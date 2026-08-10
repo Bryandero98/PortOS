@@ -23,23 +23,40 @@ export function isAntigravityCommand(command) {
   return base === 'agy' || base === 'antigravity';
 }
 
-// `agy models` prints one bare model id per line. Toolkit-native (there is no
-// upstream counterpart to keep in sync) — it lives here so it sits next to
-// ./cursor.js#parseCursorModelList and gets direct unit coverage, rather than
-// being reachable only by spawning a fake binary through the provider service.
-const ANTIGRAVITY_MODEL_LINE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+// `agy models` prints one row per model on stdout (its "Fetching available
+// models…" banner goes to stderr, so it never reaches this parser). Older
+// builds printed a bare id per line; agy 2026-08 prints `<id>\t<Label>`:
+//
+//   gemini-3.6-flash-high\tGemini 3.6 Flash (High)
+//   claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
+//
+// Both shapes are accepted — other installs run older agy builds, and a
+// whole-line id match is what every previously-persisted catalog was parsed
+// with. The label is anchored on a TAB rather than "first whitespace token" on
+// purpose: a prose line ("Available models") would otherwise surrender a
+// regex-valid first word and get persisted as a model id.
+//
+// Lives here so it sits next to ./cursor.js#parseCursorModelList and gets
+// direct unit coverage, rather than being reachable only by spawning a fake
+// binary through the provider service. Mirrored upstream at
+// server/lib/antigravity.js#parseAntigravityModelList (PortOS's image-gen agy
+// provider needs the same parse and cannot import into this directory's
+// `internal/`) — keep the two in sync.
+const ANTIGRAVITY_MODEL_LINE = /^([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\t.*)?$/;
 
 /**
  * Parse the ids out of `agy models` output, dropping blanks, banner/status
  * prose, and the configured-default sentinel (which the caller re-prepends).
  * @param {string} stdout - raw stdout from `agy models`
- * @returns {string[]} ids in the order the binary listed them (not deduped)
+ * @returns {string[]} deduped ids, in the order the binary listed them
  */
 export function parseAntigravityModelList(stdout) {
-  return String(stdout || '')
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(line => ANTIGRAVITY_MODEL_LINE.test(line) && line !== ANTIGRAVITY_CONFIGURED_DEFAULT);
+  const ids = [];
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const match = ANTIGRAVITY_MODEL_LINE.exec(line.trim());
+    if (match && match[1] !== ANTIGRAVITY_CONFIGURED_DEFAULT) ids.push(match[1]);
+  }
+  return [...new Set(ids)];
 }
 
 export function isAntigravityCliProvider(provider) {

@@ -19,6 +19,8 @@ import { tmpdir } from 'os';
 import sharp from 'sharp';
 import {
   ensureAntigravityPrintArgs,
+  isAntigravityModelId,
+  parseAntigravityModelList,
   prepareAntigravityPrompt,
 } from '../../lib/antigravity.js';
 import { bufferedSpawn, killProcessTree, prepareCliSpawn } from '../../lib/bufferedSpawn.js';
@@ -44,7 +46,6 @@ const AGY_TIMEOUT_MS = (() => {
 })();
 const DEFAULT_BIN = 'agy';
 const DEFAULT_HARVEST_TIMEOUT_MS = 5000;
-const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 let harvestTimeoutMs = DEFAULT_HARVEST_TIMEOUT_MS;
 
 const jobs = new Map();
@@ -132,9 +133,9 @@ export function listModels({ agyPath } = {}) {
         finish({ models: [], error: stderr.trim() || `agy models exited ${code}` });
         return;
       }
-      const models = [...new Set(stdout.split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => MODEL_ID_RE.test(line)))];
+      // Shared with the provider-catalog refresh so the two never disagree
+      // about what a `models` row looks like — see parseAntigravityModelList.
+      const models = parseAntigravityModelList(stdout);
       finish(models.length ? { models, error: null } : { models: [], error: 'agy models returned no model ids' });
     });
   });
@@ -226,7 +227,7 @@ export async function generateImage({
   if (cloudPromptRequired(IMAGE_GEN_MODE.AGY, inputImages.paths.length > 0) && !prompt.trim()) {
     throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   }
-  if (model && !MODEL_ID_RE.test(model)) {
+  if (model && !isAntigravityModelId(model)) {
     throw new ServerError('Invalid Agy model id', { status: 400, code: 'VALIDATION_ERROR' });
   }
 

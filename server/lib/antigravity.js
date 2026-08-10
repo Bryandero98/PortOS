@@ -25,6 +25,57 @@ export function isAntigravityCliProvider(provider) {
   return provider?.id === ANTIGRAVITY_CLI_ID || isAntigravityCommand(provider?.command);
 }
 
+// `agy models` prints one row per model on stdout (its "Fetching available
+// models…" banner goes to stderr, so it never reaches this parser). Older
+// builds printed a bare id per line; agy 2026-08 prints `<id>\t<Label>`:
+//
+//   gemini-3.6-flash-high\tGemini 3.6 Flash (High)
+//   claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
+//
+// Both shapes are accepted — other installs run older agy builds, and a
+// whole-line id match is what every previously-persisted catalog was parsed
+// with. The label is anchored on a TAB rather than "first whitespace token" on
+// purpose: a prose line ("Available models") would otherwise surrender a
+// regex-valid first word and get persisted as a model id.
+//
+// The id shape itself is the charset `validation.js#cloudModelIdString` bounds
+// its Zod schemas with; it is restated here rather than imported because
+// `validation.js` pulls in the whole route-schema graph, which several mocked
+// suites cannot absorb.
+const MODEL_ID_CHARS = '[A-Za-z0-9][A-Za-z0-9._:/-]*';
+const ANTIGRAVITY_MODEL_ID = new RegExp(`^${MODEL_ID_CHARS}$`);
+const ANTIGRAVITY_MODEL_LINE = new RegExp(`^(${MODEL_ID_CHARS})(?:\\t.*)?$`);
+
+/**
+ * Is this a syntactically valid agy model id? The defense-in-depth check
+ * behind `agyImageModelSchema`, for spawn sites that build an `agy --model`
+ * argv from a value the route schema didn't already bound.
+ * @param {unknown} id
+ */
+export function isAntigravityModelId(id) {
+  return typeof id === 'string' && ANTIGRAVITY_MODEL_ID.test(id);
+}
+
+/**
+ * Parse the ids out of `agy models` output, dropping blanks, banner/status
+ * prose, and the configured-default sentinel (which callers re-prepend).
+ *
+ * Mirrored in the vendored toolkit at
+ * `server/lib/aiToolkit/internal/antigravity.js` (which must not import out of
+ * its own directory) — keep the two in sync.
+ *
+ * @param {string} stdout - raw stdout from `agy models`
+ * @returns {string[]} deduped ids, in the order the binary listed them
+ */
+export function parseAntigravityModelList(stdout) {
+  const ids = [];
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const match = ANTIGRAVITY_MODEL_LINE.exec(line.trim());
+    if (match && match[1] !== ANTIGRAVITY_CONFIGURED_DEFAULT) ids.push(match[1]);
+  }
+  return [...new Set(ids)];
+}
+
 // agy print flags. Unlike the old Gemini CLI (which read the prompt from stdin),
 // `agy --print`/`-p`/`--prompt` takes the prompt as the flag's VALUE and does
 // NOT read stdin at all. So the print flag must be the FINAL token, with the
