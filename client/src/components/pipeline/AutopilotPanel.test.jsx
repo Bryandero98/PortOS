@@ -83,9 +83,8 @@ describe('AutopilotPanel', () => {
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
     // uncheck draft visuals, check file-gaps
-    const checks = screen.getAllByRole('checkbox');
-    fireEvent.click(checks[0]); // includeVisual -> false
-    fireEvent.click(checks[1]); // fileGaps -> true
+    fireEvent.click(screen.getByLabelText(/Draft cover \+ all interior pages/i));
+    fireEvent.click(screen.getByLabelText(/File CoS tasks for gaps/i));
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: false, fileGaps: true }, { silent: true },
@@ -259,7 +258,7 @@ describe('AutopilotPanel', () => {
     renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
-    const summary = await screen.findByText(/This run calls/i);
+    const summary = await screen.findByText(/Creation and repair call/i);
     await waitFor(() => expect(summary).toHaveTextContent('Codex / gpt-5-codex'));
   });
 
@@ -267,7 +266,7 @@ describe('AutopilotPanel', () => {
     renderPanel({ id: 's1', targetFormat: 'comic' });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
-    const summary = await screen.findByText(/This run calls/i);
+    const summary = await screen.findByText(/Creation and repair call/i);
     await waitFor(() => expect(summary).toHaveTextContent('Claude Code (provider default model)'));
   });
 
@@ -298,7 +297,7 @@ describe('AutopilotPanel', () => {
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
     fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'high' } });
-    const summary = await screen.findByText(/This run calls/i);
+    const summary = await screen.findByText(/Creation and repair call/i);
     await waitFor(() => expect(summary).toHaveTextContent('high reasoning effort'));
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
@@ -322,6 +321,72 @@ describe('AutopilotPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: true, fileGaps: false, providerOverride: 'claude' }, { silent: true },
+    ));
+  });
+
+  it('can split Luna/max creation from Sol/xhigh judging for one run', async () => {
+    getProviders.mockResolvedValue({
+      activeProvider: 'codex-tui',
+      providers: [{
+        id: 'codex-tui', name: 'Codex TUI', type: 'cli', enabled: true,
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
+      }],
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex-tui', model: 'gpt-5.6-luna' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'max' } });
+    fireEvent.click(screen.getByLabelText(/separate model for judging/i));
+    const models = screen.getAllByLabelText('Model');
+    fireEvent.change(models[1], { target: { value: 'gpt-5.6-sol' } });
+    const efforts = screen.getAllByLabelText('Thinking effort');
+    fireEvent.change(efforts[1], { target: { value: 'xhigh' } });
+    expect(screen.getByText(/Luna\/max writing with an independent Sol\/xhigh critic/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      {
+        includeVisual: true,
+        fileGaps: false,
+        effortOverride: 'max',
+        judgeLlm: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+      },
+      { silent: true },
+    ));
+  });
+
+  it('restores split LLM routing when a paused run is resumed', async () => {
+    getProviders.mockResolvedValue({
+      activeProvider: 'codex-tui',
+      providers: [{
+        id: 'codex-tui', name: 'Codex TUI', type: 'cli', enabled: true,
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
+      }],
+    });
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        resumeOptions: {
+          providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+          judgeLlm: { providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+        },
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByLabelText(/separate model for judging/i)).toBeChecked();
+    expect(screen.getAllByLabelText('Model')[0]).toHaveValue('gpt-5.6-luna');
+    expect(screen.getAllByLabelText('Model')[1]).toHaveValue('gpt-5.6-sol');
+    fireEvent.click(screen.getByRole('button', { name: /resume autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+      }),
+      { silent: true },
     ));
   });
 

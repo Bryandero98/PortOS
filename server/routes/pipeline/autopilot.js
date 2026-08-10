@@ -30,6 +30,16 @@ import { mapServiceError, providerOverrideShape } from './shared.js';
 
 const router = Router();
 
+const effortOverrideSchema = z.preprocess(
+  (v) => (v === '' ? undefined : v),
+  z.enum(EFFORT_LEVELS).optional(),
+);
+
+const autopilotLlmRouteSchema = z.object({
+  ...providerOverrideShape,
+  effortOverride: effortOverrideSchema,
+}).strict();
+
 const autopilotStartSchema = z.object({
   ...providerOverrideShape,
   // Per-run reasoning effort (#3641). Soft, like the provider/model override: it
@@ -37,7 +47,13 @@ const autopilotStartSchema = z.object({
   // to the resolved provider ladder (dropping it entirely for a provider with no
   // effort control). Validated against the union of every accepted level across
   // effort-capable CLIs; '' (the UI "provider default" sentinel) means no override.
-  effortOverride: z.preprocess((v) => (v === '' ? undefined : v), z.enum(EFFORT_LEVELS).optional()),
+  effortOverride: effortOverrideSchema,
+  // Optional per-run critic route. Creation/repair continues to use the run's
+  // provider/model/effort above; judges, verification, analytical editorial
+  // passes and pipeline diagnosis use this soft route instead. Exact stage pins
+  // from Prompts still win. This is deliberately per-run so experimenting with a
+  // lighter writer (for example Luna/max) does not globally repoint every series.
+  judgeLlm: autopilotLlmRouteSchema.optional(),
   // Draft cover + all interior pages once a story is ready. Accepted now;
   // honored when VISUAL_DRAFT_ENABLED ships (Phase 2). Defaults true per the
   // product decision (whole-series, full draft visuals).

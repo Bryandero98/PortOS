@@ -22,6 +22,7 @@ import { sanitizeSeverityWeights, sanitizeBlockingSeverities } from '../../lib/e
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import { persistedRenderPinFields } from '../../lib/renderTargets.js';
+import { EFFORT_LEVELS } from '../../lib/providerModels.js';
 import { DIAGNOSIS_MAX_FILED } from './seriesAutopilot/diagnosisCore.js';
 import {
   maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes,
@@ -122,18 +123,35 @@ export const AUTOPILOT_STEP_MAX = 80;
 export const AUTOPILOT_ERROR_MAX = 1000;
 const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
 
-// The two local Options toggles that must survive a pause/reload so "Resume"
-// continues the run the user actually launched. These are deliberately scoped
-// to the paused run marker instead of global settings: a future scheduled run
-// should not inherit one series' gap-filing choice, while a resume should not
-// silently turn it off. The destructive-consent `unlockForRun` flag is NOT
-// carried here — the unlock pass spends that consent once and leaves the
-// records unlocked, so re-arming it would only repeat a completed mutation.
+const sanitizeAutopilotLlmRoute = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  const providerOverride = trimTo(raw.providerOverride, 80);
+  const modelOverride = trimTo(raw.modelOverride, 200);
+  if (providerOverride) out.providerOverride = providerOverride;
+  if (modelOverride) out.modelOverride = modelOverride;
+  if (EFFORT_LEVELS.includes(raw.effortOverride)) out.effortOverride = raw.effortOverride;
+  return Object.keys(out).length ? out : null;
+};
+
+// Run-local Options that must survive a pause/reload so "Resume" continues the
+// run the user actually launched. These are deliberately scoped to the paused
+// run marker instead of global settings: a future scheduled run should not
+// inherit one series' gap-filing or LLM-routing experiment. The destructive-
+// consent `unlockForRun` flag is NOT carried here — the unlock pass spends that
+// consent once and leaves the records unlocked, so re-arming it would only
+// repeat a completed mutation.
 const sanitizeAutopilotResumeOptions = (raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const out = {};
   if (typeof raw.includeVisual === 'boolean') out.includeVisual = raw.includeVisual;
   if (typeof raw.fileGaps === 'boolean') out.fileGaps = raw.fileGaps;
+  const baseLlm = sanitizeAutopilotLlmRoute(raw);
+  if (baseLlm?.providerOverride) out.providerOverride = baseLlm.providerOverride;
+  if (baseLlm?.modelOverride) out.modelOverride = baseLlm.modelOverride;
+  if (baseLlm?.effortOverride) out.effortOverride = baseLlm.effortOverride;
+  const judgeLlm = sanitizeAutopilotLlmRoute(raw.judgeLlm);
+  if (judgeLlm) out.judgeLlm = judgeLlm;
   return Object.keys(out).length ? out : null;
 };
 // Why a bounded-retry gate paused the run. Convergence gates (#1571):

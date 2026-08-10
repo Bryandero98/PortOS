@@ -287,6 +287,33 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
     expect(autopilot.__testing.providerIdOpts(none).providerIdDefault).toBeUndefined();
     expect(autopilot.__testing.providerIdOpts(none).modelIdDefault).toBeUndefined();
   });
+
+  it('routes judges separately while keeping creation on the run default', () => {
+    const split = {
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+      },
+    };
+    expect(autopilot.__testing.providerOverrideOpts(split)).toMatchObject({
+      providerDefault: 'codex-tui', modelDefault: 'gpt-5.6-luna', effortDefault: 'max',
+    });
+    expect(autopilot.__testing.providerOverrideOpts(split, 'judge')).toMatchObject({
+      providerDefault: 'codex-tui', modelDefault: 'gpt-5.6-sol', effortDefault: 'xhigh',
+    });
+  });
+
+  it('drops a creative model when the judge changes provider without choosing one', () => {
+    const split = {
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { providerOverride: 'claude-code-tui', effortOverride: 'high' },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(split, 'judge')).toEqual({
+      providerOverride: 'claude-code-tui', modelOverride: undefined, effortOverride: 'high',
+    });
+  });
 });
 
 // The precedence itself is covered by server/lib/seriesLlmOverride.test.js —
@@ -1552,6 +1579,38 @@ describe('autopilot conductor', () => {
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     expect(series.autopilot?.residualFindings?.length).toBeGreaterThan(0);
+  });
+
+  it('foundation gate: uses the critic route for judging and the creative route for repairs', async () => {
+    foundationScore = 3;
+    foundationFixApplied = true;
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-luna',
+      effortOverride: 'max',
+      judgeLlm: {
+        providerOverride: 'codex-tui',
+        modelOverride: 'gpt-5.6-sol',
+        effortOverride: 'xhigh',
+      },
+      maxFoundationRounds: 2,
+    });
+    await waitFor(runFinished(seriesId));
+    expect(judgeFoundation).toHaveBeenCalledWith(seriesId, expect.objectContaining({
+      providerDefault: 'codex-tui', modelDefault: 'gpt-5.6-sol', effortDefault: 'xhigh',
+    }));
+    expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, expect.any(String), expect.objectContaining({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+    }));
+    expect((await seriesSvc.getSeries(seriesId)).autopilot?.resumeOptions).toMatchObject({
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-luna',
+      effortOverride: 'max',
+      judgeLlm: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+      },
+    });
   });
 
   it('foundation gate: repairs a below-floor character dimension even when the weighted score passes', async () => {

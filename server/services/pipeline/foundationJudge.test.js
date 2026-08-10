@@ -467,6 +467,36 @@ describe('judgeFoundation — cache / fast-pass', () => {
     expect(stageRunner.resolveJudgeForStage).toHaveBeenCalled();
     logSpy.mockRestore();
   });
+
+  it('threads an autopilot critic route as soft defaults so a stage judge pin can win', async () => {
+    seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', universeId: null });
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: { dimensions: dims(), oneLineVerdict: 'v' },
+      providerId: 'judge-x', model: 'jm-heavy', runId: 'run-soft',
+    });
+
+    await judgeFoundation('ser-1', {
+      providerDefault: 'codex-tui',
+      modelDefault: 'gpt-5.6-sol',
+      effortDefault: 'xhigh',
+      force: true,
+    });
+
+    expect(stageRunner.resolveJudgeForStage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        providerDefault: 'codex-tui',
+        modelDefault: 'gpt-5.6-sol',
+        providerOverride: undefined,
+        modelOverride: undefined,
+      }),
+    );
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledWith(
+      'pipeline-judge-foundation',
+      expect.anything(),
+      expect.objectContaining({ effortDefault: 'xhigh' }),
+    );
+  });
 });
 
 describe('applyFoundationFix — dimension → owning-service routing table', () => {

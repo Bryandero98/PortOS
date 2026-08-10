@@ -24,7 +24,7 @@ import {
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
   isResolveRegression, regressionPauseReason,
 } from './convergence.js';
-import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, seasonPreserveOpts } from './session.js';
+import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
 
 const MAX_PLANNING_GATE_HANDOFFS = 6;
@@ -65,7 +65,7 @@ export async function runArcVerify(seriesId, record) {
     if (record.cancelRequested) return { canceled: true };
     const beforeVerify = await budgetPause();
     if (beforeVerify) return beforeVerify;
-    const { issues: arcFindings } = await verifyArc(seriesId, providerOverrideOpts(record));
+    const { issues: arcFindings } = await verifyArc(seriesId, providerOverrideOpts(record, 'judge'));
     await recordDomainUsage('cos', { actions: 1 });
     const series = await getSeries(seriesId);
     const volumeFindings = [];
@@ -74,7 +74,7 @@ export async function runArcVerify(seriesId, record) {
       const beforeVolumeVerify = await budgetPause();
       if (beforeVolumeVerify) return beforeVolumeVerify;
       const { issues } = await verifyVolume(seriesId, season.id, {
-        ...providerOverrideOpts(record),
+        ...providerOverrideOpts(record, 'judge'),
         // This gate's resolver rewrites the synopsis-level arc/volumes, not
         // issue beats. Existing beat sheets get their own continuity gate later.
         synopsisOnly: true,
@@ -183,7 +183,7 @@ export async function runBeatContinuity(seriesId, record) {
     if (record.cancelRequested) return { canceled: true };
     const beforeVerify = await budgetPause();
     if (beforeVerify) return beforeVerify;
-    const { issues } = await analyzeBeatContinuity(seriesId, providerOverrideOpts(record));
+    const { issues } = await analyzeBeatContinuity(seriesId, providerOverrideOpts(record, 'judge'));
     await recordDomainUsage('cos', { actions: 1 });
     const blocking = issues.filter((i) => record.options.blockingSets.beatContinuity.has(i.severity));
     broadcast(seriesId, {
@@ -288,9 +288,8 @@ export async function runFoundationGate(seriesId, record) {
   const threshold = Number.isFinite(record.options.foundationThreshold)
     ? record.options.foundationThreshold
     : DEFAULT_FOUNDATION_THRESHOLD;
-  const providerId = record.options.providerOverride;
-  const model = record.options.modelOverride;
-  const effort = record.options.effortOverride;
+  const judgeLlm = roleLlm(record, 'judge');
+  const creativeLlm = roleLlm(record, 'creative');
 
   // Each owning editor gets its own convergence history. Invert the target's
   // raw score to a distance below 10 so trackConvergence's fewer-is-better
@@ -308,7 +307,11 @@ export async function runFoundationGate(seriesId, record) {
     // nothing) returns the cached score with no LLM call — this IS the fast-pass
     // that stops an already-clean foundation looping. A real change (any fix, or
     // a user edit) flips the pinned hash and re-judges automatically.
-    const snap = await judgeFoundation(seriesId, { providerId, model, effort });
+    const snap = await judgeFoundation(seriesId, {
+      providerDefault: judgeLlm.providerOverride,
+      modelDefault: judgeLlm.modelOverride,
+      effortDefault: judgeLlm.effortOverride,
+    });
     // A cached (content-hash unchanged) verdict did no LLM work — don't bill it.
     if (!snap.cached) await recordDomainUsage('cos', { actions: 1 });
     const score = snap.weightedScore ?? 0;
@@ -381,10 +384,10 @@ export async function runFoundationGate(seriesId, record) {
     try {
       fix = await applyFoundationFix(seriesId, weak.dimension, {
         finding: snap.dimensions?.[weak.dimension] || {},
-        providerOverride: providerId,
-        modelOverride: model,
+        providerOverride: creativeLlm.providerOverride,
+        modelOverride: creativeLlm.modelOverride,
         ...seasonPreserveOpts(record),
-        effortOverride: effort,
+        effortOverride: creativeLlm.effortOverride,
       });
     } catch (err) {
       const detail = (err?.message || String(err)).slice(0, 300);

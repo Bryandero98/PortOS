@@ -110,6 +110,7 @@ export const __testing = {
   get runs() { return state.runs; },
   get buildDryRunPlan() { return dryRun.buildDryRunPlan; },
   get summarizePlanCost() { return convergence.summarizePlanCost; },
+  get roleLlm() { return session.roleLlm; },
   get providerOverrideOpts() { return session.providerOverrideOpts; },
   get providerIdOpts() { return session.providerIdOpts; },
   get meanQualityScore() { return revisionSteps.meanQualityScore; },

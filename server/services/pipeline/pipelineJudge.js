@@ -262,9 +262,21 @@ async function runJudgeStage(ctx, runOptions) {
  * @param {string} [opts.model]       explicit judge model override
  * @param {string} [opts.effort]      run-level reasoning effort (soft — a per-stage
  *                                   `effort` pin still wins, #3641)
+ * @param {string} [opts.providerDefault] soft run-level judge provider; stage pin wins
+ * @param {string} [opts.modelDefault] soft run-level judge model; explicit stage model wins
+ * @param {string} [opts.effortDefault] soft run-level judge effort; stage pin wins
  * @param {boolean} [opts.force]      re-judge unchanged content
  */
-export async function judgeIssue(issueId, { stageId, providerId, model, effort, force = false } = {}) {
+export async function judgeIssue(issueId, {
+  stageId,
+  providerId,
+  model,
+  effort,
+  providerDefault,
+  modelDefault,
+  effortDefault,
+  force = false,
+} = {}) {
   assertValidIssueId(issueId);
   const issue = await getIssue(issueId);
   const picked = pickJudgeContent(issue, stageId);
@@ -289,6 +301,8 @@ export async function judgeIssue(issueId, { stageId, providerId, model, effort, 
   const { provider: judgeProvider, model: judgeModel } = await resolveJudgeForStage(writerStage, {
     providerOverride: providerId,
     modelOverride: model,
+    providerDefault,
+    modelDefault,
   });
 
   // Budget content to the judge model's window (a small/local judge trims to fit
@@ -309,7 +323,7 @@ export async function judgeIssue(issueId, { stageId, providerId, model, effort, 
     returnsJson: true,
     providerOverride: judgeProvider.id,
     modelOverride: judgeModel,
-    effortDefault: effort,
+    effortDefault: effort || effortDefault,
     source: 'pipeline-judge-issue',
   });
 

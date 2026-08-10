@@ -80,7 +80,7 @@ describe('seriesAutopilot barrel re-exports (issue #2842)', () => {
   it('preserves the __testing internals bundle pulled from the split modules', () => {
     expect(Object.keys(barrel.__testing).sort()).toEqual([
       'buildDryRunPlan', 'meanQualityScore', 'providerIdOpts', 'providerOverrideOpts',
-      'runs', 'summarizePlanCost',
+      'roleLlm', 'runs', 'summarizePlanCost',
     ]);
     expect(barrel.__testing.runs).toBeInstanceOf(Map);
   });

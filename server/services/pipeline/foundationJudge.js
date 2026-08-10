@@ -599,9 +599,20 @@ async function runFoundationJudgeStage(ctx, runOptions) {
  * @param {string} [opts.model]       explicit judge model override
  * @param {string} [opts.effort]      run-level reasoning effort (soft — a per-stage
  *                                   `effort` pin still wins, #3641)
+ * @param {string} [opts.providerDefault] soft run-level judge provider; stage pin wins
+ * @param {string} [opts.modelDefault] soft run-level judge model; explicit stage model wins
+ * @param {string} [opts.effortDefault] soft run-level judge effort; stage pin wins
  * @param {boolean} [opts.force]      re-judge unchanged inputs
  */
-export async function judgeFoundation(seriesId, { providerId, model, effort, force = false } = {}) {
+export async function judgeFoundation(seriesId, {
+  providerId,
+  model,
+  effort,
+  providerDefault,
+  modelDefault,
+  effortDefault,
+  force = false,
+} = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
   const [universe, issues] = await Promise.all([
@@ -623,6 +634,8 @@ export async function judgeFoundation(seriesId, { providerId, model, effort, for
   const { provider: judgeProvider, model: judgeModel } = await resolveJudgeForStage(writerStage, {
     providerOverride: providerId,
     modelOverride: model,
+    providerDefault,
+    modelDefault,
   });
 
   // Budget content to the judge model's window (#1488).
@@ -642,7 +655,7 @@ export async function judgeFoundation(seriesId, { providerId, model, effort, for
     returnsJson: true,
     providerOverride: judgeProvider.id,
     modelOverride: judgeModel,
-    effortDefault: effort,
+    effortDefault: effort || effortDefault,
     source: STAGE,
   });
 

@@ -101,6 +101,10 @@ export async function persistMarker(seriesId, patch) {
     ? {
       includeVisual: run.options.includeVisual !== false,
       fileGaps: run.options.fileGaps === true,
+      ...(run.options.providerOverride ? { providerOverride: run.options.providerOverride } : {}),
+      ...(run.options.modelOverride ? { modelOverride: run.options.modelOverride } : {}),
+      ...(run.options.effortOverride ? { effortOverride: run.options.effortOverride } : {}),
+      ...(run.options.judgeLlm ? { judgeLlm: run.options.judgeLlm } : {}),
     }
     : null;
   await updateSeries(seriesId, {
@@ -199,28 +203,60 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // stageRunner's `providerDefault`/`modelDefault` at the leaf call while keeping
 // its existing hard `providerOverride`/`providerId` + `modelOverride`/`model`
 // params untouched for manual route callers.
-export const providerOverrideOpts = (record) => ({
-  providerDefault: record.options.providerOverride,
-  modelDefault: record.options.modelOverride,
-  effortDefault: record.options.effortOverride,
-});
-export const providerIdOpts = (record) => ({
-  providerIdDefault: record.options.providerOverride,
-  modelIdDefault: record.options.modelOverride,
-  effortIdDefault: record.options.effortOverride,
-  // Multi-candidate draft gate (#2169): bill one cos action per re-roll and stop
-  // re-rolling when the daily budget is spent. Only ever invoked by
-  // generateStage's runDraftGate on a judgeable stage with draftAttempts > 1 — a
-  // no-op for every other stage/run. Check-then-bill so a skipped (budget-out)
-  // attempt isn't charged. Returns false to halt further attempts (keep the best
-  // so far); true when the attempt may proceed.
-  chargeAction: async () => {
-    const budget = await getDomainBudgetStatus('cos');
-    if (!budget.withinBudget) return false;
-    await recordDomainUsage('cos', { actions: 1 });
-    return true;
-  },
-});
+export const roleLlm = (record, role = 'creative') => {
+  const base = record?.options || {};
+  const route = role === 'judge' && base.judgeLlm && typeof base.judgeLlm === 'object'
+    ? base.judgeLlm
+    : null;
+  if (!route) {
+    return {
+      providerOverride: base.providerOverride,
+      modelOverride: base.modelOverride,
+      effortOverride: base.effortOverride,
+    };
+  }
+  const providerOverride = route.providerOverride || base.providerOverride;
+  // A model id belongs to its provider. When the judge route changes provider
+  // and leaves model blank, use that provider's default instead of carrying the
+  // creative provider's model across. A same-provider/effort-only judge route
+  // deliberately inherits the creative model.
+  const providerChanged = !!route.providerOverride
+    && route.providerOverride !== base.providerOverride;
+  return {
+    providerOverride,
+    modelOverride: route.modelOverride || (providerChanged ? undefined : base.modelOverride),
+    effortOverride: route.effortOverride || base.effortOverride,
+  };
+};
+
+export const providerOverrideOpts = (record, role = 'creative') => {
+  const llm = roleLlm(record, role);
+  return {
+    providerDefault: llm.providerOverride,
+    modelDefault: llm.modelOverride,
+    effortDefault: llm.effortOverride,
+  };
+};
+export const providerIdOpts = (record, role = 'creative') => {
+  const llm = roleLlm(record, role);
+  return {
+    providerIdDefault: llm.providerOverride,
+    modelIdDefault: llm.modelOverride,
+    effortIdDefault: llm.effortOverride,
+    // Multi-candidate draft gate (#2169): bill one cos action per re-roll and stop
+    // re-rolling when the daily budget is spent. Only ever invoked by
+    // generateStage's runDraftGate on a judgeable stage with draftAttempts > 1 — a
+    // no-op for every other stage/run. Check-then-bill so a skipped (budget-out)
+    // attempt isn't charged. Returns false to halt further attempts (keep the best
+    // so far); true when the attempt may proceed.
+    chargeAction: async () => {
+      const budget = await getDomainBudgetStatus('cos');
+      if (!budget.withinBudget) return false;
+      await recordDomainUsage('cos', { actions: 1 });
+      return true;
+    },
+  };
+};
 
 // Non-deletion guarantee for every arc-rewriting call this run makes. Once the
 // unlock pre-pass has cleared the per-season locks (see ./unlockPass.js), those

@@ -475,12 +475,43 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // in". Sent as `effortOverride`, which the server threads as a SOFT run-level
   // default — a stage with its own `effort` pin still wins.
   const [effortOverride, setEffortOverride] = useState('');
+  // Optional independent critic route for this run. Creation/repair keeps the
+  // run default above; judges, verification and analytical editorial passes use
+  // this route. Exact prompt-stage pins still win over both soft defaults.
+  const [separateJudgeLlm, setSeparateJudgeLlm] = useState(false);
+  const [judgeProviderOverride, setJudgeProviderOverride] = useState('');
+  const [judgeModelOverride, setJudgeModelOverride] = useState('');
+  const [judgeEffortOverride, setJudgeEffortOverride] = useState('');
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
   // Provider/model/effort the ACTIVE run reported on its start frame — what the
   // live progress line names, so a run started elsewhere (or by the scheduler)
   // still says which provider (and how hard it thinks) it is spending on.
   const [runLlm, setRunLlm] = useState(null);
+
+  // A cooperative cancel persists every non-destructive run-local LLM choice.
+  // Restore those choices on Resume so a model experiment does not silently
+  // collapse back to the series default after a pause/restart.
+  useEffect(() => {
+    const paused = series?.autopilot?.status === 'paused';
+    const resume = paused ? series?.autopilot?.resumeOptions : null;
+    setProviderOverride(resume?.providerOverride || '');
+    setModelOverride(resume?.modelOverride || '');
+    setEffortOverride(resume?.effortOverride || '');
+    setSeparateJudgeLlm(!!resume?.judgeLlm);
+    setJudgeProviderOverride(resume?.judgeLlm?.providerOverride || '');
+    setJudgeModelOverride(resume?.judgeLlm?.modelOverride || '');
+    setJudgeEffortOverride(resume?.judgeLlm?.effortOverride || '');
+  }, [
+    seriesId,
+    series?.autopilot?.status,
+    series?.autopilot?.resumeOptions?.providerOverride,
+    series?.autopilot?.resumeOptions?.modelOverride,
+    series?.autopilot?.resumeOptions?.effortOverride,
+    series?.autopilot?.resumeOptions?.judgeLlm?.providerOverride,
+    series?.autopilot?.resumeOptions?.judgeLlm?.modelOverride,
+    series?.autopilot?.resumeOptions?.judgeLlm?.effortOverride,
+  ]);
 
   useEffect(() => {
     let canceled = false;
@@ -534,6 +565,19 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // than the raw pick) keeps the copy honest — the same rule EffortSelect uses
   // for its out-of-ladder option.
   const effectiveEffort = resolveCliEffort(effortOverride, effProvider, effModel);
+  const judgeProviderId = judgeProviderOverride || effProviderId;
+  const judgeModel = judgeModelOverride
+    || ((!judgeProviderOverride || judgeProviderOverride === effProviderId) ? effModel : '');
+  const judgeProvider = providers.find((p) => p.id === judgeProviderId);
+  const judgeModels = useMemo(
+    () => assignmentModelOptions(null, providers, judgeProviderId),
+    [providers, judgeProviderId],
+  );
+  const judgeEffort = resolveCliEffort(
+    judgeEffortOverride || effortOverride,
+    judgeProvider,
+    judgeModel,
+  );
 
   // Load the persisted option defaults so the Options controls reflect the
   // install's settings. The autopilot reads the same settings server-side, so we
@@ -573,7 +617,12 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // status payload's copy of it (see the re-attach effect below).
   const applyStartFrame = useCallback((f) => {
     setMode(f.mode || null);
-    setRunLlm({ provider: f.provider || null, model: f.model || null, effort: f.effort || null });
+    setRunLlm({
+      provider: f.provider || null,
+      model: f.model || null,
+      effort: f.effort || null,
+      judge: f.judge || null,
+    });
     if (Array.isArray(f.plan)) setPlan(f.plan);
     if (f.planTotals) setPlanTotals(f.planTotals);
   }, []);
@@ -662,6 +711,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       ...(providerOverride ? { providerOverride } : {}),
       ...(modelOverride ? { modelOverride } : {}),
       ...(effortOverride ? { effortOverride } : {}),
+      ...(separateJudgeLlm && (judgeProviderOverride || judgeModelOverride || judgeEffortOverride) ? {
+        judgeLlm: {
+          ...(judgeProviderOverride ? { providerOverride: judgeProviderOverride } : {}),
+          ...(judgeModelOverride ? { modelOverride: judgeModelOverride } : {}),
+          ...(judgeEffortOverride ? { effortOverride: judgeEffortOverride } : {}),
+        },
+      } : {}),
     };
     const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...unlockOverride, ...llmOverride }, { silent: true })
       .catch((err) => { toast.error(err.message || 'Could not start autopilot'); return null; });
@@ -681,7 +737,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     setActive(true);
     // `options` is the single dep for every persisted option — the registry reads
     // live values through refs, so no option can be forgotten here.
-  }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, options, persistRounds]);
+  }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, separateJudgeLlm, judgeProviderOverride, judgeModelOverride, judgeEffortOverride, options, persistRounds]);
 
   const cancel = useCallback(async () => {
     await cancelPipelineAutopilot(seriesId).catch(() => null);
@@ -755,10 +811,19 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
               only way to know what a run would spend on was to read the code. */}
           <div className="rounded-lg border border-port-border bg-port-bg/60 p-2.5 flex flex-col gap-2">
             <p className="text-[11px] text-gray-400 leading-relaxed">
-              This run calls{' '}
+              Creation and repair call{' '}
               <span className="text-gray-200 font-medium">{providerModelLabel(providers, effProviderId, effModel)}</span>
               {effectiveEffort ? (
                 <> at <span className="text-gray-200 font-medium">{effectiveEffort}</span> reasoning effort</>
+              ) : null}
+              {separateJudgeLlm ? (
+                <>
+                  ; judging and verification call{' '}
+                  <span className="text-gray-200 font-medium">{providerModelLabel(providers, judgeProviderId, judgeModel)}</span>
+                  {judgeEffort ? (
+                    <> at <span className="text-gray-200 font-medium">{judgeEffort}</span> reasoning effort</>
+                  ) : null}
+                </>
               ) : null}
               . Stages pinned in{' '}
               <Link to="/prompts" className="text-port-accent hover:underline">Prompts</Link>{' '}
@@ -793,6 +858,41 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                 emptyModelOption={inheritedModel ? `Series default (${inheritedModel})` : 'Default model'}
               />
             </div>
+            <label className="flex items-center gap-2 text-xs text-gray-300 pt-1">
+              <input
+                type="checkbox"
+                checked={separateJudgeLlm}
+                onChange={(e) => setSeparateJudgeLlm(e.target.checked)}
+              />
+              Use a separate model for judging and verification
+            </label>
+            {separateJudgeLlm ? (
+              <div className="max-w-md pl-5">
+                <ProviderModelSelector
+                  providers={providers}
+                  selectedProviderId={judgeProviderOverride}
+                  effectiveProviderId={judgeProviderId}
+                  selectedModel={judgeModelOverride}
+                  availableModels={judgeModels}
+                  onProviderChange={(id) => {
+                    setJudgeProviderOverride(id);
+                    setJudgeModelOverride('');
+                    setJudgeEffortOverride('');
+                  }}
+                  onModelChange={setJudgeModelOverride}
+                  effort={judgeEffortOverride}
+                  onEffortChange={setJudgeEffortOverride}
+                  label="Override judge and verifier for this run"
+                  compact
+                  alwaysShowModel
+                  emptyProviderOption={`Run default (${providerDisplayName(providers, effProviderId, '—')})`}
+                  emptyModelOption={effModel ? `Run default (${effModel})` : 'Run default model'}
+                />
+                <p className="mt-1 text-[11px] text-gray-500">
+                  Useful for experiments such as Luna/max writing with an independent Sol/xhigh critic. Exact stage pins in Prompts still take precedence.
+                </p>
+              </div>
+            ) : null}
           </div>
           <label className="flex items-center gap-2 text-xs text-gray-300">
             <input type="checkbox" checked={includeVisual} onChange={(e) => setIncludeVisual(e.target.checked)} />
@@ -960,8 +1060,15 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
               with neither known there is nothing truthful to name, so say nothing. */}
           {runLlm?.provider || activeProviderId ? (
             <div className="mt-1 text-[11px] text-gray-500">
-              on {providerModelLabel(providers, runLlm?.provider || activeProviderId, runLlm?.model)}
+              create/repair on {providerModelLabel(providers, runLlm?.provider || activeProviderId, runLlm?.model)}
               {runLlm?.effort ? ` at ${runLlm.effort} effort` : ''}
+              {runLlm?.judge ? (
+                <> · judge/verify on {providerModelLabel(
+                  providers,
+                  runLlm.judge.provider || runLlm?.provider || activeProviderId,
+                  runLlm.judge.model,
+                )}{runLlm.judge.effort ? ` at ${runLlm.judge.effort} effort` : ''}</>
+              ) : null}
             </div>
           ) : null}
           {frames?.length ? (

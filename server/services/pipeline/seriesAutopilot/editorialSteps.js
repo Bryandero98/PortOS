@@ -51,7 +51,7 @@ export async function runScriptVerify(sId, issueId, record) {
   // downgrades to a skip instead of aborting the whole run.
   let issues = [];
   try {
-    const result = await verifyComicScript(issueId, providerIdOpts(record));
+    const result = await verifyComicScript(issueId, providerIdOpts(record, 'judge'));
     issues = result.issues || [];
     await recordDomainUsage('cos', { actions: 1 });
   } catch (err) {
@@ -106,7 +106,7 @@ export async function runEditorial(sId, record) {
     if (beforeAnalyze) return beforeAnalyze;
     const { issues, runId } = await analyzeManuscriptCompleteness(sId, {
       withEdits: true,
-      ...providerOverrideOpts(record),
+      ...providerOverrideOpts(record, 'judge'),
     });
     await recordDomainUsage('cos', { actions: 1 });
     const blocking = (issues || []).filter((i) => record.options.blockingSets.editorial.has(i.severity));
@@ -229,7 +229,7 @@ export async function runReverseOutlineRefresh(sId, record) {
   const beforeRefresh = await budgetPause();
   if (beforeRefresh) return beforeRefresh;
   const signal = { get aborted() { return record.cancelRequested; } };
-  const regen = (force) => generateReverseOutline(sId, { ...providerIdOpts(record), force, signal })
+  const regen = (force) => generateReverseOutline(sId, { ...providerIdOpts(record, 'judge'), force, signal })
     .catch((err) => {
       console.log(`⚠️ autopilot: reverse-outline refresh failed for ${sId.slice(0, 12)}: ${err.message}`);
       return null;
@@ -292,7 +292,7 @@ export async function runEditorialChecksPass(sId, record) {
   // during a long (issues × checks) pass is the single terminal verify:round
   // total — no per-check progress or severity breakdown.
   const onProgress = (event) => broadcast(sId, { ...event, scope: 'editorialChecks' });
-  const result = await runEditorialChecks(sId, { ...providerOverrideOpts(record), checkIds, settings, signal, onProgress }).catch((err) => {
+  const result = await runEditorialChecks(sId, { ...providerOverrideOpts(record, 'judge'), checkIds, settings, signal, onProgress }).catch((err) => {
     console.log(`⚠️ autopilot: editorial checks failed for ${sId.slice(0, 12)}: ${err.message}`);
     return null;
   });

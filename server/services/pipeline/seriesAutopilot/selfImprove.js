@@ -142,7 +142,7 @@ export async function runSelfImproveDiagnosis(sId, record, { outcome, reason = n
     ...buildDiagnosisStageVars(record, { series, checkPlan, signals, counts, dropped }),
     outcome,
     outcomeReason: trimToClause(reason, 1000) || 'none',
-  }, { ...providerOverrideOpts(record), returnsJson: true, source: SELF_IMPROVE_STAGE });
+  }, { ...providerOverrideOpts(record, 'judge'), returnsJson: true, source: SELF_IMPROVE_STAGE });
   await recordDomainUsage('cos', { actions: 1 });
 
   const diagnosis = shapeDiagnosis(content);

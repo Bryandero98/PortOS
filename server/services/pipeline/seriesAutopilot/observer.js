@@ -197,7 +197,7 @@ export async function runObserverPass(sId, record, { phase, stepKind = null, out
     // What this run already filed, so a later pass proposes the NEXT fix
     // instead of re-describing the one already dispatched.
     priorFilings: (rs.observerFindings || []).map((f) => `${f.area}: ${f.title}`).join('\n') || 'none',
-  }, { ...providerOverrideOpts(record), returnsJson: true, source: OBSERVER_STAGE });
+  }, { ...providerOverrideOpts(record, 'judge'), returnsJson: true, source: OBSERVER_STAGE });
   await recordDomainUsage('cos', { actions: 1 });
 
   const diagnosis = shapeDiagnosis(content, OBSERVER_AREAS);

@@ -23,7 +23,7 @@ import {
 import { runSelfImproveDiagnosis } from './selfImprove.js';
 import { observerEnabled, runObserverPass, summarizeObserver } from './observer.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
-import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup } from './session.js';
+import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup, roleLlm } from './session.js';
 import { resolveNextStep } from './stepResolver.js';
 import { editorialSubsetIds } from './editorialSteps.js';
 import { dispatchStep } from './dispatch.js';
@@ -184,13 +184,21 @@ export async function startSeriesAutopilot(sId, options = {}) {
   // Shared `start` frame for both modes. `provider`/`model`/`effort` are the
   // run's resolved soft defaults — what the panel shows as "this run calls X / Y";
   // a stage pinned on the Prompts page still overrides them for that stage.
-  const startFrame = (target, extra = {}) => ({
-    type: 'start', runId, mode, target,
-    provider: runOptions.providerOverride ?? null,
-    model: runOptions.modelOverride ?? null,
-    effort: runOptions.effortOverride ?? null,
-    ...extra,
-  });
+  const startFrame = (target, extra = {}) => {
+    const judge = runOptions.judgeLlm ? roleLlm(record, 'judge') : null;
+    return {
+      type: 'start', runId, mode, target,
+      provider: runOptions.providerOverride ?? null,
+      model: runOptions.modelOverride ?? null,
+      effort: runOptions.effortOverride ?? null,
+      judge: judge ? {
+        provider: judge.providerOverride ?? null,
+        model: judge.modelOverride ?? null,
+        effort: judge.effortOverride ?? null,
+      } : null,
+      ...extra,
+    };
+  };
 
   // Post-mortem hook for the opt-in diagnosis passes. Best-effort by contract:
   // a diagnosis that throws must never turn a completed run into a failed one,
