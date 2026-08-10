@@ -116,6 +116,7 @@ import {
   DEFAULT_FAILURE_TASK_MAX_AGE_MS,
   __resetTaskCache
 } from './cosTaskStore.js';
+import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS } from '../lib/taskPauseHold.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/cosValidation.js';
 
 const USER_FILE = '/root/TASKS.md';
@@ -680,6 +681,29 @@ describe('cosTaskStore.updateTask', () => {
     const reopened = await updateTask('task-blk', { status: 'pending' }, 'user');
     expect(reopened.metadata.blockedReason).toBeUndefined();
     expect(reopened.metadata.blockedCategory).toBeUndefined();
+  });
+
+  // The pause hold goes with it, whatever un-blocked the task. `resumeAgent` is only
+  // ONE of the paths back to pending — a dedupe revive, an autopilot re-dispatch, a
+  // cooldown expiry and a human unblocking it all land here — and every one of them
+  // used to leave a running task advertising a live pause, which made the paused
+  // agent's own resume read as spent and queue a duplicate.
+  it.each(['pending', 'in_progress'])('clears the pause hold when an unrelated path flips it to %s', async (status) => {
+    await addTask({ description: 'paused', id: 'task-pz' }, 'user');
+    await updateTask('task-pz', {
+      status: 'blocked',
+      metadata: {
+        blockedCategory: AGENT_PAUSED_CATEGORY,
+        pausedAt: '2026-08-10T00:00:00.000Z',
+        pausedAgentId: 'agent-1',
+        resumeWorkspacePath: '/w/agent-1',
+        resumeRunId: 'run-1',
+      },
+    }, 'user');
+    const revived = await updateTask('task-pz', { status }, 'user');
+    for (const key of PAUSE_METADATA_KEYS) {
+      expect(revived.metadata[key]).toBeUndefined();
+    }
   });
 
   // The pointer is spent once a task is done or parked for a human: a PERPETUAL

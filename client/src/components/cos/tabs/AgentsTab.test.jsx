@@ -62,6 +62,7 @@ vi.mock('./ResumeAgentModal', () => ({
 vi.mock('../../ui/InlineConfirmRow', () => ({ default: () => null }));
 
 import * as api from '../../../services/api';
+import toast from '../../ui/Toast';
 import AgentsTab from './AgentsTab';
 
 const completedAgent = (id, description, extra = {}) => ({
@@ -117,6 +118,41 @@ describe('AgentsTab resume routing', () => {
       { silent: true },
     ));
     expect(api.addCosTask).not.toHaveBeenCalled();
+  });
+
+  // `already-active` and `superseded` create NOTHING server-side — the task is
+  // already in flight, or a later pause owns it. Reporting "created a resume task"
+  // there is the message that had users hunting for an agent that never spawned.
+  it.each([
+    ['already-active', /already queued or running/i],
+    ['superseded', /later agent/i],
+  ])('reports the %s outcome without claiming a task was created', async (mode, pattern) => {
+    const user = userEvent.setup();
+    api.resumeCosAgent.mockResolvedValue({ success: true, taskId: 'task-abc', mode });
+    renderTab([pausedAgent]);
+    await act(async () => {});
+
+    await user.click(screen.getByRole('button', { name: 'Resume agent-paused' }));
+    await user.click(screen.getByRole('button', { name: 'Submit resume' }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(pattern)));
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/resume task/i));
+  });
+
+  // The default has to be safe by construction, not by keeping a copy of the server's
+  // mode enum in sync — a future non-creating mode this build has no wording for must
+  // not regress to announcing a task that was never queued.
+  it('never claims a task was created for an unrecognized non-creating mode', async () => {
+    const user = userEvent.setup();
+    api.resumeCosAgent.mockResolvedValue({ success: true, taskId: 'task-abc', mode: 'some-future-mode', created: false });
+    renderTab([pausedAgent]);
+    await act(async () => {});
+
+    await user.click(screen.getByRole('button', { name: 'Resume agent-paused' }));
+    await user.click(screen.getByRole('button', { name: 'Submit resume' }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/created/i));
   });
 
   it('still queues a fresh task for a COMPLETED agent, which has no task to requeue', async () => {

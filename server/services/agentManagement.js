@@ -16,7 +16,7 @@ import { emitLog } from './cosEvents.js';
 // live", which is the thing this sequencing keeps removing.
 import { completeAgent, updateAgent, getAgents, getAgentRecord } from './cosAgentLifecycle.js';
 import { updateTask, addTask, getTaskById, reviveBlockedTask, evaluateTasks } from './cos.js';
-import { AGENT_PAUSED_CATEGORY } from './cosTaskStore.js';
+import { AGENT_PAUSED_CATEGORY, pauseMetadata, clearedPauseMetadata, isAgentPausedTask, isResumablePausedTask } from '../lib/taskPauseHold.js';
 import { terminateAgentViaRunner, killAgentViaRunner, pauseAgentViaRunner, getAgentStatsFromRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
@@ -97,25 +97,6 @@ async function terminateRunnerAgent(agentId, runnerFn, errorMessage, blockedReas
   return result;
 }
 
-// The pause bookkeeping a user pause stamps onto its task, and the patch that
-// clears it again on resume. Paired (the `taskRetryHold.js` idiom) so the two key
-// lists can't drift — a new key added to one is uncleared by the other otherwise.
-// The clear uses `undefined`, not `null`: `updateTask` DELETES undefined keys from
-// the merged metadata, while a null survives and TASKS.md serializes it as the
-// literal string `"null"`, which reads back as a live pause.
-const pauseMetadata = (agentInfo, agentId, pausedAt) => ({
-  pausedAt,
-  pausedAgentId: agentId,
-  ...(agentInfo?.workspacePath ? { resumeWorkspacePath: agentInfo.workspacePath } : {}),
-  ...(agentInfo?.runId ? { resumeRunId: agentInfo.runId } : {})
-});
-const clearedPauseMetadata = () => ({
-  pausedAt: undefined,
-  pausedAgentId: undefined,
-  resumeWorkspacePath: undefined,
-  resumeRunId: undefined
-});
-
 async function markPausedTask(agentInfo, agentId, pausedAt, reason) {
   const task = agentInfo?.task || (agentInfo?.taskId ? await getTaskById(agentInfo.taskId).catch(() => null) : null);
   if (!task) return;
@@ -126,7 +107,7 @@ async function markPausedTask(agentInfo, agentId, pausedAt, reason) {
       blockedReason: reason ? `Paused by user: ${reason}` : 'Paused by user',
       blockedCategory: AGENT_PAUSED_CATEGORY,
       blockedAt: pausedAt,
-      ...pauseMetadata(agentInfo, agentId, pausedAt)
+      ...pauseMetadata({ agentId, pausedAt, workspacePath: agentInfo?.workspacePath, runId: agentInfo?.runId })
     }
   }, task.taskType || 'user');
 }
@@ -223,16 +204,30 @@ export async function pauseAgent(agentId, reason = null) {
 }
 
 /**
- * Is this task the one `agentId`'s pause blocked, still waiting to be resumed?
+ * What resuming `agentId` should actually DO, given the current state of the task
+ * its pause parked. Four outcomes, and only one of them creates anything:
  *
- * Anything else — the user re-ran it, it was revived and completed, a different
- * agent has since paused it — means the pause is spent and requeueing this task
- * would stomp whatever happened after. The resume falls back to a fresh task.
+ * - `requeued` — the task is still BLOCKED and is ours to restart. That covers the
+ *   pause itself and any later block the task fell into (a failed retry, a cooldown,
+ *   a config block): the user asking to resume is an explicit dispatch, and
+ *   `reviveBlockedTask` resets the spawn/orphan budgets so it can actually run.
+ * - `superseded` — a DIFFERENT agent has since paused it. That pause is live and
+ *   belongs to someone else; ours is spent, so we retire our record and touch nothing.
+ * - `already-active` — the task is `pending` or `in_progress`: some other path
+ *   (a dedupe revive, an autopilot re-dispatch, a cooldown expiry, a human unblocking
+ *   it) already put it back in flight. Queueing anything here is what spawned the
+ *   SECOND agent users kept seeing — the work is already running, so we only retire
+ *   the stale paused record.
+ * - `new-task` — the task is gone or `completed`. Nothing to restart, so the fresh
+ *   task the dialog described is the honest answer.
  */
-function isResumablePausedTask(task, agentId) {
-  return task?.status === 'blocked'
-    && task.metadata?.blockedCategory === AGENT_PAUSED_CATEGORY
-    && task.metadata?.pausedAgentId === agentId;
+function classifyResume(task, agentId) {
+  if (!task) return 'new-task';
+  if (task.status === 'pending' || task.status === 'in_progress') return 'already-active';
+  if (task.status === 'blocked') {
+    return isAgentPausedTask(task) && !isResumablePausedTask(task, agentId) ? 'superseded' : 'requeued';
+  }
+  return 'new-task';
 }
 
 /**
@@ -257,10 +252,10 @@ function isResumablePausedTask(task, agentId) {
  * run. A falsy value means "unchanged" — the dialog seeds its selects from the
  * paused run, so blank is absence, not an intentional clear.
  *
- * When the task is no longer resumable (deleted, completed, re-run, or paused by
- * a later agent) this falls back to adding the fresh task the caller described,
- * rather than erroring: the paused RUN is over either way, and the agent record
- * is retired on both paths so nothing is left stranded in `paused`.
+ * `classifyResume` decides which of the four outcomes applies; only `new-task`
+ * creates anything. The agent record is retired on ALL of them, so a resume never
+ * leaves a stale `paused` row next to a task that has moved on — that stale row is
+ * what made the next resume click read its own pause as spent and queue a duplicate.
  *
  * The retirement carries `resumed: true`, which is what keeps a pause from reading
  * as a failure downstream: `completeAgent` skips the `stats.errors` bump and the
@@ -270,7 +265,7 @@ function isResumablePausedTask(task, agentId) {
  *
  * @param {string} agentId
  * @param {{context?: string, description?: string, provider?: string, model?: string, effort?: string, app?: string, screenshots?: string[]}} overrides
- * @returns {Promise<{success: true, agentId: string, taskId: string, mode: 'requeued'|'new-task', branchName: string|null}>}
+ * @returns {Promise<{success: true, agentId: string, taskId: string|null, mode: 'requeued'|'already-active'|'superseded'|'new-task', created: boolean, branchName: string|null}>}
  */
 export async function resumeAgent(agentId, overrides = {}) {
   const agent = await getAgentRecord(agentId);
@@ -287,9 +282,20 @@ export async function resumeAgent(agentId, overrides = {}) {
   const task = taskId ? await getTaskById(taskId).catch(() => null) : null;
   const taskType = task?.taskType || agent.metadata?.taskType || 'user';
 
-  const resumed = isResumablePausedTask(task, agentId)
-    ? await requeuePausedTask({ task, taskType, agentId, agentMetadata: agent.metadata, overrides })
-    : await replacePausedTask({ agentId, task, taskType, overrides });
+  const mode = classifyResume(task, agentId);
+  let resumed;
+  switch (mode) {
+    case 'requeued':
+      resumed = await requeuePausedTask({ task, taskType, agentId, agentMetadata: agent.metadata, overrides });
+      break;
+    case 'new-task':
+      resumed = await replacePausedTask({ agentId, task, taskType, overrides });
+      break;
+    default:
+      // `already-active` / `superseded` — the task needs nothing done to it.
+      resumed = { taskId: task.id, mode, branchName: null };
+  }
+  const summary = resumeSummary(agentId, resumed);
 
   // Retire the paused record LAST: `completeAgent` emits `agent:completed`, whose
   // handler dequeues — so the task must already be `pending` and pointed at the
@@ -300,15 +306,32 @@ export async function resumeAgent(agentId, overrides = {}) {
     success: false,
     resumed: true,
     resumedTaskId: resumed.taskId,
-    error: `Resumed by user as ${resumed.taskId}`
+    error: summary
   });
 
-  emitLog('info', resumed.mode === 'requeued'
-    ? `▶️ Resumed agent ${agentId} — task ${resumed.taskId} requeued${resumed.branchName ? ` on ${resumed.branchName}` : ' from a clean workspace'}`
-    : `▶️ Resumed agent ${agentId} — its task was no longer resumable, queued ${resumed.taskId} instead`,
-  { agentId, taskId: resumed.taskId, branchName: resumed.branchName });
+  emitLog('info', `▶️ ${summary}`, {
+    agentId, taskId: resumed.taskId, branchName: resumed.branchName, mode: resumed.mode
+  });
 
-  return { success: true, agentId, ...resumed };
+  // `created` says whether anything was queued, so a caller doesn't have to keep its
+  // own copy of the mode enum to know — a client that guesses would go on announcing
+  // "created a resume task" for a future non-creating mode, which is the exact false
+  // claim this change exists to delete.
+  return { success: true, agentId, created: mode === 'new-task', ...resumed };
+}
+
+/** One line naming what the resume actually did — used for the log and the record. */
+function resumeSummary(agentId, { taskId, mode, branchName }) {
+  switch (mode) {
+    case 'requeued':
+      return `Resumed agent ${agentId} — task ${taskId} requeued${branchName ? ` on ${branchName}` : ' from a clean workspace'}`;
+    case 'already-active':
+      return `Resumed agent ${agentId} — task ${taskId} is already queued or running, nothing to restart`;
+    case 'superseded':
+      return `Resumed agent ${agentId} — task ${taskId} is paused by a later agent, leaving that pause intact`;
+    default:
+      return `Resumed agent ${agentId} — its task was no longer resumable, queued ${taskId} instead`;
+  }
 }
 
 /**
@@ -334,11 +357,10 @@ async function requeuePausedTask({ task, taskType, agentId, agentMetadata, overr
   const metadata = {
     ...pointer,
     ...resumeOverrideMetadata(overrides, task.metadata?.context),
-    // The pause bookkeeping `markPausedTask` stamped, cleared now that the pause
-    // is lifted. `undefined`, not `null`: `updateTask` DELETES undefined keys from
-    // the merged metadata, while a null survives and TASKS.md serializes it as the
-    // literal string `"null"` — which reads back as a live pause.
-    pausedAt: undefined, pausedAgentId: undefined, resumeWorkspacePath: undefined, resumeRunId: undefined
+    // The pause `markPausedTask` stamped, released in the same patch that consumes
+    // it (the pointer above is computed FROM it). `updateTask` drops these on the
+    // blocked transition anyway — this keeps the write self-contained.
+    ...clearedPauseMetadata()
   };
 
   // `pending` is non-terminal, so the pointer written here survives the write
@@ -353,22 +375,27 @@ async function requeuePausedTask({ task, taskType, agentId, agentMetadata, overr
 }
 
 /**
- * The fallback: the paused run's task is gone or has moved on, so queue the fresh
- * task the caller described instead. Same outcome the pre-fix client always took,
- * kept only for the case where it is actually correct.
+ * The fallback: the paused run's task is gone or completed, so queue the fresh task
+ * the caller described instead. Same outcome the pre-fix client always took, kept
+ * only for the case where it is actually correct.
+ *
+ * Everything the original task carried that SHAPES the run — its app, its
+ * provider/model/effort, its context — is INHERITED as the base, with the dialog's
+ * edits layered on top through the same `resumeOverrideMetadata` the requeue path
+ * uses, so both resumes merge by one rule. A bare description is not a runnable
+ * substitute for a task that was scoped to a managed app or pinned to a provider:
+ * dropping those is how the replacement ended up running against the wrong repo, or
+ * against a default model the user had deliberately moved off.
  */
 async function replacePausedTask({ agentId, task, taskType, overrides }) {
   const description = overrides.description
     || task?.description
     || `Resume ${agentId}`;
+  const { context, provider, model, effort, app } = task?.metadata || {};
   const created = await addTask({
     description,
-    context: overrides.context || undefined,
-    provider: overrides.provider || undefined,
-    model: overrides.model || undefined,
-    effort: overrides.effort || undefined,
-    app: overrides.app || undefined,
-    screenshots: overrides.screenshots?.length ? overrides.screenshots : undefined
+    context, provider, model, effort, app,
+    ...resumeOverrideMetadata(overrides, context)
   }, taskType);
   if (created?.error) {
     throw new ServerError(`Failed to queue resume task: ${created.error}`, {
@@ -756,6 +783,59 @@ export async function settleOrphanedCreativeDirectorRun(task) {
   return true;
 }
 
+/**
+ * How long after a pause the sweep leaves a paused record alone regardless of what
+ * its task says. `markAgentPaused` writes the agent record BEFORE the task's pause
+ * hold, so for a moment a genuinely-paused agent has a task that doesn't know it —
+ * and if that second write fails outright, the sweep is the recovery, just not
+ * within the same minute.
+ */
+const PAUSE_SETTLE_GRACE_MS = 60 * 1000;
+
+/**
+ * Retire `paused` agent records whose task has moved on without them.
+ *
+ * A pause is a two-part state: the agent record says `paused`, and its task holds
+ * the matching pause (see lib/taskPauseHold.js). Plenty of paths legitimately take
+ * the task half back — a dedupe revive, an autopilot re-dispatch, a cooldown expiry,
+ * a human unblocking it, another agent pausing it later. None of them know about the
+ * agent record, so it used to sit in `paused` forever: visible in the paused list,
+ * and — because a stale pause reads as spent — turning the next resume click into a
+ * duplicate task on a second agent.
+ *
+ * Only the record is retired. The worktree stays on disk: whoever picked the task up
+ * may be running on that very branch, and the scheduled `agent-data-cleanup` job is
+ * what reaps worktrees with no live agent.
+ */
+async function retireStrandedPausedAgents(agents) {
+  const now = Date.now();
+  for (const agent of agents) {
+    if (agent.status !== 'paused') continue;
+    // No task to compare against — nothing proves the pause is spent, so leave it.
+    const taskId = agent.taskId || agent.metadata?.taskId || null;
+    if (!taskId) continue;
+    const pausedAt = Date.parse(agent.pausedAt ?? agent.metadata?.pausedAt ?? '');
+    if (Number.isFinite(pausedAt) && now - pausedAt < PAUSE_SETTLE_GRACE_MS) continue;
+
+    const task = await getTaskById(taskId).catch(() => null);
+    if (isResumablePausedTask(task, agent.id)) continue;
+
+    const reason = !task
+      ? `its task ${taskId} no longer exists`
+      : `task ${taskId} is ${task.status} and no longer holds this pause`;
+    pausedAgents.delete(agent.id);
+    // `resumed: true` for the same reason `resumeAgent` uses it: this run produced no
+    // verdict of its own, so charging it an error would invent a failure the task
+    // never had — whoever ran the task records the real outcome.
+    await completeAgent(agent.id, {
+      success: false,
+      resumed: true,
+      error: `Pause retired — ${reason}`
+    });
+    emitLog('info', `⏹️ Retired stranded paused agent ${agent.id} — ${reason}`, { agentId: agent.id, taskId });
+  }
+}
+
 export async function cleanupOrphanedAgents() {
   // Was `await import('./cos.js')` destructuring all four of these (#3450). The
   // deferral bought nothing — this module already imports `./cos.js` statically
@@ -918,6 +998,11 @@ export async function cleanupOrphanedAgents() {
   // leave that file on disk to be re-read and re-parsed on every boot and every
   // 15-minute sweep, forever.
   if (shutdownMarker) await clearHostShutdownMarker();
+
+  // Paused records whose task moved on without them. Not orphans (nothing died) and
+  // not counted as such — but this is the sweep that already holds the agent list,
+  // and leaving them stranded is what turns a later resume click into a duplicate.
+  await retireStrandedPausedAgents(agents);
 
   // Trigger evaluation to spawn new agents for retried tasks
   if (cleanedCount > 0) {
