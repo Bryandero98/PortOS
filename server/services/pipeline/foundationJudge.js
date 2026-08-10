@@ -278,12 +278,33 @@ function sanitizeDimension(raw) {
   };
 }
 
-// A judge response is "valid-shaped" when it carries the dimensions object we
-// scored against — the retry gate. A response that parses as JSON but omits the
-// rubric is treated as malformed and retried once.
+const PLACEHOLDER_FINDING = /^(?:string|placeholder|todo|tbd|n\/?a|none|null|undefined)$/i;
+const isMeaningfulFinding = (value) => (
+  typeof value === 'string'
+  && value.trim().length > 0
+  && !PLACEHOLDER_FINDING.test(value.trim())
+);
+
+// A judge response is "valid-shaped" only when every rubric dimension contains
+// a usable score plus concrete gap/fix prose. The prompt itself includes a JSON
+// shape example whose values are `{ score: 6, gap: "string", fix: "string" }`;
+// if a TUI screen scrape ever leaks through, a permissive dimensions-only check
+// would mistake that echoed contract for a real verdict and spend a repair round
+// on the literal instruction "string". Reject incomplete and placeholder
+// rubrics so the deliberate retry (and ultimately the caller) handles them as
+// malformed output instead of persisting fabricated editorial evidence.
 export function isValidFoundationShape(content) {
-  return !!(content && typeof content === 'object'
-    && content.dimensions && typeof content.dimensions === 'object');
+  if (!(content && typeof content === 'object'
+    && content.dimensions && typeof content.dimensions === 'object')) return false;
+  if (!FOUNDATION_DIMENSIONS.every((dimension) => {
+    const finding = content.dimensions[dimension];
+    const score = Number(finding?.score);
+    return finding && typeof finding === 'object'
+      && Number.isFinite(score) && score >= 1 && score <= 10
+      && isMeaningfulFinding(finding.gap)
+      && isMeaningfulFinding(finding.fix);
+  })) return false;
+  return content.oneLineVerdict === undefined || isMeaningfulFinding(content.oneLineVerdict);
 }
 
 export function sanitizeFoundationJudge(parsed) {
@@ -567,7 +588,7 @@ async function runFoundationJudgeStage(ctx, runOptions) {
     try {
       const result = await runStagedLLM(STAGE, ctx, runOptions);
       if (isValidFoundationShape(result.content)) return result;
-      lastError = new Error('foundation judge response parsed but is missing the `dimensions` rubric');
+      lastError = new Error('foundation judge response parsed but its rubric is incomplete or contains placeholders');
     } catch (err) {
       lastError = err;
     }

@@ -165,8 +165,19 @@ describe('sanitizeFoundationJudge — defensive LLM output shaping', () => {
     expect(out.dimensions.worldbuilding.score).toBe(10);
     expect(out.dimensions.character.score).toBe(0);
   });
-  it('isValidFoundationShape requires a dimensions object', () => {
-    expect(isValidFoundationShape({ dimensions: {} })).toBe(true);
+  it('isValidFoundationShape requires every concrete rubric finding and rejects the echoed schema example', () => {
+    expect(isValidFoundationShape({ dimensions: dims(), oneLineVerdict: 'Specific weakest-link verdict' })).toBe(true);
+    expect(isValidFoundationShape({ dimensions: {} })).toBe(false);
+    expect(isValidFoundationShape({
+      dimensions: Object.fromEntries(FOUNDATION_DIMENSIONS.map((key) => [
+        key,
+        { score: 6, gap: 'string', fix: 'string' },
+      ])),
+      oneLineVerdict: 'string',
+    })).toBe(false);
+    expect(isValidFoundationShape({
+      dimensions: { ...dims(), craft: { score: 6, gap: '', fix: 'Add an actionable example.' } },
+    })).toBe(false);
     expect(isValidFoundationShape({ oneLineVerdict: 'x' })).toBe(false);
     expect(isValidFoundationShape(null)).toBe(false);
   });
@@ -479,6 +490,30 @@ describe('judgeFoundation — cache / fast-pass', () => {
     expect(fileUtils.atomicWrite).toHaveBeenCalled();
     expect(stageRunner.resolveJudgeForStage).toHaveBeenCalled();
     logSpy.mockRestore();
+  });
+
+  it('retries an echoed output-contract placeholder instead of persisting it as a score-six verdict', async () => {
+    seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', universeId: null });
+    const placeholderDimensions = Object.fromEntries(FOUNDATION_DIMENSIONS.map((key) => [
+      key,
+      { score: 6, gap: 'string', fix: 'string' },
+    ]));
+    stageRunner.runStagedLLM
+      .mockResolvedValueOnce({
+        content: { dimensions: placeholderDimensions, oneLineVerdict: 'string' },
+        providerId: 'judge-x', model: 'jm-heavy', runId: 'run-placeholder',
+      })
+      .mockResolvedValueOnce({
+        content: { dimensions: dims({ worldbuilding: 7 }), oneLineVerdict: 'The world rule is the weakest link.' },
+        providerId: 'judge-x', model: 'jm-heavy', runId: 'run-real',
+      });
+
+    const out = await judgeFoundation('ser-1', { force: true });
+
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledTimes(2);
+    expect(out.runId).toBe('run-real');
+    expect(out.dimensions.worldbuilding.gap).toBe('gap worldbuilding');
+    expect(out.oneLineVerdict).toBe('The world rule is the weakest link.');
   });
 
   it('threads an autopilot critic route as soft defaults so a stage judge pin can win', async () => {
