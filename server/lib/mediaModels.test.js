@@ -57,14 +57,14 @@ describe('mediaModels registry', () => {
     expect(list.every((m) => m.id && m.name)).toBe(true);
   });
 
-  it('ships MiniMax H3 as a pinned, text-only 128 GB BYOV profile', async () => {
+  it('ships MiniMax H3 as a pinned, keyframe-capable 128 GB BYOV profile', async () => {
     const { getVideoModels } = await import('./mediaModels.js');
     const h3 = getVideoModels().find((model) => model.id === 'minimax_h3_8bit');
     expect(h3).toMatchObject({
       runtime: 'minimax_h3',
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
       revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
-      supportedModes: ['text'],
+      supportedModes: ['text', 'image', 'fflf'],
       defaultFrames: 124,
       fpsOptions: [24],
       memoryGb: 128,
@@ -76,11 +76,26 @@ describe('mediaModels registry', () => {
       repo: 'MiniMaxAI/MiniMax-H3',
       revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
     });
+    // Keyframe conditioning runs each image through Qwen3-VL's AutoProcessor,
+    // which reads `processor/` — not the `tokenizer/` directory the text path
+    // uses. Without these the vision path dies on a cache miss ~83 GB into
+    // loading, so they belong in the base download, not a second opt-in pull.
+    expect(h3.requiredWeights[0].files.filter((file) => file.startsWith('FL2VA/processor/')))
+      .toEqual([
+        'FL2VA/processor/chat_template.json',
+        'FL2VA/processor/merges.txt',
+        'FL2VA/processor/preprocessor_config.json',
+        'FL2VA/processor/tokenizer.json',
+        'FL2VA/processor/tokenizer_config.json',
+        'FL2VA/processor/video_preprocessor_config.json',
+        'FL2VA/processor/vocab.json',
+      ]);
     // The pinned port builds only decoder layers 0-49. Shards 12/13 contain
     // only layers 53-63, which its _wanted() loader deliberately skips; shard
-    // 14 remains required for the final norm. Keep this selective 12-shard
-    // contract explicit so a generic "download every index shard" rewrite
-    // does not add roughly 10 GB of weights the H3 text path never loads.
+    // 14 remains required for the final norm — and, since every `model.visual.*`
+    // tensor also lives there, for the vision tower keyframes load. Keep this
+    // selective 12-shard contract explicit so a generic "download every index
+    // shard" rewrite does not add roughly 10 GB of weights H3 never loads.
     expect(h3.requiredWeights[0].files.filter((file) => /model-\d{5}-of-00014\.safetensors$/.test(file)))
       .toEqual([
         ...Array.from(

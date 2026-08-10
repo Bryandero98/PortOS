@@ -15,7 +15,9 @@ vi.mock('child_process', async (importOriginal) => ({
   spawn: runtimeMocks.spawn,
 }));
 
-import { invalidateByovReadyCache, isByovRuntimeReady, isPinnedSourceStatusClean } from './runtimes.js';
+import {
+  invalidateByovReadyCache, isByovRuntimeReady, isPinnedSourceStatusClean, modelAnchorsLastFrame,
+} from './runtimes.js';
 
 const REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
 
@@ -66,5 +68,25 @@ describe('isByovRuntimeReady', () => {
 
     expect(runtimeMocks.spawn).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.spawn.mock.calls[0][0]).toBe('git');
+  });
+});
+
+// One declaration feeds three consumers: buildArgs (which forwards the last
+// frame), the last-image resize in local.js, and the client's advisory note via
+// the `lastFrameAnchored` field listVideoModels() decorates onto each model.
+describe('modelAnchorsLastFrame', () => {
+  it.each([
+    ['ltx2', true],
+    ['minimax_h3', true],
+    ['mlx_video', false],
+    ['wan22', false],
+    ['hunyuan', false],
+  ])('reports %s as %s', (runtime, anchored) => {
+    expect(modelAnchorsLastFrame({ runtime })).toBe(anchored);
+  });
+
+  it('treats a missing model or runtime as not anchored', () => {
+    expect(modelAnchorsLastFrame(null)).toBe(false);
+    expect(modelAnchorsLastFrame({})).toBe(false);
   });
 });

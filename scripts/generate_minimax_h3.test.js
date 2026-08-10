@@ -73,7 +73,7 @@ describe('generate_minimax_h3.py', () => {
   it('rejects zero dimensions at the execution boundary', () => {
     const output = runPython(`${importRunner}\n${[
       'from types import SimpleNamespace',
-      'args = SimpleNamespace(fps=24, width=0, height=320, num_frames=124, steps=8)',
+      'args = SimpleNamespace(fps=24, width=0, height=320, num_frames=124, steps=8, image=[], anchor=[])',
       'try:',
       '    runner.validate_args(args)',
       'except SystemExit as exc:',
@@ -82,6 +82,49 @@ describe('generate_minimax_h3.py', () => {
       '    raise SystemExit("zero dimensions were accepted")',
     ].join('\n')}`);
     expect(output).toMatch(/dimensions must be positive multiples of 32/i);
+  });
+
+  // An unpaired or repeated anchor would silently mis-place a keyframe in the
+  // packed sequence, so both fail at the boundary rather than rendering.
+  it.each([
+    [['a.png', 'b.png'], ['first'], /one --anchor per --image/i],
+    [['a.png', 'b.png'], ['first', 'first'], /anchors must be distinct/i],
+  ])('rejects mismatched keyframe anchors (%j / %j)', (images, anchors, pattern) => {
+    const output = runPython(`${importRunner}\n${[
+      'from types import SimpleNamespace',
+      `args = SimpleNamespace(fps=24, width=512, height=320, num_frames=124, steps=8, image=${JSON.stringify(images)}, anchor=${JSON.stringify(anchors)})`,
+      'try:',
+      '    runner.validate_args(args)',
+      'except SystemExit as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("bad anchors were accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(pattern);
+  });
+
+  it('accepts a paired first/last keyframe request', () => {
+    const output = runPython(`${importRunner}\n${[
+      'from types import SimpleNamespace',
+      'args = SimpleNamespace(fps=24, width=512, height=320, num_frames=124, steps=8, image=["a.png", "b.png"], anchor=["first", "last"])',
+      'runner.validate_args(args)',
+      'print("ok")',
+    ].join('\n')}`);
+    expect(output.trim()).toBe('ok');
+  });
+
+  // Reading the keyframes happens before the ~83 GB load, so a bad path costs
+  // a second rather than an hour.
+  it('fails a missing conditioning image before any model load', () => {
+    const output = runPython(`${importRunner}\n${[
+      'try:',
+      '    runner.load_keyframes(["/nonexistent/first.png"])',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("missing keyframe was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/Conditioning image is missing/i);
   });
 
   it('emits the video_path JSON completion contract on stdout', () => {

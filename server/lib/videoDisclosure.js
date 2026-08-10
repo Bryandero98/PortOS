@@ -91,7 +91,8 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
       weightsLicense: MINIMAX_H3_WEIGHTS,
       runtimeLicense: RUNTIME_LICENSE.minimax_h3,
       // 35.302 GB quantized transformer + 67.996 GB selective upstream
-      // conditioner / video VAE / audio VAE files used by text-to-video.
+      // conditioner / video VAE / audio VAE files, plus the ~0.011 GB
+      // Qwen3-VL processor the keyframe (image / FFLF) path reads.
       estimatedDownloadGb: 103.3,
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
