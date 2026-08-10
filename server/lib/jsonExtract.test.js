@@ -89,6 +89,41 @@ describe('jsonExtract.tryParseWithRepair', () => {
     expect(tryParseWithRepair('{"vars":[...]}')).toEqual({ value: { vars: [] } });
   });
 
+  it('repairs a complete JSON document whose remaining tail was serialized as escaped text', () => {
+    const bad = [
+      '{',
+      '  "items": [',
+      '    { "name": "Alpha", "notes": ["kept"]\\n    },\\n    {\\n      \\"name\\": \\"Beta\\",\\n      \\"notes\\": [\\"also kept\\"]\\n    }\\n  ]\\n}',
+    ].join('\n');
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: {
+        items: [
+          { name: 'Alpha', notes: ['kept'] },
+          { name: 'Beta', notes: ['also kept'] },
+        ],
+      },
+    });
+  });
+
+  it('escapes unescaped quotation marks inside a prose string value', () => {
+    const bad = '{"voice":"She calls it "the old rule" before rejecting it.","ok":true}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: { voice: 'She calls it "the old rule" before rejecting it.', ok: true },
+    });
+  });
+
+  it('combines serialized-tail and bare-quote repairs in one completed response', () => {
+    const bad = '{"items":[{"voice":"plain"}\\n, {\\n  \\"voice\\": \\"Calls it \\"witness\\" before answering.\\"\\n}\\n]}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: { items: [{ voice: 'plain' }, { voice: 'Calls it "witness" before answering.' }] },
+    });
+  });
+
+  it('does not guess at an invalid backslash tail that is not a serialized JSON fragment', () => {
+    const bad = '{"items":[]}\\not-json';
+    expect(tryParseWithRepair(bad).error).toBeInstanceOf(Error);
+  });
+
   it('escapes raw control chars (literal newlines/tabs) inside a string value', () => {
     // A model writes a multi-line markdown field with literal newlines/tabs
     // instead of the `\n`/`\t` escapes JSON requires — JSON.parse throws

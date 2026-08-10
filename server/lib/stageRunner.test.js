@@ -185,6 +185,10 @@ describe('stageRunner — extractJson', () => {
   it('parses JSON inside markdown code fences', () => {
     expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
   });
+  it('recovers a response that serializes its remaining JSON tail as escaped text', () => {
+    const raw = '{"items":[{"id":"one"}\\n, {\\n  \\"id\\": \\"two\\"\\n}\\n]}';
+    expect(extractJson(raw)).toEqual({ items: [{ id: 'one' }, { id: 'two' }] });
+  });
   it('extracts the first balanced object even when prose is prepended', () => {
     expect(extractJson('Sure! Here is the data: {"a":1,"b":2} cheers.')).toEqual({ a: 1, b: 2 });
   });
