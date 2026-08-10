@@ -419,7 +419,8 @@ function gitlabProjectPath(originUrl) {
  * Resolve which forge a repo checkout's `origin` points at, together with
  * everything a `gh`/`glab` caller needs to target it — or null when the origin
  * isn't a forge PortOS can query (no remote, or a host that is neither
- * GitHub- nor GitLab-family).
+ * GitHub- nor GitLab-family AND no `preferredForge` override applies — see
+ * below).
  *
  * The two branches deliberately differ, mirroring how the CLIs address a repo:
  * - GitHub (incl. Enterprise) resolves through `githubRepoSpec`, whose
@@ -433,11 +434,25 @@ function gitlabProjectPath(originUrl) {
  *   `repoSpec` is therefore null for GitLab — the caller must run `glab` in
  *   `repoPath`.
  *
+ * `preferredForge` ('github' | 'gitlab' | null) is the app's EXPLICITLY
+ * configured work tracker (never 'auto' — that already flows through the same
+ * `hostToWorkTracker` classification above, so it would already have matched
+ * here if it could). It's a fallback, tried only once both host-pattern checks
+ * above have failed: a self-hosted GitHub Enterprise Server or GitLab instance
+ * can run on ANY domain the operator picked (`git.mycompany.com`,
+ * `scm.mycompany.com`, …) — there is no hostname heuristic that can tell such a
+ * host apart from a non-forge remote, so the user's own pin is the only signal
+ * left. A genuinely wrong pin (e.g. a bitbucket.org origin pinned to 'github')
+ * still degrades gracefully: the resulting `gh`/`glab` call fails and the
+ * caller reports a transient "couldn't reach" error rather than PortOS lying
+ * upfront that the origin "isn't GitHub or GitLab".
+ *
  * Never throws: a missing repo / unreadable origin degrades to null.
  * @param {string} repoPath
+ * @param {{preferredForge?: 'github'|'gitlab'|null}} [options]
  * @returns {Promise<{forge:'github'|'gitlab', fullName:string, repoSpec:string|null, apiHost:string|null}|null>}
  */
-export async function resolveRepoForgeTarget(repoPath) {
+export async function resolveRepoForgeTarget(repoPath, { preferredForge = null } = {}) {
   if (!repoPath) return null;
   const origin = await getOriginInfo(repoPath).catch(() => null);
   const githubSpec = githubRepoSpec(origin);
@@ -455,12 +470,20 @@ export async function resolveRepoForgeTarget(repoPath) {
   // segment and discards it before reading the host / path.
   const originUrl = origin?.originUrl || null;
   const host = origin?.host || hostFromOriginUrl(originUrl);
-  if (hostToWorkTracker(host) === 'gitlab') {
+  if (hostToWorkTracker(host) === 'gitlab' || (preferredForge === 'gitlab' && host)) {
     return {
       forge: 'gitlab',
       fullName: origin?.fullName || gitlabProjectPath(originUrl) || host,
       repoSpec: null,
       apiHost: null,
+    };
+  }
+  if (preferredForge === 'github' && origin?.fullName && host) {
+    return {
+      forge: 'github',
+      fullName: origin.fullName,
+      repoSpec: `${host}/${origin.fullName}`,
+      apiHost: githubApiHost(host),
     };
   }
   return null;
