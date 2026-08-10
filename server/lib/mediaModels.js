@@ -60,12 +60,11 @@ const DEFAULT_REGISTRY = {
     macos: applyVideoFinishProfiles(applyVideoDisclosures([
       // notapalindrome's mlx-video-with-audio runtime — single PyPI package,
       // T2V/I2V only, FFLF degrades to last-frame conditioning (one --image arg).
-      // LTX-2 (the older 42 GB model) stays deprecated — superseded by 2.3.
-      // The 2.3 Unified Beta and Distilled Q4 are no longer deprecated:
-      // 2.3 Unified bf16 is the quality ceiling for the mlx_video runtime, and
-      // is now practical on 128 GB unified-memory hardware. Distilled Q4 is
-      // still the shipped default because it works on smaller boxes.
-      { id: 'ltx2_unified',       name: 'LTX-2 Unified (~42 GB)',          repo: 'notapalindrome/ltx2-mlx-av',     runtime: 'mlx_video', steps: 30, guidance: 3.0, deprecated: true },
+      // LTX-2 Unified (the older 42 GB model) was retired in favour of 2.3 —
+      // see RETIRED_VIDEO_MODELS. 2.3 Unified bf16 is the quality ceiling for
+      // the mlx_video runtime and is practical on 128 GB unified-memory
+      // hardware, while Distilled Q4 is both smaller and better than LTX-2 was,
+      // and stays the shipped default because it works on smaller boxes.
       { id: 'ltx23_unified',      name: 'LTX-2.3 Unified Beta (~48 GB, bf16 quality ceiling)', repo: 'notapalindrome/ltx23-mlx-av',    runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)',   repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       // dgrauet's ltx-2-mlx runtime — true KeyframeInterpolationPipeline,
@@ -630,6 +629,9 @@ const appendNewlyShippedEntries = (userList, defaultList, shippedIds) => {
 // with 'mlx_video' (the legacy default) for known-legacy ids so the
 // dispatch in videoGen/local.js routes them through `python -m
 // mlx_video.generate_av` rather than treating undefined as ltx2.
+// 'ltx2_unified' is retired (see RETIRED_VIDEO_MODELS) but stays here: an
+// install that re-pointed its entry at a fork keeps that entry, and it still
+// needs the runtime backfill.
 const LEGACY_MLX_VIDEO_IDS = new Set(['ltx2_unified', 'ltx23_unified', 'ltx23_distilled_q4', 'ltx_video']);
 const backfillRuntime = (list) => {
   if (!Array.isArray(list)) return list;
@@ -639,6 +641,59 @@ const backfillRuntime = (list) => {
     if (LEGACY_MLX_VIDEO_IDS.has(entry.id)) return { ...entry, runtime: 'mlx_video' };
     return entry;
   });
+};
+
+// Built-in video models that were delivered to installs and have since been
+// withdrawn. Dropping an id from DEFAULT_REGISTRY is NOT enough on its own: the
+// user's persisted list is what the pickers read, and appendNewlyShippedEntries
+// only ever adds. This is the load-time twin of the retirement migration (247
+// for ltx2_unified) — and it is the load-bearing half, because the registry is
+// cached at import time, BEFORE bootstrapServices() runs migrations, and
+// persistRegistry writes the whole cached object back on the next registry
+// edit. Without this the migration's deletion is undone by the same boot that
+// applied it.
+//
+// `replacement` repoints a `defaultMacos`/`defaultWindows` that named the
+// retired model. getDefaultVideoModelId() would otherwise fall back to the
+// first available entry, which is not necessarily the intended successor.
+//
+// Preservation guard mirrors backfillKvRepo: an entry whose `repo` no longer
+// matches the shipped one is a fork the user pointed at deliberately, so it
+// stays — that is also the escape hatch for anyone who wants a retired model
+// back.
+//
+// Exported so the matching retirement migration can assert it froze the same
+// id/repo/replacement — a typo in either copy would otherwise turn one half of
+// the retirement into a silent no-op with every test still green.
+export const RETIRED_VIDEO_MODELS = Object.freeze({
+  ltx2_unified: Object.freeze({
+    shippedRepo: 'notapalindrome/ltx2-mlx-av',
+    replacement: 'ltx23_distilled_q4',
+  }),
+});
+
+const isRetired = (entry) => {
+  if (!isPlainObject(entry) || typeof entry.id !== 'string') return false;
+  const spec = RETIRED_VIDEO_MODELS[entry.id];
+  // `spec &&` is load-bearing, not defensive: several entries (the Windows
+  // `ltx_video`) carry no `repo` at all, and without the guard an absent spec
+  // would compare `undefined === undefined` and retire every one of them.
+  return Boolean(spec) && entry.repo === spec.shippedRepo;
+};
+
+const dropRetiredEntries = (list) => (
+  Array.isArray(list) ? list.filter((entry) => !isRetired(entry)) : list
+);
+
+// Repoint a platform default that named a model this load just retired. Falls
+// through to the original id when the successor isn't installed either — then
+// getDefaultVideoModelId()'s "unknown default → first available" warning is the
+// honest outcome, rather than naming a model this install doesn't have.
+const resolveRetiredDefault = (configuredId, entries) => {
+  const replacement = RETIRED_VIDEO_MODELS[configuredId]?.replacement;
+  if (!replacement) return configuredId;
+  if (entries.some((entry) => entry?.id === configuredId)) return configuredId; // fork kept it
+  return entries.some((entry) => entry?.id === replacement) ? replacement : configuredId;
 };
 
 // Build the initial shippedIds set for one platform on first encounter
@@ -734,6 +789,22 @@ const normalizeRegistry = (parsed) => {
     list: [...shippedImageIds, ...imageResult.newlyShipped],
   };
 
+  // applyVideoDisclosures is the load-time twin of migration 237: installs
+  // that persisted their registry before `disclosure` existed pick it up
+  // here without waiting for the migration, and both paths share the same
+  // preservation guards (user value wins, forked repo keeps Unknown).
+  // dropRetiredEntries is the same arrangement for migration 247, and runs
+  // FIRST so a withdrawn model isn't handed a disclosure or a Finish edge on
+  // its way out. sanitizeFinishProfiles runs LAST (after the backfill and
+  // after the user's own entries are merged in) so an edge that points at a
+  // model this install deleted — or a hand-edited typo — is dropped with a
+  // warning instead of surfacing a Finish button targeting nothing.
+  const videoEntries = (entries) => sanitizeFinishProfiles(applyVideoFinishProfiles(
+    applyVideoDisclosures(backfillRuntime(dropRetiredEntries(entries))),
+  ));
+  const macosEntries = videoEntries(macosResult.entries);
+  const windowsEntries = videoEntries(windowsResult.entries);
+
   return {
     ...DEFAULT_REGISTRY,
     ...safe,
@@ -742,16 +813,14 @@ const normalizeRegistry = (parsed) => {
     video: {
       ...DEFAULT_REGISTRY.video,
       ...safeVideo,
-      // applyVideoDisclosures is the load-time twin of migration 237: installs
-      // that persisted their registry before `disclosure` existed pick it up
-      // here without waiting for the migration, and both paths share the same
-      // preservation guards (user value wins, forked repo keeps Unknown).
-      // sanitizeFinishProfiles runs LAST (after the backfill and after the
-      // user's own entries are merged in) so an edge that points at a model
-      // this install deleted — or a hand-edited typo — is dropped with a
-      // warning instead of surfacing a Finish button targeting nothing.
-      macos: sanitizeFinishProfiles(applyVideoFinishProfiles(applyVideoDisclosures(backfillRuntime(macosResult.entries)))),
-      windows: sanitizeFinishProfiles(applyVideoFinishProfiles(applyVideoDisclosures(backfillRuntime(windowsResult.entries)))),
+      macos: macosEntries,
+      windows: windowsEntries,
+      defaultMacos: resolveRetiredDefault(
+        safeVideo.defaultMacos ?? DEFAULT_REGISTRY.video.defaultMacos, macosEntries,
+      ),
+      defaultWindows: resolveRetiredDefault(
+        safeVideo.defaultWindows ?? DEFAULT_REGISTRY.video.defaultWindows, windowsEntries,
+      ),
     },
     _shippedDefaults: {
       ...(safe._shippedDefaults || {}),

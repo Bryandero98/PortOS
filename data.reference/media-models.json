@@ -3,28 +3,6 @@
   "video": {
     "macos": [
       {
-        "id": "ltx2_unified",
-        "name": "LTX-2 Unified (~42 GB)",
-        "repo": "notapalindrome/ltx2-mlx-av",
-        "runtime": "mlx_video",
-        "steps": 30,
-        "guidance": 3,
-        "deprecated": true,
-        "disclosure": {
-          "modelCardUrl": "https://huggingface.co/notapalindrome/ltx2-mlx-av",
-          "weightsLicense": {
-            "name": "MIT",
-            "url": "https://opensource.org/license/mit"
-          },
-          "runtimeLicense": {
-            "name": "MIT",
-            "url": "https://pypi.org/project/mlx-video-with-audio/"
-          },
-          "estimatedDownloadGb": 44.7,
-          "reviewedAt": "2026-08-09"
-        }
-      },
-      {
         "id": "ltx23_unified",
         "name": "LTX-2.3 Unified Beta (~48 GB, bf16 quality ceiling)",
         "repo": "notapalindrome/ltx23-mlx-av",

@@ -26,8 +26,7 @@
  * repo/revision is left alone entirely — its files may not exist there.
  */
 
-import { join } from 'path';
-import { atomicWrite, readJSONFileStrict } from '../../server/lib/fileUtils.js';
+import { readMediaRegistry, writeMediaRegistry } from './_lib.js';
 
 const REL_PATH = 'data/media-models.json';
 const H3_ID = 'minimax_h3_8bit';
@@ -46,25 +45,8 @@ const PROCESSOR_FILES = [
 
 export default {
   async up({ rootDir }) {
-    const path = join(rootDir, REL_PATH);
-    // `ok` separates "never written" (fresh install — the seed will carry this
-    // change) from "unreadable or corrupt", where rewriting the file would
-    // destroy a registry we couldn't read.
-    const { ok, value: config } = await readJSONFileStrict(path, null);
-    if (!ok) {
-      console.log(`⚠️ ${REL_PATH}: unreadable or invalid JSON, skipping`);
-      return;
-    }
-    if (config == null) {
-      console.log(`📄 ${REL_PATH} not present — skipping (fresh install seeds from data.reference)`);
-      return;
-    }
-
-    const macos = Array.isArray(config?.video?.macos) ? config.video.macos : null;
-    if (!macos) {
-      console.log(`⚠️ ${REL_PATH}: no video.macos[] array — skipping`);
-      return;
-    }
+    const { ok, config, entries: macos, path } = await readMediaRegistry({ rootDir });
+    if (!ok) return;
 
     const entry = macos.find((m) => m?.id === H3_ID);
     if (!entry) {
@@ -99,7 +81,7 @@ export default {
     }
 
     if (changed) {
-      await atomicWrite(path, `${JSON.stringify(config, null, 2)}\n`);
+      await writeMediaRegistry(path, config);
       console.log(`📝 ${REL_PATH}: enabled MiniMax H3 image-to-video + FFLF (added the Qwen3-VL processor files)`);
     } else {
       console.log(`✅ ${REL_PATH}: MiniMax H3 already keyframe-capable, no changes`);
