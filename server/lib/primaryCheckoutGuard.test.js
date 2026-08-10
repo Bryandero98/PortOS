@@ -213,6 +213,51 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.unattributed).toBe(true);
   });
 
+  it('does not blame an agent that REBASED onto a commit another actor put on main (#3725)', async () => {
+    // Observed on agent-c925dbfb: a foreign actor committed F to the primary's main
+    // mid-run; the agent then rebased its worktree branch onto the moved main (what
+    // `/do:pr` does before pushing) and added its own commit on top. F is now reachable
+    // from the agent's branch tip, so excluding that tip drops the stranded count to
+    // zero and the reachability check reads the INHERITED BASE as proof of authorship.
+    // The agent built on F; it did not put F there.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // A foreign actor strands F on the primary's main during the run...
+    await commit('a foreign actor\'s commit F');
+    const drifted = (await capturePrimaryCheckoutState(repo)).head;
+    // ...and the agent's branch is cut from the moved main (equivalently: rebased onto
+    // it) and carries its own work on top.
+    await execGit(['checkout', '-b', agentBranch, drifted], repo);
+    await commit('the agent\'s actual work');
+    await execGit(['checkout', 'main'], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    expect(verdict.unpushedCount).toBe(1);
+    expect(verdict.suggestedFix).toBeUndefined();
+  });
+
+  it('still catches a jack whose commits sit at the agent branch tip (#3725 must not over-clear)', async () => {
+    // The #3680 shape: the agent's own commits were applied to main, leaving the primary
+    // AT the agent's branch tip — not strictly behind it. The rebase escape hatch above
+    // keys on STRICTLY ahead, so this must remain a failure.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await execGit(['checkout', '-b', agentBranch], repo);
+    await commit('the agent\'s own work');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    // A stray `/do:pr` fast-forwards the PRIMARY's main onto the agent's commit.
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['merge', '--ff-only', agentTip], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(true);
+    expect(verdict.reason).toBe(PRIMARY_CHECKOUT_MUTATED_REASON);
+  });
+
   it('never attributes a branch-jack to a read-only reasoner that never branched (Case A)', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     // A 24-file commit lands on main mid-run, authored by another actor.

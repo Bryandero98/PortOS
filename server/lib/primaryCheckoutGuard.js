@@ -34,8 +34,10 @@
  * strands commits, they are attributed to the agent's own worktree branch by
  * PATCH-ID (`git cherry`, not raw SHA, so a cherry-picked or rebased copy still
  * matches). Stranded commits the agent demonstrably did not author — a read-only
- * reasoner that never branched, or commits with no patch-equivalent on the
- * agent's branch — are carried as `{ drifted: false, unattributed: true }`:
+ * reasoner that never branched, commits with no patch-equivalent on the agent's
+ * branch, or commits the agent merely REBASED ONTO (#3725: `/do:pr` rebases on
+ * `main` before pushing, so any run that outlives a concurrent commit to `main`
+ * inherits it into its branch's base) — are carried as `{ drifted: false, unattributed: true }`:
  * warn-logged (unreviewed commits on `main` are worth surfacing) but not failed.
  * The asymmetry is deliberate — a missed branch-jack still leaves a warn log and
  * recoverable commits, while a false failure escalates to a human and dents the
@@ -183,6 +185,21 @@ async function resolveAgentBranchSha(checkoutPath, agentBranch) {
 }
 
 /**
+ * Is `descendant` STRICTLY ahead of `ancestor` — reachable from it, and not the same
+ * commit? Non-throwing; an unresolvable comparison returns false, which the caller
+ * treats as "no reason to skip the attribution checks".
+ */
+async function isStrictlyAhead(checkoutPath, ancestor, descendant) {
+  if (!ancestor || !descendant || ancestor === descendant) return false;
+  const result = await execGit(
+    ['merge-base', '--is-ancestor', ancestor, descendant],
+    checkoutPath,
+    { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+  ).catch(() => null);
+  return Boolean(result && result.exitCode === 0);
+}
+
+/**
  * Was the drift plausibly THIS agent's doing (#3703)? Looks only at the commits
  * that could actually be this run's branch-jack — reachable from the drifted head,
  * created AFTER spawn (not reachable from `runBase`, the checkout's HEAD at spawn)
@@ -208,6 +225,20 @@ async function resolveAgentBranchSha(checkoutPath, agentBranch) {
 async function isDriftAttributableToAgent(checkoutPath, { runBase, upstream, driftedHead, agentBranch }) {
   const agentSha = await resolveAgentBranchSha(checkoutPath, agentBranch);
   if (!agentSha) return false;
+  // The agent's branch is BUILT ON TOP OF the drifted head, so the stranded commits are
+  // part of the branch's BASE — put there by whoever moved the primary first, then
+  // inherited when the agent branched from (or rebased onto) the moved `main`. `/do:pr`
+  // rebases onto `main` before pushing, so EVERY agent that outlives a concurrent commit
+  // to `main` ends in this shape; the reachability check below only asks "is this commit
+  // on the agent's branch?", and would read that inherited base as proof of authorship.
+  // The causal arrow runs primary → agent here, which is a rebase, not a branch-jack.
+  //
+  // A real jack leaves the primary AT a commit the agent authored — its branch tip, or a
+  // patch-equivalent copy on a divergent history — never strictly BEHIND its own branch,
+  // so the #3680 incident shape still fails this test and is still caught. The residual
+  // miss (an agent that jacks and then keeps committing to its branch) is the documented
+  // fail-open trade in the module header, and its commits are on a pushed branch anyway.
+  if (await isStrictlyAhead(checkoutPath, driftedHead, agentSha)) return false;
   // Candidate branch-jack commits (set S): new this run (`^runBase`) AND unpushed
   // (`^upstream`, when there is an upstream to compare against), non-merge only — a
   // merge commit reaches the primary via a human's `git merge` / non-ff pull, never a
