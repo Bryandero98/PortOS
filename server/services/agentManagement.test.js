@@ -786,13 +786,56 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
     expect(markAgentComplete).toHaveBeenCalled();
   });
 
-  it('falls back to a fresh task when a LATER agent owns the pause', async () => {
+  it('inherits the replaced task\'s app and run settings — a bare description is not runnable', async () => {
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      status: 'completed',
+      metadata: { ...PAUSED_TASK.metadata, app: 'bookloom', provider: 'codex-tui', model: 'gpt-5.6-terra', effort: 'medium' },
+    });
+    await resumeAgent('agent-paused-1', { description: '[Resume] Do the thing', context: 'extra guidance' });
+    expect(addTask).toHaveBeenCalledWith(expect.objectContaining({
+      app: 'bookloom',
+      provider: 'codex-tui',
+      model: 'gpt-5.6-terra',
+      effort: 'medium',
+      context: 'original context\n\nextra guidance',
+    }), 'user');
+  });
+
+  it('leaves a LATER agent\'s pause intact and creates nothing', async () => {
     getTaskById.mockResolvedValue({
       ...PAUSED_TASK,
       metadata: { ...PAUSED_TASK.metadata, pausedAgentId: 'agent-someone-else' },
     });
-    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'new-task' });
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'superseded', taskId: 'task-abc' });
     expect(reviveBlockedTask).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
+    // The stale record still retires — leaving it paused is what makes the NEXT
+    // resume click read its own pause as spent and queue a duplicate.
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-paused-1', expect.objectContaining({ resumed: true }));
+  });
+
+  // The regression this whole mode exists for: something else (a dedupe revive, an
+  // autopilot re-dispatch, a cooldown expiry, a human unblocking it) already put the
+  // task back in flight. Queueing anything here is the "second agent" users saw.
+  it.each(['pending', 'in_progress'])('creates nothing when the task is already %s', async (status) => {
+    getTaskById.mockResolvedValue({ ...PAUSED_TASK, status, metadata: { context: 'original context' } });
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'already-active', taskId: 'task-abc' });
+    expect(addTask).not.toHaveBeenCalled();
+    expect(reviveBlockedTask).not.toHaveBeenCalled();
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-paused-1', expect.objectContaining({ resumed: true }));
+  });
+
+  // A user asking to resume is an explicit dispatch, and reviveBlockedTask resets the
+  // spawn/orphan budgets — so a task that fell into a LATER failure block restarts in
+  // place rather than being duplicated onto a fresh task.
+  it('requeues a task re-blocked for a non-pause reason instead of duplicating it', async () => {
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      metadata: { ...PAUSED_TASK.metadata, blockedCategory: 'pr-missing' },
+    });
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'requeued', taskId: 'task-abc' });
+    expect(addTask).not.toHaveBeenCalled();
   });
 
   it('falls back to a fresh task when the task was deleted outright', async () => {
@@ -1418,5 +1461,67 @@ describe('host-restart interruptions are not charged orphan-retry budget (#3202)
 
     expect(clearHostShutdownMarker).not.toHaveBeenCalled();
     expect(markAgentComplete).toHaveBeenCalledWith('agent-dead', expect.objectContaining({ interruptedByRestart: false }));
+  });
+});
+
+// ─── Stranded paused records ──────────────────────────────────────────────────
+//
+// A pause is TWO halves: the agent record says `paused`, and its task holds the
+// matching pause. Plenty of paths take the task half back without knowing about the
+// agent — a dedupe revive, an autopilot re-dispatch, a cooldown expiry, a human
+// unblocking it. Each left the record in `paused` forever, and because a stale pause
+// reads as spent, the next resume click queued a duplicate task on a second agent.
+describe('the sweep retires paused records whose task moved on', () => {
+  const OLD_PAUSE = new Date('2026-08-10T00:00:00.000Z').toISOString();
+  const pausedAgent = {
+    id: 'agent-paused-9', status: 'paused', taskId: 'task-9', pausedAt: OLD_PAUSE, metadata: {},
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getAgents.mockResolvedValue([pausedAgent]);
+    readHostShutdownMarker.mockResolvedValue(null);
+    activeAgents.clear();
+    runnerAgents.clear();
+    pausedAgents.clear();
+  });
+
+  const livePause = {
+    id: 'task-9', taskType: 'user', status: 'blocked',
+    metadata: { blockedCategory: 'agent-paused', pausedAgentId: 'agent-paused-9' },
+  };
+
+  it('leaves a live pause alone — a user may resume it days later', async () => {
+    getTaskById.mockResolvedValue(livePause);
+    await cleanupOrphanedAgents();
+    expect(markAgentComplete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the task is running again', { ...livePause, status: 'in_progress', metadata: {} }],
+    ['a later agent owns the pause', { ...livePause, metadata: { blockedCategory: 'agent-paused', pausedAgentId: 'agent-other' } }],
+    ['the task was deleted', null],
+  ])('retires the record when %s', async (_label, task) => {
+    getTaskById.mockResolvedValue(task);
+    await cleanupOrphanedAgents();
+    // `resumed: true` for the same reason resumeAgent uses it — this run has no
+    // verdict of its own, so charging it an error invents a failure.
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-paused-9', expect.objectContaining({
+      success: false, resumed: true, error: expect.stringContaining('Pause retired'),
+    }));
+  });
+
+  it('leaves a just-paused record alone — markAgentPaused writes the agent before the task', async () => {
+    getAgents.mockResolvedValue([{ ...pausedAgent, pausedAt: new Date().toISOString() }]);
+    getTaskById.mockResolvedValue({ id: 'task-9', taskType: 'user', status: 'in_progress', metadata: {} });
+    await cleanupOrphanedAgents();
+    expect(markAgentComplete).not.toHaveBeenCalled();
+  });
+
+  it('leaves a paused record with no task alone — nothing proves the pause is spent', async () => {
+    getAgents.mockResolvedValue([{ ...pausedAgent, taskId: null }]);
+    await cleanupOrphanedAgents();
+    expect(getTaskById).not.toHaveBeenCalled();
+    expect(markAgentComplete).not.toHaveBeenCalled();
   });
 });

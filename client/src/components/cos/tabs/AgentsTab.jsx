@@ -8,6 +8,17 @@ import ResumeAgentModal from './ResumeAgentModal';
 import BrailleSpinner from '../../BrailleSpinner';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 
+// What each `resumeAgent` outcome actually did (server modes, agentManagement.js).
+// `already-active` and `superseded` deliberately queue NOTHING — the task is already
+// in flight, or a later pause owns it — so an unmapped mode must NOT fall through to
+// "created a resume task". The server's `created` flag decides that (see below); this
+// map only supplies the specific wording.
+const RESUME_MESSAGES = {
+  requeued: 'Resumed — the paused task is queued on its preserved worktree',
+  'already-active': 'Its task is already queued or running — nothing new was created',
+  superseded: 'A later agent now holds this task paused — that pause was left intact',
+};
+
 const needsAgentFeedback = (agent) => {
   const isSystemAgent = agent.taskId?.startsWith('sys-') || agent.id?.startsWith('sys-');
   return !isSystemAgent && !agent.feedback?.rating;
@@ -140,9 +151,11 @@ export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, a
     // Errors propagate to the modal, which owns the failure toast and re-enables
     // its submit button — swallowing them here closed the dialog on failure and
     // left the user believing the resume was queued.
-    toast.success(result.mode === 'requeued'
-      ? 'Resumed — the paused task is queued on its preserved worktree'
-      : `Created ${type === 'internal' ? 'system ' : ''}resume task`);
+    // A resume that created nothing (`created: false`) never claims it did, even for
+    // a mode this build has no wording for — the completed-agent branch above has no
+    // `created` field at all and did queue a task, so it keeps the default.
+    toast.success(RESUME_MESSAGES[result.mode]
+      || (result.created === false ? 'Resumed — nothing new was queued' : `Created ${type === 'internal' ? 'system ' : ''}resume task`));
     setResumingAgent(null);
     onRefresh();
   };

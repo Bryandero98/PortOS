@@ -20,6 +20,7 @@ import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normal
 import { isPlainObject } from '../lib/objects.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
+import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS } from '../lib/taskPauseHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
@@ -44,11 +45,6 @@ export const PRIORITY_VALUES = {
 
 const CLAIM_KEY_SET = new Set(CLAIM_METADATA_KEYS);
 
-// The `blockedCategory` a user pause stamps. Written by `markAgentPaused` and read
-// back by `resumeAgent` (both agentManagement.js) to prove a blocked task is still
-// the one THAT pause parked — named here so the write side, the read side, and the
-// reaper's exemption list below can't drift into three different literals.
-export const AGENT_PAUSED_CATEGORY = 'agent-paused';
 
 // Blocked categories that mean "paused until something outside the task
 // changes", not "this task is finished with". A pause keeps the resume pointer
@@ -550,9 +546,18 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
     if (updates[f] !== undefined) updatedMetadata[f] = updates[f] ?? undefined;
   }
 
-  // Clear blocked/failure metadata when transitioning out of blocked status
+  // Clear blocked/failure metadata when transitioning out of blocked status.
+  //
+  // The PAUSE keys go with them (`PAUSE_METADATA_KEYS`, lib/taskPauseHold.js).
+  // `resumeAgent` is not the only way a paused task runs again — a dedupe revive, an
+  // autopilot re-dispatch, an orphan-cooldown expiry, or a human unblocking it from
+  // the task list all flip it back to `pending` through here. Clearing only in
+  // `resumeAgent` left every one of those paths running a task that still advertised
+  // a live pause: the UI kept showing it parked, and `resumeAgent` on the still-paused
+  // agent record then read its own pause as spent and spawned a SECOND agent on a
+  // fresh task. The clear belongs at the transition, not at one caller.
   if (updates.status && updates.status !== 'blocked' && tasks[taskIndex].status === 'blocked') {
-    for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'failureCount', 'lastErrorCategory', 'lastFailureAt']) {
+    for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'failureCount', 'lastErrorCategory', 'lastFailureAt', ...PAUSE_METADATA_KEYS]) {
       delete updatedMetadata[key];
     }
   }
