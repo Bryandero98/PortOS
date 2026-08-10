@@ -35,6 +35,15 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   UUID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
 }));
 
+// The restricted-model license gate resolves authorization from the install's
+// recorded acknowledgements at render time, so these tests declare whether this
+// "install" has accepted MiniMax H3's license.
+const H3_TERMS = 'minimax-h3-community-license-2026-08-02';
+const settingsState = vi.hoisted(() => ({ acceptedModelTerms: [] }));
+vi.mock('../settings.js', () => ({
+  getSettings: vi.fn(async () => ({ videoGen: { acceptedModelTerms: [...settingsState.acceptedModelTerms] } })),
+}));
+
 vi.mock('../../lib/mediaModels.js', () => ({
   getVideoModels: vi.fn(() => [
     { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2', repo: 'Lightricks/LTX-Video', steps: 30, guidance: 3.5 },
@@ -1749,7 +1758,12 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
 });
 
 describe('generateVideo — MiniMax H3 MLX contract', () => {
-  it('requires the exact reviewed terms key at the render boundary', async () => {
+  // Every test below renders H3, which is license-gated: authorization comes
+  // from the install's recorded acknowledgement, re-read here at the render
+  // boundary rather than trusted from the caller's params.
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
+
+  it('resolves the license gate from the install record at the render boundary', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     vi.mocked(spawnDetached).mockClear();
     const base = {
@@ -1760,11 +1774,20 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
       mode: 'text',
     };
 
+    settingsState.acceptedModelTerms = [];
     await expect(generateVideo(base)).rejects.toMatchObject({
       status: 403,
       code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
     });
-    await expect(generateVideo({ ...base, termsAcceptance: 'old-license' })).rejects.toMatchObject({
+    // A superseded license revision does not carry forward — a job queued while
+    // the old one was accepted fails closed at execution.
+    settingsState.acceptedModelTerms = ['old-license'];
+    await expect(generateVideo(base)).rejects.toMatchObject({
+      status: 403,
+      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
+    });
+    // A caller cannot assert its own acceptance — only the install record counts.
+    await expect(generateVideo({ ...base, termsAcceptance: H3_TERMS })).rejects.toMatchObject({
       status: 403,
       code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
     });
@@ -1785,7 +1808,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     await expect(generateVideo({
       jobId: 'h3-conditioning',
       modelId: 'minimax_h3_8bit',
-      termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+
       prompt: 'a fox watches the rain',
       width: 512, height: 320, numFrames: 141, fps: 24,
       ...conditioning,
@@ -1808,7 +1831,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     await expect(generateVideo({
       jobId: 'h3-image-shape',
       modelId: 'minimax_h3_8bit',
-      termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+
       prompt: 'a fox watches the rain',
       width: 512, height: 320, numFrames: 141, fps: 24,
       ...fields,
@@ -1832,7 +1855,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     await generateVideo({
       jobId: 'h3-keyframes',
       modelId: 'minimax_h3_8bit',
-      termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+
       prompt: 'a fox watches the rain',
       width: 512, height: 320, numFrames: 141, fps: 24,
       ...fields,
@@ -1863,7 +1886,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
       await generateVideo({
         jobId: 'h3-args',
         modelId: 'minimax_h3_8bit',
-        termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+
         prompt: 'a fox watches the rain',
         width: 512, height: 320, numFrames: 141, fps: 24,
         steps: 99, guidanceScale: 12, mode: 'text',

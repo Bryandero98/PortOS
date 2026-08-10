@@ -49,6 +49,7 @@ import IcLoraPanel from '../components/videoGen/IcLoraPanel';
 import AdvancedParamsPanel from '../components/videoGen/AdvancedParamsPanel';
 import RuntimeFingerprint from '../components/videoGen/RuntimeFingerprint';
 import ModelDisclosure from '../components/videoGen/ModelDisclosure';
+import ModelTermsGate from '../components/videoGen/ModelTermsGate';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
 import VideoPreviewPanel from '../components/videoGen/VideoPreviewPanel';
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
@@ -90,6 +91,7 @@ import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord } from '../lib/videoFinish.js';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
+import useVideoModelTerms from '../hooks/useVideoModelTerms.js';
 
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
@@ -166,30 +168,37 @@ export default function VideoGen() {
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
 
-  // Restricted model terms are accepted per exact reviewed license id. Keep
-  // the convenience bit in guarded localStorage, but send the versioned id on
-  // every download/generation request so the server enforces the same gate.
+  // Restricted model terms are accepted per exact reviewed license id, and the
+  // acceptance is persisted server-side so it authorizes every other render
+  // surface (music video board, pipeline, agent runs) — not just this page in
+  // this browser. The versioned id still rides every download/generation
+  // request so the server enforces the same gate on both inputs.
   const termsGate = !isGrok && currentModel?.termsGate ? currentModel.termsGate : null;
-  const [acceptedTermsId, setAcceptedTermsId] = useState(null);
+  const modelTerms = useVideoModelTerms();
+  // Key acceptance by the exact license id, never a shared boolean, so a model
+  // switch can't momentarily apply one model's acceptance to another's terms.
+  const termsAccepted = modelTerms.isAccepted(termsGate?.id);
+  // One-time carry-forward of the browser-local acceptance bit this page used
+  // to keep: the user already performed this exact acknowledgement (same
+  // versioned id) here, so re-home it into settings instead of asking again.
+  // The legacy key is cleared afterwards so it can never re-assert a later
+  // withdrawal, and `migratedTerms` keeps the re-home to one attempt per id —
+  // the effect re-runs on any acceptance-list change, and the PATCH is not
+  // instantaneous.
+  const migratedTerms = useRef(new Set());
   useEffect(() => {
-    const key = termsGate?.id ? `video-gen:terms:${termsGate.id}` : null;
-    setAcceptedTermsId(key && safeReadStorage(key) === '1' ? termsGate.id : null);
-  }, [termsGate?.id]);
-  // Key state by the accepted license, not a shared boolean. That makes a
-  // model switch fail closed during the effect boundary: acceptance for one
-  // terms id can never be momentarily applied to another id.
-  const termsAccepted = !!termsGate?.id && acceptedTermsId === termsGate.id;
+    const id = termsGate?.id;
+    if (!id || !modelTerms.loaded || modelTerms.isAccepted(id) || migratedTerms.current.has(id)) return;
+    const legacyKey = `video-gen:terms:${id}`;
+    if (safeReadStorage(legacyKey) !== '1') return;
+    migratedTerms.current.add(id);
+    modelTerms.setAcceptance(id, true).then((saved) => { if (saved) safeWriteStorage(legacyKey, '0'); });
+  }, [termsGate?.id, modelTerms.loaded, modelTerms.isAccepted, modelTerms.setAcceptance]);
   const handleTermsAcceptedChange = (accepted) => {
-    setAcceptedTermsId(accepted ? termsGate?.id || null : null);
-    if (termsGate?.id) safeWriteStorage(`video-gen:terms:${termsGate.id}`, accepted ? '1' : '0');
+    if (termsGate?.id) modelTerms.setAcceptance(termsGate.id, accepted);
   };
   const termsGateBlocked = !!termsGate && !termsAccepted;
   const termsDescriptionId = termsGate ? 'video-model-terms-requirement' : undefined;
-  const acceptedTermsKey = termsGate && termsAccepted ? termsGate.id : null;
-  const buildAcceptedGeneratePayload = () => ({
-    ...buildGeneratePayload(),
-    ...(acceptedTermsKey ? { termsAcceptance: acceptedTermsKey } : {}),
-  });
 
   // Image gallery — used by both the start and end frame pickers so the
   // user can pull from any prior render in either slot.
@@ -594,7 +603,7 @@ export default function VideoGen() {
     // textarea and fire a request the disabled button would otherwise
     // have prevented.
     if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
-    await runGeneration(buildAcceptedGeneratePayload()).catch(() => {});
+    await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
   const handleEnqueue = () => {
@@ -605,7 +614,7 @@ export default function VideoGen() {
     if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
-    enqueue(buildAcceptedGeneratePayload());
+    enqueue(buildGeneratePayload());
   };
 
   const handleCancel = async () => {
@@ -795,7 +804,7 @@ export default function VideoGen() {
               repairLabel="Repair model"
               onRepair={() => {
                 setDismissedIntegrityKey(integrityKey);
-                modelDownload.repair(modelId, { termsAcceptance: acceptedTermsKey });
+                modelDownload.repair(modelId);
               }}
               onDismiss={() => setDismissedIntegrityKey(integrityKey)}
               disabled={termsGateBlocked || modelDownload.repairing || modelDownload.downloading}
@@ -996,7 +1005,7 @@ export default function VideoGen() {
                 {modelStatus && (
                   <ModelDownloadBadge
                     status={modelStatus}
-                    onDownload={() => modelDownload.start(modelId, { termsAcceptance: acceptedTermsKey })}
+                    onDownload={() => modelDownload.start(modelId)}
                     onCancel={modelDownload.cancel}
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
                     disabled={termsGateBlocked}
@@ -1091,18 +1100,25 @@ export default function VideoGen() {
           </div>
           )}
 
-          {/* Provenance / licensing / policy scope for the selected backend +
-              model (#3674). Restricted models also render their explicit,
-              server-enforced terms gate here before Advanced / Generate. */}
-          <ModelDisclosure
-            backend={backend}
-            backendDisclosures={status?.backendDisclosures}
-            model={isGrok ? null : currentModel}
-            systemMemoryGb={status?.systemMemoryGb}
-            termsAccepted={termsAccepted}
-            onTermsAcceptedChange={handleTermsAcceptedChange}
-            termsDescriptionId={termsDescriptionId}
-          />
+          {/* A restricted model's server-enforced terms gate, then provenance /
+              licensing / policy scope for the selected backend + model (#3674)
+              — both before Advanced / Generate. */}
+          <div className="space-y-2">
+            <ModelTermsGate
+              termsGate={termsGate}
+              accepted={termsAccepted}
+              onAcceptedChange={handleTermsAcceptedChange}
+              disabled={modelTerms.saving}
+              descriptionId={termsDescriptionId}
+              inputId="video-gen-terms-accept"
+            />
+            <ModelDisclosure
+              backend={backend}
+              backendDisclosures={status?.backendDisclosures}
+              model={isGrok ? null : currentModel}
+              systemMemoryGb={status?.systemMemoryGb}
+            />
+          </div>
 
           {/* Sampler/output knobs live behind a closed-by-default disclosure so
               Generate stays above the fold — the sibling /media/image tab keeps

@@ -98,10 +98,11 @@ export default function ProjectToolbar({
         </button>
         <button
           onClick={sceneMedia.generateMissingVideos}
-          disabled={videoSettings.saving || sceneCount === 0 || missingVideoCount === 0 || referenceFrameCount !== sceneCount || generatingVideos || (videoSettings.audioReactiveSelected && !videoSettings.audioReactiveReady)}
-          title={referenceFrameCount !== sceneCount
-            ? 'Generate every reference frame first'
-            : (missingVideoCount > 0 ? `Generate ${missingVideoCount} missing scene video${missingVideoCount === 1 ? '' : 's'}` : 'Every scene has a video')}
+          disabled={videoSettings.saving || sceneCount === 0 || missingVideoCount === 0 || referenceFrameCount !== sceneCount || generatingVideos || !!videoSettings.videoBlockedReason}
+          title={videoSettings.videoBlockedReason
+            || (referenceFrameCount !== sceneCount
+              ? 'Generate every reference frame first'
+              : (missingVideoCount > 0 ? `Generate ${missingVideoCount} missing scene video${missingVideoCount === 1 ? '' : 's'}` : 'Every scene has a video'))}
           className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[44px] sm:min-h-0 disabled:opacity-50"
         >
           <Video size={15} /> Videos {renderableSceneCount}/{sceneCount}

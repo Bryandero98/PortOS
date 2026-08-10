@@ -39,6 +39,18 @@ const state = vi.hoisted(() => ({
   enqueue: vi.fn(),
   attach: vi.fn(),
   eventSourceRef: { current: null },
+  // Stands in for the persisted install-wide acceptance list
+  // (settings.videoGen.acceptedModelTerms) the terms endpoints read and write.
+  acceptedTerms: [],
+  setVideoModelTerms: vi.fn(),
+}));
+
+// Acceptance lives on the server, not in this browser, so a single
+// acknowledgement authorizes every render surface. The page reads and writes it
+// through these two endpoints.
+vi.mock('../services/apiImageVideo.js', () => ({
+  getVideoModelTerms: vi.fn(async () => ({ accepted: [...state.acceptedTerms] })),
+  setVideoModelTerms: (...args) => state.setVideoModelTerms(...args),
 }));
 
 vi.mock('../services/api', () => ({
@@ -159,6 +171,13 @@ describe('VideoGen restricted-model orchestration', () => {
     state.startDownload.mockReset();
     state.repairModel.mockReset().mockResolvedValue({ ok: true });
     state.enqueue.mockReset();
+    state.acceptedTerms = [];
+    state.setVideoModelTerms.mockReset().mockImplementation(async (termsId, accepted) => {
+      state.acceptedTerms = accepted
+        ? [...new Set([...state.acceptedTerms, termsId])]
+        : state.acceptedTerms.filter((id) => id !== termsId);
+      return { accepted: [...state.acceptedTerms] };
+    });
     state.eventSourceRef.current = null;
     state.attach.mockReset().mockImplementation(async (_jobId, handlers) => {
       handlers.onComplete({ result: { filename: 'example.mp4' } });
@@ -167,29 +186,35 @@ describe('VideoGen restricted-model orchestration', () => {
   });
 
   it('restores only the exact license, gates model switches, submit, queue, and revocation', async () => {
+    // A pre-existing browser-local acknowledgement of this exact license id is
+    // carried forward into the install-wide list once, then cleared — the user
+    // already performed this acknowledgement and must not be asked again.
     localStorage.setItem(`video-gen:terms:${TERMS_ONE}`, '1');
     await renderPage();
 
     await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue(H3_ONE.id));
     await waitFor(() => expect(termsCheckbox()).toBeChecked());
+    expect(state.setVideoModelTerms).toHaveBeenCalledWith(TERMS_ONE, true, { silent: true });
+    await waitFor(() => expect(localStorage.getItem(`video-gen:terms:${TERMS_ONE}`)).toBe('0'));
     fireEvent.change(prompt(), { target: { value: 'a fox watches the rain' } });
 
     await waitFor(() => expect(enqueue()).toBeEnabled());
     fireEvent.click(enqueue());
-    expect(state.enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      modelId: H3_ONE.id,
-      termsAcceptance: TERMS_ONE,
-    }));
+    // The payload carries no acceptance of its own — the server resolves it
+    // from the install record, so nothing renders without a recorded (and
+    // therefore withdrawable) acknowledgement.
+    expect(state.enqueue).toHaveBeenCalledWith(expect.objectContaining({ modelId: H3_ONE.id }));
+    expect(state.enqueue.mock.calls[0][0]).not.toHaveProperty('termsAcceptance');
 
-    // A form submit models keyboard/Enter submission and must use the same
-    // gate + exact key as clicking Generate.
+    // A form submit models keyboard/Enter submission and must pass the same
+    // gate as clicking Generate.
     await act(async () => {
       fireEvent.submit(prompt().closest('form'));
     });
     await waitFor(() => expect(state.generateVideo).toHaveBeenCalledWith(expect.objectContaining({
       modelId: H3_ONE.id,
-      termsAcceptance: TERMS_ONE,
     })));
+    expect(state.generateVideo.mock.calls[0][0]).not.toHaveProperty('termsAcceptance');
 
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: H3_TWO.id } });
     await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue(H3_TWO.id));
@@ -202,12 +227,12 @@ describe('VideoGen restricted-model orchestration', () => {
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: H3_ONE.id } });
     await waitFor(() => expect(termsCheckbox()).toBeChecked());
     fireEvent.click(termsCheckbox());
-    expect(localStorage.getItem(`video-gen:terms:${TERMS_ONE}`)).toBe('0');
-    expect(generate()).toBeDisabled();
+    expect(state.setVideoModelTerms).toHaveBeenLastCalledWith(TERMS_ONE, false, { silent: true });
+    await waitFor(() => expect(generate()).toBeDisabled());
     expect(enqueue()).toBeDisabled();
   });
 
-  it('blocks download until acceptance and forwards the exact key', async () => {
+  it('blocks download until the acknowledgement is recorded', async () => {
     state.modelStatuses[H3_ONE.id] = { id: H3_ONE.id, repo: H3_ONE.repo, cached: false, sizeBytes: 0 };
     await renderPage();
 
@@ -217,10 +242,10 @@ describe('VideoGen restricted-model orchestration', () => {
     fireEvent.click(termsCheckbox());
     await waitFor(() => expect(download).toBeEnabled());
     fireEvent.click(download);
-    expect(state.startDownload).toHaveBeenCalledWith(H3_ONE.id, { termsAcceptance: TERMS_ONE });
+    expect(state.startDownload).toHaveBeenCalledWith(H3_ONE.id);
   });
 
-  it('blocks integrity repair until acceptance and forwards the exact key', async () => {
+  it('blocks integrity repair until the acknowledgement is recorded', async () => {
     state.modelStatuses[H3_ONE.id] = {
       id: H3_ONE.id,
       repo: H3_ONE.repo,
@@ -236,6 +261,6 @@ describe('VideoGen restricted-model orchestration', () => {
     fireEvent.click(termsCheckbox());
     await waitFor(() => expect(repair).toBeEnabled());
     fireEvent.click(repair);
-    expect(state.repairModel).toHaveBeenCalledWith(H3_ONE.id, { termsAcceptance: TERMS_ONE });
+    expect(state.repairModel).toHaveBeenCalledWith(H3_ONE.id);
   });
 });

@@ -17,7 +17,7 @@ const SCENE_TIME_FIELDS = [['Start', 'startSec'], ['End', 'endSec']];
  */
 export default function SceneCard({
   scene, index, isLast, generatingFrame, generatingVideo,
-  settingsSaving, videoBlocked, canContinueShot,
+  settingsSaving, videoBlockedReason, canContinueShot,
   onMove, onDelete, onEditLocal, onSave,
   onGenerateFrame, onGenerateVideo, onContinueVideo,
   onOpenPreview,
@@ -137,9 +137,10 @@ export default function SceneCard({
           </div>
         )}
         <button onClick={() => onGenerateVideo(scene)}
-          disabled={settingsSaving || !scene.referenceImageId || !!generatingVideo || videoBlocked}
+          disabled={settingsSaving || !scene.referenceImageId || !!generatingVideo || !!videoBlockedReason}
           className="flex items-center gap-1 bg-port-border hover:bg-port-border/70 disabled:opacity-50 rounded px-2 py-1.5 text-xs min-h-[44px] sm:min-h-0 whitespace-nowrap"
-          title={scene.referenceImageId ? "Generate this scene's video from its reference frame (i2v)" : 'Generate a reference frame first'}>
+          title={videoBlockedReason
+            || (scene.referenceImageId ? "Generate this scene's video from its reference frame (i2v)" : 'Generate a reference frame first')}>
           {generatingVideo ? <Activity size={14} className="animate-spin" /> : <Video size={14} />}
           {generatingVideo ? 'Generating video…' : (scene.videoHistoryId ? 'Regenerate video' : 'Generate video')}
         </button>
