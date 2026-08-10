@@ -64,10 +64,11 @@ export const VARIATION_LABEL_MAX = 120;
 // universe's logline/premise/style notes can seed a production series in one click.
 export const LOGLINE_MAX = 500;
 // Match the production-series premise ceiling. A universe premise that must
-// carry distinct economies, jurisdictions, travel rules, and several sites can
-// legitimately need more than 4k; this remains a runaway-payload guard, not an
-// instruction to crush readable bible prose into an abbreviation ledger.
-export const PREMISE_MAX = 8000;
+// carry distinct economies, jurisdictions, travel rules, route logistics, and
+// several sites can legitimately need more than 8k; this remains a
+// runaway-payload guard, not an instruction to crush readable bible prose into
+// an abbreviation ledger.
+export const PREMISE_MAX = 12000;
 export const STYLE_NOTES_MAX = 4000;
 export const VARIATIONS_PER_CATEGORY_MAX = 50;
 export const COMPOSITE_SHEETS_MAX = 50;

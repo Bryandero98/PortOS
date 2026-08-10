@@ -52,7 +52,9 @@ const SERIES_ID_RE = /^ser-[A-Za-z0-9-]+$/;
 
 export const NAME_MAX = 200;
 export const LOGLINE_MAX = 500;
-export const PREMISE_MAX = 8000;
+// Large enough for a multi-site production bible with concrete route and
+// resource rules; still bounded so the field cannot become an unbounded prompt.
+export const PREMISE_MAX = 12000;
 export const STYLE_NOTES_MAX = 4000;
 // Author-supplied real-world fact reference (#1588) — the ground-truth facts the
 // opt-in `research.fact-accuracy` editorial check reconciles the prose against

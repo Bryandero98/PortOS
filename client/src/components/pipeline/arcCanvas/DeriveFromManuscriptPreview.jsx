@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Loader2, X, BookText } from 'lucide-react';
+import { WORLD_PREMISE_MAX } from '../../../services/apiUniverseBuilder.js';
 
 // Field-count guard for derived synopsis textareas — mirrors the server caps so
 // the user isn't surprised by a 400 on commit.
@@ -88,7 +89,7 @@ export default function DeriveFromManuscriptPreview({ preview, committing, onCan
       </div>
       <label className="block space-y-1">
         <span className="text-[11px] uppercase tracking-wider text-gray-500">Premise</span>
-        <textarea className={`${inputCls} resize-y`} rows={3} value={bible.premise} maxLength={8000}
+        <textarea className={`${inputCls} resize-y`} rows={3} value={bible.premise} maxLength={WORLD_PREMISE_MAX}
           onChange={(e) => { setBible((b) => ({ ...b, premise: e.target.value })); setArc((a) => ({ ...a, summary: e.target.value })); }} />
       </label>
       <label className="block space-y-1">
