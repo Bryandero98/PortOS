@@ -42,8 +42,9 @@ export function isAntigravityCliProvider(provider) {
 // its Zod schemas with; it is restated here rather than imported because
 // `validation.js` pulls in the whole route-schema graph, which several mocked
 // suites cannot absorb.
-const ANTIGRAVITY_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-const ANTIGRAVITY_MODEL_LINE = /^([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\t.*)?$/;
+const MODEL_ID_CHARS = '[A-Za-z0-9][A-Za-z0-9._:/-]*';
+const ANTIGRAVITY_MODEL_ID = new RegExp(`^${MODEL_ID_CHARS}$`);
+const ANTIGRAVITY_MODEL_LINE = new RegExp(`^(${MODEL_ID_CHARS})(?:\\t.*)?$`);
 
 /**
  * Is this a syntactically valid agy model id? The defense-in-depth check
