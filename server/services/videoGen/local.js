@@ -1882,6 +1882,15 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
           // Cut the next hop's conditioning window off this chunk's tail. Both
           // the count and the cut clamp: a window longer than the chunk simply
           // conditions on all of it.
+          //
+          // An unprobeable length clamps the same way, which means the whole
+          // chunk becomes the window — the unbounded conditioning this exists
+          // to avoid, for one hop. It self-corrects (the next chunk's prefix
+          // trim measures the echo off the render, not off the window), but say
+          // so rather than letting the fallback be silent.
+          if (frames == null) {
+            console.log(`⚠️ Chunk ${i + 1}/${totalChunks} length unprobeable — conditioning the next chunk on the whole clip instead of a ${windowFrames}-frame window`);
+          }
           const contextPath = join(tmpdir(), `chaincontext-${chunkId}.mp4`);
           // eslint-disable-next-line no-await-in-loop
           const cut = await trimVideoFromFrame(chunkPath, contextPath, {

@@ -21,8 +21,8 @@ export const CHUNK_OPTIONS = Array.from({ length: MAX_CHUNKS }, (_, i) => i + 1)
 // Continuation context window — how many of the prior chunk's frames each
 // subsequent chunk conditions on. Display-side mirror of
 // `server/lib/videoContinuity.js` (which stays the authority: it defaults,
-// clamps, and picks the strategy). Pinned against drift by the parity block in
-// `videoGenParams.test.js`.
+// clamps, and picks the strategy). Pinned against drift by
+// `server/lib/videoContinuity.parity.test.js`.
 //
 // `0` is a real option, not "unset" — it opts back into seeding the next chunk
 // from a single extracted last frame, which is what every runtime without an
