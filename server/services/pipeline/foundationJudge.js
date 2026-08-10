@@ -632,7 +632,15 @@ export async function judgeFoundation(seriesId, {
   const hash = foundationInputsHash(series, universe, issues);
 
   const existing = await loadSnapshot(seriesId);
-  if (!force && existing && existing.status === 'complete' && existing.sourceInputsHash === hash) {
+  // Cache only a verdict that still satisfies the current rubric contract.
+  // This also self-heals snapshots written by an older permissive validator
+  // from echoed prompt examples (`gap: "string"`): unchanged story inputs must
+  // not make fabricated editorial evidence immortal across restarts/resumes.
+  if (!force
+    && existing
+    && existing.status === 'complete'
+    && existing.sourceInputsHash === hash
+    && isValidFoundationShape(existing)) {
     return { ...existing, cached: true };
   }
 

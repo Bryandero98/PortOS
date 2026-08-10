@@ -469,6 +469,35 @@ describe('judgeFoundation — cache / fast-pass', () => {
     expect(stageRunner.runStagedLLM).not.toHaveBeenCalled();
   });
 
+  it('re-judges a matching cached snapshot whose findings are echoed schema placeholders', async () => {
+    const series = { id: 'ser-1', name: 'S', universeId: null };
+    seriesSvc.getSeries.mockResolvedValue(series);
+    const hash = foundationInputsHash(series, null);
+    const placeholderDimensions = Object.fromEntries(FOUNDATION_DIMENSIONS.map((key) => [
+      key,
+      { score: 6, gap: 'string', fix: 'string' },
+    ]));
+    fileUtils.tryReadFile.mockResolvedValue(JSON.stringify({
+      seriesId: 'ser-1',
+      status: 'complete',
+      sourceInputsHash: hash,
+      weightedScore: 6,
+      dimensions: placeholderDimensions,
+      oneLineVerdict: 'string',
+    }));
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: { dimensions: dims({ worldbuilding: 7 }), oneLineVerdict: 'Fresh specific verdict.' },
+      providerId: 'judge-x', model: 'jm-heavy', runId: 'run-rejudge',
+    });
+
+    const out = await judgeFoundation('ser-1');
+
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledTimes(1);
+    expect(out.cached).toBeUndefined();
+    expect(out.runId).toBe('run-rejudge');
+    expect(out.oneLineVerdict).toBe('Fresh specific verdict.');
+  });
+
   it('runs the judge (writer/judge split) and persists a hashed snapshot on a fresh foundation', async () => {
     seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', universeId: null });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
