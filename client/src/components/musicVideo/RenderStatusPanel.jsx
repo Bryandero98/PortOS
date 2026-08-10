@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { Film, Download, Maximize2 } from 'lucide-react';
 
 // The final-render surface: a progress bar while the assemble job runs, and the
@@ -9,11 +10,14 @@ import { Film, Download, Maximize2 } from 'lucide-react';
 // history id is NOT its filename stem (`music-video-*.mp4`), so reconstructing
 // `/data/videos/<id>.mp4` 404s. `onOpenPreview(key)` opens the page-level
 // MediaLightbox; the expand control sits in the player corner so native
-// play/pause keeps working. "Open in Media History →" stays — it goes to the
-// full history grid, not the same-page lightbox.
+// play/pause keeps working. Opening the lightbox pauses this player first so
+// the lightbox's autoplay unmute doesn't double-play the same audio. "Open in
+// Media History →" stays — it goes to the full history grid, not the same-page
+// lightbox.
 export default function RenderStatusPanel({
   rendering, progress, renderHistoryId, finalVideo, onOpenPreview,
 }) {
+  const playerRef = useRef(null);
   if (rendering) {
     return (
       <div className="mt-2">
@@ -55,6 +59,7 @@ export default function RenderStatusPanel({
         // own black) instead of being stretched to fill it.
         <div className="relative">
           <video
+            ref={playerRef}
             src={finalVideo.src}
             controls
             playsInline
@@ -64,10 +69,13 @@ export default function RenderStatusPanel({
           />
           <button
             type="button"
-            onClick={() => onOpenPreview?.(`video:${renderHistoryId}`)}
+            onClick={() => {
+              playerRef.current?.pause();
+              onOpenPreview?.(`video:${renderHistoryId}`);
+            }}
             aria-label="View final video full size"
             title="View final video full size"
-            className="absolute top-2 right-2 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1.5 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
+            className="always-dark absolute top-2 right-2 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1.5 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>

@@ -774,7 +774,7 @@ describe('MusicVideo media lightbox (#3718)', () => {
 
   it('opens the lightbox from a reference-frame thumbnail click', async () => {
     await openProject(PROJECT_WITH_CLIP);
-    fireEvent.click(await screen.findByRole('button', { name: 'View reference frame full size' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'View scene 1 reference frame full size' }));
     const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
     expect(dialog).toBeTruthy();
     // Image uses previewUrl (/data/images/<id>); img may be MediaImage-wrapped.
@@ -789,7 +789,7 @@ describe('MusicVideo media lightbox (#3718)', () => {
     expect(inlineVideo).toBeTruthy();
     expect(inlineVideo.hasAttribute('controls')).toBe(true);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'View clip full size' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'View scene 1 clip full size' }));
     const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
     const lightboxVideo = dialog.querySelector('video');
     expect(lightboxVideo?.getAttribute('src')).toBe('/data/videos/h1.mp4');

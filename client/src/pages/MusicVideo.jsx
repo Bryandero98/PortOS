@@ -407,7 +407,11 @@ export default function MusicVideo() {
         });
       }
     }
-    return items;
+    // Scenes can reuse the same frame/clip (ProjectToolbar surfaces a
+    // "Repetition: N unique frames" badge). Dedupe by key so prev/next and
+    // openPreview's .find() land on a single item rather than the first of
+    // several identical keys with different prompts.
+    return [...new Map(items.map((i) => [i.key, i])).values()];
   }, [selected, finalVideo.src]);
   const [preview, setPreview] = usePreviewRoute(previewItems);
   const openPreview = useCallback((key) => {
