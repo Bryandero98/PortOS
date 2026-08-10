@@ -149,10 +149,12 @@ export function createJiraClient(instance) {
     post: (...args) => base.post(...args).then(checkToken, mapAuthError),
     put: (...args) => base.put(...args).then(checkToken, mapAuthError),
     delete: (...args) => base.delete(...args).then(checkToken, mapAuthError),
-    // Atlassian sunset the old `GET /rest/api/2/search` (410 Gone) — `/search/jql` is
-    // its replacement and keeps the same v2 field shapes, just cursor-paginated. Every
-    // JQL search goes through here so the next endpoint change is a one-line fix.
-    search: (params) => base.get('/rest/api/2/search/jql', { params }).then(checkToken, mapAuthError)
+    // Atlassian sunset the old `GET /rest/api/2/search` on Cloud only (410 Gone) in
+    // favor of `/search/jql`, which keeps the same v2 field shapes. Server/DC is on
+    // its own release cycle: the classic endpoint stays supported there, and an
+    // older DC version may not even serve `/search/jql` yet — so route on instance
+    // type instead of hardcoding one path. Every JQL search goes through here.
+    search: (params) => base.get(isCloud ? '/rest/api/2/search/jql' : '/rest/api/2/search', { params }).then(checkToken, mapAuthError)
   };
 }
 
