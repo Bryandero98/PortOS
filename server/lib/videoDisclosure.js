@@ -32,7 +32,6 @@ export const VIDEO_DISCLOSURE_REVIEWED_AT = '2026-08-09';
 // License descriptors reused across entries. `url` points at the primary text
 // of the license, or at the model card when the card declares a custom license
 // without publishing a distinct document.
-const MIT = { name: 'MIT', url: 'https://opensource.org/license/mit' };
 const APACHE_2 = { name: 'Apache-2.0', url: 'https://www.apache.org/licenses/LICENSE-2.0' };
 const TENCENT_HUNYUAN_WEIGHTS = {
   name: 'Tencent Hunyuan Community License',
@@ -114,16 +113,6 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
         'Republic of Korea',
         'United States of America',
       ],
-    },
-  },
-  ltx2_unified: {
-    shippedRepo: 'notapalindrome/ltx2-mlx-av',
-    disclosure: {
-      modelCardUrl: hfModelCard('notapalindrome/ltx2-mlx-av'),
-      weightsLicense: MIT,
-      runtimeLicense: RUNTIME_LICENSE.mlx_video,
-      estimatedDownloadGb: 44.7,
-      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
   },
   ltx23_unified: {
@@ -241,7 +230,7 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
 });
 
 // Deep-freeze the nested disclosure objects so a consumer can't mutate the
-// shared descriptors (`MIT`, `APACHE_2`, …) through one entry and corrupt every
+// shared descriptors (`APACHE_2`, `RUNTIME_LICENSE.*`, …) through one entry and corrupt every
 // other entry that reuses them.
 for (const spec of Object.values(VIDEO_MODEL_DISCLOSURES)) {
   for (const value of Object.values(spec.disclosure)) {

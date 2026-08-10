@@ -416,17 +416,100 @@ describe('mediaModels registry', () => {
     logSpy.mockRestore();
   });
 
+  // Retirement has to bite at LOAD, not only in the migration: the registry is
+  // cached at import time (before bootstrapServices runs migrations) and
+  // persistRegistry writes the whole cached object back on the next edit, so a
+  // migration-only retirement is undone by the boot that applied it.
+  describe('retired video models', () => {
+    const RETIRED_ID = 'ltx2_unified';
+    const SHIPPED_REPO = 'notapalindrome/ltx2-mlx-av';
+
+    // _shippedDefaults claims every current built-in so appendNewlyShippedEntries
+    // adds nothing — these cases are about what the load REMOVES, and an
+    // "everything else is new" fixture would bury it under a dozen appends.
+    const shippedMacosIds = JSON.parse(readFileSync(SAMPLE_REGISTRY_PATH, 'utf-8'))
+      .video.macos.map((e) => e.id).concat(RETIRED_ID);
+
+    const writeRegistry = (macos, defaultMacos = 'ltx23_distilled_q4') => writeFileSync(
+      registryFile,
+      JSON.stringify({
+        video: { macos, windows: [], defaultMacos, defaultWindows: 'ltx_video' },
+        image: [],
+        textEncoders: [{ id: 't', label: 't', repo: 'r' }],
+        selectedTextEncoder: 't',
+        _shippedDefaults: { video: { macos: shippedMacosIds, windows: [] } },
+      }),
+    );
+    const retiredEntry = (repo = SHIPPED_REPO) => ({
+      id: RETIRED_ID, name: 'LTX-2 Unified', repo, runtime: 'mlx_video', steps: 30, guidance: 3.0,
+    });
+    const survivor = { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Q4', repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 };
+
+    it('drops a persisted entry that still points at the shipped repo', async () => {
+      writeRegistry([retiredEntry(), survivor]);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { loadMediaModels } = await import('./mediaModels.js');
+      expect(loadMediaModels().video.macos.map((e) => e.id)).toEqual(['ltx23_distilled_q4']);
+      logSpy.mockRestore();
+    });
+
+    // The fork is the escape hatch: a user who re-pointed the entry owns it.
+    it('keeps an entry the user re-pointed at another repo', async () => {
+      writeRegistry([retiredEntry('example-org/ltx2-fork'), survivor]);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { loadMediaModels } = await import('./mediaModels.js');
+      expect(loadMediaModels().video.macos.map((e) => e.id)).toContain(RETIRED_ID);
+      logSpy.mockRestore();
+    });
+
+    it('repoints a default that named the retired model at its replacement', async () => {
+      writeRegistry([retiredEntry(), survivor], RETIRED_ID);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { loadMediaModels, getDefaultVideoModelId } = await import('./mediaModels.js');
+      expect(loadMediaModels().video.defaultMacos).toBe('ltx23_distilled_q4');
+      if (process.platform !== 'win32') expect(getDefaultVideoModelId()).toBe('ltx23_distilled_q4');
+      logSpy.mockRestore();
+    });
+
+    it('leaves the default alone when the fork kept the retired entry', async () => {
+      writeRegistry([retiredEntry('example-org/ltx2-fork'), survivor], RETIRED_ID);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { loadMediaModels } = await import('./mediaModels.js');
+      expect(loadMediaModels().video.defaultMacos).toBe(RETIRED_ID);
+      logSpy.mockRestore();
+    });
+
+    it('leaves the stale default alone when the replacement is gone too', async () => {
+      writeRegistry([retiredEntry()], RETIRED_ID);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { loadMediaModels } = await import('./mediaModels.js');
+      // Nothing left to name — getDefaultVideoModelId's "unknown default →
+      // first available" warning is the honest outcome.
+      expect(loadMediaModels().video.defaultMacos).toBe(RETIRED_ID);
+      logSpy.mockRestore();
+    });
+
+    it('does not re-add the retired model as a newly-shipped built-in', async () => {
+      writeRegistry([survivor]);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { loadMediaModels } = await import('./mediaModels.js');
+      expect(loadMediaModels().video.macos.some((e) => e.id === RETIRED_ID)).toBe(false);
+      logSpy.mockRestore();
+    });
+  });
+
   it('user-deleted built-in video model is NOT re-added on subsequent load', async () => {
     const platformKey = process.platform === 'win32' ? 'windows' : 'macos';
     const otherKey = process.platform === 'win32' ? 'macos' : 'windows';
     // Simulate a registry that already has _shippedDefaults (post-bootstrap)
-    // but is missing one model the user deleted (ltx2_unified).
-    const deletedId = 'ltx2_unified';
+    // but is missing one model the user deleted. The id MUST still be a current
+    // built-in — a retired one would pass this assertion for the wrong reason
+    // (nothing re-adds a model that left DEFAULT_REGISTRY).
+    const deletedId = 'ltx23_dgrauet_q8';
     const remainingMacos = [
       { id: 'ltx23_unified', name: 'LTX-2.3 Unified Beta (~48 GB)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q4', name: 'LTX-2.3 dgrauet Q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
-      { id: 'ltx23_dgrauet_q8', name: 'LTX-2.3 dgrauet Q8', runtime: 'ltx2', steps: 8, guidance: 3.0 },
     ];
     const shippedMacosIds = [deletedId, ...remainingMacos.map((e) => e.id)];
     writeFileSync(registryFile, JSON.stringify({
@@ -462,7 +545,6 @@ describe('mediaModels registry', () => {
     // Simulate a registry that pre-dates a newly-shipped model: _shippedDefaults
     // exists but does NOT include 'ltx23_dgrauet_q8' (as if it shipped later).
     const existingMacos = [
-      { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'mlx_video', steps: 30, guidance: 3.0 },
       { id: 'ltx23_unified', name: 'LTX-2.3 Unified', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q4', name: 'LTX-2.3 dgrauet Q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
@@ -679,7 +761,6 @@ describe('mediaModels registry', () => {
     // _shippedDefaults includes ltx23_dgrauet_q8 (it was added in a prior
     // load), but the user has now removed it from their video list.
     const userMacos = [
-      { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'mlx_video', steps: 30, guidance: 3.0 },
       { id: 'ltx23_unified', name: 'LTX-2.3 Unified', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q4', name: 'LTX-2.3 dgrauet Q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
@@ -779,7 +860,7 @@ describe('mediaModels registry', () => {
     // have it.
     const driftedId = 'ltx23_dgrauet_q4';
     const userPlatformList = platformKey === 'macos' ? [
-      { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'mlx_video', steps: 30, guidance: 3.0 },
+      { id: 'ltx23_unified', name: 'LTX-2.3 Unified', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       // ltx23_dgrauet_q4 deliberately absent (drift)
     ] : [
       { id: 'ltx_video', name: 'LTX', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
@@ -788,7 +869,7 @@ describe('mediaModels registry', () => {
       video: {
         [platformKey]: userPlatformList,
         [otherKey]: [],
-        defaultMacos: 'ltx2_unified',
+        defaultMacos: 'ltx23_unified',
         defaultWindows: 'ltx_video',
       },
       image: [],
@@ -796,7 +877,7 @@ describe('mediaModels registry', () => {
       selectedTextEncoder: 't',
       _shippedDefaults: {
         video: {
-          macos: platformKey === 'macos' ? ['ltx2_unified', driftedId] : [],
+          macos: platformKey === 'macos' ? ['ltx23_unified', driftedId] : [],
           windows: platformKey === 'windows' ? ['ltx_video'] : [],
         },
         image: { list: [] },
