@@ -1395,7 +1395,7 @@ describe('trackConvergence (pure divergence/oscillation guard — #1571)', () =>
 });
 
 describe('isResolveRegression (pure resolve-round damage check)', () => {
-  const { isResolveRegression, findingFingerprint } = autopilot;
+  const { isResolveRegression, sameFinding, findingTextOverlap } = autopilot;
   const f = (problem, location = 'V1', severity = 'high') => ({ severity, location, problem });
 
   it('flags a round that grew the blocking set while leaving what it targeted standing', () => {
@@ -1428,14 +1428,42 @@ describe('isResolveRegression (pure resolve-round damage check)', () => {
     expect(isResolveRegression(null, [f('a')])).toBe(false);
   });
 
-  it('fingerprints through the verifier re-wording its prose', () => {
-    // Same finding, re-punctuated and re-cased between two verify calls — a raw
-    // string match would read the second as brand new and miss the regression.
-    expect(findingFingerprint({ severity: 'high', location: 'V1', problem: 'Both volumes stage the first eclipse.' }))
-      .toBe(findingFingerprint({ severity: 'HIGH', location: 'v1', problem: 'both   volumes stage the first eclipse' }));
-    // Different location is a different finding.
-    expect(findingFingerprint({ severity: 'high', location: 'V1', problem: 'x' }))
-      .not.toBe(findingFingerprint({ severity: 'high', location: 'V2', problem: 'x' }));
+  it('still flags the regression when the verifier PARAPHRASES the finding it left standing', () => {
+    // The failure mode that let the observed 1 → 3 → 5 divergence through: the
+    // second verify call restates the same defect in its own words and at a
+    // re-labelled location. A prose fingerprint reads that as a brand-new
+    // finding, concludes the round closed what it targeted, and commits the
+    // damage. Identity has to survive the re-wording.
+    expect(isResolveRegression(
+      [f('volume 1 and volume 2 both stage the first eclipse', 'Volume 1 → Volume 2')],
+      [
+        f('the eclipse is presented as a first-time event in two separate volumes', 'Volume 2 opening'),
+        f('mentor subplot never pays off', 'V3'),
+        f('finale hook is unresolved', 'V4'),
+      ],
+    )).toBe(true);
+  });
+
+  it('matches a re-punctuated, re-cased, re-pluralized restatement', () => {
+    expect(sameFinding(
+      { severity: 'high', location: 'V1', problem: 'Both volumes stage the first eclipse.' },
+      { severity: 'medium', location: 'v1', problem: 'both   volume stages the first eclipse' },
+    )).toBe(true);
+  });
+
+  it('does not fuse two findings that merely share the structural vocabulary', () => {
+    // "volume"/"episode"/"arc" appear in nearly every finding — they must not be
+    // what makes two of them look like one, or the guard reverts good rounds.
+    expect(findingTextOverlap('volume 3 drops the mentor subplot', 'volume 3 has no ticking clock'))
+      .toBeLessThan(0.4);
+    expect(sameFinding(f('the mentor subplot is dropped', 'V3'), f('the finale hook is unresolved', 'V4')))
+      .toBe(false);
+    // A location label can't swallow a longer one that starts the same way —
+    // containment matches whole words, not prefixes.
+    expect(sameFinding(f('x', 'V1'), f('y', 'V10'))).toBe(false);
+    expect(sameFinding(f('x', 'volume 3'), f('y', 'volume 30'))).toBe(false);
+    // The same place at two altitudes IS one location.
+    expect(sameFinding(f('x', 'volume 3'), f('y', 'volume 3 — act two'))).toBe(true);
   });
 });
 
@@ -1912,6 +1940,55 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.status).toBe('paused');
     expect(series.autopilot?.pauseKind).toBe('regression');
     expect(series.autopilot?.residualFindings).toHaveLength(1);
+  });
+
+  it('reverts the same 1 → 3 → 5 divergence when each verify call re-words the finding', async () => {
+    // Same incident as the test above, but replayed the way the verifier
+    // actually behaves: round 2 restates the standing defect in fresh prose at a
+    // re-labelled location, and round 3 does it again. Matching those on an
+    // exact prose fingerprint read them as brand-new findings, so the guard
+    // concluded the round had closed what it targeted, committed the damage, and
+    // let the loop run on to a 5-finding divergence pause (the observed
+    // `verify:round` 1/3/5 with two non-empty `resolve:round` frames between
+    // them). It has to be reverted at round 2 here too.
+    const restatements = [
+      { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' },
+      { severity: 'high', problem: 'the first eclipse is staged twice — once in each of the opening volumes', location: 'Volume 1 → Volume 2' },
+      { severity: 'medium', problem: 'two separate volumes each present the eclipse as its first occurrence', location: 'Volume 2 opening' },
+    ];
+    const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 3}` });
+    const round = (n, idx) => ({
+      issues: [restatements[idx], ...Array.from({ length: n - 1 }, (_, i) => extra(i))],
+    });
+    // beforeEach's clearAllMocks does NOT drain a queued `mockImplementationOnce`,
+    // and the test above deliberately leaves its third round unconsumed — reset
+    // (which restores the vi.fn default) so this run starts on round 1.
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => round(1, 0))
+      .mockImplementationOnce(async () => round(3, 1))
+      .mockImplementationOnce(async () => round(5, 2));
+    // The round reports real work (the observed `resolve:round episodesEdited=1`)
+    // — it edited episodes and STILL came back worse, which is the whole point.
+    arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => ({
+      applied: true,
+      episodesResolved: [{ issueId: 'i1', number: 1 }],
+    }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Round 3 (the 5-finding verify) and its resolve are never billed.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    // Paused on the ONE finding the user actually had, not the 3 it manufactured.
+    expect(last?.residualFindings).toEqual([restatements[0]]);
   });
 
   it('keeps a round that closed what it targeted, even when new findings surface', async () => {
