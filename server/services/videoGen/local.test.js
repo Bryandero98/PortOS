@@ -466,6 +466,33 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     expect(trims).toHaveLength(0);
   });
 
+  it('seeds an extend chain from the last frame on a runtime that cannot take a source video', async () => {
+    // mlx_video offers an Extend *mode* but implements it as last-frame i2v —
+    // buildArgs never forwards extendFromVideoPath to its builder. Chunks 2+
+    // used to be handed that path with no source image, so the path was dropped
+    // and they rendered from the prompt alone, ignoring the clip they were
+    // meant to continue. They must fall back to the frame hop instead.
+    const sourceVideoPath = join(MOCK_PATHS.videos, 'original-video.mp4');
+    const { renders } = await runChain({
+      modelId: 'ltx23_unified',
+      mode: 'extend',
+      extendFromVideoPath: sourceVideoPath,
+    }, 2);
+
+    expect(flagValue(renders[1], '--mode')).not.toBe('extend');
+    // The source video never reaches this runtime's argv — it has no flag for
+    // one. That silent drop is what left chunk 1 with nothing to continue from.
+    expect(renders[0]).not.toContain(sourceVideoPath);
+    expect(renders[1]).not.toContain(sourceVideoPath);
+    // So chunk 1 must be given a still instead. Chunk 0 legitimately has none
+    // (its conditioning was the dropped video), which is the contrast that
+    // shows the frame is being supplied for chunk 1 specifically rather than
+    // just inherited. The value is a tmpdir path — generateVideo resizes the
+    // frame to the model resolution first — so assert presence, not location.
+    expect(flagValue(renders[0], '--image')).toBeNull();
+    expect(flagValue(renders[1], '--image')).toBeTruthy();
+  });
+
   it('keeps the first chunk of an extend chain whole, conditioned on the user source clip', async () => {
     // In an extend chain chunk 0's output is `user clip + extension`, and the
     // user clip belongs in the result exactly once — here. Trimming it would
