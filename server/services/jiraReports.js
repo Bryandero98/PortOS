@@ -32,12 +32,10 @@ async function getSprintTickets(instance, projectKey) {
   const client = createJiraClient(instance);
   const jql = `project = "${projectKey}" AND assignee = currentUser() AND sprint in openSprints() ORDER BY status ASC, priority DESC, updated DESC`;
 
-  const response = await client.get('/rest/api/2/search', {
-    params: {
-      jql,
-      fields: 'summary,status,priority,issuetype,assignee,updated,created,customfield_10106,resolution',
-      maxResults: 100
-    }
+  const response = await client.search({
+    jql,
+    fields: 'summary,status,priority,issuetype,assignee,updated,created,customfield_10106,resolution',
+    maxResults: 100
   });
 
   return (response.data?.issues || []).map(issue => ({
@@ -51,12 +49,10 @@ async function getRecentlyCompleted(instance, projectKey) {
   const client = createJiraClient(instance);
   const jql = `project = "${projectKey}" AND assignee = currentUser() AND status changed to Done AFTER -7d ORDER BY updated DESC`;
 
-  const response = await client.get('/rest/api/2/search', {
-    params: {
-      jql,
-      fields: 'summary,status,priority,issuetype,assignee,updated,customfield_10106,resolutiondate',
-      maxResults: 50
-    }
+  const response = await client.search({
+    jql,
+    fields: 'summary,status,priority,issuetype,assignee,updated,customfield_10106,resolutiondate',
+    maxResults: 50
   });
 
   return (response.data?.issues || []).map(issue => ({

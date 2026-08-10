@@ -6,15 +6,17 @@ import { FormField } from '../components/ui/FormField';
 import Modal from '../components/ui/Modal';
 import api from '../services/api';
 
-const TOKEN_LIFETIME_DAYS = 30;
-const TOKEN_WARN_DAYS = 5;
+// PAT lifetimes aren't a fixed platform constant — Cloud API tokens typically don't
+// expire on a schedule at all, and Server/DC PAT expiration is chosen per-token by
+// whoever generated it. So there's no age threshold that reliably means "expired"
+// (a real instance was still authenticating fine 35+ days after its last save).
+// This is a soft, non-committal nudge — the Test button is the only real signal.
+const TOKEN_STALE_WARN_DAYS = 60;
 
-function getTokenExpiry(tokenUpdatedAt) {
+function getTokenAgeDays(tokenUpdatedAt) {
   if (!tokenUpdatedAt) return null;
   const updated = new Date(tokenUpdatedAt);
-  const expiresAt = new Date(updated.getTime() + TOKEN_LIFETIME_DAYS * 86400000);
-  const daysLeft = Math.ceil((expiresAt - Date.now()) / 86400000);
-  return { daysLeft, expiresAt };
+  return Math.floor((Date.now() - updated.getTime()) / 86400000);
 }
 
 export default function Jira() {
@@ -351,20 +353,15 @@ export default function Jira() {
                       API Token: {instance.hasApiToken ? '✓ Configured' : '✗ Not set'}
                     </p>
                     {instance.hasApiToken && (() => {
-                      const expiry = getTokenExpiry(instance.tokenUpdatedAt);
-                      if (!expiry) return (
+                      const ageDays = getTokenAgeDays(instance.tokenUpdatedAt);
+                      if (ageDays === null) return (
                         <p className="text-port-warning text-sm mt-1">
-                          Token age unknown — re-save to start tracking expiry
+                          Token age unknown — re-save to start tracking age
                         </p>
                       );
-                      if (expiry.daysLeft <= 0) return (
-                        <p className="text-port-error text-sm font-medium mt-1">
-                          Token likely expired — regenerate your PAT
-                        </p>
-                      );
-                      if (expiry.daysLeft <= TOKEN_WARN_DAYS) return (
-                        <p className="text-port-warning text-sm font-medium mt-1">
-                          Token expires in {expiry.daysLeft} day{expiry.daysLeft !== 1 ? 's' : ''} — regenerate soon
+                      if (ageDays >= TOKEN_STALE_WARN_DAYS) return (
+                        <p className="text-port-warning text-sm mt-1">
+                          Token saved {ageDays} days ago — click Test to confirm it&apos;s still valid
                         </p>
                       );
                       return null;
