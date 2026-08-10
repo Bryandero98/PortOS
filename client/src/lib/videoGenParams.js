@@ -17,6 +17,22 @@ export const FPS_OPTIONS = [16, 24, 30];
 // Exported so the Chunks picker and the Remix restore can't drift from it.
 export const MAX_CHUNKS = 8;
 export const CHUNK_OPTIONS = Array.from({ length: MAX_CHUNKS }, (_, i) => i + 1);
+
+// Continuation context window — how many of the prior chunk's frames each
+// subsequent chunk conditions on. Display-side mirror of
+// `server/lib/videoContinuity.js` (which stays the authority: it defaults,
+// clamps, and picks the strategy). Pinned against drift by the parity block in
+// `videoGenParams.test.js`.
+//
+// `0` is a real option, not "unset" — it opts back into seeding the next chunk
+// from a single extracted last frame, which is what every runtime without an
+// extend pipeline does anyway.
+export const DEFAULT_CONTEXT_FRAMES = 22;
+export const CONTEXT_FRAME_OPTIONS = [0, 11, 22, 45, 73];
+// Only a runtime with a video-conditioned extend pipeline can use a window;
+// elsewhere the server ignores the value, so the control stays hidden rather
+// than offering a knob that does nothing.
+export const supportsContextWindow = (model) => model?.runtime === 'ltx2';
 export const WAN_FRAME_OPTIONS = [...new Set([
   ...FRAME_OPTIONS,
   41, 61, 81, 101, 161, 201, 321,

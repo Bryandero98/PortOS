@@ -149,6 +149,7 @@ export default function VideoGen() {
     width, height, handleResolutionChange,
     numFrames, setNumFrames, fps, setFps, chunks, setChunks,
     chunkPrompts, setChunkPromptAt, chainingActive,
+    contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
@@ -1132,6 +1133,7 @@ export default function VideoGen() {
               numFrames={numFrames} onNumFramesChange={setNumFrames}
               chunks={chunks} onChunksChange={setChunks} keyframesActive={keyframesActive}
               chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chainingActive}
+              contextFrames={contextFrames} onContextFramesChange={setContextFrames}
               fps={fps} onFpsChange={setFps}
               seed={seed} onSeedChange={setSeed} onRandomSeed={handleRandomSeed}
               steps={steps} onStepsChange={setSteps}

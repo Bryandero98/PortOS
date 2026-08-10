@@ -123,6 +123,14 @@ vi.mock('../../lib/ffmpeg.js', () => ({
   optimizeForStreaming: vi.fn(async () => {}),
   upscaleVideo2x: vi.fn(async () => ({ ok: true })),
   extractEvaluationFrames: vi.fn(async () => []),
+  // Chained renders on a window-continuity runtime probe each chunk's length
+  // and cut two clips from it (the echoed-context trim and the next hop's
+  // conditioning window). 25 matches the numFrames the chain tests render, so
+  // the prefix math below lands on a realistic value.
+  H264_ENCODE_ARGS: ['-c:v', 'libx264'],
+  AAC_ENCODE_ARGS: ['-c:a', 'aac'],
+  probeFrameCount: vi.fn(async () => 25),
+  trimVideoFromFrame: vi.fn(async (_videoPath, outPath) => ({ ok: true, outPath })),
 }));
 
 // hfChildEnv() carries the resolved token over the inherited child env; mocking here
@@ -285,140 +293,66 @@ async function runChainAndCaptureArgs(chainParams, totalChunks) {
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
-describe('generateChainedVideo — extend chain arg routing', () => {
-  it('chunks 2+ receive mode=extend with extendFromVideoPath pointing to the prior chunk output', async () => {
-    // Provide an initial extendFromVideoPath (the source clip the user wants to extend)
-    const sourceVideoPath = join(MOCK_PATHS.videos, 'original-video.mp4');
+describe('generateChainedVideo — continuation strategy (context window vs last frame)', () => {
+  // numFrames=25 → extendLatentFrames(25) = 3 latents = 24 new pixel frames,
+  // and probeFrameCount is mocked at 25. So for each rendered chunk:
+  //   echoed context prefix = 25 − 24 = 1 frame (chunk 0 is never trimmed)
+  //   chunk 0's 22-frame window starts at 25 − 22 = 3
+  //   a TRIMMED chunk is 24 frames, so its window starts at 24 − 22 = 2
+  // The 2-vs-3 difference is the point: the orchestrator probes each chunk
+  // once and subtracts the trim, so it can't cut the window from a stale
+  // pre-trim length (which would hand the next hop a short window).
+  const CHUNK_FRAMES = 25;
+  const EXPECTED_EXTEND_LATENTS = 3;
+  const EXPECTED_PREFIX_START = 1;
+  const WINDOW_START_UNTRIMMED = 3;
+  const WINDOW_START_TRIMMED = 2;
 
-    // We can't intercept generateVideo's exact params directly from outside
-    // the module (same-module calls), but we CAN assert the emitted 'started'
-    // event's metadata and the chain's internal state by tracking the chunk
-    // job ids and verifying the expected file paths.
-    //
-    // The real assertion is that the chain does NOT call extractLastFrame for
-    // extend mode. We verify this by ensuring ffmpeg's spawn is never called
-    // with the last-frame extraction arguments (only the video render spawn
-    // is called, not a frame-extract spawn).
+  const flagValue = (args, flag) => (Array.isArray(args) && args.includes(flag)
+    ? args[args.indexOf(flag) + 1] : null);
+
+  /**
+   * Drive a chain and return everything the continuation path touches: the
+   * argv of each chunk's render child, every trim the orchestrator asked for,
+   * and the raw child_process spawns (which is where both extractLastFrame's
+   * `-sseof` seek and the final concat show up).
+   */
+  async function runChain(chainParams, totalChunks) {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { trimVideoFromFrame, probeFrameCount } = await import('../../lib/ffmpeg.js');
     const { spawn } = await import('child_process');
-    const spawnMock = vi.mocked(spawn);
-    spawnMock.mockClear();
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(spawnDetached).mockClear();
+    vi.mocked(trimVideoFromFrame).mockClear();
+    vi.mocked(probeFrameCount).mockClear();
+    vi.mocked(spawn).mockClear();
 
-    const outerJobId = randomUUID();
+    // extractLastFrame and stitchVideos both look their inputs up in history;
+    // feed the chunk ids back as they start so the chain can advance.
     const innerJobIds = [];
-    const startedEvents = [];
-
-    videoGenEvents.on('started', (e) => {
-      innerJobIds.push(e.generationId);
-      startedEvents.push(e);
-    });
+    vi.mocked(readJSONFile).mockImplementation(async () =>
+      innerJobIds.map((id) => ({ id, filename: `${id}.mp4` })),
+    );
+    videoGenEvents.on('started', (e) => innerJobIds.push(e.generationId));
 
     generateChainedVideo({
-      chunks: 3,
-      jobId: outerJobId,
+      chunks: totalChunks,
+      jobId: randomUUID(),
       pythonPath: '/usr/bin/python3',
       modelId: 'ltx2_unified',
       prompt: 'test prompt',
       width: 512,
       height: 512,
-      numFrames: 25,
+      numFrames: CHUNK_FRAMES,
       fps: 24,
-      mode: 'extend',
-      extendFromVideoPath: sourceVideoPath,
+      mode: 'text',
       sourceImagePath: null,
-      lastImagePath: null,
-    });
-
-    // Drive all 3 chunks through the chain
-    for (let i = 0; i < 3; i++) {
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((resolve) => {
-        const check = () => {
-          if (innerJobIds.length > i) { resolve(); return; }
-          setTimeout(check, 10);
-        };
-        check();
-      });
-      const id = innerJobIds[i];
-      videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
-    }
-
-    // Wait for outer chain to settle
-    await new Promise((r) => setTimeout(r, 100));
-
-    videoGenEvents.removeAllListeners('started');
-
-    // All 3 chunks must have been started
-    expect(innerJobIds).toHaveLength(3);
-
-    // Verify ffmpeg was NOT called with last-frame extraction args between chunks.
-    // extractLastFrame uses spawn(ffmpeg, ['-sseof', '-1.0', ...])  — the chain
-    // loop must skip this entirely for extend mode.
-    const ffmpegFrameExtractCalls = spawnMock.mock.calls.filter(
-      (args) => Array.isArray(args[1]) && args[1].includes('-sseof'),
-    );
-    expect(ffmpegFrameExtractCalls).toHaveLength(0);
-
-    // Verify the expected per-chunk video output paths are resolvable:
-    // chunk i's output is PATHS.videos/<innerJobIds[i]>.mp4
-    const chunk0Output = join(MOCK_PATHS.videos, `${innerJobIds[0]}.mp4`);
-    const chunk1Output = join(MOCK_PATHS.videos, `${innerJobIds[1]}.mp4`);
-
-    // Chunk 1 should extend from chunk 0's video, chunk 2 from chunk 1's video.
-    // We verify this by checking that the path the chain would have computed
-    // (PATHS.videos/<id>.mp4) matches the known inner job ids.
-    expect(chunk0Output).toBe(join(MOCK_PATHS.videos, `${innerJobIds[0]}.mp4`));
-    expect(chunk1Output).toBe(join(MOCK_PATHS.videos, `${innerJobIds[1]}.mp4`));
-  });
-
-  it('non-extend chains still call extractLastFrame (frame extraction path unchanged)', async () => {
-    const { spawn } = await import('child_process');
-    const spawnMock = vi.mocked(spawn);
-    spawnMock.mockClear();
-
-    // For image-conditioned chain (non-extend), extractLastFrame calls ffmpeg
-    // with -sseof. Mock existsSync to return true (frame file present) so the
-    // cache-hit path triggers and we avoid needing a real ffmpeg call.
-    const { existsSync } = await import('fs');
-    vi.mocked(existsSync).mockReturnValue(true);
-
-    const { statSync } = await import('fs');
-    vi.mocked(statSync).mockReturnValue({ size: 1000 });
-
-    const { readJSONFile } = await import('../../lib/fileUtils.js');
-    // extractLastFrame reads history to find the item — return a stub entry
-    // so it can resolve the video path.
-    vi.mocked(readJSONFile).mockImplementation(async () => [
-      { id: 'placeholder', filename: 'placeholder.mp4' },
-    ]);
-
-    const outerJobId = randomUUID();
-    const innerJobIds = [];
-
-    videoGenEvents.on('started', (e) => {
-      innerJobIds.push(e.generationId);
-      // Once history has the chunk id, subsequent extractLastFrame calls work
-      vi.mocked(readJSONFile).mockImplementation(async () =>
-        innerJobIds.map((id) => ({ id, filename: `${id}.mp4` })),
-      );
-    });
-
-    generateChainedVideo({
-      chunks: 2,
-      jobId: outerJobId,
-      pythonPath: '/usr/bin/python3',
-      modelId: 'ltx2_unified',
-      prompt: 'image chain test',
-      width: 512,
-      height: 512,
-      numFrames: 25,
-      fps: 24,
-      mode: 'image',
-      sourceImagePath: '/mock/source.png',
       extendFromVideoPath: null,
       lastImagePath: null,
+      ...chainParams,
     });
 
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < totalChunks; i++) {
       // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => {
         const check = () => {
@@ -430,16 +364,125 @@ describe('generateChainedVideo — extend chain arg routing', () => {
       const id = innerJobIds[i];
       videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
     }
-
     await new Promise((r) => setTimeout(r, 100));
     videoGenEvents.removeAllListeners('started');
 
-    expect(innerJobIds).toHaveLength(2);
-    // For non-extend chains the frame-extraction path is exercised OR the cache-
-    // hit (existsSync returning true) skips the ffmpeg spawn. Either way,
-    // extractLastFrame was called — we confirm no extend-mode bypass happened
-    // by asserting the chain completed its 2 chunks.
-    expect(innerJobIds).toHaveLength(2);
+    return {
+      innerJobIds,
+      renders: vi.mocked(spawnDetached).mock.calls.map(([, args]) => args),
+      trims: vi.mocked(trimVideoFromFrame).mock.calls,
+      spawns: vi.mocked(spawn).mock.calls,
+    };
+  }
+
+  it('chains an ltx2 text render as extend hops conditioned on the prior chunk tail, not on a still', async () => {
+    const { innerJobIds, renders, spawns } = await runChain({}, 3);
+
+    expect(renders).toHaveLength(3);
+    // Chunk 0 keeps the mode the user asked for.
+    expect(flagValue(renders[0], '--mode')).toBe('text');
+    // Chunks 1+ re-enter as extend renders reading the tail clip cut from the
+    // chunk before them — a text chain now inherits motion across the seam
+    // exactly the way an explicit extend chain does.
+    for (const i of [1, 2]) {
+      expect(flagValue(renders[i], '--mode')).toBe('extend');
+      expect(flagValue(renders[i], '--extend-from-video'))
+        .toBe(join(tmpdir(), `chaincontext-${innerJobIds[i - 1]}.mp4`));
+      expect(flagValue(renders[i], '--extend-frames')).toBe(String(EXPECTED_EXTEND_LATENTS));
+    }
+    // The window replaces last-frame extraction entirely — no `-sseof` seek.
+    expect(spawns.filter(([, args]) => Array.isArray(args) && args.includes('-sseof'))).toHaveLength(0);
+  });
+
+  it('cuts the echoed context back off each windowed chunk before stitching', async () => {
+    // extend_from_video returns `source + extension`, so every hop after the
+    // first opens with a replay of its conditioning window. Left in, the
+    // stitched clip repeats ~1s of footage at every seam.
+    const { innerJobIds, trims } = await runChain({}, 3);
+
+    const chunkPath = (i) => join(MOCK_PATHS.videos, `${innerJobIds[i]}.mp4`);
+    const trimFor = (src, dest) => trims.find(([from, to]) => from === src && to === dest);
+
+    // Chunk 0 is never trimmed — nothing precedes it in the timeline.
+    expect(trims.some(([, to]) => to === chunkPath(0))).toBe(false);
+    // Chunks 1 and 2 are trimmed in place, dropping only the echoed prefix.
+    for (const i of [1, 2]) {
+      const trim = trimFor(chunkPath(i), chunkPath(i));
+      expect(trim).toBeTruthy();
+      expect(trim[2]).toMatchObject({ startFrame: EXPECTED_PREFIX_START });
+    }
+    // And each hop's conditioning window is cut from the tail into tmpdir —
+    // off the chunk's post-trim length, not the length it was probed at.
+    const windowStart = (i) => trimFor(chunkPath(i), join(tmpdir(), `chaincontext-${innerJobIds[i]}.mp4`))?.[2]?.startFrame;
+    expect(windowStart(0)).toBe(WINDOW_START_UNTRIMMED);
+    expect(windowStart(1)).toBe(WINDOW_START_TRIMMED);
+  });
+
+  it('re-encodes the concat once a chunk has been trimmed', async () => {
+    // A trimmed chunk was re-encoded, so it no longer shares codec parameters
+    // with its untrimmed siblings and the demuxer's `-c copy` can't be trusted.
+    const { spawns } = await runChain({}, 2);
+    const concat = spawns.find(([, args]) => Array.isArray(args) && args.includes('-f') && args.includes('concat'));
+    expect(concat).toBeTruthy();
+    expect(concat[1]).toContain('libx264');
+    expect(concat[1].join(' ')).not.toContain('-c copy');
+  });
+
+  it('probes each chunk once rather than re-reading it after the trim', async () => {
+    // probeFrameCount falls back to a full -count_frames decode when the
+    // container header carries no nb_frames, so a redundant probe per hop can
+    // cost an entire extra decode of the clip.
+    const { probeFrameCount } = await import('../../lib/ffmpeg.js');
+    const { innerJobIds } = await runChain({}, 3);
+    expect(vi.mocked(probeFrameCount).mock.calls).toHaveLength(innerJobIds.length);
+  });
+
+  it('honors a smaller context window', async () => {
+    // 8 frames instead of the 22-frame default → the window starts 8 back.
+    const { innerJobIds, trims } = await runChain({ contextFrames: 8 }, 2);
+    const cut = trims.find(([, to]) => to === join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
+    expect(cut[2]).toMatchObject({ startFrame: CHUNK_FRAMES - 8 });
+  });
+
+  it('contextFrames: 0 opts back into last-frame chaining', async () => {
+    // 0 is a real value, distinct from "unset" — it's how a user gets the
+    // historical single-still hop back on a runtime that could do better.
+    const { renders, trims, spawns } = await runChain({ contextFrames: 0 }, 2);
+
+    expect(flagValue(renders[1], '--mode')).toBe('image');
+    expect(flagValue(renders[1], '--extend-from-video')).toBeNull();
+    // Nothing is trimmed, so the concat keeps the stream-copy fast path.
+    expect(trims).toHaveLength(0);
+    const concat = spawns.find(([, args]) => Array.isArray(args) && args.includes('concat'));
+    expect(concat[1]).toContain('copy');
+  });
+
+  it('falls back to last-frame chaining on a runtime with no extend pipeline', async () => {
+    // mlx_video has no extend_from_video, so the window is silently ignored
+    // rather than rejected — switching models mid-form can't strand a request.
+    const { renders, trims } = await runChain({ modelId: 'ltx23_unified', contextFrames: 22 }, 2);
+
+    expect(flagValue(renders[1], '--mode')).not.toBe('extend');
+    expect(trims).toHaveLength(0);
+  });
+
+  it('keeps the first chunk of an extend chain whole, conditioned on the user source clip', async () => {
+    // In an extend chain chunk 0's output is `user clip + extension`, and the
+    // user clip belongs in the result exactly once — here. Trimming it would
+    // drop the very footage the user asked to extend.
+    const sourceVideoPath = join(MOCK_PATHS.videos, 'original-video.mp4');
+    const { innerJobIds, renders, trims } = await runChain({
+      mode: 'extend',
+      extendFromVideoPath: sourceVideoPath,
+    }, 2);
+
+    expect(flagValue(renders[0], '--mode')).toBe('extend');
+    expect(flagValue(renders[0], '--extend-from-video')).toBe(sourceVideoPath);
+    expect(trims.some(([, to]) => to === join(MOCK_PATHS.videos, `${innerJobIds[0]}.mp4`))).toBe(false);
+    // Chunk 1 conditions on a bounded window, NOT on chunk 0's whole output —
+    // that's what kept the chain from growing a copy of itself per hop.
+    expect(flagValue(renders[1], '--extend-from-video'))
+      .toBe(join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
   });
 });
 

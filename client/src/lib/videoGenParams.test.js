@@ -182,3 +182,4 @@ describe('IC-LoRA remix modes (#3100)', () => {
     expect(icLoraSpecForMode('ic-colorize').uploadLabel).toMatch(/B&W/);
   });
 });
+
