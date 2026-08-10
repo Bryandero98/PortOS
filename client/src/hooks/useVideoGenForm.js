@@ -150,8 +150,13 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       setMode((m) => (m === 'text' ? 'image' : m));
     }
   }, [incomingSourceImage]);
+  // A prompt handed in through the URL (Continue, Send-to-Video, Remix) is the
+  // COMPOSED prompt of an existing render — composeStyledPrompt already prefixed
+  // it with whatever style preset produced it. Drop the picker's selection with
+  // it, or the next submit prefixes a preset onto a prompt that already carries
+  // one (the same double-styling applyRemix clears the preset to avoid).
   useEffect(() => {
-    if (incomingPrompt) setPrompt(incomingPrompt);
+    if (incomingPrompt) { setPrompt(incomingPrompt); setStylePreset(null); }
   }, [incomingPrompt]);
   useEffect(() => {
     if (incomingNegativePrompt) setNegativePrompt(incomingNegativePrompt);
@@ -714,7 +719,35 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // Capture the token at request time and only apply the result when it
   // still matches the latest pick.
   const extendPickTokenRef = useRef(0);
-  const handleExtendPick = async (videoId) => {
+  // Fill a prompt field the user hasn't claimed: blank, or still holding the
+  // exact text an earlier pick put there. Text the user typed is never
+  // clobbered, and re-picking a different source still replaces a stale
+  // auto-fill. Returns whether it filled.
+  const autofilledRef = useRef({});
+  const fillIfUntouched = (key, value, current, setter) => {
+    if (!value || (current.trim() && current !== autofilledRef.current[key])) return false;
+    setter(value);
+    autofilledRef.current[key] = value;
+    return true;
+  };
+  // Continuing a shot almost always means continuing its direction too, so
+  // picking a source render drops that render's own prompt into the form
+  // instead of leaving the user to retype it. A source with no prompt (a clip
+  // we didn't generate, or a legacy render made before prompts were stamped)
+  // is a no-op, not a wipe.
+  const prefillPromptFromSource = (source) => {
+    if (!source) return;
+    const srcPrompt = (source.prompt === '(no prompt)' ? '' : source.prompt || '').trim();
+    const srcNeg = (source.negativePrompt || source.negative_prompt || '').trim();
+    // History stores the COMPOSED prompt (composeStyledPrompt prefixes the
+    // preset), so a preset left selected would prefix itself a second time on
+    // the next submit — the same reason applyRemix clears it.
+    if (fillIfUntouched('prompt', srcPrompt, prompt, setPrompt)) setStylePreset(null);
+    fillIfUntouched('negativePrompt', srcNeg, negativePrompt, setNegativePrompt);
+  };
+  // `source` is the history record behind `videoId`, supplied by the picker
+  // that rendered it — the hook never needs the whole history list for this.
+  const handleExtendPick = async (videoId, source = null) => {
     // Bumping the token cancels any in-flight extract from a prior pick:
     // the awaited promise still resolves, but the result-application block
     // sees the mismatch and bails. Clearing the spinner here too means a
@@ -727,6 +760,9 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       setExtendingFrame(false);
       return;
     }
+    // Carry the source render's prompt forward before the runtime branch below,
+    // so both the ltx2 (no extraction) and legacy (ffmpeg extract) paths prefill.
+    prefillPromptFromSource(source);
     // ltx2 runtime: native ExtendPipeline conditions on the entire source
     // video's latent, so we DON'T need a last-frame PNG. Skip the ffmpeg
     // extract roundtrip — the route resolves the video id to a disk path

@@ -142,6 +142,49 @@ describe('useVideoGenForm', () => {
     expect(payload.sourceImageFile).toBe('');
   });
 
+  it('prefills the prompt from the render being continued, dropping the style preset', async () => {
+    const first = { id: 'vid-1', prompt: 'a neon alley, rain', negativePrompt: 'blurry' };
+    const second = { id: 'vid-2', prompt: 'a desert highway' };
+    const { result } = render();
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+    // The stored prompt is already style-composed; leaving a preset selected
+    // would prefix a second one onto it at submit.
+    act(() => result.current.setStylePreset({ id: 'noir', prompt: 'film noir' }));
+
+    extractLastFrame.mockResolvedValue({ filename: 'last.png' });
+    act(() => result.current.handleModeChange('extend'));
+    await act(async () => { await result.current.handleExtendPick('vid-1', first); });
+    expect(result.current.prompt).toBe('a neon alley, rain');
+    expect(result.current.negativePrompt).toBe('blurry');
+    expect(result.current.stylePreset).toBeNull();
+    expect(result.current.buildGeneratePayload().prompt).toBe('a neon alley, rain');
+
+    // Re-picking replaces the earlier auto-fill rather than stranding it, and
+    // a source with no negative leaves the earlier fill standing (not wiped).
+    await act(async () => { await result.current.handleExtendPick('vid-2', second); });
+    expect(result.current.prompt).toBe('a desert highway');
+    expect(result.current.negativePrompt).toBe('blurry');
+  });
+
+  it('never clobbers a typed prompt, and leaves it alone for a source with none', async () => {
+    const { result } = render();
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+    extractLastFrame.mockResolvedValue({ filename: 'last.png' });
+    act(() => result.current.handleModeChange('extend'));
+
+    act(() => result.current.setPrompt('my own direction'));
+    await act(async () => {
+      await result.current.handleExtendPick('vid-1', { id: 'vid-1', prompt: 'a neon alley, rain' });
+    });
+    expect(result.current.prompt).toBe('my own direction');
+
+    // A clip we didn't generate carries no prompt — prefill is a no-op, not a wipe.
+    await act(async () => {
+      await result.current.handleExtendPick('imported', { id: 'imported', filename: 'clip.mp4' });
+    });
+    expect(result.current.prompt).toBe('my own direction');
+  });
+
   it('ignores a stale extract when a newer pick has already landed', async () => {
     const { result } = render();
     await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
