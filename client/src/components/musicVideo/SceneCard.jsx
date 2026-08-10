@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { Trash2, Activity, ArrowUp, ArrowDown, Image as ImageIcon, Video, Maximize2 } from 'lucide-react';
 import { formatDurationSec } from '../../utils/formatters.js';
 
@@ -21,6 +22,10 @@ export default function SceneCard({
   onGenerateFrame, onGenerateVideo, onContinueVideo,
   onOpenPreview,
 }) {
+  // Pause the inline clip before opening the lightbox so the user can't hear
+  // two desynced copies — MediaLightbox autoplays unmuted, and the thumb's
+  // native controls let the user unmute it first (muted is only initial).
+  const clipPlayerRef = useRef(null);
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -105,6 +110,7 @@ export default function SceneCard({
         {scene.videoHistoryId && (
           <div className="relative w-40 shrink-0">
             <video
+              ref={clipPlayerRef}
               src={`/data/videos/${scene.videoHistoryId}.mp4`}
               className="w-full aspect-video object-cover rounded border border-port-border bg-black"
               muted
@@ -114,10 +120,14 @@ export default function SceneCard({
             />
             {/* Corner expand — do not put the open handler on <video> itself;
                 that would fight native play/pause controls. Shape matches
-                ScenePreview's open-in-new-tab overlay. */}
+                ScenePreview's open-in-new-tab overlay. Pause first so the
+                lightbox's unmuted autoplay doesn't double-play the audio. */}
             <button
               type="button"
-              onClick={() => onOpenPreview?.(`video:${scene.videoHistoryId}`)}
+              onClick={() => {
+                clipPlayerRef.current?.pause();
+                onOpenPreview?.(`video:${scene.videoHistoryId}`);
+              }}
               aria-label={`View scene ${index + 1} clip full size`}
               title={`View scene ${index + 1} clip full size`}
               className="always-dark absolute top-1 right-1 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
