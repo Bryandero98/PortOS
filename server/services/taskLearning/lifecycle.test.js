@@ -18,8 +18,9 @@ vi.mock('./store.js', () => ({
 }));
 vi.mock('../cos.js', () => ({ getAgents: vi.fn(async () => agentsStore.list) }));
 
-import { backfillFromHistory } from './lifecycle.js';
+import { backfillFromHistory, initTaskLearning } from './lifecycle.js';
 import { recordTaskCompletion } from './metrics.js';
+import { cosEvents } from './store.js';
 
 const completed = (taskId, analysisType, validationPassed) => ({
   status: 'completed',
@@ -102,5 +103,38 @@ describe('backfillFromHistory — stale coordinator verdict (#2696)', () => {
     agentsStore.list = [completed('t1', 'branch-cleanup', null)];
     await backfillFromHistory();
     expect(recordTaskCompletion.mock.calls[0][0].result.validationPassed).toBeNull();
+  });
+});
+
+describe('agent:completed listener — a resumed record is a continuation, not an outcome', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // `resumeAgent` (agentManagement.js) retires a PAUSED record via completeAgent so it
+  // stops showing as paused. That fires `agent:completed` with `success: false` — but the
+  // run wasn't a failure, it was interrupted by the user and its task is already back in
+  // the queue. Learning from it charges the task type and model tier a phantom failure
+  // per pause, and double-counts the task once the continuation finishes.
+  const emitCompleted = async (agent) => {
+    initTaskLearning();
+    const handler = cosEvents.on.mock.calls.find(([event]) => event === 'agent:completed')[1];
+    await handler(agent);
+  };
+
+  it('skips a record retired by a resume', async () => {
+    await emitCompleted({
+      status: 'completed', taskId: 't1',
+      result: { success: false, resumed: true, resumedTaskId: 't1' },
+      metadata: { taskType: 'user', taskDescription: 'Half-finished work' },
+    });
+    expect(recordTaskCompletion).not.toHaveBeenCalled();
+  });
+
+  it('still records an ordinary failed run', async () => {
+    await emitCompleted({
+      status: 'completed', taskId: 't1',
+      result: { success: false, error: 'tests failed' },
+      metadata: { taskType: 'user', taskDescription: 'Half-finished work' },
+    });
+    expect(recordTaskCompletion).toHaveBeenCalledTimes(1);
   });
 });

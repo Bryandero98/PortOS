@@ -493,7 +493,9 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               <button
                 onClick={() => onResume(agent)}
                 className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors"
-                aria-label="Create new task from this agent's context"
+                aria-label={paused
+                  ? "Resume this agent's task on its preserved worktree"
+                  : "Create new task from this agent's context"}
               >
                 <RotateCcw size={12} aria-hidden="true" />
                 <span className="hidden sm:inline">Resume</span>

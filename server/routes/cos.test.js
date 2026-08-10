@@ -53,6 +53,7 @@ vi.mock('../services/cos.js', () => ({
 vi.mock('../services/agentOrchestrator.js', () => ({
   requestAgentTermination: vi.fn(),
   pauseAgent: vi.fn(),
+  resumeAgent: vi.fn(),
   killAgent: vi.fn(),
   getAgentProcessStats: vi.fn()
 }));
@@ -613,6 +614,51 @@ describe('CoS Routes', () => {
       const response = await request(app).post('/api/cos/agents/agent-999/pause');
 
       expect(response.status).toBe(404);
+    });
+  });
+
+  describe('POST /api/cos/agents/:id/resume', () => {
+    it('forwards the dialog overrides to resumeAgent', async () => {
+      agentOrchestrator.resumeAgent.mockResolvedValue({ success: true, agentId: 'agent-001', taskId: 'task-abc', mode: 'requeued' });
+
+      const response = await request(app)
+        .post('/api/cos/agents/agent-001/resume')
+        .send({ context: 'try the other approach', provider: 'claude', effort: 'high' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.mode).toBe('requeued');
+      expect(agentOrchestrator.resumeAgent).toHaveBeenCalledWith(
+        'agent-001',
+        expect.objectContaining({ context: 'try the other approach', provider: 'claude', effort: 'high' }),
+      );
+    });
+
+    it('accepts an empty body — an untouched dialog resumes exactly as paused', async () => {
+      agentOrchestrator.resumeAgent.mockResolvedValue({ success: true, agentId: 'agent-001', taskId: 'task-abc', mode: 'requeued' });
+
+      const response = await request(app).post('/api/cos/agents/agent-001/resume');
+
+      expect(response.status).toBe(200);
+      expect(agentOrchestrator.resumeAgent).toHaveBeenCalledWith('agent-001', {});
+    });
+
+    it('returns 409 when the agent is not paused', async () => {
+      agentOrchestrator.resumeAgent.mockRejectedValue(
+        new ServerError('Agent agent-001 is running, not paused', { status: 409, code: 'AGENT_NOT_PAUSED' }),
+      );
+
+      const response = await request(app).post('/api/cos/agents/agent-001/resume');
+
+      expect(response.status).toBe(409);
+    });
+
+    it('rejects a malformed effort rather than passing it to the resumed run', async () => {
+      const response = await request(app)
+        .post('/api/cos/agents/agent-001/resume')
+        .send({ effort: 'turbo' });
+
+      expect(response.status).toBe(400);
+      expect(agentOrchestrator.resumeAgent).not.toHaveBeenCalled();
     });
   });
 

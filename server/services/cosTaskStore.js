@@ -44,6 +44,12 @@ export const PRIORITY_VALUES = {
 
 const CLAIM_KEY_SET = new Set(CLAIM_METADATA_KEYS);
 
+// The `blockedCategory` a user pause stamps. Written by `markAgentPaused` and read
+// back by `resumeAgent` (both agentManagement.js) to prove a blocked task is still
+// the one THAT pause parked — named here so the write side, the read side, and the
+// reaper's exemption list below can't drift into three different literals.
+export const AGENT_PAUSED_CATEGORY = 'agent-paused';
+
 // Blocked categories that mean "paused until something outside the task
 // changes", not "this task is finished with". A pause keeps the resume pointer
 // (see updateTask) and is never auto-expired by the failure reaper (see
@@ -823,8 +829,8 @@ export const DEFAULT_REAP_LIMIT = 50;
 // stale failure artifact — the reaper leaves these alone. Everything else with a
 // `blockedCategory` is a failure-path block and therefore reapable.
 const NON_REAPABLE_BLOCKED_CATEGORIES = new Set([
-  'user-terminated',      // user explicitly stopped the agent
-  'agent-paused',         // user paused; resumable on demand
+  'user-terminated',        // user explicitly stopped the agent
+  AGENT_PAUSED_CATEGORY,    // user paused; resumable on demand
   'challenge-escalation', // parked awaiting the user's arbitration
   // The workspace blocks are an OPEN user decision, not a stale failure: the task
   // is waiting for the app's Repository Path to be fixed, and auto-completing it
