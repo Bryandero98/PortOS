@@ -60,17 +60,26 @@ export function resolveVideoBackendPin(project, settings, { target = RENDER_TARG
   // passthrough. Commissions never persist `auto` (buildRenderBackendPin drops
   // it), but a hand-made or peer-synced project can carry the sentinel.
   const mode = normalizeRenderPinValue(raw?.mode);
-  const modelId = normalizeRenderPinValue(raw?.modelId);
   const targetDefaults = renderTargetDefaults(settings, target);
+  const modelId = normalizeRenderPinValue(raw?.modelId) || targetDefaults.videoModel || null;
   return {
-    pinned: !!mode || hasVideoPin(settings, { target }),
+    // A model pin counts as a pin even with no mode beside it. Naming a local
+    // video model IS a configured choice, and the resolved mode for an
+    // otherwise-unpinned lane is LOCAL — the one backend that consumes a model
+    // id — so there is always something for it to apply to. Gating `pinned` on
+    // the mode alone made the two surfaces disagree: the scene path reads
+    // `modelId` unconditionally and would honor it, while the planner path
+    // takes its byte-identical early return and drops it. Nothing configured
+    // still yields `pinned: false`, so the auto-is-byte-identical contract is
+    // intact — the only jobs that change are ones the user asked to change.
+    pinned: !!mode || !!modelId || hasVideoPin(settings, { target }),
     // What the project ASKED for, normalized — null when it pinned nothing.
     // Distinct from `mode` (what it GOT): when the two disagree, the ladder
     // degraded an unusable pin, and only the caller has the context to decide
     // whether that's worth reporting.
     requested: mode,
     mode: resolveVideoMode(mode, settings, { target }),
-    modelId: modelId || targetDefaults.videoModel || null,
+    modelId,
   };
 }
 

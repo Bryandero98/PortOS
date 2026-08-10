@@ -35,6 +35,26 @@ describe('resolveVideoBackendPin', () => {
     expect(resolveVideoBackendPin(project({ mode: 'auto' }), grokOff).requested).toBe(null);
   });
 
+  it('counts a model-only pin as pinned so the planner path cannot drop it', () => {
+    // Both surfaces must agree: the scene path reads modelId unconditionally,
+    // so if `pinned` were false here the planner path's byte-identical early
+    // return would silently discard a model the user explicitly chose.
+    const pin = resolveVideoBackendPin(project({ modelId: 'ltx-13b' }), grokOn);
+    expect(pin.pinned).toBe(true);
+    expect(pin.mode).toBe(VIDEO_GEN_MODE.LOCAL);
+    expect(pin.modelId).toBe('ltx-13b');
+  });
+
+  it('counts a model-only render-target default as pinned', () => {
+    const settings = {
+      ...grokOn,
+      renderDefaults: { [RENDER_TARGET.CREATIVE_AGENT]: { videoModel: 'target-model' } },
+    };
+    expect(resolveVideoBackendPin(project(null), settings)).toEqual({
+      pinned: true, requested: null, mode: VIDEO_GEN_MODE.LOCAL, modelId: 'target-model',
+    });
+  });
+
   it('degrades a grok pin to local when grok is not enabled', () => {
     // A nightly commission must still produce something rather than failing
     // every fire because the user flipped the toggle off after pinning.
