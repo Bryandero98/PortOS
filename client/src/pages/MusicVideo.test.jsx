@@ -759,3 +759,59 @@ describe('MusicVideo YouTube audio import (#1945)', () => {
     expect(editInput).toHaveProperty('disabled', true);
   });
 });
+
+// Shared MediaLightbox for scene frames, scene clips, and the final render (#3718).
+// View-only — no remix/clean action handlers. Keys are deep-linkable via ?preview=.
+describe('MusicVideo media lightbox (#3718)', () => {
+  const renderMVAt = (path) => render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/music-video" element={<MusicVideo />} />
+        <Route path="/music-video/:projectId" element={<MusicVideo />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  it('opens the lightbox from a reference-frame thumbnail click', async () => {
+    await openProject(PROJECT_WITH_CLIP);
+    fireEvent.click(await screen.findByRole('button', { name: 'View scene 1 reference frame full size' }));
+    const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
+    expect(dialog).toBeTruthy();
+    // Image uses previewUrl (/data/images/<id>); img may be MediaImage-wrapped.
+    expect(dialog.querySelector('img')?.getAttribute('src') || dialog.innerHTML)
+      .toMatch(/\/data\/images\/img1/);
+  });
+
+  it('opens the lightbox from a scene-clip expand control without hijacking play/pause', async () => {
+    await openProject(PROJECT_WITH_CLIP);
+    // Inline thumb keeps its own controls attribute for native play/pause.
+    const inlineVideo = document.querySelector('video[src="/data/videos/h1.mp4"]');
+    expect(inlineVideo).toBeTruthy();
+    expect(inlineVideo.hasAttribute('controls')).toBe(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View scene 1 clip full size' }));
+    const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
+    const lightboxVideo = dialog.querySelector('video');
+    expect(lightboxVideo?.getAttribute('src')).toBe('/data/videos/h1.mp4');
+  });
+
+  it('opens the final render from the resolved filename, not the history-id reconstruction', async () => {
+    // listVideoHistory is mocked → { id: 'rh-9', filename: 'final.mp4' }; the
+    // final-render id is NOT its filename stem, so /data/videos/rh-9.mp4 404s.
+    await openProject({ ...PROJECT_WITH_CLIP, renderHistoryId: 'rh-9' });
+    const expand = await screen.findByRole('button', { name: 'View final video full size' });
+    fireEvent.click(expand);
+    const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
+    const lightboxVideo = dialog.querySelector('video');
+    expect(lightboxVideo?.getAttribute('src')).toBe('/data/videos/final.mp4');
+    expect(lightboxVideo?.getAttribute('src')).not.toBe('/data/videos/rh-9.mp4');
+  });
+
+  it('opens the lightbox from a ?preview= deep link on mount', async () => {
+    listMusicVideoProjects.mockResolvedValue([PROJECT_WITH_CLIP]);
+    renderMVAt('/music-video/mv-1?preview=image%3Aimg1');
+    await screen.findByRole('heading', { level: 2, name: PROJECT_WITH_CLIP.name });
+    const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
+    expect(dialog.getAttribute('aria-label')).toMatch(/img1|image:img1/);
+  });
+});

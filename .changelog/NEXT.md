@@ -1,5 +1,9 @@
 # Unreleased
 
+## Music Video
+
+- **[issue-3718] Scene frames, scene clips, and the final render open full-size in the shared media lightbox.** The scene board no longer traps generated media at thumbnail size — click a reference frame, or the expand control on a clip or the finished render, to inspect it full-size with prev/next across every asset in the project and a deep-linkable URL. Clip and final-render expand controls sit in the corner so the inline players' play/pause still work; the final render uses its real resolved filename so a `music-video-*.mp4` plays instead of a 404.
+
 ## Stability
 
 - **[issue-3703] A worktree agent is no longer failed for commits it didn't write.** The primary-checkout guard used to fail any worktree agent whose run window overlapped commits landing on the shared primary checkout — but a concurrent coding-on-main agent, your own terminal, or `update.sh`'s pull can move it too, so read-only reasoners and correctly-behaved agents were being blamed and escalated to you. The guard now attributes the stranded commits by patch-id (`git cherry`, so a cherry-picked or rebased copy still counts) to the agent's own branch: only commits actually traceable to that agent fail the run. Everything else is warn-logged — the unreviewed commits on the primary are still surfaced — but a run that didn't cause them stays a success.

@@ -1,11 +1,23 @@
-import { Film, Download } from 'lucide-react';
-import { useVideoFileSrc } from '../../hooks/useVideoFileSrc.js';
+import { useRef } from 'react';
+import { Film, Download, Maximize2 } from 'lucide-react';
 
 // The final-render surface: a progress bar while the assemble job runs, and the
 // finished MP4 (inline player + download + Media History deep link) once the
 // project carries a renderHistoryId.
-export default function RenderStatusPanel({ rendering, progress, renderHistoryId }) {
-  const finalVideo = useVideoFileSrc(renderHistoryId, { enabled: !!renderHistoryId });
+//
+// `finalVideo` is resolved by the page (`useVideoFileSrc`) so MusicVideo can
+// also build the lightbox item from the real filename — the final render's
+// history id is NOT its filename stem (`music-video-*.mp4`), so reconstructing
+// `/data/videos/<id>.mp4` 404s. `onOpenPreview(key)` opens the page-level
+// MediaLightbox; the expand control sits in the player corner so native
+// play/pause keeps working. Opening the lightbox pauses this player first so
+// the lightbox's autoplay unmute doesn't double-play the same audio. "Open in
+// Media History →" stays — it goes to the full history grid, not the same-page
+// lightbox.
+export default function RenderStatusPanel({
+  rendering, progress, renderHistoryId, finalVideo, onOpenPreview,
+}) {
+  const playerRef = useRef(null);
   if (rendering) {
     return (
       <div className="mt-2">
@@ -24,7 +36,7 @@ export default function RenderStatusPanel({ rendering, progress, renderHistoryId
           <Film size={15} className="text-port-success" /> Final music video
         </span>
         <div className="flex items-center gap-2 text-xs">
-          {finalVideo.src && (
+          {finalVideo?.src && (
             <a
               href={finalVideo.src}
               download
@@ -37,22 +49,37 @@ export default function RenderStatusPanel({ rendering, progress, renderHistoryId
             className="text-port-accent">Open in Media History →</a>
         </div>
       </div>
-      {finalVideo.resolving && <p className="text-xs text-port-text-muted">Loading final video…</p>}
-      {finalVideo.src && (
+      {finalVideo?.resolving && <p className="text-xs text-port-text-muted">Loading final video…</p>}
+      {finalVideo?.src && (
         // aspect-video reserves the box before the video's intrinsic dimensions
         // resolve, so the actions above it don't jump — same as the scene
         // thumbnails below. The render inherits its first scene clip's
         // dimensions, which are not always 16:9, so object-contain is explicit:
         // a 3:2 cut letterboxes inside the reserved box (against the player's
         // own black) instead of being stretched to fill it.
-        <video
-          src={finalVideo.src}
-          controls
-          playsInline
-          preload="metadata"
-          className="w-full aspect-video max-h-[65vh] object-contain rounded bg-black border border-port-border"
-          aria-label="Play final music video"
-        />
+        <div className="relative">
+          <video
+            ref={playerRef}
+            src={finalVideo.src}
+            controls
+            playsInline
+            preload="metadata"
+            className="w-full aspect-video max-h-[65vh] object-contain rounded bg-black border border-port-border"
+            aria-label="Play final music video"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              playerRef.current?.pause();
+              onOpenPreview?.(`video:${renderHistoryId}`);
+            }}
+            aria-label="View final video full size"
+            title="View final video full size"
+            className="always-dark absolute top-2 right-2 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1.5 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
       )}
     </div>
   );

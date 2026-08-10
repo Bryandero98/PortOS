@@ -1,4 +1,5 @@
-import { Trash2, Activity, ArrowUp, ArrowDown, Image as ImageIcon, Video } from 'lucide-react';
+import { useRef } from 'react';
+import { Trash2, Activity, ArrowUp, ArrowDown, Image as ImageIcon, Video, Maximize2 } from 'lucide-react';
 import { formatDurationSec } from '../../utils/formatters.js';
 
 // The two timeline-bound scene fields rendered as identical number inputs.
@@ -8,13 +9,23 @@ const SCENE_TIME_FIELDS = [['Start', 'startSec'], ['End', 'endSec']];
  * One scene on the board: ordering/delete, the shot + reference-frame prompts
  * (optimistic local edit, PATCH on blur), the authored timeline span, and the
  * per-scene reference-frame / clip render controls.
+ *
+ * `onOpenPreview(key)` opens the page-level MediaLightbox for a frame
+ * (`image:<filename>`) or clip (`video:<historyId>`). The frame thumb is the
+ * whole button; the clip keeps native play/pause and uses a corner expand
+ * control so the open handler never fights the player.
  */
 export default function SceneCard({
   scene, index, isLast, generatingFrame, generatingVideo,
   settingsSaving, videoBlocked, canContinueShot,
   onMove, onDelete, onEditLocal, onSave,
   onGenerateFrame, onGenerateVideo, onContinueVideo,
+  onOpenPreview,
 }) {
+  // Pause the inline clip before opening the lightbox so the user can't hear
+  // two desynced copies — MediaLightbox autoplays unmuted, and the thumb's
+  // native controls let the user unmute it first (muted is only initial).
+  const clipPlayerRef = useRef(null);
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -72,8 +83,19 @@ export default function SceneCard({
         />
         <div className="flex items-center gap-2">
           {scene.referenceImageId && (
-            <img src={`/data/images/${scene.referenceImageId}`} alt="Reference frame"
-              className="w-32 aspect-video object-cover rounded border border-port-border" />
+            <button
+              type="button"
+              onClick={() => onOpenPreview?.(`image:${scene.referenceImageId}`)}
+              aria-label={`View scene ${index + 1} reference frame full size`}
+              title={`View scene ${index + 1} reference frame full size`}
+              className="shrink-0 rounded border border-port-border overflow-hidden focus:outline-none focus:ring-2 focus:ring-port-accent"
+            >
+              <img
+                src={`/data/images/${scene.referenceImageId}`}
+                alt=""
+                className="w-32 aspect-video object-cover block"
+              />
+            </button>
           )}
           <button onClick={() => onGenerateFrame(scene)} disabled={!!generatingFrame}
             className="flex items-center gap-1 bg-port-border hover:bg-port-border/70 disabled:opacity-50 rounded px-2 py-1.5 text-xs min-h-[44px] sm:min-h-0 whitespace-nowrap"
@@ -86,9 +108,33 @@ export default function SceneCard({
       {/* Scene clip — i2v video generated from the reference frame (Phase 1) */}
       <div className="flex items-center gap-2 flex-wrap">
         {scene.videoHistoryId && (
-          <video src={`/data/videos/${scene.videoHistoryId}.mp4`}
-            className="w-40 aspect-video object-cover rounded border border-port-border bg-black"
-            muted playsInline preload="metadata" controls />
+          <div className="relative w-40 shrink-0">
+            <video
+              ref={clipPlayerRef}
+              src={`/data/videos/${scene.videoHistoryId}.mp4`}
+              className="w-full aspect-video object-cover rounded border border-port-border bg-black"
+              muted
+              playsInline
+              preload="metadata"
+              controls
+            />
+            {/* Corner expand — do not put the open handler on <video> itself;
+                that would fight native play/pause controls. Shape matches
+                ScenePreview's open-in-new-tab overlay. Pause first so the
+                lightbox's unmuted autoplay doesn't double-play the audio. */}
+            <button
+              type="button"
+              onClick={() => {
+                clipPlayerRef.current?.pause();
+                onOpenPreview?.(`video:${scene.videoHistoryId}`);
+              }}
+              aria-label={`View scene ${index + 1} clip full size`}
+              title={`View scene ${index + 1} clip full size`}
+              className="always-dark absolute top-1 right-1 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
+            >
+              <Maximize2 className="w-3 h-3" />
+            </button>
+          </div>
         )}
         <button onClick={() => onGenerateVideo(scene)}
           disabled={settingsSaving || !scene.referenceImageId || !!generatingVideo || videoBlocked}

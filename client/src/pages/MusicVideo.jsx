@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { Plus, Film } from 'lucide-react';
 import toast from '../components/ui/Toast';
@@ -23,6 +23,9 @@ import useMusicVideoRenderJob from '../hooks/useMusicVideoRenderJob.js';
 import useMusicVideoModelSettings from '../hooks/useMusicVideoModelSettings.js';
 import useMusicVideoManualTempo from '../hooks/useMusicVideoManualTempo.js';
 import useMusicVideoSceneMedia from '../hooks/useMusicVideoSceneMedia.js';
+import usePreviewRoute from '../hooks/usePreviewRoute.js';
+import { useVideoFileSrc } from '../hooks/useVideoFileSrc.js';
+import MediaPreview from '../components/media/MediaPreview.jsx';
 import MidiInstallModal from '../components/install/MidiInstallModal.jsx';
 import MidiGatedModal from '../components/install/MidiGatedModal.jsx';
 import { listTracks } from '../services/apiTracks.js';
@@ -34,6 +37,7 @@ import RenderStatusPanel from '../components/musicVideo/RenderStatusPanel.jsx';
 import AnalysisPanel from '../components/musicVideo/AnalysisPanel.jsx';
 import SceneCard from '../components/musicVideo/SceneCard.jsx';
 import { autoArrangeScenes } from '../lib/beatGrid.js';
+import { videoSrcForJob, videoPosterForJob } from '../lib/creativeDirectorPreview.js';
 
 const STATUS_COLORS = {
   draft: 'bg-port-border text-port-text',
@@ -354,10 +358,73 @@ export default function MusicVideo() {
     && videoSettings.activeModel?.runtime === 'ltx2';
   const videoBlocked = videoSettings.audioReactiveSelected && !videoSettings.audioReactiveReady;
 
+  // Final render filename is NOT the history id — resolve once at page level so
+  // the lightbox item and the inline player share the same lookup (#3718).
+  const finalVideo = useVideoFileSrc(selected?.renderHistoryId, {
+    enabled: !!selected?.renderHistoryId,
+  });
+
+  // Shared lightbox: final render first (it sits above the board), then each
+  // scene's frame then clip in board order. Keys use the canonical
+  // `image:<filename>` / `video:<historyId>` shape from media/normalize so the
+  // lightbox's always-mounted Add-to-collection / Pin-to-moodboard menus get a
+  // real `id`/`filename` ref (same vocabulary as Media History's ?preview=).
+  const previewItems = useMemo(() => {
+    if (!selected) return [];
+    const items = [];
+    if (selected.renderHistoryId && finalVideo.src) {
+      items.push({
+        key: `video:${selected.renderHistoryId}`,
+        kind: 'video',
+        id: selected.renderHistoryId,
+        filename: finalVideo.src.split('/').pop() || selected.renderHistoryId,
+        downloadUrl: finalVideo.src,
+        previewUrl: videoPosterForJob(selected.renderHistoryId),
+        prompt: `Music Video: ${selected.name}`,
+      });
+    }
+    for (const scene of selected.scenes || []) {
+      if (scene.referenceImageId) {
+        const imgUrl = `/data/images/${scene.referenceImageId}`;
+        items.push({
+          key: `image:${scene.referenceImageId}`,
+          kind: 'image',
+          filename: scene.referenceImageId,
+          previewUrl: imgUrl,
+          downloadUrl: imgUrl,
+          prompt: scene.framePrompt || scene.prompt || '',
+        });
+      }
+      if (scene.videoHistoryId) {
+        items.push({
+          key: `video:${scene.videoHistoryId}`,
+          kind: 'video',
+          id: scene.videoHistoryId,
+          filename: `${scene.videoHistoryId}.mp4`,
+          downloadUrl: videoSrcForJob(scene.videoHistoryId),
+          previewUrl: videoPosterForJob(scene.videoHistoryId),
+          prompt: scene.prompt || '',
+        });
+      }
+    }
+    // Scenes can reuse the same frame/clip (ProjectToolbar surfaces a
+    // "Repetition: N unique frames" badge). Dedupe by key so prev/next and
+    // openPreview's .find() land on a single item rather than the first of
+    // several identical keys with different prompts.
+    return [...new Map(items.map((i) => [i.key, i])).values()];
+  }, [selected, finalVideo.src]);
+  const [preview, setPreview] = usePreviewRoute(previewItems);
+  const openPreview = useCallback((key) => {
+    if (!key) return;
+    const match = previewItems.find((i) => i.key === key);
+    if (match) setPreview(match);
+  }, [previewItems, setPreview]);
+
   return (
     <div className="space-y-4">
       <MidiInstallModal {...midi.installGate} />
       <MidiGatedModal {...midi.gatedGate} />
+      <MediaPreview preview={preview} setPreview={setPreview} items={previewItems} />
       <PageHeader icon={Film} title="Music Video" subtitle="Director-controlled, beat-aware music videos" />
 
       <CreateProjectDrawer
@@ -479,6 +546,8 @@ export default function MusicVideo() {
                 rendering={!!renderJob.job}
                 progress={renderJob.progress}
                 renderHistoryId={selected.renderHistoryId}
+                finalVideo={finalVideo}
+                onOpenPreview={openPreview}
               />
               <AnalysisPanel
                 audioAnalysis={selected.audioAnalysis}
@@ -518,6 +587,7 @@ export default function MusicVideo() {
                   onGenerateFrame={sceneMedia.generateFrame}
                   onGenerateVideo={sceneMedia.generateSceneVideo}
                   onContinueVideo={sceneMedia.continueSceneVideo}
+                  onOpenPreview={openPreview}
                 />
               ))}
             </div>
