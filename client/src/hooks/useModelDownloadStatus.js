@@ -19,7 +19,7 @@ export const TEXT_ENCODER_DOWNLOAD_ID = '__text_encoder__';
 // Callers pass the remix mode itself ('ic-control') as the download id, and
 // membership in the mode registry (NOT a raw `ic-` string prefix) is what
 // identifies one — so an id can never be misrouted by coincidence of naming.
-export const buildDownloadUrl = (kind, modelId, force = false, termsAcceptance = null) => {
+export const buildDownloadUrl = (kind, modelId, force = false) => {
   if (!modelId) return null;
   // A repair-initiated re-download appends `?force=1` so the server re-fetches
   // even when the repo still looks cached — repairModelCache() deleted the bad
@@ -27,7 +27,6 @@ export const buildDownloadUrl = (kind, modelId, force = false, termsAcceptance =
   // and the deleted shard would never be pulled back.
   const params = new URLSearchParams();
   if (force) params.set('force', '1');
-  if (termsAcceptance) params.set('termsAcceptance', termsAcceptance);
   const q = params.size > 0 ? `?${params.toString()}` : '';
   if (kind === 'video' && modelId === TEXT_ENCODER_DOWNLOAD_ID) {
     return `/api/video-gen/text-encoder/download${q}`;
@@ -56,7 +55,6 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
   // True only for a repair-initiated re-download — appends `?force=1` so the
   // server re-fetches a repo whose surviving shards still read as cached.
   const [forceDownload, setForceDownload] = useState(false);
-  const [termsAcceptance, setTermsAcceptance] = useState(null);
 
   const fetchStatuses = useCallback(async () => {
     setLoading(true);
@@ -88,7 +86,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
 
   // EventSource for the active download. `null` URL = idle (useSseProgress's
   // `enabled: false` cleanup tears the connection down on cancel).
-  const downloadUrl = buildDownloadUrl(kind, activeModelId, forceDownload, termsAcceptance);
+  const downloadUrl = buildDownloadUrl(kind, activeModelId, forceDownload);
   const sse = useSseProgress(downloadUrl, { enabled: !!downloadUrl });
 
   // Refetch on natural stream close. useSseProgress flips `closed:true` once
@@ -115,14 +113,12 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
       setActiveModelId(null);
       activeModelIdRef.current = null;
       setForceDownload(false);
-      setTermsAcceptance(null);
     }
   }, [sse.closed, sse.latest, fetchStatuses]);
 
-  const start = useCallback((modelId, { force = false, termsAcceptance: acceptedTerms = null } = {}) => {
+  const start = useCallback((modelId, { force = false } = {}) => {
     setLastError(null);
     setForceDownload(force);
-    setTermsAcceptance(acceptedTerms);
     activeModelIdRef.current = modelId;
     setActiveModelId(modelId);
   }, []);
@@ -148,7 +144,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
   // on completion come for free). `repairing` gates the button while the
   // deletion request is in flight.
   const [repairing, setRepairing] = useState(false);
-  const repair = useCallback(async (modelId, { deep = false, termsAcceptance: acceptedTerms = null } = {}) => {
+  const repair = useCallback(async (modelId, { deep = false } = {}) => {
     if (!modelId) return;
     setRepairing(true);
     // The shared text encoder isn't a model id, so its repair hits the scalar
@@ -169,7 +165,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     // Force the re-download: repair deleted the bad file(s), but a multi-shard
     // repo's surviving shards keep it reading as cached, so a non-forced pull
     // would skip the deleted shard.
-    if (result) start(modelId, { force: true, termsAcceptance: acceptedTerms });
+    if (result) start(modelId, { force: true });
     return result;
   }, [kind, start]);
 
@@ -183,7 +179,6 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     setActiveModelId(null);
     activeModelIdRef.current = null;
     setForceDownload(false);
-    setTermsAcceptance(null);
     fetchStatuses();
   }, [sse, fetchStatuses]);
 

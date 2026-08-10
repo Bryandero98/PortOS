@@ -45,6 +45,7 @@ import { unlink } from 'fs/promises';
 import { resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
+import { getSettings } from '../settings.js';
 import { listVideoModels, defaultVideoModelId, loadHistory } from './local.js';
 import { prepareVideoGenParams, withStagedRollback, cleanupMultipartTemp } from './prepareParams.js';
 
@@ -370,19 +371,37 @@ describe('prepareVideoGenParams', () => {
 });
 
 describe('prepareVideoGenParams — MiniMax H3 contract', () => {
+  // H3 is license-gated, and the only authorization is the acknowledgement
+  // recorded in settings — so every test below that is about H3's *mode*
+  // contract runs on an install that has already accepted its terms.
+  const settingsWith = (acceptedModelTerms) => ({
+    imageGen: {
+      local: { pythonPath: '/usr/bin/python3' },
+      grok: { enabled: true, grokPath: '/usr/bin/grok', aspectRatio: '16:9' },
+    },
+    videoGen: { acceptedModelTerms },
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     listVideoModels.mockReturnValue([H3_MODEL]);
     loadHistory.mockResolvedValue([]);
+    getSettings.mockResolvedValue(settingsWith([H3_TERMS]));
   });
 
-  it('requires the exact reviewed terms key before generation', async () => {
+  // A render kicked off from a surface with no terms UI of its own (the music
+  // video board, a pipeline stage) is authorized by the acknowledgement the
+  // user recorded once — anywhere — rather than 403ing with nowhere to go.
+  it('requires the install to have recorded this exact reviewed license', async () => {
+    getSettings.mockResolvedValueOnce(settingsWith(undefined));
     await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
       .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
-    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text', termsAcceptance: 'wrong' }))
+
+    // A superseded license revision does not carry forward to this one.
+    getSettings.mockResolvedValueOnce(settingsWith(['some-older-license']));
+    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
       .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
 
-    const prepared = await prepare({ modelId: H3_MODEL.id, mode: 'text', termsAcceptance: H3_TERMS });
+    const prepared = await prepare({ modelId: H3_MODEL.id, mode: 'text' });
     expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
     expect(prepared.effectiveChunks).toBe(1);
   });
@@ -409,7 +428,7 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
   ])('rejects an unsupported H3 request (%o)', async (fields, code) => {
     await expect(prepare({
       modelId: H3_MODEL.id,
-      termsAcceptance: H3_TERMS,
+
       ...fields,
     })).rejects.toMatchObject({ status: 400, code });
   });
@@ -417,12 +436,12 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
   it('rejects chunks > 1 only while the entry lacks image-to-video', async () => {
     listVideoModels.mockReturnValue([{ ...H3_MODEL, supportedModes: ['text'] }]);
     await expect(prepare({
-      modelId: H3_MODEL.id, mode: 'text', termsAcceptance: H3_TERMS, chunks: 2,
+      modelId: H3_MODEL.id, mode: 'text', chunks: 2,
     })).rejects.toMatchObject({ status: 400, code: 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE' });
 
     listVideoModels.mockReturnValue([H3_MODEL]);
     const prepared = await prepare({
-      modelId: H3_MODEL.id, mode: 'text', termsAcceptance: H3_TERMS, chunks: 2,
+      modelId: H3_MODEL.id, mode: 'text', chunks: 2,
     });
     expect(prepared.effectiveChunks).toBe(2);
   });
@@ -433,7 +452,7 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
   ])('accepts %s keyframe conditioning', async (_label, fields) => {
     const prepared = await prepare({
       modelId: H3_MODEL.id,
-      termsAcceptance: H3_TERMS,
+
       ...fields,
     });
     expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
@@ -444,7 +463,7 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
     const prepared = await prepare({
       modelId: H3_MODEL.id,
       mode: 'text',
-      termsAcceptance: H3_TERMS,
+
       numFrames: 158,
       fps: 24,
     });

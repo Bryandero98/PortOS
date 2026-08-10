@@ -23,6 +23,8 @@
  * are deliberately NOT duplicated here.
  */
 
+import { ServerError } from './errorHandler.js';
+
 // Every shipped disclosure was checked against its upstream source on this
 // date. Bump it (and re-check) whenever an entry below changes.
 export const VIDEO_DISCLOSURE_REVIEWED_AT = '2026-08-09';
@@ -281,13 +283,59 @@ export const applyVideoDisclosures = (list) => {
   });
 };
 
-// Exact-key comparison keeps acceptance scoped to one reviewed license
-// version. A true-ish boolean from an old UI (or another model's acceptance)
-// cannot authorize a newly reviewed terms block by accident.
-export const isVideoModelTermsAccepted = (model, acceptanceKey) => {
+// The exact reviewed-license id a model requires, or null when it is ungated.
+export const videoModelTermsGateId = (model) => {
   const required = model?.termsGate?.id;
-  return typeof required !== 'string' || required.length === 0 || acceptanceKey === required;
+  return typeof required === 'string' && required.length > 0 ? required : null;
 };
+
+/**
+ * The install's persisted acknowledgements (`settings.videoGen.acceptedModelTerms`).
+ *
+ * Acceptance is an install-wide fact about the operator, not a property of one
+ * request or one browser: the same person drives the Video Gen page, the music
+ * video director board, and every scheduled/agent render. Persisting it here is
+ * what lets a single acknowledgement authorize all of them — see the
+ * `POST /api/video-gen/model-terms` route.
+ *
+ * Returns a de-duplicated array of non-empty strings; anything else on disk is
+ * ignored rather than trusted.
+ */
+export const acceptedVideoModelTerms = (settings) => {
+  const stored = settings?.videoGen?.acceptedModelTerms;
+  if (!Array.isArray(stored)) return [];
+  return [...new Set(stored.filter((id) => typeof id === 'string' && id.length > 0))];
+};
+
+// Exact-id comparison keeps acceptance scoped to one reviewed license version:
+// acknowledging one license must never authorize a later revision of it, or an
+// unrelated restricted model. The install's recorded acknowledgements
+// (`acceptedVideoModelTerms`) are the ONLY authorization — there is no
+// per-request "I accept" a caller can assert, so every authorized render traces
+// back to a recorded acknowledgement and withdrawing one takes effect
+// everywhere, including work already sitting in the queue.
+export const isVideoModelTermsAccepted = (model, acceptedKeys) => {
+  const required = videoModelTermsGateId(model);
+  if (required === null) return true;
+  return Array.isArray(acceptedKeys) && acceptedKeys.includes(required);
+};
+
+/**
+ * The rejection every gated code path throws, so the wording (and the way out
+ * of it) can't drift between the download route, request preparation, and the
+ * render itself.
+ *
+ * A render can be started from surfaces that have no acknowledgement UI of
+ * their own — and from producers with no UI at all, whose only channel to the
+ * user is this message on a failed job. So the message must name where the
+ * acknowledgement lives, not just state that one is missing.
+ */
+export const videoModelTermsError = (model, action = 'generation') => new ServerError(
+  `${model?.name || 'This model'} requires acknowledgement of its territory restrictions, `
+  + `Community License, and Acceptable Use Policy before ${action}. `
+  + 'Accept it on the Video Gen page (Media → Video) — one acknowledgement authorizes every render on this install.',
+  { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
+);
 
 /**
  * Execution + policy scope for each Video Gen render backend. Server-owned so

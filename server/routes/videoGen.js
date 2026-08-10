@@ -15,10 +15,13 @@ import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
 import { PATHS } from '../lib/fileUtils.js';
-import { grokVideoDurationSchema } from '../lib/validation.js';
-import { VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted } from '../lib/videoDisclosure.js';
+import { grokVideoDurationSchema, videoModelTermsSchema } from '../lib/validation.js';
+import {
+  VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted, acceptedVideoModelTerms,
+  videoModelTermsGateId, videoModelTermsError,
+} from '../lib/videoDisclosure.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
-import { getSettings } from '../services/settings.js';
+import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
 import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
@@ -170,10 +173,6 @@ const generateBodySchema = z.object({
   ),
   prompt: z.string().min(1).max(8000),
   negativePrompt: z.string().max(8000).optional(),
-  // Exact, versioned acceptance key for a model carrying `termsGate`. A
-  // boolean is deliberately insufficient: accepting one reviewed license must
-  // not authorize a later license revision or an unrelated restricted model.
-  termsAcceptance: z.string().min(1).max(128).optional(),
   modelId: z.string().max(64).optional(),
   width: optionalNum(64, 2048, 'width'),
   height: optionalNum(64, 2048, 'height'),
@@ -345,6 +344,39 @@ router.get('/status', asyncHandler(async (_req, res) => {
     // reject the whole /status response.
     runtime: await resolveRuntimeFingerprint().catch(() => null),
   });
+}));
+
+// Restricted-model license acknowledgement (#3674 follow-up). Acceptance is a
+// fact about the operator of this install, not about one browser or one
+// request, so it lives in settings and every render surface reads it: the
+// Video Gen page, the music video director board, and producers with no UI to
+// prompt through (queued jobs, pipeline stages, agent runs).
+router.get('/model-terms', asyncHandler(async (_req, res) => {
+  res.json({ accepted: acceptedVideoModelTerms(await getSettings()) });
+}));
+
+router.post('/model-terms', asyncHandler(async (req, res) => {
+  const parsed = videoModelTermsSchema.safeParse(req.body || {});
+  if (!parsed.success) failValidation(parsed);
+  const { termsId, accepted } = parsed.data;
+  // Only ids a shipped model actually declares are storable — otherwise a
+  // typo'd or stale id accumulates in settings and silently authorizes
+  // nothing, which reads to the user as "I accepted and it still fails".
+  const known = listVideoModels().some((model) => videoModelTermsGateId(model) === termsId);
+  if (!known) {
+    throw new ServerError(
+      `Unknown model terms id: ${termsId}`,
+      { status: 400, code: 'VIDEO_MODEL_TERMS_UNKNOWN_ID' },
+    );
+  }
+  const next = await updateSettingsWith((current) => {
+    const existing = acceptedVideoModelTerms(current);
+    const updated = accepted
+      ? [...new Set([...existing, termsId])]
+      : existing.filter((id) => id !== termsId);
+    return { ...current, videoGen: { ...(current.videoGen || {}), acceptedModelTerms: updated } };
+  });
+  res.json({ accepted: acceptedVideoModelTerms(next) });
 }));
 
 // `installed` here means "fully ready to render" — both the venv binary
@@ -724,11 +756,11 @@ router.post('/models/:modelId/repair', asyncHandler(async (req, res) => {
 router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const model = listVideoModels().find((m) => m.id === req.params.modelId);
   if (!model) throw new ServerError(`Unknown video model: ${req.params.modelId}`, { status: 404 });
-  if (!isVideoModelTermsAccepted(model, req.query.termsAcceptance)) {
-    throw new ServerError(
-      `${model.name} requires acknowledgement of its territory restrictions, Community License, and Acceptable Use Policy before download.`,
-      { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
-    );
+  // Only a gated model needs the recorded acknowledgement list — skip the
+  // settings read (and its deep clone) for every ordinary model.
+  if (videoModelTermsGateId(model)
+    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
+    throw videoModelTermsError(model, 'download');
   }
   const repos = modelDownloadTargets(model);
   if (repos.length === 0) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
@@ -900,7 +932,6 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     pythonPath,
     prompt: body.prompt,
     negativePrompt: body.negativePrompt || '',
-    ...(body.termsAcceptance ? { termsAcceptance: body.termsAcceptance } : {}),
     modelId: body.modelId,
     width: body.width,
     height: body.height,

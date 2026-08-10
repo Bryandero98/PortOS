@@ -36,6 +36,7 @@ import TrackPanel from '../components/musicVideo/TrackPanel.jsx';
 import RenderStatusPanel from '../components/musicVideo/RenderStatusPanel.jsx';
 import AnalysisPanel from '../components/musicVideo/AnalysisPanel.jsx';
 import SceneCard from '../components/musicVideo/SceneCard.jsx';
+import ModelTermsGate from '../components/videoGen/ModelTermsGate.jsx';
 import { autoArrangeScenes } from '../lib/beatGrid.js';
 import { videoSrcForJob, videoPosterForJob } from '../lib/creativeDirectorPreview.js';
 
@@ -356,7 +357,6 @@ export default function MusicVideo() {
   const canContinueShot = videoSettings.settings.backend === 'local'
     && videoSettings.settings.generationMode === 'image'
     && videoSettings.activeModel?.runtime === 'ltx2';
-  const videoBlocked = videoSettings.audioReactiveSelected && !videoSettings.audioReactiveReady;
 
   // Final render filename is NOT the history id — resolve once at page level so
   // the lightbox item and the inline player share the same lookup (#3718).
@@ -502,6 +502,21 @@ export default function MusicVideo() {
                 onClone={handleClone}
                 onDelete={() => handleDelete(selected.id)}
               />
+              {/* Restricted-model license gate for the saved scene-video
+                  renderer. Rendered right under the renderer picker so the
+                  acknowledgement the server demands is resolvable from the
+                  board that triggers the render — not only on Video Gen. */}
+              {videoSettings.termsGate && (
+                <div className="mt-2">
+                  <ModelTermsGate
+                    termsGate={videoSettings.termsGate}
+                    accepted={videoSettings.termsAccepted}
+                    onAcceptedChange={videoSettings.acceptTerms}
+                    disabled={videoSettings.termsSaving}
+                    inputId="mv-model-terms-accept"
+                  />
+                </div>
+              )}
               {/* Concept & style — optional global direction for the whole video,
                   set before "AI Plan" (see commitConcept above for what reads it). */}
               <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -578,7 +593,7 @@ export default function MusicVideo() {
                   generatingFrame={sceneMedia.genScenes[scene.sceneId]}
                   generatingVideo={sceneMedia.genVideoScenes[scene.sceneId]}
                   settingsSaving={videoSettings.saving}
-                  videoBlocked={videoBlocked}
+                  videoBlockedReason={videoSettings.videoBlockedReason}
                   canContinueShot={canContinueShot}
                   onMove={moveScene}
                   onDelete={handleDeleteScene}

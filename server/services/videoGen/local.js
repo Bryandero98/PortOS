@@ -32,7 +32,10 @@ import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename } from '../loras.js';
 import { isMlxVideoLtxLoraCapable } from '../../lib/runners.js';
-import { isVideoModelTermsAccepted } from '../../lib/videoDisclosure.js';
+import {
+  isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
+} from '../../lib/videoDisclosure.js';
+import { getSettings } from '../settings.js';
 import {
   isIcLoraMode, icLoraSpecForMode, resolveIcLoraWeight,
   assertIcReferenceCount, icResolutionIssue,
@@ -853,7 +856,7 @@ export const DEFAULT_NUM_FRAMES = 121;
 // a still regardless of how many frames carry it.
 export const IC_STILL_REFERENCE_FRAMES = 9;
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', termsAcceptance = null, modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -863,15 +866,17 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', t
 
   const model = resolveVideoModel(modelId);
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
-  // Final execution-boundary gate. Route preparation also rejects early, but
-  // internal producers, persisted jobs, and retry all reach this function
-  // directly. The exact versioned key makes old queued jobs fail closed after
-  // a future license revision instead of inheriting stale acceptance.
-  if (!isVideoModelTermsAccepted(model, termsAcceptance)) {
-    throw new ServerError(
-      `${model.name} requires acknowledgement of its territory restrictions, Community License, and Acceptable Use Policy before generation.`,
-      { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
-    );
+  // Final execution-boundary gate for a restricted model's license. Route
+  // preparation also rejects early, but internal producers, persisted jobs, and
+  // retries all reach this function directly — so authorization is resolved
+  // HERE, from the install's recorded acknowledgements, rather than trusted
+  // from a caller-supplied parameter. Read at execution time, so a withdrawn
+  // acknowledgement (or a license revision that mints a new id) fails a job
+  // that was queued while it was still accepted. Ungated models never pay for
+  // the settings read.
+  if (videoModelTermsGateId(model)
+    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
+    throw videoModelTermsError(model);
   }
   // Validate H3's mode contract before cache lookups, image resize, or staging
   // work. Internal producers and persisted/retried jobs bypass route

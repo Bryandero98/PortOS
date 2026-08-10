@@ -33,7 +33,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { safeUnder } from '../../lib/ffmpeg.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
-import { isVideoModelTermsAccepted } from '../../lib/videoDisclosure.js';
+import { isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsError } from '../../lib/videoDisclosure.js';
 import { videoLoraFamily } from '../../lib/runners.js';
 import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode,
@@ -157,12 +157,14 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
       { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' },
     );
   }
-  if (backend !== VIDEO_GEN_MODE.GROK && effectiveModel && !isVideoModelTermsAccepted(effectiveModel, body.termsAcceptance)) {
+  // Reject a gated model here so the caller gets a synchronous, actionable 403
+  // instead of a doomed queue entry. The render itself re-checks (local.js) —
+  // this is the early half of the same gate, authorized by the same recorded
+  // acknowledgement (POST /api/video-gen/model-terms).
+  if (backend !== VIDEO_GEN_MODE.GROK && effectiveModel
+    && !isVideoModelTermsAccepted(effectiveModel, acceptedVideoModelTerms(settings))) {
     await cleanupMultipartTemp(uploads);
-    throw new ServerError(
-      `${effectiveModel.name} requires acknowledgement of its territory restrictions, Community License, and Acceptable Use Policy before generation.`,
-      { status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' },
-    );
+    throw videoModelTermsError(effectiveModel);
   }
   // Reject up-front when the local python isn't configured AND the model's
   // runtime needs it. ltx2/wan22/hunyuan bring their own venv (resolved

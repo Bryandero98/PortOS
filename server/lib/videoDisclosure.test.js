@@ -5,6 +5,9 @@ import {
   VIDEO_DISCLOSURE_REVIEWED_AT,
   applyVideoDisclosures,
   isVideoModelTermsAccepted,
+  acceptedVideoModelTerms,
+  videoModelTermsGateId,
+  videoModelTermsError,
   videoBackendDisclosure,
 } from './videoDisclosure.js';
 
@@ -148,16 +151,57 @@ describe('applyVideoDisclosures', () => {
 describe('isVideoModelTermsAccepted', () => {
   const restricted = { termsGate: VIDEO_MODEL_DISCLOSURES.minimax_h3_8bit.termsGate };
 
-  it('requires the exact versioned key for a restricted model', () => {
+  it('requires the exact versioned id in the install acknowledgement list', () => {
+    const id = restricted.termsGate.id;
+    expect(isVideoModelTermsAccepted(restricted, [id])).toBe(true);
+    expect(isVideoModelTermsAccepted(restricted, ['another-license'])).toBe(false);
+    expect(isVideoModelTermsAccepted(restricted, [])).toBe(false);
     expect(isVideoModelTermsAccepted(restricted)).toBe(false);
+    // A truthy non-array (a sloppy caller's "accepted" boolean) must never
+    // stand in for the exact id.
     expect(isVideoModelTermsAccepted(restricted, true)).toBe(false);
-    expect(isVideoModelTermsAccepted(restricted, 'another-license')).toBe(false);
-    expect(isVideoModelTermsAccepted(restricted, restricted.termsGate.id)).toBe(true);
   });
 
   it('does not gate an unrestricted or malformed model entry', () => {
     expect(isVideoModelTermsAccepted({})).toBe(true);
     expect(isVideoModelTermsAccepted(null)).toBe(true);
+  });
+});
+
+describe('videoModelTermsError', () => {
+  it('names the model and where the acknowledgement is made', () => {
+    const err = videoModelTermsError({ name: 'Example Model' }, 'download');
+    expect(err.status).toBe(403);
+    expect(err.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+    expect(err.message).toContain('Example Model');
+    expect(err.message).toContain('before download');
+    // A producer with no UI reports this message verbatim on a failed job, so
+    // it has to say where the acceptance lives.
+    expect(err.message).toMatch(/Video Gen page/);
+  });
+});
+
+describe('acceptedVideoModelTerms', () => {
+  it('reads the persisted list, dropping non-string and duplicate entries', () => {
+    expect(acceptedVideoModelTerms({ videoGen: { acceptedModelTerms: ['a', 'a', '', 3, null, 'b'] } }))
+      .toEqual(['a', 'b']);
+  });
+
+  it('treats a missing, malformed, or absent settings shape as no acknowledgement', () => {
+    expect(acceptedVideoModelTerms(undefined)).toEqual([]);
+    expect(acceptedVideoModelTerms({})).toEqual([]);
+    expect(acceptedVideoModelTerms({ videoGen: {} })).toEqual([]);
+    expect(acceptedVideoModelTerms({ videoGen: { acceptedModelTerms: 'a' } })).toEqual([]);
+  });
+});
+
+describe('videoModelTermsGateId', () => {
+  it('returns the exact id for a gated model and null for everything else', () => {
+    const gate = VIDEO_MODEL_DISCLOSURES.minimax_h3_8bit.termsGate;
+    expect(videoModelTermsGateId({ termsGate: gate })).toBe(gate.id);
+    expect(videoModelTermsGateId({ termsGate: { id: '' } })).toBe(null);
+    expect(videoModelTermsGateId({})).toBe(null);
+    expect(videoModelTermsGateId(null)).toBe(null);
   });
 });
 

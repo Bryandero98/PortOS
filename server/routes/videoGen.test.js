@@ -30,6 +30,7 @@ vi.mock('child_process', async (importOriginal) => ({
 
 vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
+  updateSettingsWith: vi.fn(async (mutate) => mutate({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
 }));
 
 vi.mock('../services/musicVideo/projects.js', () => ({
@@ -446,26 +447,29 @@ describe('videoGen routes', () => {
       }],
     };
 
-    it('rejects a missing or stale acceptance key before opening a download stream', async () => {
-      videoGenService.listVideoModels
-        .mockReturnValueOnce([h3])
-        .mockReturnValueOnce([h3]);
+    it('rejects a download until the install has recorded this exact acknowledgement', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]).mockReturnValueOnce([h3]);
 
       const missing = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
       expect(missing.status).toBe(403);
       expect(missing.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+      // The message is the only channel a blocked caller has, so it must point
+      // at where the acknowledgement is made.
+      expect(missing.body.error).toMatch(/Video Gen page/);
 
-      const stale = await request(app)
-        .get('/api/video-gen/models/minimax_h3_8bit/download?termsAcceptance=old-license');
+      // A superseded license revision is not this one.
+      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: ['minimax-h3-community-license-2025-01-01'] } });
+      const stale = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
       expect(stale.status).toBe(403);
       expect(stale.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
     });
 
-    it('downloads both exact snapshots after the exact acceptance key', async () => {
+    it('downloads both exact snapshots once the acknowledgement is recorded', async () => {
+      const { getSettings } = await import('../services/settings.js');
       videoGenService.listVideoModels.mockReturnValueOnce([h3]);
-      const accepted = await request(app).get(
-        '/api/video-gen/models/minimax_h3_8bit/download?termsAcceptance=minimax-h3-community-license-2026-08-02',
-      );
+      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: [h3.termsGate.id] } });
+      const accepted = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
       expect(accepted.status).toBe(200);
       expect(sseDownload.start).toHaveBeenCalledWith(expect.objectContaining({
         repos: [
@@ -483,22 +487,85 @@ describe('videoGen routes', () => {
       }));
     });
 
-    it('persists the exact acceptance key on the queued render', async () => {
-      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
-      const accepted = await request(app).post('/api/video-gen/').send({
+    // The install-wide acknowledgement is what makes a single "I accept" click
+    // authorize every other surface — the music video board, a pipeline stage,
+    // an agent run — instead of each one 403ing with no UI to resolve it. It is
+    // also the ONLY authorization: a request cannot assert its own acceptance,
+    // so nothing renders without a recorded acknowledgement to withdraw.
+    it('queues the render on the recorded acknowledgement, and never on a self-asserted key', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValue([h3]);
+      getSettings.mockResolvedValueOnce({
+        imageGen: { local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { acceptedModelTerms: [h3.termsGate.id] },
+      });
+      const render = await request(app).post('/api/video-gen/').send({
+        prompt: 'a fox watches the rain',
+        modelId: h3.id,
+        mode: 'text',
+      });
+      expect(render.status).toBe(200);
+      // Nothing about the acceptance rides the job: the render re-resolves it
+      // from settings, so a withdrawal reaches work already in the queue.
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.not.objectContaining({ termsAcceptance: expect.anything() }),
+      }));
+
+      const asserted = await request(app).post('/api/video-gen/').send({
         prompt: 'a fox watches the rain',
         modelId: h3.id,
         mode: 'text',
         termsAcceptance: h3.termsGate.id,
       });
-      expect(accepted.status).toBe(200);
-      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
-        kind: 'video',
-        params: expect.objectContaining({
-          modelId: h3.id,
-          termsAcceptance: h3.termsGate.id,
-        }),
-      }));
+      expect(asserted.status).toBe(403);
+      expect(asserted.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+      videoGenService.listVideoModels.mockReset();
+    });
+  });
+
+  describe('POST /model-terms — install-wide acknowledgement', () => {
+    const h3 = {
+      id: 'minimax_h3_8bit',
+      name: 'MiniMax H3 MLX 8-bit',
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+    };
+
+    it('records and withdraws the acknowledgement for a known gate id', async () => {
+      const { updateSettingsWith } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      updateSettingsWith.mockImplementationOnce(async (mutate) => mutate({}));
+      const accept = await request(app)
+        .post('/api/video-gen/model-terms')
+        .send({ termsId: h3.termsGate.id, accepted: true });
+      expect(accept.status).toBe(200);
+      expect(accept.body.accepted).toEqual([h3.termsGate.id]);
+
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      updateSettingsWith.mockImplementationOnce(async (mutate) =>
+        mutate({ videoGen: { acceptedModelTerms: [h3.termsGate.id] } }));
+      const withdraw = await request(app)
+        .post('/api/video-gen/model-terms')
+        .send({ termsId: h3.termsGate.id, accepted: false });
+      expect(withdraw.status).toBe(200);
+      expect(withdraw.body.accepted).toEqual([]);
+    });
+
+    it('rejects an id no shipped model declares rather than storing a no-op acceptance', async () => {
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      const bogus = await request(app)
+        .post('/api/video-gen/model-terms')
+        .send({ termsId: 'not-a-real-license', accepted: true });
+      expect(bogus.status).toBe(400);
+      expect(bogus.body.code).toBe('VIDEO_MODEL_TERMS_UNKNOWN_ID');
+    });
+
+    it('reports the persisted acknowledgements', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: [h3.termsGate.id, ''] } });
+      const listed = await request(app).get('/api/video-gen/model-terms');
+      expect(listed.status).toBe(200);
+      expect(listed.body.accepted).toEqual([h3.termsGate.id]);
     });
   });
 

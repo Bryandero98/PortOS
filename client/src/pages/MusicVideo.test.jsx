@@ -80,6 +80,10 @@ vi.mock('../services/apiImageVideo.js', () => ({
     ],
   })),
   listVideoHistory: vi.fn(async () => [{ id: 'rh-9', filename: 'final.mp4' }]),
+  // Restricted-model license gate — none of the models above carry a
+  // `termsGate`, so the board renders no acceptance panel and nothing blocks.
+  getVideoModelTerms: vi.fn(async () => ({ accepted: [] })),
+  setVideoModelTerms: vi.fn(async () => ({ accepted: [] })),
 }));
 vi.mock('../services/apiTracks.js', () => ({
   listTracks: vi.fn(async () => []),
@@ -108,7 +112,9 @@ import {
   deleteMusicVideoProject, transcribeMusicVideoMidi,
 } from '../services/apiMusicVideo.js';
 import { importTrackFromYoutube, trackImportEventsUrl, listTracks } from '../services/apiTracks.js';
-import { generateVideo } from '../services/apiImageVideo.js';
+import {
+  generateVideo, getVideoGenStatus, getVideoModelTerms, setVideoModelTerms,
+} from '../services/apiImageVideo.js';
 
 const PROJECT_ANALYZED = {
   ...PROJECT_NO_CLIP,
@@ -361,6 +367,56 @@ describe('MusicVideo project video renderer', () => {
     });
 
     expect(await screen.findByText('Repetition: 1 unique frames · 1 unique clips')).toBeTruthy();
+  });
+});
+
+// A restricted model selected here used to 403 at generate time with the
+// acknowledgement UI living only on the Video Gen page — the user saw an error
+// naming terms they had no way to accept from this board.
+describe('MusicVideo restricted-model license gate', () => {
+  const GATE = {
+    id: 'example-community-license-2026-01-01',
+    title: 'Example model eligibility and terms',
+    summary: 'This model is licensed only in its applicable territory.',
+    acknowledgement: 'I am eligible and accept the Example Community License.',
+    licenseUrl: 'https://example.com/license',
+  };
+  const gatedStatus = (accepted) => {
+    getVideoGenStatus.mockResolvedValueOnce({
+      connected: true,
+      defaultModel: 'gated_model',
+      models: [{ id: 'gated_model', name: 'Gated Model', runtime: 'ltx2', termsGate: GATE }],
+    });
+    getVideoModelTerms.mockResolvedValueOnce({ accepted });
+  };
+
+  it('shows the acknowledgement inline and blocks generation until it is accepted', async () => {
+    gatedStatus([]);
+    setVideoModelTerms.mockResolvedValueOnce({ accepted: [GATE.id] });
+    await openProject(PROJECT_NO_CLIP);
+
+    const checkbox = await screen.findByRole('checkbox', { name: /I am eligible/ });
+    expect(checkbox).not.toBeChecked();
+    const generate = screen.getByRole('button', { name: /^Generate video$/ });
+    expect(generate).toBeDisabled();
+    expect(generate.title).toMatch(/must be accepted before generating/);
+
+    fireEvent.click(checkbox);
+    // Persisted install-wide, so every other render surface is authorized too.
+    await waitFor(() => expect(setVideoModelTerms).toHaveBeenCalledWith(GATE.id, true, { silent: true }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Generate video$/ })).toBeEnabled());
+  });
+
+  it('does not re-ask when the install already accepted these exact terms', async () => {
+    gatedStatus([GATE.id]);
+    generateVideo.mockResolvedValue({ jobId: 'gated-job' });
+    await openProject(PROJECT_NO_CLIP);
+
+    const generate = await screen.findByRole('button', { name: /^Generate video$/ });
+    await waitFor(() => expect(generate).toBeEnabled());
+    expect(screen.getByRole('checkbox', { name: /I am eligible/ })).toBeChecked();
+    fireEvent.click(generate);
+    await waitFor(() => expect(generateVideo).toHaveBeenCalled());
   });
 });
 

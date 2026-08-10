@@ -105,6 +105,17 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
     videoLane.trackJob(jobId, sceneId);
   };
 
+  // A restricted model's license gate is enforced server-side, so a render can
+  // still be rejected for terms the board thought were accepted (accepted on
+  // another peer, withdrawn since this page loaded). Refresh the gate state so
+  // the acknowledgement panel appears with the checkbox the message is asking
+  // for, rather than leaving a 403 the user has nowhere to act on.
+  const handleVideoError = (err, sceneId, fallbackMessage) => {
+    if (err?.code === 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED') videoSettings?.refreshTerms?.();
+    toast.error(err?.message || fallbackMessage);
+    videoLane.clearScene(sceneId);
+  };
+
   /**
    * Generate this scene's video from its chosen reference frame via the video
    * route's image (i2v) mode. The render always rides the media-job queue, so we
@@ -117,11 +128,8 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
     if (!scene.referenceImageId) { toast.error('Generate a reference frame first'); return; }
     const basePrompt = buildShotPrompt(scene);
     if (!basePrompt) { toast.error('Add a shot prompt first'); return; }
-    const { settings, audioReactiveSelected, audioReactiveReady, detectedAudioReactiveLora } = videoSettings;
-    if (audioReactiveSelected && !audioReactiveReady) {
-      toast.error('Audio-reactive generation requires an installed LTX-2.3 audio-reactive LoRA and an LTX-2.3 local model');
-      return;
-    }
+    const { settings, audioReactiveSelected, detectedAudioReactiveLora, videoBlockedReason } = videoSettings;
+    if (videoBlockedReason) { toast.error(videoBlockedReason); return; }
     const prompt = audioReactiveSelected
       ? `${basePrompt}. ${AUDIO_REACTIVE_PERFORMANCE_GUARD}`
       : basePrompt;
@@ -147,10 +155,7 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
       musicVideo: JSON.stringify({ projectId: project.id, sceneId: scene.sceneId }),
     })
       .then((res) => trackVideoJob(res, scene.sceneId))
-      .catch((err) => {
-        toast.error(err?.message || 'Scene video generation failed');
-        videoLane.clearScene(scene.sceneId);
-      });
+      .catch((err) => handleVideoError(err, scene.sceneId, 'Scene video generation failed'));
   };
 
   /**
@@ -162,11 +167,12 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
    */
   const continueSceneVideo = (scene) => {
     if (!scene.videoHistoryId || !scene.referenceImageId) return;
-    const { settings, activeModel, effectiveModelId } = videoSettings;
+    const { settings, activeModel, effectiveModelId, videoBlockedReason } = videoSettings;
     if (settings.backend !== 'local' || activeModel?.runtime !== 'ltx2') {
       toast.error('Choose an LTX local model with native continuation support');
       return;
     }
+    if (videoBlockedReason) { toast.error(videoBlockedReason); return; }
     videoLane.startScene(scene.sceneId);
     generateVideo({
       prompt: buildShotPrompt(scene),
@@ -179,10 +185,7 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
       musicVideo: JSON.stringify({ projectId: project.id, sceneId: scene.sceneId }),
     })
       .then((res) => trackVideoJob(res, scene.sceneId))
-      .catch((err) => {
-        toast.error(err?.message || 'Shot continuation failed');
-        videoLane.clearScene(scene.sceneId);
-      });
+      .catch((err) => handleVideoError(err, scene.sceneId, 'Shot continuation failed'));
   };
 
   const scenes = project?.scenes || [];

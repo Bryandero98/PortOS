@@ -13,8 +13,11 @@
 //     place (server/lib/videoDisclosure.js) and can't drift here.
 //
 // It is deliberately NOT part of `ModelSelect` — that component selects models
-// and must stay a plain picker.
-import { ExternalLink, Server, Cloud, ShieldAlert, CheckCircle } from 'lucide-react';
+// and must stay a plain picker, and it is deliberately NOT where a restricted
+// model's terms gate lives: that is an execution gate every render surface
+// needs, so it is its own component (`ModelTermsGate`) rendered beside this one.
+import { Server, Cloud } from 'lucide-react';
+import FactLink from './FactLink.jsx';
 
 const UNKNOWN = 'Unknown';
 
@@ -28,20 +31,6 @@ function Fact({ label, children }) {
       <dt className="text-[10px] uppercase tracking-wide text-gray-500">{label}</dt>
       <dd className="text-[11px] text-gray-300 break-words">{children ?? <span className="text-gray-500">{UNKNOWN}</span>}</dd>
     </div>
-  );
-}
-
-function FactLink({ href, children }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="inline-flex items-center gap-1 text-port-accent hover:underline break-all"
-    >
-      {children}
-      <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
-    </a>
   );
 }
 
@@ -82,9 +71,6 @@ export default function ModelDisclosure({
   backendDisclosures,
   model,
   systemMemoryGb,
-  termsAccepted = false,
-  onTermsAcceptedChange,
-  termsDescriptionId,
 }) {
   const list = Array.isArray(backendDisclosures) ? backendDisclosures : [];
   const backendInfo = list.find((b) => b?.id === backend) || null;
@@ -93,9 +79,6 @@ export default function ModelDisclosure({
   // provider picks the model, so showing local model facts would be wrong.
   const showModelFacts = !hosted && !!model;
   const disclosure = model?.disclosure && typeof model.disclosure === 'object' ? model.disclosure : null;
-  const termsGate = showModelFacts && model?.termsGate && typeof model.termsGate === 'object'
-    ? model.termsGate
-    : null;
 
   if (!backendInfo && !showModelFacts) return null;
 
@@ -104,45 +87,7 @@ export default function ModelDisclosure({
     : null;
 
   return (
-    <div className="space-y-2">
-      {termsGate && (
-        <section
-          id={termsDescriptionId}
-          aria-label="Model terms acceptance"
-          className={`rounded-xl border px-3 py-3 text-xs ${termsAccepted
-            ? 'border-port-success/40 bg-port-success/10 text-gray-300'
-            : 'border-port-warning/50 bg-port-warning/10 text-port-warning'}`}
-        >
-          <div className="flex items-start gap-2">
-            {termsAccepted
-              ? <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-port-success" aria-hidden="true" />
-              : <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />}
-            <div className="min-w-0 space-y-1.5">
-              <p className="font-semibold text-gray-200">{termsGate.title || 'Model terms required'}</p>
-              <p className="leading-snug">{termsGate.summary}</p>
-              {termsGate.licenseUrl && (
-                <p>
-                  <FactLink href={termsGate.licenseUrl}>Read the Community License and Acceptable Use Policy</FactLink>
-                </p>
-              )}
-              <label className="flex items-start gap-2 text-gray-200 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={termsAccepted}
-                  onChange={(event) => onTermsAcceptedChange?.(event.target.checked)}
-                  className="mt-0.5 rounded"
-                />
-                <span>{termsGate.acknowledgement}</span>
-              </label>
-              <p className="text-[10px] text-gray-500">
-                PortOS cannot determine your location or legal eligibility. Do not accept if this statement is not true.
-              </p>
-            </div>
-          </div>
-        </section>
-      )}
-
-      <details className="bg-port-card border border-port-border rounded-xl overflow-hidden">
+    <details className="bg-port-card border border-port-border rounded-xl overflow-hidden">
       <summary className="cursor-pointer list-none px-3 py-2 text-[11px] text-gray-400 flex flex-wrap items-center gap-x-2 gap-y-1 hover:text-gray-200">
         {hosted
           ? <Cloud className="w-3.5 h-3.5 shrink-0 text-port-warning" aria-hidden="true" />
@@ -205,7 +150,6 @@ export default function ModelDisclosure({
           </section>
         )}
       </div>
-      </details>
-    </div>
+    </details>
   );
 }
