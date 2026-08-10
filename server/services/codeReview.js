@@ -30,12 +30,11 @@ import {
   resolveOptionalReviewers,
   normalizeReviewerMaxRounds,
   resolveReviewerMaxRounds,
-  resolveReviewerModels,
-  reviewerModelsFromDefaults,
-  resolveReviewerEfforts,
   reviewerEffortsFromDefaults,
+  resolveReviewerPins,
   normalizeReviewerEffort,
   EFFORT_SELECTABLE_REVIEWERS,
+  MODEL_SELECTABLE_REVIEWERS,
 } from '../lib/validation.js'
 import { getSettings, settingsEvents } from './settings.js'
 import { getBaseUrl as getLmStudioBaseUrl } from './lmStudioManager.js'
@@ -92,10 +91,16 @@ export function pickCodeReviewDefaults(settings) {
     // that path can legitimately use. Every consumer that turns a scalar into a
     // slashdo TOKEN re-validates first (`reviewerModelsFromDefaults`), and the
     // settings schema rejects an unusable id at write time.
-    lmstudioModel: typeof raw?.lmstudioModel === 'string' && raw.lmstudioModel ? raw.lmstudioModel : null,
-    ollamaModel: typeof raw?.ollamaModel === 'string' && raw.ollamaModel ? raw.ollamaModel : null,
-    codexModel: typeof raw?.codexModel === 'string' && raw.codexModel ? raw.codexModel : null,
-    claudeModel: typeof raw?.claudeModel === 'string' && raw.claudeModel ? raw.claudeModel : null,
+    //
+    // Generated from the roster, like the effort scalars below: a reviewer that
+    // gains model selection (`antigravity`, #3728) must not need a hand-copied
+    // line here, or the panel would read back `undefined` for a pin it just saved.
+    ...Object.fromEntries(
+      MODEL_SELECTABLE_REVIEWERS.map((reviewer) => {
+        const stored = raw?.[`${reviewer}Model`]
+        return [`${reviewer}Model`, typeof stored === 'string' && stored ? stored : null]
+      })
+    ),
     // Per-reviewer reasoning-effort defaults. Unlike the model scalars above these
     // ARE checked here: a level is a closed per-reviewer enum, not free text, and
     // `/api/code-review/local` forwards the value straight into the backend request
@@ -186,13 +191,14 @@ export async function resolveReviewLoopOptions(metadata, { normalize, isTruthyMe
   // has never seen the task. The prompt builder routes each kind to its own
   // mechanism (`--model <id>` for a CLI, the request body's `model` for a local
   // backend); spawnReviewLoopFollowUp narrows to the reviewers actually in the list.
-  const reviewerModels = resolveReviewerModels(metadata?.reviewerModels, reviewerModelsFromDefaults(defaults))
-  // Reviewer-keyed reasoning-effort map, same task-over-default precedence as the
-  // models above. Routed by the prompt builder the same two ways: an effort flag on
-  // a CLI reviewer's command line, or `reasoning_effort` in a local reviewer's
-  // `/api/code-review/local` body.
-  const reviewerEfforts = resolveReviewerEfforts(metadata?.reviewerEfforts, reviewerEffortsFromDefaults(defaults))
-  return { reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewStopMode, reviewerApplies, reviewerModels, reviewerEfforts }
+  //
+  // Resolved alongside the reviewer-keyed EFFORT map (same precedence, routed the
+  // same two ways) because the two have to be reconciled against each other before
+  // anything emits them — see `resolveReviewerPins`.
+  return {
+    reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewStopMode, reviewerApplies,
+    ...resolveReviewerPins(metadata, defaults)
+  }
 }
 
 /**

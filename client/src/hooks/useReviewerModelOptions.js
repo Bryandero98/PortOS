@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as api from '../services/api';
-import { filterSelectableModels } from '../utils/providers';
-import { MODEL_SELECTABLE_REVIEWERS } from '../components/cos/constants';
+import { filterSelectableModels, selectableModelsForProvider, isAntigravityProvider } from '../utils/providers';
+import { LOCAL_LLM_REVIEWERS, MODEL_SELECTABLE_REVIEWERS } from '../components/cos/constants';
 
 /**
  * Selectable model ids per model-taking reviewer, for `ReviewerPicker`'s Model
@@ -12,8 +12,9 @@ import { MODEL_SELECTABLE_REVIEWERS } from '../components/cos/constants';
  * Two sources, because the two reviewer kinds are different things:
  * - `lmstudio` / `ollama` ids come from `/api/local-llm/status`, so they reflect
  *   what's actually installed rather than a provider's stale stored `models`.
- * - `codex` / `claude` tiers come from the provider catalog (`/api/providers`) —
- *   these are CLI reviewers, not local backends, so there's nothing to probe.
+ * - `codex` / `claude` / `antigravity` tiers come from the provider catalog
+ *   (`/api/providers`) — these are CLI reviewers, not local backends, so there's
+ *   nothing to probe.
  *
  * The `claude` list spans BOTH usage modes: the `claude-code` provider tiers and
  * the installed Ollama ids (an Ollama-backed `claude` CLI, where `--model` selects
@@ -30,7 +31,7 @@ import { MODEL_SELECTABLE_REVIEWERS } from '../components/cos/constants';
  * yet" from "genuinely no options" (an empty list is a real answer, not a
  * pre-fetch placeholder).
  *
- * @returns {{ optionsByReviewer: Record<string, string[]>, freeText: Record<string, boolean>, unavailable: Record<string, boolean>, loaded: boolean }}
+ * @returns {{ optionsByReviewer: Record<string, string[]>, freeText: Record<string, boolean>, unavailable: Record<string, boolean>, loaded: boolean, reviewers: string[] }}
  */
 export default function useReviewerModelOptions() {
   const [localStatus, setLocalStatus] = useState(null);
@@ -57,31 +58,45 @@ export default function useReviewerModelOptions() {
     const localIds = (backend) => (localStatus?.[backend]?.models || [])
       .map((m) => m.id || m.name)
       .filter(Boolean);
-    const providerTiers = (id) => {
-      const provider = (providers || []).find((p) => p.id === id);
+    // `match` is a predicate rather than an id so a reviewer whose provider can be
+    // recognized by more than its shipped id (an `agy` configured by path) uses the
+    // same predicate the rest of the app does.
+    const providerTiers = (match) => {
+      const provider = (providers || []).find(match);
       if (!provider) return [];
       // `models` may be empty on a CLI provider configured with only a
       // defaultModel — `[]` is truthy, so a bare `||` wouldn't fall through.
-      return filterSelectableModels(provider.models?.length ? provider.models : [provider.defaultModel]);
+      const models = provider.models?.length ? provider.models : [provider.defaultModel];
+      // `selectableModelsForProvider` owns the per-provider normalization (today:
+      // agy's one-id-per-effort-tier catalog collapsed to base ids, so the row's
+      // separate Effort cell stays the effort control). Going through it rather
+      // than special-casing agy here keeps the rule in one place.
+      return filterSelectableModels(selectableModelsForProvider(provider, models));
     };
 
     const ollama = localIds('ollama');
     const optionsByReviewer = {
       lmstudio: localIds('lmstudio'),
       ollama,
-      codex: providerTiers('codex'),
+      codex: providerTiers((p) => p.id === 'codex'),
       // Claude tiers first (the common case), then installed Ollama ids for an
       // Ollama-backed `claude`. Deduped, order-preserving.
-      claude: Array.from(new Set([...providerTiers('claude-code'), ...ollama].filter(Boolean))),
+      claude: Array.from(new Set([...providerTiers((p) => p.id === 'claude-code'), ...ollama].filter(Boolean))),
+      antigravity: providerTiers(isAntigravityProvider),
     };
 
     return {
       optionsByReviewer,
       // A local backend's id list is authoritative (we probed it), so keep those
-      // pickers a closed `<select>`. The two CLI reviewers are free-text: `claude`
-      // for the Ollama-backed / Bedrock-form cases above, and `codex` because its
-      // catalog is a stored snapshot that can lag a newly-released tier.
-      freeText: { codex: true, claude: true, lmstudio: false, ollama: false },
+      // pickers a closed `<select>`. Every CLI reviewer is free-text: `claude` for
+      // the Ollama-backed / Bedrock-form cases above, `codex`/`antigravity` because
+      // their catalogs are stored snapshots that can lag a newly-released tier (an
+      // agy pin may also be typed effort-suffixed — the server splits it). Derived
+      // from the rosters so a reviewer added to either one can't silently default to
+      // the wrong control.
+      freeText: Object.fromEntries(
+        MODEL_SELECTABLE_REVIEWERS.map((r) => [r, !LOCAL_LLM_REVIEWERS.includes(r)])
+      ),
       unavailable: {
         lmstudio: localStatus?.lmstudio?.available === false,
         ollama: localStatus?.ollama?.available === false,
