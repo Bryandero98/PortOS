@@ -258,6 +258,97 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.reason).toBe(PRIMARY_CHECKOUT_MUTATED_REASON);
   });
 
+  it('clears a commit whose content merged upstream under a REBASED sha (#3744)', async () => {
+    // The observed false failure on agent-347b0ca0, whose PR had already MERGED.
+    // PortOS rebase-merges PRs, so the merged commit's sha on origin/main differs
+    // from the copy a local `merge --ff-only` put on the primary. The sha-only
+    // upstream exclusion read that copy as unpushed, and the patch-id attribution
+    // then matched it against the agent's branch — which carried the same upstream
+    // commit only because `/do:pr` rebased onto it. Nothing was ever stranded.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    // A commit that will merge upstream, sitting on a sibling branch for now.
+    await execGit(['checkout', '-b', 'sibling-work'], repo);
+    await commit('a commit that merges via PR');
+    const sharedCommit = (await capturePrimaryCheckoutState(repo)).head;
+    // The agent's branch carries its own patch-equivalent copy of that commit (what
+    // a `/do:pr` rebase leaves behind) plus its own real work.
+    await execGit(['checkout', '-b', agentBranch, 'main'], repo);
+    await execGit(['cherry-pick', sharedCommit], repo);
+    await commit('the agent\'s actual work');
+    await execGit(['push', 'origin', agentBranch], repo);
+    await execGit(['checkout', 'main'], repo);
+
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // Mid-run: the primary fast-forwards onto the sibling branch's copy...
+    await execGit(['merge', '--ff-only', 'sibling-work'], repo);
+    // ...and the PR rebase-merges upstream, landing a THIRD sha with the same patch.
+    const contributor = join(scratch, 'contributor-rebase-merge');
+    await execGit(['clone', join(scratch, 'origin.git'), contributor], scratch);
+    await execGit(['config', 'user.email', 'other@example.com'], contributor);
+    await execGit(['config', 'user.name', 'Other Contributor'], contributor);
+    await execGit(['cherry-pick', sharedCommit], contributor);
+    await execGit(['push', 'origin', 'main'], contributor);
+    await execGit(['fetch', 'origin'], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    // Its content is upstream, so there is nothing to recover and nothing to blame.
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.fastForwarded).toBe(true);
+    expect(verdict.suggestedFix).toBeUndefined();
+    // The sha comparison alone still calls it unpushed — which is exactly why the
+    // patch-level verdict has to be the one that decides.
+    expect(await execGit(['rev-list', '--count', 'main', '^origin/main'], repo)
+      .then(r => Number(r.stdout.trim()))).toBe(1);
+  });
+
+  it('still reports a genuinely unpushed commit that no upstream copy clears (#3744 must not over-clear)', async () => {
+    // The guard rail on the test above: patch-equivalence may only clear a commit
+    // the upstream ACTUALLY has. An agent's own commit that never merged has no
+    // copy on origin/main, so it stays a failure.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await execGit(['checkout', '-b', agentBranch], repo);
+    await commit('never merged anywhere');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['cherry-pick', agentTip], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(true);
+    expect(verdict.reason).toBe(PRIMARY_CHECKOUT_MUTATED_REASON);
+    expect(verdict.suggestedFix).toContain('1 commit ');
+  });
+
+  it('does not quote a commit count spanning a baseline a mid-run rebase rewrote (#3744)', async () => {
+    // `git pull --rebase` on the primary replays its local commits under new shas,
+    // orphaning the baseline stamped at spawn. `rev-list ^baseline` then counts the
+    // whole post-fork history — the incident reported "16 new commits" for a run
+    // that stranded none. The prose must not pass that number off as movement.
+    await addOrigin();
+    await commit('primary local unpushed one');
+    await commit('primary local unpushed two');
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // A contributor lands upstream, and the primary pulls --rebase over it, which
+    // rewrites BOTH local commits and orphans `baseline.head`.
+    const contributor = join(scratch, 'contributor-rebased-baseline');
+    await execGit(['clone', join(scratch, 'origin.git'), contributor], scratch);
+    await execGit(['config', 'user.email', 'other@example.com'], contributor);
+    await execGit(['config', 'user.name', 'Other Contributor'], contributor);
+    await writeFile(join(contributor, 'landed-upstream.txt'), 'landed upstream');
+    await execGit(['add', '-A'], contributor);
+    await execGit(['commit', '-m', 'landed upstream'], contributor);
+    await execGit(['push', 'origin', 'main'], contributor);
+    await execGit(['pull', '--rebase'], repo);
+    expect(await execGit(['merge-base', '--is-ancestor', baseline.head, 'HEAD'], repo,
+      { ignoreExitCode: true }).then(r => r.exitCode)).not.toBe(0);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: 'cos/task-x/agent-y' });
+    expect(verdict.message).toContain('baseline rewritten by a rebase');
+    expect(verdict.message).not.toMatch(/\d+ new commits/);
+  });
+
   it('never attributes a branch-jack to a read-only reasoner that never branched (Case A)', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     // A 24-file commit lands on main mid-run, authored by another actor.
