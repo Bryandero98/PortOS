@@ -105,32 +105,28 @@ describe('IcLoraPanel — image-kind references (#3112)', () => {
     ...baseProps,
     spec: ING,
     referenceImageFiles: ['owl.png', ''],
-    visibleGallery: [
-      { filename: 'owl.png' }, { filename: 'store.png' }, { filename: 'tote.png' },
-    ],
     weightStatus: { id: 'ic-ingredients', repo: 'org/ingredients', cached: true, sizeBytes: 1_308_778_338 },
     onAddReferenceImage: vi.fn(),
-    onUpdateReferenceImage: vi.fn(),
+    onBrowseReferenceImage: vi.fn(),
     onRemoveReferenceImage: vi.fn(),
   };
 
   it('renders one gallery row per reference, not the clip upload/history pair', () => {
     render(<IcLoraPanel {...imageProps} />);
-    expect(screen.getByLabelText(/Ingredients reference 1 gallery image/i)).toBeTruthy();
-    expect(screen.getByLabelText(/Ingredients reference 2 gallery image/i)).toBeTruthy();
+    // Row 1 already holds owl.png, so its trigger offers a swap; row 2 is empty.
+    expect(screen.getByLabelText('Ingredients reference 1 — change image')).toBeTruthy();
+    expect(screen.getByLabelText('Ingredients reference 2 — pick from gallery')).toBeTruthy();
     // The video-only inputs must be absent — offering them would let a clip ride
     // into an image-kind weight, which the route rejects.
     expect(screen.queryByText(/Upload a reference still/i)).toBeNull();
     expect(screen.queryByLabelText(/Pick a previous render/i)).toBeNull();
   });
 
-  it('reports the picked gallery file through onUpdateReferenceImage', () => {
-    const onUpdateReferenceImage = vi.fn();
-    render(<IcLoraPanel {...imageProps} onUpdateReferenceImage={onUpdateReferenceImage} />);
-    fireEvent.change(screen.getByLabelText(/Ingredients reference 2 gallery image/i), {
-      target: { value: 'store.png' },
-    });
-    expect(onUpdateReferenceImage).toHaveBeenCalledWith(1, 'store.png');
+  it('opens the gallery picker for the clicked reference row', () => {
+    const onBrowseReferenceImage = vi.fn();
+    render(<IcLoraPanel {...imageProps} onBrowseReferenceImage={onBrowseReferenceImage} />);
+    fireEvent.click(screen.getByLabelText(/Ingredients reference 2 — pick from gallery/i));
+    expect(onBrowseReferenceImage).toHaveBeenCalledWith(1);
   });
 
   it('shows the row count against the spec maximum', () => {

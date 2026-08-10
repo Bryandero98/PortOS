@@ -2,8 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import FramePanel from './FramePanel';
 
-const GALLERY = [{ filename: 'a.png' }, { filename: 'b.png' }];
-
 describe('FramePanel', () => {
   it('renders the gallery + upload picker when empty', () => {
     render(
@@ -12,8 +10,7 @@ describe('FramePanel', () => {
         file={null}
         upload={null}
         uploadUrl={null}
-        visibleGallery={GALLERY}
-        onPickGallery={vi.fn()}
+        onBrowseGallery={vi.fn()}
         onUpload={vi.fn()}
         onClear={vi.fn()}
         alt="Source"
@@ -25,23 +22,22 @@ describe('FramePanel', () => {
     expect(screen.queryByText('Clear')).toBeNull();
   });
 
-  it('fires onPickGallery with the chosen filename', () => {
-    const onPickGallery = vi.fn();
+  it('opens the gallery picker when the browse button is clicked', () => {
+    const onBrowseGallery = vi.fn();
     render(
       <FramePanel
         label="First frame"
         file={null}
         upload={null}
         uploadUrl={null}
-        visibleGallery={GALLERY}
-        onPickGallery={onPickGallery}
+        onBrowseGallery={onBrowseGallery}
         onUpload={vi.fn()}
         onClear={vi.fn()}
         alt="Source"
       />,
     );
-    fireEvent.change(screen.getByLabelText(/First frame — pick from gallery/i), { target: { value: 'b.png' } });
-    expect(onPickGallery).toHaveBeenCalledWith('b.png');
+    fireEvent.click(screen.getByLabelText(/First frame — pick from gallery/i));
+    expect(onBrowseGallery).toHaveBeenCalled();
   });
 
   it('shows the gallery preview + Clear when a file is set', () => {
@@ -52,8 +48,7 @@ describe('FramePanel', () => {
         file="a.png"
         upload={null}
         uploadUrl={null}
-        visibleGallery={GALLERY}
-        onPickGallery={vi.fn()}
+        onBrowseGallery={vi.fn()}
         onUpload={vi.fn()}
         onClear={onClear}
         alt="Source"
@@ -72,8 +67,7 @@ describe('FramePanel', () => {
         file={null}
         upload={null}
         uploadUrl={null}
-        visibleGallery={GALLERY}
-        onPickGallery={vi.fn()}
+        onBrowseGallery={vi.fn()}
         onUpload={vi.fn()}
         onClear={vi.fn()}
         alt="End frame"
