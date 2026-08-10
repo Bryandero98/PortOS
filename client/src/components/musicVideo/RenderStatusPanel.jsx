@@ -64,10 +64,10 @@ export default function RenderStatusPanel({
           />
           <button
             type="button"
-            onClick={() => onOpenPreview?.(`mv-render:${renderHistoryId}`)}
+            onClick={() => onOpenPreview?.(`video:${renderHistoryId}`)}
             aria-label="View final video full size"
             title="View final video full size"
-            className="absolute top-2 right-2 p-1.5 rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
+            className="absolute top-2 right-2 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1.5 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>

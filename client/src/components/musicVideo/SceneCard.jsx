@@ -10,9 +10,9 @@ const SCENE_TIME_FIELDS = [['Start', 'startSec'], ['End', 'endSec']];
  * per-scene reference-frame / clip render controls.
  *
  * `onOpenPreview(key)` opens the page-level MediaLightbox for a frame
- * (`mv-frame:<id>`) or clip (`mv-clip:<id>`). The frame thumb is the whole
- * button; the clip keeps native play/pause and uses a corner expand control
- * so the open handler never fights the player.
+ * (`image:<filename>`) or clip (`video:<historyId>`). The frame thumb is the
+ * whole button; the clip keeps native play/pause and uses a corner expand
+ * control so the open handler never fights the player.
  */
 export default function SceneCard({
   scene, index, isLast, generatingFrame, generatingVideo,
@@ -80,7 +80,7 @@ export default function SceneCard({
           {scene.referenceImageId && (
             <button
               type="button"
-              onClick={() => onOpenPreview?.(`mv-frame:${scene.referenceImageId}`)}
+              onClick={() => onOpenPreview?.(`image:${scene.referenceImageId}`)}
               aria-label="View reference frame full size"
               title="View reference frame full size"
               className="shrink-0 rounded border border-port-border overflow-hidden focus:outline-none focus:ring-2 focus:ring-port-accent"
@@ -117,10 +117,10 @@ export default function SceneCard({
                 ScenePreview's open-in-new-tab overlay. */}
             <button
               type="button"
-              onClick={() => onOpenPreview?.(`mv-clip:${scene.videoHistoryId}`)}
+              onClick={() => onOpenPreview?.(`video:${scene.videoHistoryId}`)}
               aria-label="View clip full size"
               title="View clip full size"
-              className="absolute top-1 right-1 p-1 rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
+              className="absolute top-1 right-1 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1 flex items-center justify-center rounded bg-black/50 text-white hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-port-accent"
             >
               <Maximize2 className="w-3 h-3" />
             </button>

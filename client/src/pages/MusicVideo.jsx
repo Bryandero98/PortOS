@@ -365,15 +365,18 @@ export default function MusicVideo() {
   });
 
   // Shared lightbox: final render first (it sits above the board), then each
-  // scene's frame then clip in board order. Keys are stable deep-link ids
-  // (`?preview=mv-frame:…` / `mv-clip:…` / `mv-render:…`).
+  // scene's frame then clip in board order. Keys use the canonical
+  // `image:<filename>` / `video:<historyId>` shape from media/normalize so the
+  // lightbox's always-mounted Add-to-collection / Pin-to-moodboard menus get a
+  // real `id`/`filename` ref (same vocabulary as Media History's ?preview=).
   const previewItems = useMemo(() => {
     if (!selected) return [];
     const items = [];
     if (selected.renderHistoryId && finalVideo.src) {
       items.push({
-        key: `mv-render:${selected.renderHistoryId}`,
+        key: `video:${selected.renderHistoryId}`,
         kind: 'video',
+        id: selected.renderHistoryId,
         filename: finalVideo.src.split('/').pop() || selected.renderHistoryId,
         downloadUrl: finalVideo.src,
         previewUrl: videoPosterForJob(selected.renderHistoryId),
@@ -384,7 +387,7 @@ export default function MusicVideo() {
       if (scene.referenceImageId) {
         const imgUrl = `/data/images/${scene.referenceImageId}`;
         items.push({
-          key: `mv-frame:${scene.referenceImageId}`,
+          key: `image:${scene.referenceImageId}`,
           kind: 'image',
           filename: scene.referenceImageId,
           previewUrl: imgUrl,
@@ -394,8 +397,9 @@ export default function MusicVideo() {
       }
       if (scene.videoHistoryId) {
         items.push({
-          key: `mv-clip:${scene.videoHistoryId}`,
+          key: `video:${scene.videoHistoryId}`,
           kind: 'video',
+          id: scene.videoHistoryId,
           filename: `${scene.videoHistoryId}.mp4`,
           downloadUrl: videoSrcForJob(scene.videoHistoryId),
           previewUrl: videoPosterForJob(scene.videoHistoryId),

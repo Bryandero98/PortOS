@@ -809,9 +809,9 @@ describe('MusicVideo media lightbox (#3718)', () => {
 
   it('opens the lightbox from a ?preview= deep link on mount', async () => {
     listMusicVideoProjects.mockResolvedValue([PROJECT_WITH_CLIP]);
-    renderMVAt('/music-video/mv-1?preview=mv-frame%3Aimg1');
+    renderMVAt('/music-video/mv-1?preview=image%3Aimg1');
     await screen.findByRole('heading', { level: 2, name: PROJECT_WITH_CLIP.name });
     const dialog = await screen.findByRole('dialog', { name: /Media viewer/i });
-    expect(dialog.getAttribute('aria-label')).toMatch(/img1|mv-frame:img1/);
+    expect(dialog.getAttribute('aria-label')).toMatch(/img1|image:img1/);
   });
 });
