@@ -664,7 +664,9 @@ export async function judgeFoundation(seriesId, { providerId, model, effort, for
     ...judge,
   };
   await saveSnapshot(snapshot);
-  console.log(`🏛️ foundation judge — series=${seriesId.slice(0, 12)} weighted=${judge.weightedScore} target=${weak?.dimension || '—'}(${weak?.score ?? '—'}) via ${judgeProvider.id}/${judgeModel || '(default)'}`);
+  const actualProviderId = result.providerId || judgeProvider.id;
+  const actualModel = result.model || judgeModel || '(default)';
+  console.log(`🏛️ foundation judge — series=${seriesId.slice(0, 12)} weighted=${judge.weightedScore} target=${weak?.dimension || '—'}(${weak?.score ?? '—'}) via ${actualProviderId}/${actualModel}`);
   return snapshot;
 }
 

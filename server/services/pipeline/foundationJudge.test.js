@@ -447,16 +447,25 @@ describe('judgeFoundation — cache / fast-pass', () => {
 
   it('runs the judge (writer/judge split) and persists a hashed snapshot on a fresh foundation', async () => {
     seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', universeId: null });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     stageRunner.runStagedLLM.mockResolvedValue({
       content: { dimensions: dims({ worldbuilding: 7, character: 7, structure: 7, craft: 7 }), oneLineVerdict: 'v' },
-      providerId: 'judge-x', model: 'jm-heavy', runId: 'run-1',
+      providerId: 'fallback-y', model: 'fallback-model', runId: 'run-1',
     });
     const out = await judgeFoundation('ser-1', { force: true });
     expect(out.status).toBe('complete');
     expect(out.weightedScore).toBe(7);
     expect(out.sourceInputsHash).toBeTruthy();
+    expect(out).toMatchObject({
+      providerId: 'fallback-y',
+      model: 'fallback-model',
+      judgeProviderId: 'judge-x',
+      judgeModel: 'jm-heavy',
+    });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('via fallback-y/fallback-model'));
     expect(fileUtils.atomicWrite).toHaveBeenCalled();
     expect(stageRunner.resolveJudgeForStage).toHaveBeenCalled();
+    logSpy.mockRestore();
   });
 });
 
