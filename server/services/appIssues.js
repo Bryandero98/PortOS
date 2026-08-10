@@ -152,8 +152,11 @@ async function fetchGitlabIssues(repoPath) {
  * against a ticket key that doesn't exist. Same resolver as
  * `buildClaimWorkTask`, so the list and the claim agree by construction.
  *
- * The tracker probe and the forge-target probe are independent git reads, so
- * they overlap.
+ * The forge-target probe needs the RESOLVED tracker first (see
+ * `resolveRepoForgeTarget`'s `preferredForge`, which lets an explicitly-pinned
+ * github/gitlab tracker reach a self-hosted forge whose hostname doesn't spell
+ * out "github."/"gitlab."), so the two reads run sequentially rather than
+ * overlapping — and are skipped entirely for a plan/jira-tracked app.
  *
  * @param {object} app - managed app record (needs `repoPath`, `workTracker`)
  * @returns {Promise<{forge:'github'|'gitlab'|null, tracker:string|null, fullName:string|null, issues:object[], reason:string, transient:boolean, remedy:string|null}>}
@@ -162,15 +165,14 @@ export async function listAppIssues(app) {
   const base = { forge: null, tracker: null, fullName: null, issues: [], transient: false, remedy: null };
   if (!app?.repoPath) return { ...base, reason: 'no-repo-path' };
 
-  const [wt, target] = await Promise.all([
-    resolveAppWorkTracker(app),
-    resolveRepoForgeTarget(app.repoPath),
-  ]);
+  const wt = await resolveAppWorkTracker(app);
   const tracker = wt.resolved;
 
   // PLAN.md / JIRA apps have no forge issue list — and, more importantly, no
   // claim this tab could honestly offer.
   if (tracker !== 'github' && tracker !== 'gitlab') return { ...base, tracker, reason: 'tracker-not-a-forge' };
+
+  const target = await resolveRepoForgeTarget(app.repoPath, { preferredForge: tracker });
   if (!target) return { ...base, tracker, reason: 'unsupported-forge' };
   // Explicitly tracking one forge from the other's remote: we can't query the
   // configured tracker (no selector for it) and must not silently list the

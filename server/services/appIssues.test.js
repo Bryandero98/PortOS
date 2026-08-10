@@ -187,11 +187,44 @@ describe('listAppIssues — non-forge apps', () => {
     expect(result).toMatchObject({ forge: null, tracker: 'plan', reason: 'tracker-not-a-forge', transient: false });
   });
 
-  it('reports unsupported-forge when a forge tracker is pinned but the origin can serve none', async () => {
-    getOriginInfo.mockResolvedValue({ isGithub: false, host: 'bitbucket.org', fullName: 'acme/widget' });
-    readOriginRemoteUrl.mockResolvedValue('git@bitbucket.org:acme/widget.git');
+  it('reports unsupported-forge when a forge tracker is pinned but the origin has no owner/repo to build a spec from', async () => {
+    getOriginInfo.mockResolvedValue({ isGithub: false, host: null, fullName: null });
+    readOriginRemoteUrl.mockResolvedValue(null);
     const result = await listAppIssues({ ...APP, workTracker: 'github' });
     expect(result).toMatchObject({ forge: null, tracker: 'github', reason: 'unsupported-forge', transient: false });
+    expect(execGh).not.toHaveBeenCalled();
+  });
+
+  it('attempts the pinned forge on a non-matching-hostname origin instead of refusing outright, since a self-hosted forge can live on any domain', async () => {
+    // `bitbucket.org` matches neither the github.* nor gitlab.* hostname
+    // pattern — same as a real self-hosted GHE/GitLab instance on a custom
+    // domain would. The hostname alone can't tell them apart, so an explicit
+    // pin is trusted and the CLI is actually asked, rather than PortOS
+    // pre-emptively claiming "isn't GitHub or GitLab".
+    getOriginInfo.mockResolvedValue({ isGithub: false, host: 'bitbucket.org', fullName: 'acme/widget' });
+    readOriginRemoteUrl.mockResolvedValue('git@bitbucket.org:acme/widget.git');
+    execGh.mockResolvedValue(JSON.stringify([{ number: 1, title: 't', labels: [], assignees: [] }]));
+    const result = await listAppIssues({ ...APP, workTracker: 'github' });
+    expect(result).toMatchObject({ forge: 'github', tracker: 'github', reason: 'ok' });
+    expect(execGh.mock.calls[0][0][execGh.mock.calls[0][0].indexOf('--repo') + 1]).toBe('bitbucket.org/acme/widget');
+  });
+
+  it('lists issues for a github tracker explicitly pinned on a custom-hostname enterprise origin', async () => {
+    getOriginInfo.mockResolvedValue({ isGithub: false, host: 'git.example-corp.com', fullName: 'acme/widget' });
+    readOriginRemoteUrl.mockResolvedValue('git@git.example-corp.com:acme/widget.git');
+    execGh.mockResolvedValue(JSON.stringify([{ number: 9, title: 'Custom host works', labels: [], assignees: [] }]));
+    const result = await listAppIssues({ ...APP, workTracker: 'github' });
+    expect(result).toMatchObject({ forge: 'github', tracker: 'github', fullName: 'acme/widget', reason: 'ok' });
+    expect(ensureForgeReachableMock).toHaveBeenCalledWith('app-issues', { hostname: 'git.example-corp.com' });
+  });
+
+  it('lists issues for a gitlab tracker explicitly pinned on a custom-hostname self-hosted origin', async () => {
+    getOriginInfo.mockResolvedValue({ isGithub: false, host: 'git.example-corp.com', fullName: 'acme/widget' });
+    readOriginRemoteUrl.mockResolvedValue('git@git.example-corp.com:acme/widget.git');
+    execGlab.mockResolvedValue(JSON.stringify([{ iid: 3, title: 'Custom host works', labels: [], assignees: [] }]));
+    const result = await listAppIssues({ ...APP, workTracker: 'gitlab' });
+    expect(result).toMatchObject({ forge: 'gitlab', tracker: 'gitlab', reason: 'ok' });
+    expect(execGlab.mock.calls[0][1]).toBe('/repo');
   });
 });
 
