@@ -488,6 +488,56 @@ describe('executeTuiRun', () => {
       }));
     });
 
+    it('does not reap a quiet Codex reasoning pass before its response file exists', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      const provider = {
+        id: 'codex-tui', type: 'tui', command: 'codex',
+        tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500,
+      };
+      const runId = 'run-codex-quiet-reasoning';
+      const promise = executeTuiRun({
+        runId,
+        provider,
+        prompt: 'reason carefully and write the complete structured response',
+        workspacePath: TEST_WORKSPACE,
+        timeout: 60000,
+      });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData('OpenAI Codex ready> ');
+      await vi.advanceTimersByTimeAsync(2000); // paste
+      await vi.advanceTimersByTimeAsync(4000); // enter
+      pty.emitData('Working (0s • esc to interrupt)');
+
+      // This is well beyond the configured 500ms idle fallback. A generic TUI
+      // would have completed from its screen scrape, but Codex is still doing
+      // real work and has not written the authoritative response yet.
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushAsync();
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
+
+      const runDir = join(runsTmpDirRef.current, runId);
+      await mkdir(runDir, { recursive: true });
+      await writeFile(join(runDir, 'tui-response.txt'), '{"repaired":true}');
+      await vi.advanceTimersByTimeAsync(1100);
+      await vi.advanceTimersByTimeAsync(1100);
+      await flushAsync();
+      await promise;
+
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId,
+        success: true,
+        output: '{"repaired":true}',
+        extras: expect.objectContaining({
+          completionReason: 'response-file',
+          usedResponseFile: true,
+        }),
+      }));
+    });
+
     it('does NOT idle-complete while a Shell viewer is attached, then completes once they detach', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],

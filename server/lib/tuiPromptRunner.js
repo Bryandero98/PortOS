@@ -24,12 +24,15 @@
  * is the authoritative "done" signal (the wrapped prompt directs it to write
  * its full answer to `tui-response.txt` and then finish) — checked
  * unconditionally, even while a human watches. Output-idle is the fallback for
- * runs that print inline instead of writing the file (paused while watched, so
- * a viewer isn't snapped shut mid-read). The hard timeout is the backstop, and
- * salvages an already-written file before failing. Per-binary input-prompt
+ * TUIs that print inline instead of writing the file (paused while watched, so
+ * a viewer isn't snapped shut mid-read). Codex is excluded from that fallback:
+ * its status chrome can go silent for long stretches during real reasoning,
+ * and the required response file is the only safe completion signal. The hard
+ * timeout is the backstop, and salvages an already-written file before failing.
+ * Per-binary input-prompt
  * regexes were considered for idle but are fragile across versions and screen
- * sizes; the idle threshold (~8s) works universally and matches how a human
- * knows the TUI finished — output stopped scrolling.
+ * sizes; for non-Codex TUIs, the idle threshold (~8s) remains the pragmatic
+ * inline-output fallback.
  */
 
 import { spawn as ptySpawn } from 'node-pty';
@@ -146,6 +149,13 @@ export async function executeTuiRun({ runId, provider, prompt, workspacePath, on
   const promptDelayMs = provider.tuiPromptDelayMs ?? DEFAULT_TUI_PROMPT_DELAY_MS;
   const idleThresholdMs = idleMs ?? provider.tuiOneShotIdleMs ?? DEFAULT_ONE_SHOT_IDLE_MS;
   const totalTimeoutMs = timeout ?? provider.timeout ?? DEFAULT_TIMEOUT_MS;
+  // Codex is explicitly instructed to write the machine-consumed answer to a
+  // response file. Its PTY may stop repainting for many seconds or minutes
+  // while the model is still reasoning; treating that quiet screen as a final
+  // inline answer kills the live request and returns terminal chrome such as
+  // "[Pasted Content …]" to JSON parsers. Wait for the authoritative file,
+  // natural process exit, explicit cancellation, or the configured hard cap.
+  const requiresResponseFileForIdleCompletion = isCodexCommand(command);
   // Mirror runner.js#executeCliRun's runs-path resolution so TUI runs land
   // under the runner-config dataDir (not always PATHS.runs) — otherwise a
   // non-default dataDir would split metadata + output across two trees.
@@ -503,15 +513,14 @@ ${prompt}`;
           if (isExternalSessionAttached(runId)) return;
           const idle = Date.now() - lastOutputAt;
           if (idle >= idleThresholdMs) {
+            if (requiresResponseFileForIdleCompletion) return;
             // NOTE: unlike the long-running agent path, the one-shot runner does
-            // NOT gate this on a work-activity signal. Idle-complete here is the
-            // inline-output fallback for a model that prints its answer instead of
-            // writing the response file — that output legitimately may carry no
-            // `(Ns ·` working counter (fast reply, or a non-Claude/Codex TUI), so
-            // requiring one would falsely fail a completed run whose answer is
-            // already in outputBuffer. The authoritative done-signal is the
-            // response file (handled by responseFileWatchTimer); this stays the
-            // permissive fallback it has always been.
+            // NOT gate non-Codex providers on a work-activity signal.
+            // Idle-complete is their inline-output fallback when a model prints
+            // its answer instead of writing the response file; that output may
+            // legitimately carry no `(Ns ·` working counter. Codex is held to
+            // the response-file contract above because its quiet reasoning
+            // stretches are otherwise indistinguishable from completion.
             finish({ success: true, exitCode: 0, reason: 'idle-complete' });
           }
         }, 1000);
