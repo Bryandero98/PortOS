@@ -154,6 +154,19 @@ describe('buildProjectParams — every type yields well-formed render settings',
     expect(p).toEqual({ aspectRatio: '1:1', quality: 'draft', modelId: 'ltx-default', targetDurationSeconds: 15 });
   });
 
+  it('the pinned local video model becomes the project model', () => {
+    // `project.modelId` is what the CD planner prompt reports to the LLM and what
+    // the teaser tool inherits, so a videoModelId that stopped at
+    // `renderBackend.video.modelId` would leave both on the install default.
+    const p = getAbilityAdapter('video').buildProjectParams({ generation: { videoMode: 'local', videoModelId: 'wan-2.2' } }, ctx);
+    expect(p.modelId).toBe('wan-2.2');
+  });
+
+  it('falls back to the legacy universal model, then the install default', () => {
+    expect(getAbilityAdapter('video').buildProjectParams({ generation: { model: 'ltx-13b' } }, ctx).modelId).toBe('ltx-13b');
+    expect(getAbilityAdapter('video').buildProjectParams({ generation: {} }, ctx).modelId).toBe('ltx-default');
+  });
+
   it('non-video types still carry harmless geometry defaults', () => {
     for (const ability of ['image', 'music', 'series']) {
       const p = getAbilityAdapter(ability).buildProjectParams({ generation: {} }, ctx);

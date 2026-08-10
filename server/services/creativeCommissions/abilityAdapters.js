@@ -134,7 +134,14 @@ function buildVideoGeometryParams(commission, { defaultVideoModelId } = {}) {
   return {
     aspectRatio: gen?.aspectRatio || '16:9',
     quality: gen?.quality || 'standard',
-    modelId: gen?.model || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined),
+    // The project's video model. `videoModelId` is the pin the UI actually sets
+    // (Render backend → "Local video model"), and it wins over the legacy
+    // universal `generation.model`. Without this the user's chosen model reached
+    // the render only via `renderBackend.video.modelId`, leaving `project.modelId`
+    // on the install default — which the CD planner prompt reports to the LLM
+    // (lib/creativeDirectorPrompts.js) and the teaser tool inherits. Neither set
+    // ⇒ the install default, exactly as before.
+    modelId: gen?.videoModelId || gen?.model || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined),
     targetDurationSeconds: gen?.targetDurationSeconds || 10,
     // Only passed when the commission actually pinned a backend (#3135), so an
     // unpinned commission's createProject call is byte-identical to a hand-made
