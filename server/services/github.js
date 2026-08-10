@@ -365,10 +365,31 @@ const GH_NETWORK_MARKERS = [
   'i/o timeout',
   'timed out',
   'tls handshake',
-  'certificate'
+  'certificate',
+  // gh's own DNS/connect-failure wrapper (seen on gh 2.9x), distinct from the
+  // raw Go transport strings above — this is what a `--hostname` pointed at an
+  // unreachable or misresolved self-hosted GitHub Enterprise instance actually
+  // prints, and it was falling through to the generic 'error' bucket.
+  'error connecting to'
 ];
 
 const includesAny = (haystack, needles) => needles.some(n => haystack.includes(n));
+
+// GitHub Enterprise Server admins can disable the `/rate_limit` endpoint
+// outright (a documented GHES setting) — `gh api rate_limit` then fails with
+// "HTTP 404: Rate limiting is not enabled" even though `gh` successfully
+// authenticated and round-tripped to that host. This bucket is only valid
+// because probeGh is classifyGhProbe's one caller and always hits
+// `/rate_limit` (see probeGh) — that response is proof the forge IS
+// reachable, not evidence it is not. Without this marker it fell into the
+// generic 'error' bucket ("gh failed for an unrecognised reason"), so a
+// perfectly healthy GHES install with rate limiting turned off never got
+// past the health gate to list PRs/issues. If classifyGhProbe ever gains a
+// second caller probing a different endpoint, move this bucket into probeGh
+// so it stays scoped to the endpoint it actually describes.
+const GH_RATE_LIMIT_DISABLED_MARKERS = [
+  'rate limiting is not enabled'
+];
 
 /**
  * Classify a `gh` probe result. Split out from the spawn so the mapping from
@@ -389,6 +410,7 @@ export function classifyGhProbe({ code = null, stderr = '', spawnError = null } 
   const text = String(stderr || '').trim();
   const lower = text.toLowerCase();
   if (includesAny(lower, GH_AUTH_MARKERS)) return { status: 'not-authenticated', detail: text || null };
+  if (includesAny(lower, GH_RATE_LIMIT_DISABLED_MARKERS)) return { status: 'ok', detail: null };
   if (includesAny(lower, GH_NETWORK_MARKERS)) return { status: 'unreachable', detail: text || null };
   return { status: 'error', detail: text || `gh exited with code ${code}` };
 }
