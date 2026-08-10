@@ -393,6 +393,30 @@ describe('useVideoGenForm', () => {
       expect(result.current.contextFrames).toBe(0);
     });
 
+    it('restores a numeric-string context window without losing an explicit 0', async () => {
+      // The route persists a number, but a share link or hand-rolled client
+      // sends '0'. Rejecting the string would silently put the render back on
+      // a 22-frame window after the user chose last-frame chaining.
+      const { result } = render();
+      await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+      act(() => result.current.applyResumedParams({ prompt: 'p', chunks: 2, contextFrames: '0' }));
+      expect(result.current.contextFrames).toBe(0);
+
+      act(() => result.current.applyResumedParams({ prompt: 'p', chunks: 2, contextFrames: '45' }));
+      expect(result.current.contextFrames).toBe(45);
+    });
+
+    it('leaves the context window alone when the resumed job carries none', async () => {
+      // Number(null) and Number('') are both a finite 0 — folding the absence
+      // test into the numeric check would clear the default to 0 here.
+      const { result } = render();
+      await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+      act(() => result.current.applyResumedParams({ prompt: 'p', chunks: 2 }));
+      expect(result.current.contextFrames).toBe(22);
+      act(() => result.current.applyResumedParams({ prompt: 'p', chunks: 2, contextFrames: '' }));
+      expect(result.current.contextFrames).toBe(22);
+    });
+
     it('restores beats from a resumed job, mapping the server null back to blank', async () => {
       const { result } = render();
       await waitFor(() => expect(result.current.modelId).toBe(MLX.id));

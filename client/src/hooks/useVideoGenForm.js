@@ -905,7 +905,15 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // 0 is a real restored value ("last frame only"), so this can't gate on
     // truthiness the way `chunks` does — that would silently upgrade a render
     // the user deliberately put on last-frame chaining back to a window.
-    if (Number.isFinite(p.contextFrames)) setContextFrames(p.contextFrames);
+    // Absence is tested separately from the numeric check rather than folded
+    // into one `Number.isFinite(...)`: the route persists a number today, but a
+    // share link or hand-rolled client sends `'0'`, and a bare isFinite on the
+    // raw value rejects that string while `Number(null)`/`Number('')` are both
+    // a finite 0 that would wrongly clear the default. Same shape the
+    // `guidanceScale` restore above uses, for the same round-tripping reason.
+    if (p.contextFrames != null && p.contextFrames !== '' && Number.isFinite(Number(p.contextFrames))) {
+      setContextFrames(Number(p.contextFrames));
+    }
     // Per-chunk beats (#3695). The server normalizes an absent beat to null;
     // the editor's shape is '' for the same thing, so map back on restore.
     if (Array.isArray(p.chunkPrompts) && p.chunkPrompts.length) {
