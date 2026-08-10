@@ -25,7 +25,15 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
-import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x, extractEvaluationFrames } from '../../lib/ffmpeg.js';
+import {
+  findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x,
+  extractEvaluationFrames, probeFrameCount, trimVideoFromFrame,
+  H264_ENCODE_ARGS, AAC_ENCODE_ARGS,
+} from '../../lib/ffmpeg.js';
+import {
+  resolveContextFrames, resolveContinuityStrategy, extendLatentFrames,
+  contextPrefixFrames, tailWindowStartFrame,
+} from '../../lib/videoContinuity.js';
 import { hfChildEnv } from '../../lib/hfToken.js';
 import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
@@ -507,12 +515,11 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
   }
   if (helperMode === 'extend') {
     args.push('--extend-from-video', extendFromVideoPath);
-    // Translate the user's requested numFrames into a latent-frame count
-    // for ExtendPipeline. 1 latent ≈ 8 pixel frames, with no leading +1
-    // because the source already supplies the anchor frame. Floor at 1
-    // so a too-small numFrames still produces something.
-    const extendLatents = Math.max(1, Math.floor(Number(numFrames) / 8));
-    args.push('--extend-frames', String(extendLatents));
+    // Translate the user's requested numFrames into a latent-frame count for
+    // ExtendPipeline. Shared with the chain orchestrator, which needs the same
+    // number to work out how much of the render is echoed source (see
+    // `lib/videoContinuity.js`) — the two MUST agree or the trim is wrong.
+    args.push('--extend-frames', String(extendLatentFrames(numFrames)));
     args.push('--extend-direction', 'after');
   }
   if (helperMode === 'a2v') {
@@ -1614,11 +1621,25 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   return { jobId, generationId: jobId, filename, mode: 'local', model: modelId };
 }
 
-// Generate a chain of N video chunks where each chunk's last frame seeds
-// the next, then stitch them into a single longer clip. Reports progress +
-// terminal events against the OUTER jobId (so the mediaJobQueue's dispatcher
-// sees one logical job through the chain) while each inner chunk runs as a
-// normal generateVideo() with its own inner jobId, file, and history entry.
+// Generate a chain of N video chunks, each conditioned on the one before it,
+// then stitch them into a single longer clip. Reports progress + terminal
+// events against the OUTER jobId (so the mediaJobQueue's dispatcher sees one
+// logical job through the chain) while each inner chunk runs as a normal
+// generateVideo() with its own inner jobId, file, and history entry.
+//
+// Continuation strategy (`lib/videoContinuity.js`, tunable via
+// `contextFrames`):
+//
+//   'window' — chunk N+1 is an `extend` render conditioned on a clip cut from
+//     the last `contextFrames` frames of chunk N, so the model inherits the
+//     scene's MOTION, not just its final pose. Requires a runtime with an
+//     extend pipeline (ltx2 today) and applies whatever mode the chain started
+//     in. Because extend returns `source + extension`, each windowed chunk
+//     opens with an echo of the window; that echo is measured and cut back off
+//     before the stitch, so the timeline holds each frame exactly once.
+//   'frame' — the historical hop: extract chunk N's last frame and run chunk
+//     N+1 as image-to-video off that still. What every other runtime gets, and
+//     what `contextFrames: 0` opts back into.
 //
 // On completion the inner chunk entries are hidden so only the stitched clip
 // is visible by default; the user can toggle hidden in the gallery to
@@ -1633,7 +1654,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 // chunk i's prompt, and a null/blank/missing entry falls back to the main
 // `prompt`. It is destructured out of `rest` on purpose so the per-chunk
 // generateVideo() calls below never receive the whole list.
-export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJobId, ...rest }) {
+export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames, jobId: outerJobId, ...rest }) {
   const totalChunks = Number(chunks) || 1;
   if (totalChunks === 1) {
     return generateVideo({ jobId: outerJobId, ...rest });
@@ -1643,6 +1664,20 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
   const chainModel = resolveVideoModel(rest.modelId || defaultVideoModelId());
   const chainError = videoChainUnsupportedError(chainModel);
   if (chainError) throw chainError;
+
+  // How chunk N+1 sees chunk N. 'window' hands LTX-2's extend pipeline the
+  // prior chunk's last `windowFrames` frames (motion + appearance); 'frame'
+  // is the historical single-still i2v hop, and is what every runtime without
+  // an extend pipeline resolves to. See lib/videoContinuity.js.
+  const windowFrames = resolveContextFrames(contextFrames);
+  const continuity = resolveContinuityStrategy({ model: chainModel, contextFrames: windowFrames });
+  // Mirrors generateVideo's own default — the trim math converts frame indices
+  // to audio timestamps, so it can't run on an undefined rate.
+  const chainFps = Number(rest.fps) > 0 ? Number(rest.fps) : 24;
+  // Latents each chained chunk asks ExtendPipeline to append. buildLtx2Args
+  // derives the same number from the same numFrames; the trim below subtracts
+  // the pixel frames they decode to, so the two have to stay in step.
+  const chunkExtendLatents = extendLatentFrames(rest.numFrames);
 
   const chainState = { stopped: false };
   activeChain = chainState;
@@ -1655,14 +1690,24 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
 
   const chunkIds = [];
   let currentSource = rest.sourceImagePath;
-  // For extend mode, track the prior chunk's full video path so ExtendPipeline
-  // can condition on the entire clip (motion + visual content) rather than just
-  // a single last frame.
-  let currentExtendFromVideo = rest.extendFromVideoPath ?? null;
-  // First chunk preserves the user's mode (text, image, or extend). Subsequent
-  // chunks are conditioned differently depending on the original mode:
-  //   - extend: keep mode='extend', pass prior chunk's full video as extendFromVideoPath
-  //   - all others: image-conditioned on the previous chunk's extracted last frame
+  // 'window' continuation: the tail slice of the prior chunk that the next one
+  // conditions on. A fresh short clip per hop, NOT the prior chunk's whole
+  // output — extend_from_video returns `source + extension`, so conditioning
+  // on the full clip would make every chunk re-contain the one before it (the
+  // stitch then repeats that content once per hop) while the conditioning cost
+  // grew with the chain. Written under tmpdir and deleted when the chain ends.
+  let currentContextClip = null;
+  const contextClipPaths = [];
+  // Post-trim frame count for each chunk we cut a context prefix off. Two jobs:
+  // a non-empty map means at least one chunk was re-encoded (so the concat can
+  // no longer stream-copy), and it tells stitchVideos the real lengths — the
+  // chunks' own history entries record the frame count that was RENDERED, which
+  // is a render parameter Remix reuses, not a measurement of the trimmed file.
+  const trimmedFrameCounts = new Map();
+  // First chunk always preserves the user's mode (text, image, fflf or extend)
+  // and is never trimmed: in an extend chain its output is `source clip +
+  // extension`, and the source clip belongs in the result exactly once — here.
+  // Chunks 1+ take the resolved continuity path instead.
   const firstMode = rest.mode || (currentSource ? 'image' : 'text');
 
   const runChunk = (i) => new Promise((resolve, reject) => {
@@ -1712,7 +1757,11 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
       ? Number(rest.seed) + i
       : undefined;
 
-    const isExtendChain = firstMode === 'extend' && i > 0;
+    // Chunks 1+ on a window-continuity chain re-enter as extend renders
+    // conditioned on the tail clip built after the previous chunk, whatever
+    // mode the chain STARTED in — a text or i2v chain gets the same motion
+    // carry-over an extend chain does, instead of restarting from a still.
+    const isWindowHop = continuity === 'window' && i > 0;
     // Per-chunk beat (#3695). `chunkPrompts` is already normalized (blank →
     // null) by prepareVideoGenParams, but re-guard on emptiness here too so a
     // direct service caller can't hand a chunk an empty prompt — an absent beat
@@ -1725,22 +1774,21 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
       prompt: chunkPrompt,
       seed: chunkSeed,
       jobId: innerJobId,
-      // extend chain: subsequent chunks condition on the prior clip's full
-      // video — ExtendPipeline.extend_from_video needs the entire video, not
-      // just the last frame, to avoid reintroducing seams.
-      // image/text chain: condition on the extracted last frame as before.
-      sourceImagePath: isExtendChain ? null : currentSource,
-      extendFromVideoPath: isExtendChain ? currentExtendFromVideo : (i === 0 ? rest.extendFromVideoPath : null),
+      // window hop: condition on the tail clip cut from the prior chunk, so
+      // the model reads motion out of it rather than a single static pose.
+      // frame hop: condition on the prior chunk's extracted last frame.
+      sourceImagePath: isWindowHop ? null : currentSource,
+      extendFromVideoPath: isWindowHop ? currentContextClip : (i === 0 ? rest.extendFromVideoPath : null),
       // Only the first chunk consumes the user's uploadedTempPath (durable
-      // copy under data/uploads). Later chunks use a frame extracted from a
-      // prior render (image chain) or the prior chunk's video (extend chain).
+      // copy under data/uploads). Later chunks condition on the prior chunk
+      // instead — a tail window (window hop) or an extracted frame (frame hop).
       uploadedTempPath: i === 0 ? rest.uploadedTempPath : null,
       uploadedTempPaths: i === 0 ? (rest.uploadedTempPaths || []) : [],
       hidden: true,
-      mode: isExtendChain ? 'extend' : (i === 0 ? firstMode : 'image'),
-      // After the first chunk, drop FFLF-style last image — chained continuation
-      // is single-conditioned on the previous chunk's tail frame (or full video
-      // for extend mode).
+      mode: isWindowHop ? 'extend' : (i === 0 ? firstMode : 'image'),
+      // After the first chunk, drop FFLF-style last image — chained
+      // continuation conditions on one thing, the tail of the chunk before it,
+      // and has no second anchor to pin an end frame to.
       lastImagePath: i === 0 ? rest.lastImagePath : null,
       // Multi-keyframe interpolation only makes sense for the first chunk
       // (the user pinned specific frame indices in a single clip). Subsequent
@@ -1753,14 +1801,24 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
     });
   });
 
+  // The conditioning windows are scratch input to the next chunk, never
+  // output — drop them on every terminal path (both of which always run) so a
+  // long chain doesn't leave a trail of clips in tmpdir. Best-effort and
+  // fire-and-forget: a leftover temp file must never fail a finished render.
+  const cleanupContextClips = () => {
+    for (const p of contextClipPaths) unlink(p).catch(() => {});
+    contextClipPaths.length = 0;
+  };
   const finishOk = (payload) => {
     if (activeChain === chainState) activeChain = null;
+    cleanupContextClips();
     videoGenEvents.emit('completed', { generationId: outerJobId, ...payload });
     broadcastSse(outerJob, { type: 'complete', result: payload });
     closeJobAfterDelay(jobs, outerJobId);
   };
   const finishFail = (error) => {
     if (activeChain === chainState) activeChain = null;
+    cleanupContextClips();
     videoGenEvents.emit('failed', { generationId: outerJobId, error });
     broadcastSse(outerJob, { type: 'error', error });
     closeJobAfterDelay(jobs, outerJobId);
@@ -1782,27 +1840,85 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
         finishFail(completed.error);
         return;
       }
-      if (i < totalChunks - 1) {
-        if (firstMode === 'extend') {
-          // For extend chains, subsequent chunks condition on the entire prior
-          // clip via ExtendPipeline.extend_from_video — no frame extraction
-          // needed. The chunk's output file is always <innerJobId>.mp4 under
-          // PATHS.videos (see generateVideo: filename = `${jobId}.mp4`).
-          currentExtendFromVideo = join(PATHS.videos, `${chunkIds[chunkIds.length - 1]}.mp4`);
-        } else {
-          // extractLastFrame caches by id, so re-clicks (e.g. from gallery
-          // "Continue") don't re-spawn ffmpeg.
+      // The chunk's output file is always <innerJobId>.mp4 under PATHS.videos
+      // (see generateVideo: filename = `${jobId}.mp4`).
+      const chunkId = chunkIds[chunkIds.length - 1];
+      const chunkPath = join(PATHS.videos, `${chunkId}.mp4`);
+
+      if (continuity === 'window') {
+        // One probe serves both cuts below. The trim rewrites chunkPath, so
+        // `frames` is decremented rather than re-probed — `ffmpeg trim` keeps
+        // exactly [prefix, total), which makes the new length arithmetic, and
+        // probeFrameCount can fall back to a full decode pass.
+        // eslint-disable-next-line no-await-in-loop
+        let frames = await probeFrameCount(chunkPath);
+
+        // A window hop's render is `context window + new frames`. The window is
+        // the tail of the chunk before it, which the stitched timeline already
+        // holds, so cut it back off before this chunk joins the concat. Measured
+        // from the RENDERED length rather than from the window we supplied: the
+        // VAE snaps the encoded context up to a latent boundary, so the echo is
+        // usually a few frames longer than what we handed in.
+        if (i > 0) {
+          const prefix = contextPrefixFrames({ totalFrames: frames, extendLatents: chunkExtendLatents });
+          if (prefix > 0) {
+            // eslint-disable-next-line no-await-in-loop
+            const trim = await trimVideoFromFrame(chunkPath, chunkPath, { startFrame: prefix, fps: chainFps });
+            if (trim.ok) {
+              frames -= prefix;
+              trimmedFrameCounts.set(chunkId, frames);
+            } else {
+              // Degrade rather than throw away the whole chain: an untrimmed
+              // chunk costs the viewer a ~1s repeat at one seam, where failing
+              // here would discard every chunk already rendered.
+              console.log(`⚠️ Chunk ${i + 1}/${totalChunks} context trim failed, seam will repeat ${prefix} frames: ${trim.reason}`);
+            }
+          } else {
+            console.log(`⚠️ Chunk ${i + 1}/${totalChunks} context prefix unmeasurable (frames=${frames ?? 'unknown'}), leaving it untrimmed`);
+          }
+        }
+
+        if (i < totalChunks - 1) {
+          // Cut the next hop's conditioning window off this chunk's tail. Both
+          // the count and the cut clamp: a window longer than the chunk simply
+          // conditions on all of it.
+          //
+          // An unprobeable length clamps the same way, which means the whole
+          // chunk becomes the window — the unbounded conditioning this exists
+          // to avoid, for one hop. It self-corrects (the next chunk's prefix
+          // trim measures the echo off the render, not off the window), but say
+          // so rather than letting the fallback be silent.
+          if (frames == null) {
+            console.log(`⚠️ Chunk ${i + 1}/${totalChunks} length unprobeable — conditioning the next chunk on the whole clip instead of a ${windowFrames}-frame window`);
+          }
+          const contextPath = join(tmpdir(), `chaincontext-${chunkId}.mp4`);
           // eslint-disable-next-line no-await-in-loop
-          const frame = await extractLastFrame(chunkIds[chunkIds.length - 1]).catch((err) => ({ error: err.message }));
-          if (frame?.error) {
+          const cut = await trimVideoFromFrame(chunkPath, contextPath, {
+            startFrame: tailWindowStartFrame({ totalFrames: frames, frames: windowFrames }),
+            fps: chainFps,
+          });
+          if (!cut.ok) {
             await setHistoryItemsHidden(chunkIds, true);
-            finishFail(`Failed to extract frame between chunks: ${frame.error}`);
+            finishFail(`Failed to build the continuation context window between chunks: ${cut.reason}`);
             return;
           }
-          currentSource = join(PATHS.images, frame.filename);
+          contextClipPaths.push(contextPath);
+          currentContextClip = contextPath;
         }
+      } else if (i < totalChunks - 1) {
+        // extractLastFrame caches by id, so re-clicks (e.g. from gallery
+        // "Continue") don't re-spawn ffmpeg.
+        // eslint-disable-next-line no-await-in-loop
+        const frame = await extractLastFrame(chunkId).catch((err) => ({ error: err.message }));
+        if (frame?.error) {
+          await setHistoryItemsHidden(chunkIds, true);
+          finishFail(`Failed to extract frame between chunks: ${frame.error}`);
+          return;
+        }
+        currentSource = join(PATHS.images, frame.filename);
       }
     }
+
     const stitched = await stitchVideos(chunkIds, {
       id: outerJobId,
       filenamePrefix: 'chained',
@@ -1813,6 +1929,13 @@ export async function generateChainedVideo({ chunks, chunkPrompts, jobId: outerJ
       // from — the individual chunk entries only ever hold their own resolved
       // prompt, which loses which of them were explicit beats vs. fallbacks.
       chunkPrompts: chunkPrompts?.some(Boolean) ? chunkPrompts : null,
+      // A trimmed chunk was re-encoded, so it no longer shares an identical
+      // codec/parameter set with its untrimmed siblings and the concat
+      // demuxer's `-c copy` fast path can't be trusted across the mix.
+      reencode: trimmedFrameCounts.size > 0,
+      // Trimmed chunks are shorter on disk than the frame count they were
+      // rendered at, so the stitched duration can't just sum the chunk records.
+      frameCounts: trimmedFrameCounts.size ? trimmedFrameCounts : null,
     }).catch((err) => ({ error: err.message }));
     if (stitched?.error) {
       await setHistoryItemsHidden(chunkIds, true);
@@ -1982,9 +2105,10 @@ export async function sampleEvaluationFrames(jobId, count = 5) {
 }
 
 // Concat selected videos (preserving order) into a single MP4. Uses ffmpeg's
-// concat demuxer which is stream-copy, so it's fast and lossless — but the
-// inputs must share codec/resolution. The Media History page already only
-// lets users stitch from a single model so this holds in practice.
+// concat demuxer, stream-copy by default, so it's fast and lossless — but the
+// inputs must then share codec/resolution. The Media History page already only
+// lets users stitch from a single model so this holds in practice; a caller
+// whose inputs have been re-encoded out of lockstep passes `reencode: true`.
 //
 // `opts` lets the chained-render code reuse the same ffmpeg path with a
 // different identity (id, filename prefix, history-link key, prompt, per-chunk
@@ -1998,6 +2122,18 @@ export async function stitchVideos(videoIds, opts = {}) {
     // Per-chunk prompt beats to record on the stitched entry (#3695) — chained
     // renders only; a hand-stitched clip has no beats.
     chunkPrompts = null,
+    // Normalize every input through one encoder instead of stream-copying.
+    // Required when the inputs no longer share identical codec parameters —
+    // the chained-render context trim re-encodes the chunks it cuts, and the
+    // concat demuxer's `-c copy` needs its inputs to match exactly. Costs an
+    // encode pass over the whole timeline, so it stays opt-in.
+    reencode = false,
+    // Optional `Map<videoId, frames>` overriding what an input contributes to
+    // the stitched entry's `numFrames`. A history entry's `numFrames` is the
+    // count the clip was RENDERED at — a render parameter Remix reuses — so a
+    // caller that shortened a file on disk reports the real length here instead
+    // of rewriting that record and changing what a Remix of it would produce.
+    frameCounts = null,
   } = opts;
   if (!Array.isArray(videoIds) || videoIds.length < 2) {
     throw new ServerError('Need at least 2 videos to stitch', { status: 400, code: 'VALIDATION_ERROR' });
@@ -2036,7 +2172,15 @@ export async function stitchVideos(videoIds, opts = {}) {
   // ffmpeg rejects — otherwise it leaks one file per failed stitch.
   try {
     await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpeg, ['-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', outPath], { env: safeChildProcessEnv(), stdio: 'ignore' });
+      const codecArgs = reencode
+        // Matches trimVideoFromFrame's encoder so a trimmed chunk isn't
+        // re-graded relative to its untrimmed siblings. `-c:a` is safe to pass
+        // unconditionally — ffmpeg ignores it when the concatenated inputs
+        // carry no audio stream at all (every chunk in a chain shares one
+        // model and one audio setting, so they're never mixed).
+        ? [...H264_ENCODE_ARGS, ...AAC_ENCODE_ARGS]
+        : ['-c', 'copy'];
+      const proc = spawn(ffmpeg, ['-f', 'concat', '-safe', '0', '-i', listFile, ...codecArgs, '-y', outPath], { env: safeChildProcessEnv(), stdio: 'ignore' });
       proc.on('close', (code) => code === 0 ? resolve() : reject(new ServerError('Stitch failed', { status: 500, code: 'FFMPEG_FAILED' })));
       proc.on('error', (err) => reject(new ServerError(`ffmpeg failed to spawn: ${err.message}`, { status: 500, code: 'FFMPEG_FAILED' })));
     });
@@ -2055,7 +2199,7 @@ export async function stitchVideos(videoIds, opts = {}) {
     seed: videos[0].seed ?? 0,
     width: videos[0].width,
     height: videos[0].height,
-    numFrames: videos.reduce((sum, v) => sum + (v.numFrames || 0), 0),
+    numFrames: videos.reduce((sum, v) => sum + (frameCounts?.get(v.id) ?? v.numFrames ?? 0), 0),
     fps: videos[0].fps,
     filename: outFilename,
     thumbnail: thumb,

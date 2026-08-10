@@ -16,6 +16,7 @@ import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.j
 import { uploadFields } from '../lib/multipart.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { grokVideoDurationSchema, videoModelTermsSchema } from '../lib/validation.js';
+import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
 import {
   VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted, acceptedVideoModelTerms,
   videoModelTermsGateId, videoModelTermsError,
@@ -204,6 +205,12 @@ const generateBodySchema = z.object({
   // string multipart sends for a single repeated key — a bare string is still
   // accepted as a one-entry list for hand-rolled/JSON clients.
   chunkPrompts: z.preprocess(listPreprocess, z.array(z.string().max(8000)).max(MAX_VIDEO_CHUNKS).optional()),
+  // How many of the prior chunk's frames each subsequent chunk conditions on.
+  // A window carries motion across the seam where a single still can't; `0`
+  // opts back into last-frame chaining, and absence takes the default. Only
+  // meaningful on a runtime with an extend pipeline — elsewhere it's ignored,
+  // not rejected. See lib/videoContinuity.js.
+  contextFrames: optionalInt(MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES, 'contextFrames'),
   // History id of a prior render to extend natively (ltx2 runtime only —
   // routes through ExtendPipeline.extend_from_video which conditions on
   // the entire source video's latent rather than a single last frame).
@@ -923,7 +930,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     pythonPath, effectiveModelId, mode,
     sourceImagePath, lastImagePath, audioFilePath, icReferencePaths,
     resolvedKeyframes, extendFromVideoPath,
-    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks, effectiveChunkPrompts,
+    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks, effectiveChunkPrompts, effectiveContextFrames,
   } = prepared;
 
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
@@ -957,6 +964,10 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // key is simply absent from job.params then, so a resumed form restores no
     // stale beats. See prepareVideoGenParams for the normalization.
     ...(effectiveChunkPrompts ? { chunkPrompts: effectiveChunkPrompts } : {}),
+    // Undefined for a non-chained request, so job.params doesn't carry a knob
+    // that couldn't have applied. `0` is a real value here (last-frame
+    // chaining) and must survive — see resolveContextFrames.
+    ...(effectiveContextFrames != null ? { contextFrames: effectiveContextFrames } : {}),
     loras,
     icReferencePaths,
     icStrength: body.icStrength,
@@ -991,7 +1002,7 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'prompt', 'negativePrompt', 'modelId',
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
-  'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'imageStrength',
+  'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
   'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain

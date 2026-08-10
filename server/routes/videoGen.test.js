@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
+import { DEFAULT_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
 
 const installProcess = vi.hoisted(() => {
   const spawn = vi.fn();
@@ -1103,6 +1104,66 @@ describe('videoGen routes', () => {
       });
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(/chunks/i);
+    });
+
+    it('defaults the continuation context window on a chained request', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 3,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ chunks: 3, contextFrames: DEFAULT_CONTEXT_FRAMES }),
+      }));
+    });
+
+    it('forwards an explicit context window', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        contextFrames: 45,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ contextFrames: 45 }),
+      }));
+    });
+
+    it('preserves contextFrames: 0 — last-frame chaining, not "unset"', async () => {
+      // Dropping the 0 would silently upgrade the render back to a window and
+      // give the user a materially different clip than they asked for.
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        contextFrames: 0,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ contextFrames: 0 }),
+      }));
+    });
+
+    it('omits contextFrames entirely when the request does not chain', async () => {
+      // Persisting a knob that could never have applied would replay into the
+      // form on resume as if the user had chosen it.
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a single render',
+        contextFrames: 45,
+      });
+      expect(r.status).toBe(200);
+      const { params } = mediaJobQueue.enqueueJob.mock.calls.at(-1)[0];
+      expect(params.chunks).toBe(1);
+      expect(params).not.toHaveProperty('contextFrames');
+    });
+
+    it('rejects a context window past the cap', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        contextFrames: MAX_CONTEXT_FRAMES + 1,
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/contextFrames/i);
     });
 
     it('forwards per-chunk prompt beats, keeping a blank entry as a fallback marker', async () => {

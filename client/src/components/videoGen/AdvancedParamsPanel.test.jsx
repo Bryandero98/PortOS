@@ -12,6 +12,7 @@ const baseProps = {
   numFrames: 121, onNumFramesChange: vi.fn(),
   chunks: 1, onChunksChange: vi.fn(), keyframesActive: false,
   chunkPrompts: [], onChunkPromptChange: vi.fn(), chainingActive: false,
+  contextFrames: 22, onContextFramesChange: vi.fn(),
   fps: 24, onFpsChange: vi.fn(),
   seed: '', onSeedChange: vi.fn(), onRandomSeed: vi.fn(),
   steps: '', onStepsChange: vi.fn(),
@@ -199,6 +200,45 @@ describe('AdvancedParamsPanel', () => {
       fireEvent.click(toggle());
       fireEvent.change(screen.getByLabelText('Chunk 2'), { target: { value: 'the storm breaks' } });
       expect(onChunkPromptChange).toHaveBeenCalledWith(1, 'the storm breaks');
+    });
+  });
+
+  describe('continuation context window', () => {
+    // ltx2 is the only runtime with an extend pipeline to feed a window to.
+    const LTX2 = { steps: 30, guidance: 3.0, runtime: 'ltx2' };
+
+    it('stays hidden while the request is not chaining', () => {
+      renderPanel({ currentModel: LTX2, chunks: 1, chainingActive: false });
+      fireEvent.click(toggle());
+      expect(screen.queryByLabelText('Continuity')).toBeNull();
+    });
+
+    it('stays hidden on a runtime that ignores the window', () => {
+      // Offering the control where the server discards the value would be a
+      // knob that silently does nothing.
+      renderPanel({ currentModel: { runtime: 'minimax_h3' }, chunks: 3, chainingActive: true });
+      fireEvent.click(toggle());
+      expect(screen.queryByLabelText('Continuity')).toBeNull();
+    });
+
+    it('shows the selected window on a chaining ltx2 render', () => {
+      renderPanel({ currentModel: LTX2, chunks: 3, chainingActive: true, contextFrames: 45 });
+      fireEvent.click(toggle());
+      expect(screen.getByLabelText('Continuity').value).toBe('45');
+    });
+
+    it('offers last-frame chaining as an explicit choice', () => {
+      renderPanel({ currentModel: LTX2, chunks: 3, chainingActive: true });
+      fireEvent.click(toggle());
+      expect(screen.getByRole('option', { name: /Last frame only/ })).toBeTruthy();
+    });
+
+    it('reports the choice as a number, so a selected 0 is not sent as a string', () => {
+      const onContextFramesChange = vi.fn();
+      renderPanel({ currentModel: LTX2, chunks: 3, chainingActive: true, onContextFramesChange });
+      fireEvent.click(toggle());
+      fireEvent.change(screen.getByLabelText('Continuity'), { target: { value: '0' } });
+      expect(onContextFramesChange).toHaveBeenCalledWith(0);
     });
   });
 });

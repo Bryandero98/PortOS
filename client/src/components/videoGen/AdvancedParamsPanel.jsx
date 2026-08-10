@@ -23,6 +23,7 @@ import { FormField } from '../ui/FormField';
 import {
   frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS,
   isModelAllowedForMode, supportsVideoAudioControls,
+  CONTEXT_FRAME_OPTIONS, supportsContextWindow,
 } from '../../lib/videoGenParams.js';
 import { VIDEO_TILING_OPTIONS } from '../../lib/videoTilingOptions';
 
@@ -34,6 +35,7 @@ export default function AdvancedParamsPanel({
   numFrames, onNumFramesChange,
   chunks, onChunksChange, keyframesActive,
   chunkPrompts = [], onChunkPromptChange, chainingActive = false,
+  contextFrames, onContextFramesChange,
   fps, onFpsChange,
   seed, onSeedChange, onRandomSeed,
   steps, onStepsChange,
@@ -110,6 +112,34 @@ export default function AdvancedParamsPanel({
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Continuation context window. Only meaningful once the request
+              really chains AND the runtime has an extend pipeline to feed the
+              window to — everywhere else the server seeds the next chunk from
+              a single last frame regardless, so showing the control would be
+              offering a knob that does nothing. */}
+          {chainingActive && supportsContextWindow(currentModel) && (
+            <div>
+              <label htmlFor="context-frames-select" className="block text-xs font-medium text-gray-400 mb-1" title="How much of the previous chunk each new chunk sees. A window carries the scene's motion across the seam; a single last frame gives the model a pose with no velocity, so movement stalls and restarts at every join.">
+                Continuity
+              </label>
+              <select
+                id="context-frames-select"
+                value={contextFrames}
+                onChange={(e) => onContextFramesChange(Number(e.target.value))}
+                className={inputCls}
+              >
+                {CONTEXT_FRAME_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n === 0 ? 'Last frame only' : `${n} frames (~${(n / fps).toFixed(1)}s)`}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-gray-500 leading-snug mt-1">
+                Bigger windows hold motion better across joins but add render time per chunk.
+              </p>
             </div>
           )}
 

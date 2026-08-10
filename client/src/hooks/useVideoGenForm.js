@@ -10,7 +10,7 @@ import { clampImageEdge } from '../lib/imageGenResolutions';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import {
-  VIDEO_EDGE_BOUNDS, MAX_CHUNKS,
+  VIDEO_EDGE_BOUNDS, MAX_CHUNKS, DEFAULT_CONTEXT_FRAMES,
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
   supportsVideoAudioControls,
   normalizeFramesForModel, normalizeFpsForModel,
@@ -73,6 +73,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // `setChunkPromptAt` rather than eagerly resized on every chunk change, so
   // lowering then raising the count doesn't lose typed text.
   const [chunkPrompts, setChunkPrompts] = useState([]);
+  // Continuation context window — how many of the previous chunk's frames each
+  // chained chunk conditions on. 0 means "last frame only"; the server clamps
+  // and ignores it on a runtime with no extend pipeline.
+  const [contextFrames, setContextFrames] = useState(DEFAULT_CONTEXT_FRAMES);
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');
   const [imageStrength, setImageStrength] = useState('');
@@ -898,6 +902,18 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       if (p.duration) setGrokDuration(p.duration);
     } else if (p.mode) setMode(p.mode);
     if (p.chunks && p.chunks > 1) setChunks(p.chunks);
+    // 0 is a real restored value ("last frame only"), so this can't gate on
+    // truthiness the way `chunks` does — that would silently upgrade a render
+    // the user deliberately put on last-frame chaining back to a window.
+    // Absence is tested separately from the numeric check rather than folded
+    // into one `Number.isFinite(...)`: the route persists a number today, but a
+    // share link or hand-rolled client sends `'0'`, and a bare isFinite on the
+    // raw value rejects that string while `Number(null)`/`Number('')` are both
+    // a finite 0 that would wrongly clear the default. Same shape the
+    // `guidanceScale` restore above uses, for the same round-tripping reason.
+    if (p.contextFrames != null && p.contextFrames !== '' && Number.isFinite(Number(p.contextFrames))) {
+      setContextFrames(Number(p.contextFrames));
+    }
     // Per-chunk beats (#3695). The server normalizes an absent beat to null;
     // the editor's shape is '' for the same thing, so map back on restore.
     if (Array.isArray(p.chunkPrompts) && p.chunkPrompts.length) {
@@ -1118,6 +1134,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // POSITION of a blank middle beat. Omitted entirely when chaining is off
       // or every beat is blank, so a non-chained submit sends nothing.
       chunkPrompts: beats.some((p) => p.trim()) ? JSON.stringify(beats) : '',
+      // Rides only when the request actually chains — same rule as `chunks`.
+      // String()'d rather than sent raw so a deliberate 0 survives buildFormData
+      // (which drops falsy values); '' is what "not sent" looks like here.
+      contextFrames: chainingActive ? String(contextFrames) : '',
     };
   };
 
@@ -1140,6 +1160,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     fps, setFps,
     chunks, setChunks,
     chunkPrompts, setChunkPromptAt, chainingActive,
+    contextFrames, setContextFrames,
     steps, setSteps,
     guidanceScale, setGuidanceScale,
     imageStrength, setImageStrength,

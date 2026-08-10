@@ -110,6 +110,7 @@ export * from './sseHeaders.js';
 export * from './installLogger.js';
 export * from './kimi.js';
 export * from './mediaModels.js';
+export * from './videoContinuity.js';
 export * from './videoDisclosure.js';
 export * from './videoFinishProfiles.js';
 export * from './videoModeProfiles.js';

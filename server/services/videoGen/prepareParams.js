@@ -35,6 +35,7 @@ import { safeUnder } from '../../lib/ffmpeg.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
 import { isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsError } from '../../lib/videoDisclosure.js';
 import { videoLoraFamily } from '../../lib/runners.js';
+import { resolveContextFrames } from '../../lib/videoContinuity.js';
 import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode,
   assertIcReferenceCount, describeIcReferenceRange,
@@ -828,6 +829,16 @@ async function resolvePreparedParams({
     ? normalizedChunkPrompts
     : undefined;
 
+  // Continuation context window — same "only meaningful once the request
+  // really chains" rule as the beats above, so a single-chunk render doesn't
+  // persist a knob that never applied and a resume can't replay it into the
+  // form. Resolved (defaulted + clamped) here rather than at render time so
+  // the persisted job records what the chain will actually do; note `0` is a
+  // real value (last-frame chaining) and must not be dropped as falsy.
+  const effectiveContextFrames = effectiveChunks > 1
+    ? resolveContextFrames(body.contextFrames)
+    : undefined;
+
   return {
     backend,
     pythonPath,
@@ -844,6 +855,7 @@ async function resolvePreparedParams({
     loras,
     effectiveChunks,
     effectiveChunkPrompts,
+    effectiveContextFrames,
     cleanupStaged,
   };
 }
