@@ -552,8 +552,9 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     : {};
   // One entry per CLI reviewer carrying a pinned model and/or effort, rendered as
   // the literal command line the agent must run. Reviewers are listed rather than
-  // filtered to MODEL_CAPABLE_CLI_REVIEWERS because `agy` takes an effort but no
-  // PortOS-pinnable model — it would otherwise have no way to receive one.
+  // filtered to MODEL_CAPABLE_CLI_REVIEWERS up front because a CLI reviewer may
+  // carry only one of the two pins (and `grok` carries neither). The per-flag
+  // gates below decide what each entry renders; an entry with no flags drops out.
   const reviewerPinEntries = cliReviewers
     .map((r) => {
       const flags = [];

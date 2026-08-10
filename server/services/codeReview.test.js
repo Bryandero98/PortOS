@@ -70,6 +70,15 @@ describe('codeReview helpers', () => {
       lmstudioEffort: null,
       ollamaEffort: null,
     }
+    // Same for every model-selectable reviewer — `antigravity` joined the roster
+    // when agy's `--model` became pinnable (#3728).
+    const NO_MODELS = {
+      lmstudioModel: null,
+      ollamaModel: null,
+      codexModel: null,
+      claudeModel: null,
+      antigravityModel: null,
+    }
     it('returns the hardcoded fallback when settings has no codeReview slice', () => {
       expect(pickCodeReviewDefaults(null)).toEqual({
         reviewers: ['copilot'],
@@ -78,10 +87,7 @@ describe('codeReview helpers', () => {
         reviewerMaxRounds: {},
         stopMode: 'all',
         reviewerApplies: false,
-        lmstudioModel: null,
-        ollamaModel: null,
-        codexModel: null,
-        claudeModel: null,
+        ...NO_MODELS,
         ...NO_EFFORTS,
       })
       expect(pickCodeReviewDefaults({})).toEqual({
@@ -91,10 +97,7 @@ describe('codeReview helpers', () => {
         reviewerMaxRounds: {},
         stopMode: 'all',
         reviewerApplies: false,
-        lmstudioModel: null,
-        ollamaModel: null,
-        codexModel: null,
-        claudeModel: null,
+        ...NO_MODELS,
         ...NO_EFFORTS,
       })
     })
@@ -145,6 +148,7 @@ describe('codeReview helpers', () => {
           ollamaModel: 'codellama',
           codexModel: 'gpt-5.6-sol',
           claudeModel: 'qwen2.5:7b',
+          antigravityModel: 'gemini-3.6-flash',
         },
       })
       expect(out).toEqual({
@@ -161,6 +165,7 @@ describe('codeReview helpers', () => {
         ollamaModel: 'codellama',
         codexModel: 'gpt-5.6-sol',
         claudeModel: 'qwen2.5:7b',
+        antigravityModel: 'gemini-3.6-flash',
         ...NO_EFFORTS,
       })
     })
@@ -260,6 +265,19 @@ describe('codeReview helpers', () => {
       // choice, not an absent field — it must not fall back to the scalars.
       const cleared = await resolveReviewLoopOptions({ reviewerModels: {} }, testDeps)
       expect(cleared.reviewerModels).toEqual({})
+    })
+
+    it('carries an antigravity model pin and splits a suffixed id into model + effort', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['antigravity'], antigravityModel: 'gemini-3.6-flash' } }
+      expect((await resolveReviewLoopOptions({}, testDeps)).reviewerModels)
+        .toEqual({ antigravity: 'gemini-3.6-flash' })
+      // `agy models` lists each tier as its own id; agy validates the model/effort
+      // PAIR, so a typed suffixed pin has to reach the invocation already split.
+      mockedSettings.current = { codeReview: { reviewers: ['antigravity'], antigravityModel: 'gemini-3.6-flash-high' } }
+      __resetCodeReviewDefaultsCache()
+      const split = await resolveReviewLoopOptions({}, testDeps)
+      expect(split.reviewerModels).toEqual({ antigravity: 'gemini-3.6-flash' })
+      expect(split.reviewerEfforts).toEqual({ antigravity: 'high' })
     })
 
     it('drops a pin on a reviewer that takes no model', async () => {

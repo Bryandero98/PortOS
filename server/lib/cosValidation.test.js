@@ -13,6 +13,9 @@ import {
   REVIEWER_CLI_BINARIES,
   REVIEWER_VALUES,
   EFFORT_SELECTABLE_REVIEWERS,
+  MODEL_CAPABLE_CLI_REVIEWERS,
+  MODEL_SELECTABLE_REVIEWERS,
+  pairReviewerModelsAndEfforts,
   LOCAL_LLM_EFFORT_LEVELS,
   reviewerEffortLevels,
   normalizeReviewerEfforts,
@@ -327,5 +330,65 @@ describe('client mirror of the reviewer effort ladders', () => {
     }
     // Alias parity too — the picker keys rows off stored slugs.
     expect(client.reviewerEffortLevels('gemini')).toEqual(reviewerEffortLevels('gemini'));
+  });
+
+  // Same failure mode one column over: a reviewer the picker offers a Model cell
+  // for but the server drops the pin from (or vice versa — a CLI whose `--model`
+  // the UI hides). The two rosters drove `antigravity` out of sync until #3728.
+  it('matches the server model-pin rosters', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    expect([...client.MODEL_CAPABLE_CLI_REVIEWERS].sort()).toEqual([...MODEL_CAPABLE_CLI_REVIEWERS].sort());
+    expect([...client.MODEL_SELECTABLE_REVIEWERS].sort()).toEqual([...MODEL_SELECTABLE_REVIEWERS].sort());
+  });
+});
+
+describe('per-reviewer model pins', () => {
+  it('keeps an antigravity model pin on the code-review settings slice', () => {
+    // `agy --model <id>` is real (unlike the effort-only support PortOS assumed
+    // before #3728), so the scalar has to survive the `.strict()` schema.
+    expect(codeReviewSettingsSchema.parse({ antigravityModel: 'gemini-3.6-flash' }).antigravityModel)
+      .toBe('gemini-3.6-flash');
+    // Structural characters would corrupt the emitted `antigravity[<model>]` token.
+    expect(codeReviewSettingsSchema.parse({ antigravityModel: 'a,b' }).antigravityModel).toBeUndefined();
+    expect(codeReviewSettingsSchema.parse({ antigravityModel: '  ' }).antigravityModel).toBeUndefined();
+  });
+
+  it('carries an antigravity model through the task schema and the sanitizer', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', reviewerModels: { antigravity: 'gemini-3.6-pro' } }).reviewerModels)
+      .toEqual({ antigravity: 'gemini-3.6-pro' });
+    expect(sanitizeTaskMetadata({ reviewerModels: { antigravity: 'gemini-3.6-pro', copilot: 'x' } }))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-pro' } });
+  });
+
+  it('splits an effort-suffixed antigravity id into a model/effort pair agy accepts', () => {
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash-high' }, {}))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-flash' }, reviewerEfforts: { antigravity: 'high' } });
+    // An explicitly pinned effort wins over the one baked into the id.
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash-high' }, { antigravity: 'low' }))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-flash' }, reviewerEfforts: { antigravity: 'low' } });
+    // …but an UNUSABLE stored effort doesn't get to suppress the baked one.
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash-low' }, { antigravity: 'max' }))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-flash' }, reviewerEfforts: { antigravity: 'low' } });
+  });
+
+  it('leaves unsuffixed ids and every other reviewer untouched', () => {
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash', codex: 'gpt-5.6-sol' }, { codex: 'high' }))
+      .toEqual({
+        reviewerModels: { antigravity: 'gemini-3.6-flash', codex: 'gpt-5.6-sol' },
+        reviewerEfforts: { codex: 'high' }
+      });
+    // A `-high` suffix on a NON-agy reviewer is part of the id, not an effort.
+    expect(pairReviewerModelsAndEfforts({ claude: 'qwen2.5:7b-high' }, {}))
+      .toEqual({ reviewerModels: { claude: 'qwen2.5:7b-high' }, reviewerEfforts: {} });
+    expect(pairReviewerModelsAndEfforts(undefined, undefined))
+      .toEqual({ reviewerModels: {}, reviewerEfforts: {} });
+  });
+
+  it('does not mutate the maps it was handed', () => {
+    const models = { antigravity: 'gemini-3.6-flash-high' };
+    const efforts = {};
+    pairReviewerModelsAndEfforts(models, efforts);
+    expect(models).toEqual({ antigravity: 'gemini-3.6-flash-high' });
+    expect(efforts).toEqual({});
   });
 });
