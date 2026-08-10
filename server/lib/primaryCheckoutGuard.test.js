@@ -275,6 +275,12 @@ describe('detectPrimaryCheckoutDrift', () => {
     // a `/do:pr` rebase leaves behind) plus its own real work.
     await execGit(['checkout', '-b', agentBranch, 'main'], repo);
     await execGit(['cherry-pick', sharedCommit], repo);
+    // The copy's own sha — identical to `sharedCommit` only when the cherry-pick
+    // landed inside the same committer-timestamp second. `sibling-work` is never
+    // pushed, so this branch is the ONLY route by which the patch reaches origin;
+    // the contributor below must cherry-pick this sha, not `sharedCommit`, or the
+    // clone hits `fatal: bad object` whenever the two straddle a second boundary.
+    const agentCopy = (await capturePrimaryCheckoutState(repo)).head;
     await commit('the agent\'s actual work');
     await execGit(['push', 'origin', agentBranch], repo);
     await execGit(['checkout', 'main'], repo);
@@ -287,7 +293,7 @@ describe('detectPrimaryCheckoutDrift', () => {
     await execGit(['clone', join(scratch, 'origin.git'), contributor], scratch);
     await execGit(['config', 'user.email', 'other@example.com'], contributor);
     await execGit(['config', 'user.name', 'Other Contributor'], contributor);
-    await execGit(['cherry-pick', sharedCommit], contributor);
+    await execGit(['cherry-pick', agentCopy], contributor);
     await execGit(['push', 'origin', 'main'], contributor);
     await execGit(['fetch', 'origin'], repo);
 
