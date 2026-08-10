@@ -37,7 +37,11 @@ import { spawn as ptySpawn } from 'node-pty';
 import { join, resolve } from 'path';
 import { ensureDir, PATHS, tryReadFile } from './fileUtils.js';
 import { createStreamingAnsiStripper, stripAnsi } from './ansiStrip.js';
-import { createImmediateFallbackSignalDetector, createTerminalModelErrorDetector } from './aiToolkit/errorDetection.js';
+import {
+  createImmediateFallbackSignalDetector,
+  createTerminalModelErrorDetector,
+  createTerminalRequestTimeoutDetector,
+} from './aiToolkit/errorDetection.js';
 import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, consumeRunStopRequested, resolveRunCwd } from '../services/runner.js';
 import { registerExternalSession, unregisterExternalSession, isExternalSessionAttached } from '../services/shell.js';
 import { isHostShuttingDown } from './hostShutdown.js';
@@ -265,6 +269,10 @@ ${prompt}`;
   // (not in the shared fallback detector) so it can't kill a long-running agent
   // that merely echoes the error line — see errorDetection.js for the rationale.
   const detectTerminalModelError = createTerminalModelErrorDetector();
+  // Claude Code can exhaust all of its own request retries and then exit 0 with
+  // only `⎿ Request timed out` on screen. This one-shot-only detector lets the
+  // central runner fall back instead of parsing that terminal as creative output.
+  const detectTerminalRequestTimeout = createTerminalRequestTimeoutDetector();
   // True once outputBuffer overflowed OUTPUT_BUFFER_HEADROOM and the head was
   // dropped. We warn once and surface it in the run record so /runs can flag
   // responses where the fallback path may have lost the start.
@@ -423,11 +431,13 @@ ${prompt}`;
         }
         onData?.(stripped);
 
-        const fallbackSignal = detectImmediateFallbackSignal(stripped) || detectTerminalModelError(stripped);
+        const fallbackSignal = detectImmediateFallbackSignal(stripped)
+          || detectTerminalModelError(stripped)
+          || detectTerminalRequestTimeout(stripped);
         if (fallbackSignal) {
           finish({
             success: false,
-            exitCode: 1,
+            exitCode: fallbackSignal.exitCode ?? 1,
             error: fallbackSignal.message || 'Provider requires fallback',
             reason: 'fallback-signal'
           });

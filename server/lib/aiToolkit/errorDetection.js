@@ -228,6 +228,47 @@ export function createTerminalModelErrorDetector({ maxBuffer = 512 } = {}) {
   };
 }
 
+// Claude Code retries transient provider failures inside the TUI. Let those
+// retries run: a line such as `Request timed out · Retrying … attempt 7/10` is
+// still recoverable and may eventually produce the requested response file.
+// Once all retries are exhausted, however, Claude Code renders a terminal
+// gutter line (`⎿ Request timed out`) and may still exit with code 0. Without a
+// one-shot-only detector, the runner calls that a success and hands the error
+// screen to downstream JSON/prose consumers as if it were model output.
+//
+// Require the gutter glyph and the whole line. This deliberately does not match
+// ordinary generated prose mentioning a request timeout, nor an in-progress
+// retry banner. `\s*` between words also matches the cursor-positioned,
+// ANSI-stripped shape observed from the TUI (`Requesttimedout`).
+const TERMINAL_REQUEST_TIMEOUT_PATTERN = /^[\s\u00a0]*⎿[\s\u00a0]*Request\s*timed\s*out\.?[\s\u00a0]*$/im;
+
+export function detectTerminalRequestTimeout(text) {
+  if (!text) return null;
+  const match = String(text).match(TERMINAL_REQUEST_TIMEOUT_PATTERN);
+  if (!match) return null;
+  return {
+    hasError: true,
+    category: ERROR_CATEGORIES.TIMEOUT,
+    message: 'Provider request timed out after exhausting TUI retries',
+    waitTime: null,
+    requiresFallback: true,
+    actionable: false,
+    suggestedFix: 'The provider exhausted its internal request retries — retrying with a fallback provider.',
+    exitCode: 124,
+  };
+}
+
+export function createTerminalRequestTimeoutDetector({ maxBuffer = 512 } = {}) {
+  let buffer = '';
+  const cap = Number.isFinite(maxBuffer) && maxBuffer > 0 ? maxBuffer : 512;
+
+  return (chunk) => {
+    if (!chunk) return null;
+    buffer = `${buffer}${String(chunk)}`.slice(-cap);
+    return detectTerminalRequestTimeout(buffer);
+  };
+}
+
 export function extractWaitTime(text) {
   if (!text) return null;
 

@@ -755,6 +755,34 @@ describe('executeTuiRun', () => {
       }));
     });
 
+    it('fails as a timeout after Claude exhausts its internal request retries instead of parsing the error screen as output', async () => {
+      const provider = { id: 'claude', type: 'tui', command: 'claude' };
+      const onComplete = vi.fn();
+      const promise = executeTuiRun({ runId: 'run-request-timeout', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete, timeout: 60000 });
+      await flushAsync();
+
+      // Retry banners are recoverable and must not be interrupted. The final
+      // gutter-owned line is what Claude Code shows only after retry 10/10.
+      ptyInstances[0].emitData('⎿ Request timed out · Retrying in 38s · attempt 9/10\n');
+      expect(ptyInstances[0].kill).not.toHaveBeenCalled();
+      ptyInstances[0].emitData('  ⎿\u00a0Requesttimedout\n');
+
+      await promise;
+      expect(ptyInstances[0].kill).toHaveBeenCalled();
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-request-timeout',
+        success: false,
+        exitCode: 124,
+        error: expect.stringContaining('timed out'),
+        extras: expect.objectContaining({ completionReason: 'fallback-signal' }),
+      }));
+      expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+        success: false,
+        exitCode: 124,
+        completionReason: 'fallback-signal',
+      }));
+    });
+
     it('finishes with reason "exit" + exitCode 0 when the PTY closes cleanly', async () => {
       const provider = { id: 'claude', type: 'tui', command: 'echo' };
       const promise = executeTuiRun({ runId: 'run-exit', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete: undefined, timeout: 60000 });

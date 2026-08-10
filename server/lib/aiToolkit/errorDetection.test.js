@@ -4,8 +4,10 @@ import {
   analyzeHttpError,
   createImmediateFallbackSignalDetector,
   createTerminalModelErrorDetector,
+  createTerminalRequestTimeoutDetector,
   detectImmediateFallbackSignal,
   detectTerminalModelError,
+  detectTerminalRequestTimeout,
   extractWaitTime,
   ERROR_CATEGORIES
 } from './errorDetection.js';
@@ -321,6 +323,34 @@ describe('Error Detection', () => {
       expect(detect('⏺ API Error (claude-opus-4-8): 400 The provided ')).toBeNull();
       const result = detect('model identifier is invalid.\n');
       expect(result).toMatchObject({ category: ERROR_CATEGORIES.MODEL_NOT_FOUND, requiresFallback: true });
+    });
+  });
+
+  describe('detectTerminalRequestTimeout', () => {
+    it('detects Claude Code exhausting all internal request retries', () => {
+      expect(detectTerminalRequestTimeout('  ⎿\u00a0Requesttimedout\n')).toMatchObject({
+        category: ERROR_CATEGORIES.TIMEOUT,
+        requiresFallback: true,
+        actionable: false,
+        exitCode: 124,
+      });
+    });
+
+    it('does not interrupt an in-progress internal retry', () => {
+      expect(detectTerminalRequestTimeout('⎿ Request timed out · Retrying in 38s · attempt 9/10\n')).toBeNull();
+    });
+
+    it('does not treat generated prose mentioning a timeout as provider chrome', () => {
+      expect(detectTerminalRequestTimeout('The report says the request timed out before the retry.')).toBeNull();
+    });
+
+    it('buffers the terminal banner across stream chunks', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request')).toBeNull();
+      expect(detect(' timed out\n')).toMatchObject({
+        category: ERROR_CATEGORIES.TIMEOUT,
+        exitCode: 124,
+      });
     });
   });
 
