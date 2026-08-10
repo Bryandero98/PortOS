@@ -540,6 +540,46 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(r).toMatchObject({ dimension: 'character', applied: true, characterArcsUpdated: true });
   });
 
+  it('keeps existing transition beats structure-owned during post-arc character repair', async () => {
+    const existingTransition = { kind: 'decision', atIssue: 6, label: 'refuses the unsupported shortcut' };
+    const series = {
+      id: 'ser-1', name: 'S', premise: 'P', universeId: 'uni-1',
+      characterArcs: [{
+        characterId: 'chr-1', characterName: 'Example Listener', want: 'Prove the protocol',
+        need: 'Accept uncertainty', startState: 'certain', endState: 'careful',
+        transitions: [existingTransition], status: 'draft',
+      }],
+    };
+    const universe = { id: 'uni-1', characters: [{ id: 'chr-1', name: 'Example Listener' }] };
+    seriesSvc.getSeries.mockResolvedValue(series);
+    universeBuilder.getUniverse.mockResolvedValue(universe);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(universe) || {}) }));
+    stageRunner.runStagedLLM.mockResolvedValue({ content: {
+      characters: [{
+        id: 'chr-1', name: 'Example Listener', ghost: 'A failed test', wound: 'Fears ambiguity',
+        lie: 'One protocol can prove innocence', want: 'Prove the protocol', need: 'Accept uncertainty',
+        coreTheme: 'restraint without innocence', motivations: 'Protect workers and avoid blame',
+        speechPattern: 'measured sensory clauses', arcType: 'flat', secrets: ['Cannot hear the upper band'],
+      }],
+      characterArcs: [{
+        characterId: 'chr-1', characterName: 'Example Listener', want: 'Prove the protocol',
+        need: 'Accept uncertainty', startState: 'certain', endState: 'still opposed to the lead',
+        transitions: [{ kind: 'decision', atIssue: 2, label: 'new unsupported early appearance' }],
+        status: 'draft',
+      }],
+    } });
+
+    await applyFoundationFix('ser-1', 'character', {
+      finding: { gap: 'too agreeable', fix: 'retain a principled opponent' },
+    });
+
+    const patch = seriesSvc.updateSeries.mock.calls.at(-1)[1];
+    expect(patch.characterArcs[0]).toMatchObject({ endState: 'still opposed to the lead' });
+    expect(patch.characterArcs[0].transitions).toEqual([
+      expect.objectContaining(existingTransition),
+    ]);
+  });
+
   it('repairs a large referenced cast through exhaustive sequential batches', async () => {
     const characters = Array.from({ length: 8 }, (_, index) => ({
       id: `chr-${index + 1}`,
@@ -643,6 +683,9 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-character-foundation', expect.objectContaining({
       phase: 'pre-arc character foundation',
     }), expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' }));
+    expect(seriesSvc.updateSeries.mock.calls.at(-1)[1].characterArcs[0].transitions).toEqual([
+      expect.objectContaining({ kind: 'decision', atIssue: 2, label: 'asks for help' }),
+    ]);
   });
 
   it('routes worldbuilding → expandWorldTemplate + a lock-aware updateUniverse write', async () => {

@@ -948,12 +948,32 @@ async function repairCharacters(series, issues, universe, finding, options) {
   let arcsApplied = false;
   if (proposedArcs.length > 0) {
     const latestSeries = await getSeries(series.id);
+    const existingArcByKey = new Map((latestSeries.characterArcs || []).flatMap((arc) => [
+      arc?.characterId ? [arc.characterId, arc] : null,
+      arc?.characterName ? [`name:${arc.characterName.trim().toLowerCase()}`, arc] : null,
+    ].filter(Boolean)));
+    // Character repairs after the macro arc may deepen motivation, arc type,
+    // and start/end states, but transition beats are plot events. Letting this
+    // editor add or move them silently creates an arc-ledger event that no
+    // episode synopsis stages; the next judge then (correctly) penalizes the
+    // structure for a contradiction the previous repair just invented. Keep
+    // existing authored transitions unchanged in post-arc reconciliation and leave
+    // missing scene placement to the structure owner (`resolveVerifyIssues`).
+    const boundedProposedArcs = options.phase === 'post-arc reconciliation'
+      ? proposedArcs.map((arc) => {
+        const existing = existingArcByKey.get(arc.characterId)
+          || existingArcByKey.get(`name:${String(arc.characterName || '').trim().toLowerCase()}`);
+        return existing
+          ? { ...arc, transitions: Array.isArray(existing.transitions) ? existing.transitions : [] }
+          : arc;
+      })
+      : proposedArcs;
     // A legacy name-only arc and a newly canon-linked arc otherwise have
     // different sanitizer keys and survive as duplicates. Remove every prior
     // identity the proposal replaces, then rely on last-write-wins within the
     // proposal itself. This preserves untouched arcs while upgrading the
     // authored character to its stable canon id.
-    const replacementKeys = new Set(proposedArcs.flatMap((arc) => [
+    const replacementKeys = new Set(boundedProposedArcs.flatMap((arc) => [
       arc.characterId || '',
       arc.characterName ? `name:${arc.characterName.trim().toLowerCase()}` : '',
     ]).filter(Boolean));
@@ -961,7 +981,7 @@ async function repairCharacters(series, issues, universe, finding, options) {
       !replacementKeys.has(arc?.characterId || '')
       && !replacementKeys.has(arc?.characterName ? `name:${arc.characterName.trim().toLowerCase()}` : '')
     ));
-    const mergedArcs = sanitizeCharacterArcList([...untouchedArcs, ...proposedArcs]);
+    const mergedArcs = sanitizeCharacterArcList([...untouchedArcs, ...boundedProposedArcs]);
     if (JSON.stringify(mergedArcs) !== JSON.stringify(latestSeries.characterArcs || [])) {
       await updateSeries(series.id, { characterArcs: mergedArcs });
       arcsApplied = true;

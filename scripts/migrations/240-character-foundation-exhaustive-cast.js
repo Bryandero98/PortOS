@@ -15,7 +15,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-character-foundation.md': 'cda34127b40754ddbcc8544e3d82572b',
+  'pipeline-character-foundation.md': 'd6c449c06de73a0868141c899b26e52c',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
