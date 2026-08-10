@@ -91,18 +91,20 @@ export function resolveVideoBackendPin(project, settings, { target = RENDER_TARG
  * the shortest clip that still covers the request, which is free: a shorter
  * request costs the same wall clock and returns the same footage.
  *
- * `width`/`height` are optional and only used by grok.js to derive an aspect
- * ratio for the base image it generates; when omitted it falls back to the
- * configured `imageGen.grok.aspectRatio`.
+ * Returns only the keys that are grok-specific, so a caller merges it over its
+ * own params rather than being handed a whole job. That matters for geometry:
+ * both callers already carry the project's `width`/`height`, and grok.js
+ * derives its base-image aspect ratio from those in preference to the
+ * configured `imageGen.grok.aspectRatio` — so this must not restate (or drop)
+ * them, only supply the ratio fallback for a caller that has no geometry.
  */
-export function grokVideoJobParams(settings, { sourceImagePath = null, durationSeconds, width, height } = {}) {
+export function grokVideoJobParams(settings, { sourceImagePath = null, durationSeconds } = {}) {
   const grok = settings?.imageGen?.grok || {};
   return {
     mode: VIDEO_GEN_MODE.GROK,
     videoMode: sourceImagePath ? 'image' : 'text',
     grokPath: grok.grokPath,
     duration: nearestGrokDuration(durationSeconds),
-    ...(Number.isFinite(width) && Number.isFinite(height) ? { width, height } : {}),
     ...(grok.aspectRatio ? { aspectRatio: grok.aspectRatio } : {}),
   };
 }

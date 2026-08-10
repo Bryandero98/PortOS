@@ -112,16 +112,13 @@ describe('grokVideoJobParams', () => {
     expect(grokVideoJobParams(grokOn, {}).duration).toBe(6);
   });
 
-  it('passes width/height through so grok derives the project aspect ratio', () => {
-    const params = grokVideoJobParams(grokOn, { durationSeconds: 6, width: 544, height: 960 });
-    expect(params.width).toBe(544);
-    expect(params.height).toBe(960);
-  });
-
-  it('omits width/height when they are not both finite', () => {
-    const params = grokVideoJobParams(grokOn, { durationSeconds: 6, width: 544 });
+  it("never restates geometry, so a caller's own width/height survives the merge", () => {
+    // grok.js prefers width/height-derived aspect over the configured one, so
+    // emitting either key here would let the helper clobber the project's.
+    const params = grokVideoJobParams(grokOn, { durationSeconds: 6 });
     expect(params).not.toHaveProperty('width');
     expect(params).not.toHaveProperty('height');
+    expect({ width: 544, height: 960, ...params }).toMatchObject({ width: 544, height: 960 });
   });
 
   it('carries the configured aspect ratio only when one is set', () => {

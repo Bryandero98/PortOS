@@ -210,12 +210,9 @@ export async function runSceneRender(project, scene) {
       ...shared,
       // Scene duration is authored in the local lane's continuous seconds;
       // grokVideoJobParams snaps it up to a length Grok actually delivers.
-      ...grokVideoJobParams(settings, {
-        sourceImagePath,
-        durationSeconds: scene.durationSeconds,
-        width: renderParams.width,
-        height: renderParams.height,
-      }),
+      // Geometry rides along in `shared` — grok.js reads it to derive the
+      // project's aspect ratio for the base image.
+      ...grokVideoJobParams(settings, { sourceImagePath, durationSeconds: scene.durationSeconds }),
     }
     : {
       ...shared,
