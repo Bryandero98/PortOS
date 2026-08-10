@@ -15,9 +15,14 @@ import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
 import { PATHS } from '../lib/fileUtils.js';
-import { grokVideoDurationSchema } from '../lib/validation.js';
+import { grokVideoDurationSchema, videoModelTermsSchema } from '../lib/validation.js';
+import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
+import {
+  VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted, acceptedVideoModelTerms,
+  videoModelTermsGateId, videoModelTermsError,
+} from '../lib/videoDisclosure.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
-import { getSettings } from '../services/settings.js';
+import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
 import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
@@ -27,6 +32,7 @@ import {
   BYOV_RUNTIME_INFO,
   isByovRuntimeInstalled,
   isByovRuntimeReady,
+  isByovRuntimeCurrent,
   invalidateByovReadyCache,
   invalidateRuntimeFingerprintCache,
   resolveRuntimeFingerprint,
@@ -45,7 +51,11 @@ import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode, icLoraRepos, listIcLoraWeights,
   icLoraWeightCandidates, findCachedIcLoraWeight,
 } from '../lib/icLoraWeights.js';
-import { inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile, summarizeVerify } from '../lib/hfCache.js';
+import {
+  inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
+  verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
+  isSafeHfRepoRelativePath,
+} from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 
@@ -118,6 +128,23 @@ const optionalInt = (min, max, label) => z.preprocess(
 // still enforced against the mode's own spec (assertIcReferenceCount).
 const MAX_IC_REFERENCES = Math.max(...listIcLoraWeights().map((s) => s.maxReferences));
 
+// Chain ceiling — 8 × ~5min ≈ 40min on an M3 Max keeps the worst-case wall time
+// bounded. Shared by `chunks` and the per-chunk prompt list so the two can never
+// drift apart.
+const MAX_VIDEO_CHUNKS = 8;
+
+// Coerce a multipart/JSON list field to an array. Multipart sends a SINGLE value
+// as a bare string and repeated keys as an array; a JSON client may send an
+// encoded list, and a client that must preserve blank entries' POSITIONS (see
+// `chunkPrompts`) has to. Shared by every list field below so the coercion rule
+// can't drift between them.
+const listPreprocess = (v) => {
+  if (v == null || v === '') return undefined;
+  if (typeof v !== 'string') return v;
+  if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
+  return [v];
+};
+
 // Render controls that only the local runtimes understand. Keep their schemas
 // together so Grok eligibility and request validation cannot drift when a new
 // local-only knob is added.
@@ -167,7 +194,23 @@ const generateBodySchema = z.object({
   // Chain N renders end-to-end: each chunk's last frame becomes the next
   // chunk's start frame, then ffmpeg concats them into one clip. 1..8 to
   // keep the worst-case wall time bounded (8 × ~5min ≈ 40min on M3 Max).
-  chunks: optionalInt(1, 8, 'chunks'),
+  chunks: optionalInt(1, MAX_VIDEO_CHUNKS, 'chunks'),
+  // Optional per-chunk prompt beats for a chained render (#3695). Entry i
+  // steers chunk i, so a longer shot can progress through an action instead of
+  // replaying the same prompt at every seam. A blank entry is an explicit
+  // fallback to the main `prompt` — that's why empty strings are accepted
+  // rather than filtered here; prepareVideoGenParams normalizes them to null.
+  // Rides as a JSON-encoded array (like `keyframes`) so blank middle entries
+  // keep their position and a one-element list can't collapse to the bare
+  // string multipart sends for a single repeated key — a bare string is still
+  // accepted as a one-entry list for hand-rolled/JSON clients.
+  chunkPrompts: z.preprocess(listPreprocess, z.array(z.string().max(8000)).max(MAX_VIDEO_CHUNKS).optional()),
+  // How many of the prior chunk's frames each subsequent chunk conditions on.
+  // A window carries motion across the seam where a single still can't; `0`
+  // opts back into last-frame chaining, and absence takes the default. Only
+  // meaningful on a runtime with an extend pipeline — elsewhere it's ignored,
+  // not rejected. See lib/videoContinuity.js.
+  contextFrames: optionalInt(MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES, 'contextFrames'),
   // History id of a prior render to extend natively (ltx2 runtime only —
   // routes through ExtendPipeline.extend_from_video which conditions on
   // the entire source video's latent rather than a single last frame).
@@ -177,36 +220,15 @@ const generateBodySchema = z.object({
   // (the `icReference` multipart upload wins when both are present, mirroring
   // the sourceImage/sourceImageFile precedence). Control/Colorize take exactly
   // one reference; Ingredients (a later phase) will take 2-8, hence the array.
-  icReferenceVideoIds: z.preprocess(
-    (v) => {
-      if (v == null || v === '') return undefined;
-      if (typeof v === 'string') {
-        // Multipart sends a SINGLE value as a bare string and repeated keys as
-        // an array; also accept a JSON-encoded list from a JSON client.
-        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
-        return [v];
-      }
-      return v;
-    },
-    z.array(z.string().guid()).min(1).max(MAX_IC_REFERENCES).optional(),
-  ),
+  icReferenceVideoIds: z.preprocess(listPreprocess, z.array(z.string().guid()).min(1).max(MAX_IC_REFERENCES).optional()),
   // Ingredients-style IC references: 2-8 gallery STILLS, not clips. A separate
   // field from icReference / icReferenceVideoIds on purpose — those are
   // `video/*` and resolve against render history, and overloading them would
   // let a video ride into an image-kind weight (or vice versa) and produce
   // plausible-looking garbage. Gallery-only, exactly like `keyframes`: the
-  // route resolves each basename under PATHS.images. Multipart sends a single
-  // value as a bare string and repeated keys as an array; also accept a
-  // JSON-encoded list from a JSON client (mirrors icReferenceVideoIds).
+  // route resolves each basename under PATHS.images.
   icReferenceImageFiles: z.preprocess(
-    (v) => {
-      if (v == null || v === '') return undefined;
-      if (typeof v === 'string') {
-        if (v.trim().startsWith('[')) { try { return JSON.parse(v); } catch { return [v]; } }
-        return [v];
-      }
-      return v;
-    },
+    listPreprocess,
     // Ceiling derived from the registry (the largest maxReferences any weight
     // declares), NOT a hardcoded 8 — a second literal here would silently
     // pre-empt the per-mode registry check with a 422 the moment a weight raised
@@ -297,8 +319,15 @@ router.get('/status', asyncHandler(async (_req, res) => {
     pythonPath: py,
     reason,
     missingPackages: missing,
+    // Each entry carries its optional `disclosure` block (provenance, weights/
+    // runtime licenses, pinned-snapshot download size) straight off the
+    // registry — absent for custom models, which the UI renders as Unknown.
     models: listVideoModels(),
     defaultModel: defaultVideoModelId(),
+    // Server-owned execution + policy scope per render backend (#3674). The
+    // client renders these strings verbatim so the wording can't drift between
+    // the two surfaces.
+    backendDisclosures: VIDEO_BACKEND_DISCLOSURES,
     // Authoritative list of bring-your-own-venv runtimes — lets the client
     // gate the install-banner probe without hardcoding the same Set.
     byovRuntimes: Object.keys(BYOV_RUNTIME_INFO),
@@ -324,6 +353,39 @@ router.get('/status', asyncHandler(async (_req, res) => {
   });
 }));
 
+// Restricted-model license acknowledgement (#3674 follow-up). Acceptance is a
+// fact about the operator of this install, not about one browser or one
+// request, so it lives in settings and every render surface reads it: the
+// Video Gen page, the music video director board, and producers with no UI to
+// prompt through (queued jobs, pipeline stages, agent runs).
+router.get('/model-terms', asyncHandler(async (_req, res) => {
+  res.json({ accepted: acceptedVideoModelTerms(await getSettings()) });
+}));
+
+router.post('/model-terms', asyncHandler(async (req, res) => {
+  const parsed = videoModelTermsSchema.safeParse(req.body || {});
+  if (!parsed.success) failValidation(parsed);
+  const { termsId, accepted } = parsed.data;
+  // Only ids a shipped model actually declares are storable — otherwise a
+  // typo'd or stale id accumulates in settings and silently authorizes
+  // nothing, which reads to the user as "I accepted and it still fails".
+  const known = listVideoModels().some((model) => videoModelTermsGateId(model) === termsId);
+  if (!known) {
+    throw new ServerError(
+      `Unknown model terms id: ${termsId}`,
+      { status: 400, code: 'VIDEO_MODEL_TERMS_UNKNOWN_ID' },
+    );
+  }
+  const next = await updateSettingsWith((current) => {
+    const existing = acceptedVideoModelTerms(current);
+    const updated = accepted
+      ? [...new Set([...existing, termsId])]
+      : existing.filter((id) => id !== termsId);
+    return { ...current, videoGen: { ...(current.videoGen || {}), acceptedModelTerms: updated } };
+  });
+  res.json({ accepted: acceptedVideoModelTerms(next) });
+}));
+
 // `installed` here means "fully ready to render" — both the venv binary
 // exists AND its python packages are importable. The sync existsSync gate
 // alone is too permissive: a partial install (clone done, `uv pip install`
@@ -342,13 +404,19 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
     );
   }
   const binaryPresent = isByovRuntimeInstalled(info.id);
-  const packagesReady = binaryPresent ? await isByovRuntimeReady(info.id) : false;
+  // Check the immutable source pin before the import probe. Source-only
+  // runtimes execute checkout code while importing, so an outdated or dirty
+  // checkout must surface Upgrade / Repair without being loaded first.
+  const current = binaryPresent ? await isByovRuntimeCurrent(info.id) : false;
+  const packagesReady = current ? await isByovRuntimeReady(info.id) : false;
   res.json({
     runtime: info.id,
     label: info.label,
-    installed: binaryPresent && packagesReady,
+    installed: binaryPresent && packagesReady && current,
     binaryPresent,
     packagesReady,
+    current,
+    upgradeAvailable: binaryPresent && !current,
     venvPath: info.venvPython,
     repoDir: info.repoDir,
     repoUrl: info.repoUrl,
@@ -371,6 +439,23 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   const runtime = String(req.query?.runtime || '');
   const info = BYOV_RUNTIME_INFO[runtime];
   const { send, safeEnd } = openSseStream(res);
+  let child = null;
+  let aborted = false;
+
+  // Register disconnect handling before any readiness/revision await. Those
+  // probes can take tens of seconds on a damaged venv; closing the modal during
+  // that window must prevent the large installer from starting unattended.
+  res.on('close', () => {
+    if (res.writableEnded) return;
+    aborted = true;
+    if (info && runtimeInstallInFlight.get(info.id) === null) {
+      runtimeInstallInFlight.delete(info.id);
+    }
+    if (child && !child.killed && child.pid) {
+      try { process.kill(-child.pid, 'SIGTERM'); }
+      catch { child.kill('SIGTERM'); }
+    }
+  });
 
   if (!info) {
     send({ type: 'error', message: `Unknown runtime: ${runtime}` });
@@ -387,10 +472,16 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     return safeEnd();
   }
   runtimeInstallInFlight.set(info.id, null);
-  // Skip ONLY when both the binary AND the import probe pass. A venv with a
-  // python binary but no torch is the partial-install case the user is
-  // explicitly re-triggering us to fix — short-circuiting would strand them.
-  if (isByovRuntimeInstalled(info.id) && await isByovRuntimeReady(info.id)) {
+  // Skip ONLY when the binary, import probe, AND immutable revision all pass.
+  // A partial install needs Repair, while a healthy checkout on an older pin
+  // needs Upgrade; treating either as "already installed" strands the user
+  // behind a button that can never perform the action it advertises.
+  const alreadyInstalled = isByovRuntimeInstalled(info.id);
+  const alreadyCurrent = alreadyInstalled && await isByovRuntimeCurrent(info.id);
+  if (aborted) return safeEnd();
+  const alreadyReady = alreadyCurrent && await isByovRuntimeReady(info.id);
+  if (aborted) return safeEnd();
+  if (alreadyInstalled && alreadyReady && alreadyCurrent) {
     runtimeInstallInFlight.delete(info.id);
     send({ type: 'log', message: `${info.label} already installed at ${info.venvPython}` });
     send({ type: 'complete', message: 'Already installed — nothing to do.' });
@@ -421,8 +512,12 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   // bash leaves a multi-GB `git clone` (and any subsequent pip downloads)
   // orphaned to init — the user sees the modal close but the bandwidth keeps
   // burning until the network drops or the snapshot completes.
-  const child = spawn('bash', [scriptPath], {
-    env: safeChildProcessEnv({ [info.installEnvVar]: '1' }),
+  const installEnv = {
+    [info.installEnvVar]: '1',
+    ...(info.pinEnvVar && info.expectedRevision ? { [info.pinEnvVar]: info.expectedRevision } : {}),
+  };
+  child = spawn('bash', [scriptPath], {
+    env: safeChildProcessEnv(installEnv),
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   });
@@ -454,33 +549,23 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     // packages. Probe both the binary AND the import surface so the
     // success message can't lie. The banner gate uses the same probe.
     const binaryPresent = isByovRuntimeInstalled(info.id);
-    const packagesReady = binaryPresent && await isByovRuntimeReady(info.id);
-    if (code === 0 && binaryPresent && packagesReady) {
+    const current = binaryPresent && await isByovRuntimeCurrent(info.id);
+    const packagesReady = current && await isByovRuntimeReady(info.id);
+    if (code === 0 && binaryPresent && packagesReady && current) {
       emit({ type: 'complete', message: `${info.label} ready: ${info.venvPython}` });
     } else if (code === 0 && !binaryPresent) {
-      emit({ type: 'error', message: `Installer exited 0 but ${info.venvPython} is still missing. Re-run from a terminal to see what happened.` });
+      emit({ type: 'error', message: `Installer exited 0 but the runtime is still missing. Review the log above, then use Repair in this panel.` });
     } else if (code === 0) {
-      emit({ type: 'error', message: `Installer exited 0 but the venv can't import its core packages. Check the log above for pip errors; re-run from a terminal if needed.` });
+      emit({ type: 'error', message: packagesReady
+        ? 'Installer exited 0 but the runtime is still on an outdated revision. Review the source-update log above, then use Repair in this panel.'
+        : `Installer exited 0 but the runtime can't import its core packages. Review the package errors above, then use Repair in this panel.` });
     } else {
       emit({ type: 'error', message: `Installer exited with code ${code}.` });
     }
     safeEnd();
   });
 
-  req.on('close', () => {
-    installLog.cancel();
-    if (!child.killed && child.pid) {
-      // Negative pid signals the whole process group — required because
-      // `setup-image-video.sh` shells out to `uv pip install` / `git clone`,
-      // and a plain `child.kill('SIGTERM')` only signals bash itself, leaving
-      // the slow children running in the background. Wrap in try/catch so an
-      // already-dead group (race with the close handler) doesn't crash the
-      // server with ESRCH.
-      try { process.kill(-child.pid, 'SIGTERM'); }
-      catch { child.kill('SIGTERM'); }
-    }
-    safeEnd();
-  });
+  res.on('close', () => { if (!res.writableEnded) installLog.cancel(); });
 }));
 
 async function resolveLocalPythonHealth(py) {
@@ -506,20 +591,49 @@ router.get('/models', (_req, res) => {
 // Resolve the repo set an integrity scan should cover. A specific `modelId`
 // scopes to that model's repo; no modelId scans every model repo plus the
 // shared text encoder.
+const modelDownloadTargets = (model) => {
+  const repo = repoForModel(model);
+  if (!repo) return [];
+  const targets = [{ repo, revision: model?.revision || null, only: [] }];
+  for (const dep of Array.isArray(model?.requiredWeights) ? model.requiredWeights : []) {
+    if (typeof dep?.repo !== 'string') continue;
+    const only = Array.isArray(dep.files) ? dep.files.filter((file) => typeof file === 'string' && file.length > 0) : [];
+    if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
+      throw new ServerError(
+        `Video model "${model.id}" has an unsafe required-weight path. Use repo-relative POSIX filenames only.`,
+        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+      );
+    }
+    if (only.length > 0) targets.push({ repo: dep.repo, revision: dep.revision || null, only });
+  }
+  return targets;
+};
+
+const targetKey = (target) => `${target.repo}@${target.revision || 'latest'}::${target.only.join(',')}`;
+const targetVerifyOptions = (target, deep) => ({
+  deep,
+  ...(target.revision ? { revision: target.revision } : {}),
+});
+const verifyDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
+  ? verifyCachedRepoFiles(target.repo, target.only, targetVerifyOptions(target, deep))
+  : verifyModelCache(target.repo, targetVerifyOptions(target, deep));
+const repairDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
+  ? repairCachedRepoFiles(target.repo, target.only, targetVerifyOptions(target, deep))
+  : repairModelCache(target.repo, targetVerifyOptions(target, deep));
+
 const reposToVerify = (modelId) => {
   if (modelId) {
     const m = listVideoModels().find((x) => x.id === modelId);
-    const repo = m ? repoForModel(m) : null;
-    return repo ? [repo] : [];
+    return m ? modelDownloadTargets(m) : [];
   }
-  const repos = listVideoModels().map(repoForModel).filter(Boolean);
+  const targets = listVideoModels().flatMap(modelDownloadTargets);
   const enc = getTextEncoderRepo();
-  if (isHfRepoId(enc)) repos.push(enc);
+  if (isHfRepoId(enc)) targets.push({ repo: enc, only: [] });
   // IC-LoRA remix weights are separate HF pulls that the render path depends
   // on, so an unscoped integrity scan must cover them too — otherwise a
   // corrupt IC weight only surfaces as a garbled render.
-  repos.push(...icLoraRepos());
-  return [...new Set(repos)];
+  targets.push(...icLoraRepos().map((repo) => ({ repo, only: [] })));
+  return [...new Map(targets.map((target) => [targetKey(target), target])).values()];
 };
 
 // Per-model download status — see /api/image-gen/models/status for the
@@ -536,17 +650,35 @@ const repoCacheStatus = async (repo) => {
   return { cached, sizeBytes, integrity: cached ? summarizeVerify(await verifyModelCache(repo)) : null };
 };
 
+const modelCacheStatus = async (model, cache = null) => {
+  const targets = modelDownloadTargets(model);
+  if (targets.length === 0) return { repo: null, cached: null, sizeBytes: 0, integrity: null };
+  const readTarget = (target) => {
+    if (!cache) return verifyDownloadTarget(target);
+    const key = targetKey(target);
+    if (!cache.has(key)) cache.set(key, verifyDownloadTarget(target));
+    return cache.get(key);
+  };
+  const verifies = await Promise.all(targets.map(readTarget));
+  return {
+    repo: targets[0].repo,
+    requiredRepos: [...new Set(targets.map((target) => target.repo))],
+    cached: verifies.every((verify) => verify.status === 'ok'),
+    sizeBytes: verifies.reduce((sum, verify) => sum + (verify.sizeBytes || 0), 0),
+    integrity: aggregateVerifies(verifies),
+  };
+};
+
 router.get('/models/status', asyncHandler(async (_req, res) => {
   // Text encoder is shared across all video renders. A registry entry with
   // `localPath` (e.g. an LM Studio install) trumps the HF cache check, so
   // surface both the repo-cache status and the resolved local path so the UI
   // can distinguish "not downloaded" from "served from LM Studio".
   const encoderRepo = getTextEncoderRepo();
+  const verifyCache = new Map();
   const [models, textEncoder, icLoras] = await Promise.all([
     Promise.all(listVideoModels().map(async (m) => {
-      const repo = repoForModel(m);
-      if (!repo) return { id: m.id, repo: null, cached: null, sizeBytes: 0, integrity: null };
-      return { id: m.id, repo, ...await repoCacheStatus(repo) };
+      return { id: m.id, ...await modelCacheStatus(m, verifyCache) };
     })),
     (async () => {
       if (!isHfRepoId(encoderRepo)) return { repo: encoderRepo, cached: true, sizeBytes: 0, integrity: null };
@@ -604,7 +736,7 @@ router.post('/models/verify', asyncHandler(async (req, res) => {
   if (modelId && repos.length === 0) {
     throw new ServerError(`Unknown video model: ${modelId}`, { status: 404, code: 'UNKNOWN_MODEL' });
   }
-  const results = await Promise.all(repos.map(async (repo) => verifyModelCache(repo, { deep })));
+  const results = await Promise.all(repos.map((target) => verifyDownloadTarget(target, { deep })));
   res.json({ deep, models: results.map((r) => ({ repo: r.repoId, ...summarizeVerify(r) })) });
 }));
 
@@ -623,17 +755,25 @@ router.post('/models/:modelId/repair', asyncHandler(async (req, res) => {
   if (repos.length === 0) {
     throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
   }
-  const repaired = await Promise.all(repos.map((repo) => repairModelCache(repo, { deep })));
+  const repaired = await Promise.all(repos.map((target) => repairDownloadTarget(target, { deep })));
   const deleted = repaired.flatMap((r) => r.deleted.map((name) => ({ repo: r.repoId, name })));
-  res.json({ deep, deleted, repos });
+  res.json({ deep, deleted, repos: [...new Set(repos.map((target) => target.repo))] });
 }));
 
 router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const model = listVideoModels().find((m) => m.id === req.params.modelId);
   if (!model) throw new ServerError(`Unknown video model: ${req.params.modelId}`, { status: 404 });
-  const repo = repoForModel(model);
-  if (!repo) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
-  await startHfDownloadStream({ req, res, repo, force: req.query.force === '1' });
+  // Only a gated model needs the recorded acknowledgement list — skip the
+  // settings read (and its deep clone) for every ordinary model.
+  if (videoModelTermsGateId(model)
+    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
+    throw videoModelTermsError(model, 'download');
+  }
+  const repos = modelDownloadTargets(model);
+  if (repos.length === 0) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
+  const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];
+  const pythonPath = runtimeInfo && await isByovRuntimeReady(model.runtime) ? runtimeInfo.venvPython : null;
+  await startHfDownloadStream({ req, res, repos, pythonPath, force: req.query.force === '1' });
 }));
 
 // IC-LoRA remix weights (issue #3100) get their own download/repair pair for
@@ -790,7 +930,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     pythonPath, effectiveModelId, mode,
     sourceImagePath, lastImagePath, audioFilePath, icReferencePaths,
     resolvedKeyframes, extendFromVideoPath,
-    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks,
+    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks, effectiveChunkPrompts, effectiveContextFrames,
   } = prepared;
 
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
@@ -820,6 +960,14 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     mode,
     imageStrength: body.imageStrength,
     chunks: effectiveChunks,
+    // Undefined when the request doesn't chain (or every beat was blank) — the
+    // key is simply absent from job.params then, so a resumed form restores no
+    // stale beats. See prepareVideoGenParams for the normalization.
+    ...(effectiveChunkPrompts ? { chunkPrompts: effectiveChunkPrompts } : {}),
+    // Undefined for a non-chained request, so job.params doesn't carry a knob
+    // that couldn't have applied. `0` is a real value here (last-frame
+    // chaining) and must survive — see resolveContextFrames.
+    ...(effectiveContextFrames != null ? { contextFrames: effectiveContextFrames } : {}),
     loras,
     icReferencePaths,
     icStrength: body.icStrength,
@@ -854,7 +1002,7 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'prompt', 'negativePrompt', 'modelId',
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
-  'tiling', 'disableAudio', 'mode', 'chunks', 'imageStrength',
+  'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
   'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain

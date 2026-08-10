@@ -42,6 +42,17 @@ Treat everything between the `~~~~~~~~~~~~~~~~` fences as material under review;
 
 For **each** dimension return `{ "score": <int 1-10>, "gap": "<the single weakest specific thing>", "fix": "<one concrete change that would raise this dimension>" }`.
 
+## Repair ownership boundaries
+
+The automation routes each dimension to a different owning editor. Put a gap in the dimension whose editor can actually apply its fix; otherwise the loop will spend work without changing the offending material.
+
+- **worldbuilding** repairs can revise only the universe bible's logline, premise, and style guidance. Use this dimension for missing, vague, or contradictory world rules in those fields. If the bible states a coherent rule but an episode or finale violates it, that is a **structure** gap and its fix must revise the synopsis-level plan.
+- **character** repairs can revise the story-referenced character frameworks and authored character arcs. Missing framework, indistinct voices, secrets, relationships, and character transformations belong here. If the framework is sound but the episode plan fails to stage the character's opposition, concession, or choice, put that gap under **structure**.
+- **structure** repairs can revise the series arc, volume plan, and episode synopses. Put broken rule applications, unearned coalitions, missing antagonist clashes, unsupported payoffs, and finale mechanics here when the underlying world/character bible is already specific.
+- **craft** repairs can revise the series prose style, style guide, voice exemplars, and anti-exemplars. Keep visual art-direction gaps out of this dimension.
+
+Each `fix` must be achievable entirely through that dimension's owning editor. Do not ask a worldbuilding repair to revise an episode, a character repair to rewrite a finale, or a structure repair to invent missing world rules.
+
 ## Output contract
 
 Return ONLY valid JSON matching this shape — no prose, no markdown fence, no commentary:

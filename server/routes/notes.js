@@ -22,13 +22,32 @@ import {
 const router = Router();
 
 const NOT_FOUND_CODES = new Set(['VAULT_NOT_FOUND', 'NOTE_NOT_FOUND']);
-const errorStatus = (code) => NOT_FOUND_CODES.has(code) ? 404 : 400;
+// The note exists but iCloud reports its bytes as evicted — usually transient
+// (it heals once the background `brctl download` completes), so 503, not 404
+// (gone) or 400 (your request was wrong). Not ALWAYS transient: the screen can
+// false-positive on a genuinely-local sparse/compressed file, which no amount of
+// retrying clears — the service says so in the message and the UI offers a
+// force-save override on the second refusal (#3717).
+const UNAVAILABLE_CODES = new Set(['NOTE_EVICTED']);
+const errorStatus = (code) => {
+  if (NOT_FOUND_CODES.has(code)) return 404;
+  if (UNAVAILABLE_CODES.has(code)) return 503;
+  return 400;
+};
 
 function throwOnError(result, fallbackMessage) {
   if (result?.error) {
     throw new ServerError(result.message || result.error, {
       status: errorStatus(result.error),
-      code: result.error
+      code: result.error,
+      // `stalled` is the service's verdict that this refusal is NOT transient —
+      // the download changed nothing, so no amount of retrying clears it. It
+      // rides the standard `context` channel (sanitized here, re-attached by
+      // `apiCore.request` as `err.context`) because it is the only thing allowed
+      // to arm the force-save override: a client-side retry counter would arm it
+      // during a genuine in-flight download too, handing the user exactly the
+      // blocking write this guard exists to prevent (#3717).
+      ...(result.stalled === undefined ? {} : { context: { stalled: result.stalled } })
     });
   }
   if (result === null) {
@@ -83,7 +102,10 @@ router.get('/vaults/:id/scan', asyncHandler(async (req, res) => {
 
   const total = result.notes.length;
   const notes = result.notes.slice(offset, offset + limit);
-  res.json({ vault: result.vault, notes, total });
+  // Forward the skipped-because-unavailable count (the other readers pass their
+  // whole result through; this one reshapes for pagination and would otherwise
+  // drop it, leaving the client unable to tell a short vault from an offloaded one).
+  res.json({ vault: result.vault, notes, total, skippedUnavailable: result.skippedUnavailable ?? 0 });
 }));
 
 router.get('/vaults/:id/note', asyncHandler(async (req, res) => {
@@ -103,8 +125,8 @@ router.post('/vaults/:id/note', asyncHandler(async (req, res) => {
 
 router.put('/vaults/:id/note', asyncHandler(async (req, res) => {
   const { path } = validateRequest(notePathSchema, req.query);
-  const { content } = validateRequest(updateNoteSchema, req.body);
-  const result = await obsidian.updateNote(req.params.id, path, content);
+  const { content, force } = validateRequest(updateNoteSchema, req.body);
+  const result = await obsidian.updateNote(req.params.id, path, content, { force });
   throwOnError(result);
   res.json(result);
 }));

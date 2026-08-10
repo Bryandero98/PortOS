@@ -49,7 +49,9 @@ import { ensureDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { createToolExecution, startExecution, completeExecution, errorExecution } from './toolStateMachine.js';
 import { determineLane, acquire, release } from './executionLanes.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
-import { createAgentRun, checkForTaskCommit, completeAgentRun } from './agentRunTracking.js';
+import { createAgentRun } from './agentRunTracking.js';
+import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
+import { capturePrimaryCheckoutState } from '../lib/primaryCheckoutGuard.js';
 import { buildAgentPrompt, getAppWorkspace } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
@@ -71,7 +73,11 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 // below them were retired with the `subAgentSpawner.js` barrel (#3450).
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
-import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
+// `releaseRetryHold` is imported STATICALLY here (the TUI/direct-CLI spawners
+// reach for it via `await import()` only because they sit BELOW this module and
+// a top-level import there would race the cycle) — this module already imports
+// `cleanupAgentWorktree` from the same file, so there is no new edge.
+import { cleanupAgentWorktree, releaseRetryHold } from './agentWorktreeCleanup.js';
 import { runAgentCompletionCleanup } from './agentCompletionCleanup.js';
 import { dispatchRecoveredTaskOutputHook, finalizeAgent, releaseAgentLane, stampLiExecutionVerdict } from './agentFinalization.js';
 import { extractFinalSummary } from './agentSummaryExtraction.js';
@@ -426,10 +432,24 @@ async function runAgentSpawn(task) {
     //
     // `instanceId` was resolved up front via `ensureInstanceId()` for the claim
     // guard, and is reused here so the warm-path cached read happens once.
+    // The checkout the worktree was cut FROM (null for a non-worktree run, which
+    // works in the primary directly and so has nothing to protect).
+    const sourceWorkspace = worktreeInfo
+      ? (task.metadata?.app ? await getAppWorkspace(task.metadata.app) : ROOT_DIR)
+      : null;
+
     await registerAgent(agentId, task.id, {
       instanceId,
       workspacePath,
-      sourceWorkspace: worktreeInfo ? (task.metadata?.app ? await getAppWorkspace(task.metadata.app) : ROOT_DIR) : null,
+      sourceWorkspace,
+      // Branch-jack baseline (#3680): the primary checkout's branch + HEAD at the
+      // instant this worktree agent started. finalizeAgent re-reads it at the end
+      // of the run — every spawn mode funnels through that one chokepoint — and
+      // fails the run when the primary moved, instead of recording a silent
+      // "completed" for an agent that wrote unreviewed commits outside its
+      // worktree. Non-throwing: an unreadable checkout yields null, which the
+      // detector reads as "nothing to check".
+      primaryCheckoutBaseline: sourceWorkspace ? await capturePrimaryCheckoutState(sourceWorkspace) : null,
       worktreeBranch: worktreeInfo?.branchName || null,
       isWorktree: !!worktreeInfo,
       isPersistentWorktree: !!worktreeInfo?.isPersistentWorktree,
@@ -484,7 +504,7 @@ async function runAgentSpawn(task) {
       taskQuotaBurnLimitingResetAt: Number(task.metadata?.quotaBurnLimitingResetAt) || null,
       // Same reason as taskLiProposal — a hand-picked projection, so this must be
       // listed explicitly. `declaresNoCommitCriterion` (taskTypeHooks.js) reads it
-      // to decide whether a run declared a `[task-<id>]` commit criterion at all,
+      // to decide whether a run declared a commit criterion at all,
       // and taskLearning's history backfill re-processes the ARCHIVED agent shape
       // through that same predicate. Without the projection an archived
       // tracker-filing run (reference-watch/ux on a github/gitlab/jira app) looks
@@ -740,9 +760,10 @@ export async function spawnViaRunner(agentId, task, opts) {
   // because `runnerAgents` still holds the entry, `isAgentOwnedLocally` makes
   // the orphan sweep skip the record too, so the 3s timer above flips it to
   // `working` and it sits there for the life of the process. Finalize with the
-  // real error instead — same shape as the runner's own `agent:error` handling
-  // in subAgentSpawner.js. (The TUI arm of this dispatch owns the equivalent
-  // handling inside spawnTuiAgent, where `finish()` is the idempotent finalizer.)
+  // real error instead, through the ordinary finalizeAgent → releaseRetryHold
+  // chain so the TASK is transitioned too — see the catch below. (The TUI arm of
+  // this dispatch owns the equivalent handling inside spawnTuiAgent, where
+  // `finish()` is the idempotent finalizer that runs the same chain.)
   let result;
   try {
     result = await spawnAgentViaRunner({
@@ -770,11 +791,51 @@ export async function spawnViaRunner(agentId, task, opts) {
     clearTimeout(agentInfo.initializationTimeout);
     runnerAgents.delete(agentId);
     releaseAgentLane({ agentId, success: false, exitCode: 1, executionId, laneName, errorExecutionMessage: message });
-    // validationPassed is the null sentinel (#2344): no success criterion was
-    // ever evaluated, so this records "not declared" rather than a false
-    // "declared and failed".
-    await completeAgent(agentId, { success: false, validationPassed: null, error: message });
-    await completeAgentRun(runId, '', 1, 0, { message, category: 'runner-error' });
+    // Finalize through the SAME chokepoint every other ending uses (#3632).
+    // Finalizing the agent alone — which is all this used to do — left the TASK
+    // sitting `in_progress` holding its federation claim until the 15-minute
+    // orphan sweep, and that sweep is for orphans: it charges
+    // `orphanRetryCount` against MAX_ORPHAN_RETRIES and arms a 30-minute
+    // cooldown for a failure the task did not cause. finalizeAgent owns the
+    // task transition, execution tracking, and the per-type failure ledger;
+    // releaseRetryHold then flips the held retry to `pending` immediately (and
+    // `updateTask` strips the claim keys on the way out of `in_progress`), so
+    // the task is re-dequeuable the moment the rejection lands.
+    //
+    // `spawn-rejected` is its own reason, deliberately NOT the TUI's
+    // `spawn-error`: that one is `actionable` (→ the task is BLOCKED for a
+    // human), which is right when a PTY genuinely can't start but wrong for a
+    // runner that was merely unreachable for a moment. See its entry in
+    // COMPLETION_REASON_ANALYSES.
+    const errorAnalysis = analyzeAgentFailure('', task, model, {
+      completionReason: 'spawn-rejected',
+      completionError: message,
+    });
+    // validationPassed is the null sentinel (#2344), applied inside
+    // finalizeAgent: no success criterion was ever evaluated, so this records
+    // "not declared" rather than a false "declared and failed".
+    await finalizeAgent({
+      agentId,
+      task,
+      runId,
+      providerId: provider.id,
+      success: false,
+      exitCode: 1,
+      duration: 0,
+      outputBuffer: '',
+      errorAnalysis,
+      isTruthyMetaFn: isTruthyMeta,
+      error: message,
+      completionReason: 'spawn-rejected',
+      workspacePath,
+      // The agent never ran, so it cannot have opened a PR — skip the
+      // PR-claim verification entirely (it only applies to claimed successes).
+      prExpected: false,
+    }).catch(err => {
+      emitLog('error', `finalizeAgent threw for rejected spawn ${agentId}: ${err.message}`, { agentId, taskId: task.id, error: err.message });
+    });
+    await releaseRetryHold({ agentId, task, success: false })
+      .catch(err => emitLog('warn', `Retry-hold release failed for rejected spawn ${agentId}: ${err.message}`, { agentId, taskId: task.id }));
     emitLog('error', `Agent ${agentId} failed to spawn via runner: ${message}`, { agentId, taskId: task.id });
     cosEvents.emit('agent:error', { agentId, taskId: task.id, error: message });
     return null;
@@ -875,7 +936,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
           // cleanup), so the worktree is still on disk, branch and all — without it
           // the retry builds a fresh tree off the default branch and redoes work
           // that is sitting right there.
-          await handleOrphanedTask(cosAgent.taskId, agentId, getTaskById, { agentMetadata: cosAgent.metadata });
+          await handleOrphanedTask(cosAgent.taskId, agentId, getTaskById, { agentMetadata: cosAgent.metadata, agentStartedAt: cosAgent.startedAt });
           // If orphan recovery settled the task into a terminal `blocked` state (retry budget
           // exhausted), the local completion already recorded the proposal failure — so stamp
           // the LI failure verdict here too (#2779, codex P2) or the originating peer would
@@ -953,11 +1014,16 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       outputBuffer = await readFile(outputFile, 'utf-8').catch(() => '');
     }
 
-    // Post-execution validation: check for task commit even if exit code is non-zero
+    // Post-execution validation: a non-zero exit that still left a commit inside
+    // the run's own window DID the work (#3637 — the probe is the window, not a
+    // task-id commit marker no agent ever emitted).
+    // `runnerAgents` (in-memory) stamps `startedAt: Date.now()` — a NUMBER — while
+    // the persisted record stores an ISO string; toEpochMs handles both.
+    const runStartedAt = toEpochMs(agent.startedAt);
     let effectiveSuccess = success;
     if (!effectiveSuccess && task?.id) {
       const workspacePath = agent.workspacePath || ROOT_DIR;
-      const commitFound = await checkForTaskCommit(task.id, workspacePath);
+      const commitFound = await committedDuringRun(workspacePath, runStartedAt);
       if (commitFound) {
         emitLog('warn', `Agent ${agentId} reported failure (exit ${exitCode}) but work completed - commit found for task ${task.id}`, { agentId, taskId: task.id, exitCode });
         effectiveSuccess = true;
@@ -1039,6 +1105,8 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
         isTruthyMetaFn: isTruthyMeta,
         workspacePath: agent.workspacePath || null,
         prExpected: runnerAgentOwnsPR,
+        // The run window the commit criterion is evaluated against (#3637).
+        startedAt: Number.isFinite(runStartedAt) ? runStartedAt : null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
     } catch (err) {

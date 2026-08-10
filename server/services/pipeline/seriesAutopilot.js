@@ -77,10 +77,14 @@ export * from './seriesAutopilot/config.js';
 export * from './seriesAutopilot/convergence.js';
 export * from './seriesAutopilot/stepResolver.js';
 export * from './seriesAutopilot/session.js';
+export * from './seriesAutopilot/diagnosisCore.js';
+export * from './seriesAutopilot/selfImprove.js';
+export * from './seriesAutopilot/observer.js';
 export * from './seriesAutopilot/childRuns.js';
 export * from './seriesAutopilot/editorialSteps.js';
 export * from './seriesAutopilot/visualSteps.js';
 export * from './seriesAutopilot/revisionSteps.js';
+export * from './seriesAutopilot/unlockPass.js';
 export * from './seriesAutopilot/dispatch.js';
 export * from './seriesAutopilot/dryRun.js';
 export * from './seriesAutopilot/orchestrator.js';
@@ -106,6 +110,7 @@ export const __testing = {
   get runs() { return state.runs; },
   get buildDryRunPlan() { return dryRun.buildDryRunPlan; },
   get summarizePlanCost() { return convergence.summarizePlanCost; },
+  get roleLlm() { return session.roleLlm; },
   get providerOverrideOpts() { return session.providerOverrideOpts; },
   get providerIdOpts() { return session.providerIdOpts; },
   get meanQualityScore() { return revisionSteps.meanQualityScore; },

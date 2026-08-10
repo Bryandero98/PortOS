@@ -9,13 +9,12 @@
  */
 
 import { homedir } from 'os';
-import { join, dirname, basename } from 'path';
-import { readFile, stat } from 'fs/promises';
+import { join } from 'path';
+import { stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { spawn } from 'child_process';
 import { atomicWrite, safeJSONParse, readJSONFile, dataPath, ensureDir } from '../lib/fileUtils.js';
-import { bufferedSpawn } from '../lib/bufferedSpawn.js';
+import { ICLOUD_NOT_MATERIALIZED, isEvictedStats, materializeAndWait, readIfMaterialized, requestMaterialization } from '../lib/icloudFile.js';
 import { isPlainObject } from '../lib/objects.js';
 import { getSettings, settingsEvents } from './settings.js';
 
@@ -90,124 +89,111 @@ export function defaultStorePath() { return DEFAULT_ICLOUD_PATH; }
 // macOS Optimize-Mac-Storage can evict iCloud files. When that happens the
 // path still appears to exist (placeholder), but `readFile` returns EAGAIN
 // because the read triggers an async download that doesn't return inline.
-// `brctl download <path>` is the documented verb to materialize the file
-// now. It does NOT set a persistent retention flag against future eviction
+// `brctl download <path>` is the verb that materializes the file now. It is
+// undocumented — absent from `brctl --help`, like its `evict` counterpart (see
+// server/lib/icloudFile.js) — but present on every stock macOS and functional.
+// It does NOT set a persistent retention flag against future eviction
 // (that requires Finder's "Keep Downloaded" or undocumented `brctl unevict`),
 // so re-eviction under future disk pressure is still possible — the retry-
 // on-EAGAIN path handles that case. Best-effort, fire-and-forget; on
 // non-macOS we never spawn brctl, and on macOS when brctl is unexpectedly
 // missing (sandboxed env, removed binary) we warn ONCE and then fall
-// through to the retry path silently — without the dedupe, every
-// settings:updated would re-warn.
+// through to the retry path silently.
 
 let lastPinnedPath = null;
-let brctlMissingWarned = false;
+// Monotonic pin-attempt counter. Each pin captures its own generation so a stale
+// child's late failure can be told apart from the CURRENT pin even when both share
+// the same path (an A → B → A settings churn re-pins A while A's first child is
+// still in flight). A path-only guard can't distinguish those two A children, so
+// the first one's late failure would wrongly clear the second's sticky state and
+// let the next event spawn a duplicate pin.
+let pinGeneration = 0;
 
+// The boot/settings-change pin. The spawn + detach/unref + error/exit handler
+// plumbing (and the shared once-per-process "brctl missing" warning) all live in
+// the shared `requestMaterialization` helper now — this call site only owns the
+// pin's distinct dedupe policy: a single sticky `lastPinnedPath` that persists
+// after a *successful* pin (one configured path at a time; re-pin only when the
+// path changes). `retryAfterExit: false` keeps the shared helper from tracking
+// the pin in its in-flight read-heal map. `onFailure` clears the sticky path so a
+// failed / signal-killed pin can be retried on the next settings:updated — gated
+// on the captured generation so only the CURRENT pin's own failure clears it (a
+// superseded pin's late failure is ignored).
 function pinAgainstEviction(path) {
   if (process.platform !== 'darwin') return;
   if (!path || lastPinnedPath === path) return;
   lastPinnedPath = path;
-
-  // detached + unref so a long-running `brctl download` (large evicted file,
-  // slow network) can't keep the Node process alive on shutdown. Matches the
-  // repo's fire-and-forget spawn pattern in server/routes/apps/launch.js +
-  // server/routes/brain.js.
-  const child = spawn('brctl', ['download', path], { detached: true, stdio: 'ignore' });
-  child.unref();
-  // Capture `path` in each handler so a late-arriving error/exit from a stale
-  // child (one whose path has since been replaced by a newer pinAgainstEviction
-  // call) doesn't clear the dedupe cache for the *current* path. Without this
-  // capture, the stale exit would null out lastPinnedPath even though the new
-  // path's child is still in flight (or has already succeeded), defeating
-  // dedupe and causing repeated spawns on subsequent settings:updated events.
-  child.on('error', (err) => {
-    if (lastPinnedPath === path) lastPinnedPath = null;
-    if (err.code === 'ENOENT') {
-      // brctl isn't in PATH. On darwin this is extremely unusual; surface it
-      // once so operators in a sandbox aren't left wondering why pinning is
-      // a silent no-op, then dedupe so we don't spam on every settings change.
-      if (!brctlMissingWarned) {
-        brctlMissingWarned = true;
-        console.warn('⚠️ brctl not found on PATH; MortalLoom store pinning disabled (retry-on-EAGAIN path remains)');
-      }
-      return;
-    }
-    console.warn(`⚠️ brctl download failed for MortalLoom store: ${err.message}`);
+  const myGeneration = ++pinGeneration;
+  const stillCurrent = () => pinGeneration === myGeneration;
+  const spawned = requestMaterialization(path, {
+    label: 'MortalLoom store',
+    retryAfterExit: false,
+    onFailure: () => { if (stillCurrent()) lastPinnedPath = null; },
   });
-  child.on('exit', (code, signal) => {
-    if (code === 0) {
-      console.log(`📥 MortalLoom store pinned for download: ${path}`);
-      return;
-    }
-    // Non-zero exit OR signal-kill (code===null,signal set). Either way the
-    // pin didn't complete, so clear the dedupe cache to allow a retry on the
-    // next settings:updated event. Without this, a SIGTERM'd brctl would
-    // permanently mask its own retry. Guard with the captured `path` so a
-    // stale child can't clear cache for a path that has already moved on.
-    if (lastPinnedPath === path) lastPinnedPath = null;
-    if (code !== null) {
-      console.warn(`⚠️ brctl download exited ${code} for MortalLoom store: ${path}`);
-    } else {
-      console.warn(`⚠️ brctl download killed by ${signal} for MortalLoom store: ${path}`);
-    }
-  });
+  // The helper declined to spawn (a non-iCloud configured path, or a synchronous
+  // spawn failure — the non-darwin case is already handled above). Clear the
+  // sticky path so a corrected/healable path on the next settings:updated isn't
+  // wrongly deduped as "already pinned".
+  if (!spawned && stillCurrent()) lastPinnedPath = null;
 }
 
 // === On-demand (blocking) materialization for the write path ===
 
-// macOS' older eviction mechanism renames `Foo.json` to a hidden
-// `.Foo.json.icloud` placeholder, after which `existsSync(Foo.json)` reports
-// false even though real data is sitting there evicted. Detecting the
-// placeholder lets updateStore() refuse to seed a fresh store on top of it
-// (which would shadow the real data) and materialize it instead. Modern macOS
-// uses dataless files (path stays present) so this is belt-and-suspenders, but
-// the silent-data-loss cost if it ever fires is exactly what this module's
-// overwrite guard exists to prevent.
-function icloudPlaceholderPath(path) {
-  return join(dirname(path), `.${basename(path)}.icloud`);
-}
+// Eviction has exactly ONE representation this module has to handle: the modern
+// APFS dataless vnode, where the path stays present and `readIfMaterialized`'s
+// `stat()` screen catches it. This module used to also probe for macOS' pre-APFS
+// `.MortalLoom.json.icloud` sibling stub; #3716 measured that representation as
+// non-occurring and removed the probe — see the "only ONE representation"
+// section in server/lib/icloudFile.js. An absent path is therefore genuinely
+// absent here, safe to seed.
 
 // Unlike the fire-and-forget pinAgainstEviction() at boot, the write path needs
 // to KNOW an evicted file is materialized before deciding whether refusing to
-// overwrite is warranted. `brctl download <path>` materializes a dataless
-// (Optimize-Mac-Storage-evicted) file or an `.icloud` placeholder and exits 0
-// once the bytes are local; we await that exit (bounded by a timeout) and let
-// the caller re-read. Resolves `true` only on a clean exit-0 — non-darwin,
-// missing brctl, spawn error, timeout, and non-zero exit all resolve `false`,
-// every one of which falls through to the caller's existing refuse-to-overwrite
-// guard. So this can only ever recover the situation, never worsen it.
+// overwrite is warranted. `brctl download <path>` asks iCloud to materialize a
+// dataless (Optimize-Mac-Storage-evicted) file.
+//
+// CRITICAL: exit 0 means the download was ACCEPTED/QUEUED, NOT that the bytes are
+// local. brctl can return 0 before materialization completes, and returns 0 even
+// when the sync layer ultimately can't fetch the file (device offline / iCloud
+// wedged); under a wedged iCloud it can instead hang, which is why we await it
+// with a timeout below. So a `true` here is NOT proof the file is readable. What
+// keeps the caller's subsequent re-read safe is `readStoreAtPathResult`: it calls
+// `readIfMaterialized`, which REJECTS rather than issuing a blocking read for a
+// file it can't safely read — a still-dataless file rejects with
+// ICLOUD_NOT_MATERIALIZED (its `Stats.blocks` screen) — and `readStoreAtPathResult`
+// catches that and yields `store: null` (which `readStoreAtPath` unwraps). Either
+// way the store stays null and the caller refuses to overwrite, so a false-
+// positive `true` from here can't truncate data. (It does not eliminate the
+// bounded eviction race documented in `readIfMaterialized`, which can still
+// strand one threadpool slot per path — see server/lib/icloudFile.js — but this
+// path never makes that worse.)
+//
+// We await brctl's exit (bounded by a timeout) and let the caller re-read.
+// Resolves `true` only on a clean exit-0 — non-darwin, missing brctl, spawn
+// error, timeout, and non-zero exit all resolve `false`, every one of which
+// falls through to the caller's existing refuse-to-overwrite guard. So this can
+// only ever recover the situation, never worsen it.
 //
 // Exposed (not const) so tests can drop the timeout without waiting on it.
 export let MATERIALIZE_TIMEOUT_MS = 20000;
 export function _setMaterializeTimeoutForTest(ms) { MATERIALIZE_TIMEOUT_MS = ms; }
 
-// Unlike pinAgainstEviction, this awaits brctl to completion via the shared
-// bufferedSpawn helper (timeout + kill-tree handled there). The timeout bounds a
-// hung download (file evicted AND device offline) so a single write can't block
-// forever. Resolves `true` only on a clean exit-0; every failure mode resolves
-// `false` and falls through to the caller's existing refuse-to-overwrite guard.
+// Unlike pinAgainstEviction, this awaits brctl to completion (timeout + kill-tree
+// handled inside the shared helper). The timeout bounds a hung download (file
+// evicted AND device offline) so a single write can't block forever. Resolves
+// `true` only on a clean exit-0; every failure mode resolves `false` and falls
+// through to the caller's existing refuse-to-overwrite guard.
+//
+// The mechanics live in `icloudFile.materializeAndWait` — Obsidian's `updateNote`
+// needs the identical awaited-and-bounded materialize (#3706), so the second
+// caller is what earned the extraction. The local `MATERIALIZE_TIMEOUT_MS` is
+// passed explicitly rather than relying on the lib's default so this service
+// keeps its own test hook.
 async function materializeNow(path) {
-  if (process.platform !== 'darwin' || !path) return false;
-  const result = await bufferedSpawn('brctl', ['download', path], {
+  return materializeAndWait(path, {
+    label: 'MortalLoom store',
     timeoutMs: MATERIALIZE_TIMEOUT_MS,
-    shell: false,
   });
-  if (result.success) return true;
-  if (result.error?.code === 'ENOENT') {
-    // brctl missing — share the dedupe flag with pinAgainstEviction so we
-    // surface the missing-binary warning at most once per process.
-    if (!brctlMissingWarned) {
-      brctlMissingWarned = true;
-      console.warn('⚠️ brctl not found on PATH; MortalLoom on-demand materialize disabled (refuse-to-overwrite guard remains)');
-    }
-  } else if (result.timedOut) {
-    console.warn(`⚠️ brctl download timed out after ${MATERIALIZE_TIMEOUT_MS}ms for MortalLoom store: ${path}`);
-  } else if (result.error) {
-    console.warn(`⚠️ brctl download failed for MortalLoom store: ${result.error.message}`);
-  } else {
-    console.warn(`⚠️ brctl download exited ${result.code} for MortalLoom store: ${path}`);
-  }
-  return false;
 }
 
 // Two flags, not one: the listener is durable (sync, idempotent) but the
@@ -224,7 +210,9 @@ export function _resetMortalLoomInitForTest() {
   listenerAttached = false;
   didInitialPin = false;
   lastPinnedPath = null;
-  brctlMissingWarned = false;
+  pinGeneration = 0;
+  // The once-per-process "brctl missing" flag now lives in icloudFile; tests that
+  // need it cleared reset it via icloudFile._resetICloudFileStateForTest().
 }
 
 /**
@@ -347,17 +335,28 @@ async function readStoreAtPathResult(path) {
   // closes the existsSync→readFile TOCTOU where iCloud offloads the file between
   // the check and the read. `readFile`'s ENOENT is the ONLY genuine "absent".
   let unreadable = false;
-  const raw = await withTransientRetry(() => readFile(path, 'utf-8')).catch((err) => {
+  // `readIfMaterialized` — NOT a bare `readFile`. On modern macOS an evicted
+  // (dataless) iCloud file does not fail with EAGAIN the way the retry logic
+  // below assumes; the read BLOCKS forever in the kernel and strands a libuv
+  // threadpool thread, and four of those take the entire server's filesystem
+  // access down with them (see server/lib/icloudFile.js). The guard screens with
+  // a `stat()` — which never materializes — and rejects with
+  // ICLOUD_NOT_MATERIALIZED instead of issuing the read, kicking a background
+  // `brctl download` so the next cycle succeeds.
+  const raw = await withTransientRetry(() => readIfMaterialized(path, { label: 'MortalLoom store' })).catch((err) => {
+    if (err.code === ICLOUD_NOT_MATERIALIZED) {
+      // Present but evicted — never a trustworthy empty, so a strict read reports
+      // `unavailable` and updateStore's guard refuses to seed over real data.
+      console.warn(`⚠️ MortalLoom store evicted from local storage; skipping read until iCloud materializes it: ${path}`);
+      unreadable = true;
+      return null;
+    }
     if (err.code === 'ENOENT') {
-      // Genuinely absent — UNLESS a legacy `.MortalLoom.json.icloud` placeholder
-      // shadows the real path, which means the store EXISTS but is offloaded under
-      // macOS's older rename-based eviction (the case updateStore's overwrite
-      // guard also checks). Treat that as present-but-unreadable so a strict read
-      // refuses to report a trustworthy empty for a store it has not actually
-      // read. This also covers an offload that races in after the read began.
-      // Silent either way — a missing store is normal, not warn-worthy. The read
-      // side never blocks on `brctl` to materialize (that stays updateStore's job).
-      if (existsSync(icloudPlaceholderPath(path))) unreadable = true;
+      // Genuinely absent, and trustworthy as such: eviction cannot surface here.
+      // A dataless file keeps its path and rejects with ICLOUD_NOT_MATERIALIZED
+      // above, and the pre-APFS placeholder representation that WOULD read as
+      // ENOENT does not occur (#3716 — see server/lib/icloudFile.js). Silent —
+      // a missing store is normal, not warn-worthy.
       return null;
     }
     // Any other error (EACCES/EIO/EAGAIN/EDEADLK/unknown errno) is a store we could
@@ -379,8 +378,8 @@ async function readStoreAtPathResult(path) {
 /**
  * Store object or `null` — the pre-#2742 shape, kept for callers (readStore,
  * updateStore) that only need the parsed store and derive their own
- * absent-vs-unreadable handling (updateStore does its own existsSync +
- * placeholder check for the overwrite guard).
+ * absent-vs-unreadable handling (updateStore does its own existsSync check for
+ * the overwrite guard).
  */
 async function readStoreAtPath(path) {
   return (await readStoreAtPathResult(path)).store;
@@ -403,19 +402,18 @@ export async function updateStore(mutator) {
   const path = await resolvePath();
   let store = await readStoreAtPath(path);
   // The overwrite guard is based solely on post-read state, not a pre-read
-  // snapshot. readStoreAtPath returns null for four reasons; we only care
+  // snapshot. readStoreAtPath returns null for several reasons; we only care
   // about the *currently observable* state when deciding whether it's safe
   // to write:
-  //   (1) file does not exist now (and no `.icloud` placeholder shadows it) →
-  //       safe to seed a fresh store (whether it was absent the whole time,
-  //       disappeared mid-call, or never appeared in the first place).
+  //   (1) file does not exist now → safe to seed a fresh store (whether it was
+  //       absent the whole time, disappeared mid-call, or never appeared in the
+  //       first place). An absent path is unambiguously absent: the only eviction
+  //       representation that would hide real data behind a false `existsSync` is
+  //       the pre-APFS `.icloud` placeholder, which does not occur (#3716).
   //   (2) file exists now but parsed to a non-plain-object value → unreadable
   //       (transient iCloud read failure, corrupt JSON, or unexpected shape
   //       like a top-level array which JSON.stringify would silently drop).
-  //   (3) the real path is absent but an `.icloud` placeholder is shadowing it
-  //       → the file was evicted under the legacy rename mechanism and real
-  //       data is sitting there unmaterialized; seeding fresh would bury it.
-  // For (2) and (3) the most common cause on macOS is iCloud eviction
+  // For (2) the most common cause on macOS is iCloud eviction
   // (Optimize-Mac-Storage made the file dataless and the sub-200ms transient
   // retry isn't long enough to materialize it). Before refusing — which blocks
   // the user's write — force a BLOCKING `brctl download` and re-read once. This
@@ -425,14 +423,20 @@ export async function updateStore(mutator) {
   // survive to the throw. Without this guard, the iCloud transient-failure
   // tolerance in readStoreAtPath would let updateStore silently truncate a
   // momentarily unreadable iCloud file.
-  const unsafeToSeed = existsSync(path)
-    ? !isPlainObject(store)
-    : existsSync(icloudPlaceholderPath(path));
+  const unsafeToSeed = existsSync(path) && !isPlainObject(store);
   if (unsafeToSeed) {
+    // `materializeNow` resolving `true` only means brctl ACCEPTED the download
+    // request (exit 0), NOT that the bytes are local — see its docblock. Do NOT
+    // remove the re-read's screening on the strength of that `true`: `readStoreAtPath`
+    // → `readStoreAtPathResult` calls `readIfMaterialized`, which REJECTS instead of
+    // issuing a blocking read for a file it can't safely read — a still-dataless file
+    // rejects on the `stat()` re-screen — and `readStoreAtPathResult` catches that
+    // and returns `store: null`. Either way store stays null and we refuse rather
+    // than reading blindly (which is what would risk stranding a threadpool slot).
     const materialized = await materializeNow(path);
     if (materialized) {
       store = await readStoreAtPath(path);
-      console.log(`📥 MortalLoom store materialized from iCloud before write: ${path}`);
+      console.log(`📥 MortalLoom store iCloud download requested before write: ${path}`);
     }
     if (!isPlainObject(store)) {
       // Log the resolved path server-side for diagnostics; keep the thrown
@@ -666,7 +670,23 @@ export async function getStatus() {
   });
   if (!st && !statTransient) return missingResponse;
   let readEnoent = false;
-  const raw = st ? await withTransientRetry(() => readFile(path, 'utf-8')).catch((err) => {
+  // An evicted (dataless) store must NOT be read — the read would block forever
+  // and strand a libuv threadpool thread, taking the whole server's filesystem
+  // access down with it (see server/lib/icloudFile.js). Reuse the `stat` we
+  // already have rather than paying a second one. `size`/`mtime` stay accurate
+  // for a dataless file, so the UI still reports a real file with a null
+  // summary — the same "store unavailable" shape it already renders.
+  // `isEvictedStats`, not the bare `isDatalessStats`: the dataless signal alone
+  // also matches a sparse/compressed ordinary file, so an unscoped check would
+  // permanently report "unavailable" for a store that `readStore()` is reading
+  // fine. Kick the same background heal the read path does, so a user staring at
+  // the Settings page isn't waiting on some unrelated code path to trigger it.
+  const evicted = isEvictedStats(path, st);
+  if (evicted) {
+    console.warn(`⚠️ MortalLoom store evicted from local storage; status summary unavailable: ${path}`);
+    requestMaterialization(path, { label: 'MortalLoom store' });
+  }
+  const raw = st && !evicted ? await withTransientRetry(() => readIfMaterialized(path, { label: 'MortalLoom store' })).catch((err) => {
     if (err.code === 'ENOENT') { readEnoent = true; return null; }
     console.warn(`⚠️ MortalLoom status read unavailable (${err.code || err.errno || 'unknown'}): ${path}`);
     return null;
@@ -703,7 +723,12 @@ export async function getStatus() {
 
 /** Non-destructive import: append MortalLoom records missing from PortOS local files. */
 export async function importToPortOS() {
-  const store = await readStore();
+  // Use the {present, ok} result, not readStore()'s store-or-null: an evicted
+  // store is present-but-unreadable, and reporting it as "file not found" is the
+  // one message most likely to make the user repoint the path or re-seed — burying
+  // the real data this module works to protect.
+  const { present, ok, store } = await readStoreAtPathResult(await resolvePath());
+  if (present && !ok) return { ok: false, reason: 'mortalloom-file-unreadable' };
   if (!store) return { ok: false, reason: 'mortalloom-file-not-found' };
 
   const report = { added: {}, skipped: {} };

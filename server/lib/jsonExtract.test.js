@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findBalancedBlocks, tryParseWithRepair, extractJson } from './jsonExtract.js';
+import { findAllBalancedBlocks, findBalancedBlocks, tryParseWithRepair, extractJson } from './jsonExtract.js';
 
 describe('jsonExtract.findBalancedBlocks', () => {
   it('returns the single top-level brace-balanced block', () => {
@@ -87,6 +87,60 @@ describe('jsonExtract.tryParseWithRepair', () => {
 
   it('replaces literal `[...]` placeholder elisions with empty arrays', () => {
     expect(tryParseWithRepair('{"vars":[...]}')).toEqual({ value: { vars: [] } });
+  });
+
+  it('repairs a complete JSON document whose remaining tail was serialized as escaped text', () => {
+    const bad = [
+      '{',
+      '  "items": [',
+      '    { "name": "Alpha", "notes": ["kept"]\\n    },\\n    {\\n      \\"name\\": \\"Beta\\",\\n      \\"notes\\": [\\"also kept\\"]\\n    }\\n  ]\\n}',
+    ].join('\n');
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: {
+        items: [
+          { name: 'Alpha', notes: ['kept'] },
+          { name: 'Beta', notes: ['also kept'] },
+        ],
+      },
+    });
+  });
+
+  it('escapes unescaped quotation marks inside a prose string value', () => {
+    const bad = '{"voice":"She calls it "the old rule" before rejecting it.","ok":true}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: { voice: 'She calls it "the old rule" before rejecting it.', ok: true },
+    });
+  });
+
+  it('closes a prose string whose final quote is missing before its structural close line', () => {
+    const bad = '{\n  "dimensions": {\n    "world": {\n      "score": 8,\n      "fix": "Make each culture arise from its own history.\n    },\n    "craft": { "score": 7 }\n  }\n}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: {
+        dimensions: {
+          world: { score: 8, fix: 'Make each culture arise from its own history.' },
+          craft: { score: 7 },
+        },
+      },
+    });
+  });
+
+  it('preserves an ordinary raw multiline string for the control-character repair', () => {
+    const bad = '{"body":"line one\nline two","ok":true}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: { body: 'line one\nline two', ok: true },
+    });
+  });
+
+  it('combines serialized-tail and bare-quote repairs in one completed response', () => {
+    const bad = '{"items":[{"voice":"plain"}\\n, {\\n  \\"voice\\": \\"Calls it \\"witness\\" before answering.\\"\\n}\\n]}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: { items: [{ voice: 'plain' }, { voice: 'Calls it "witness" before answering.' }] },
+    });
+  });
+
+  it('does not guess at an invalid backslash tail that is not a serialized JSON fragment', () => {
+    const bad = '{"items":[]}\\not-json';
+    expect(tryParseWithRepair(bad).error).toBeInstanceOf(Error);
   });
 
   it('escapes raw control chars (literal newlines/tabs) inside a string value', () => {
@@ -250,5 +304,38 @@ describe('jsonExtract.extractJson', () => {
   it('does not misparse `}` inside string values (string-aware brace walker)', () => {
     const raw = 'banner {"a":"close-brace-} inside"}';
     expect(extractJson(raw).value).toEqual({ a: 'close-brace-} inside' });
+  });
+});
+
+describe('findAllBalancedBlocks', () => {
+  it('returns nested blocks in closing order, so a reverse walk sees the outer object first', () => {
+    const blocks = findAllBalancedBlocks('{"a":{"b":1}}');
+    expect(blocks).toEqual(['{"b":1}', '{"a":{"b":1}}']);
+  });
+
+  it('keeps scanning past an unmatched opening brace (findBalancedBlocks bails there)', () => {
+    const noisy = 'repaint fragment { then the answer {"a":1}';
+    expect(findBalancedBlocks(noisy)).toEqual([]);
+    expect(findAllBalancedBlocks(noisy)).toEqual(['{"a":1}']);
+  });
+
+  it('ignores an unmatched closing brace', () => {
+    expect(findAllBalancedBlocks('} {"a":1} }')).toEqual(['{"a":1}']);
+  });
+
+  it('is string-aware, so braces inside string values do not shift the depth', () => {
+    expect(findAllBalancedBlocks('{"a":"{ not a brace \\" }"}')).toEqual(['{"a":"{ not a brace \\" }"}']);
+  });
+
+  it('does not let a stray quote on one line swallow the JSON on the next', () => {
+    // A truncated PTY redraw leaves an unmatched `"`; without the line-break
+    // reset the walker would treat the rest of the transcript as string content.
+    const transcript = '\u2502 renaming "foo to bar\n{"a":1}\n';
+    expect(findAllBalancedBlocks(transcript)).toEqual(['{"a":1}']);
+  });
+
+  it('returns [] for non-string or empty input', () => {
+    expect(findAllBalancedBlocks(null)).toEqual([]);
+    expect(findAllBalancedBlocks('')).toEqual([]);
   });
 });

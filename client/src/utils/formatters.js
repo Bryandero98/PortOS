@@ -254,7 +254,7 @@ export function formatDateShort(value) {
 // or vice versa — would let a value through one validator that the
 // other rejects.
 export const TIMEOUT_INPUT_MIN_MS = 1000;
-export const TIMEOUT_INPUT_MAX_MS = 1800000;
+export const TIMEOUT_INPUT_MAX_MS = 43_200_000;
 export const TIMEOUT_INPUT_STEP_MS = 1000;
 
 /**

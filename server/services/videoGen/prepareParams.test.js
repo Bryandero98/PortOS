@@ -13,7 +13,7 @@ vi.mock('./local.js', () => ({
   listVideoModels: vi.fn(() => [{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]),
   defaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   loadHistory: vi.fn(async () => []),
-  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'hunyuan']),
+  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3', 'hunyuan']),
   DEFAULT_NUM_FRAMES: 121,
 }));
 
@@ -42,9 +42,11 @@ vi.mock('fs/promises', () => ({
 }));
 
 import { unlink } from 'fs/promises';
+import { resolveGalleryImage } from '../../lib/fileUtils.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
-import { loadHistory } from './local.js';
+import { getSettings } from '../settings.js';
+import { listVideoModels, defaultVideoModelId, loadHistory } from './local.js';
 import { prepareVideoGenParams, withStagedRollback, cleanupMultipartTemp } from './prepareParams.js';
 
 // Field names the route owns Zod schemas for; the service only needs the keys
@@ -62,6 +64,18 @@ const prepare = (body, uploads = {}) => prepareVideoGenParams({
   uploads,
   localOnlyParamKeys: LOCAL_ONLY_KEYS,
 });
+
+const H3_TERMS = 'minimax-h3-community-license-2026-08-02';
+const H3_MODEL = {
+  id: 'minimax_h3_8bit',
+  name: 'MiniMax H3 MLX 8-bit',
+  runtime: 'minimax_h3',
+  supportedModes: ['text', 'image', 'fflf'],
+  defaultFrames: 124,
+  frameOptions: [124, 141, 158],
+  fpsOptions: [24],
+  termsGate: { id: H3_TERMS },
+};
 
 // Paths unlinked under PATHS.uploads — i.e. the durable copies the service
 // staged, as opposed to the OS temp files the multipart parser wrote.
@@ -105,6 +119,7 @@ describe('cleanupMultipartTemp', () => {
 describe('prepareVideoGenParams', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    listVideoModels.mockReturnValue([{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]);
     loadHistory.mockResolvedValue([]);
   });
 
@@ -152,6 +167,55 @@ describe('prepareVideoGenParams', () => {
       const ic = await prepare({ mode: 'ic-control', icReferenceVideoIds: ['11111111-1111-4111-8111-111111111111'] });
       expect(ic.effectiveChunks).toBe(1);
       expect(ic.icReferencePaths).toEqual(['/mock/videos/prior.mp4']);
+    });
+  });
+
+  describe('per-chunk prompt beats (#3695)', () => {
+    it('normalizes beats and keeps a blank entry in position as a fallback marker', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 3, chunkPrompts: ['  opens the door  ', '', 'the storm breaks'] });
+      expect(prepared.effectiveChunkPrompts).toEqual(['opens the door', null, 'the storm breaks']);
+    });
+
+    it('truncates a stale overlong list to the resolved chunk count', async () => {
+      // The user typed four beats, then lowered Chunks to 2 — the extra beats
+      // must not ride along and desync the list from the chain.
+      const prepared = await prepare({ mode: 'image', chunks: 2, chunkPrompts: ['a', 'b', 'c', 'd'] });
+      expect(prepared.effectiveChunkPrompts).toEqual(['a', 'b']);
+    });
+
+    it('leaves a short list short — uncovered chunks fall back to the main prompt', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 3, chunkPrompts: ['a'] });
+      expect(prepared.effectiveChunkPrompts).toEqual(['a']);
+    });
+
+    it('drops the list entirely for a single-chunk render', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 1, chunkPrompts: ['a', 'b'] });
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+
+    it('drops the list for a mode pinned to one chunk', async () => {
+      // An IC remix anchors a single clip, so chunks is pinned to 1 — a beat
+      // list sent anyway must not persist into job params.
+      loadHistory.mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111', filename: 'prior.mp4' }]);
+      const prepared = await prepare({
+        mode: 'ic-control',
+        icReferenceVideoIds: ['11111111-1111-4111-8111-111111111111'],
+        chunkPrompts: ['a', 'b'],
+      });
+      expect(prepared.effectiveChunks).toBe(1);
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+
+    it('collapses an all-blank list to undefined', async () => {
+      // "every beat cleared" and "no beats sent" must persist identically —
+      // otherwise a resume replays an array of nulls into the form.
+      const prepared = await prepare({ mode: 'image', chunks: 3, chunkPrompts: ['', '  ', ''] });
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
+    });
+
+    it('is undefined when no beats were supplied', async () => {
+      const prepared = await prepare({ mode: 'image', chunks: 2 });
+      expect(prepared.effectiveChunkPrompts).toBeUndefined();
     });
   });
 
@@ -231,5 +295,178 @@ describe('prepareVideoGenParams', () => {
       await expect(prepare({ extendFromVideoId: '22222222-2222-4222-8222-222222222222' }))
         .rejects.toMatchObject({ status: 404, code: 'EXTEND_SOURCE_NOT_FOUND' });
     });
+
+    it('rejects an unsupported Wan mode before staging its upload', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_t2v', name: 'Wan T2V', runtime: 'wan22',
+        supportedModes: ['text'], frameStride: 4,
+      }]);
+
+      await expect(prepare(
+        { modelId: 'wan_t2v', mode: 'image' },
+        { sourceImage: upload('sourceImage') },
+      )).rejects.toMatchObject({ status: 400, code: 'WAN22_MODE_UNSUPPORTED' });
+
+      expect(unlinkedDurablePaths()).toEqual([]);
+      expect(unlink).toHaveBeenCalledWith('/tmp/multipart-sourceImage-frame.png');
+    });
+
+    it('rejects a non-4n+1 Wan frame count before enqueue', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+
+      await expect(prepare({ modelId: 'wan_ti2v', mode: 'text', numFrames: 120 }))
+        .rejects.toMatchObject({ status: 400, code: 'WAN22_INVALID_FRAME_COUNT' });
+    });
+
+    it('rejects Wan image mode without a declared source before staging', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+
+      await expect(prepare({ modelId: 'wan_ti2v', mode: 'image', numFrames: 121 }))
+        .rejects.toMatchObject({ status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' });
+      expect(unlinkedDurablePaths()).toEqual([]);
+    });
+
+    it('rejects Wan image mode when its gallery source no longer resolves', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+      vi.mocked(resolveGalleryImage).mockReturnValueOnce(null);
+
+      await expect(prepare({
+        modelId: 'wan_ti2v', mode: 'image', numFrames: 121, sourceImageFile: 'missing.png',
+      })).rejects.toMatchObject({ status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' });
+    });
+
+    it('rejects an explicit Wan text render that also supplies a source', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_ti2v', name: 'Wan TI2V', runtime: 'wan22',
+        supportedModes: ['text', 'image'], frameStride: 4,
+      }]);
+
+      await expect(prepare(
+        { modelId: 'wan_ti2v', mode: 'text', numFrames: 121 },
+        { sourceImage: upload('sourceImage') },
+      )).rejects.toMatchObject({ status: 400, code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' });
+      expect(unlink).toHaveBeenCalledWith('/tmp/multipart-sourceImage-frame.png');
+    });
+
+    it('rejects chunks on a T2V-only Wan model before staging', async () => {
+      listVideoModels.mockReturnValue([{
+        id: 'wan_t2v', name: 'Wan T2V', runtime: 'wan22',
+        supportedModes: ['text'], frameStride: 4,
+      }]);
+
+      await expect(prepare({ modelId: 'wan_t2v', mode: 'text', numFrames: 121, chunks: 2 }))
+        .rejects.toMatchObject({ status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
+      expect(unlinkedDurablePaths()).toEqual([]);
+    });
+  });
+});
+
+describe('prepareVideoGenParams — MiniMax H3 contract', () => {
+  // H3 is license-gated, and the only authorization is the acknowledgement
+  // recorded in settings — so every test below that is about H3's *mode*
+  // contract runs on an install that has already accepted its terms.
+  const settingsWith = (acceptedModelTerms) => ({
+    imageGen: {
+      local: { pythonPath: '/usr/bin/python3' },
+      grok: { enabled: true, grokPath: '/usr/bin/grok', aspectRatio: '16:9' },
+    },
+    videoGen: { acceptedModelTerms },
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listVideoModels.mockReturnValue([H3_MODEL]);
+    loadHistory.mockResolvedValue([]);
+    getSettings.mockResolvedValue(settingsWith([H3_TERMS]));
+  });
+
+  // A render kicked off from a surface with no terms UI of its own (the music
+  // video board, a pipeline stage) is authorized by the acknowledgement the
+  // user recorded once — anywhere — rather than 403ing with nowhere to go.
+  it('requires the install to have recorded this exact reviewed license', async () => {
+    getSettings.mockResolvedValueOnce(settingsWith(undefined));
+    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
+      .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
+
+    // A superseded license revision does not carry forward to this one.
+    getSettings.mockResolvedValueOnce(settingsWith(['some-older-license']));
+    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
+      .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
+
+    const prepared = await prepare({ modelId: H3_MODEL.id, mode: 'text' });
+    expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
+    expect(prepared.effectiveChunks).toBe(1);
+  });
+
+  it('does not apply the local MiniMax gate to an explicit Grok render', async () => {
+    defaultVideoModelId.mockReturnValueOnce(H3_MODEL.id);
+    const prepared = await prepare({ backend: 'grok' });
+    expect(prepared.backend).toBe('grok');
+    expect(prepared.grok).toMatchObject({ grokPath: '/usr/bin/grok' });
+  });
+
+  it.each([
+    [{ mode: 'extend' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
+    [{ extendFromVideoId: '00000000-0000-4000-8000-000000000001' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
+    [{ mode: 'image' }, 'MINIMAX_H3_I2V_REQUIRES_IMAGE'],
+    [{ mode: 'text', sourceImageFile: 'first.png' }, 'MINIMAX_H3_TEXT_MODE_SOURCE_CONFLICT'],
+    [{ mode: 'image', sourceImageFile: 'first.png', lastImageFile: 'last.png' }, 'MINIMAX_H3_I2V_LAST_IMAGE_CONFLICT'],
+    [{ mode: 'fflf' }, 'MINIMAX_H3_FFLF_REQUIRES_IMAGE'],
+    [{ negativePrompt: 'blur' }, 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED'],
+    [{ disableAudio: true }, 'MINIMAX_H3_AUDIO_REQUIRED'],
+    [{ tiling: 'full' }, 'MINIMAX_H3_TILING_UNSUPPORTED'],
+    [{ numFrames: 125 }, 'MINIMAX_H3_INVALID_FRAME_COUNT'],
+    [{ fps: 30 }, 'MINIMAX_H3_INVALID_FPS'],
+  ])('rejects an unsupported H3 request (%o)', async (fields, code) => {
+    await expect(prepare({
+      modelId: H3_MODEL.id,
+
+      ...fields,
+    })).rejects.toMatchObject({ status: 400, code });
+  });
+
+  it('rejects chunks > 1 only while the entry lacks image-to-video', async () => {
+    listVideoModels.mockReturnValue([{ ...H3_MODEL, supportedModes: ['text'] }]);
+    await expect(prepare({
+      modelId: H3_MODEL.id, mode: 'text', chunks: 2,
+    })).rejects.toMatchObject({ status: 400, code: 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE' });
+
+    listVideoModels.mockReturnValue([H3_MODEL]);
+    const prepared = await prepare({
+      modelId: H3_MODEL.id, mode: 'text', chunks: 2,
+    });
+    expect(prepared.effectiveChunks).toBe(2);
+  });
+
+  it.each([
+    ['image', { mode: 'image', sourceImageFile: 'first.png' }],
+    ['fflf', { mode: 'fflf', sourceImageFile: 'first.png', lastImageFile: 'last.png' }],
+  ])('accepts %s keyframe conditioning', async (_label, fields) => {
+    const prepared = await prepare({
+      modelId: H3_MODEL.id,
+
+      ...fields,
+    });
+    expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
+    expect(prepared.sourceImagePath).toBe('/mock/images/first.png');
+  });
+
+  it('accepts another supported temporal shape at fixed 24 fps', async () => {
+    const prepared = await prepare({
+      modelId: H3_MODEL.id,
+      mode: 'text',
+
+      numFrames: 158,
+      fps: 24,
+    });
+    expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
   });
 });

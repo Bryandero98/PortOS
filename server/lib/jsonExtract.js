@@ -75,6 +75,59 @@ export function findBalancedBlocks(s, { startChar = '{', endChar = '}' } = {}) {
 }
 
 /**
+ * Every brace-balanced block in the string — nested ones included — in the
+ * order they CLOSE. String-aware like `findBalancedBlocks`, but built on a
+ * stack instead of a restart-from-scratch scan, which buys two properties the
+ * transcript rescue in `agentSentinel.extractSentinelPayloadFromTranscript`
+ * needs and `findBalancedBlocks` deliberately does not provide:
+ *
+ *   1. An unmatched opening brace does NOT end the walk. `findBalancedBlocks`
+ *      bails at the first unbalanced segment (see its note); a repaint-heavy
+ *      PTY transcript is full of stray braces from truncated redraws, and
+ *      bailing there would discard the complete JSON object the model printed
+ *      at the very end — the whole point of the scan.
+ *   2. Closing order means an enclosing object is emitted AFTER the objects it
+ *      contains, so a caller walking the result in REVERSE sees the outermost
+ *      object of the last-printed block before any of its children.
+ *
+ * Still one linear pass (an unmatched `}` with an empty stack is dropped), so
+ * scanning a large tail stays cheap. String tracking resets at every line break
+ * — see the note in the loop for why a transcript needs that.
+ *
+ * @param {string} s — input text
+ * @param {object} [options]
+ * @param {string} [options.startChar='{'] — opening delimiter
+ * @param {string} [options.endChar='}']   — matching closing delimiter
+ * @returns {string[]} — every balanced block, in the order they close
+ */
+export function findAllBalancedBlocks(s, { startChar = '{', endChar = '}' } = {}) {
+  if (typeof s !== 'string' || !s) return [];
+  const blocks = [];
+  const opens = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    // A line break ends string tracking. JSON forbids a raw newline inside a
+    // string literal, so nothing valid is lost — but a transcript is full of
+    // stray quotes (a truncated redraw, an echoed `echo "…`, a log message),
+    // and without this ONE of them would leave the walker "inside a string"
+    // for the rest of the scan, hiding every brace in the JSON that follows.
+    if (ch === '\n' || ch === '\r') { inString = false; escaped = false; continue; }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === startChar) opens.push(i);
+    else if (ch === endChar && opens.length) blocks.push(s.slice(opens.pop(), i + 1));
+  }
+  return blocks;
+}
+
+/**
  * Apply a regex `replace()` to the input ONLY OUTSIDE quoted JSON
  * string regions. Walks the input with the same string/escape awareness
  * as `findBalancedBlocks`, splits into alternating "code" and "string"
@@ -169,6 +222,100 @@ function escapeControlCharsInStrings(input) {
 }
 
 /**
+ * Close a string whose final quote was omitted immediately before a structural
+ * `}` / `]` line. A raw line break is illegal inside JSON strings; when its next
+ * non-horizontal-whitespace character closes the containing object or array,
+ * the only structurally coherent interpretation is that the prose value ended
+ * before the line break. Other raw newlines remain untouched for the existing
+ * control-character escape repair.
+ */
+function closeStringBeforeStructuralLine(input) {
+  if (typeof input !== 'string' || !input) return input;
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+    if (ch === '\n' || ch === '\r') {
+      let next = i + 1;
+      while (next < input.length && (input[next] === ' ' || input[next] === '\t')) next += 1;
+      if (input[next] === '}' || input[next] === ']') {
+        out += '"';
+        inString = false;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Escape a quote that appears inside a JSON string without its required
+ * backslash. A quote can close a JSON string only when the next non-whitespace
+ * character is a structural delimiter (`:`, `,`, `}`, or `]`) or the document
+ * ends. Anything else means prose continues after the quote, so retaining it as
+ * a delimiter cannot produce valid JSON. This deliberately repairs only that
+ * unambiguous case; the caller still accepts the result only after a full parse.
+ */
+function escapeBareQuotesInStrings(input) {
+  if (typeof input !== 'string' || !input) return input;
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch !== '"') {
+      out += ch;
+      continue;
+    }
+    let next = i + 1;
+    while (next < input.length && /\s/.test(input[next])) next += 1;
+    if (next >= input.length || /[:,}\]]/.test(input[next])) {
+      out += ch;
+      inString = false;
+    } else {
+      out += '\\"';
+    }
+  }
+  return out;
+}
+
+/**
  * Try JSON.parse on a candidate block. If it fails, apply cheap repairs
  * for observed LLM corruption patterns and try again:
  *   - Trailing commas before `}` or `]` (common LLM mistake).
@@ -177,6 +324,13 @@ function escapeControlCharsInStrings(input) {
  *     between a variation's close-brace and the array's `]`. Swapping
  *     `}}]` → `}]}` (not dropping the brace) keeps the brace count
  *     correct so the outer container still closes.
+ *   - A serialized JSON tail — the model begins with ordinary JSON, then
+ *     accidentally emits the remainder as JSON-string escapes (`\\n`, `\\"`).
+ *     Decode only from JSON.parse's exact failure position and only keep the
+ *     result when the reconstructed whole document parses.
+ *   - Unescaped quotation marks inside prose string values — escape only a
+ *     quote that cannot legally close the string because prose follows it.
+ *   - A missing closing quote immediately before a structural `}` / `]` line.
  *   - Raw control chars (literal newlines/tabs) inside a string value —
  *     escaped to their `\n`/`\t`/`\uXXXX` forms (see
  *     escapeControlCharsInStrings). Common when a model writes a long
@@ -204,8 +358,26 @@ export function tryParseWithRepair(jsonText) {
   const initialResult = safeParse(initial);
   if (!initialResult.error) return initialResult;
 
-  const noTrailing = replaceOutsideStrings(initial, /,(\s*[}\]])/g, '$1');
-  if (noTrailing !== initial) {
+  const unescapedTail = unescapeSerializedJsonTail(initial, initialResult.error);
+  if (unescapedTail !== initial) {
+    const tailResult = safeParse(unescapedTail);
+    if (!tailResult.error) return tailResult;
+  }
+
+  const closedStrings = closeStringBeforeStructuralLine(unescapedTail);
+  if (closedStrings !== unescapedTail) {
+    const closedResult = safeParse(closedStrings);
+    if (!closedResult.error) return closedResult;
+  }
+
+  const escapedQuotes = escapeBareQuotesInStrings(closedStrings);
+  if (escapedQuotes !== closedStrings) {
+    const quotesResult = safeParse(escapedQuotes);
+    if (!quotesResult.error) return quotesResult;
+  }
+
+  const noTrailing = replaceOutsideStrings(escapedQuotes, /,(\s*[}\]])/g, '$1');
+  if (noTrailing !== escapedQuotes) {
     const trailingResult = safeParse(noTrailing);
     if (!trailingResult.error) return trailingResult;
   }
@@ -225,6 +397,29 @@ export function tryParseWithRepair(jsonText) {
   // concrete reason ("Unexpected token } in JSON at position 47") in its
   // error message rather than a generic "no JSON block found".
   return { error: orphanResult.error };
+}
+
+/**
+ * Recover an observed one-shot LLM corruption where a valid JSON prefix is
+ * followed by the rest of the document encoded as a JSON string fragment.
+ * V8 reports the first outside-string backslash as the parse position, giving
+ * us an exact and conservative decode boundary. Wrapping the tail in quotes
+ * decodes its `\\n` / `\\"` sequences without guessing at individual escapes;
+ * callers still require the entire reconstructed document to parse before
+ * accepting it.
+ */
+function unescapeSerializedJsonTail(input, error) {
+  const match = error?.message?.match(/position (\d+)/);
+  const position = Number(match?.[1]);
+  if (!Number.isInteger(position) || position < 0 || input[position] !== '\\') return input;
+
+  const tail = input.slice(position);
+  if (!/^\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/.test(tail)) return input;
+  const trailingWhitespace = tail.match(/\s*$/)?.[0] || '';
+  const encodedTail = trailingWhitespace ? tail.slice(0, -trailingWhitespace.length) : tail;
+  const decoded = safeParse(`"${encodedTail}"`);
+  if (decoded.error || typeof decoded.value !== 'string') return input;
+  return `${input.slice(0, position)}${decoded.value}${trailingWhitespace}`;
 }
 
 // Returns `{ value }` on success or `{ error }` on failure. The discriminated

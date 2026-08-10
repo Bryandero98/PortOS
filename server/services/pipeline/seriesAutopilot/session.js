@@ -11,7 +11,7 @@ import { addNotification, removeByMetadata, NOTIFICATION_TYPES, PRIORITY_LEVELS 
 import { getSeries, updateSeries } from '../series.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
-import { runs, autopilotEvents } from './state.js';
+import { runs, autopilotEvents, noteSignal } from './state.js';
 
 // ---------------------------------------------------------------------------
 // Run registry helpers (mirror editorialAnalysisRunner.js).
@@ -20,6 +20,18 @@ import { runs, autopilotEvents } from './state.js';
 export function isAutopilotActive(seriesId) {
   const run = runs.get(seriesId);
   return !!run && !run.finished;
+}
+
+// The `start` frame of an IN-FLIGHT run (null when none is active). Everything
+// a client needs to describe a run it didn't watch begin — mode (the dry-run
+// badge), target, the resolved run provider/model — lives on that frame, but
+// attachSseClient replays only the LAST payload, so a client attaching mid-run
+// never sees it. Kept whole (rather than rescuing one field at a time through
+// bespoke status keys) so a new start-frame field needs no new plumbing.
+export function activeRunStart(seriesId) {
+  const run = runs.get(seriesId);
+  if (!run || run.finished) return null;
+  return run.startPayload || null;
 }
 
 export function attachClient(seriesId, res) {
@@ -48,6 +60,12 @@ export function broadcast(seriesId, payload) {
   const run = runs.get(seriesId);
   if (!run) return;
   broadcastSse(run, payload);
+  // Retain the diagnosable frames for the opt-in self-improvement pass. A single
+  // tap here (rather than instrumenting each step runner) means any telemetry
+  // frame a future step emits is diagnosable evidence for free. No-op unless the
+  // run opted in — see state.js#noteSignal (it lives with the run registry it
+  // mutates, which is what keeps selfImprove.js out of this module's imports).
+  noteSignal(run, payload);
   // Mirror every frame onto the in-process bus (CDO Phase 3, #2185) so a
   // server-side consumer (CD plan step) sees the same progress/pause/terminal
   // frames as an SSE client. Emit is best-effort — a listener throw must never
@@ -57,6 +75,14 @@ export function broadcast(seriesId, payload) {
   } catch (err) {
     console.log(`⚠️ autopilot: event emit failed for ${seriesId.slice(0, 12)}: ${err.message}`);
   }
+}
+
+// Broadcast the run's `start` frame AND retain it on the run record, so a
+// client attaching mid-run can still read it back via `activeRunStart`.
+export function broadcastStart(seriesId, payload) {
+  const run = runs.get(seriesId);
+  if (run) run.startPayload = payload;
+  broadcast(seriesId, payload);
 }
 
 export function scheduleCleanup(seriesId, record) {
@@ -70,8 +96,23 @@ export function scheduleCleanup(seriesId, record) {
 // Thin persisted marker for resume/paused UI + boot recovery. NOT a step
 // cursor — see module header. Best-effort; a marker write must never abort a run.
 export async function persistMarker(seriesId, patch) {
+  const run = runs.get(seriesId);
+  const resumable = ['running', 'paused', 'error'].includes(patch.status) && run?.options
+    ? {
+      includeVisual: run.options.includeVisual !== false,
+      fileGaps: run.options.fileGaps === true,
+      ...(run.options.providerOverride ? { providerOverride: run.options.providerOverride } : {}),
+      ...(run.options.modelOverride ? { modelOverride: run.options.modelOverride } : {}),
+      ...(run.options.effortOverride ? { effortOverride: run.options.effortOverride } : {}),
+      ...(run.options.judgeLlm ? { judgeLlm: run.options.judgeLlm } : {}),
+    }
+    : null;
   await updateSeries(seriesId, {
-    autopilot: { ...patch, updatedAt: new Date().toISOString() },
+    autopilot: {
+      ...patch,
+      ...(resumable ? { resumeOptions: resumable } : {}),
+      updatedAt: new Date().toISOString(),
+    },
   }).catch((err) => {
     console.log(`⚠️ autopilot: marker write failed for ${seriesId.slice(0, 12)}: ${err.message}`);
   });
@@ -84,11 +125,20 @@ export async function persistMarker(seriesId, patch) {
 // issue) so cosTaskStore.addTask's pending/in_progress dedup collapses repeats
 // instead of spamming a task per page / per run. Best-effort — a task-store
 // failure must never abort the autopilot.
+//
+// No `app` is passed. `metadata.app` is WORKSPACE ROUTING — it must name a
+// record in `data/apps.json` — not a feature tag. These gaps are work on
+// PortOS's own pipeline code, so the correct workspace is the PortOS root,
+// which is exactly what an absent `app` resolves to. Passing the feature name
+// `'pipeline'` made every gap task unrunnable once the #3180 guard landed:
+// `prepareAgentWorkspace` refuses to spawn an agent whose app doesn't resolve
+// to a repo path, so the task was filed and then blocked at every spawn
+// attempt. Same reasoning as the investigation tasks in agentErrorAnalysis.js.
 export async function fileGap(record, sId, { gapKind, issueId = null, summary, context = '' }) {
   if (!record.options.fileGaps || record.mode !== 'execute') return;
   const idTag = `series ${sId}${issueId ? ` issue ${issueId}` : ''}`;
   const description = `Autopilot ${gapKind} gap — ${idTag}\n\n${summary}`;
-  const result = await cosTaskStore.addTask({ description, context, app: 'pipeline' }, 'user')
+  const result = await cosTaskStore.addTask({ description, context }, 'user')
     .catch((err) => { console.log(`⚠️ autopilot: fileGap (${gapKind}) failed: ${err.message}`); return null; });
   if (result && !result.duplicate) {
     broadcast(sId, { type: 'gap:filed', gapKind, issueId, taskId: result.id });
@@ -142,6 +192,10 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // stageRunner.resolveModelHint). Before #1558 the model was threaded as a hard
 // `modelOverride`, which let the run model beat even an explicit stage pin.
 //
+// The run's reasoning effort (#3641) rides the same soft channel as a third
+// dimension: `effortDefault` applies only to stages with no `stage.effort` pin,
+// and the runner clamps it to (or drops it for) whatever provider actually runs.
+//
 // Two shapes because the delegated services disagree on field names: the
 // arc/episode/verify passes take `providerDefault`/`modelDefault`; the child
 // runners (volumeBeatsRunner, autoRunner) and the `providerId`-style services
@@ -149,25 +203,70 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // stageRunner's `providerDefault`/`modelDefault` at the leaf call while keeping
 // its existing hard `providerOverride`/`providerId` + `modelOverride`/`model`
 // params untouched for manual route callers.
-export const providerOverrideOpts = (record) => ({
-  providerDefault: record.options.providerOverride,
-  modelDefault: record.options.modelOverride,
-});
-export const providerIdOpts = (record) => ({
-  providerIdDefault: record.options.providerOverride,
-  modelIdDefault: record.options.modelOverride,
-  // Multi-candidate draft gate (#2169): bill one cos action per re-roll and stop
-  // re-rolling when the daily budget is spent. Only ever invoked by
-  // generateStage's runDraftGate on a judgeable stage with draftAttempts > 1 — a
-  // no-op for every other stage/run. Check-then-bill so a skipped (budget-out)
-  // attempt isn't charged. Returns false to halt further attempts (keep the best
-  // so far); true when the attempt may proceed.
-  chargeAction: async () => {
-    const budget = await getDomainBudgetStatus('cos');
-    if (!budget.withinBudget) return false;
-    await recordDomainUsage('cos', { actions: 1 });
-    return true;
-  },
+export const roleLlm = (record, role = 'creative') => {
+  const base = record?.options || {};
+  const route = role === 'judge' && base.judgeLlm && typeof base.judgeLlm === 'object'
+    ? base.judgeLlm
+    : null;
+  if (!route) {
+    return {
+      providerOverride: base.providerOverride,
+      modelOverride: base.modelOverride,
+      effortOverride: base.effortOverride,
+    };
+  }
+  const providerOverride = route.providerOverride || base.providerOverride;
+  // A model id belongs to its provider. When the judge route changes provider
+  // and leaves model blank, use that provider's default instead of carrying the
+  // creative provider's model across. A same-provider/effort-only judge route
+  // deliberately inherits the creative model.
+  const providerChanged = !!route.providerOverride
+    && route.providerOverride !== base.providerOverride;
+  return {
+    providerOverride,
+    modelOverride: route.modelOverride || (providerChanged ? undefined : base.modelOverride),
+    effortOverride: route.effortOverride || base.effortOverride,
+  };
+};
+
+export const providerOverrideOpts = (record, role = 'creative') => {
+  const llm = roleLlm(record, role);
+  return {
+    providerDefault: llm.providerOverride,
+    modelDefault: llm.modelOverride,
+    effortDefault: llm.effortOverride,
+  };
+};
+export const providerIdOpts = (record, role = 'creative') => {
+  const llm = roleLlm(record, role);
+  return {
+    providerIdDefault: llm.providerOverride,
+    modelIdDefault: llm.modelOverride,
+    effortIdDefault: llm.effortOverride,
+    // Multi-candidate draft gate (#2169): bill one cos action per re-roll and stop
+    // re-rolling when the daily budget is spent. Only ever invoked by
+    // generateStage's runDraftGate on a judgeable stage with draftAttempts > 1 — a
+    // no-op for every other stage/run. Check-then-bill so a skipped (budget-out)
+    // attempt isn't charged. Returns false to halt further attempts (keep the best
+    // so far); true when the attempt may proceed.
+    chargeAction: async () => {
+      const budget = await getDomainBudgetStatus('cos');
+      if (!budget.withinBudget) return false;
+      await recordDomainUsage('cos', { actions: 1 });
+      return true;
+    },
+  };
+};
+
+// Non-deletion guarantee for every arc-rewriting call this run makes. Once the
+// unlock pre-pass has cleared the per-season locks (see ./unlockPass.js), those
+// locks can no longer stop an LLM-proposed arc from DROPPING a volume — and
+// "unlock so the autopilot can edit" must never become "unlock so it can
+// delete". Lives here beside the other record→options fragments so every arc
+// path (generateArc, arc auto-resolve, the foundation gate's structure fix)
+// spreads the SAME rule instead of each inlining its own copy.
+export const seasonPreserveOpts = (record) => ({
+  preserveDroppedSeasons: record.options.unlockForRun === true,
 });
 
 // Pause result when the cos action budget is exhausted, else null. Used to gate
@@ -179,5 +278,5 @@ export const providerIdOpts = (record) => ({
 export async function budgetPause() {
   const budget = await getDomainBudgetStatus('cos');
   if (budget.withinBudget) return null;
-  return { pause: true, gapFiled: true, reason: `daily cos ${budget.exceeded || 'actions'} budget reached` };
+  return { pause: true, gapFiled: true, pauseKind: 'budget', reason: `daily cos ${budget.exceeded || 'actions'} budget reached` };
 }

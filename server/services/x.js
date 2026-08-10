@@ -113,20 +113,48 @@ export async function deleteAccount(id) {
   return result.rowCount > 0;
 }
 
+// A browser read that returns an app shell, a rate-limit interstitial, or a page that rendered
+// late still resolves successfully with an empty profile. Reporting that as `false` manufactures
+// the shadowban verdict the feature exists to avoid — so an unread profile page means `null`
+// ("Unknown") for every check that a failed read could have silently emptied. A positive
+// observation is self-validating and stays `true` even when the profile page came back blank.
 export function deriveXDiagnostics({ accountUsername, profile = {}, latest = {}, people = {} }) {
   const configured = normalizeUsername(accountUsername);
   const profileUsername = safeUsername(profile.username);
-  const latestPosts = Array.isArray(latest.posts) ? latest.posts : [];
-  const matchingPosts = latestPosts.filter((post) => safeUsername(post.authorHandle) === configured);
+  const profileRead = Boolean(profileUsername);
+
+  const peopleHandles = Array.isArray(people.handles) ? people.handles.map(safeUsername) : null;
+  const observedInPeopleSearch = people.exactMatch === true || Boolean(peopleHandles?.includes(configured));
+  // A People-search page that actually rendered always returns at least one @handle link, so an
+  // empty handle list is a shell — not "nobody by that name."
+  const peopleRead = observedInPeopleSearch || (peopleHandles !== null && peopleHandles.length > 0);
+
+  const latestPosts = Array.isArray(latest.posts) ? latest.posts : null;
+  const matchingPosts = (latestPosts || []).filter((post) => safeUsername(post.authorHandle) === configured);
+  // Zero results in Latest search is indistinguishable from a shell on its own, so the profile
+  // read is the corroborating signal: if that page rendered, an empty Latest search is a real
+  // observation; if it did not, the whole browser session is suspect and this stays unknown.
+  const latestRead = latestPosts !== null && (latestPosts.length > 0 || profileRead);
+
   return {
-    profilePublic: Boolean(profileUsername && profileUsername === configured),
-    profileHandleMatches: Boolean(profileUsername && profileUsername === configured),
-    appearsInPeopleSearch: people.exactMatch === true || (Array.isArray(people.handles) && people.handles.map(safeUsername).includes(configured)),
-    recentPostsInLatestSearch: matchingPosts.length > 0,
-    latestSearchPostCount: matchingPosts.length,
+    profileRead,
+    peopleRead,
+    latestRead,
+    profilePublic: profileRead ? profileUsername === configured : null,
+    profileHandleMatches: profileRead ? profileUsername === configured : null,
+    appearsInPeopleSearch: peopleRead ? observedInPeopleSearch : null,
+    recentPostsInLatestSearch: latestRead ? matchingPosts.length > 0 : null,
+    latestSearchPostCount: latestRead ? matchingPosts.length : null,
     recommendationEligibility: 'unknown',
     checkedAt: new Date().toISOString(),
   };
+}
+
+// A read that came back as a shell must leave a trace: clearing `last_error` on the same write
+// that persists three Unknowns hides the reason they are unknown.
+export function buildXReadError({ profileRead, peopleRead, latestRead }) {
+  const unread = [!profileRead && 'profile page', !peopleRead && 'account search', !latestRead && 'Latest search'].filter(Boolean);
+  return unread.length ? `Could not read the X ${unread.join(', ')} — those checks are unknown, not negative. Retry the diagnostic.` : '';
 }
 
 const safeMetric = (value) => Number.isInteger(value) && value >= 0 && value <= MAX_INTEGER ? value : null;
@@ -171,6 +199,8 @@ async function syncAccountUnlocked(accountId) {
     latestSearch: { postCount: diagnostics.latestSearchPostCount },
   };
   const posts = mergePosts(profileResult.posts || [], latestPosts);
+  const readError = buildXReadError(diagnostics);
+  if (readError) console.warn(`⚠️ X read for @${account.username} came back empty — reporting affected visibility checks as unknown`);
 
   await withTransaction(async (client) => {
     for (const post of posts) {
@@ -188,8 +218,8 @@ async function syncAccountUnlocked(accountId) {
       );
     }
     await client.query(
-      `UPDATE x_accounts SET profile_snapshot=$2,last_sync_at=NOW(),last_error='',updated_at=NOW() WHERE id=$1`,
-      [accountId, snapshot],
+      `UPDATE x_accounts SET profile_snapshot=$2,last_sync_at=NOW(),last_error=$3,updated_at=NOW() WHERE id=$1`,
+      [accountId, snapshot, readError],
     );
   });
   const [nextAccount, nextPosts] = await Promise.all([getAccount(accountId), listPosts(accountId)]);

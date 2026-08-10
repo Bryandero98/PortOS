@@ -10,6 +10,7 @@
 #   PORTOS_DATA    Path to PortOS data dir (default: ./data, resolved from $REPO_ROOT)
 #   INSTALL_VIDEO  '1' to also install mlx_video for LTX video generation (default: 1 on macOS, 0 on Windows)
 #   INSTALL_LTX2   '1' to also clone + uv-sync dgrauet/ltx-2-mlx at ~/.portos/ltx-2-mlx for the second-gen LTX-2.3 pipeline (proper keyframe interpolation, true video extend, audio-to-video). Default: 0; opt in with INSTALL_LTX2=1.
+#   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx. Weights remain a separate explicit Video Gen download. Default: 0.
 #   INSTALL_FLUX2  '1' to also bootstrap a separate venv at ~/.portos/venv-flux2 for FLUX.2-klein (default: 1 on macOS, 0 elsewhere)
 #   INSTALL_MUSICGEN '1' to bootstrap a venv at ~/.portos/venv-musicgen + clone ml-explore/mlx-examples to ~/.portos/mlx-examples for local MusicGen (MLX) background-music generation (pipeline audio stage). Default: 0; opt in with INSTALL_MUSICGEN=1 (macOS / Apple Silicon only).
 #   MLX_EXAMPLES_PIN  commit SHA of ml-explore/mlx-examples to check out for MusicGen (default: main).
@@ -53,7 +54,7 @@ mkdir -p "${PORTOS_DATA}/videos"
 mkdir -p "${PORTOS_DATA}/video-thumbnails"
 
 # When the user only wants a specific BYOV runtime (set via INSTALL_LTX2 /
-# INSTALL_WAN22 / INSTALL_HUNYUAN — or one of the self-contained MUSIC venvs
+# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 — or one of the self-contained MUSIC venvs
 # INSTALL_MUSICGEN / INSTALL_AUDIOLDM2 / INSTALL_ACESTEP — typically from the
 # in-app installer), skip the mflux + legacy mlx_video preamble. Those
 # bring-your-own-venv runtimes are self-contained and don't depend on mflux;
@@ -62,8 +63,8 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MUSCRIPTOR:-0}"
-if [[ "$ANY_BYOV" == "0000000" ]]; then
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MUSCRIPTOR:-0}"
+if [[ "$ANY_BYOV" == "00000000" ]]; then
   DEFAULT_INSTALL_MFLUX=1
   DEFAULT_INSTALL_VIDEO=$(is_macos && echo 1 || echo 0)
   DEFAULT_INSTALL_FLUX2=$(is_macos && echo 1 || echo 0)
@@ -266,58 +267,113 @@ fi
 
 INSTALL_WAN22="${INSTALL_WAN22:-0}"
 if [[ "$INSTALL_WAN22" == "1" ]]; then
-  # osama-ata/Wan2.2-mlx — pure-MLX port of Alibaba's Wan 2.2 video model.
-  # MoE-A14B: 14B active params at inference, ~28 GB resident at bf16. The
-  # PortOS helper at scripts/generate_wan22.py subprocesses upstream's
-  # generate.py from the cloned repo, so PortOS releases own the arg
-  # translation layer (PortOS arg stability) while upstream owns the
-  # actual inference (upstream-tracked changes).
-  #
-  # EXPERIMENTAL — the clone is pinned (WAN22_PIN below) so new installs are
-  # reproducible, but bumping that pin can still reshape --task / --ckpt_dir;
-  # if it does, set `broken: true` on the wan22_* entries in
-  # data/media-models.json until generate_wan22.py is updated to match.
-  if ! have uv; then
-    echo "❌ INSTALL_WAN22=1 requires the 'uv' Python installer." >&2
-    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
-    exit 1
-  fi
+  # MLX-Gen provides the validated Apple-Silicon Wan 2.2 TI2V-5B and A14B
+  # q8 routes. This path runs only after the user chooses Install in Video Gen;
+  # the regular PortOS install/update path never provisions it automatically.
   if ! have git; then
     echo "❌ INSTALL_WAN22=1 requires git." >&2
     exit 1
   fi
-  # Pinned to a known-good commit (the repo's HEAD as of 2026-06-02). Floating
-  # `main` on a community-maintained port means every new install gets whatever
-  # HEAD is that day — a pin keeps installs reproducible. To upgrade: bump this
-  # SHA and verify with PortOS's video gen smoke tests. Set WAN22_PIN=main to
-  # bypass the pin and track upstream HEAD for development.
-  WAN22_PIN="${WAN22_PIN:-0b6b09aaa0d0b7cd7360fa358208437646dece60}"
-  WAN22_DIR="${HOME}/.portos/wan2.2-mlx"
+  # Keep uv itself on-demand too. A machine that updated PortOS but never used
+  # a BYOV model should gain no global package or tool. If uv is not already
+  # available, bootstrap a pinned copy inside ~/.portos using the Python that
+  # PortOS already validated above; all output streams back to the install UI.
+  WAN22_UV_TOOL_DIR="${HOME}/.portos/tools/uv-0.8.14"
+  WAN22_UV="${WAN22_UV_TOOL_DIR}/bin/uv"
+  # Always use the PortOS-owned exact uv version. A random PATH copy can be too
+  # old for this lockfile or a future release with different sync semantics,
+  # which would defeat the reproducible runtime pin even though MLX-Gen itself
+  # is checked out at an immutable commit.
+  if [[ ! -x "$WAN22_UV" ]] || [[ "$("$WAN22_UV" --version 2>/dev/null || true)" != "uv 0.8.14" ]]; then
+    echo "📦 Bootstrapping pinned uv 0.8.14 for MLX-Gen..."
+    "$PYTHON_BIN" -m venv --clear "$WAN22_UV_TOOL_DIR"
+    "${WAN22_UV_TOOL_DIR}/bin/python3" -m pip install --disable-pip-version-check "uv==0.8.14"
+  fi
+  # v0.25.0 exact commit, statically audited before integration. Keep the full
+  # SHA so existing installs get an explicit, reproducible UI-driven upgrade.
+  WAN22_PIN="${WAN22_PIN:-2452f0c12edcc8886eebf15772205ce9c417a618}"
+  WAN22_DIR="${HOME}/.portos/mlx-gen"
   WAN22_PY="${WAN22_DIR}/.venv/bin/python3"
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${WAN22_DIR}/.git" ]]; then
-    echo "📦 Cloning osama-ata/Wan2.2-mlx..."
-    git clone https://github.com/osama-ata/Wan2.2-mlx.git "${WAN22_DIR}"
+    echo "📦 Cloning MLX-Gen..."
+    git clone https://github.com/lpalbou/mlx-gen.git "${WAN22_DIR}"
   else
-    echo "📦 Fetching Wan2.2-mlx updates..."
+    echo "📦 Fetching MLX-Gen updates..."
     (cd "${WAN22_DIR}" && git fetch origin)
   fi
   git_checkout_pin "${WAN22_DIR}" "${WAN22_PIN}"
   if [[ ! -x "${WAN22_PY}" ]]; then
-    echo "📦 Creating Wan2.2-mlx venv with Python 3.11..."
-    (cd "${WAN22_DIR}" && uv venv --python 3.11)
+    echo "📦 Creating MLX-Gen venv with Python 3.11..."
+    (cd "${WAN22_DIR}" && "$WAN22_UV" venv --python 3.11)
   fi
-  # Upstream uses pyproject + requirements rather than a lockfile. Use
-  # `uv pip install -r requirements.txt` when present; otherwise `uv sync`
-  # falls back to the project config.
-  if [[ -f "${WAN22_DIR}/requirements.txt" ]]; then
-    echo "📦 Installing Wan2.2-mlx requirements..."
-    (cd "${WAN22_DIR}" && uv pip install -r requirements.txt)
+  echo "📦 Syncing pinned MLX-Gen packages..."
+  (cd "${WAN22_DIR}" && "$WAN22_UV" sync --locked)
+  if ! "${WAN22_PY}" -c "import mflux.models.wan.cli.wan_generate" 2>/dev/null; then
+    echo "❌ MLX-Gen synced but the Wan runtime import failed." >&2
+    echo "   Use Repair / Upgrade from the Video Gen runtime panel to retry." >&2
+    exit 1
+  fi
+  echo "✅ MLX-Gen Wan runtime ready: ${WAN22_PY}"
+fi
+
+INSTALL_MINIMAX_H3="${INSTALL_MINIMAX_H3:-0}"
+if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
+  # PipeNetwork/minimax-h3-mlx is a source checkout rather than a wheel. Keep
+  # both its commit and the complete Python dependency graph immutable; an MLX
+  # or transformers drift on a ~100 GB model is expensive to diagnose after a
+  # long render. This block is reached only from the explicit runtime Install /
+  # Repair action (or the matching terminal opt-in), never from PortOS boot.
+  if ! is_macos || [[ "$(uname -m)" != "arm64" ]]; then
+    echo "❌ MiniMax H3 MLX requires an Apple-Silicon Mac." >&2
+    exit 1
+  fi
+  if ! have git; then
+    echo "❌ INSTALL_MINIMAX_H3=1 requires git." >&2
+    exit 1
+  fi
+
+  MINIMAX_H3_UV_TOOL_DIR="${HOME}/.portos/tools/uv-0.8.14"
+  MINIMAX_H3_UV="${MINIMAX_H3_UV_TOOL_DIR}/bin/uv"
+  if [[ ! -x "$MINIMAX_H3_UV" ]] || [[ "$("$MINIMAX_H3_UV" --version 2>/dev/null || true)" != "uv 0.8.14" ]]; then
+    echo "📦 Bootstrapping pinned uv 0.8.14 for MiniMax H3 MLX..."
+    "$PYTHON_BIN" -m venv --clear "$MINIMAX_H3_UV_TOOL_DIR"
+    "${MINIMAX_H3_UV_TOOL_DIR}/bin/python3" -m pip install --disable-pip-version-check "uv==0.8.14"
+  fi
+
+  MINIMAX_H3_PIN="${MINIMAX_H3_PIN:-fcd9e9b79a1d6018d91ac477c0968de1fa067e49}"
+  MINIMAX_H3_DIR="${HOME}/.portos/minimax-h3-mlx"
+  MINIMAX_H3_PY="${MINIMAX_H3_DIR}/.venv/bin/python3"
+  MINIMAX_H3_LOCK="${SCRIPT_DIR}/requirements-minimax-h3-mlx.lock.txt"
+  mkdir -p "${HOME}/.portos"
+  if [[ ! -d "${MINIMAX_H3_DIR}/.git" ]]; then
+    echo "📦 Cloning MiniMax H3 MLX..."
+    git clone https://github.com/PipeNetwork/minimax-h3-mlx.git "$MINIMAX_H3_DIR"
   else
-    echo "📦 Syncing Wan2.2-mlx packages..."
-    (cd "${WAN22_DIR}" && uv sync)
+    echo "📦 Fetching MiniMax H3 MLX updates..."
+    git -C "$MINIMAX_H3_DIR" fetch origin
   fi
-  echo "✅ Wan2.2-mlx venv ready: ${WAN22_PY}"
+  git_checkout_pin "$MINIMAX_H3_DIR" "$MINIMAX_H3_PIN"
+  # This runtime imports directly from the checkout, so HEAD alone is not an
+  # integrity guarantee: tracked edits or an untracked Python module inside
+  # the package would execute ahead of the pinned source. Install / Repair is
+  # an explicit user action, so restore and clean only the executable package
+  # (never the whole checkout, where large model/output folders may live).
+  git -C "$MINIMAX_H3_DIR" restore --source=HEAD --staged --worktree -- minimax_h3_mlx
+  git -C "$MINIMAX_H3_DIR" clean -fd -- minimax_h3_mlx
+  if [[ ! -x "$MINIMAX_H3_PY" ]]; then
+    echo "📦 Creating MiniMax H3 MLX venv with Python 3.11..."
+    "$MINIMAX_H3_UV" venv --python 3.11 "${MINIMAX_H3_DIR}/.venv"
+  fi
+  echo "📦 Syncing pinned MiniMax H3 MLX packages..."
+  "$MINIMAX_H3_UV" pip sync --python "$MINIMAX_H3_PY" "$MINIMAX_H3_LOCK"
+  if ! "$MINIMAX_H3_PY" "${SCRIPT_DIR}/minimax_h3_runtime_probe.py" "$MINIMAX_H3_DIR" 2>/dev/null; then
+    echo "❌ MiniMax H3 MLX synced but its pipeline import failed." >&2
+    echo "   Use Repair / Upgrade from the Video Gen runtime panel to retry." >&2
+    exit 1
+  fi
+  echo "✅ MiniMax H3 MLX runtime ready: ${MINIMAX_H3_PY}"
+  echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
 fi
 
 INSTALL_HUNYUAN="${INSTALL_HUNYUAN:-0}"
@@ -643,6 +699,14 @@ echo "   Videos:    ${PORTOS_DATA}/videos"
 if [[ "$INSTALL_LTX2" == "1" ]]; then
   echo "   LTX-2.3:   ${HOME}/.portos/ltx-2-mlx/.venv/bin/python3 (separate venv, dgrauet pipeline @ ${LTX2_PIN:0:12})"
 fi
+if [[ "$INSTALL_WAN22" == "1" ]]; then
+  echo "   Wan 2.2:  ${HOME}/.portos/mlx-gen/.venv/bin/python3 (MLX-Gen @ ${WAN22_PIN:0:12})"
+  echo "              Weights remain uninstalled until Download is chosen in Video Gen."
+fi
+if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
+  echo "   MiniMax H3: ${HOME}/.portos/minimax-h3-mlx/.venv/bin/python3 (MLX port @ ${MINIMAX_H3_PIN:0:12})"
+  echo "                Weights remain uninstalled until accepted and downloaded in Video Gen."
+fi
 if [[ "$INSTALL_MUSICGEN" == "1" ]] && is_macos; then
   echo "   MusicGen:  ${HOME}/.portos/venv-musicgen/bin/python3 (separate venv, MLX runtime @ ${HOME}/.portos/mlx-examples/musicgen)"
 fi
@@ -662,7 +726,7 @@ if [[ "$INSTALL_FLUX2" == "1" ]]; then
   echo ""
   echo "⚠️  FLUX.2-klein needs HF auth: accept the license at"
   echo "    https://huggingface.co/black-forest-labs/FLUX.2-klein-4B"
-  echo "    then export HF_TOKEN=... before running PortOS."
+  echo "    then save the Hugging Face token in PortOS Media Generation Settings."
 fi
 echo ""
 echo "Set this Python path in PortOS Settings → Image Gen → Local."

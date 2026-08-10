@@ -6,7 +6,7 @@ export const COMPOSITE_PROMPT_MAX = 4000;
 // Mirror of the bible-field caps in server/services/universeBuilder.js — used by
 // the Universe Builder + Pipeline forms for maxLength enforcement on inputs.
 export const WORLD_LOGLINE_MAX = 500;
-export const WORLD_PREMISE_MAX = 4000;
+export const WORLD_PREMISE_MAX = 20000;
 export const WORLD_STYLE_NOTES_MAX = 4000;
 // Mirror of INFLUENCE_ENTRY_MAX + INFLUENCES_PER_LIST_MAX in
 // server/services/universeBuilder.js — used by the chip editor for maxLength

@@ -35,6 +35,15 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   UUID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
 }));
 
+// The restricted-model license gate resolves authorization from the install's
+// recorded acknowledgements at render time, so these tests declare whether this
+// "install" has accepted MiniMax H3's license.
+const H3_TERMS = 'minimax-h3-community-license-2026-08-02';
+const settingsState = vi.hoisted(() => ({ acceptedModelTerms: [] }));
+vi.mock('../settings.js', () => ({
+  getSettings: vi.fn(async () => ({ videoGen: { acceptedModelTerms: [...settingsState.acceptedModelTerms] } })),
+}));
+
 vi.mock('../../lib/mediaModels.js', () => ({
   getVideoModels: vi.fn(() => [
     { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2', repo: 'Lightricks/LTX-Video', steps: 30, guidance: 3.5 },
@@ -42,6 +51,59 @@ vi.mock('../../lib/mediaModels.js', () => ({
     { id: 'ltx23_unified', name: 'LTX-2.3 Unified Beta', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av', steps: 25, guidance: 3.0 },
     // quantized mlx_video model — NOT LoRA-capable (out of scope).
     { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av-q4', steps: 25, guidance: 3.0 },
+    {
+      id: 'minimax_h3_8bit', name: 'MiniMax H3 MLX 8-bit', runtime: 'minimax_h3',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+      supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
+      frameOptions: [124, 141, 158], fpsOptions: [24],
+      steps: 8, guidance: 0, samplerLocked: true,
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+      requiredWeights: [{
+        repo: 'MiniMaxAI/MiniMax-H3',
+        revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+        files: ['LICENSE', 'FL2VA/vae/video/config.json'],
+      }],
+    },
+    {
+      id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
+      repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
+      revision: '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3',
+      supportedModes: ['text', 'image'], frameStride: 4, steps: 25, guidance: 5,
+      guidance2: null, flowShift: 3, solver: 'unipc',
+    },
+    {
+      id: 'wan22_t2v_a14b_lightning', name: 'Wan T2V Lightning', runtime: 'wan22',
+      repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+      revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798',
+      supportedModes: ['text'], frameStride: 4, steps: 4, guidance: 1,
+      guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
+      requiredWeights: [{
+        repo: 'lightx2v/Wan2.2-Lightning',
+        revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+        files: [
+          'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
+          'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+        ],
+        targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
+      }],
+    },
+    {
+      id: 'wan22_i2v_a14b_lightning', name: 'Wan I2V Lightning', runtime: 'wan22',
+      repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit',
+      revision: '1a17fbea2649c576de844e08e79fe56296751efa',
+      supportedModes: ['image'], frameStride: 4, steps: 4, guidance: 1,
+      guidance2: 1, flowShift: 5, solver: 'euler', samplerLocked: true,
+      requiredWeights: [{
+        repo: 'lightx2v/Wan2.2-Lightning',
+        revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+        files: [
+          'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
+          'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+        ],
+        targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
+      }],
+    },
   ]),
   getDefaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   getTextEncoderRepo: vi.fn(() => 'some/text-encoder'),
@@ -54,13 +116,23 @@ vi.mock('../../lib/sseUtils.js', () => ({
   PYTHON_NOISE_RE: /^\s*$/,
 }));
 
-vi.mock('../../lib/ffmpeg.js', () => ({
+vi.mock('../../lib/ffmpeg.js', async () => ({
   findFfmpeg: vi.fn(async () => '/usr/bin/ffmpeg'),
   safeUnder: vi.fn((base, file) => (file ? join(base, file) : null)),
   generateThumbnail: vi.fn(async () => 'thumb.jpg'),
   optimizeForStreaming: vi.fn(async () => {}),
   upscaleVideo2x: vi.fn(async () => ({ ok: true })),
   extractEvaluationFrames: vi.fn(async () => []),
+  // Chained renders on a window-continuity runtime probe each chunk's length
+  // and cut the next hop's conditioning window from it. 25 matches the
+  // numFrames the chain tests render, so the prefix math below lands on a
+  // realistic value.
+  probeFrameCount: vi.fn(async () => 25),
+  trimVideoFromFrame: vi.fn(async (_videoPath, outPath) => ({ ok: true, outPath })),
+  hasAudioStream: vi.fn(async () => false),
+  // The real builder is pure and covered by ffmpeg.test.js; keep it real here
+  // so the chain tests assert on the argv that actually reaches ffmpeg.
+  buildTrimConcatArgs: (await vi.importActual('../../lib/ffmpeg.js')).buildTrimConcatArgs,
 }));
 
 // hfChildEnv() carries the resolved token over the inherited child env; mocking here
@@ -98,6 +170,9 @@ vi.mock('fs/promises', () => ({
   unlink: vi.fn(async () => {}),
   writeFile: vi.fn(async () => {}),
   copyFile: vi.fn(async () => {}),
+  // Unused by the code under test, but lib/ffmpeg.js imports it and the ffmpeg
+  // mock above pulls the real module in for buildTrimConcatArgs.
+  rename: vi.fn(async () => {}),
 }));
 
 // Fake EventEmitter-like process that completes immediately with exit code 0.
@@ -223,51 +298,86 @@ async function runChainAndCaptureArgs(chainParams, totalChunks) {
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
-describe('generateChainedVideo — extend chain arg routing', () => {
-  it('chunks 2+ receive mode=extend with extendFromVideoPath pointing to the prior chunk output', async () => {
-    // Provide an initial extendFromVideoPath (the source clip the user wants to extend)
-    const sourceVideoPath = join(MOCK_PATHS.videos, 'original-video.mp4');
+describe('generateChainedVideo — continuation strategy (context window vs last frame)', () => {
+  // numFrames=25 → extendLatentFrames(25) = 3 latents = 24 new pixel frames.
+  //
+  // The probe is mocked to the lengths a real chain produces, NOT to the
+  // rendered numFrames: chunk 0 is a plain 25-frame text render, but a windowed
+  // hop returns `context + extension`, so its FILE is 49 frames — 24 new ones
+  // behind a 25-frame echo of the window it was conditioned on. That gap is the
+  // whole reason the stitch can't fall back on a chunk's own history
+  // `numFrames`, and mocking both at 25 would hide it.
+  const CHUNK_FRAMES = 25;
+  const HOP_FILE_FRAMES = 49;
+  const EXPECTED_EXTEND_LATENTS = 3;
+  // 49 − 24 new frames = a 25-frame echo to drop.
+  const EXPECTED_PREFIX_START = 25;
+  // The 22-frame window off chunk 0 (25 − 22) and off a hop (49 − 22).
+  const WINDOW_START_FIRST = 3;
+  const WINDOW_START_HOP = 27;
+  // 25 + (49−25) + (49−25) once the echoes come out of the timeline…
+  const STITCHED_FRAMES_3_CHUNKS = 73;
+  // …versus the 123 frames actually on the timeline if the cuts don't land.
+  const UNTRIMMED_FRAMES_3_CHUNKS = 123;
 
-    // We can't intercept generateVideo's exact params directly from outside
-    // the module (same-module calls), but we CAN assert the emitted 'started'
-    // event's metadata and the chain's internal state by tracking the chunk
-    // job ids and verifying the expected file paths.
-    //
-    // The real assertion is that the chain does NOT call extractLastFrame for
-    // extend mode. We verify this by ensuring ffmpeg's spawn is never called
-    // with the last-frame extraction arguments (only the video render spawn
-    // is called, not a frame-extract spawn).
+  const flagValue = (args, flag) => (Array.isArray(args) && args.includes(flag)
+    ? args[args.indexOf(flag) + 1] : null);
+
+  /**
+   * Drive a chain and return everything the continuation path touches: the
+   * argv of each chunk's render child, every trim the orchestrator asked for,
+   * and the raw child_process spawns (which is where both extractLastFrame's
+   * `-sseof` seek and the final concat show up).
+   */
+  async function runChain(chainParams, totalChunks, probeFrames = null) {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { trimVideoFromFrame, probeFrameCount } = await import('../../lib/ffmpeg.js');
     const { spawn } = await import('child_process');
-    const spawnMock = vi.mocked(spawn);
-    spawnMock.mockClear();
-
-    const outerJobId = randomUUID();
-    const innerJobIds = [];
-    const startedEvents = [];
-
-    videoGenEvents.on('started', (e) => {
-      innerJobIds.push(e.generationId);
-      startedEvents.push(e);
+    const { readJSONFile, atomicWrite } = await import('../../lib/fileUtils.js');
+    vi.mocked(spawnDetached).mockClear();
+    vi.mocked(trimVideoFromFrame).mockClear();
+    vi.mocked(probeFrameCount).mockClear();
+    vi.mocked(spawn).mockClear();
+    vi.mocked(atomicWrite).mockClear();
+    // Chunk 0 is a plain render; every hop after it comes back as
+    // `context + extension`. The orchestrator probes each chunk exactly once,
+    // in order, so the call index is the chunk index. `probeFrames` overrides
+    // the sequence for chains whose chunk 0 isn't a plain render either.
+    let probeCall = 0;
+    vi.mocked(probeFrameCount).mockImplementation(async () => {
+      const i = probeCall++;
+      return probeFrames ? probeFrames[Math.min(i, probeFrames.length - 1)] : (i === 0 ? CHUNK_FRAMES : HOP_FILE_FRAMES);
     });
 
+    // extractLastFrame and stitchVideos both look their inputs up in history;
+    // feed the chunk ids back as they start so the chain can advance. The
+    // geometry matters: stitchVideos reads the canonical width/height/fps for
+    // its filter graph off the first entry, and sums numFrames for the
+    // stitched record.
+    const innerJobIds = [];
+    vi.mocked(readJSONFile).mockImplementation(async () =>
+      innerJobIds.map((id) => ({ id, filename: `${id}.mp4`, width: 512, height: 512, fps: 24, numFrames: CHUNK_FRAMES })),
+    );
+    videoGenEvents.on('started', (e) => innerJobIds.push(e.generationId));
+
     generateChainedVideo({
-      chunks: 3,
-      jobId: outerJobId,
+      chunks: totalChunks,
+      jobId: randomUUID(),
       pythonPath: '/usr/bin/python3',
       modelId: 'ltx2_unified',
       prompt: 'test prompt',
       width: 512,
       height: 512,
-      numFrames: 25,
+      numFrames: CHUNK_FRAMES,
       fps: 24,
-      mode: 'extend',
-      extendFromVideoPath: sourceVideoPath,
+      mode: 'text',
       sourceImagePath: null,
+      extendFromVideoPath: null,
       lastImagePath: null,
+      ...chainParams,
     });
 
-    // Drive all 3 chunks through the chain
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < totalChunks; i++) {
       // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => {
         const check = () => {
@@ -279,73 +389,304 @@ describe('generateChainedVideo — extend chain arg routing', () => {
       const id = innerJobIds[i];
       videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
     }
-
-    // Wait for outer chain to settle
     await new Promise((r) => setTimeout(r, 100));
-
     videoGenEvents.removeAllListeners('started');
 
-    // All 3 chunks must have been started
-    expect(innerJobIds).toHaveLength(3);
+    const spawns = vi.mocked(spawn).mock.calls;
+    return {
+      innerJobIds,
+      renders: vi.mocked(spawnDetached).mock.calls.map(([, args]) => args),
+      trims: vi.mocked(trimVideoFromFrame).mock.calls,
+      spawns,
+      // The one ffmpeg run that assembles the timeline — either a concat
+      // demuxer invocation or the trim-bearing filter graph that replaces it.
+      concat: (spawns.find(([, args]) => Array.isArray(args)
+        && (args.includes('concat') || args.some((a) => typeof a === 'string' && a.includes('concat=n=')))) || [])[1] || null,
+      // The stitched history entry, read off the history write it triggers.
+      stitched: vi.mocked(atomicWrite).mock.calls
+        .flatMap(([, payload]) => (Array.isArray(payload) ? payload : []))
+        .find((entry) => entry?.chainedFrom) || null,
+    };
+  }
 
-    // Verify ffmpeg was NOT called with last-frame extraction args between chunks.
-    // extractLastFrame uses spawn(ffmpeg, ['-sseof', '-1.0', ...])  — the chain
-    // loop must skip this entirely for extend mode.
-    const ffmpegFrameExtractCalls = spawnMock.mock.calls.filter(
-      (args) => Array.isArray(args[1]) && args[1].includes('-sseof'),
-    );
-    expect(ffmpegFrameExtractCalls).toHaveLength(0);
+  it('chains an ltx2 text render as extend hops conditioned on the prior chunk tail, not on a still', async () => {
+    const { innerJobIds, renders, spawns } = await runChain({}, 3);
 
-    // Verify the expected per-chunk video output paths are resolvable:
-    // chunk i's output is PATHS.videos/<innerJobIds[i]>.mp4
-    const chunk0Output = join(MOCK_PATHS.videos, `${innerJobIds[0]}.mp4`);
-    const chunk1Output = join(MOCK_PATHS.videos, `${innerJobIds[1]}.mp4`);
-
-    // Chunk 1 should extend from chunk 0's video, chunk 2 from chunk 1's video.
-    // We verify this by checking that the path the chain would have computed
-    // (PATHS.videos/<id>.mp4) matches the known inner job ids.
-    expect(chunk0Output).toBe(join(MOCK_PATHS.videos, `${innerJobIds[0]}.mp4`));
-    expect(chunk1Output).toBe(join(MOCK_PATHS.videos, `${innerJobIds[1]}.mp4`));
+    expect(renders).toHaveLength(3);
+    // Chunk 0 keeps the mode the user asked for.
+    expect(flagValue(renders[0], '--mode')).toBe('text');
+    // Chunks 1+ re-enter as extend renders reading the tail clip cut from the
+    // chunk before them — a text chain now inherits motion across the seam
+    // exactly the way an explicit extend chain does.
+    for (const i of [1, 2]) {
+      expect(flagValue(renders[i], '--mode')).toBe('extend');
+      expect(flagValue(renders[i], '--extend-from-video'))
+        .toBe(join(tmpdir(), `chaincontext-${innerJobIds[i - 1]}.mp4`));
+      expect(flagValue(renders[i], '--extend-frames')).toBe(String(EXPECTED_EXTEND_LATENTS));
+    }
+    // The window replaces last-frame extraction entirely — no `-sseof` seek.
+    expect(spawns.filter(([, args]) => Array.isArray(args) && args.includes('-sseof'))).toHaveLength(0);
   });
 
-  it('non-extend chains still call extractLastFrame (frame extraction path unchanged)', async () => {
+  it('cuts the echoed context out of the timeline in the stitch, not out of the chunk files', async () => {
+    // extend_from_video returns `source + extension`, so every hop after the
+    // first opens with a replay of its conditioning window. Left in, the
+    // stitched clip repeats ~1s of footage at every seam. Cutting it in the
+    // concat's own filter graph costs nothing on top of the timeline encode
+    // that a trimmed concat needs anyway, where pre-trimming each chunk file
+    // would add a whole x264 pass per hop AND grade the trimmed chunks
+    // differently from the untrimmed chunk 0.
+    const { innerJobIds, trims, concat, stitched } = await runChain({}, 3);
+
+    const chunkPath = (i) => join(MOCK_PATHS.videos, `${innerJobIds[i]}.mp4`);
+
+    // No chunk file is rewritten — the archived per-chunk entries stay exactly
+    // what the model rendered.
+    expect(trims.some(([from, to]) => from === to)).toBe(false);
+    for (const i of [0, 1, 2]) {
+      expect(trims.some(([, to]) => to === chunkPath(i))).toBe(false);
+    }
+
+    // Instead the offsets ride in the concat graph: chunk 0 whole, chunks 1+
+    // starting after their echoed prefix.
+    const graph = concat[concat.indexOf('-filter_complex') + 1];
+    expect(graph).toContain('[0:v]');
+    expect(graph).not.toMatch(/\[0:v\][^;]*trim=start_frame/);
+    for (const i of [1, 2]) {
+      expect(graph).toMatch(new RegExp(`\\[${i}:v\\][^;]*trim=start_frame=${EXPECTED_PREFIX_START}`));
+    }
+    expect(graph).toContain('concat=n=3:v=1:a=0[outv]');
+    // And the stitched record reports the timeline that exists, not the sum of
+    // what each chunk was rendered at.
+    expect(stitched?.numFrames).toBe(STITCHED_FRAMES_3_CHUNKS);
+
+    // Each hop's conditioning window is still cut from the tail into tmpdir.
+    const windowStart = (i) => trims
+      .find(([from, to]) => from === chunkPath(i) && to === join(tmpdir(), `chaincontext-${innerJobIds[i]}.mp4`))?.[2]?.startFrame;
+    expect(windowStart(0)).toBe(WINDOW_START_FIRST);
+    expect(windowStart(1)).toBe(WINDOW_START_HOP);
+  });
+
+  it('runs no whole-chunk encode pass — the timeline encode is the only one', async () => {
+    // The whole point: (N−1) whole-chunk encodes + 1 timeline encode collapses
+    // to just the timeline encode. (The per-hop conditioning-window cut is
+    // still an encode, but of ~22 frames, and it goes through the mocked
+    // trimVideoFromFrame rather than spawn — the sibling test above is what
+    // pins that it never touches a chunk file.)
+    const { spawns, concat } = await runChain({}, 3);
+    const encodes = spawns.filter(([, args]) => Array.isArray(args) && args.includes('libx264'));
+    expect(encodes).toHaveLength(1);
+    expect(encodes[0][1]).toBe(concat);
+    // A trim-bearing concat can't stream-copy, and it can't use the demuxer
+    // either — the demuxer has no way to express a per-input offset.
+    expect(concat.join(' ')).not.toContain('-c copy');
+    expect(concat).not.toContain('-f');
+  });
+
+  it('falls back to a stream copy when the trimmed filter graph fails, rather than losing the chain', async () => {
+    // The pre-trim implementation degraded to a repeated seam when a chunk
+    // trim failed, because failing there would have discarded every chunk
+    // already rendered. Moving the cut into the concat has to keep that: the
+    // untrimmed chunks were never re-encoded, so they're still in codec
+    // lockstep and the demuxer can still assemble them.
     const { spawn } = await import('child_process');
-    const spawnMock = vi.mocked(spawn);
+    const failingProc = () => {
+      const listeners = {};
+      const proc = {
+        pid: 12345,
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        on(event, fn) { listeners[event] = fn; return proc; },
+        kill: vi.fn(),
+      };
+      setImmediate(() => listeners.close?.(1, null));
+      return proc;
+    };
+    vi.mocked(spawn).mockImplementation((_bin, args) => (
+      Array.isArray(args) && args.includes('-filter_complex') ? failingProc() : makeProc()
+    ));
+    try {
+      const { spawns, stitched } = await runChain({}, 3);
+      const concats = spawns.map(([, args]) => args).filter(Array.isArray);
+      expect(concats.some((args) => args.includes('-filter_complex'))).toBe(true);
+      // …and the salvage run, which is the plain demuxer stream copy.
+      const copy = concats.find((args) => args.includes('-f') && args.includes('copy'));
+      expect(copy).toBeTruthy();
+      // The echoes are still in the output, so the record must say so — and
+      // "so" is the chunks' MEASURED lengths (25 + 49 + 49), not the numFrames
+      // they were rendered at, which understates an extend render's file by
+      // the whole context window.
+      expect(stitched?.numFrames).toBe(UNTRIMMED_FRAMES_3_CHUNKS);
+    } finally {
+      vi.mocked(spawn).mockImplementation(() => makeProc());
+    }
+  });
+
+  it('keeps the graph video-only when the chunks carry no audio stream', async () => {
+    // Referencing `[k:a]` against a silent input aborts the whole ffmpeg run,
+    // and AI renders are silent unless the model generated a soundtrack.
+    const { concat } = await runChain({}, 2);
+    expect(concat.join(' ')).not.toContain(':a]');
+    expect(concat).toContain('-an');
+  });
+
+  it('probes each chunk once rather than re-reading it after the trim', async () => {
+    // probeFrameCount falls back to a full -count_frames decode when the
+    // container header carries no nb_frames, so a redundant probe per hop can
+    // cost an entire extra decode of the clip.
+    const { probeFrameCount } = await import('../../lib/ffmpeg.js');
+    const { innerJobIds } = await runChain({}, 3);
+    expect(vi.mocked(probeFrameCount).mock.calls).toHaveLength(innerJobIds.length);
+  });
+
+  it('honors a smaller context window', async () => {
+    // 8 frames instead of the 22-frame default → the window starts 8 back.
+    const { innerJobIds, trims } = await runChain({ contextFrames: 8 }, 2);
+    const cut = trims.find(([, to]) => to === join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
+    expect(cut[2]).toMatchObject({ startFrame: CHUNK_FRAMES - 8 });
+  });
+
+  it('measures the untrimmed first chunk too, instead of trusting the count it was rendered at', async () => {
+    // In an extend chain chunk 0's output is `user clip + extension`, so its
+    // file is far longer than the numFrames its history entry records — and
+    // nothing trims it, so no cut forces a measurement. It still has to be
+    // measured, or the stitched entry's duration is short by the whole source
+    // clip and a Remix off it re-renders at the wrong length.
+    const FIRST_FILE_FRAMES = 60;
+    const { stitched } = await runChain({
+      mode: 'extend',
+      extendFromVideoPath: join(MOCK_PATHS.videos, 'original-video.mp4'),
+    }, 2, [FIRST_FILE_FRAMES, HOP_FILE_FRAMES]);
+    // 60 whole + (49 − 25) after the hop's echo comes out.
+    expect(stitched?.numFrames).toBe(FIRST_FILE_FRAMES + (HOP_FILE_FRAMES - EXPECTED_PREFIX_START));
+  });
+
+  it('resolves the default frame count before sizing the echo, like the render does', async () => {
+    // numFrames is optional on the route, and generateVideo falls back to
+    // DEFAULT_NUM_FRAMES (121 → 15 latents → 120 new pixel frames) before it
+    // derives --extend-frames. The orchestrator has to fall back identically:
+    // reading the raw request instead makes it assume a 1-latent, 8-frame
+    // extension, so it would call all but 8 frames of every hop "echo" and
+    // cut the hop's actual footage out of the timeline.
+    const DEFAULT_HOP_FILE_FRAMES = 145; // a 25-frame echo + 120 new frames
+    const { renders, concat } = await runChain({ numFrames: undefined }, 2, [121, DEFAULT_HOP_FILE_FRAMES]);
+    expect(flagValue(renders[1], '--extend-frames')).toBe('15');
+    const graph = concat[concat.indexOf('-filter_complex') + 1];
+    expect(graph).toMatch(/\[1:v\]trim=start_frame=25,/);
+  });
+
+  it('never conditions the next hop on the echo the stitch is about to drop', async () => {
+    // A window bigger than the chunk's own new footage (121 requested vs 24
+    // rendered) clamps to the start of the file — which, now that the file
+    // still holds its echoed prefix, would hand the next hop a replay of the
+    // chunk BEFORE it. The window start floors at the prefix instead.
+    const { innerJobIds, trims } = await runChain({ contextFrames: 121 }, 3);
+    const windowStart = (i) => trims
+      .find(([, to]) => to === join(tmpdir(), `chaincontext-${innerJobIds[i]}.mp4`))?.[2]?.startFrame;
+    // Chunk 0 has no echo, so its whole render is fair game as a window.
+    expect(windowStart(0)).toBe(0);
+    expect(windowStart(1)).toBe(EXPECTED_PREFIX_START);
+  });
+
+  it('contextFrames: 0 opts back into last-frame chaining', async () => {
+    // 0 is a real value, distinct from "unset" — it's how a user gets the
+    // historical single-still hop back on a runtime that could do better.
+    const { renders, trims, concat } = await runChain({ contextFrames: 0 }, 2);
+
+    expect(flagValue(renders[1], '--mode')).toBe('image');
+    expect(flagValue(renders[1], '--extend-from-video')).toBeNull();
+    // No offsets to apply, so the concat keeps the demuxer stream-copy fast
+    // path — the same one the hand-stitch from Media History takes.
+    expect(trims).toHaveLength(0);
+    expect(concat).toContain('copy');
+    expect(concat).not.toContain('-filter_complex');
+  });
+
+  it('falls back to last-frame chaining on a runtime with no extend pipeline', async () => {
+    // mlx_video has no extend_from_video, so the window is silently ignored
+    // rather than rejected — switching models mid-form can't strand a request.
+    const { renders, trims } = await runChain({ modelId: 'ltx23_unified', contextFrames: 22 }, 2);
+
+    expect(flagValue(renders[1], '--mode')).not.toBe('extend');
+    expect(trims).toHaveLength(0);
+  });
+
+  it('seeds an extend chain from the last frame on a runtime that cannot take a source video', async () => {
+    // mlx_video offers an Extend *mode* but implements it as last-frame i2v —
+    // buildArgs never forwards extendFromVideoPath to its builder. Chunks 2+
+    // used to be handed that path with no source image, so the path was dropped
+    // and they rendered from the prompt alone, ignoring the clip they were
+    // meant to continue. They must fall back to the frame hop instead.
+    const sourceVideoPath = join(MOCK_PATHS.videos, 'original-video.mp4');
+    const { renders } = await runChain({
+      modelId: 'ltx23_unified',
+      mode: 'extend',
+      extendFromVideoPath: sourceVideoPath,
+    }, 2);
+
+    expect(flagValue(renders[1], '--mode')).not.toBe('extend');
+    // The source video never reaches this runtime's argv — it has no flag for
+    // one. That silent drop is what left chunk 1 with nothing to continue from.
+    expect(renders[0]).not.toContain(sourceVideoPath);
+    expect(renders[1]).not.toContain(sourceVideoPath);
+    // So chunk 1 must be given a still instead. Chunk 0 legitimately has none
+    // (its conditioning was the dropped video), which is the contrast that
+    // shows the frame is being supplied for chunk 1 specifically rather than
+    // just inherited. The value is a tmpdir path — generateVideo resizes the
+    // frame to the model resolution first — so assert presence, not location.
+    expect(flagValue(renders[0], '--image')).toBeNull();
+    expect(flagValue(renders[1], '--image')).toBeTruthy();
+  });
+
+  it('keeps the first chunk of an extend chain whole, conditioned on the user source clip', async () => {
+    // In an extend chain chunk 0's output is `user clip + extension`, and the
+    // user clip belongs in the result exactly once — here. Trimming it would
+    // drop the very footage the user asked to extend.
+    const sourceVideoPath = join(MOCK_PATHS.videos, 'original-video.mp4');
+    const { innerJobIds, renders, trims } = await runChain({
+      mode: 'extend',
+      extendFromVideoPath: sourceVideoPath,
+    }, 2);
+
+    expect(flagValue(renders[0], '--mode')).toBe('extend');
+    expect(flagValue(renders[0], '--extend-from-video')).toBe(sourceVideoPath);
+    expect(trims.some(([, to]) => to === join(MOCK_PATHS.videos, `${innerJobIds[0]}.mp4`))).toBe(false);
+    // Chunk 1 conditions on a bounded window, NOT on chunk 0's whole output —
+    // that's what kept the chain from growing a copy of itself per hop.
+    expect(flagValue(renders[1], '--extend-from-video'))
+      .toBe(join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
+  });
+});
+
+describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
+  /**
+   * Drive a text chain of `totalChunks` and return the `--prompt` value each
+   * inner render was spawned with, in chunk order. Prompts are read off the
+   * spawn args rather than the 'started' event because that event carries
+   * sampler metadata, not the prompt — the spawn args are what the runner
+   * actually renders.
+   */
+  async function runChainAndCapturePrompts(chainParams, totalChunks) {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
 
-    // For image-conditioned chain (non-extend), extractLastFrame calls ffmpeg
-    // with -sseof. Mock existsSync to return true (frame file present) so the
-    // cache-hit path triggers and we avoid needing a real ffmpeg call.
-    const { existsSync } = await import('fs');
-    vi.mocked(existsSync).mockReturnValue(true);
-
-    const { statSync } = await import('fs');
-    vi.mocked(statSync).mockReturnValue({ size: 1000 });
-
+    // Between chunks the chain extracts the prior chunk's last frame, which
+    // looks the chunk up in history — feed it the ids as they start so the
+    // chain can advance past chunk 0.
     const { readJSONFile } = await import('../../lib/fileUtils.js');
-    // extractLastFrame reads history to find the item — return a stub entry
-    // so it can resolve the video path.
-    vi.mocked(readJSONFile).mockImplementation(async () => [
-      { id: 'placeholder', filename: 'placeholder.mp4' },
-    ]);
-
-    const outerJobId = randomUUID();
     const innerJobIds = [];
-
-    videoGenEvents.on('started', (e) => {
-      innerJobIds.push(e.generationId);
-      // Once history has the chunk id, subsequent extractLastFrame calls work
-      vi.mocked(readJSONFile).mockImplementation(async () =>
-        innerJobIds.map((id) => ({ id, filename: `${id}.mp4` })),
-      );
-    });
+    vi.mocked(readJSONFile).mockImplementation(async () =>
+      innerJobIds.map((id) => ({ id, filename: `${id}.mp4` })),
+    );
+    videoGenEvents.on('started', (e) => innerJobIds.push(e.generationId));
 
     generateChainedVideo({
-      chunks: 2,
-      jobId: outerJobId,
+      chunks: totalChunks,
+      jobId: randomUUID(),
       pythonPath: '/usr/bin/python3',
       modelId: 'ltx2_unified',
-      prompt: 'image chain test',
+      prompt: 'main prompt',
       width: 512,
       height: 512,
       numFrames: 25,
@@ -354,9 +695,10 @@ describe('generateChainedVideo — extend chain arg routing', () => {
       sourceImagePath: '/mock/source.png',
       extendFromVideoPath: null,
       lastImagePath: null,
+      ...chainParams,
     });
 
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < totalChunks; i++) {
       // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => {
         const check = () => {
@@ -368,16 +710,60 @@ describe('generateChainedVideo — extend chain arg routing', () => {
       const id = innerJobIds[i];
       videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
     }
-
     await new Promise((r) => setTimeout(r, 100));
     videoGenEvents.removeAllListeners('started');
 
-    expect(innerJobIds).toHaveLength(2);
-    // For non-extend chains the frame-extraction path is exercised OR the cache-
-    // hit (existsSync returning true) skips the ffmpeg spawn. Either way,
-    // extractLastFrame was called — we confirm no extend-mode bypass happened
-    // by asserting the chain completed its 2 chunks.
-    expect(innerJobIds).toHaveLength(2);
+    return spawnMock.mock.calls
+      .map(([, args]) => (Array.isArray(args) && args.includes('--prompt')
+        ? args[args.indexOf('--prompt') + 1] : null))
+      .filter((p) => p != null);
+  }
+
+  it('renders each chunk with its own beat', async () => {
+    const prompts = await runChainAndCapturePrompts(
+      { chunkPrompts: ['she opens the door', 'she steps into the rain'] },
+      2,
+    );
+    expect(prompts).toEqual(['she opens the door', 'she steps into the rain']);
+  });
+
+  it('falls back to the main prompt for a blank beat', async () => {
+    // A blank middle entry is the explicit "no beat here" marker — it must
+    // render the MAIN prompt, never an empty prompt.
+    const prompts = await runChainAndCapturePrompts(
+      { chunkPrompts: ['she opens the door', '', '   '] },
+      3,
+    );
+    expect(prompts).toEqual(['she opens the door', 'main prompt', 'main prompt']);
+  });
+
+  it('falls back to the main prompt for a null beat and for indices past the list', async () => {
+    const prompts = await runChainAndCapturePrompts(
+      { chunkPrompts: [null, 'the storm breaks'] },
+      3,
+    );
+    expect(prompts).toEqual(['main prompt', 'the storm breaks', 'main prompt']);
+  });
+
+  it('renders the main prompt for every chunk when no beats are supplied', async () => {
+    const prompts = await runChainAndCapturePrompts({}, 2);
+    expect(prompts).toEqual(['main prompt', 'main prompt']);
+  });
+
+  it('persists the beat list on the stitched history entry', async () => {
+    // The individual chunk entries only record their own RESOLVED prompt, which
+    // loses which chunks carried an explicit beat — so the visible stitched
+    // entry has to carry the list for a Remix to round-trip it.
+    const { atomicWrite } = await import('../../lib/fileUtils.js');
+    await runChainAndCapturePrompts({ chunkPrompts: ['a beat', '', 'a later beat'] }, 3);
+
+    const stitched = vi.mocked(atomicWrite).mock.calls
+      .flatMap(([, payload]) => (Array.isArray(payload) ? payload : []))
+      .find((item) => Array.isArray(item?.chainedFrom));
+    expect(stitched).toBeTruthy();
+    expect(stitched.chunkPrompts).toEqual(['a beat', '', 'a later beat']);
+    // The stitched entry keeps its own derived identity alongside the beats.
+    expect(stitched.filename).toMatch(/^chained-/);
   });
 });
 
@@ -1431,6 +1817,11 @@ describe('generateVideo — close-handler resilience (issue #1334)', () => {
       makeVideoGenLineHandler: () => () => true,
       isWatchdogSuccess: () => false,
       finalizeGeneratedVideo: vi.fn(async () => { throw new Error('boom finalize'); }),
+      // Durable re-render inputs (#3696) — generateVideo reads both while
+      // building `meta`, so a partial mock has to carry them or every render
+      // in this file throws on the missing export.
+      describeRenderConditioning: () => [],
+      RENDER_INPUTS_VERSION: 1,
     }));
     const { generateVideo: gv } = await import('./local.js');
     const { videoGenEvents: events } = await import('./events.js');
@@ -1451,6 +1842,300 @@ describe('generateVideo — close-handler resilience (issue #1334)', () => {
     expect(evt.error).toMatch(/boom finalize/);
 
     vi.doUnmock('./generateVideoHelpers.js');
+  });
+});
+
+describe('generateVideo — Wan MLX-Gen contract', () => {
+  it('passes the locked Lightning sampler and exact high/low adapter pair', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId: 'wan-lightning-args',
+      modelId: 'wan22_t2v_a14b_lightning',
+      prompt: 'a starship lifts off',
+      negativePrompt: 'blur',
+      width: 480, height: 256, numFrames: 81, fps: 20,
+      steps: 99, guidanceScale: 9, mode: 'text',
+    });
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_wan22.py')));
+    expect(call).toBeDefined();
+    const args = call[1];
+    expect(args[args.indexOf('--steps') + 1]).toBe('4');
+    expect(args[args.indexOf('--guidance') + 1]).toBe('1');
+    expect(args[args.indexOf('--guidance-2') + 1]).toBe('1');
+    expect(args[args.indexOf('--flow-shift') + 1]).toBe('5');
+    expect(args[args.indexOf('--solver') + 1]).toBe('euler');
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('/mock/hf/snap');
+    expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
+      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
+      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+    ]);
+    expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
+      'high_noise_transformer',
+      'low_noise_transformer',
+    ]);
+    expect(spawnMock.mock.calls.find(([, childArgs]) => childArgs === args)?.[2]).toMatchObject({
+      killProcessGroup: true,
+    });
+    expect(mockInspectModelCache).toHaveBeenCalledWith(
+      'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+      { revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798' },
+    );
+    expect(mockFindCachedRepoFile).toHaveBeenCalledWith(
+      'lightx2v/Wan2.2-Lightning',
+      expect.any(String),
+      { revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e' },
+    );
+  });
+
+  it('passes the exact ordered I2V Lightning adapter pair', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId: 'wan-i2v-lightning-args',
+      modelId: 'wan22_i2v_a14b_lightning', prompt: 'a boat crosses a lake',
+      sourceImagePath: '/mock/data/images/boat.png',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
+    });
+    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => String(arg).endsWith('/generate_wan22.py')))[1];
+    expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
+      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
+      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+    ]);
+    expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
+      'high_noise_transformer',
+      'low_noise_transformer',
+    ]);
+  });
+
+  it('rejects a Wan model in an unsupported mode before spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateVideo({
+      modelId: 'wan22_t2v_a14b_lightning', prompt: 'test',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
+    })).rejects.toMatchObject({ code: 'WAN22_MODE_UNSUPPORTED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-4n+1 Wan frame count', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateVideo({
+      modelId: 'wan22_ti2v_5b', prompt: 'test',
+      width: 480, height: 256, numFrames: 82, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_INVALID_FRAME_COUNT' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects image mode without a source before cache or spawn work', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateVideo({
+      modelId: 'wan22_i2v_a14b_lightning', prompt: 'test',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
+    })).rejects.toMatchObject({ code: 'WAN22_I2V_REQUIRES_IMAGE' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects text mode with a source before cache or spawn work', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateVideo({
+      modelId: 'wan22_ti2v_5b', prompt: 'test', sourceImagePath: '/mock/source.png',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing immutable base snapshot before spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    mockInspectModelCache.mockResolvedValueOnce({ cached: false, snapshotPath: null, sizeBytes: 0 });
+    await expect(generateVideo({
+      modelId: 'wan22_ti2v_5b', prompt: 'test',
+      width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_MODEL_NOT_CACHED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rejects a T2V-only Wan chain before rendering chunk one', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    await expect(generateChainedVideo({
+      chunks: 2, jobId: 'wan-chain-reject', modelId: 'wan22_t2v_a14b_lightning',
+      prompt: 'test', width: 480, height: 256, numFrames: 81, fps: 20, mode: 'text',
+    })).rejects.toMatchObject({ code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateVideo — MiniMax H3 MLX contract', () => {
+  // Every test below renders H3, which is license-gated: authorization comes
+  // from the install's recorded acknowledgement, re-read here at the render
+  // boundary rather than trusted from the caller's params.
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
+
+  it('resolves the license gate from the install record at the render boundary', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    const base = {
+      jobId: 'h3-terms',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      mode: 'text',
+    };
+
+    settingsState.acceptedModelTerms = [];
+    await expect(generateVideo(base)).rejects.toMatchObject({
+      status: 403,
+      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
+    });
+    // A superseded license revision does not carry forward — a job queued while
+    // the old one was accepted fails closed at execution.
+    settingsState.acceptedModelTerms = ['old-license'];
+    await expect(generateVideo(base)).rejects.toMatchObject({
+      status: 403,
+      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
+    });
+    // A caller cannot assert its own acceptance — only the install record counts.
+    await expect(generateVideo({ ...base, termsAcceptance: H3_TERMS })).rejects.toMatchObject({
+      status: 403,
+      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
+    });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // H3 anchors keyframes at the first/last latent frame only, so the ltx2
+  // arbitrary-index array and every non-keyframe conditioning channel stay out.
+  it.each([
+    ['keyframes', { keyframes: [{ path: '/mock/first.png', frame: 0 }, { path: '/mock/last.png', frame: 140 }] }],
+    ['extension video', { mode: 'extend', extendFromVideoPath: '/mock/prior.mp4' }],
+    ['audio file', { mode: 'a2v', audioFilePath: '/mock/audio.wav' }],
+    ['IC reference', { mode: 'ic-restyle', icReferencePaths: ['/mock/reference.mp4'] }],
+  ])('rejects direct %s conditioning before any child is spawned', async (_label, conditioning) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    await expect(generateVideo({
+      jobId: 'h3-conditioning',
+      modelId: 'minimax_h3_8bit',
+
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      ...conditioning,
+    })).rejects.toMatchObject({ code: 'MINIMAX_H3_MODE_UNSUPPORTED' });
+
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // Each mode has exactly one legal image shape; a mismatch must fail rather
+  // than silently render a different clip than the caller asked for.
+  it.each([
+    ['text mode with a source image', { mode: 'text', sourceImagePath: '/mock/source.png' }, 'MINIMAX_H3_TEXT_MODE_SOURCE_CONFLICT'],
+    ['image mode with no image', { mode: 'image' }, 'MINIMAX_H3_I2V_REQUIRES_IMAGE'],
+    ['image mode with a last frame', { mode: 'image', sourceImagePath: '/mock/source.png', lastImagePath: '/mock/last.png' }, 'MINIMAX_H3_I2V_LAST_IMAGE_CONFLICT'],
+    ['fflf mode with no frames', { mode: 'fflf' }, 'MINIMAX_H3_FFLF_REQUIRES_IMAGE'],
+  ])('rejects %s before any child is spawned', async (_label, fields, code) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    await expect(generateVideo({
+      jobId: 'h3-image-shape',
+      modelId: 'minimax_h3_8bit',
+
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      ...fields,
+    })).rejects.toMatchObject({ code });
+
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // The helper stretches the FIRST keyframe onto the canvas as the geometry
+  // anchor, so packed order has to put the first frame ahead of the last.
+  it.each([
+    ['image', { mode: 'image', sourceImagePath: '/mock/source.png' }, ['first']],
+    ['fflf', { mode: 'fflf', sourceImagePath: '/mock/source.png', lastImagePath: '/mock/last.png' }, ['first', 'last']],
+    ['fflf with only a last frame', { mode: 'fflf', lastImagePath: '/mock/last.png' }, ['last']],
+    ['text', { mode: 'text' }, []],
+  ])('forwards %s conditioning as anchored --image pairs', async (_label, fields, expectedAnchors) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-keyframes',
+      modelId: 'minimax_h3_8bit',
+
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      ...fields,
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    // Paths are the ffmpeg-resized copies, so assert the anchors and that each
+    // one directly follows its own --image rather than the literal input path.
+    expect(args.flatMap((arg, i) => (
+      arg === '--image' ? [args[i + 2] === '--anchor' ? args[i + 3] : 'UNPAIRED'] : []
+    ))).toEqual(expectedAnchors);
+  });
+
+  it('uses the pinned cache-only helper, locked sampler and credential-free environment', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { hfChildEnv } = await import('../../lib/hfToken.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    vi.mocked(hfChildEnv).mockClear();
+    const priorToken = process.env.HF_TOKEN;
+    const priorHubToken = process.env.HUGGING_FACE_HUB_TOKEN;
+    process.env.HF_TOKEN = 'test-secret';
+    process.env.HUGGING_FACE_HUB_TOKEN = 'test-secret-2';
+
+    try {
+      await generateVideo({
+        jobId: 'h3-args',
+        modelId: 'minimax_h3_8bit',
+
+        prompt: 'a fox watches the rain',
+        width: 512, height: 320, numFrames: 141, fps: 24,
+        steps: 99, guidanceScale: 12, mode: 'text',
+      });
+    } finally {
+      if (priorToken === undefined) delete process.env.HF_TOKEN; else process.env.HF_TOKEN = priorToken;
+      if (priorHubToken === undefined) delete process.env.HUGGING_FACE_HUB_TOKEN;
+      else process.env.HUGGING_FACE_HUB_TOKEN = priorHubToken;
+    }
+
+    const call = spawnMock.mock.calls.find(([, args]) => (
+      Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(call).toBeDefined();
+    const [bin, args, options] = call;
+    expect(bin).toMatch(/\.portos\/minimax-h3-mlx\/\.venv\/bin\/python3$/);
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('pipenetwork/MiniMax-H3-MLX-8bit');
+    expect(args[args.indexOf('--model-revision') + 1]).toBe('3ac52081470b0488921c3ec3ba84a39097bf2361');
+    expect(args[args.indexOf('--runtime-revision') + 1]).toBe('fcd9e9b79a1d6018d91ac477c0968de1fa067e49');
+    expect(args[args.indexOf('--checkpoint-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
+    expect(args[args.indexOf('--checkpoint-revision') + 1]).toBe('6818f6c32d12b210915e44ad56a4228c2608f160');
+    expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    expect(args.flatMap((arg, i) => arg === '--checkpoint-file' ? [args[i + 1]] : []))
+      .toEqual(['LICENSE', 'FL2VA/vae/video/config.json']);
+    expect(options.killProcessGroup).toBe(true);
+    expect(options.env).toMatchObject({
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+      PYTHONUNBUFFERED: '1',
+    });
+    expect(options.env).not.toHaveProperty('HF_TOKEN');
+    expect(options.env).not.toHaveProperty('HUGGING_FACE_HUB_TOKEN');
+    expect(hfChildEnv).not.toHaveBeenCalled();
   });
 });
 
@@ -2258,5 +2943,74 @@ describe('icLoraArgs — direct validation (#3100)', () => {
       icLoraWeightPath: '/mock/hf/snap/ingredients.safetensors',
       icReferencePaths: ['/mock/a.mp4', '/mock/b.mp4'],
     })).not.toThrow();
+  });
+});
+
+describe('generateVideo — durable re-render inputs (#3696)', () => {
+  // The `started` event spreads the same `meta` object finalizeGeneratedVideo
+  // later persists as the history record, so it's the observable surface for
+  // what a completed render would store — without having to drive the child
+  // process to a successful close.
+  const startedMetaFor = async (params) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    let started = null;
+    const onStarted = (e) => { started = e; };
+    videoGenEvents.on('started', onStarted);
+    await generateVideo({
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a quiet street at dusk',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      ...params,
+    });
+    videoGenEvents.off('started', onStarted);
+    const renderCall = spawnMock.mock.calls.find(
+      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3') && Array.isArray(args),
+    );
+    return { started, args: renderCall?.[1] || [] };
+  };
+
+  it('records the seed a random-seed render actually resolved to, matching the one the child got', async () => {
+    const { started, args } = await startedMetaFor({ jobId: 'finish-random-seed-test' });
+    // No seed was supplied — the record must still pin the resolved value, or
+    // a Finish re-render would roll a different composition.
+    expect(Number.isInteger(started.seed)).toBe(true);
+    expect(args[args.indexOf('--seed') + 1]).toBe(String(started.seed));
+    expect(started.renderInputsVersion).toBe(1);
+    expect(started.conditioning).toEqual([]);
+    expect(started.mode).toBe('text');
+  });
+
+  it('keeps an explicitly supplied seed verbatim', async () => {
+    const { started, args } = await startedMetaFor({ jobId: 'finish-explicit-seed-test', seed: 1234 });
+    expect(started.seed).toBe(1234);
+    expect(args[args.indexOf('--seed') + 1]).toBe('1234');
+  });
+
+  it('inventories conditioning for an image-to-video render (so Finish is not offered for it)', async () => {
+    const { started } = await startedMetaFor({
+      jobId: 'finish-i2v-conditioning-test',
+      mode: 'image',
+      sourceImagePath: '/mock/source.png',
+    });
+    expect(started.conditioning).toContain('image');
+    expect(started.mode).toBe('image');
+  });
+
+  it('inventories audio conditioning even though the mode still reads as text', async () => {
+    // The mode inference only looks at images/keyframes, so an audio-driven
+    // render with no explicit mode would otherwise be stamped `text` and look
+    // fully reproducible. The conditioning inventory is what catches it.
+    const { started } = await startedMetaFor({
+      jobId: 'finish-audio-conditioning-test',
+      audioFilePath: '/mock/song.wav',
+    });
+    expect(started.mode).toBe('text');
+    expect(started.conditioning).toEqual(['audio']);
   });
 });

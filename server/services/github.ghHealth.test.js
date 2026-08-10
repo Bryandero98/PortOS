@@ -72,6 +72,19 @@ describe('classifyGhProbe', () => {
     expect(classifyGhProbe({ code: 1, stderr }).status).toBe(expected);
   });
 
+  it('classifies gh 2.9x\'s own DNS/connect-failure wrapper as unreachable, not a generic error', () => {
+    // Reproduced against a real gh 2.96.0 binary probing an unresolvable
+    // `--hostname` — the exact shape a misconfigured or unreachable self-hosted
+    // GitHub Enterprise host produces. This text carries none of the raw Go
+    // transport strings above, so it was falling into the unhelpful 'error'
+    // catch-all ("gh failed for an unrecognised reason").
+    const probe = classifyGhProbe({
+      code: 1,
+      stderr: 'error connecting to github.enterprise.example\ncheck your internet connection or https://githubstatus.com'
+    });
+    expect(probe.status).toBe('unreachable');
+  });
+
   it.each([
     'You are not logged in to any GitHub hosts. To log in, run: gh auth login',
     'HTTP 401: Bad credentials (https://api.github.com/rate_limit)',
@@ -99,6 +112,19 @@ describe('classifyGhProbe', () => {
 
   it('does not collapse an unrecognised failure into ok', () => {
     expect(classifyGhProbe({ code: 1, stderr: 'something new' }).status).toBe('error');
+  });
+
+  it('treats a GHES host with rate limiting disabled as ok, not error', () => {
+    // Reproduced against a real GitHub Enterprise Server host with the
+    // /rate_limit endpoint turned off: `gh api rate_limit --hostname <ghes>`
+    // exits 1 with this exact message even though gh authenticated and
+    // reached the host fine. That proves reachability — it must not be
+    // reported as "gh failed for an unrecognised reason".
+    const probe = classifyGhProbe({
+      code: 1,
+      stderr: 'HTTP 404: Rate limiting is not enabled. (https://github.enterprise.example/api/v3/rate_limit)'
+    });
+    expect(probe).toEqual({ status: 'ok', detail: null });
   });
 });
 

@@ -65,8 +65,14 @@ describe('dependency override parity across manifests (#2848)', () => {
       'brace-expansion': '5.0.7', // GHSA-3jxr-9vmj-r5cp (5.x line)
       'protobufjs': '7.6.5', // GHSA-j3f2-48v5-ccww
       'body-parser': '2.3.0', // GHSA-v422-hmwv-36x6
-      'js-yaml': '4.3.0', // GHSA-52cp-r559-cp3m
+      // GHSA-52cp-r559-cp3m, then GHSA-5p4m-2wfm-xmqj (quadratic CPU in !!omap
+      // resolution, CVE-2026-59870) which covers 4.0.0–4.3.0 — the previous 4.3.0
+      // floor is itself vulnerable, so the 4.x line must be at least 4.3.1.
+      'js-yaml': '4.3.1',
       'tar': '7.5.21', // GHSA-vmf3-w455-68vh et al
+      // GHSA-2v37-7h3g-55p8 (zero-size custom generators loop forever). Only reachable
+      // via postcss, which asks for ^3.3.16 — the 3.x line is the one to floor.
+      'nanoid': '3.3.17',
       // GHSA-f88m-g3jw-g9cj (libvips CVE-2026-33327/33328/35590/35591). Pinned in
       // server/ only, so the parity assertion above never sees it — this floor is
       // the sole guard against a downgrade back onto the vulnerable 0.34.x line

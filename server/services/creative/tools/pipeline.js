@@ -181,7 +181,16 @@ export const PIPELINE_TOOLS = [
       },
       required: ['seriesId'],
     },
-    execute: ({ seriesId, options }) => startSeriesAutopilot(seriesId, options || {}),
+    // `options` is a free-form passthrough, so strip `unlockForRun` here: that
+    // option clears locks the user set BY HAND, and the whole point of it being
+    // per-run-only (no saved default, unticked on every render) is that a
+    // human arms it each time. An LLM agent choosing it from a tool schema is
+    // exactly the unattended lock-clearing the option is designed to prevent —
+    // it stays a human-in-the-loop decision made in the Autopilot panel.
+    execute: ({ seriesId, options }) => {
+      const { unlockForRun: _humanOnly, ...safeOptions } = options || {};
+      return startSeriesAutopilot(seriesId, safeOptions);
+    },
   },
   {
     name: 'pipeline_renderComicCover',

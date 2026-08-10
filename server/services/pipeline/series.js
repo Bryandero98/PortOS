@@ -22,6 +22,8 @@ import { sanitizeSeverityWeights, sanitizeBlockingSeverities } from '../../lib/e
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import { persistedRenderPinFields } from '../../lib/renderTargets.js';
+import { EFFORT_LEVELS } from '../../lib/providerModels.js';
+import { DIAGNOSIS_MAX_FILED } from './seriesAutopilot/diagnosisCore.js';
 import {
   maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes,
   deleteSyncBaseHash,
@@ -51,7 +53,9 @@ const SERIES_ID_RE = /^ser-[A-Za-z0-9-]+$/;
 
 export const NAME_MAX = 200;
 export const LOGLINE_MAX = 500;
-export const PREMISE_MAX = 8000;
+// Large enough for a multi-site production bible with concrete route and
+// resource rules; still bounded so the field cannot become an unbounded prompt.
+export const PREMISE_MAX = 20000;
 export const STYLE_NOTES_MAX = 4000;
 // Author-supplied real-world fact reference (#1588) — the ground-truth facts the
 // opt-in `research.fact-accuracy` editorial check reconciles the prose against
@@ -118,15 +122,62 @@ export const AUTOPILOT_STATUSES = Object.freeze(['idle', 'running', 'paused', 'd
 export const AUTOPILOT_STEP_MAX = 80;
 export const AUTOPILOT_ERROR_MAX = 1000;
 const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
+
+const sanitizeAutopilotLlmRoute = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  const providerOverride = trimTo(raw.providerOverride, 80);
+  const modelOverride = trimTo(raw.modelOverride, 200);
+  if (providerOverride) out.providerOverride = providerOverride;
+  if (modelOverride) out.modelOverride = modelOverride;
+  if (EFFORT_LEVELS.includes(raw.effortOverride)) out.effortOverride = raw.effortOverride;
+  return Object.keys(out).length ? out : null;
+};
+
+// Run-local Options that must survive a pause/reload so "Resume" continues the
+// run the user actually launched. These are deliberately scoped to the paused
+// run marker instead of global settings: a future scheduled run should not
+// inherit one series' gap-filing or LLM-routing experiment. The destructive-
+// consent `unlockForRun` flag is NOT carried here — the unlock pass spends that
+// consent once and leaves the records unlocked, so re-arming it would only
+// repeat a completed mutation.
+const sanitizeAutopilotResumeOptions = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  if (typeof raw.includeVisual === 'boolean') out.includeVisual = raw.includeVisual;
+  if (typeof raw.fileGaps === 'boolean') out.fileGaps = raw.fileGaps;
+  const baseLlm = sanitizeAutopilotLlmRoute(raw);
+  if (baseLlm?.providerOverride) out.providerOverride = baseLlm.providerOverride;
+  if (baseLlm?.modelOverride) out.modelOverride = baseLlm.modelOverride;
+  if (baseLlm?.effortOverride) out.effortOverride = baseLlm.effortOverride;
+  const judgeLlm = sanitizeAutopilotLlmRoute(raw.judgeLlm);
+  if (judgeLlm) out.judgeLlm = judgeLlm;
+  return Object.keys(out).length ? out : null;
+};
 // Why a bounded-retry gate paused the run. Convergence gates (#1571):
 // `maxRounds` (the verify→resolve loop ran out of rounds) vs `divergence` (it
 // stopped converging early — the blocking count failed to drop). Child runners
 // (#1574): `childFailed` (a delegated beats/text run produced no output after
 // its retry budget). Lets the UI classify the pause without string-matching the
-// reason text. Any other pause (budget, error, a capability gap) leaves this null.
+// reason text. Any other pause (error, a capability gap) leaves this null.
 // Editorial checks (#1613): `checkFindings` (the editorial-checks pass surfaced ≥
 // the armed high-finding threshold, so the run paused for human review).
-export const AUTOPILOT_PAUSE_KINDS = Object.freeze(['maxRounds', 'divergence', 'childFailed', 'checkFindings']);
+// Resolve rollback: `regression` (an auto-resolve round came back with MORE
+// blocking findings than it was handed while leaving those standing, so its
+// edits were reverted and the run paused on the pre-round residual).
+// Dead ends the run can't fix itself: `inapplicable` (the owning service had
+// nothing it was allowed to change — no linked universe, a fully-locked cast),
+// `planningOscillation` (the foundation and arc gates kept handing repairs back
+// to each other without settling), `budget` (the daily spend cap was reached
+// mid-run), `providerFailed` (an LLM repair call failed outright — a provider
+// timeout, a dead CLI, a rate limit — after the prompt runner's own fallback
+// cascade was exhausted). This list must carry EVERY kind the autopilot emits:
+// sanitizeAutopilot drops an unlisted one to null, which silently strips the
+// badge the UI would otherwise show.
+export const AUTOPILOT_PAUSE_KINDS = Object.freeze([
+  'maxRounds', 'divergence', 'regression', 'childFailed', 'checkFindings',
+  'inapplicable', 'planningOscillation', 'budget', 'providerFailed',
+]);
 
 export const sanitizeAutopilot = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
@@ -158,6 +209,10 @@ export const sanitizeAutopilot = (raw) => {
     // strip is real data loss), a stale peer that drops pauseKind just briefly
     // shows a generic "paused" banner until the next run re-stamps it.
     pauseKind: AUTOPILOT_PAUSE_KINDS.includes(raw.pauseKind) ? raw.pauseKind : null,
+    // Run-local choices restored by the Options form on a paused resume. This is
+    // transient orchestration state, not creative content, so it shares the
+    // marker's no-schema-gate posture.
+    resumeOptions: sanitizeAutopilotResumeOptions(raw.resumeOptions),
     // #1572 — a `done` run that filed blocking script-craft gaps (the advisory
     // craft gate) carries the count here so the marker can qualify "complete"
     // instead of reporting clean while downstream rendering is still blocked.
@@ -174,6 +229,12 @@ export const sanitizeAutopilot = (raw) => {
     // health API. Null on any non-health pause. Same transient-marker rationale
     // as pauseKind / craftGap*: no schema-gate bump.
     healthBreakdown: sanitizeHealthBreakdown(raw.healthBreakdown),
+    // Pipeline self-improvement verdict for the run that just ended (null unless
+    // the run opted in and its telemetry warranted a diagnosis).
+    selfImprove: sanitizeAutopilotSelfImprove(raw.selfImprove),
+    // Observing-orchestrator activity for the run that just ended (null unless
+    // the run opted in and the observer dispatched at least one fix task).
+    observer: sanitizeAutopilotObserver(raw.observer),
     updatedAt: isStr(raw.updatedAt) ? raw.updatedAt : null,
   };
 };
@@ -203,6 +264,47 @@ const sanitizeHealthBreakdown = (raw) => {
 // Coerce a marker counter to a non-negative integer, defaulting to 0 (so an
 // older marker that predates the field reads as "no gaps", not undefined).
 const toCount = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+
+// Verdict of the opt-in pipeline self-improvement post-mortem, stamped onto the
+// terminal marker so the resume/status banner can say a PortOS fix task was
+// filed without re-reading the CoS task list. Null on every run that didn't opt
+// in, whose telemetry was clean (the pass makes no LLM call then), or that
+// diagnosed nothing filable — the producer only reports a `pipeline` verdict, so
+// that's the only shape this accepts. Same transient-marker rationale as
+// pauseKind / craftGap*: no schema-gate bump.
+// One bounded task-reference shape, shared by both diagnosis markers below —
+// they feed the same status banner, so the field caps must not drift.
+const sanitizeDiagnosisRef = (raw) => ({
+  area: trimTo(raw.area, 40) || null,
+  title: trimTo(raw.title, 160) || null,
+  taskId: trimTo(raw.taskId, 64) || null,
+  filed: raw.filed === true,
+  duplicate: raw.duplicate === true,
+});
+
+const sanitizeAutopilotSelfImprove = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (raw.verdict !== 'pipeline') return null;
+  return { verdict: 'pipeline', ...sanitizeDiagnosisRef(raw) };
+};
+
+// Observing-orchestrator summary for the run that just ended: how many passes
+// it spent and which fix tasks it dispatched, so the status banner can report
+// "the pipeline is being fixed" without re-reading the CoS task list. The
+// producer (observer.js#summarizeObserver) only reports when at least one task
+// was filed, so an empty list reads as null. The cap is the producer's own
+// (DIAGNOSIS_MAX_FILED — diagnosisCore is a leaf, so this import can't cycle).
+// Same transient-marker rationale as pauseKind / craftGap* / selfImprove: no
+// schema-gate bump.
+const sanitizeAutopilotObserver = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const filed = (Array.isArray(raw.filed) ? raw.filed : [])
+    .map((f) => (f && typeof f === 'object' ? sanitizeDiagnosisRef(f) : null))
+    .filter(Boolean)
+    .slice(0, DIAGNOSIS_MAX_FILED);
+  if (filed.length === 0) return null;
+  return { passes: toCount(raw.passes), filed };
+};
 
 // Per-series editorial-check config overrides (#1591). Shape:
 //   { [checkId]: { [configKey]: number|string|boolean } }

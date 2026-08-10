@@ -33,7 +33,9 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { safeUnder } from '../../lib/ffmpeg.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
+import { isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsError } from '../../lib/videoDisclosure.js';
 import { videoLoraFamily } from '../../lib/runners.js';
+import { resolveContextFrames } from '../../lib/videoContinuity.js';
 import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode,
   assertIcReferenceCount, describeIcReferenceRange,
@@ -49,6 +51,9 @@ import {
   loadHistory,
   DEFAULT_NUM_FRAMES,
 } from './local.js';
+// Straight from the leaf, not through local.js: the suites that exercise this
+// module mock local.js wholesale, and a mocked rule table would assert nothing.
+import { videoModeContractError, videoChainUnsupportedError } from './modeContract.js';
 
 /**
  * Best-effort unlink of every multipart temp file the parser wrote before the
@@ -99,7 +104,8 @@ export const withStagedRollback = async (cleanupStaged, fn) => {
  *   `{ backend, grok, sourceImagePath, uploadedTempPath, cleanupStaged }`.
  *   On the local lane, additionally `{ pythonPath, effectiveModelId, mode,
  *   lastImagePath, audioFilePath, icReferencePaths, resolvedKeyframes,
- *   extendFromVideoPath, uploadedTempPaths, loras, effectiveChunks }`.
+ *   extendFromVideoPath, uploadedTempPaths, loras, effectiveChunks,
+ *   effectiveChunkPrompts }`.
  *   `cleanupStaged` is the caller's rollback hook for anything that can still
  *   throw after this resolves (today: `enqueueJob`) — pass it to
  *   `withStagedRollback`.
@@ -151,6 +157,15 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
       `Unknown modelId: ${body.modelId}`,
       { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' },
     );
+  }
+  // Reject a gated model here so the caller gets a synchronous, actionable 403
+  // instead of a doomed queue entry. The render itself re-checks (local.js) —
+  // this is the early half of the same gate, authorized by the same recorded
+  // acknowledgement (POST /api/video-gen/model-terms).
+  if (backend !== VIDEO_GEN_MODE.GROK && effectiveModel
+    && !isVideoModelTermsAccepted(effectiveModel, acceptedVideoModelTerms(settings))) {
+    await cleanupMultipartTemp(uploads);
+    throw videoModelTermsError(effectiveModel);
   }
   // Reject up-front when the local python isn't configured AND the model's
   // runtime needs it. ltx2/wan22/hunyuan bring their own venv (resolved
@@ -384,6 +399,96 @@ async function resolvePreparedParams({
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
   }
+  // Chunk chaining needs image-to-video on any runtime — the same rule
+  // generateChainedVideo enforces at dispatch, applied once here so a doomed
+  // chain never reaches the persisted queue.
+  if (body.chunks != null && Number(body.chunks) > 1) {
+    const chainError = videoChainUnsupportedError(effectiveModel);
+    if (chainError) {
+      await cleanupStaged();
+      throw chainError;
+    }
+  }
+  // Mode ↔ source pairing for every gated runtime, resolved through the one
+  // contract the render boundary also throws from (#3736), so the two entry
+  // points can't disagree about which shapes are legal or which code they
+  // return. Runs before durable upload staging, keeping rejection cleanup cheap.
+  const hasDeclaredFirstImage = Boolean(uploads.sourceImage || body.sourceImageFile);
+  const hasDeclaredLastImage = Boolean(uploads.lastImage || body.lastImageFile);
+  // Pinned here rather than re-derived at the resolved pass below: once a
+  // declared gallery pick fails to resolve, "was this an i2v request?" can only
+  // be answered from what the caller declared.
+  const declaredMode = body.mode || (hasDeclaredFirstImage ? 'image' : 'text');
+  const modeContractError = videoModeContractError({
+    model: effectiveModel,
+    mode: declaredMode,
+    hasFirstImage: hasDeclaredFirstImage,
+    hasLastImage: hasDeclaredLastImage,
+    keyframes: body.keyframes,
+    extendFromVideo: body.extendFromVideoId,
+  });
+  if (modeContractError) {
+    await cleanupStaged();
+    throw modeContractError;
+  }
+  // MiniMax H3's released MLX path is fixed-24fps, joint A/V and CFG-distilled.
+  // These are the runtime's non-mode controls; the mode gate above already ran.
+  // Fail before queue persistence so a direct API caller cannot enqueue a
+  // request whose controls the runtime would silently ignore.
+  if (effectiveModel?.runtime === 'minimax_h3') {
+    if (body.negativePrompt?.trim()) {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 is CFG-distilled and does not accept a negative prompt.',
+        { status: 400, code: 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED' },
+      );
+    }
+    if (body.disableAudio === true || body.disableAudio === 'true') {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 jointly generates video and audio; its audio track cannot be disabled.',
+        { status: 400, code: 'MINIMAX_H3_AUDIO_REQUIRED' },
+      );
+    }
+    if (body.tiling && body.tiling !== 'auto') {
+      await cleanupStaged();
+      throw new ServerError(
+        'MiniMax H3 does not expose a tiling mode.',
+        { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
+      );
+    }
+    const frames = Number(body.numFrames ?? effectiveModel.defaultFrames);
+    if (!Array.isArray(effectiveModel.frameOptions) || !effectiveModel.frameOptions.includes(frames)) {
+      await cleanupStaged();
+      throw new ServerError(
+        `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${frames}.`,
+        { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
+      );
+    }
+    const fps = Number(body.fps ?? 24);
+    if (fps !== 24) {
+      await cleanupStaged();
+      throw new ServerError(
+        `MiniMax H3 runs at a fixed 24 fps; got ${fps}.`,
+        { status: 400, code: 'MINIMAX_H3_INVALID_FPS' },
+      );
+    }
+  }
+  // Wan profiles have a narrower temporal-shape contract than the shared
+  // request schema can express (the mode side is the shared gate above). Mirror
+  // the worker's frame-grid guard here so a direct API caller cannot persist a
+  // job that is already known to fail.
+  if (effectiveModel?.runtime === 'wan22') {
+    const numFrames = body.numFrames != null ? Number(body.numFrames) : DEFAULT_NUM_FRAMES;
+    const frameStride = Number(effectiveModel.frameStride);
+    if (Number.isFinite(frameStride) && frameStride > 0 && (numFrames - 1) % frameStride !== 0) {
+      await cleanupStaged();
+      throw new ServerError(
+        `${effectiveModel.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
+        { status: 400, code: 'WAN22_INVALID_FRAME_COUNT' },
+      );
+    }
+  }
 
   let sourceImagePath = null;
   let lastImagePath = null;
@@ -410,6 +515,22 @@ async function resolvePreparedParams({
     uploadedTempPath = sourceImagePath;
   } else if (body.sourceImageFile) {
     sourceImagePath = resolveGalleryImage(body.sourceImageFile);
+  }
+  // Re-run the same contract now that the gallery pick has been resolved to a
+  // real path: the pre-staging pass only saw that a filename was *declared*, so
+  // a stale/missing gallery entry would otherwise fall through to a text render.
+  const resolvedModeError = videoModeContractError({
+    model: effectiveModel,
+    mode: declaredMode,
+    hasFirstImage: Boolean(sourceImagePath),
+    hasLastImage: hasDeclaredLastImage,
+    sourceResolved: true,
+    keyframes: body.keyframes,
+    extendFromVideo: body.extendFromVideoId,
+  });
+  if (resolvedModeError) {
+    await cleanupStaged();
+    throw resolvedModeError;
   }
   // Music Video director-board renders are always i2v FROM the scene's reference
   // frame (#1760 Phase 1). resolveGalleryImage returns null for a missing/invalid
@@ -687,6 +808,37 @@ async function resolvePreparedParams({
   // also hard-rejects an explicit chunks>1 above; this covers the default.
   const effectiveChunks = (body.mode === 'a2v' || icSpec) ? 1 : (body.chunks ?? 1);
 
+  // Per-chunk prompt beats (#3695) — only meaningful once the RESOLVED request
+  // really chains, so a single-chunk render (or an a2v/IC one pinned to 1 above)
+  // drops the list entirely rather than persisting a stale array into job params
+  // that a resume would replay into the form.
+  //
+  // Sizing is forgiving in both directions: a stale overlong list (the user
+  // typed beats, then lowered the chunk count) is truncated to the resolved
+  // count, and a short list is left short — generateChainedVideo falls back to
+  // the main prompt for any index the list doesn't cover. Blank entries become
+  // an explicit null (absent beat → main prompt) rather than an empty string the
+  // runner would render as an empty prompt. An all-blank list collapses to
+  // undefined so "the user cleared every beat" and "no beats were sent" persist
+  // identically instead of storing a useless array of nulls.
+  const normalizedChunkPrompts = effectiveChunks > 1 && Array.isArray(body.chunkPrompts)
+    ? body.chunkPrompts.slice(0, effectiveChunks)
+      .map((p) => (typeof p === 'string' && p.trim() !== '' ? p.trim() : null))
+    : undefined;
+  const effectiveChunkPrompts = normalizedChunkPrompts?.some(Boolean)
+    ? normalizedChunkPrompts
+    : undefined;
+
+  // Continuation context window — same "only meaningful once the request
+  // really chains" rule as the beats above, so a single-chunk render doesn't
+  // persist a knob that never applied and a resume can't replay it into the
+  // form. Resolved (defaulted + clamped) here rather than at render time so
+  // the persisted job records what the chain will actually do; note `0` is a
+  // real value (last-frame chaining) and must not be dropped as falsy.
+  const effectiveContextFrames = effectiveChunks > 1
+    ? resolveContextFrames(body.contextFrames)
+    : undefined;
+
   return {
     backend,
     pythonPath,
@@ -702,6 +854,8 @@ async function resolvePreparedParams({
     uploadedTempPaths: extraUploadedTempPaths,
     loras,
     effectiveChunks,
+    effectiveChunkPrompts,
+    effectiveContextFrames,
     cleanupStaged,
   };
 }

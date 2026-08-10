@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { promises as fs } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
+import { mockPathsDataRoot } from '../lib/mockPathsDataRoot.js';
 
 // Mock cosEvents before import
 vi.mock('./cos.js', () => ({
@@ -9,7 +10,31 @@ vi.mock('./cos.js', () => ({
   }
 }));
 
-import {
+// This suite exercises the REAL file-backed mission store — createMission writes
+// `PATHS.missions/<id>.json` and loadMissions enumerates that dir with a real
+// readdir. Without a PATHS redirect that dir is the checkout's own
+// `data/cos/missions`, so the suite both read the developer's live missions (one
+// with no `subTasks` crashed getStats) and wrote its own fixtures into it — the
+// same leak class as #3683. `mockPathsDataRoot` re-roots every data-rooted
+// `PATHS` member (#3689), so `PATHS.missions` lands under `tempRoot` on its own.
+const { tempRoot, makeProxy, cleanup } = mockPathsDataRoot({ prefix: 'portos-missions-' });
+vi.mock('../lib/fileUtils.js', async (importOriginal) => makeProxy(await importOriginal()));
+
+afterAll(cleanup);
+
+// Dynamic import, not a static one: `missions.js` reads `PATHS.missions` into a
+// module-level const at load time, and a static import would run that load
+// BEFORE the `mockPathsDataRoot()` line above — the hoisted mock factory would
+// then close over an uninitialized `makeProxy`. Top-level await defers the load
+// until after it exists.
+//
+// So the static imports at the top of this file must never transitively reach
+// `../lib/fileUtils.js`, or the factory runs during their evaluation and throws
+// `Cannot access 'makeProxy' before initialization`. `vi.hoisted()` does NOT fix
+// that — it hoists above the imports too, putting `mockPathsDataRoot` itself in
+// TDZ (verified: `Cannot access '__vi_import_0__' before initialization`). Keep
+// new static imports here dependency-free, or make them dynamic as well.
+const {
   createMission,
   getMission,
   getMissionsForApp,
@@ -24,20 +49,16 @@ import {
   deleteMission,
   archiveCompletedMissions,
   invalidateCache
-} from './missions.js';
+} = await import('./missions.js');
 
-const DATA_DIR = path.join(process.cwd(), 'data', 'cos', 'missions');
+const DATA_DIR = path.join(tempRoot, 'cos', 'missions');
 
 describe('Missions Service', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     invalidateCache();
-    // Clean up test missions
-    const files = await fs.readdir(DATA_DIR).catch(() => []);
-    for (const file of files) {
-      if (file.startsWith('test-')) {
-        await fs.unlink(path.join(DATA_DIR, file)).catch(() => {});
-      }
-    }
+    // The temp root is this suite's alone, so wiping the whole missions dir is
+    // both simpler and stricter than unlinking `test-`-prefixed files.
+    rmSync(DATA_DIR, { recursive: true, force: true });
   });
 
   afterEach(() => {
@@ -332,6 +353,133 @@ describe('Missions Service', () => {
     });
   });
 
+  // #3690 — `loadMissions` used to hand every parsed `.json` straight through, so
+  // a hand-edited / half-written / older-shape record took out the whole Missions
+  // overview instead of one row. Fixtures are written with `writeFileSync`
+  // deliberately: the point is a record PortOS itself would never produce.
+  describe('malformed records on disk', () => {
+    const writeRaw = (file, contents) => {
+      mkdirSync(DATA_DIR, { recursive: true });
+      writeFileSync(path.join(DATA_DIR, file), contents);
+      invalidateCache();
+    };
+
+    it('does not throw on a record with no subTasks array', async () => {
+      writeRaw('test-no-subtasks.json', JSON.stringify({
+        id: 'test-no-subtasks',
+        appId: 'test-app',
+        name: 'No SubTasks',
+        status: 'active',
+        progress: 40
+      }));
+
+      const stats = await getStats();
+      expect(stats.totalMissions).toBe(1);
+      expect(stats.totalSubTasks).toBe(0);
+      expect(stats.completedSubTasks).toBe(0);
+      expect(stats.overallCompletion).toBe('0%');
+    });
+
+    it('never reports averageProgress as NaN for a non-numeric progress', async () => {
+      writeRaw('test-bad-progress.json', JSON.stringify({
+        id: 'test-bad-progress',
+        appId: 'test-app',
+        name: 'Bad Progress',
+        status: 'active',
+        progress: 'halfway',
+        subTasks: []
+      }));
+
+      const stats = await getStats();
+      expect(stats.averageProgress).toBe('0.0%');
+      expect(stats.averageProgress).not.toContain('NaN');
+    });
+
+    it('buckets a status-less record under a named key, not undefined', async () => {
+      writeRaw('test-no-status.json', JSON.stringify({
+        id: 'test-no-status',
+        appId: 'test-app',
+        name: 'No Status',
+        subTasks: []
+      }));
+
+      const stats = await getStats();
+      expect(Object.keys(stats.byStatus)).toEqual(['unknown']);
+      expect(stats.byStatus.unknown).toBe(1);
+    });
+
+    it.each([
+      ['an array', '[]'],
+      ['a bare string', '"just a string"'],
+      ['a number', '42'],
+      ['unparseable bytes', '{ not json at all']
+    ])('drops %s with one warning line naming the file, and keeps the good records', async (_label, contents) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      writeRaw('test-not-a-mission.json', contents);
+      await createMission({ id: 'test-good-mission', appId: 'test-app', name: 'Good Mission' });
+
+      const stats = await getStats();
+      expect(stats.totalMissions).toBe(1);
+
+      const dropWarnings = warn.mock.calls.filter(([msg]) =>
+        typeof msg === 'string' && msg.includes('test-not-a-mission.json')
+      );
+      expect(dropWarnings.length).toBe(1);
+      expect(dropWarnings[0][0]).toContain('⚠️');
+
+      warn.mockRestore();
+      await deleteMission('test-good-mission');
+    });
+
+    it('ignores non-object entries inside subTasks rather than throwing', async () => {
+      writeRaw('test-bad-subtask-entries.json', JSON.stringify({
+        id: 'test-bad-subtask-entries',
+        appId: 'test-app',
+        name: 'Bad SubTask Entries',
+        status: 'active',
+        progress: 50,
+        subTasks: [null, 'not-a-task', { id: 'a', status: 'completed' }, { id: 'b', status: 'pending' }]
+      }));
+
+      const stats = await getStats();
+      expect(stats.totalSubTasks).toBe(2);
+      expect(stats.completedSubTasks).toBe(1);
+      expect(stats.overallCompletion).toBe('50.0%');
+    });
+
+    it('preserves the unrelated fields of a record it normalizes', async () => {
+      writeRaw('test-partial-record.json', JSON.stringify({
+        id: 'test-partial-record',
+        appId: 'test-app',
+        name: 'Partial Record',
+        description: 'kept as-is'
+      }));
+
+      const mission = await getMission('test-partial-record');
+      expect(mission.description).toBe('kept as-is');
+      expect(mission.subTasks).toEqual([]);
+      expect(mission.goals).toEqual([]);
+      expect(mission.metrics).toEqual({ tasksGenerated: 0, tasksCompleted: 0, successRate: 0 });
+    });
+
+    // The normalized record has to survive the mutating paths too — `addSubTask`
+    // pushes onto `subTasks` and bumps `metrics.tasksGenerated`, both of which
+    // threw on a record that arrived without them.
+    it('lets a normalized record take a new sub-task', async () => {
+      writeRaw('test-normalized-mutation.json', JSON.stringify({
+        id: 'test-normalized-mutation',
+        appId: 'test-app',
+        name: 'Normalized Mutation',
+        status: 'active'
+      }));
+
+      const updated = await addSubTask('test-normalized-mutation', { description: 'First task' });
+      expect(updated.subTasks.length).toBe(1);
+      expect(updated.metrics.tasksGenerated).toBe(1);
+    });
+  });
+
   describe('deleteMission', () => {
     it('should delete a mission', async () => {
       await createMission({
@@ -371,5 +519,25 @@ describe('Missions Service', () => {
         await deleteMission('test-archive-mission');
       }
     });
+  });
+});
+
+// Isolation probe for #3687 — these fail the same way if the PATHS redirect at
+// the top of the file is ever dropped, so the leak can't come back silently.
+describe('Missions Service — the suite is isolated from the checkout\'s real data/', () => {
+  it('resolves PATHS.missions to a temp dir outside the repo', async () => {
+    const { PATHS } = await import('../lib/fileUtils.js');
+    expect(PATHS.missions).toBe(DATA_DIR);
+  });
+
+  // Asserts WHERE the record landed, not just how many came back. A count alone
+  // would pass on a fresh checkout with the redirect removed — real
+  // `data/cos/missions` is empty there, so writing one and reading one back still
+  // gives 1. Only the path assertion fails in that case.
+  it('writes its missions under the temp root, and reads back only its own', async () => {
+    await createMission({ id: 'test-isolation-probe', appId: 'test-app', name: 'Isolation Probe' });
+    expect(existsSync(path.join(DATA_DIR, 'test-isolation-probe.json'))).toBe(true);
+    const stats = await getStats();
+    expect(stats.totalMissions).toBe(1);
   });
 });

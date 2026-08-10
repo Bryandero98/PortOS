@@ -2,9 +2,36 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
+import { DEFAULT_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
+
+const installProcess = vi.hoisted(() => {
+  const spawn = vi.fn();
+  const makeChild = () => {
+    const listeners = {};
+    const child = {
+      pid: 4242,
+      killed: false,
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      kill: vi.fn(() => true),
+      on: vi.fn((event, handler) => {
+        listeners[event] = handler;
+        if (event === 'close') setImmediate(() => handler(0));
+        return child;
+      }),
+    };
+    return child;
+  };
+  return { spawn, makeChild };
+});
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal()),
+  spawn: installProcess.spawn,
+}));
 
 vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
+  updateSettingsWith: vi.fn(async (mutate) => mutate({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
 }));
 
 vi.mock('../services/musicVideo/projects.js', () => ({
@@ -46,17 +73,29 @@ vi.mock('../services/videoGen/local.js', () => ({
   // hunyuan bring their own venv). Mirror the real export so the
   // "accepts BYOV-runtime when pythonPath missing" case passes and the
   // negative case (legacy mlx_video model) still 400s.
-  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'hunyuan']),
+  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3', 'hunyuan']),
   // The route's /status response now surfaces the BYOV runtime list so the
   // client can drop its hardcoded copy. Mirror the real shape — only the
   // `id` and a couple of UI-display fields are read by /status.
   BYOV_RUNTIME_INFO: {
+    minimax_h3: {
+      id: 'minimax_h3', label: 'MiniMax H3 MLX', venvPython: '/tmp/minimax-h3.py',
+      installEnvVar: 'INSTALL_MINIMAX_H3', pinEnvVar: 'MINIMAX_H3_PIN',
+      expectedRevision: 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49',
+      repoUrl: 'x', repoDir: '/tmp',
+    },
     ltx2: { id: 'ltx2', label: 'LTX-2 MLX', venvPython: '/tmp/ltx2.py', installEnvVar: 'INSTALL_LTX2', repoUrl: 'x', repoDir: '/tmp' },
-    wan22: { id: 'wan22', label: 'Wan 2.2 MLX', venvPython: '/tmp/wan22.py', installEnvVar: 'INSTALL_WAN22', repoUrl: 'x', repoDir: '/tmp' },
+    wan22: {
+      id: 'wan22', label: 'Wan 2.2 MLX', venvPython: '/tmp/wan22.py',
+      installEnvVar: 'INSTALL_WAN22', pinEnvVar: 'WAN22_PIN',
+      expectedRevision: '2452f0c12edcc8886eebf15772205ce9c417a618',
+      repoUrl: 'x', repoDir: '/tmp',
+    },
     hunyuan: { id: 'hunyuan', label: 'HunyuanVideo MLX', venvPython: '/tmp/hunyuan.py', installEnvVar: 'INSTALL_HUNYUAN', repoUrl: 'x', repoDir: '/tmp' },
   },
   isByovRuntimeInstalled: vi.fn(() => false),
   isByovRuntimeReady: vi.fn(async () => false),
+  isByovRuntimeCurrent: vi.fn(async () => false),
   invalidateByovReadyCache: vi.fn(),
   invalidateRuntimeFingerprintCache: vi.fn(),
   // /status now surfaces a runtime block (host chip/os + per-runtime versions).
@@ -65,6 +104,23 @@ vi.mock('../services/videoGen/local.js', () => ({
     host: { chip: 'Apple M5 Max', os: 'Darwin 25.5.0', platform: 'darwin', arch: 'arm64', node: 'v22' },
     runtimes: { ltx2: { runtime: 'ltx2', versions: { mlx: '0.22.0' }, chip: 'Apple M5 Max' } },
   })),
+}));
+
+const sseDownload = vi.hoisted(() => ({
+  start: vi.fn(async ({ res }) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end('data: {"type":"complete"}\n\n');
+  }),
+}));
+vi.mock('../lib/sseDownload.js', () => ({
+  startHfDownloadStream: sseDownload.start,
+  openSseStream: (res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    return {
+      send: (event) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`); },
+      safeEnd: () => { if (!res.writableEnded) res.end(); },
+    };
+  },
 }));
 
 // Render submissions go through the mediaJobQueue. Mock its surface so the
@@ -206,6 +262,7 @@ describe('videoGen routes', () => {
     // Reset the upload holder so a test that set a pending upload but
     // bailed before the route consumed it can't leak into the next test.
     pendingUpload.current = null;
+    installProcess.spawn.mockReset().mockImplementation(() => installProcess.makeChild());
   });
 
   describe('GET /status', () => {
@@ -245,6 +302,119 @@ describe('videoGen routes', () => {
       expect(r.body.missingPackages).toEqual(['mflux', 'mlx', 'mlx_video']);
       expect(r.body.reason).toMatch(/3 python packages missing/);
     });
+
+    // #3674 — the backend policy-scope wording is server-owned so the UI can't
+    // drift into ranking language ("less restrictive", "uncensored", …).
+    it('serializes the local + hosted backend disclosures', async () => {
+      const r = await request(app).get('/api/video-gen/status');
+      expect(r.body.backendDisclosures.map((b) => b.id)).toEqual(['local', 'grok']);
+      const local = r.body.backendDisclosures.find((b) => b.id === 'local');
+      expect(local.execution).toBe('local');
+      expect(local.facts.join(' ')).toMatch(/does not send your prompt/i);
+      expect(local.facts.join(' ')).toMatch(/no model-level prompt filter/i);
+      expect(local.facts.join(' ')).toMatch(/license/i);
+      const grok = r.body.backendDisclosures.find((b) => b.id === 'grok');
+      expect(grok.execution).toBe('hosted');
+      expect(grok.provider).toBe('xAI');
+      expect(grok.facts.join(' ')).toMatch(/sent to xAI/i);
+      for (const link of grok.links) expect(link.url).toMatch(/^https:\/\//);
+      for (const backend of r.body.backendDisclosures) {
+        expect([backend.summary, ...backend.facts].join(' '))
+          .not.toMatch(/uncensored|unrestricted|less restrictive/i);
+      }
+    });
+
+    it('passes each model entry through with its registry disclosure block', async () => {
+      videoGenService.listVideoModels.mockReturnValueOnce([
+        {
+          id: 'ltx2_unified',
+          name: 'LTX-2 Unified',
+          runtime: 'ltx2',
+          disclosure: { modelCardUrl: 'https://huggingface.co/example-org/example-video', reviewedAt: '2026-08-09' },
+        },
+        { id: 'custom', name: 'Custom', runtime: 'ltx2', source: 'user' },
+      ]);
+      const r = await request(app).get('/api/video-gen/status');
+      expect(r.body.models[0].disclosure.modelCardUrl).toBe('https://huggingface.co/example-org/example-video');
+      // Custom models carry no disclosure — the UI renders Unknown rather than
+      // inheriting a shipped model's licensing.
+      expect('disclosure' in r.body.models[1]).toBe(false);
+    });
+  });
+
+  describe('GET /setup/runtime-status', () => {
+    it('reports a missing runtime without probing readiness or revision', async () => {
+      const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({
+        runtime: 'wan22', installed: false, binaryPresent: false,
+        packagesReady: false, current: false, upgradeAvailable: false,
+      });
+      expect(videoGenService.isByovRuntimeReady).not.toHaveBeenCalled();
+      expect(videoGenService.isByovRuntimeCurrent).not.toHaveBeenCalled();
+    });
+
+    it('reports a ready runtime as installed only when its checkout is current', async () => {
+      videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(true);
+      const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
+      expect(r.body).toMatchObject({
+        installed: true, binaryPresent: true, packagesReady: true,
+        current: true, upgradeAvailable: false,
+      });
+    });
+
+    it('offers an upgrade without importing an outdated checkout', async () => {
+      videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(false);
+      const r = await request(app).get('/api/video-gen/setup/runtime-status?runtime=wan22');
+      expect(r.body).toMatchObject({
+        installed: false, binaryPresent: true, packagesReady: false,
+        current: false, upgradeAvailable: true,
+      });
+      expect(videoGenService.isByovRuntimeReady).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /setup/runtime-install', () => {
+    it('short-circuits only when the runtime packages and pinned revision are current', async () => {
+      videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(true);
+      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.text).toContain('"type":"complete"');
+      expect(r.text).toContain('Already installed');
+      expect(videoGenService.invalidateByovReadyCache).not.toHaveBeenCalled();
+    });
+
+    it('upgrades an outdated checkout with the pinned revision in the installer environment', async () => {
+      videoGenService.isByovRuntimeInstalled
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(true);
+      videoGenService.isByovRuntimeReady
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+      videoGenService.isByovRuntimeCurrent
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.text).toContain('"type":"complete"');
+      expect(r.text).toContain('Wan 2.2 MLX ready');
+      expect(installProcess.spawn).toHaveBeenCalledWith(
+        'bash',
+        ['/mock/scripts/setup-image-video.sh'],
+        expect.objectContaining({
+          detached: true,
+          env: expect.objectContaining({
+            INSTALL_WAN22: '1',
+            WAN22_PIN: '2452f0c12edcc8886eebf15772205ce9c417a618',
+          }),
+        }),
+      );
+    });
   });
 
   describe('GET /models', () => {
@@ -252,6 +422,151 @@ describe('videoGen routes', () => {
       const r = await request(app).get('/api/video-gen/models');
       expect(r.status).toBe(200);
       expect(r.body).toEqual([{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]);
+    });
+  });
+
+  describe('GET /models/:modelId/download — restricted terms', () => {
+    const h3CheckpointFiles = ['LICENSE', 'FL2VA/model_index.json', 'FL2VA/video_vae/source/model.safetensors'];
+    const h3 = {
+      id: 'minimax_h3_8bit',
+      name: 'MiniMax H3 MLX 8-bit',
+      runtime: 'minimax_h3',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+      supportedModes: ['text'],
+      defaultFrames: 124,
+      frameOptions: [124, 141, 158],
+      fpsOptions: [24],
+      steps: 8,
+      guidance: 0,
+      samplerLocked: true,
+      requiredWeights: [{
+        repo: 'MiniMaxAI/MiniMax-H3',
+        revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+        files: h3CheckpointFiles,
+      }],
+    };
+
+    it('rejects a download until the install has recorded this exact acknowledgement', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]).mockReturnValueOnce([h3]);
+
+      const missing = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
+      expect(missing.status).toBe(403);
+      expect(missing.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+      // The message is the only channel a blocked caller has, so it must point
+      // at where the acknowledgement is made.
+      expect(missing.body.error).toMatch(/Video Gen page/);
+
+      // A superseded license revision is not this one.
+      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: ['minimax-h3-community-license-2025-01-01'] } });
+      const stale = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
+      expect(stale.status).toBe(403);
+      expect(stale.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+    });
+
+    it('downloads both exact snapshots once the acknowledgement is recorded', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: [h3.termsGate.id] } });
+      const accepted = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
+      expect(accepted.status).toBe(200);
+      expect(sseDownload.start).toHaveBeenCalledWith(expect.objectContaining({
+        repos: [
+          {
+            repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+            revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+            only: [],
+          },
+          {
+            repo: 'MiniMaxAI/MiniMax-H3',
+            revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+            only: h3CheckpointFiles,
+          },
+        ],
+      }));
+    });
+
+    // The install-wide acknowledgement is what makes a single "I accept" click
+    // authorize every other surface — the music video board, a pipeline stage,
+    // an agent run — instead of each one 403ing with no UI to resolve it. It is
+    // also the ONLY authorization: a request cannot assert its own acceptance,
+    // so nothing renders without a recorded acknowledgement to withdraw.
+    it('queues the render on the recorded acknowledgement, and never on a self-asserted key', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValue([h3]);
+      getSettings.mockResolvedValueOnce({
+        imageGen: { local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { acceptedModelTerms: [h3.termsGate.id] },
+      });
+      const render = await request(app).post('/api/video-gen/').send({
+        prompt: 'a fox watches the rain',
+        modelId: h3.id,
+        mode: 'text',
+      });
+      expect(render.status).toBe(200);
+      // Nothing about the acceptance rides the job: the render re-resolves it
+      // from settings, so a withdrawal reaches work already in the queue.
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.not.objectContaining({ termsAcceptance: expect.anything() }),
+      }));
+
+      const asserted = await request(app).post('/api/video-gen/').send({
+        prompt: 'a fox watches the rain',
+        modelId: h3.id,
+        mode: 'text',
+        termsAcceptance: h3.termsGate.id,
+      });
+      expect(asserted.status).toBe(403);
+      expect(asserted.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+      videoGenService.listVideoModels.mockReset();
+    });
+  });
+
+  describe('POST /model-terms — install-wide acknowledgement', () => {
+    const h3 = {
+      id: 'minimax_h3_8bit',
+      name: 'MiniMax H3 MLX 8-bit',
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+    };
+
+    it('records and withdraws the acknowledgement for a known gate id', async () => {
+      const { updateSettingsWith } = await import('../services/settings.js');
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      updateSettingsWith.mockImplementationOnce(async (mutate) => mutate({}));
+      const accept = await request(app)
+        .post('/api/video-gen/model-terms')
+        .send({ termsId: h3.termsGate.id, accepted: true });
+      expect(accept.status).toBe(200);
+      expect(accept.body.accepted).toEqual([h3.termsGate.id]);
+
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      updateSettingsWith.mockImplementationOnce(async (mutate) =>
+        mutate({ videoGen: { acceptedModelTerms: [h3.termsGate.id] } }));
+      const withdraw = await request(app)
+        .post('/api/video-gen/model-terms')
+        .send({ termsId: h3.termsGate.id, accepted: false });
+      expect(withdraw.status).toBe(200);
+      expect(withdraw.body.accepted).toEqual([]);
+    });
+
+    it('rejects an id no shipped model declares rather than storing a no-op acceptance', async () => {
+      videoGenService.listVideoModels.mockReturnValueOnce([h3]);
+      const bogus = await request(app)
+        .post('/api/video-gen/model-terms')
+        .send({ termsId: 'not-a-real-license', accepted: true });
+      expect(bogus.status).toBe(400);
+      expect(bogus.body.code).toBe('VIDEO_MODEL_TERMS_UNKNOWN_ID');
+    });
+
+    it('reports the persisted acknowledgements', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: [h3.termsGate.id, ''] } });
+      const listed = await request(app).get('/api/video-gen/model-terms');
+      expect(listed.status).toBe(200);
+      expect(listed.body.accepted).toEqual([h3.termsGate.id]);
     });
   });
 
@@ -789,6 +1104,114 @@ describe('videoGen routes', () => {
       });
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(/chunks/i);
+    });
+
+    it('defaults the continuation context window on a chained request', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 3,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ chunks: 3, contextFrames: DEFAULT_CONTEXT_FRAMES }),
+      }));
+    });
+
+    it('forwards an explicit context window', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        contextFrames: 45,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ contextFrames: 45 }),
+      }));
+    });
+
+    it('preserves contextFrames: 0 — last-frame chaining, not "unset"', async () => {
+      // Dropping the 0 would silently upgrade the render back to a window and
+      // give the user a materially different clip than they asked for.
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        contextFrames: 0,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ contextFrames: 0 }),
+      }));
+    });
+
+    it('omits contextFrames entirely when the request does not chain', async () => {
+      // Persisting a knob that could never have applied would replay into the
+      // form on resume as if the user had chosen it.
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a single render',
+        contextFrames: 45,
+      });
+      expect(r.status).toBe(200);
+      const { params } = mediaJobQueue.enqueueJob.mock.calls.at(-1)[0];
+      expect(params.chunks).toBe(1);
+      expect(params).not.toHaveProperty('contextFrames');
+    });
+
+    it('rejects a context window past the cap', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        contextFrames: MAX_CONTEXT_FRAMES + 1,
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/contextFrames/i);
+    });
+
+    it('forwards per-chunk prompt beats, keeping a blank entry as a fallback marker', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 3,
+        chunkPrompts: ['she opens the door', '', 'the storm breaks'],
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({
+          chunks: 3,
+          chunkPrompts: ['she opens the door', null, 'the storm breaks'],
+        }),
+      }));
+    });
+
+    it('accepts a JSON-encoded beat list (the multipart submit shape)', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 2,
+        chunkPrompts: JSON.stringify(['first beat', 'second beat']),
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ chunkPrompts: ['first beat', 'second beat'] }),
+      }));
+    });
+
+    it('omits beats entirely from a single-chunk render', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a single render',
+        chunkPrompts: ['a stale beat'],
+      });
+      expect(r.status).toBe(200);
+      const { params } = mediaJobQueue.enqueueJob.mock.calls.at(-1)[0];
+      expect(params.chunks).toBe(1);
+      expect('chunkPrompts' in params).toBe(false);
+    });
+
+    it('rejects a beat list longer than the chunk cap', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'too many beats',
+        chunks: 2,
+        chunkPrompts: Array.from({ length: 9 }, (_, i) => `beat ${i}`),
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/chunkPrompts/i);
     });
 
     it('forwards extendFromVideoId by resolving to a real disk path under data/videos/', async () => {

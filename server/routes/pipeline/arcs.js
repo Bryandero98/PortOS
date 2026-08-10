@@ -60,7 +60,7 @@ const arcDeriveCommitSchema = z.object({
   }).optional(),
   bible: z.object({
     logline: z.string().max(500).optional(),
-    premise: z.string().max(8000).optional(),
+    premise: z.string().max(seriesSvc.PREMISE_MAX).optional(),
     issueCountTarget: z.number().int().min(0).max(9999).optional(),
   }).optional(),
   volume: z.object({

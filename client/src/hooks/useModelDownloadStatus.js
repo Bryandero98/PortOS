@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSseProgress } from './useSseProgress.js';
 import { isIcLoraMode } from '../lib/videoGenParams.js';
 import toast from '../components/ui/Toast';
@@ -19,13 +19,15 @@ export const TEXT_ENCODER_DOWNLOAD_ID = '__text_encoder__';
 // Callers pass the remix mode itself ('ic-control') as the download id, and
 // membership in the mode registry (NOT a raw `ic-` string prefix) is what
 // identifies one — so an id can never be misrouted by coincidence of naming.
-const buildDownloadUrl = (kind, modelId, force = false) => {
+export const buildDownloadUrl = (kind, modelId, force = false) => {
   if (!modelId) return null;
   // A repair-initiated re-download appends `?force=1` so the server re-fetches
   // even when the repo still looks cached — repairModelCache() deleted the bad
   // file(s), but a multi-shard repo's surviving shards otherwise mask the gap
   // and the deleted shard would never be pulled back.
-  const q = force ? '?force=1' : '';
+  const params = new URLSearchParams();
+  if (force) params.set('force', '1');
+  const q = params.size > 0 ? `?${params.toString()}` : '';
   if (kind === 'video' && modelId === TEXT_ENCODER_DOWNLOAD_ID) {
     return `/api/video-gen/text-encoder/download${q}`;
   }
@@ -46,27 +48,34 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
   const [statuses, setStatuses] = useState(null);
   const [extra, setExtra] = useState({}); // video: { textEncoder: {...} }
   const [loading, setLoading] = useState(false);
+  const [statusError, setStatusError] = useState(null);
   const [activeModelId, setActiveModelId] = useState(null);
+  const activeModelIdRef = useRef(null);
+  const [lastError, setLastError] = useState(null);
   // True only for a repair-initiated re-download — appends `?force=1` so the
   // server re-fetches a repo whose surviving shards still read as cached.
   const [forceDownload, setForceDownload] = useState(false);
 
   const fetchStatuses = useCallback(async () => {
     setLoading(true);
-    // Best-effort: a failure leaves the badge in its loading state. The form
-    // still works because lazy download is the existing fallback.
+    // Best-effort: a failure resolves to an empty status list. Local forms
+    // stay gated because an unknown cache state must not trigger a hidden
+    // render-time download; retrying the status request remains safe.
     const body = await (kind === 'video' ? getVideoModelStatuses() : getImageModelStatuses())
       .catch(() => null);
     if (body == null) {
+      setStatusError('PortOS could not check the local model cache. Retry before generating.');
       setStatuses([]);
       setExtra({});
     } else if (kind === 'video') {
+      setStatusError(null);
       setStatuses(Array.isArray(body?.models) ? body.models : []);
       setExtra({
         textEncoder: body?.textEncoder || null,
         icLoras: Array.isArray(body?.icLoras) ? body.icLoras : [],
       });
     } else {
+      setStatusError(null);
       setStatuses(Array.isArray(body) ? body : []);
       setExtra({});
     }
@@ -90,16 +99,27 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
   useEffect(() => {
     if (sse.closed) {
       if (sse.latest?.type === 'error' && sse.latest?.message) {
+        setLastError({
+          modelId: activeModelIdRef.current,
+          message: sse.latest.message,
+          kind: sse.latest.kind || 'download_failed',
+          repo: sse.latest.repo || null,
+        });
         toast.error(sse.latest.message);
+      } else {
+        setLastError(null);
       }
       fetchStatuses();
       setActiveModelId(null);
+      activeModelIdRef.current = null;
       setForceDownload(false);
     }
   }, [sse.closed, sse.latest, fetchStatuses]);
 
   const start = useCallback((modelId, { force = false } = {}) => {
+    setLastError(null);
     setForceDownload(force);
+    activeModelIdRef.current = modelId;
     setActiveModelId(modelId);
   }, []);
 
@@ -157,6 +177,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
   const cancel = useCallback(() => {
     sse.close();
     setActiveModelId(null);
+    activeModelIdRef.current = null;
     setForceDownload(false);
     fetchStatuses();
   }, [sse, fetchStatuses]);
@@ -193,6 +214,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     statuses,
     extra,
     loading,
+    statusError,
     refresh: fetchStatuses,
     start,
     cancel,
@@ -203,6 +225,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     getStatus,
     activeModelId,
     progress: sse.latest,
+    lastError,
     downloading: !!activeModelId,
   };
 }

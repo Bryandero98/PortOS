@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
   VIDEO_EDGE_BOUNDS, FRAME_OPTIONS, FPS_OPTIONS,
+  WAN_FRAME_OPTIONS, frameOptionsForModel, fpsOptionsForModel,
+  normalizeFramesForModel, normalizeFpsForModel,
+  supportsVideoAudioControls,
   IC_LORA_MODES, IC_LORA_MODE_VALUES, isIcLoraMode, icLoraSpecForMode,
   icResolutionIssue,
 } from './videoGenParams.js';
@@ -12,6 +15,7 @@ describe('videoModelMemoryGb', () => {
   });
   it('falls back to a "~NN GB" hint in the name', () => {
     expect(videoModelMemoryGb({ name: 'LTX 2.3 (~12.5 GB)' })).toBe(12.5);
+    expect(videoModelMemoryGb({ name: 'Wan 2.2 (~17 GiB)' })).toBe(17);
   });
   it('returns +Infinity when neither is present so it never spuriously fits a budget', () => {
     expect(videoModelMemoryGb({ name: 'mystery model' })).toBe(Number.POSITIVE_INFINITY);
@@ -47,9 +51,35 @@ describe('isModelAllowedForMode', () => {
   it('rejects a null model', () => {
     expect(isModelAllowedForMode(null, 'text')).toBe(false);
   });
-  it('allows any runtime for non-a2v modes', () => {
-    expect(isModelAllowedForMode({ runtime: 'mlx_video' }, 'text')).toBe(true);
-    expect(isModelAllowedForMode({ runtime: 'ltx2' }, 'image')).toBe(true);
+  it('allows general runtimes for the modes their entry resolves', () => {
+    // The server resolves supportedModes onto EVERY entry at load
+    // (server/lib/videoModeProfiles.js) — these are the mlx_video / ltx2 rows.
+    const mlx = { runtime: 'mlx_video', supportedModes: ['text', 'image', 'fflf', 'extend'] };
+    const ltx2 = { runtime: 'ltx2', supportedModes: ['text', 'image', 'fflf', 'extend'] };
+    expect(isModelAllowedForMode(mlx, 'text')).toBe(true);
+    expect(isModelAllowedForMode(ltx2, 'image')).toBe(true);
+  });
+  it('rejects every mode for a model that resolved no supportedModes (#3737)', () => {
+    // "Declares nothing" used to mean "supports everything", which offered FFLF
+    // on runtimes that silently drop the second keyframe. Post-backfill an
+    // absent list can only mean a payload that never came from the registry.
+    expect(isModelAllowedForMode({ runtime: 'mlx_video' }, 'text')).toBe(false);
+    expect(isModelAllowedForMode({ runtime: 'mlx_video', supportedModes: [] }, 'text')).toBe(false);
+  });
+  it('filters Wan models by their declared text/image capabilities', () => {
+    const ti2v = { runtime: 'wan22', supportedModes: ['text', 'image'] };
+    const i2v = { runtime: 'wan22', supportedModes: ['image'] };
+    expect(isModelAllowedForMode(ti2v, 'text')).toBe(true);
+    expect(isModelAllowedForMode(ti2v, 'image')).toBe(true);
+    expect(isModelAllowedForMode(i2v, 'text')).toBe(false);
+    expect(isModelAllowedForMode(i2v, 'image')).toBe(true);
+    expect(isModelAllowedForMode(ti2v, 'fflf')).toBe(false);
+  });
+  it('filters any model with an explicit supportedModes contract', () => {
+    const h3 = { runtime: 'minimax_h3', supportedModes: ['text'] };
+    expect(isModelAllowedForMode(h3, 'text')).toBe(true);
+    expect(isModelAllowedForMode(h3, 'image')).toBe(false);
+    expect(isModelAllowedForMode(h3, 'fflf')).toBe(false);
   });
   it('requires the ltx2 runtime for a2v', () => {
     expect(isModelAllowedForMode({ runtime: 'ltx2' }, 'a2v')).toBe(true);
@@ -65,6 +95,28 @@ describe('constants', () => {
     expect(FRAME_OPTIONS[0]).toBe(25);
     expect(FRAME_OPTIONS.every((f) => (f - 1) % 8 === 0)).toBe(true);
     expect(FPS_OPTIONS).toEqual([16, 24, 30]);
+    expect(WAN_FRAME_OPTIONS.every((f) => (f - 1) % 4 === 0)).toBe(true);
+  });
+  it('selects and normalizes model-aware Wan frame/fps values', () => {
+    const wan = { frameStride: 4, fpsOptions: [16, 20, 24] };
+    expect(frameOptionsForModel(wan)).toBe(WAN_FRAME_OPTIONS);
+    expect(fpsOptionsForModel(wan)).toEqual([16, 20, 24]);
+    expect(normalizeFramesForModel(97, wan)).toBe(97);
+    expect(normalizeFramesForModel(109, wan)).toBe(109);
+    expect(frameOptionsForModel(wan, 109)).toContain(109);
+    expect(normalizeFramesForModel(98, wan)).toBe(97);
+    expect(normalizeFpsForModel(30, wan)).toBe(24);
+  });
+  it('uses an explicit model frame list and fixed fps for MiniMax H3', () => {
+    const h3 = { frameOptions: [124, 141, 158], fpsOptions: [24] };
+    expect(frameOptionsForModel(h3)).toEqual([124, 141, 158]);
+    expect(frameOptionsForModel(h3, 175)).toEqual([124, 141, 158]);
+    expect(normalizeFramesForModel(140, h3)).toBe(141);
+    expect(normalizeFpsForModel(30, h3)).toBe(24);
+  });
+  it('uses one explicit capability for visible and submitted audio controls', () => {
+    expect(supportsVideoAudioControls({ runtime: 'mlx_video' })).toBe(true);
+    expect(supportsVideoAudioControls({ supportsDisableAudio: false })).toBe(false);
   });
 });
 
@@ -130,3 +182,4 @@ describe('IC-LoRA remix modes (#3100)', () => {
     expect(icLoraSpecForMode('ic-colorize').uploadLabel).toMatch(/B&W/);
   });
 });
+

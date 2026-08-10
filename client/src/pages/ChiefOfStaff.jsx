@@ -5,7 +5,7 @@ import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { useValidTab } from '../hooks/useValidTab';
 import * as api from '../services/api';
-import { Play, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import TabPills from '../components/ui/TabPills';
@@ -118,6 +118,7 @@ export default function ChiefOfStaff() {
   // Derive agent state from system status
   const deriveAgentState = useCallback((statusData, agentsData, healthData) => {
     if (!statusData?.running) return 'sleeping';
+    if (statusData.paused) return 'sleeping';
 
     const activeAgents = agentsData.filter(a => a.status === 'running');
     if (activeAgents.length > 0) return 'coding';
@@ -176,7 +177,9 @@ export default function ChiefOfStaff() {
     const newState = deriveAgentState(statusData, agentsData, healthData);
     setAgentState(newState);
     // Use default state message - real messages come from socket events
-    setStatusMessage(STATE_MESSAGES[newState]);
+    setStatusMessage(statusData?.paused
+      ? `Paused${statusData.pauseReason ? ` — ${statusData.pauseReason}` : ''}`
+      : STATE_MESSAGES[newState]);
 
     // Set active agent metadata for dynamic avatar (use first running agent)
     const runningAgent = agentsData.find(a => a.status === 'running');
@@ -374,6 +377,35 @@ export default function ChiefOfStaff() {
     }
   };
 
+  const handlePause = async () => {
+    const reason = 'Paused from Chief of Staff controls';
+    const result = await api.pauseCos(reason, { silent: true }).catch(err => {
+      toast.error(err.message);
+      return null;
+    });
+    if (result?.success) {
+      toast.success('Chief of Staff paused');
+      setStatus(prev => ({ ...prev, paused: true, pausedAt: result.pausedAt, pauseReason: reason }));
+      setAgentState('sleeping');
+      setStatusMessage(`Paused — ${reason}`);
+      fetchData();
+    }
+  };
+
+  const handleResume = async () => {
+    const result = await api.resumeCos({ silent: true }).catch(err => {
+      toast.error(err.message);
+      return null;
+    });
+    if (result?.success) {
+      toast.success('Chief of Staff resumed');
+      setStatus(prev => ({ ...prev, paused: false, pausedAt: null, pauseReason: null }));
+      setAgentState('thinking');
+      setStatusMessage('Resuming daemon - scanning for tasks...');
+      fetchData();
+    }
+  };
+
   const handleForceEvaluate = async () => {
     // Only announce success / drive the "thinking" state after the request
     // actually resolves — a failed evaluate must not flash a success toast.
@@ -547,18 +579,41 @@ export default function ChiefOfStaff() {
         </div>
       </button>
       {status?.running ? (
-        <button
-          type="button"
-          onClick={handleStop}
-          className="bg-port-error/20 hover:bg-port-error/30 text-port-error border border-port-error/30 rounded px-2 py-1.5 flex items-center gap-2 transition-colors min-h-[52px]"
-          aria-label="Stop Chief of Staff agent"
-        >
-          <Square size={16} className="shrink-0" aria-hidden="true" />
-          <div className="flex-1 min-w-0 text-left">
-            <div className="text-[10px] text-gray-600">Agent</div>
-            <div className="text-sm font-bold text-port-error">Stop</div>
-          </div>
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={status.paused ? handleResume : handlePause}
+            className={`border rounded px-2 py-1.5 flex items-center gap-2 transition-colors min-h-[52px] ${
+              status.paused
+                ? 'bg-port-success/20 hover:bg-port-success/30 text-port-success border-port-success/30'
+                : 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning border-port-warning/30'
+            }`}
+            aria-label={status.paused ? 'Resume Chief of Staff scheduling' : 'Pause Chief of Staff scheduling'}
+            title={status.paused
+              ? 'Resume task evaluation and dispatch'
+              : 'Pause new task evaluation and dispatch; running agents keep their work'}
+          >
+            {status.paused
+              ? <Play size={16} className="shrink-0" aria-hidden="true" />
+              : <Pause size={16} className="shrink-0" aria-hidden="true" />}
+            <div className="flex-1 min-w-0 text-left">
+              <div className="text-[10px] text-gray-600">Queue</div>
+              <div className="text-sm font-bold">{status.paused ? 'Resume' : 'Pause'}</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={handleStop}
+            className="bg-port-error/20 hover:bg-port-error/30 text-port-error border border-port-error/30 rounded px-2 py-1.5 flex items-center gap-2 transition-colors min-h-[52px]"
+            aria-label="Stop Chief of Staff agent"
+          >
+            <Square size={16} className="shrink-0" aria-hidden="true" />
+            <div className="flex-1 min-w-0 text-left">
+              <div className="text-[10px] text-gray-600">Agent</div>
+              <div className="text-sm font-bold text-port-error">Stop</div>
+            </div>
+          </button>
+        </>
       ) : (
         <button
           type="button"
@@ -676,7 +731,7 @@ export default function ChiefOfStaff() {
                 >
                   CoS
                 </h1>
-                <StatusIndicator running={status?.running} />
+                <StatusIndicator running={status?.running} paused={status?.paused} />
               </div>
               <div className="flex items-center gap-1.5 text-gray-400">
                 <StateLabel state={agentState} compact />
@@ -727,7 +782,7 @@ export default function ChiefOfStaff() {
               >
                 CoS
               </h1>
-              <StatusIndicator running={status?.running} />
+              <StatusIndicator running={status?.running} paused={status?.paused} />
             </div>
             <div className="flex items-center gap-1.5 text-gray-400">
               <StateLabel state={agentState} compact />

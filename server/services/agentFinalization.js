@@ -24,7 +24,7 @@ import { emitLog } from './cosEvents.js';
 // `agentManagement.js`. This module is a LEAF that both transition modules
 // import, which puts it inside the facade's closure, so the facade is out of
 // reach here.
-import { getAgent, updateAgent, completeAgent } from './cosAgentLifecycle.js';
+import { getAgent, getAgentRecord, updateAgent, completeAgent } from './cosAgentLifecycle.js';
 import { updateTask } from './cos.js';
 import { getActiveProvider } from './providers.js';
 import { markProviderUsageLimit, markProviderUnavailable } from './providerStatus.js';
@@ -32,8 +32,10 @@ import { resolveProviderBench } from '../lib/providerCooldown.js';
 import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
-import { completeAgentRun, checkForTaskCommit } from './agentRunTracking.js';
-import { canRunTaskOutputHookWithoutPayload, isProgrammaticIoTaskType, resolveTaskHookType, declaresNoCommitCriterion } from './taskTypeHooks.js';
+import { completeAgentRun } from './agentRunTracking.js';
+import { committedDuringRun } from '../lib/gitCommitProbe.js';
+import { detectPrimaryCheckoutDrift, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
+import { canRunTaskOutputHookWithoutPayload, getTaskOutputPayloadPredicate, isProgrammaticIoTaskType, resolveTaskHookType, declaresNoCommitCriterion } from './taskTypeHooks.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { extractSimplifySummaries } from './agentSummaryExtraction.js';
 
@@ -62,16 +64,28 @@ export function releaseAgentLane({ agentId, success, duration, exitCode, executi
  * Evaluate a completed autonomous run against its DECLARED success criteria
  * (issue #2344). Distinct from the runner's exit-code `success`: it answers
  * "did the run actually produce the work it was supposed to?" using the one
- * machine-checkable criterion the CoS already relies on — a `[task-<id>]` commit.
+ * machine-checkable criterion the CoS can actually observe — did the run leave
+ * a commit behind inside its own run window (`committedDuringRun`)?
+ *
+ * That probe replaced a task-id commit-marker grep in #3637. NOTHING ever
+ * emitted that marker — no prompt, template, or slashdo command asked an agent
+ * to stamp a task id into a commit subject, and the root CLAUDE.md forbids
+ * exactly that shape of subject line — so the criterion was unsatisfiable and
+ * stamped `validationPassed: false` on every ordinary code-editing run,
+ * poisoning the task-learning buckets it feeds.
  *
  * Returns a null sentinel when NO criterion is declared (interactive/user tasks,
- * user-terminated runs, or a run with no task id / workspace to validate
- * against), so downstream telemetry never conflates "not declared" with
+ * user-terminated runs, or a run with no task id / workspace / run window to
+ * validate against), so downstream telemetry never conflates "not declared" with
  * "declared and failed". For autonomous tasks it verifies the commit on BOTH
  * success and failure — a clean exit that committed nothing is an honest miss,
- * and that is exactly the signal task-learning wants. `checkForTaskCommit` is
- * git-repo-gated, off the event loop, and hard-timeout-bounded, so a non-repo
- * workspace or a hung git degrades to "no commit" rather than stalling finalize.
+ * and that is exactly the signal task-learning wants. `committedDuringRun` is
+ * non-throwing and hard-timeout-bounded, so a non-repo workspace or a hung git
+ * degrades to "no commit" rather than stalling finalize.
+ *
+ * `startedAt` (epoch ms) bounds the window. A non-finite value means we can't
+ * tell this run's commits from anything already in the repo, so the criterion is
+ * undeclared (null) rather than a manufactured `false`.
  *
  * `hookResult` is the programmatic-I/O output-hook result (from
  * `dispatchTaskOutputHook`), which finalizeAgent resolves BEFORE calling this so
@@ -79,7 +93,7 @@ export function releaseAgentLane({ agentId, success, duration, exitCode, executi
  * runner's exit-code verdict that hook result is weighed against. Both are
  * absent/null for every other task shape.
  */
-export async function evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, success = false, hookResult = null }) {
+export async function evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt = null, success = false, hookResult = null }) {
   if (terminatedByUser) return null;
   const taskType = task?.taskType || 'user';
   // The SCHEDULED type (`metadata.analysisType`) if any, else the queue category —
@@ -92,7 +106,7 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // pre-empted by the `!workspacePath` bail below (a hook that already ran and
   // threw is a real verdict even if the worktree is gone). Their prompts
   // explicitly FORBID committing or opening a PR (the worktree is discarded), so
-  // the `[task-<id>]` commit check would mark every correct run a failure (#2700).
+  // the commit criterion would mark every correct run a failure (#2700).
   // Judging them purely by exit code instead is also wrong: an exit-0 run whose
   // `.agent-done` sentinel was missing/malformed, or whose hook threw, produced
   // nothing usable and must be recorded as the failure it is (#2727).
@@ -102,7 +116,7 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // Interactive/user tasks declare no machine-checkable criterion; neither does
   // a run missing the task id or workspace needed to validate.
   if (taskType === 'user' || !task?.id || !workspacePath) return null;
-  // Pipeline/media tasks deliver artifacts, not a `[task-<id>]` commit — the
+  // Pipeline/media tasks deliver artifacts, not a commit — the
   // commit criterion doesn't apply, so don't mislabel a clean artifact run as a
   // validation miss (which would also pollute the correlation window). null =
   // no commit criterion declared for this task shape. Unlike programmatic-I/O
@@ -112,7 +126,7 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // gh/git/external COORDINATOR task types (NON_COMMITTING_COORDINATOR_TASK_TYPES in
   // taskTypeHooks.js — branch-reconcile/issue-reconcile/branch-cleanup/jira-status-report)
   // deliver their work as a side effect — a merged PR, a resolved conflict, a deleted
-  // branch, a posted report — and by design NEVER produce a `[task-<id>]` commit. Because
+  // branch, a posted report — and by design NEVER produce a commit. Because
   // their workspacePath IS set (the app's live checkout), the commit check above would
   // return false on every SUCCESSFUL run and drive their learning bucket to ~0% (#2696) —
   // the same artifact #2700 fixed for the programmatic-I/O reasoning run. They register no
@@ -129,7 +143,10 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // so the same type still gets its commit criterion on a `plan`-tracker app
   // where it legitimately commits PLAN.md items (#3273).
   if (declaresNoCommitCriterion(task)) return null;
-  return await checkForTaskCommit(task.id, workspacePath);
+  // No usable run window means no way to attribute a commit to THIS run — the
+  // sentinel, not a false verdict (#3637).
+  if (!Number.isFinite(startedAt)) return null;
+  return await committedDuringRun(workspacePath, startedAt);
 }
 
 /**
@@ -209,6 +226,41 @@ async function resolveWorkspaceBranch(workspacePath) {
 }
 
 /**
+ * How many commits the finished branch holds that its base does not — or `null`
+ * when we could not work it out.
+ *
+ * The `null` sentinel matters: it is the difference between "we looked and the
+ * agent committed nothing" and "we could not look". Only a confirmed `0` is
+ * allowed to excuse a missing PR (see `verifyPrClaim`); an unreadable count
+ * leaves the miss standing rather than inventing an excuse for it.
+ *
+ * Compares against `origin/<default>` in preference to the local branch. A
+ * worktree's local `main` is routinely STALE — it is whatever the primary
+ * checkout last pulled, which can sit well behind the commit the worktree was
+ * actually branched from. Counting against it reports the merge commits the
+ * agent inherited as commits the agent authored, which is precisely backwards
+ * for a check that exists to recognize "this agent wrote nothing".
+ */
+async function countCommitsAhead(workspacePath) {
+  const { getDefaultBranch } = await import('./git.js');
+  // `allowRemote: false` — finalize must not block on a network round-trip to
+  // answer a bookkeeping question; the local fallbacks resolve main/master fine.
+  const defaultBranch = await getDefaultBranch(workspacePath, { allowRemote: false }).catch(() => null);
+  if (!defaultBranch) return null;
+
+  const remoteRef = `refs/remotes/origin/${defaultBranch}`;
+  const hasRemote = await execGit(['rev-parse', '--verify', '--quiet', remoteRef], workspacePath, { ignoreExitCode: true })
+    .then(r => !!(r?.stdout || '').trim())
+    .catch(() => false);
+
+  const base = hasRemote ? `origin/${defaultBranch}` : defaultBranch;
+  const result = await execGit(['rev-list', '--count', `${base}..HEAD`], workspacePath, { ignoreExitCode: true })
+    .catch(() => null);
+  const count = Number.parseInt((result?.stdout || '').trim(), 10);
+  return Number.isInteger(count) ? count : null;
+}
+
+/**
  * Verify that a run whose task shape PROMISED a pull request actually produced
  * one (#3358).
  *
@@ -228,12 +280,16 @@ async function resolveWorkspaceBranch(workspacePath) {
  * `glab` split `createPR` already makes. Asking `gh` about a GitLab remote
  * would fail and record every correct MR run as `forge-unreachable`.
  *
- * Three outcomes, never collapsed:
+ * Four outcomes, never collapsed:
  *   - `ok: true`  — a PR exists, or there was nothing to check
- *   - `ok: false, category: 'pr-missing'` — the forge answered: no PR
+ *   - `ok: true, noChangesToShip: true` — the forge answered "no PR" and the
+ *     branch holds no commits, so there was nothing a PR could have been opened
+ *     for; the run concluded that no change was warranted
+ *   - `ok: false, category: 'pr-missing'` — the forge answered "no PR" for a
+ *     branch that DOES hold commits
  *   - `ok: false, category: 'forge-unreachable'` — we could not ask
  *
- * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null }>}
+ * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null, noChangesToShip?: boolean, commitsAhead?: number|null }>}
  */
 export async function verifyPrClaim({ task, workspacePath, success, prExpected }) {
   // Only a run that CLAIMED success has a claim to verify; a failed run is
@@ -259,9 +315,24 @@ export async function verifyPrClaim({ task, workspacePath, success, prExpected }
   const noun = cli === 'glab' ? 'merge request' : 'pull request';
   if (found.status === 'found') return { ok: true, branch };
   if (found.status === 'none') {
+    // "No PR" is only a MISS if there was something to open one for. An agent
+    // that investigated its task, found the defect already fixed on main, and
+    // stopped without touching a file leaves a branch with zero commits — and
+    // `gh pr create` on a zero-commit branch does not fail because the agent
+    // slipped, it fails because there is no diff. Recording that as `pr-missing`
+    // failed a correct run and, being non-actionable, re-ran the whole
+    // investigation twice more to reach the same conclusion (agent-446c4f47).
+    //
+    // Deliberately gated on an EXPLICIT 0: an unreadable count is not evidence
+    // of an empty branch, so it leaves the miss standing.
+    const ahead = await countCommitsAhead(workspacePath).catch(() => null);
+    if (ahead === 0) {
+      return { ok: true, branch, noChangesToShip: true };
+    }
     return {
       ok: false,
       branch,
+      commitsAhead: ahead,
       category: PR_MISSING_CATEGORY,
       message: `Agent reported success but no ${noun} exists for branch ${branch}`
     };
@@ -271,6 +342,47 @@ export async function verifyPrClaim({ task, workspacePath, success, prExpected }
     branch,
     category: FORGE_UNREACHABLE_CATEGORY,
     message: `Could not confirm a ${noun} for branch ${branch} — the forge is unreachable${found.detail ? ` (${String(found.detail).split('\n')[0].slice(0, 120)})` : ''}`
+  };
+}
+
+/**
+ * Branch-jack check (#3680): did this WORKTREE agent commit to the primary
+ * checkout instead of its own worktree?
+ *
+ * Reads the `primaryCheckoutBaseline` that `agentLifecycle.js` stamped onto the
+ * agent record at spawn time and re-reads that checkout now. Living here rather
+ * than in the TUI spawner is what makes the guard apply to all three spawn modes
+ * — TUI `finish()`, direct-CLI `close`, and runner-mode `handleAgentCompletion`
+ * all funnel through `finalizeAgent` — without triplicating it.
+ *
+ * Non-worktree runs carry no baseline (they legitimately work IN the primary),
+ * so they short-circuit to "no drift" before any git call.
+ *
+ * @returns {Promise<{drifted: boolean, message?: string, suggestedFix?: string, category?: string}>}
+ */
+export async function checkPrimaryCheckoutDrift(agentId) {
+  const agent = await getAgentRecord(agentId).catch(() => null);
+  const baseline = agent?.metadata?.primaryCheckoutBaseline || null;
+  if (!baseline) return { drifted: false };
+  return await detectPrimaryCheckoutDrift(baseline, { agentBranch: agent?.metadata?.worktreeBranch || null });
+}
+
+/**
+ * The `errorAnalysis` shape for a detected branch-jack. `actionable` because a
+ * human has to decide whether to discard the primary's commits — a retry cannot
+ * repair this, and silently retrying would leave the mutated checkout in place.
+ */
+function primaryCheckoutDriftAnalysis(drift) {
+  return {
+    category: drift.category,
+    // Observed by the spawner from the checkout's own git state, not scraped out
+    // of the transcript — the same provenance rule the structural analyses use.
+    origin: 'runner',
+    completionReason: PRIMARY_CHECKOUT_MUTATED_REASON,
+    actionable: true,
+    escalation: PRIMARY_CHECKOUT_MUTATED_ESCALATION,
+    message: drift.message,
+    suggestedFix: drift.suggestedFix
   };
 }
 
@@ -286,7 +398,7 @@ function prVerificationAnalysis(verdict) {
     message: verdict.message,
     actionable: false,
     suggestedFix: verdict.category === PR_MISSING_CATEGORY
-      ? `The branch ${verdict.branch} is pushed but has no open change request. Re-run the task, or open it by hand (\`gh pr create --head ${verdict.branch}\` / \`glab mr create --source-branch ${verdict.branch}\`).`
+      ? `The branch ${verdict.branch} holds ${verdict.commitsAhead ?? 'unreviewed'} commit(s) but has no open change request. Re-run the task, or open it by hand (\`gh pr create --head ${verdict.branch}\` / \`glab mr create --source-branch ${verdict.branch}\`).`
       : 'Check the forge probe on the System Health page — the forge CLI could not reach the forge, so the run\'s change request could not be confirmed.'
   };
 }
@@ -497,7 +609,20 @@ export async function finalizeAgent({
   completionReason,
   workspacePath = null,
   prExpected = false,
+  startedAt = null,
 }) {
+  // The run window the commit criterion is evaluated against (#3637). Callers
+  // that don't track their own start timestamp still know how long the run took,
+  // and `duration` is measured from the same instant, so derive it — a missing
+  // window would otherwise leave every such path permanently undeclared.
+  //
+  // `duration > 0`, not `>= 0`: the spawn-rejected path reports a zero-length
+  // run because the agent never started. A window that cannot contain a commit
+  // is not evidence of one, so it stays the null sentinel ("no criterion
+  // evaluated") rather than recording a run that never happened as a miss.
+  const runStartedAt = Number.isFinite(startedAt)
+    ? startedAt
+    : (Number.isFinite(duration) && duration > 0 ? Date.now() - duration : null);
   // #3358: a run whose task shape promised a PR is not successful until the
   // forge confirms one exists. Runs BEFORE the completion verdict is derived so
   // every downstream write (task status, learning telemetry, the "Completed
@@ -512,11 +637,54 @@ export async function finalizeAgent({
         return { ok: true };
       });
 
-  const success = reportedSuccess && prVerdict.ok;
-  const errorAnalysis = prVerdict.ok ? reportedErrorAnalysis : prVerificationAnalysis(prVerdict);
+  // #3680: a worktree agent that committed to the PRIMARY checkout left
+  // unreviewed commits on an unprotected branch. Same posture as the PR check —
+  // a throw is not a verdict, so fall back to "no drift" rather than
+  // manufacturing a failure out of a check that never ran.
+  const drift = await checkPrimaryCheckoutDrift(agentId).catch(err => {
+    emitLog('warn', `⚠️ Primary-checkout drift check failed for ${agentId}: ${err.message}`, { agentId });
+    return { drifted: false };
+  });
+  if (drift.drifted) {
+    emitLog('warn', `⚠️ ${drift.message} — reported by ${agentId}; PortOS will not repair it automatically`, {
+      agentId, taskId: task?.id, category: drift.category
+    });
+  } else if (drift.unattributed) {
+    // #3703: commits WERE stranded on the primary, but none are patch-equivalent
+    // to this agent's own branch — another actor (a coding-on-main agent, the
+    // human's terminal, `update.sh`'s pull) moved it. Unreviewed commits on the
+    // primary are still worth surfacing, but this run did not cause them, so it is
+    // warn-logged WITHOUT downgrading an otherwise-successful run to a failure.
+    emitLog('warn', `⚠️ ${drift.message} — not attributable to ${agentId}; surfacing without failing the run`, {
+      agentId, taskId: task?.id
+    });
+  } else if (drift.fastForwarded) {
+    // Movement without stranded commits — a pull, not a branch-jack. Logged so
+    // "the primary moved during this run" stays visible without being a failure.
+    emitLog('info', `↪️ Primary checkout moved ${drift.commitCount ?? '?'} commit(s) during ${agentId}, all already upstream — not a branch-jack`, {
+      agentId, taskId: task?.id
+    });
+  }
+  // A drift downgrade only OVERRIDES a run that would otherwise have been
+  // recorded a success. On a run that already failed, the original analysis is
+  // the better diagnosis of why it failed, and the branch-jack is already on the
+  // record via the warn above — replacing it would trade a real cause for a
+  // side effect. Same reason `terminatedByUser` keeps its own verdict.
+  const driftDowngrade = drift.drifted && reportedSuccess && !terminatedByUser;
+
+  const success = reportedSuccess && prVerdict.ok && !driftDowngrade;
+  const errorAnalysis = driftDowngrade
+    ? primaryCheckoutDriftAnalysis(drift)
+    : prVerdict.ok ? reportedErrorAnalysis : prVerificationAnalysis(prVerdict);
   if (!prVerdict.ok) {
     emitLog('warn', `⚠️ ${prVerdict.message} — recording ${agentId} as needs-attention (${prVerdict.category}) rather than complete`, {
       agentId, taskId: task?.id, branch: prVerdict.branch, category: prVerdict.category
+    });
+  } else if (prVerdict.noChangesToShip) {
+    // A no-op run is a legitimate completion, not a silent one — the human still
+    // wants to know a task burned an agent and concluded there was nothing to do.
+    emitLog('info', `🫧 ${agentId} opened no change request and committed nothing to ${prVerdict.branch} — recording the run as complete with no change warranted`, {
+      agentId, taskId: task?.id, branch: prVerdict.branch
     });
   }
 
@@ -568,7 +736,7 @@ export async function finalizeAgent({
   // exit-code `success`, so task-learning telemetry can distinguish "ran clean
   // but produced nothing" from a genuine success. Best-effort — a validation
   // check failure must never block finalize (falls back to the null sentinel).
-  const validationPassed = await evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, success, hookResult })
+  const validationPassed = await evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt: runStartedAt, success, hookResult })
     .catch(err => {
       emitLog('warn', `⚠️ Success-criteria validation failed for ${agentId}: ${err.message}`, { agentId });
       return null;
@@ -583,8 +751,14 @@ export async function finalizeAgent({
   // A PR-verification downgrade carries its own error text + reason: without
   // them the agent card would render a bare "Failed" for a run that actually
   // did everything but land its PR (or simply couldn't reach the forge).
-  const finalError = prVerdict.ok ? error : prVerdict.message;
-  const finalCompletionReason = prVerdict.ok ? completionReason : prVerdict.category;
+  // A branch-jack downgrade (#3680) carries its own text + reason for the same
+  // reason the PR downgrade does, and outranks it: the run may well have opened
+  // its PR fine and still mutated the primary, and THAT is the thing a human has
+  // to act on.
+  const finalError = driftDowngrade ? drift.message : prVerdict.ok ? error : prVerdict.message;
+  const finalCompletionReason = driftDowngrade
+    ? PRIMARY_CHECKOUT_MUTATED_REASON
+    : prVerdict.ok ? completionReason : prVerdict.category;
 
   await completeAgent(agentId, {
     success,
@@ -601,7 +775,7 @@ export async function finalizeAgent({
     // Pass the downgrade explicitly: this run exited 0, so the run record would
     // otherwise keep saying "success" for the one run we just concluded did not
     // land its PR (#3358).
-    await completeAgentRun(runId, outputBuffer, exitCode, duration, errorAnalysis, prVerdict.ok ? null : false);
+    await completeAgentRun(runId, outputBuffer, exitCode, duration, errorAnalysis, prVerdict.ok && !driftDowngrade ? null : false);
   }
 
   // LI hand-off execution verdict (#2779): stamp the per-proposal execution outcome into
@@ -697,6 +871,47 @@ export async function finalizeAgent({
   return { success, prVerdict };
 }
 
+// Tail of the agent's raw PTY spool scanned by the transcript rescue. The
+// deliverable, when printed, is the LAST thing the model emits, and a reasoner
+// envelope is a few KB at most — but a repaint-heavy TUI spends most of its
+// bytes on escape sequences, so the window is generous relative to the payload.
+// Bounded for the same reason RAW_TAIL_ANALYSIS_BYTES is: raw.txt has no upper
+// size limit on a long run.
+const TRANSCRIPT_RESCUE_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Recover a programmatic-I/O deliverable the agent PRINTED to its terminal
+ * instead of writing to `.agent-done` (#3640). Returns the payload, or null
+ * when the type opts out (no shape predicate), the spool is unreadable, or
+ * nothing in the transcript matches the hook's expected shape — in which case
+ * the caller behaves exactly as it did before this existed.
+ *
+ * Gated to programmatic-I/O types on purpose: everywhere else the sentinel is a
+ * completion SIGNAL rather than the product, and scraping a transcript for one
+ * would let an agent that merely discussed finishing be treated as finished.
+ */
+async function rescueTranscriptPayload({ agentId, taskType }) {
+  if (!agentId || !isProgrammaticIoTaskType(taskType)) return null;
+  // Sanctioned try/catch (see CLAUDE.md — this runs outside the request
+  // lifecycle): a best-effort salvage must never be able to make the outcome
+  // WORSE than not attempting it. A hook whose own shape predicate throws would
+  // otherwise abort the dispatch and skip the hook entirely, turning "we
+  // couldn't recover the payload" into "the hook never ran".
+  try {
+    const isPayload = await getTaskOutputPayloadPredicate(taskType);
+    if (!isPayload) return null;
+    const { PATHS, readFileTail } = await import('../lib/fileUtils.js');
+    const transcript = await readFileTail(join(PATHS.cosAgents, agentId, 'raw.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES);
+    if (!transcript) return null;
+    const { extractSentinelPayloadFromTranscript } = await import('../lib/agentSentinel.js');
+    const { payload } = await extractSentinelPayloadFromTranscript(transcript, isPayload);
+    return payload ?? null;
+  } catch (err) {
+    emitLog('warn', `⚠️ Transcript payload rescue failed for ${agentId} (${taskType}): ${err.message}`, { agentId });
+    return null;
+  }
+}
+
 /**
  * Read the finished agent's `.agent-done` payload and run the task type's
  * `processTaskOutput` hook, if it registers one. No-op for the vast majority of
@@ -729,6 +944,18 @@ async function dispatchTaskOutputHook({ agentId, task, success, workspacePath, r
       if (salvaged.payload != null) {
         payload = salvaged.payload;
         emitLog('info', `Recovered structured .agent-done payload for ${agentId} (${taskType}) via lenient JSON extraction`, { agentId });
+      }
+    }
+    // No sentinel at all: the model may have PRINTED its deliverable into the
+    // TUI instead of writing the file (#3640). `contents == null` — not just a
+    // null payload — so a sentinel the agent DID write, whose content simply
+    // isn't a payload, keeps its own (correct) missing-output verdict instead of
+    // being overridden by something older in the transcript.
+    if (payload == null && contents == null) {
+      const rescued = await rescueTranscriptPayload({ agentId, taskType });
+      if (rescued != null) {
+        payload = rescued;
+        emitLog('info', `Recovered printed payload for ${agentId} (${taskType}) from the transcript — no .agent-done was written`, { agentId });
       }
     }
   }

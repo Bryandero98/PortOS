@@ -9,6 +9,10 @@ import EffortSelect from '../EffortSelect';
 import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, seedModelEffort } from '../../../utils/providers';
 
 export default function ResumeAgentModal({ agent, taskType = 'user', providers, apps, onSubmit, onClose }) {
+  // A paused agent resumes IN PLACE: its own task is requeued on the worktree its
+  // run left behind. Everything else (a completed/failed run, whose task is long
+  // settled) can only be continued by queueing a new task.
+  const isPaused = agent.status === 'paused';
   const taskDescription = agent.metadata?.taskDescription || agent.taskId || 'Resume previous task';
   const outputSummary = agent.output?.length > 0
     ? agent.output.slice(-20).map(o => o.line).join('\n')
@@ -16,7 +20,7 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
   const resultInfo = agent.result
     ? (agent.result.success ? 'Previous run: Completed successfully' : `Previous run: Failed - ${agent.result.error || 'Unknown error'}`)
     : '';
-  const pauseInfo = agent.status === 'paused'
+  const pauseInfo = isPaused
     ? `Previous run: Paused${agent.metadata?.pauseReason ? ` - ${agent.metadata.pauseReason}` : ''}`
     : '';
   const resumeWorkspace = agent.metadata?.resumeWorkspacePath || agent.metadata?.workspacePath;
@@ -134,8 +138,15 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
 
         {/* Previous Task Info */}
         <div className="mb-4 p-3 bg-port-bg border border-port-border rounded-lg">
-          <div className="text-sm text-gray-400 mb-1">Original Task</div>
+          <div className="text-sm text-gray-400 mb-1">
+            {isPaused ? 'Paused Task (will be resumed in place)' : 'Original Task'}
+          </div>
           <div className="text-white">{taskDescription}</div>
+          {isPaused && (
+            <div className="text-sm text-gray-400 mt-2">
+              This requeues the same task on the worktree the paused run left behind — no second agent, and nothing to clean up afterward.
+            </div>
+          )}
           {agent.result && (
             <div className={`text-sm mt-2 flex items-center gap-2 ${agent.result.success ? 'text-port-success' : 'text-port-error'}`}>
               {agent.result.success ? (
@@ -283,7 +294,7 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
               className="flex items-center gap-2 px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-              {isSubmitting ? 'Queuing...' : 'Queue Resume Task'}
+              {isSubmitting ? 'Queuing...' : (isPaused ? 'Resume Agent' : 'Queue Resume Task')}
             </button>
           </div>
         </form>

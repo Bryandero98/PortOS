@@ -37,6 +37,7 @@ vi.mock('../domainUsage.js', () => ({
 // arcPlanner: keep the REAL barrel (for compareIssuesByPosition) and override
 // only the LLM-calling passes with spies whose return values the tests drive.
 let verifyFindings = [];
+let volumeVerifyFindings = [];
 let beatContinuityFindings = [];
 let editorialFindings = [];
 const arcSpies = {
@@ -45,7 +46,13 @@ const arcSpies = {
   generateSeasonEpisodes: vi.fn(async () => ({ episodes: [] })),
   commitEpisodesToIssues: vi.fn(async () => []),
   verifyArc: vi.fn(async () => ({ issues: verifyFindings })),
+  verifyVolume: vi.fn(async () => ({ issues: volumeVerifyFindings })),
   resolveVerifyIssues: vi.fn(async () => ({ applied: true })),
+  // Resolve-round rollback. The real snapshot/restore pair is covered
+  // against the store in arcPlanner.test.js; here they're stubbed so the
+  // conductor tests assert the LOOP's decision — when a round gets reverted.
+  snapshotArcState: vi.fn(async (sId) => ({ seriesId: sId, arc: null, seasons: [], episodes: [] })),
+  restoreArcState: vi.fn(async () => ({ restored: true, episodesRestored: 0, reassignedIssueCount: 0 })),
   analyzeBeatContinuity: vi.fn(async () => ({ issues: beatContinuityFindings })),
   resolveBeatContinuity: vi.fn(async () => ({ applied: true, episodesResolved: [] })),
   analyzeManuscriptCompleteness: vi.fn(async () => ({ issues: editorialFindings, runId: 'run-comp' })),
@@ -147,14 +154,16 @@ vi.mock('./canonReadiness.js', () => ({ checkSeriesCanonReadiness }));
 // router per test. Default: a clean foundation (10) so the gate passes on the
 // first round and existing downstream-step tests are unaffected.
 let foundationScore = 10;
+let foundationDimensionScores = null;
 let foundationFixApplied = true;
+const establishCharacterFoundation = vi.fn(async () => ({ applied: true, ran: true }));
 const judgeFoundation = vi.fn(async () => ({
   seriesId: 'ser-uuid-1', status: 'complete', weightedScore: foundationScore,
   dimensions: {
-    worldbuilding: { score: foundationScore, gap: 'g', fix: 'f' },
-    character: { score: foundationScore, gap: 'g', fix: 'f' },
-    structure: { score: foundationScore, gap: 'g', fix: 'f' },
-    craft: { score: foundationScore, gap: 'g', fix: 'f' },
+    worldbuilding: { score: foundationDimensionScores?.worldbuilding ?? foundationScore, gap: 'g', fix: 'f' },
+    character: { score: foundationDimensionScores?.character ?? foundationScore, gap: 'g', fix: 'f' },
+    structure: { score: foundationDimensionScores?.structure ?? foundationScore, gap: 'g', fix: 'f' },
+    craft: { score: foundationDimensionScores?.craft ?? foundationScore, gap: 'g', fix: 'f' },
   },
   weakest: 'worldbuilding',
 }));
@@ -165,6 +174,7 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
     ...actual,
     judgeFoundation: (...args) => judgeFoundation(...args),
     applyFoundationFix: (...args) => applyFoundationFix(...args),
+    establishCharacterFoundation: (...args) => establishCharacterFoundation(...args),
   };
 });
 
@@ -191,6 +201,7 @@ const seasonsSvc = await import('./seasons.js');
 const issuesSvc = await import('./issues.js');
 const autopilot = await import('./seriesAutopilot.js');
 const arcPlanner = await import('./arcPlanner.js');
+const { commitSeasonsWithRemap: realCommitSeasonsWithRemap } = await import('./arcPlanner/arcCore.js');
 const { stageContentOf } = await import('./textStages.js');
 const { resolveNextStep, requiredScriptStages, scriptStructurallyReady, visualReady, wantsComic } = autopilot;
 
@@ -216,13 +227,16 @@ beforeEach(() => {
   cosMode = 'execute';
   budgetStatus = { withinBudget: true, exceeded: null };
   verifyFindings = [];
+  volumeVerifyFindings = [];
   beatContinuityFindings = [];
   editorialFindings = [];
   scriptVerifyFindings = [];
   canonReady = true;
   canonUndescribed = [];
   foundationScore = 10;
+  foundationDimensionScores = null;
   foundationFixApplied = true;
+  establishCharacterFoundation.mockClear();
   reverseOutlineConsumed = false;
   reverseOutlineConsumedGated = null;
   reverseOutlineState = { status: 'complete', stale: false };
@@ -273,6 +287,63 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
     expect(autopilot.__testing.providerIdOpts(none).providerIdDefault).toBeUndefined();
     expect(autopilot.__testing.providerIdOpts(none).modelIdDefault).toBeUndefined();
   });
+
+  it('routes judges separately while keeping creation on the run default', () => {
+    const split = {
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+      },
+    };
+    expect(autopilot.__testing.providerOverrideOpts(split)).toMatchObject({
+      providerDefault: 'codex-tui', modelDefault: 'gpt-5.6-luna', effortDefault: 'max',
+    });
+    expect(autopilot.__testing.providerOverrideOpts(split, 'judge')).toMatchObject({
+      providerDefault: 'codex-tui', modelDefault: 'gpt-5.6-sol', effortDefault: 'xhigh',
+    });
+  });
+
+  it('drops a creative model when the judge changes provider without choosing one', () => {
+    const split = {
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { providerOverride: 'claude-code-tui', effortOverride: 'high' },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(split, 'judge')).toEqual({
+      providerOverride: 'claude-code-tui', modelOverride: undefined, effortOverride: 'high',
+    });
+  });
+});
+
+// The precedence itself is covered by server/lib/seriesLlmOverride.test.js —
+// what's specific here is that the autopilot delegates to it and renames the
+// keys to the run-option ones.
+describe('resolveAutopilotLlm — run provider/model resolution', () => {
+  const series = { llm: { provider: 'codex', model: 'gpt-x' } };
+
+  it('inherits the series llm under the run-option key names', () => {
+    expect(autopilot.resolveAutopilotLlm({}, series))
+      .toEqual({ providerOverride: 'codex', modelOverride: 'gpt-x' });
+  });
+
+  it('lets a per-run override win, dropping the series model when the provider differs', () => {
+    expect(autopilot.resolveAutopilotLlm({ providerOverride: 'claude' }, series))
+      .toEqual({ providerOverride: 'claude', modelOverride: undefined });
+  });
+
+  it('resolves to nothing with no series llm and no override (active provider downstream)', () => {
+    expect(autopilot.resolveAutopilotLlm({}, null))
+      .toEqual({ providerOverride: undefined, modelOverride: undefined });
+  });
+
+  it('stamps a per-run reasoning effort (#3641) — per-run only, nothing to inherit', () => {
+    expect(autopilot.resolveAutopilotLlm({ effortOverride: 'high' }, series))
+      .toEqual({ providerOverride: 'codex', modelOverride: 'gpt-x', effortOverride: 'high' });
+    // No series-level effort exists, so a blank pick stays unset and each stage
+    // falls through to its own pin, then the provider's configured args.
+    expect(autopilot.resolveAutopilotLlm({ effortOverride: '' }, series).effortOverride).toBeUndefined();
+  });
 });
 
 describe('resolveNextStep (pure)', () => {
@@ -280,7 +351,9 @@ describe('resolveNextStep (pure)', () => {
   const issue = (over = {}) => ({ id: 'iss1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {}, ...over });
 
   it('asks for arc generation when there is no arc', () => {
-    expect(resolveNextStep({ targetFormat: 'comic', seasons: [] }, []).kind).toBe('generateArc');
+    const bare = { targetFormat: 'comic', seasons: [] };
+    expect(resolveNextStep(bare, []).kind).toBe('characterFoundation');
+    expect(resolveNextStep(bare, [], { characterFoundationEstablished: true }).kind).toBe('generateArc');
   });
 
   it('treats a present arc summary (no logline) as having an arc', () => {
@@ -381,16 +454,42 @@ describe('resolveNextStep (pure)', () => {
 
   it('regenerates the arc for an arc-only series with no volumes', () => {
     const arcOnly = { targetFormat: 'comic', arc: { logline: 'L', summary: 'S' }, seasons: [] };
-    expect(resolveNextStep(arcOnly, []).kind).toBe('generateArc');
+    expect(resolveNextStep(arcOnly, []).kind).toBe('characterFoundation');
+    expect(resolveNextStep(arcOnly, [], { characterFoundationEstablished: true }).kind).toBe('generateArc');
     // once arc generation has been attempted, it does not re-loop into generateArc
     expect(resolveNextStep(arcOnly, [], { arcAttempted: true }).kind).not.toBe('generateArc');
+  });
+
+  it('repairs duplicate volume numbers before generating episodes for empty duplicates', () => {
+    const duplicate = {
+      targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+      seasons: [{ id: 'se1', number: 1 }, { id: 'dup1', number: 1 }, { id: 'dup2', number: 1 }],
+    };
+    const step = resolveNextStep(duplicate, [
+      { id: 'i1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {} },
+    ]);
+    expect(step.kind).toBe('repairArcStructure');
+  });
+
+  it('dry-run previews duplicate-volume repair without charging episode generation for absorbed records', () => {
+    const duplicate = {
+      targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+      // A lock makes the empty first record the survivor; the issue-bearing
+      // duplicate is absorbed and its issue must be projected onto that survivor.
+      seasons: [{ id: 'se1', number: 1, locked: true }, { id: 'dup1', number: 1 }],
+    };
+    const plan = autopilot.__testing.buildDryRunPlan(duplicate, [
+      { id: 'i1', seasonId: 'dup1', number: 1, arcPosition: 1, stages: {} },
+    ], {});
+    expect(plan[0]).toMatchObject({ kind: 'repairArcStructure', estActions: 0 });
+    expect(plan.some((entry) => entry.kind === 'generateEpisodes')).toBe(false);
   });
 
   it('dry-run plan includes generateArc for an arc-only series (parity with execute)', () => {
     const plan = autopilot.__testing.buildDryRunPlan(
       { targetFormat: 'comic', arc: { logline: 'L', summary: 'S' }, seasons: [] }, [], {},
     );
-    expect(plan[0].kind).toBe('generateArc');
+    expect(plan.slice(0, 2).map((step) => step.kind)).toEqual(['characterFoundation', 'generateArc']);
   });
 
   it('dry-run plan omits editorialChecks + editorialHealthGate when editorial rounds are 0', () => {
@@ -435,8 +534,9 @@ describe('resolveNextStep (pure)', () => {
     // Every step carries a numeric estimate.
     expect(plan.every((p) => Number.isFinite(p.estActions))).toBe(true);
     const byKind = Object.fromEntries(plan.map((p) => [p.kind, p]));
-    // verifyArc: convergence loop at the default 3 rounds → 2*3-1 = 5 actions.
-    expect(byKind.verifyArc.estActions).toBe(5);
+    // verifyArc: each round checks the whole arc + one volume, then resolves
+    // between rounds → 3*(1+1)+2 = 8 actions.
+    expect(byKind.verifyArc.estActions).toBe(8);
     // textStages: one child action per not-yet-text-ready issue (2 here).
     expect(byKind.textStages.estActions).toBe(2);
     // Pure-gate steps that bill nothing against the cap are zero-cost.
@@ -450,10 +550,10 @@ describe('resolveNextStep (pure)', () => {
       .find((p) => p.kind === kind)?.estActions;
     // 0 rounds → the loop is skipped → 0 actions.
     expect(actionsFor({ maxArcVerifyRounds: 0 }, 'verifyArc')).toBe(0);
-    // 1 round → a single verify, no resolve → 1 action.
-    expect(actionsFor({ maxArcVerifyRounds: 1 }, 'verifyArc')).toBe(1);
-    // 4 rounds → 4 verifies + 3 resolves → 7 actions.
-    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(7);
+    // 1 round → whole-arc + one-volume verify, no resolve → 2 actions.
+    expect(actionsFor({ maxArcVerifyRounds: 1 }, 'verifyArc')).toBe(2);
+    // 4 rounds → 4 arc verifies + 4 volume verifies + 3 resolves → 11 actions.
+    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(11);
     // Editorial review follows the same convergence shape.
     expect(actionsFor({ maxEditorialRounds: 2 }, 'editorialReview')).toBe(3);
   });
@@ -524,14 +624,14 @@ describe('resolveNextStep (pure)', () => {
     expect(step).toMatchObject({ kind: 'generateEpisodes', seasonId: 'se1' });
   });
 
-  it('verifies the arc before drafting issues', () => {
+  it('establishes the foundation before arc verification or drafting', () => {
     const step = resolveNextStep(comic, [issue()]);
-    expect(step.kind).toBe('verifyArc');
+    expect(step.kind).toBe('foundationGate');
   });
 
-  it('runs the foundation gate after arc verify, before beats (#2176)', () => {
-    const step = resolveNextStep(comic, [issue()], { arcVerified: true });
-    expect(step.kind).toBe('foundationGate');
+  it('runs arc verification after the foundation gate, before beats (#2176)', () => {
+    const step = resolveNextStep(comic, [issue()], { foundationGated: true });
+    expect(step.kind).toBe('verifyArc');
   });
 
   it('skips the foundation gate when disabled via options (#2176)', () => {
@@ -739,6 +839,64 @@ describe('resolveAutopilotProduceTeaser (config gate, #2185)', () => {
   });
 });
 
+describe('resolveAutopilotUnlockForRun (config gate)', () => {
+  it('defaults OFF — it mutates lock state the user set by hand', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({})).toBe(false);
+    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: false })).toBe(false);
+  });
+  it('is on only when the run explicitly asks for it', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({ unlockForRun: true })).toBe(true);
+  });
+  // The one autopilot option with NO persisted default: `seriesAutopilotScheduler`
+  // resolves unattended runs from the settings slice, so a saved value would arm
+  // lock-clearing on every scheduled run of every series.
+  it('ignores a persisted setting entirely — per-run only', () => {
+    expect(autopilot.resolveAutopilotUnlockForRun({}, { pipelineEditorialChecks: { unlockForRun: true } })).toBe(false);
+  });
+});
+
+describe('resolveNextStep — unlock pre-pass ordering', () => {
+  // A locked arc makes generateArc/resolveVerifyIssues throw and a locked stage
+  // makes text generation skip, so the unlock MUST precede every generation step
+  // — pin that it sorts ahead of even the very first one.
+  const bare = { targetFormat: 'comic', arc: null, seasons: [] };
+
+  it('runs before generateArc when enabled', () => {
+    expect(resolveNextStep(bare, [], {}, { unlockForRun: true }).kind).toBe('unlockLocks');
+  });
+  it('is skipped entirely when not enabled', () => {
+    expect(resolveNextStep(bare, [], {}, {}).kind).toBe('characterFoundation');
+    expect(resolveNextStep(bare, [], {}, { unlockForRun: false }).kind).toBe('characterFoundation');
+  });
+  it('runs at most once per run (latched by runState.locksUnlocked)', () => {
+    expect(resolveNextStep(bare, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('characterFoundation');
+    expect(resolveNextStep(bare, [], { locksUnlocked: true, characterFoundationEstablished: true }, { unlockForRun: true }).kind).toBe('generateArc');
+  });
+  it('unlocks before repairing duplicate volume structure', () => {
+    const duplicate = {
+      targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+      seasons: [{ id: 'se1', number: 1, locked: true }, { id: 'dup1', number: 1, locked: true }],
+    };
+    expect(resolveNextStep(duplicate, [], {}, { unlockForRun: true }).kind).toBe('unlockLocks');
+    expect(resolveNextStep(duplicate, [], { locksUnlocked: true }, { unlockForRun: true }).kind).toBe('repairArcStructure');
+  });
+});
+
+describe('resolveAutopilotSelfImprove (config gate)', () => {
+  const { resolveAutopilotSelfImprove } = autopilot;
+
+  it('defaults OFF', () => {
+    expect(resolveAutopilotSelfImprove({}, null)).toBe(false);
+  });
+  it('per-run option wins over the persisted setting', () => {
+    expect(resolveAutopilotSelfImprove({ selfImprove: true }, { pipelineEditorialChecks: { selfImprove: false } })).toBe(true);
+    expect(resolveAutopilotSelfImprove({ selfImprove: false }, { pipelineEditorialChecks: { selfImprove: true } })).toBe(false);
+  });
+  it('falls back to the persisted setting when no per-run option', () => {
+    expect(resolveAutopilotSelfImprove({}, { pipelineEditorialChecks: { selfImprove: true } })).toBe(true);
+  });
+});
+
 // CWQE Phase 7 (#2171) — iterate-to-quality revision loop.
 describe('resolveAutopilotRevision (config gate, #2171)', () => {
   const {
@@ -908,7 +1066,8 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   // parity is covered separately by the dedicated cases above.
 
   const freshRunState = () => ({
-    arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
+    locksUnlocked: false,
+    characterFoundationEstablished: false, arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
     editorialReviewed: false, reverseOutlineRefreshed: false,
     editorialChecksReviewed: false, editorialHealthReady: false, canonVerified: false,
     episodesAttempted: new Set(), beatsAttempted: new Set(), textAttempted: new Set(),
@@ -922,6 +1081,12 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   // rendered pages) so the resolver actually advances past them.
   const completeStep = (step, issues, runState, edRounds) => {
     switch (step.kind) {
+      case 'unlockLocks':
+        runState.locksUnlocked = true;
+        break;
+      case 'characterFoundation':
+        runState.characterFoundationEstablished = true;
+        break;
       case 'generateArc':
       case 'generateEpisodes':
         // These steps CREATE downstream work (seasons / issues) that buildDryRunPlan
@@ -1049,6 +1214,7 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
     { name: 'comic, editorial rounds 0 (skips editorial gate)', series: baseComic(), issues: bareIssue(), options: { maxEditorialRounds: 0 } },
     { name: 'tv (no comic script / canon / visual)', series: baseTv(), issues: bareIssue(), options: {} },
     { name: 'comic + visual, 2 seasons × 1 issue (per-step multiplicity)', series: twoSeasonComic(), issues: twoIssues(), options: {} },
+    { name: 'comic + unlock-for-run pre-pass', series: baseComic(), issues: bareIssue(), options: { unlockForRun: true } },
   ];
 
   for (const c of cases) {
@@ -1162,6 +1328,33 @@ async function seedComplete({ script = VALID_SCRIPT } = {}) {
   return { seriesId: series.id, seasonId, issueId: issue.id };
 }
 
+it('normalizes duplicate volume records before the conductor can seed their empty copies', async () => {
+  const { seriesId, seasonId } = await seedComplete();
+  const current = await seriesSvc.getSeries(seriesId);
+  const canonical = current.seasons.find((season) => season.id === seasonId);
+  await seriesSvc.updateSeries(seriesId, {
+    seasons: [
+      ...current.seasons,
+      { ...canonical, id: 'duplicate-volume-a', locked: false },
+      { ...canonical, id: 'duplicate-volume-b', locked: false },
+    ],
+  });
+  // The suite normally stubs this persistence boundary so conductor tests can
+  // isolate LLM behavior. Use the real deterministic commit once here: the
+  // arcPlanner store tests cover the collapse itself, while this pins the new
+  // resolver → dispatcher ordering around it.
+  arcSpies.commitSeasonsWithRemap.mockImplementationOnce(realCommitSeasonsWithRemap);
+
+  await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+  await waitFor(runFinished(seriesId));
+
+  const repaired = await seriesSvc.getSeries(seriesId);
+  expect(repaired.seasons).toHaveLength(1);
+  expect(repaired.seasons[0].id).toBe(seasonId);
+  expect(arcSpies.generateSeasonEpisodes).not.toHaveBeenCalled();
+  expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+});
+
 describe('trackConvergence (pure divergence/oscillation guard — #1571)', () => {
   const { trackConvergence, DIVERGENCE_PATIENCE } = autopilot;
 
@@ -1201,6 +1394,103 @@ describe('trackConvergence (pure divergence/oscillation guard — #1571)', () =>
   });
 });
 
+describe('isResolveRegression (pure resolve-round damage check)', () => {
+  const { isResolveRegression, sameFinding, findingTextOverlap } = autopilot;
+  const f = (problem, location = 'V1', severity = 'high') => ({ severity, location, problem });
+
+  it('flags a round that grew the blocking set while leaving what it targeted standing', () => {
+    // The observed shape: one finding in, three out, the original still there.
+    expect(isResolveRegression([f('both volumes stage the first eclipse')], [
+      f('both volumes stage the first eclipse'),
+      f('volume 3 drops the mentor subplot', 'V3'),
+      f('finale hook never pays off', 'V4'),
+    ])).toBe(true);
+  });
+
+  it('lets a round stand when it closed everything it targeted, even if latent findings surfaced', () => {
+    // Growth alone is not damage — this round did its job and exposed work that
+    // was already there. The divergence guard picks it up if the loop stalls.
+    expect(isResolveRegression([f('both volumes stage the first eclipse')], [
+      f('volume 3 drops the mentor subplot', 'V3'),
+      f('finale hook never pays off', 'V4'),
+    ])).toBe(false);
+  });
+
+  it('never flags a round that held the line or improved', () => {
+    const before = [f('a'), f('b', 'V2')];
+    expect(isResolveRegression(before, before)).toBe(false);          // stalled → divergence guard's job
+    expect(isResolveRegression(before, [f('a')])).toBe(false);        // improved
+    expect(isResolveRegression(before, [])).toBe(false);              // cleared
+  });
+
+  it('tolerates missing/garbage inputs', () => {
+    expect(isResolveRegression(undefined, undefined)).toBe(false);
+    expect(isResolveRegression(null, [f('a')])).toBe(false);
+  });
+
+  it('still flags the regression when the verifier PARAPHRASES the finding it left standing', () => {
+    // The failure mode that let the observed 1 → 3 → 5 divergence through: the
+    // second verify call restates the same defect in its own words and at a
+    // re-labelled location. A prose fingerprint reads that as a brand-new
+    // finding, concludes the round closed what it targeted, and commits the
+    // damage. Identity has to survive the re-wording.
+    expect(isResolveRegression(
+      [f('volume 1 and volume 2 both stage the first eclipse', 'Volume 1 → Volume 2')],
+      [
+        f('the eclipse is presented as a first-time event in two separate volumes', 'Volume 2 opening'),
+        f('mentor subplot never pays off', 'V3'),
+        f('finale hook is unresolved', 'V4'),
+      ],
+    )).toBe(true);
+  });
+
+  it('matches a restatement that only re-words the OPENING clause', () => {
+    // The narrow shape a leading-prefix fingerprint misses: same defect, same
+    // place, but the verifier opens the sentence differently on the second call.
+    expect(sameFinding(
+      f('the mentor subplot introduced in the opening never pays off', 'V3'),
+      f('nothing ever pays off the mentor subplot introduced in the opening', 'V3'),
+    )).toBe(true);
+  });
+
+  it('matches a re-punctuated, re-cased, re-pluralized restatement', () => {
+    expect(sameFinding(
+      { severity: 'high', location: 'V1', problem: 'Both volumes stage the first eclipse.' },
+      { severity: 'medium', location: 'v1', problem: 'both   volume stages the first eclipse' },
+    )).toBe(true);
+  });
+
+  it('does not fuse two findings that merely share the structural vocabulary', () => {
+    // "volume"/"episode"/"arc" appear in nearly every finding — they must not be
+    // what makes two of them look like one, or the guard reverts good rounds.
+    expect(findingTextOverlap('volume 3 drops the mentor subplot', 'volume 3 has no ticking clock'))
+      .toBeLessThan(0.4);
+    expect(sameFinding(f('the mentor subplot is dropped', 'V3'), f('the finale hook is unresolved', 'V4')))
+      .toBe(false);
+    // A single shared word is a coincidence, not an identity: both of these
+    // reduce to {fix} once the structural nouns are dropped, which would
+    // otherwise score a perfect 1.0 containment.
+    expect(sameFinding(f('fix volume 3', 'volume 3'), f('fix arc one', 'arc one'))).toBe(false);
+  });
+
+  it('needs the PROBLEM to agree — a shared location alone is not one finding', () => {
+    // Two genuinely different defects routinely sit in the same volume. Fusing
+    // them would revert a round that closed what it targeted and merely exposed
+    // something else next door — the over-strict rollback this guard must avoid.
+    expect(sameFinding(f('the eclipse is staged twice', 'volume 3'), f('the mentor never returns', 'volume 3')))
+      .toBe(false);
+    // Naming the same place only LOWERS how much of the prose has to agree.
+    expect(sameFinding(
+      f('the eclipse is staged twice across the opening volumes', 'volume 3'),
+      f('eclipse staged as a first-time event in two places, and the mentor thread also stalls here', 'volume 3 — act two'),
+    )).toBe(true);
+    // Whole-word location containment: a label can't swallow a longer one that
+    // starts the same way.
+    expect(sameFinding(f('x', 'V1'), f('y', 'V10'))).toBe(false);
+    expect(sameFinding(f('x', 'volume 3'), f('y', 'volume 30'))).toBe(false);
+  });
+});
+
 describe('autopilot conductor', () => {
   it('rejects start when the cos domain is off (no run created)', async () => {
     cosMode = 'off';
@@ -1233,9 +1523,40 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
     expect(arcSpies.verifyArc).toHaveBeenCalled();
+    expect(arcSpies.verifyVolume).toHaveBeenCalled();
     expect(arcSpies.analyzeManuscriptCompleteness).toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('done');
+  });
+
+  it('runs on the series-configured provider/model and names it on the start frame', async () => {
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, { llm: { provider: 'codex', model: 'gpt-x' } });
+    await autopilot.startSeriesAutopilot(seriesId, {});
+    await waitFor(runFinished(seriesId));
+    const run = autopilot.__testing.runs.get(seriesId);
+    // Stamped once at start, so every delegated call threads the same soft default.
+    expect(run.options.providerOverride).toBe('codex');
+    expect(run.options.modelOverride).toBe('gpt-x');
+    // Delegated arc verify receives it as a SOFT default (a stage pin still wins).
+    expect(arcSpies.verifyArc).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x' }),
+    );
+    // The same values ride the retained start frame, so a client attaching
+    // mid-run can name what the run is spending on.
+    expect(run.startPayload).toMatchObject({ type: 'start', provider: 'codex', model: 'gpt-x' });
+  });
+
+  it('lets a per-run provider override beat the series-configured provider', async () => {
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, { llm: { provider: 'codex', model: 'gpt-x' } });
+    await autopilot.startSeriesAutopilot(seriesId, { providerOverride: 'claude' });
+    await waitFor(runFinished(seriesId));
+    const run = autopilot.__testing.runs.get(seriesId);
+    expect(run.options.providerOverride).toBe('claude');
+    // codex's model must NOT ride along to claude.
+    expect(run.options.modelOverride).toBeUndefined();
   });
 
   it('pauses for review when arc verify never converges', async () => {
@@ -1254,6 +1575,22 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.residualFindings?.[0]?.problem).toBe('plot hole');
   });
 
+  it('includes per-volume verification before drafting beats', async () => {
+    volumeVerifyFindings = [{ severity: 'high', problem: 'the midpoint promise never pays off', location: 'issue 3' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.scope).toBe('verifyArc');
+    expect(arcSpies.verifyVolume).toHaveBeenCalledTimes(1);
+    expect(arcSpies.verifyVolume).toHaveBeenCalledWith(seriesId, expect.any(String), expect.objectContaining({ synopsisOnly: true }));
+    expect(last?.residualFindings?.[0]).toMatchObject({
+      problem: 'the midpoint promise never pays off',
+      location: expect.stringContaining('volume 1'),
+    });
+  });
+
   // Foundation-quality gate (#2176).
   it('foundation gate: a clean foundation (default mock ≥ threshold) passes through to completion', async () => {
     foundationScore = 10;
@@ -1264,6 +1601,18 @@ describe('autopilot conductor', () => {
     expect(judgeFoundation).toHaveBeenCalled();
     // clean on round 1 → no fix attempted
     expect(applyFoundationFix).not.toHaveBeenCalled();
+  });
+
+  it('re-judges the foundation after arc verification repairs the synopsis plan', async () => {
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [{ severity: 'high', problem: 'missing setup', location: 'V1' }] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(judgeFoundation).toHaveBeenCalledTimes(2);
   });
 
   it('foundation gate: iterates on the weakest dimension then pauses (maxRounds) when it never clears', async () => {
@@ -1284,6 +1633,96 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.residualFindings?.length).toBeGreaterThan(0);
   });
 
+  it('foundation gate: uses the critic route for judging and the creative route for repairs', async () => {
+    foundationScore = 3;
+    foundationFixApplied = true;
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-luna',
+      effortOverride: 'max',
+      judgeLlm: {
+        providerOverride: 'codex-tui',
+        modelOverride: 'gpt-5.6-sol',
+        effortOverride: 'xhigh',
+      },
+      maxFoundationRounds: 2,
+    });
+    await waitFor(runFinished(seriesId));
+    expect(judgeFoundation).toHaveBeenCalledWith(seriesId, expect.objectContaining({
+      providerDefault: 'codex-tui', modelDefault: 'gpt-5.6-sol', effortDefault: 'xhigh',
+    }));
+    expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, expect.any(String), expect.objectContaining({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+    }));
+    expect((await seriesSvc.getSeries(seriesId)).autopilot?.resumeOptions).toMatchObject({
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-luna',
+      effortOverride: 'max',
+      judgeLlm: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+      },
+    });
+  });
+
+  it('foundation gate: repairs a below-floor character dimension even when the weighted score passes', async () => {
+    foundationScore = 8.5;
+    foundationDimensionScores = { worldbuilding: 10, character: 5, structure: 10, craft: 10 };
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.scope).toBe('foundationGate');
+    expect(last?.reason).toMatch(/character below the 6 dimension floor/);
+    expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, 'character', expect.any(Object));
+  });
+
+  it('foundation gate: lets a newly surfaced target run before applying divergence patience', async () => {
+    const snap = (weightedScore, scores) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: scores.worldbuilding, gap: 'g', fix: 'f' },
+        character: { score: scores.character, gap: 'g', fix: 'f' },
+        structure: { score: scores.structure, gap: 'g', fix: 'f' },
+        craft: { score: scores.craft, gap: 'g', fix: 'f' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snap(7.4, {
+        worldbuilding: 7.4, character: 7.4, structure: 7.4, craft: 7.4,
+      }))
+      .mockImplementationOnce(async () => snap(6.6, {
+        worldbuilding: 7, character: 7, structure: 5, craft: 7,
+      }))
+      .mockImplementationOnce(async () => snap(6.8, {
+        worldbuilding: 7, character: 7, structure: 7, craft: 5,
+      }))
+      .mockImplementationOnce(async () => snap(8, {
+        worldbuilding: 8, character: 8, structure: 8, craft: 8,
+      }));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(applyFoundationFix.mock.calls.slice(0, 3).map(([, dimension]) => dimension))
+      .toEqual(['worldbuilding', 'structure', 'craft']);
+  });
+
+  it('foundation gate: still stops after the same target repeatedly fails to improve', async () => {
+    foundationScore = 7;
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'divergence' });
+    expect(judgeFoundation).toHaveBeenCalledTimes(3);
+    expect(applyFoundationFix).toHaveBeenCalledTimes(2);
+  });
+
   it('foundation gate: pauses immediately when the weakest dimension cannot be auto-fixed', async () => {
     foundationScore = 3;
     foundationFixApplied = false; // owning service can't apply a fix
@@ -1296,6 +1735,25 @@ describe('autopilot conductor', () => {
     // one judge, one (failed) fix attempt, then pause — no burning the rest.
     expect(judgeFoundation).toHaveBeenCalledTimes(1);
     expect(applyFoundationFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('foundation gate: a repair that throws pauses the run instead of erroring it away', async () => {
+    foundationScore = 3;
+    applyFoundationFix.mockRejectedValueOnce(new Error('TUI run timed out after 600000ms'));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    // The whole point: an LLM transport failure is transient and has nothing to
+    // do with the foundation, so it must NOT discard the run the way `error` does.
+    expect(last?.type).toBe('paused');
+    expect(last?.pauseKind).toBe('providerFailed');
+    expect(last?.reason).toMatch(/TUI run timed out after 600000ms/);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    // Survives the sanitizer — an unlisted kind would be silently nulled and the
+    // UI badge would vanish.
+    expect(series.autopilot?.pauseKind).toBe('providerFailed');
   });
 
   it('foundation gate: disabled via option runs no judge and proceeds', async () => {
@@ -1380,6 +1838,20 @@ describe('autopilot conductor', () => {
     expect(removeByMetadata).toHaveBeenCalledWith('autopilotPauseSeriesId', seriesId);
   });
 
+  it('persists run-local visual and gap choices for a paused resume', async () => {
+    editorialFindings = [{ severity: 'high', problem: 'missing scene', issueNumber: 1 }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {
+      includeVisual: false,
+      fileGaps: true,
+      maxEditorialRounds: 1,
+    });
+    await waitFor(runFinished(seriesId));
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.resumeOptions).toEqual({ includeVisual: false, fileGaps: true });
+  });
+
   it('does not notify on a clean complete (#1615)', async () => {
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, {});
@@ -1451,6 +1923,120 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.status).toBe('paused');
     // Persisted through sanitizeAutopilot so the resume banner survives a reload.
     expect(series.autopilot?.pauseKind).toBe('divergence');
+  });
+
+  it('reverts an arc-resolve round that introduced blocking findings and pauses on the pre-round residual', async () => {
+    // The 2026-08-09 non-convergence, replayed: the loop hands the resolver ONE
+    // blocking finding and gets 3 back, then 5 — with the original still
+    // standing every round. Before this guard all of that damage was committed
+    // and the run paused on 5 findings the user never had. Now round 2's verify sees the
+    // regression, puts the pre-resolve arc back, and pauses on the original 1.
+    const original = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 2}` });
+    const round = (n) => ({ issues: [original, ...Array.from({ length: n - 1 }, (_, i) => extra(i))] });
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => round(1))
+      .mockImplementationOnce(async () => round(3))
+      .mockImplementationOnce(async () => round(5));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Bailed at round 2 — the 5-finding third round never runs, so neither the
+    // verify nor another resolve is billed against the budget.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    // The snapshot taken before that resolve is what gets handed back.
+    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(1);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.scope).toBe('verifyArc');
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/reverted/);
+    // Residual is what the user had BEFORE the round, not the 3 it manufactured.
+    expect(last?.residualFindings).toEqual([original]);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.pauseKind).toBe('regression');
+    expect(series.autopilot?.residualFindings).toHaveLength(1);
+  });
+
+  it('reverts the same 1 → 3 → 5 divergence when each verify call re-words the finding', async () => {
+    // Same incident as the test above, but replayed the way the verifier
+    // actually behaves: round 2 restates the standing defect in fresh prose at a
+    // re-labelled location, and round 3 does it again. Matching those on an
+    // exact prose fingerprint read them as brand-new findings, so the guard
+    // concluded the round had closed what it targeted, committed the damage, and
+    // let the loop run on to a 5-finding divergence pause (the observed
+    // `verify:round` 1/3/5 with two non-empty `resolve:round` frames between
+    // them). It has to be reverted at round 2 here too.
+    const restatements = [
+      { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' },
+      { severity: 'high', problem: 'the first eclipse is staged twice — once in each of the opening volumes', location: 'Volume 1 → Volume 2' },
+      { severity: 'medium', problem: 'two separate volumes each present the eclipse as its first occurrence', location: 'Volume 2 opening' },
+    ];
+    const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 3}` });
+    const round = (n, idx) => ({
+      issues: [restatements[idx], ...Array.from({ length: n - 1 }, (_, i) => extra(i))],
+    });
+    // beforeEach's clearAllMocks does NOT drain a queued `mockImplementationOnce`,
+    // and the test above deliberately leaves its third round unconsumed — reset
+    // (which restores the vi.fn default) so this run starts on round 1.
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => round(1, 0))
+      .mockImplementationOnce(async () => round(3, 1))
+      .mockImplementationOnce(async () => round(5, 2));
+    // The round reports real work (the observed `resolve:round episodesEdited=1`)
+    // — it edited episodes and STILL came back worse, which is the whole point.
+    arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => ({
+      applied: true,
+      episodesResolved: [{ issueId: 'i1', number: 1 }],
+    }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Round 3 (the 5-finding verify) and its resolve are never billed.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    // Paused on the ONE finding the user actually had, not the 3 it manufactured.
+    expect(last?.residualFindings).toEqual([restatements[0]]);
+  });
+
+  it('keeps a round that closed what it targeted, even when new findings surface', async () => {
+    // Guard against the over-strict rollback: this round DID clear the finding
+    // it was handed, and the two that follow were latent underneath. Reverting
+    // it would throw away real progress, so the loop keeps the edits and falls
+    // through to the existing divergence guard when it stops improving.
+    const first = { severity: 'high', problem: 'first eclipse staged twice', location: 'V1' };
+    const latent = [
+      { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' },
+      { severity: 'high', problem: 'finale hook is unresolved', location: 'V4' },
+    ];
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [first] }))
+      .mockImplementationOnce(async () => ({ issues: latent }))
+      .mockImplementationOnce(async () => ({ issues: latent }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('divergence');
+    expect(last?.residualFindings).toEqual(latent);
   });
 
   it('a default-cap arc run is unaffected by the divergence guard (maxRounds still wins)', async () => {
@@ -2155,6 +2741,21 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     expect(addTask).toHaveBeenCalled();
     expect(addTask.mock.calls[0][0].description).toMatch(/verifyArc-stalled/);
+  });
+
+  // `metadata.app` is workspace routing, not a feature tag: it must name a
+  // record in data/apps.json. Filing these at 'pipeline' made every gap task
+  // unspawnable once prepareAgentWorkspace started refusing an app that
+  // resolves to no repo path (#3180) — the task was filed, then blocked.
+  it('files gap tasks with no app so they run in the PortOS workspace', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'unresolved plot hole' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, maxArcVerifyRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    expect(addTask).toHaveBeenCalled();
+    for (const [taskData] of addTask.mock.calls) {
+      expect(taskData.app).toBeUndefined();
+    }
   });
 
   it('recoverStuckAutopilots demotes a running marker to paused', async () => {

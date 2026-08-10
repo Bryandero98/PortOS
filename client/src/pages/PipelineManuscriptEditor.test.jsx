@@ -68,6 +68,9 @@ describe('PipelineManuscriptEditor', () => {
   it('renders the manuscript section and an open editorial comment in the index', async () => {
     renderEditor();
     expect(await screen.findByText('My Series')).toBeInTheDocument();
+    const page = screen.getByRole('heading', { name: 'My Series' }).closest('.h-full');
+    expect(page).toHaveClass('overflow-y-auto');
+    expect(page).toHaveClass('lg:overflow-hidden');
     expect(screen.getByText('The ending is abrupt')).toBeInTheDocument();
     expect(screen.getByDisplayValue('The hero walked in. She left.')).toBeInTheDocument();
     expect(screen.getByText(/1 open/)).toBeInTheDocument();

@@ -28,8 +28,10 @@ vi.mock('./gitlab.js', () => ({
 }));
 
 const resolveForgeForRepoMock = vi.fn(async () => ({ cli: 'gh' }));
+const getDefaultBranchMock = vi.fn(async () => 'main');
 vi.mock('./git.js', () => ({
   resolveForgeForRepo: (...args) => resolveForgeForRepoMock(...args),
+  getDefaultBranch: (...args) => getDefaultBranchMock(...args),
 }));
 
 vi.mock('./cosEvents.js', () => ({ emitLog: vi.fn() }));
@@ -37,6 +39,7 @@ vi.mock('./cosEvents.js', () => ({ emitLog: vi.fn() }));
 const completeAgentMock = vi.fn();
 vi.mock('./cosAgentLifecycle.js', () => ({
   getAgent: vi.fn(async () => null),
+  getAgentRecord: vi.fn(async () => null),
   updateAgent: vi.fn(async () => null),
   completeAgent: (...args) => completeAgentMock(...args),
 }));
@@ -62,8 +65,10 @@ vi.mock('./agentErrorAnalysis.js', () => ({
 }));
 
 const completeAgentRunMock = vi.fn(async () => null);
+vi.mock('../lib/gitCommitProbe.js', () => ({
+  committedDuringRun: vi.fn(async () => true),
+}));
 vi.mock('./agentRunTracking.js', () => ({
-  checkForTaskCommit: vi.fn(async () => true),
   createAgentRun: vi.fn(),
   completeAgentRun: (...args) => completeAgentRunMock(...args),
 }));
@@ -74,6 +79,7 @@ vi.mock('./taskTypeHooks.js', () => ({
   resolveTaskHookType: vi.fn(() => null),
   declaresNoCommitCriterion: vi.fn(() => false),
   getTaskOutputHook: vi.fn(async () => null),
+  getTaskOutputPayloadPredicate: vi.fn(async () => null),
 }));
 
 vi.mock('./agentCompletion.js', () => ({ processAgentCompletion: vi.fn(async () => null) }));
@@ -86,7 +92,24 @@ import {
   FORGE_UNREACHABLE_CATEGORY,
 } from './agentFinalization.js';
 
-const onBranch = (name) => execGitMock.mockResolvedValue({ stdout: `${name}\n`, stderr: '', exitCode: 0 });
+/**
+ * Routes the git calls verifyPrClaim makes by their argv, so a test can set the
+ * branch and the commit count independently. A blanket `mockResolvedValue`
+ * cannot: `rev-list --count` and `rev-parse --abbrev-ref HEAD` want different
+ * answers, and feeding a branch name to the counter reads as "unknown".
+ */
+const git = { branch: 'claim/issue-1', ahead: 3, hasOriginRef: true };
+const ok = (stdout) => ({ stdout, stderr: '', exitCode: 0 });
+const routeGit = (args) => {
+  if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) return ok(`${git.branch}\n`);
+  if (args[0] === 'rev-parse' && args.includes('--verify')) return ok(git.hasOriginRef ? 'abc1234\n' : '');
+  if (args[0] === 'rev-list' && args.includes('--count')) return ok(git.ahead === null ? '\n' : `${git.ahead}\n`);
+  return ok('');
+};
+const onBranch = (name) => {
+  git.branch = name;
+  execGitMock.mockImplementation(async (args) => routeGit(args));
+};
 
 const prTask = () => ({
   id: 'task-1',
@@ -97,7 +120,9 @@ const prTask = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  execGitMock.mockResolvedValue({ stdout: 'claim/issue-1\n', stderr: '', exitCode: 0 });
+  Object.assign(git, { branch: 'claim/issue-1', ahead: 3, hasOriginRef: true });
+  execGitMock.mockImplementation(async (args) => routeGit(args));
+  getDefaultBranchMock.mockResolvedValue('main');
   findPullRequestForBranchMock.mockResolvedValue({ status: 'found', number: 7, url: 'https://example.com/pr/7' });
   findMergeRequestForBranchMock.mockResolvedValue({ status: 'found', number: 12, url: 'https://example.com/mr/12' });
   resolveForgeForRepoMock.mockResolvedValue({ cli: 'gh' });
@@ -128,6 +153,85 @@ describe('verifyPrClaim (#3358)', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.category).toBe(PR_MISSING_CATEGORY);
     expect(verdict.branch).toBe('claim/issue-1');
+  });
+
+  it('passes when the branch holds no commits — there was nothing to open a PR for', async () => {
+    // agent-446c4f47: the agent investigated, found the reported defect already
+    // fixed on main, and stopped without touching a file. `gh pr create` on a
+    // zero-commit branch fails because there is no diff, not because the agent
+    // slipped — recording that as pr-missing failed a correct run.
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = 0;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    const verdict = await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.noChangesToShip).toBe(true);
+    expect(verdict.category).toBeUndefined();
+  });
+
+  it('counts against origin/<default>, not the worktree\'s stale local copy', async () => {
+    // A worktree's local `main` is whatever the primary last pulled and routinely
+    // sits behind the commit the worktree branched from. Counting against it
+    // reports inherited merge commits as the agent's own — backwards for a check
+    // that exists to recognize "this agent wrote nothing".
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = 0;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(execGitMock).toHaveBeenCalledWith(['rev-list', '--count', 'origin/main..HEAD'], '/w', expect.anything());
+  });
+
+  it('falls back to the local default branch when origin/<default> is absent', async () => {
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = 0;
+    git.hasOriginRef = false;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(execGitMock).toHaveBeenCalledWith(['rev-list', '--count', 'main..HEAD'], '/w', expect.anything());
+  });
+
+  it('keeps pr-missing when the commit count is unreadable — that is not evidence of an empty branch', async () => {
+    onBranch('claim/issue-1');
+    git.ahead = null;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    const verdict = await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.category).toBe(PR_MISSING_CATEGORY);
+  });
+
+  it('keeps pr-missing when the default branch cannot be resolved', async () => {
+    onBranch('claim/issue-1');
+    git.ahead = 0;
+    getDefaultBranchMock.mockResolvedValue(null);
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    const verdict = await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.category).toBe(PR_MISSING_CATEGORY);
+  });
+
+  it('never blocks finalize on a network round-trip to name the default branch', async () => {
+    onBranch('claim/issue-1');
+    git.ahead = 0;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(getDefaultBranchMock).toHaveBeenCalledWith('/w', { allowRemote: false });
+  });
+
+  it('still reports pr-missing when the branch DOES hold commits', async () => {
+    // The #3358 case must survive the no-op exemption: real work, pushed, no PR.
+    onBranch('claim/issue-1');
+    git.ahead = 4;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    const verdict = await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.category).toBe(PR_MISSING_CATEGORY);
+    expect(verdict.commitsAhead).toBe(4);
+  });
+
+  it('does not count commits when a PR was found — the check is only for the miss path', async () => {
+    onBranch('claim/issue-1');
+    await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
+    expect(getDefaultBranchMock).not.toHaveBeenCalled();
   });
 
   it('fails with forge-unreachable — NOT pr-missing — when we could not ask', async () => {
@@ -219,6 +323,20 @@ describe('finalizeAgent — a PR-shaped run with no PR is not a success (#3358)'
     // The task must not be marked completed — it goes back through the failure
     // path so it can retry and actually open the PR.
     expect(updateTaskMock).not.toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'completed' }), 'internal');
+  });
+
+  it('records "completed" for a run that committed nothing and opened no PR', async () => {
+    // The retry loop this closes: pr-missing is non-actionable, so a correct
+    // "nothing to fix here" conclusion was re-run to the retry budget, burning
+    // three Opus agents to reach the same answer three times (agent-446c4f47).
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = 0;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await finalize();
+
+    expect(completeAgentMock).toHaveBeenCalledWith('agent-1', expect.objectContaining({ success: true }));
+    expect(updateTaskMock).toHaveBeenCalledWith('task-1', expect.objectContaining({ status: 'completed' }), 'internal');
+    expect(resolveFailedTaskUpdateMock).not.toHaveBeenCalled();
   });
 
   it('marks the RUN record failed too, even though the process exited 0', async () => {

@@ -24,12 +24,15 @@
  * is the authoritative "done" signal (the wrapped prompt directs it to write
  * its full answer to `tui-response.txt` and then finish) — checked
  * unconditionally, even while a human watches. Output-idle is the fallback for
- * runs that print inline instead of writing the file (paused while watched, so
- * a viewer isn't snapped shut mid-read). The hard timeout is the backstop, and
- * salvages an already-written file before failing. Per-binary input-prompt
+ * TUIs that print inline instead of writing the file (paused while watched, so
+ * a viewer isn't snapped shut mid-read). Codex is excluded from that fallback:
+ * its status chrome can go silent for long stretches during real reasoning,
+ * and the required response file is the only safe completion signal. The hard
+ * timeout is the backstop, and salvages an already-written file before failing.
+ * Per-binary input-prompt
  * regexes were considered for idle but are fragile across versions and screen
- * sizes; the idle threshold (~8s) works universally and matches how a human
- * knows the TUI finished — output stopped scrolling.
+ * sizes; for non-Codex TUIs, the idle threshold (~8s) remains the pragmatic
+ * inline-output fallback.
  */
 
 import { spawn as ptySpawn } from 'node-pty';
@@ -37,9 +40,14 @@ import { spawn as ptySpawn } from 'node-pty';
 import { join, resolve } from 'path';
 import { ensureDir, PATHS, tryReadFile } from './fileUtils.js';
 import { createStreamingAnsiStripper, stripAnsi } from './ansiStrip.js';
-import { createImmediateFallbackSignalDetector, createTerminalModelErrorDetector } from './aiToolkit/errorDetection.js';
-import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, resolveRunCwd } from '../services/runner.js';
+import {
+  createImmediateFallbackSignalDetector,
+  createTerminalModelErrorDetector,
+  createTerminalRequestTimeoutDetector,
+} from './aiToolkit/errorDetection.js';
+import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, consumeRunStopRequested, resolveRunCwd } from '../services/runner.js';
 import { registerExternalSession, unregisterExternalSession, isExternalSessionAttached } from '../services/shell.js';
+import { isHostShuttingDown } from './hostShutdown.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   PASTE_MARKER_POLL_MS,
@@ -58,6 +66,7 @@ import {
   detectMissingTuiBinary,
 } from './tuiHandshake.js';
 import { buildCliChildEnv } from './cliChildEnv.js';
+import { isCodexCommand } from './codex.js';
 
 // One-shot defaults that don't apply to the long-running agent path:
 //   - hard run cap (5 min vs unbounded for agents)
@@ -66,6 +75,22 @@ import { buildCliChildEnv } from './cliChildEnv.js';
 //     to stop talking)
 const DEFAULT_TIMEOUT_MS = 300000;
 const DEFAULT_ONE_SHOT_IDLE_MS = 8000;
+
+// A one-shot prompt must return one machine-consumed answer. Codex's general
+// interactive TUI inherits the user's multi-agent feature flag, which can turn
+// that bounded request into agent fan-out + wait loops that consume the entire
+// timeout before the fallback provider repeats the work. Long-running CoS
+// agents use agentTuiSpawning.js and keep their configured collaboration
+// posture; only this synchronous prompt runner pins the feature off.
+function buildOneShotTuiArgs(command, args) {
+  if (!isCodexCommand(command)) return args;
+  const alreadyDisabled = args.some((arg, index) => (
+    arg === '--disable=multi_agent'
+    || (arg === '--disable' && args[index + 1] === 'multi_agent')
+    || (arg === '-c' && args[index + 1] === 'features.multi_agent=false')
+  ));
+  return alreadyDisabled ? args : [...args, '--disable', 'multi_agent'];
+}
 
 // Wide PTY so TUI doesn't wrap responses at narrow widths, which makes
 // downstream parsing harder.
@@ -118,10 +143,19 @@ export async function executeTuiRun({ runId, provider, prompt, workspacePath, on
     throw new Error('executeTuiRun: prompt must be a non-empty string');
   }
 
-  const { command, args } = buildTuiInvocation(provider, provider.defaultModel);
+  const invocation = buildTuiInvocation(provider, provider.defaultModel);
+  const { command } = invocation;
+  const args = buildOneShotTuiArgs(command, invocation.args);
   const promptDelayMs = provider.tuiPromptDelayMs ?? DEFAULT_TUI_PROMPT_DELAY_MS;
   const idleThresholdMs = idleMs ?? provider.tuiOneShotIdleMs ?? DEFAULT_ONE_SHOT_IDLE_MS;
   const totalTimeoutMs = timeout ?? provider.timeout ?? DEFAULT_TIMEOUT_MS;
+  // Codex is explicitly instructed to write the machine-consumed answer to a
+  // response file. Its PTY may stop repainting for many seconds or minutes
+  // while the model is still reasoning; treating that quiet screen as a final
+  // inline answer kills the live request and returns terminal chrome such as
+  // "[Pasted Content …]" to JSON parsers. Wait for the authoritative file,
+  // natural process exit, explicit cancellation, or the configured hard cap.
+  const requiresResponseFileForIdleCompletion = isCodexCommand(command);
   // Mirror runner.js#executeCliRun's runs-path resolution so TUI runs land
   // under the runner-config dataDir (not always PATHS.runs) — otherwise a
   // non-default dataDir would split metadata + output across two trees.
@@ -245,6 +279,10 @@ ${prompt}`;
   // (not in the shared fallback detector) so it can't kill a long-running agent
   // that merely echoes the error line — see errorDetection.js for the rationale.
   const detectTerminalModelError = createTerminalModelErrorDetector();
+  // Claude Code can exhaust all of its own request retries and then exit 0 with
+  // only `⎿ Request timed out` on screen. This one-shot-only detector lets the
+  // central runner fall back instead of parsing that terminal as creative output.
+  const detectTerminalRequestTimeout = createTerminalRequestTimeoutDetector();
   // True once outputBuffer overflowed OUTPUT_BUFFER_HEADROOM and the head was
   // dropped. We warn once and surface it in the run record so /runs can flag
   // responses where the fallback path may have lost the start.
@@ -269,6 +307,13 @@ ${prompt}`;
     lastResponseLen = txt.length;
     return false;
   };
+  // Stability doesn't apply once nothing can still be writing (hard timeout with
+  // the TUI wedged, or the PTY already gone): non-empty content is the whole
+  // answer by then.
+  const responseFileHasContent = async () => {
+    const txt = await tryReadFile(responseFilePath);
+    return typeof txt === 'string' && !!txt.trim();
+  };
 
   let readyTimer = null;
   let pasteEnterTimer = null;
@@ -290,7 +335,7 @@ ${prompt}`;
   };
 
   return new Promise((resolve) => {
-    const finish = async ({ success, exitCode = 0, error = null, reason = 'completed' }) => {
+    const finish = async ({ success, exitCode = 0, error = null, reason = 'completed', canceled = false }) => {
       if (finalized) return;
       finalized = true;
       // Tracks whether the normal-path onComplete was reached, so the catch
@@ -332,12 +377,18 @@ ${prompt}`;
         // set post-write and never made it to disk → /runs replay missed it).
         const metadata = await finalizeRunRecord({
           runId, output: responseText, exitCode, success, error, startTime,
-          extras: { completionReason: reason, usedResponseFile, outputTruncated: outputBufferTruncated },
+          extras: {
+            completionReason: reason,
+            usedResponseFile,
+            outputTruncated: outputBufferTruncated,
+            ...(canceled ? { canceled: true } : {}),
+          },
         }).catch((err) => {
           console.error(`❌ TUI run ${runId} finalize failed: ${err.message}`);
           return {
             exitCode, success, error: error || err.message,
             duration: Date.now() - startTime, completionReason: reason,
+            ...(canceled ? { canceled: true } : {}),
           };
         });
         onCompleteInvoked = true;
@@ -368,6 +419,7 @@ ${prompt}`;
             onComplete?.({
               runId, success: false, exitCode, error: `finish() failed: ${err?.message || err}`,
               duration: Date.now() - startTime, completionReason: reason,
+              ...(canceled ? { canceled: true } : {}),
             });
           } catch (cbErr) {
             console.error(`❌ TUI run ${runId} onComplete threw during finish() error handling: ${cbErr?.message || cbErr}`);
@@ -376,6 +428,36 @@ ${prompt}`;
       } finally {
         resolve();
       }
+    };
+
+    // A fallback signal means "this provider can't finish the job" — but the
+    // model may have ALREADY finished it. responseFileWatchTimer only finalizes
+    // after two 1s polls agree on the file size, so there is a ≥1s window where
+    // the response file is complete on disk and the run hasn't finalized. A
+    // signal painting inside that window used to finish({ success: false }),
+    // and since resolveTuiResponseText only reads the file when `success` is
+    // true, the finished response was discarded, the ANSI-stripped error screen
+    // was returned in its place, and a fallback tier re-ran an expensive stage
+    // (#3715). Check for a usable response file first — the same salvage net the
+    // hard-timeout path already has. While the PTY is alive the file must be
+    // size-stable (it could still be mid-write); once the process has exited
+    // nothing can still be writing, so non-empty is enough.
+    const finishWithFallbackSignal = async (signal, { processExited = false } = {}) => {
+      const salvaged = processExited
+        ? await responseFileHasContent()
+        : await responseFileSettled();
+      if (finalized) return;
+      if (salvaged) {
+        console.log(`📄 TUI run ${runId} salvaged its completed response file despite a fallback signal: ${signal.message}`);
+        await finish({ success: true, exitCode: 0, reason: 'fallback-signal-response-file' });
+        return;
+      }
+      await finish({
+        success: false,
+        exitCode: signal.exitCode ?? 1,
+        error: signal.message || 'Provider requires fallback',
+        reason: 'fallback-signal',
+      });
     };
 
     ptyProcess.onData((data) => {
@@ -396,13 +478,15 @@ ${prompt}`;
         }
         onData?.(stripped);
 
-        const fallbackSignal = detectImmediateFallbackSignal(stripped) || detectTerminalModelError(stripped);
+        const fallbackSignal = detectImmediateFallbackSignal(stripped)
+          || detectTerminalModelError(stripped)
+          || detectTerminalRequestTimeout(stripped);
         if (fallbackSignal) {
-          finish({
-            success: false,
-            exitCode: 1,
-            error: fallbackSignal.message || 'Provider requires fallback',
-            reason: 'fallback-signal'
+          // Fire-and-forget like every other finish() call from this PTY
+          // callback; finish() itself never rejects and the salvage read can't
+          // throw, so the catch is belt-and-braces for a callback boundary.
+          finishWithFallbackSignal(fallbackSignal).catch((err) => {
+            console.error(`❌ TUI run ${runId} fallback-signal handling failed: ${err?.message || err}`);
           });
           return;
         }
@@ -429,15 +513,14 @@ ${prompt}`;
           if (isExternalSessionAttached(runId)) return;
           const idle = Date.now() - lastOutputAt;
           if (idle >= idleThresholdMs) {
+            if (requiresResponseFileForIdleCompletion) return;
             // NOTE: unlike the long-running agent path, the one-shot runner does
-            // NOT gate this on a work-activity signal. Idle-complete here is the
-            // inline-output fallback for a model that prints its answer instead of
-            // writing the response file — that output legitimately may carry no
-            // `(Ns ·` working counter (fast reply, or a non-Claude/Codex TUI), so
-            // requiring one would falsely fail a completed run whose answer is
-            // already in outputBuffer. The authoritative done-signal is the
-            // response file (handled by responseFileWatchTimer); this stays the
-            // permissive fallback it has always been.
+            // NOT gate non-Codex providers on a work-activity signal.
+            // Idle-complete is their inline-output fallback when a model prints
+            // its answer instead of writing the response file; that output may
+            // legitimately carry no `(Ns ·` working counter. Codex is held to
+            // the response-file contract above because its quiet reasoning
+            // stretches are otherwise indistinguishable from completion.
             finish({ success: true, exitCode: 0, reason: 'idle-complete' });
           }
         }, 1000);
@@ -457,8 +540,28 @@ ${prompt}`;
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       const killed = !!signal;
+      // pm2 tree-kills descendants during a PortOS restart, while /runs Stop
+      // kills this registered PTY through runner.stopRun. Both are intentional
+      // interruptions, not provider failures: never scan the story transcript
+      // for a bogus quota marker, bench the provider, or launch a fallback.
+      const stopRequested = consumeRunStopRequested(runId);
+      const hostInterrupted = killed && isHostShuttingDown();
+      const canceled = killed && (stopRequested || hostInterrupted);
       const finalExitCode = typeof exitCode === 'number' ? exitCode : (killed ? 130 : 0);
       const success = !killed && finalExitCode === 0;
+      // The terminal-timeout detector holds a candidate banner until a real line
+      // terminator proves the line is finished (#3715). Process exit IS that
+      // proof — no further byte can turn `⎿ Request timed out` into a
+      // `· Retrying …` banner — so flush the held candidate here rather than
+      // letting a clean exit 0 scrape the error screen as model output (the
+      // exact failure the detector was added for).
+      const heldTimeout = success ? detectTerminalRequestTimeout(null, { endOfStream: true }) : null;
+      if (heldTimeout) {
+        finishWithFallbackSignal(heldTimeout, { processExited: true }).catch((err) => {
+          console.error(`❌ TUI run ${runId} exit-time timeout handling failed: ${err?.message || err}`);
+        });
+        return;
+      }
       // Always set an explicit error string when finishing as failure. The
       // toolkit's errorDetection (if enabled) will fill in `error` inside
       // finalizeRunRecord, but if it's absent we'd persist `success: false`
@@ -467,7 +570,11 @@ ${prompt}`;
       // captured output so failures are actionable from /runs without
       // re-running.
       let error = null;
-      if (killed) {
+      if (hostInterrupted) {
+        error = `TUI interrupted by PortOS shutdown (signal ${signal})`;
+      } else if (stopRequested) {
+        error = `TUI canceled (signal ${signal})`;
+      } else if (killed) {
         error = `TUI killed (signal ${signal})`;
       } else if (!success) {
         const tail = outputBuffer.slice(-200).trim();
@@ -479,7 +586,8 @@ ${prompt}`;
         success,
         exitCode: finalExitCode,
         error,
-        reason: killed ? 'killed' : 'exit'
+        reason: hostInterrupted ? 'host-shutdown' : (stopRequested ? 'canceled' : (killed ? 'killed' : 'exit')),
+        canceled,
       });
     });
 
@@ -571,8 +679,7 @@ ${prompt}`;
       // triggering a pointless fallback retry. (The response-file watcher above
       // normally catches this within ~2s; this covers the boundary case where the
       // file lands right at the deadline or the watcher hadn't confirmed yet.)
-      const salvaged = await tryReadFile(responseFilePath);
-      if (typeof salvaged === 'string' && salvaged.trim()) {
+      if (await responseFileHasContent()) {
         finish({ success: true, exitCode: 0, reason: 'timeout-response-file' });
         return;
       }

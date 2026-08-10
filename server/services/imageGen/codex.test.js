@@ -196,6 +196,46 @@ describe('codex provider — generateImage', () => {
     await flush();
   });
 
+  it('attaches every reference image on the one variadic -i flag', async () => {
+    await mkdir(FAKE_IMAGES_DIR, { recursive: true });
+    for (const n of ['proof.png', 'ref-a.png', 'ref-b.png']) {
+      await writeFile(join(FAKE_IMAGES_DIR, n), 'fake');
+    }
+    await codex.generateImage({
+      prompt: 'cover art', initImagePath: 'proof.png', initImageStrength: 0.2,
+      referenceImagePaths: ['ref-a.png', 'ref-b.png'],
+    });
+    const { args } = spawnCalls[0];
+    const i = args.indexOf('-i');
+    expect(args.slice(i + 1, i + 4)).toEqual([
+      join(FAKE_IMAGES_DIR, 'proof.png'),
+      join(FAKE_IMAGES_DIR, 'ref-a.png'),
+      join(FAKE_IMAGES_DIR, 'ref-b.png'),
+    ]);
+    // The `--` terminator still bounds the variadic so the prompt lands as the
+    // positional rather than being swallowed as a fourth image path.
+    expect(args).toContain('--');
+    expect(args[args.length - 1]).toMatch(/edit the FIRST attached image/i);
+    expect(args[args.length - 1]).toMatch(/other 2 attached images as visual references/i);
+    spawnCalls[0].child.exitCode = 1;
+    spawnCalls[0].child.emit('close', 1, null);
+    await flush();
+  });
+
+  it('describes a reference-only render as conditioning, not an edit', async () => {
+    await mkdir(FAKE_IMAGES_DIR, { recursive: true });
+    await writeFile(join(FAKE_IMAGES_DIR, 'ref-a.png'), 'fake');
+    await codex.generateImage({ prompt: 'a fox', referenceImagePaths: ['ref-a.png'] });
+    const { args } = spawnCalls[0];
+    expect(args.slice(args.indexOf('-i') + 1, args.indexOf('-i') + 2))
+      .toEqual([join(FAKE_IMAGES_DIR, 'ref-a.png')]);
+    expect(args[args.length - 1]).toMatch(/conditioned on the attached image/i);
+    expect(args[args.length - 1]).not.toMatch(/^\$imagegen Edit /);
+    spawnCalls[0].child.exitCode = 1;
+    spawnCalls[0].child.emit('close', 1, null);
+    await flush();
+  });
+
   it('rejects when prompt is empty and there is no init image', async () => {
     await expect(codex.generateImage({ prompt: '   ' })).rejects.toThrow(/Prompt is required/);
   });

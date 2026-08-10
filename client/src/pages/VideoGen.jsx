@@ -48,9 +48,12 @@ import ExtendPanel from '../components/videoGen/ExtendPanel';
 import IcLoraPanel from '../components/videoGen/IcLoraPanel';
 import AdvancedParamsPanel from '../components/videoGen/AdvancedParamsPanel';
 import RuntimeFingerprint from '../components/videoGen/RuntimeFingerprint';
+import ModelDisclosure from '../components/videoGen/ModelDisclosure';
+import ModelTermsGate from '../components/videoGen/ModelTermsGate';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
 import VideoPreviewPanel from '../components/videoGen/VideoPreviewPanel';
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
+import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import { normalizeVideo } from '../components/media/normalize';
@@ -75,7 +78,6 @@ import {
   getVideoGenStatus, generateVideo, cancelVideoGen,
   listVideoHistory, deleteVideoHistoryItem, setVideoHidden, extractLastFrame,
   upscaleVideo,
-  listImageGallery,
   patchSettingsSlice,
   getActiveVideoJob,
   getSettings,
@@ -87,6 +89,9 @@ import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
 import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, IC_LORA_MODES } from '../lib/videoGenParams.js';
+import { finishTargetForRecord } from '../lib/videoFinish.js';
+import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
+import useVideoModelTerms from '../hooks/useVideoModelTerms.js';
 
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
@@ -143,13 +148,15 @@ export default function VideoGen() {
     selectedLoras, setSelectedLoras,
     width, height, handleResolutionChange,
     numFrames, setNumFrames, fps, setFps, chunks, setChunks,
+    chunkPrompts, setChunkPromptAt, chainingActive,
+    contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
     sourceImageFile, sourceImageUpload, sourceUploadUrl,
     pickSourceImage, uploadSourceImage, clearSourceImage,
     lastImageFile, lastImageUpload, lastUploadUrl,
-    pickLastImage, uploadLastImage, clearLastImage,
+    pickLastImage, uploadLastImage, clearLastImage, lastFrameIsAdvisory,
     keyframesMode, keyframes, keyframesSupported, keyframesActive, keyframesError, keyframesBlocked,
     toggleKeyframesMode, addKeyframe, updateKeyframe, removeKeyframe,
     extendFromVideoId, extendingFrame, handleExtendPick, extendModeBlocked,
@@ -159,19 +166,57 @@ export default function VideoGen() {
     pickIcReferenceFile, pickIcReferenceVideoId,
     addIcReferenceImage, updateIcReferenceImage, removeIcReferenceImage,
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
-    applyRemix, applyResumedParams, buildGeneratePayload,
+    applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
 
-  // Image gallery — used by both the start and end frame pickers so the
-  // user can pull from any prior render in either slot.
-  const [imageGallery, setImageGallery] = useState([]);
-  // Visible gallery options, shared by every gallery <select> (the frame
-  // panels and each multi-keyframe row) so the filter+slice runs once per
-  // gallery change rather than once per picker per render.
-  const visibleGallery = useMemo(
-    () => imageGallery.filter((img) => !img.hidden).slice(0, 50),
-    [imageGallery],
-  );
+  // Restricted model terms are accepted per exact reviewed license id, and the
+  // acceptance is recorded server-side so it authorizes every other render
+  // surface (music video board, pipeline, agent runs) — not just this page in
+  // this browser. That record is the ONLY authorization: no request carries an
+  // acceptance of its own, so the gates below are a UI mirror of what the
+  // server independently enforces on every download and render.
+  const termsGate = !isGrok && currentModel?.termsGate ? currentModel.termsGate : null;
+  const modelTerms = useVideoModelTerms();
+  // Key acceptance by the exact license id, never a shared boolean, so a model
+  // switch can't momentarily apply one model's acceptance to another's terms.
+  const termsAccepted = modelTerms.isAccepted(termsGate?.id);
+  // One-time carry-forward of the browser-local acceptance bit this page used
+  // to keep: the user already performed this exact acknowledgement (same
+  // versioned id) here, so re-home it into settings instead of asking again.
+  // The legacy key is cleared afterwards so it can never re-assert a later
+  // withdrawal, and `migratedTerms` keeps the re-home to one attempt per id —
+  // the effect re-runs on any acceptance-list change, and the PATCH is not
+  // instantaneous.
+  const migratedTerms = useRef(new Set());
+  useEffect(() => {
+    const id = termsGate?.id;
+    if (!id || !modelTerms.loaded || modelTerms.isAccepted(id) || migratedTerms.current.has(id)) return;
+    const legacyKey = `video-gen:terms:${id}`;
+    if (safeReadStorage(legacyKey) !== '1') return;
+    migratedTerms.current.add(id);
+    modelTerms.setAcceptance(id, true).then((saved) => { if (saved) safeWriteStorage(legacyKey, '0'); });
+  }, [termsGate?.id, modelTerms.loaded, modelTerms.isAccepted, modelTerms.setAcceptance]);
+  const handleTermsAcceptedChange = (accepted) => {
+    if (termsGate?.id) modelTerms.setAcceptance(termsGate.id, accepted);
+  };
+  const termsGateBlocked = !!termsGate && !termsAccepted;
+  const termsDescriptionId = termsGate ? 'video-model-terms-requirement' : undefined;
+
+  // Every gallery-image slot on this page (both frame panels, each multi-keyframe
+  // row, each IC-LoRA reference row) opens the SAME GalleryImagePicker modal the
+  // Image Gen i2i form uses — a searchable thumbnail grid over the whole gallery.
+  // `null` = closed; otherwise `{ kind, index? }` records which slot the pick
+  // lands in, since one modal serves every slot.
+  const [galleryPicker, setGalleryPicker] = useState(null);
+  const handleGalleryPick = (item) => {
+    const filename = item?.filename;
+    if (!filename || !galleryPicker) return;
+    const { kind, index } = galleryPicker;
+    if (kind === 'source') pickSourceImage(filename);
+    else if (kind === 'last') pickLastImage(filename);
+    else if (kind === 'keyframe') updateKeyframe(index, { file: filename });
+    else if (kind === 'icReference') updateIcReferenceImage(index, filename);
+  };
 
   const [history, setHistory] = useState([]);
   // `preview` is URL-driven via `usePreviewRoute(previewItems)` — declared
@@ -184,7 +229,6 @@ export default function VideoGen() {
   }, []);
   useMediaCompletionRefresh({ onVideoCompleted: refreshHistory });
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
-  useEffect(() => { listImageGallery().then(setImageGallery).catch(() => {}); }, []);
 
   const { visibleHistory, hiddenHistory } = useMemo(() => ({
     visibleHistory: history.filter((v) => !v.hidden),
@@ -261,6 +305,16 @@ export default function VideoGen() {
   const handleRemixVideo = (item) => {
     if (!item) return;
     applyRemix(item);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Finish a draft (#3696): same restore as Remix, but switched to the delivery
+  // model the draft's registry entry declares. Prefill only — the user presses
+  // Generate themselves.
+  const resolveFinishTarget = useCallback((raw) => finishTargetForRecord(raw, models), [models]);
+  const handleFinishVideo = (raw, target) => {
+    if (!raw || !target) return;
+    applyFinish(raw, target.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -412,11 +466,29 @@ export default function VideoGen() {
   // pull before hitting Render.
   const modelDownload = useModelDownloadStatus({ kind: 'video' });
   const modelStatus = modelId ? modelDownload.getStatus(modelId) : null;
+  const usesSharedTextEncoder = currentModel?.runtime === 'mlx_video' || currentModel?.runtime === 'ltx2';
   const textEncoderInfo = modelDownload.extra.textEncoder || null;
   const textEncoderStatus = textEncoderInfo
     ? (modelDownload.activeModelId === TEXT_ENCODER_DOWNLOAD_ID
       ? { ...textEncoderInfo, downloading: true, progress: modelDownload.progress }
       : textEncoderInfo)
+    : null;
+  const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
+  const modelWeightsBlocked = !isGrok
+    && (statusLoading || !modelId || !currentModel || modelDownload.loading
+      || modelStatus === null || modelStatus?.cached === false);
+  const textEncoderWeightsBlocked = !isGrok && usesSharedTextEncoder
+    && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
+  const icWeightsBlocked = !isGrok && icModeActive
+    && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
+  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked || icWeightsBlocked;
+  const activeWeightErrorIds = [
+    modelId,
+    usesSharedTextEncoder ? TEXT_ENCODER_DOWNLOAD_ID : null,
+    icModeActive ? icSpec?.mode : null,
+  ].filter(Boolean);
+  const activeWeightError = activeWeightErrorIds.includes(modelDownload.lastError?.modelId)
+    ? modelDownload.lastError
     : null;
 
   // Weight-integrity (issue #1324). A corrupt/truncated model decodes to
@@ -440,6 +512,19 @@ export default function VideoGen() {
   const encoderIntegrityKey = encoderIntegrityBad ? `text-encoder:${(encoderIntegrity.badFiles || []).map((f) => f.name).join(',')}` : null;
   const [dismissedEncoderIntegrityKey, setDismissedEncoderIntegrityKey] = useState(null);
   const showEncoderIntegrityBanner = encoderIntegrityBad && dismissedEncoderIntegrityKey !== encoderIntegrityKey && !modelDownload.downloading;
+
+  // IC-LoRA weights are independent downloads too. Keep their corruption
+  // recovery on the originating Video Gen surface instead of requiring a CLI
+  // cache purge or leaving the user with a disabled Generate button.
+  const icIntegrity = icWeightStatus && !icWeightStatus.downloading ? icWeightStatus.integrity : null;
+  const icIntegrityBad = icIntegrity?.status === 'bad';
+  const icIntegrityBadCount = icIntegrityBad ? (icIntegrity.badFiles || []).length : 0;
+  const icIntegrityKey = icIntegrityBad
+    ? `${icSpec?.mode}:${(icIntegrity.badFiles || []).map((file) => file.name).join(',')}`
+    : null;
+  const [dismissedIcIntegrityKey, setDismissedIcIntegrityKey] = useState(null);
+  const showIcIntegrityBanner = icIntegrityBad
+    && dismissedIcIntegrityKey !== icIntegrityKey && !modelDownload.downloading;
 
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
 
@@ -523,7 +608,7 @@ export default function VideoGen() {
     // Without these guards the user could press Enter in the prompt
     // textarea and fire a request the disabled button would otherwise
     // have prevented.
-    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || keyframesBlocked))) return;
+    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
@@ -532,7 +617,7 @@ export default function VideoGen() {
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || keyframesBlocked))) return;
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
     enqueue(buildGeneratePayload());
@@ -575,7 +660,9 @@ export default function VideoGen() {
   // configured" error from the unrelated legacy probe.
   const notConnected = !!status && status.connected === false && !needsByovProbe;
 
-  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked && !a2vModeBlocked && !byovGateBlocked && !keyframesBlocked));
+  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked
+    && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
+    && !weightsGateBlocked && !keyframesBlocked && !termsGateBlocked));
 
   return (
     <div className="space-y-3">
@@ -700,8 +787,8 @@ export default function VideoGen() {
           {!isGrok && byovRuntimeMissing && (
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
-                <strong className="font-semibold">{byovStatus.label}</strong> isn't installed yet.
-                PortOS can fetch and install it from {byovStatus.repoUrl?.replace('https://', '')} (~5-15 min, multi-GB on first run).
+                <strong className="font-semibold">{byovStatus.label}</strong> {byovStatus.upgradeAvailable ? 'has an update available.' : "isn't installed yet."}
+                {' '}PortOS can {byovStatus.upgradeAvailable ? 'upgrade' : 'fetch and install'} it from {byovStatus.repoUrl?.replace('https://', '')} on demand.
               </div>
               <button
                 type="button"
@@ -710,7 +797,7 @@ export default function VideoGen() {
                 className="self-start sm:self-auto whitespace-nowrap inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/80 disabled:opacity-50"
               >
                 <Sparkles size={14} />
-                Install {byovStatus.label}
+                {byovStatus.upgradeAvailable ? 'Upgrade' : 'Install'} {byovStatus.label}
               </button>
             </div>
           )}
@@ -721,9 +808,13 @@ export default function VideoGen() {
                 Repair deletes the bad file{integrityBadCount === 1 ? '' : 's'} and re-downloads clean copies.
               </>}
               repairLabel="Repair model"
-              onRepair={() => { setDismissedIntegrityKey(integrityKey); modelDownload.repair(modelId); }}
+              onRepair={() => {
+                setDismissedIntegrityKey(integrityKey);
+                modelDownload.repair(modelId);
+              }}
               onDismiss={() => setDismissedIntegrityKey(integrityKey)}
-              disabled={modelDownload.repairing || modelDownload.downloading}
+              disabled={termsGateBlocked || modelDownload.repairing || modelDownload.downloading}
+              disabledReasonId={termsGateBlocked ? termsDescriptionId : undefined}
               repairing={modelDownload.repairing}
             />
           )}
@@ -736,6 +827,19 @@ export default function VideoGen() {
               repairLabel="Repair encoder"
               onRepair={() => { setDismissedEncoderIntegrityKey(encoderIntegrityKey); modelDownload.repair(TEXT_ENCODER_DOWNLOAD_ID); }}
               onDismiss={() => setDismissedEncoderIntegrityKey(encoderIntegrityKey)}
+              disabled={modelDownload.repairing || modelDownload.downloading}
+              repairing={modelDownload.repairing}
+            />
+          )}
+          {showIcIntegrityBanner && (
+            <ModelRepairBanner
+              message={<>
+                The <strong className="font-semibold">{icSpec?.label || 'IC-LoRA'}</strong> weight has {icIntegrityBadCount || 'corrupt'} damaged file{icIntegrityBadCount === 1 ? '' : 's'}.
+                Repair deletes the bad file{icIntegrityBadCount === 1 ? '' : 's'} and re-downloads a clean copy.
+              </>}
+              repairLabel={`Repair ${icSpec?.label || 'IC-LoRA'}`}
+              onRepair={() => { setDismissedIcIntegrityKey(icIntegrityKey); modelDownload.repair(icSpec.mode); }}
+              onDismiss={() => setDismissedIcIntegrityKey(icIntegrityKey)}
               disabled={modelDownload.repairing || modelDownload.downloading}
               repairing={modelDownload.repairing}
             />
@@ -759,9 +863,12 @@ export default function VideoGen() {
               <textarea
                 value={negativePrompt}
                 onChange={(e) => setNegativePrompt(e.target.value)}
+                disabled={!isGrok && currentModel?.supportsNegativePrompt === false}
                 rows={3}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 resize-y"
-                placeholder="What to avoid..."
+                placeholder={!isGrok && currentModel?.supportsNegativePrompt === false
+                  ? 'This CFG-distilled model does not use a negative prompt.'
+                  : 'What to avoid...'}
               />
             </FormField>
           </div>
@@ -772,10 +879,10 @@ export default function VideoGen() {
               keyframesActive={keyframesActive}
               keyframes={keyframes}
               numFrames={numFrames}
-              visibleGallery={visibleGallery}
               keyframesError={keyframesError}
               onToggleMode={toggleKeyframesMode}
               onAddKeyframe={addKeyframe}
+              onBrowseKeyframe={(index) => setGalleryPicker({ kind: 'keyframe', index })}
               onUpdateKeyframe={updateKeyframe}
               onRemoveKeyframe={removeKeyframe}
             />
@@ -788,8 +895,7 @@ export default function VideoGen() {
                 file={sourceImageFile}
                 upload={sourceImageUpload}
                 uploadUrl={sourceUploadUrl}
-                visibleGallery={visibleGallery}
-                onPickGallery={pickSourceImage}
+                onBrowseGallery={() => setGalleryPicker({ kind: 'source' })}
                 onUpload={uploadSourceImage}
                 onClear={clearSourceImage}
                 alt="Source"
@@ -800,15 +906,14 @@ export default function VideoGen() {
                   file={lastImageFile}
                   upload={lastImageUpload}
                   uploadUrl={lastUploadUrl}
-                  visibleGallery={visibleGallery}
-                  onPickGallery={pickLastImage}
+                  onBrowseGallery={() => setGalleryPicker({ kind: 'last' })}
                   onUpload={uploadLastImage}
                   onClear={clearLastImage}
                   alt="End frame"
-                  advisoryNote={{
+                  advisoryNote={lastFrameIsAdvisory ? {
                     text: 'Experimental — last frame is advisory.',
-                    title: 'FFLF backend support is experimental — LTX/mlx_video uses the start frame and treats the last frame as advisory.',
-                  }}
+                    title: `FFLF backend support is experimental — the ${currentModel?.runtime || 'selected'} runtime conditions on the start frame only and treats the last frame as advisory.`,
+                  } : null}
                   hint={{
                     text: 'Tip: use keyframes that share scene geometry — same camera, same subject. The model interpolates between them; unrelated images produce a visual cut.',
                     title: 'FFLF works best when the two frames depict the same scene with continuous geometry. Both runtimes (notapalindrome and dgrauet) benefit from this.',
@@ -847,15 +952,14 @@ export default function VideoGen() {
               inFlightReferenceNames={icReferenceNames}
               visibleHistory={visibleHistory}
               referenceImageFiles={icReferenceImageFiles}
-              visibleGallery={visibleGallery}
               onAddReferenceImage={addIcReferenceImage}
-              onUpdateReferenceImage={updateIcReferenceImage}
+              onBrowseReferenceImage={(index) => setGalleryPicker({ kind: 'icReference', index })}
               onRemoveReferenceImage={removeIcReferenceImage}
               icStrength={icStrength}
               icSkipStage2={icSkipStage2}
               width={width}
               height={height}
-              weightStatus={modelDownload.getStatus(icSpec.mode)}
+              weightStatus={icWeightStatus}
               hasCompatibleModel={visibleModels.length > 0}
               onPickFile={pickIcReferenceFile}
               onClearFile={() => pickIcReferenceFile(null)}
@@ -907,9 +1011,40 @@ export default function VideoGen() {
                     onDownload={() => modelDownload.start(modelId)}
                     onCancel={modelDownload.cancel}
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
+                    disabled={termsGateBlocked}
+                    disabledReason="Accept the selected model's eligibility and license terms below before downloading."
+                    disabledReasonId={termsDescriptionId}
                   />
                 )}
-                {textEncoderStatus && (textEncoderStatus.cached === false || textEncoderStatus.downloading) && (
+                {activeWeightError && (
+                  <div className="mt-2 rounded-lg border border-port-error/40 bg-port-error/10 px-3 py-2 text-[11px] text-port-error">
+                    <p>{activeWeightError.message}</p>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      <button type="button" onClick={openSettings} className="underline hover:text-white">
+                        Open Hugging Face settings
+                      </button>
+                      {activeWeightError.repo && (
+                        <a
+                          href={`https://huggingface.co/${activeWeightError.repo}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:text-white"
+                        >
+                          Open repository access page
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {modelDownload.statusError && (
+                  <div className="mt-2 rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-2 text-[11px] text-port-warning flex flex-wrap items-center justify-between gap-2">
+                    <span>{modelDownload.statusError}</span>
+                    <button type="button" onClick={modelDownload.refresh} className="underline hover:text-white">
+                      Retry cache check
+                    </button>
+                  </div>
+                )}
+                {usesSharedTextEncoder && textEncoderStatus && (textEncoderStatus.cached === false || textEncoderStatus.downloading) && (
                   <div className="mt-1">
                     <p className="text-[10px] text-gray-500">Text encoder ({textEncoderStatus.repo}) is also required:</p>
                     <ModelDownloadBadge
@@ -968,6 +1103,26 @@ export default function VideoGen() {
           </div>
           )}
 
+          {/* A restricted model's server-enforced terms gate, then provenance /
+              licensing / policy scope for the selected backend + model (#3674)
+              — both before Advanced / Generate. */}
+          <div className="space-y-2">
+            <ModelTermsGate
+              termsGate={termsGate}
+              accepted={termsAccepted}
+              onAcceptedChange={handleTermsAcceptedChange}
+              disabled={modelTerms.saving}
+              descriptionId={termsDescriptionId}
+              inputId="video-gen-terms-accept"
+            />
+            <ModelDisclosure
+              backend={backend}
+              backendDisclosures={status?.backendDisclosures}
+              model={isGrok ? null : currentModel}
+              systemMemoryGb={status?.systemMemoryGb}
+            />
+          </div>
+
           {/* Sampler/output knobs live behind a closed-by-default disclosure so
               Generate stays above the fold — the sibling /media/image tab keeps
               only Model + Resolution inline for the same reason (issue #3279). */}
@@ -977,6 +1132,8 @@ export default function VideoGen() {
               currentModel={currentModel}
               numFrames={numFrames} onNumFramesChange={setNumFrames}
               chunks={chunks} onChunksChange={setChunks} keyframesActive={keyframesActive}
+              chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chainingActive}
+              contextFrames={contextFrames} onContextFramesChange={setContextFrames}
               fps={fps} onFpsChange={setFps}
               seed={seed} onSeedChange={setSeed} onRandomSeed={handleRandomSeed}
               steps={steps} onStepsChange={setSteps}
@@ -1000,11 +1157,16 @@ export default function VideoGen() {
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || keyframesBlocked))}
+                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))}
+                aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
                 className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
                 title={
                   byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
+                    : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before generating'
+                    : modelWeightsBlocked ? 'Download the selected model weights before generating'
+                    : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
+                    : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before generating`
                     : extendModeBlocked ? 'Pick a prior render and wait for the last frame to extract before generating'
                     : a2vModeBlocked ? (currentModel?.runtime !== 'ltx2'
                       ? 'a2v mode requires an ltx2-runtime model — pick one from the Model dropdown'
@@ -1020,8 +1182,13 @@ export default function VideoGen() {
               type="button"
               onClick={handleEnqueue}
               disabled={!canEnqueue}
+              aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
               className="flex items-center gap-2 px-4 py-2 border border-port-border text-gray-200 hover:text-white hover:bg-port-border/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg min-h-[40px]"
-              title="Add this configuration to the batch queue"
+              title={canEnqueue ? 'Add this configuration to the batch queue'
+                : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before queueing`
+                  : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before queueing'
+                  : weightsGateBlocked ? 'Finish required model downloads before queueing'
+                    : 'Complete the required inputs before queueing'}
             >
               <ListPlus className="w-4 h-4" /> Add to queue
             </button>
@@ -1071,6 +1238,8 @@ export default function VideoGen() {
         onDelete={handleDeleteHistory}
         onToggleHidden={handleToggleHistoryHidden}
         getCardProps={getCardProps}
+        finishTargetFor={resolveFinishTarget}
+        onFinish={handleFinishVideo}
       />
 
       <MediaPreview
@@ -1081,6 +1250,12 @@ export default function VideoGen() {
         updateAnnotation={updateAnnotation}
         onContinue={(item) => handleContinueHistory(item.raw)}
         onRemix={(item) => item?.raw && handleRemixVideo(item.raw)}
+      />
+
+      <GalleryImagePicker
+        open={!!galleryPicker}
+        onClose={() => setGalleryPicker(null)}
+        onSelect={handleGalleryPick}
       />
 
       <Drawer open={settingsOpen} onClose={closeSettings} title="Media Generation Settings" size="lg">

@@ -225,10 +225,14 @@ export default function XPage() {
     const snapshot = selected?.profileSnapshot || {};
     const profile = snapshot.profile || {};
     const checks = snapshot.diagnostics || {};
+    // A check is only `true`/`false` when its own page actually rendered — anything else (unread
+    // page, or no snapshot at all) is Unknown and must not carry an observation-shaped detail.
+    const unreadDetail = (page) => `The ${page} did not render, so this check could not be observed. Re-run the diagnostic.`;
+    const checkDetail = (value, page, observed) => value == null ? unreadDetail(page) : observed;
     const checkRows = [
-      { label: 'Public profile reachable', value: checks.profilePublic, detail: 'The profile page returned the configured handle.' },
-      { label: 'Exact account search', value: checks.appearsInPeopleSearch, detail: 'The handle appeared in X People search.' },
-      { label: 'Recent posts in Latest search', value: checks.recentPostsInLatestSearch, detail: `${formatCount(checks.latestSearchPostCount)} matching original post(s) were returned.` },
+      { label: 'Public profile reachable', value: checks.profilePublic ?? null, detail: checkDetail(checks.profilePublic, 'profile page', 'The profile page returned the configured handle.') },
+      { label: 'Exact account search', value: checks.appearsInPeopleSearch ?? null, detail: checkDetail(checks.appearsInPeopleSearch, 'account search', 'The handle appeared in X People search.') },
+      { label: 'Recent posts in Latest search', value: checks.recentPostsInLatestSearch ?? null, detail: checkDetail(checks.recentPostsInLatestSearch, 'Latest search', `${formatCount(checks.latestSearchPostCount)} matching original post(s) were returned.`) },
       { label: 'Recommendation eligibility', value: null, detail: 'X does not expose a public yes/no recommendation-eligibility signal here.' },
     ];
     return <div className="space-y-4">

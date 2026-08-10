@@ -125,7 +125,7 @@ vi.mock('../layeredIntelligenceOutcomes.js', () => ({
   listOutcomes: vi.fn().mockResolvedValue([])
 }));
 
-import { buildTaskInput, processTaskOutput } from './layeredIntelligenceHooks.js';
+import { buildTaskInput, isTaskOutputPayload, processTaskOutput } from './layeredIntelligenceHooks.js';
 import * as li from '../layeredIntelligence.js';
 import { recordFiledProposal, listOutcomesResult, reconcileOutcomes, listOutcomes } from '../layeredIntelligenceOutcomes.js';
 import * as apps from '../apps.js';
@@ -783,5 +783,26 @@ describe('processTaskOutput', () => {
     apps.getAppById.mockResolvedValue(null);
     const out = await processTaskOutput({ appId: 'missing', success: true, payload: {} });
     expect(out).toEqual({ action: 'no-op', reason: 'app-not-found' });
+  });
+});
+
+describe('isTaskOutputPayload (#3640)', () => {
+  // The transcript rescue in agentFinalization adopts printed JSON only when this
+  // says it is a reasoner envelope, and processTaskOutput then judges it by the
+  // SAME predicate — a looser rescue would hand the hook a shape it rejects as
+  // `unparseable-response`.
+  it('accepts an object carrying any documented reasoner key', () => {
+    expect(isTaskOutputPayload({ analysis: 'a' })).toBe(true);
+    expect(isTaskOutputPayload({ proposal: null })).toBe(true);
+    expect(isTaskOutputPayload({ pause: { until: 'x' } })).toBe(true);
+  });
+
+  it('rejects a non-envelope: junk objects, arrays, scalars, and inherited keys', () => {
+    expect(isTaskOutputPayload({})).toBe(false);
+    expect(isTaskOutputPayload({ tokens: 1200 })).toBe(false);
+    expect(isTaskOutputPayload([{ analysis: 'a' }])).toBe(false);
+    expect(isTaskOutputPayload('analysis')).toBe(false);
+    expect(isTaskOutputPayload(null)).toBe(false);
+    expect(isTaskOutputPayload(Object.create({ analysis: 'inherited' }))).toBe(false);
   });
 });

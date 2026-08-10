@@ -4,8 +4,10 @@ import {
   analyzeHttpError,
   createImmediateFallbackSignalDetector,
   createTerminalModelErrorDetector,
+  createTerminalRequestTimeoutDetector,
   detectImmediateFallbackSignal,
   detectTerminalModelError,
+  detectTerminalRequestTimeout,
   extractWaitTime,
   ERROR_CATEGORIES
 } from './errorDetection.js';
@@ -160,6 +162,73 @@ describe('Error Detection', () => {
       });
     });
 
+    // #3631: the banner sentence matches anywhere in the stream, so an agent that
+    // merely QUOTES it still fails its own run — but it must not be read as
+    // evidence about the provider's health, or one such transcript benches a
+    // healthy provider for every subsequently dequeued task.
+    it.each([
+      ['prose that quotes the banner', "The known failure mode is: We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly. — see errorDetection.js"],
+      ['a grep hit over a prior run\'s transcript', "data/cos/agents/agent-1/output.txt:412:  ⎿  We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."],
+      ['a markdown bullet in an agent write-up', "- We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.\n"],
+    ])('marks a quoted eligibility banner as output-scan (%s)', (_label, transcript) => {
+      const result = detectImmediateFallbackSignal(transcript);
+      expect(result).toMatchObject({
+        hasError: true,
+        category: ERROR_CATEGORIES.AUTH_ERROR,
+        // Still a real failure that routes to a fallback — just not provider chrome.
+        requiresFallback: true,
+        origin: 'output-scan'
+      });
+    });
+
+    it('still promotes the banner when it opens its own line behind TUI gutter chrome', () => {
+      const rendered = "reading the task brief…\n  ⎿  We're finishing verifying your account eligibility.\n This usually takes a moment. Please try again shortly.\r\n";
+      expect(detectImmediateFallbackSignal(rendered)).toMatchObject({
+        category: ERROR_CATEGORIES.AUTH_ERROR,
+        origin: 'provider'
+      });
+    });
+
+    // agentCliSpawning feeds stderr to the detector as `[stderr] ${text}`, so the
+    // host tag lands BEFORE the CLI's own gutter glyphs — a genuine banner on
+    // stderr must still bench.
+    it('promotes the banner behind the host [stderr] tag and gutter chrome', () => {
+      expect(detectImmediateFallbackSignal("[stderr]   ⎿  We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.\n"))
+        .toMatchObject({ origin: 'provider' });
+    });
+
+    // A truncated stream window starts mid-line, and `^…/m` matches that slice
+    // boundary — so a quoted banner whose line prefix scrolled out of the window
+    // must NOT be promoted (that is the false-bench this gate exists to stop).
+    it('does not trust a slice boundary as a line start once the stream window has truncated', () => {
+      const detect = createImmediateFallbackSignalDetector({ maxBuffer: 160 });
+      detect(`${'x'.repeat(200)}: quoting the banner: `);
+      const result = detect("We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.");
+      expect(result).toMatchObject({ category: ERROR_CATEGORIES.AUTH_ERROR, origin: 'output-scan' });
+    });
+
+    it('still promotes a gutter-rendered banner on its own line after the window truncated', () => {
+      const detect = createImmediateFallbackSignalDetector({ maxBuffer: 200 });
+      detect(`${'x'.repeat(300)}\n`);
+      const result = detect("  ⎿  We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.\n");
+      expect(result).toMatchObject({ origin: 'provider' });
+    });
+
+    // A repainted TUI screen advances with a bare `\r` as often as a `\n`, and
+    // JS `^…/m` treats both as line starts — a banner behind a carriage return
+    // must still count as chrome.
+    it('promotes a banner that starts after a bare carriage return', () => {
+      const detect = createImmediateFallbackSignalDetector({ maxBuffer: 200 });
+      detect(`${'x'.repeat(300)}\r`);
+      expect(detect("⎿  We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.\r"))
+        .toMatchObject({ origin: 'provider' });
+    });
+
+    it('promotes a real banner that arrives later in a buffer whose earlier mention is quoted', () => {
+      const transcript = "I will check whether We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly. is still firing.\n⎿  We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.\n";
+      expect(detectImmediateFallbackSignal(transcript)).toMatchObject({ origin: 'provider' });
+    });
+
     it('buffers an Antigravity account-eligibility block across stream chunks', () => {
       const detect = createImmediateFallbackSignalDetector();
       expect(detect("We're finishing verifying your account eligibility. This usually ")).toBeNull();
@@ -179,6 +248,10 @@ describe('Error Detection', () => {
       // Signals stay actionable-by-default; only a signal the provider says
       // clears itself opts out.
       expect(result.actionable).toBe(true);
+    });
+
+    it('stamps the real extra-usage status line as provider chrome', () => {
+      expect(detectImmediateFallbackSignal('Now using extra usage\n')).toMatchObject({ origin: 'provider' });
     });
 
     it('does not match quoted prompt text in the middle of a line', () => {
@@ -250,6 +323,92 @@ describe('Error Detection', () => {
       expect(detect('⏺ API Error (claude-opus-4-8): 400 The provided ')).toBeNull();
       const result = detect('model identifier is invalid.\n');
       expect(result).toMatchObject({ category: ERROR_CATEGORIES.MODEL_NOT_FOUND, requiresFallback: true });
+    });
+  });
+
+  describe('detectTerminalRequestTimeout', () => {
+    it('detects Claude Code exhausting all internal request retries', () => {
+      expect(detectTerminalRequestTimeout('  ⎿\u00a0Requesttimedout\n')).toMatchObject({
+        category: ERROR_CATEGORIES.TIMEOUT,
+        requiresFallback: true,
+        actionable: false,
+        exitCode: 124,
+      });
+    });
+
+    it('does not interrupt an in-progress internal retry', () => {
+      expect(detectTerminalRequestTimeout('⎿ Request timed out · Retrying in 38s · attempt 9/10\n')).toBeNull();
+    });
+
+    it('does not treat generated prose mentioning a timeout as provider chrome', () => {
+      expect(detectTerminalRequestTimeout('The report says the request timed out before the retry.')).toBeNull();
+    });
+
+    it('buffers the terminal banner across stream chunks', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request')).toBeNull();
+      expect(detect(' timed out\n')).toMatchObject({
+        category: ERROR_CATEGORIES.TIMEOUT,
+        exitCode: 124,
+      });
+    });
+
+    // #3715 — the whole-banner cases above all pass with a `$`-terminated
+    // pattern too. What broke in production was the SPLIT: the buffered
+    // detector re-tests a rolling buffer whose end is the newest byte, so
+    // "line so far ends at 'Request timed out'" looked exactly like a finished
+    // line and killed a run that was still happily retrying.
+    it('does NOT fire when a PTY chunk boundary lands right after "Request timed out"', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request timed out')).toBeNull();
+    });
+
+    it('discards a split candidate that the next chunk completes into a retry banner', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request timed out')).toBeNull();
+      expect(detect(' · Retrying in 38s · attempt 3/10\n')).toBeNull();
+      // …and the countdown repaint that follows is still not a terminal state.
+      expect(detect('  ⎿ Request timed out · Retrying in 37s · attempt 3/10\n')).toBeNull();
+    });
+
+    it('fires once the terminator for a split candidate finally arrives', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request timed out')).toBeNull();
+      expect(detect('\n')).toMatchObject({ category: ERROR_CATEGORIES.TIMEOUT, exitCode: 124 });
+    });
+
+    it('accepts a bare CR terminator (how a repainted TUI screen advances)', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request timed out\r')).toMatchObject({ exitCode: 124 });
+    });
+
+    it('treats end of stream as the terminator a held candidate was waiting for', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      expect(detect('  ⎿ Request timed out')).toBeNull();
+      // The PTY exited — nothing can still complete the line into a retry.
+      expect(detect(null, { endOfStream: true })).toMatchObject({ exitCode: 124 });
+    });
+
+    it('does not invent a match at end of stream when the last line is a retry banner', () => {
+      const detect = createTerminalRequestTimeoutDetector();
+      detect('  ⎿ Request timed out · Retrying in 38s · attempt 3/10');
+      expect(detect(null, { endOfStream: true })).toBeNull();
+    });
+
+    it('ignores a line start fabricated by the rolling window slice boundary', () => {
+      // One long line of agent prose quoting the banner, with the window sized so
+      // the slice lands EXACTLY on the gutter glyph. buffer[0] then looks like a
+      // line start the stream never witnessed — matching there would kill a
+      // healthy run over the agent's own output.
+      const banner = '⎿ Request timed out\n';
+      const detect = createTerminalRequestTimeoutDetector({ maxBuffer: banner.length });
+      expect(detect(`while investigating I saw ${banner}`)).toBeNull();
+    });
+
+    it('still fires on a real line start inside a window that has already rolled', () => {
+      const detect = createTerminalRequestTimeoutDetector({ maxBuffer: 32 });
+      detect('a long banner line of TUI chrome that overflows the window\n');
+      expect(detect('  ⎿ Request timed out\n')).toMatchObject({ exitCode: 124 });
     });
   });
 

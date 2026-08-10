@@ -24,7 +24,10 @@ import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FolderPicker from '../../FolderPicker';
 import { timeAgo, formatBytes } from '../../../utils/formatters';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import { useNoteSave } from '../../../hooks/useNoteSave.js';
 import { clickableProps } from '../../../lib/a11yKeyboard.js';
+import OfflineNotesNotice from '../../OfflineNotesNotice.jsx';
+import ForceSaveNoteRow from '../../ForceSaveNoteRow.jsx';
 
 export default function NotesTab() {
   // Vault state
@@ -38,6 +41,9 @@ export default function NotesTab() {
   // Notes state
   const [notes, setNotes] = useState([]);
   const [totalNotes, setTotalNotes] = useState(0);
+  // Notes the server skipped because iCloud hasn't downloaded them — surfaced so
+  // an incomplete list isn't presented as the whole vault.
+  const [skippedNotes, setSkippedNotes] = useState(0);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
 
@@ -45,7 +51,6 @@ export default function NotesTab() {
   const [selectedNote, setSelectedNote] = useState(null);
   const [noteContent, setNoteContent] = useState('');
   const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [loadingNote, setLoadingNote] = useState(false);
 
   // Search state
@@ -67,6 +72,13 @@ export default function NotesTab() {
 
   // Confirm delete
   const { isConfirming: isConfirmingDelete, requestDelete, cancelDelete } = useConfirmDelete();
+
+  // Owns the write plus the iCloud force-save escape hatch (#3717).
+  const { saving, save, forceOffered, dismissForce } = useNoteSave({
+    vaultId: selectedVaultId,
+    notePath: selectedNote?.path || null,
+    content: noteContent
+  });
 
   const searchRef = useRef(null);
   const editorRef = useRef(null);
@@ -109,6 +121,7 @@ export default function NotesTab() {
     if (data) {
       setNotes(data.notes);
       setTotalNotes(data.total);
+      setSkippedNotes(data.skippedUnavailable || 0);
     }
     setScanning(false);
   };
@@ -148,17 +161,15 @@ export default function NotesTab() {
     setLoadingNote(false);
   };
 
-  const handleSaveNote = async () => {
-    if (!selectedNote) return;
-    setSaving(true);
-    const data = await api.updateNote(selectedVaultId, selectedNote.path, noteContent).catch(() => null);
-    setSaving(false);
-    if (data) {
-      setSelectedNote(data);
-      setEditing(false);
-      toast.success('Note saved');
-      loadNotes(); // Refresh metadata
-    }
+  // `force` is ONLY ever passed by <ForceSaveNoteRow>'s confirm (#3717) — never
+  // by the Save button or ⌘S.
+  const handleSaveNote = async (options) => {
+    const data = await save(options);
+    if (!data) return;
+    setSelectedNote(data);
+    setEditing(false);
+    toast.success('Note saved');
+    loadNotes(); // Refresh metadata
   };
 
   const handleCreateNote = async () => {
@@ -339,6 +350,8 @@ export default function NotesTab() {
           )}
         </div>
 
+        <OfflineNotesNotice count={skippedNotes + (searchResults?.skippedUnavailable || 0)} className="mx-3 mt-2" />
+
         {/* Stats bar */}
         <div className="px-3 py-1.5 border-b border-port-border flex items-center gap-3 text-xs text-gray-500">
           <span>{totalNotes} notes</span>
@@ -470,7 +483,7 @@ export default function NotesTab() {
                 {editing ? (
                   <>
                     <button
-                      onClick={handleSaveNote}
+                      onClick={() => handleSaveNote()}
                       disabled={saving}
                       className="flex items-center gap-1 px-3 py-1.5 rounded bg-port-accent text-white text-sm hover:bg-port-accent/80 disabled:opacity-50"
                     >
@@ -513,6 +526,15 @@ export default function NotesTab() {
                 onCancel={cancelDelete}
               />
             )}
+
+            {/* Editor-only: outside edit mode there is no buffer the user meant to
+                write, and a stray "Save anyway" click would still issue the risky
+                forced write. */}
+            <ForceSaveNoteRow
+              offered={editing && forceOffered}
+              onConfirm={() => handleSaveNote({ force: true })}
+              onCancel={dismissForce}
+            />
 
             {/* Note content */}
             <div className="flex-1 min-h-0 overflow-auto flex">

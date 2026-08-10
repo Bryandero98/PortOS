@@ -1190,6 +1190,100 @@ describe('Provider Service', () => {
       expect(updated).not.toBeNull();
       expect(updated.models).toEqual([]);
     });
+
+    it('accepts bare-string data entries and throws on entries with no usable id', async () => {
+      // Some OpenAI-compatible servers emit `data: ["model-a"]` rather than
+      // `data: [{ id: 'model-a' }]`. Mapping `m.id` blindly persisted
+      // `[undefined]` — a plausible-looking, unusable catalog.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: ['model-a', { name: 'model-b' }] }),
+      }));
+      const ok = await providerService.createProvider({
+        name: 'Bare List API', type: 'api', endpoint: 'https://api.generic.com/v1', allowCustomEndpoint: true,
+      });
+      expect((await providerService.refreshProviderModels(ok.id)).models).toEqual(['model-a', 'model-b']);
+
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ object: 'model' }] }),
+      }));
+      const bad = await providerService.createProvider({
+        name: 'Idless API', type: 'api', endpoint: 'https://api.generic.com/v1', models: ['model-a'], allowCustomEndpoint: true,
+      });
+      const err = await providerService.refreshProviderModels(bad.id).catch(e => e);
+      expect(err.message).toMatch(/no usable model id/);
+      expect((await providerService.getProviderById(bad.id)).models).toEqual(['model-a']);
+    });
+
+    it('normalizes object entries under "models" the same way as "data"', async () => {
+      // A non-Ollama gateway keying `models` with objects used to persist the raw
+      // objects as if they were model ids.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ models: [{ id: 'model-a' }, 'model-b', { model: 'model-c' }] }),
+      }));
+      const ok = await providerService.createProvider({
+        name: 'Models Key API', type: 'api', endpoint: 'https://api.generic.com/v1', allowCustomEndpoint: true,
+      });
+      expect((await providerService.refreshProviderModels(ok.id)).models).toEqual(['model-a', 'model-b', 'model-c']);
+
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ models: [null] }),
+      }));
+      const bad = await providerService.createProvider({
+        name: 'Null Models API', type: 'api', endpoint: 'https://api.generic.com/v1', models: ['model-a'], allowCustomEndpoint: true,
+      });
+      const err = await providerService.refreshProviderModels(bad.id).catch(e => e);
+      expect(err.message).toMatch(/"models" entries with no usable model id/);
+      expect((await providerService.getProviderById(bad.id)).models).toEqual(['model-a']);
+    });
+
+    it('throws and leaves the stored list untouched when a 200 body is not JSON', async () => {
+      // A captive portal / login page / proxy error served as HTTP 200. Degrading
+      // to `[]` here emptied the model dropdown while the UI toasted "Models
+      // refreshed" — indistinguishable from the legitimately-empty case above.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); },
+      }));
+
+      const p = await providerService.createProvider({
+        name: 'Garbled API',
+        type: 'api',
+        endpoint: 'https://api.generic.com/v1',
+        models: ['model-a', 'model-b'],
+        allowCustomEndpoint: true,
+      });
+
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.status).toBe(502);
+      expect(err.message).toMatch(/not valid JSON/);
+      expect((await providerService.getProviderById(p.id)).models).toEqual(['model-a', 'model-b']);
+    });
+
+    it('throws and leaves the stored list untouched when a 200 body has no recognizable shape', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ object: 'error', message: 'invalid api key' }),
+      }));
+
+      const p = await providerService.createProvider({
+        name: 'Shapeless API',
+        type: 'api',
+        endpoint: 'https://api.generic.com/v1',
+        models: ['model-a'],
+        allowCustomEndpoint: true,
+      });
+
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.status).toBe(502);
+      expect(err.message).toMatch(/data.*models/);
+      expect((await providerService.getProviderById(p.id)).models).toEqual(['model-a']);
+    });
   });
 
   describe('reserved-key prototype safety (#2521)', () => {

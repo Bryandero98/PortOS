@@ -527,6 +527,23 @@ async function recordRun(app, outcome = {}) {
 // isn't an answer at all — see the envelope resolution in processTaskOutput.
 const REASONER_ENVELOPE_KEYS = ['analysis', 'proposal', 'pause']
 
+/**
+ * Is this a reasoner envelope at all? A bare string/number/array, or an object
+ * carrying none of the documented keys ({}, {"foo":1}), is not an answer.
+ * `Object.hasOwn` — an inherited key must not qualify a junk object as one.
+ *
+ * Exported as this hook's `isTaskOutputPayload` (see taskTypeHooks' module
+ * header): the finalize-time transcript rescue (#3640) asks the OWNING hook
+ * what its deliverable looks like before adopting JSON it scraped out of a
+ * terminal, and that must be the same question processTaskOutput asks below —
+ * a looser rescue check would hand the hook a shape it would then reject as
+ * `unparseable-response`.
+ */
+export function isTaskOutputPayload(payload) {
+  return !!payload && typeof payload === 'object' && !Array.isArray(payload)
+    && REASONER_ENVELOPE_KEYS.some(k => Object.hasOwn(payload, k))
+}
+
 async function defaultEnqueueHandoff(taskData) {
   const { addTask } = await import('../cos.js')
   return addTask(taskData, 'internal')
@@ -569,10 +586,7 @@ export async function processTaskOutput({ appId, success, payload, agentId } = {
   // former was recorded as a successful run. Reachable both ways: the sentinel
   // envelope only requires `payload` to be an object, and salvageSentinelPayload's
   // lenient extractor can surface a non-envelope object out of prose.
-  // `Object.hasOwn` — an inherited key must not qualify a junk object as an answer.
-  const isEnvelope = !!payload && typeof payload === 'object' && !Array.isArray(payload)
-    && REASONER_ENVELOPE_KEYS.some(k => Object.hasOwn(payload, k))
-  const envelope = isEnvelope ? payload : null
+  const envelope = isTaskOutputPayload(payload) ? payload : null
   const { proposal, pause } = validateReasonerResponse(envelope)
 
   // A reasoner that SUPPLIED a non-null proposal which then failed validation

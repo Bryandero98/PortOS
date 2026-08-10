@@ -20,7 +20,10 @@ describe('InitImagePicker', () => {
     expect(screen.getByText(/image-to-image — Flux only/i)).toBeTruthy();
   });
 
-  it('drops the "Flux only" caveat on the codex backend', () => {
+  // The caveat is a LOCAL-runner constraint (non-FLUX mflux/diffusers models
+  // ignore the init image). Every cloud CLI feeds it to its own image tool, so
+  // it must not follow them.
+  it.each(['codex', 'grok', 'agy'])('drops the "Flux only" caveat on the %s backend', (backend) => {
     render(
       <InitImagePicker
         initImage={EMPTY}
@@ -28,7 +31,7 @@ describe('InitImagePicker', () => {
         onStrengthChange={vi.fn()}
         onPick={vi.fn()}
         onClear={vi.fn()}
-        backend="codex"
+        backend={backend}
       />,
     );
     expect(screen.getByText('(image-to-image)')).toBeTruthy();

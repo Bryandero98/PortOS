@@ -6,7 +6,7 @@
 
 import { parseComicScript } from '../../../lib/comicScriptParser.js';
 import { isStageReady } from '../issues.js';
-import { compareIssuesByPosition } from '../arcPlanner.js';
+import { compareIssuesByPosition, hasDuplicateSeasonNumbers } from '../arcPlanner.js';
 import { wantsTeaser, wantsVisual } from './config.js';
 import { VISUAL_DRAFT_ENABLED } from './convergence.js';
 
@@ -144,15 +144,49 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
   const seasons = Array.isArray(series?.seasons) ? [...series.seasons].sort(byNumber) : [];
   const ordered = orderedIssues(issues);
 
-  // STEP 1 — arc. Also (re)generate when there are no seasons at all: an
+  // STEP 0 — unlock everything this series owns (opt-in, see unlockPass.js).
+  // Must run BEFORE any generation step: a locked arc makes generateArc /
+  // resolveVerifyIssues throw, a locked stage makes text generation skip, and a
+  // locked canon entry makes the describe/refine fixes no-op — so unlocking
+  // after the fact would leave the run pausing on findings it could have fixed.
+  // Latched by `runState.locksUnlocked` so it runs at most once per run.
+  if (options.unlockForRun === true && !runState.locksUnlocked) {
+    return { kind: 'unlockLocks', reason: 'unlock series-owned records before the run' };
+  }
+
+  // STEP 1 — character foundation, then arc. When the macro arc does not exist
+  // yet, establish the causal core cast first so the expensive arc call grows
+  // external events from character wants/needs/relationships instead of asking
+  // a late repair pass to retrofit people around a settled plot. The later
+  // whole-foundation gate still reconciles story-specific discoveries.
+  const noArc = !series?.arc?.logline && !series?.arc?.summary;
+  const needsArc = !runState.arcAttempted && (noArc || seasons.length === 0);
+  if (needsArc
+    && !runState.characterFoundationEstablished
+    && options.foundationGate !== false
+    && options.maxFoundationRounds !== 0) {
+    return { kind: 'characterFoundation', reason: 'establish the core cast before generating the plot arc' };
+  }
+
+  // STEP 1.5 — arc. Also (re)generate when there are no seasons at all: an
   // arc-only series (arc text present, seasons: []) has nothing for the
   // episode/issue steps to expand, and would otherwise sail through verify/
   // review of an empty issue list and be marked done with no volumes. The
   // attempted-guard stops a re-loop if arc generation yields no seasons (the
   // dispatch pauses in that case).
-  const noArc = !series?.arc?.logline && !series?.arc?.summary;
-  if (!runState.arcAttempted && (noArc || seasons.length === 0)) {
+  if (needsArc) {
     return { kind: 'generateArc', reason: seasons.length === 0 && !noArc ? 'series has no volumes' : 'series has no arc' };
+  }
+
+  // STEP 1.75 — deterministic structural preflight. A prior arc rewrite could
+  // leave two records with the same volume number; some of those duplicates are
+  // commonly empty. Seeding their episodes first would manufacture throwaway
+  // issues before arc verification eventually reports the duplicate. Normalize
+  // the records before ANY empty-volume generation instead. The dispatcher uses
+  // commitSeasonsWithRemap, whose duplicate collapse keeps the issue-bearing
+  // survivor and re-points any children from absorbed records.
+  if (hasDuplicateSeasonNumbers(seasons)) {
+    return { kind: 'repairArcStructure', reason: 'duplicate volume numbers must be normalized before issue generation' };
   }
 
   // STEP 2 — a season with zero issues (in season order). Skip volumes already
@@ -166,22 +200,22 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
     }
   }
 
-  // STEP 3 — arc verification (once per run; bounded loop happens in dispatch).
-  if (!runState.arcVerified) {
-    return { kind: 'verifyArc', reason: 'arc not yet verified this run' };
-  }
-
-  // STEP 3.5 — foundation-quality gate (#2176). After the arc/volumes exist and
-  // arc structure is verified, judge the whole foundation (world / characters /
-  // arc) BEFORE the expensive beat/text stages and iterate on the weakest
-  // dimension until it clears the threshold. Once per run (bounded loop happens
-  // in dispatch). Gated on `foundationGate` being enabled AND a non-zero round
-  // budget — a disabled/0-round gate is treated as already satisfied so the
-  // resolver falls straight through to beats (the dispatch never runs).
+  // STEP 3 — foundation-quality gate (#2176). Once the complete synopsis-level
+  // plan exists, establish the world / core cast / structure / voice foundation
+  // BEFORE arc verification and any expensive beat/text work. A foundation fix
+  // can invalidate arc verification; an arc repair can invalidate this verdict,
+  // so the child drivers deliberately unlatch their peer after a mutation.
   if (!runState.foundationGated
     && options.foundationGate !== false
     && options.maxFoundationRounds !== 0) {
     return { kind: 'foundationGate', reason: 'foundation not yet judged this run' };
+  }
+
+  // STEP 3.5 — arc + per-volume verification. This runs after the initial
+  // foundation gate, then may hand control back to it if synopsis repairs alter
+  // the judged plan.
+  if (!runState.arcVerified) {
+    return { kind: 'verifyArc', reason: 'arc not yet verified this run' };
   }
 
   // STEP 4a — per-volume beat sheets (skip volumes already attempted this run).

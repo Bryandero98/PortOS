@@ -10,10 +10,15 @@ vi.mock('../../services/api', () => ({
   getPipelineSeriesCanonReadiness: vi.fn(),
   getPipelineSeries: vi.fn(),
   listPipelineIssues: vi.fn(),
+  getProviders: vi.fn(),
   getSettings: vi.fn(),
   patchSettingsSlice: vi.fn(),
 }));
-vi.mock('../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+// The default export is CALLABLE (a neutral toast) as well as carrying the
+// typed helpers — the panel uses the bare call for the self-improvement line.
+vi.mock('../ui/Toast', () => ({
+  default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
+}));
 // Controllable SSE hook so tests don't touch EventSource. `sseLatest` lets a
 // test simulate a stale terminal frame left over from a previous run.
 let sseLatest = null;
@@ -26,6 +31,9 @@ import {
   startPipelineAutopilot,
   getPipelineAutopilotStatus,
   getPipelineSeriesCanonReadiness,
+  getPipelineSeries,
+  listPipelineIssues,
+  getProviders,
   getSettings,
   patchSettingsSlice,
 } from '../../services/api';
@@ -44,9 +52,18 @@ beforeEach(() => {
   sseLatest = null;
   sseFrames = [];
   getPipelineAutopilotStatus.mockResolvedValue({ autopilot: null, active: false });
+  getPipelineSeries.mockResolvedValue(null);
+  listPipelineIssues.mockResolvedValue([]);
   startPipelineAutopilot.mockResolvedValue({ runId: 'r1', mode: 'execute', alreadyRunning: false });
   getSettings.mockResolvedValue({ pipelineEditorialChecks: {} });
   patchSettingsSlice.mockResolvedValue({});
+  getProviders.mockResolvedValue({
+    activeProvider: 'claude',
+    providers: [
+      { id: 'claude', name: 'Claude Code', type: 'cli', enabled: true, models: ['claude-opus-5'] },
+      { id: 'codex', name: 'Codex', type: 'cli', enabled: true, models: ['gpt-5-codex'] },
+    ],
+  });
 });
 
 describe('AutopilotPanel', () => {
@@ -66,9 +83,8 @@ describe('AutopilotPanel', () => {
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
     // uncheck draft visuals, check file-gaps
-    const checks = screen.getAllByRole('checkbox');
-    fireEvent.click(checks[0]); // includeVisual -> false
-    fireEvent.click(checks[1]); // fileGaps -> true
+    fireEvent.click(screen.getByLabelText(/Draft cover \+ all interior pages/i));
+    fireEvent.click(screen.getByLabelText(/File CoS tasks for gaps/i));
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: false, fileGaps: true }, { silent: true },
@@ -103,6 +119,109 @@ describe('AutopilotPanel', () => {
     );
   });
 
+  it('sends unlockForRun as a per-run override and never persists it', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
+    // The explainer only appears once armed — it carries the two guarantees.
+    expect(screen.getByText(/nothing is ever deleted/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false, unlockForRun: true }, { silent: true },
+    ));
+    // Saving it would let a scheduled unattended run inherit lock-clearing.
+    expect(patchSettingsSlice).not.toHaveBeenCalledWith(
+      'pipelineEditorialChecks',
+      expect.objectContaining({ unlockForRun: expect.anything() }),
+      expect.anything(),
+    );
+  });
+
+  // The consent authorizes ONE run. It must not stay armed behind the collapsed
+  // Options popover while the Run button is still on screen.
+  it('clears the unlock consent after launching, so the next run does not inherit it', async () => {
+    const { rerender } = renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', expect.objectContaining({ unlockForRun: true }), { silent: true },
+    ));
+    // Finish the run so the Run/Options controls come back, then launch again:
+    // the consent was spent by the first launch and must not silently re-apply.
+    // The terminal-frame effect refetches the series + issues, so give those
+    // mocks a resolved value or the effect throws on `undefined.then`.
+    getPipelineSeries.mockResolvedValue(null);
+    listPipelineIssues.mockResolvedValue(null);
+    sseLatest = { type: 'complete', runId: 'r1' };
+    rerender(
+      <MemoryRouter>
+        <AutopilotPanel series={{ id: 's1', targetFormat: 'comic' }} onSeriesUpdate={vi.fn()} onIssuesUpdate={vi.fn()} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /run autopilot/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenLastCalledWith(
+      's1', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  // The panel is reused across seriesId changes rather than remounted, so a box
+  // ticked for one series must not still be armed — invisibly — on the next.
+  it('clears the unlock consent when the panel switches series', async () => {
+    const { rerender } = renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /unlock everything this series owns/i }));
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).toBeChecked();
+    rerender(
+      <MemoryRouter>
+        <AutopilotPanel series={{ id: 's2', targetFormat: 'comic' }} onSeriesUpdate={vi.fn()} onIssuesUpdate={vi.fn()} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(
+      screen.getByRole('checkbox', { name: /unlock everything this series owns/i }),
+    ).not.toBeChecked());
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's2', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  it('starts unticked even when settings carry a stale unlockForRun value', async () => {
+    getSettings.mockResolvedValue({ pipelineEditorialChecks: { unlockForRun: true } });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByRole('checkbox', { name: /unlock everything this series owns/i })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  it('reports what the unlock pass cleared and what it left frozen', async () => {
+    sseFrames = [{ type: 'unlock:applied', arc: 1, arcFields: 0, seasons: 2, stages: 3, canon: 4, canonForeignKept: 5, worldFields: 0, worldFieldsKept: 2 }];
+    sseLatest = sseFrames[0];
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { runId: 'r1', status: 'running' }, active: true });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(
+      screen.getAllByText(/Unlocked arc, 2 volume\(s\), 3 stage\(s\), 4 canon entries · kept 5 other series' canon \+ 2 shared world field\(s\) locked/).length,
+    ).toBeGreaterThan(0));
+  });
+
+  it('reads an already-unlocked series as a no-op rather than "unlocked 0 things"', async () => {
+    sseFrames = [{ type: 'unlock:applied', arc: 0, arcFields: 0, seasons: 0, stages: 0, canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 }];
+    sseLatest = sseFrames[0];
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { runId: 'r1', status: 'running' }, active: true });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(screen.getAllByText(/Unlock — nothing was locked/).length).toBeGreaterThan(0));
+  });
+
   it('sends a chosen readiness gate as a per-run override without persisting it (#1580)', async () => {
     renderPanel({ id: 's1', targetFormat: 'comic' });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
@@ -135,6 +254,165 @@ describe('AutopilotPanel', () => {
     ));
   });
 
+  it('names the provider/model the run will call — the series llm', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const summary = await screen.findByText(/Creation and repair call/i);
+    await waitFor(() => expect(summary).toHaveTextContent('Codex / gpt-5-codex'));
+  });
+
+  it('falls back to the active provider when the series pins no llm', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const summary = await screen.findByText(/Creation and repair call/i);
+    await waitFor(() => expect(summary).toHaveTextContent('Claude Code (provider default model)'));
+  });
+
+  it('sends a picked provider/model as a per-run override without persisting it', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'claude', model: 'claude-opus-5' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const providerSelect = await screen.findByLabelText('Override provider for this run');
+    fireEvent.change(providerSelect, { target: { value: 'codex' } });
+    // Switching providers drops the series model — it belongs to the old provider.
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue(''));
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5-codex' } });
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      { includeVisual: true, fileGaps: false, providerOverride: 'codex', modelOverride: 'gpt-5-codex' },
+      { silent: true },
+    ));
+    expect(patchSettingsSlice).not.toHaveBeenCalledWith(
+      'pipelineEditorialChecks',
+      expect.objectContaining({ providerOverride: expect.anything() }),
+      expect.anything(),
+    );
+  });
+
+  it('sends a picked reasoning effort as a per-run override and names it (#3641)', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'high' } });
+    const summary = await screen.findByText(/Creation and repair call/i);
+    await waitFor(() => expect(summary).toHaveTextContent('high reasoning effort'));
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      { includeVisual: true, fileGaps: false, effortOverride: 'high' },
+      { silent: true },
+    ));
+  });
+
+  it('clears a picked effort when the run provider changes (#3641)', async () => {
+    // Each provider has its own effort ladder, so a level picked for the old
+    // provider must not ride along to the new one.
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'ultra' } });
+    fireEvent.change(screen.getByLabelText('Override provider for this run'), { target: { value: 'claude' } });
+    // This mock provider advertises no effort ladder, so the select hides itself —
+    // and the cleared state means nothing stale rides along on start.
+    await waitFor(() => expect(screen.queryByLabelText('Thinking effort')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false, providerOverride: 'claude' }, { silent: true },
+    ));
+  });
+
+  it('can split Luna/max creation from Sol/xhigh judging for one run', async () => {
+    getProviders.mockResolvedValue({
+      activeProvider: 'codex-tui',
+      providers: [{
+        id: 'codex-tui', name: 'Codex TUI', type: 'cli', enabled: true,
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
+      }],
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex-tui', model: 'gpt-5.6-luna' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'max' } });
+    fireEvent.click(screen.getByLabelText(/separate model for judging/i));
+    const models = screen.getAllByLabelText('Model');
+    fireEvent.change(models[1], { target: { value: 'gpt-5.6-sol' } });
+    const efforts = screen.getAllByLabelText('Thinking effort');
+    fireEvent.change(efforts[1], { target: { value: 'xhigh' } });
+    expect(screen.getByText(/Luna\/max writing with an independent Sol\/xhigh critic/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      {
+        includeVisual: true,
+        fileGaps: false,
+        effortOverride: 'max',
+        judgeLlm: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+      },
+      { silent: true },
+    ));
+  });
+
+  it('restores split LLM routing when a paused run is resumed', async () => {
+    getProviders.mockResolvedValue({
+      activeProvider: 'codex-tui',
+      providers: [{
+        id: 'codex-tui', name: 'Codex TUI', type: 'cli', enabled: true,
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
+      }],
+    });
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        resumeOptions: {
+          providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+          judgeLlm: { providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+        },
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByLabelText(/separate model for judging/i)).toBeChecked();
+    expect(screen.getAllByLabelText('Model')[0]).toHaveValue('gpt-5.6-luna');
+    expect(screen.getAllByLabelText('Model')[1]).toHaveValue('gpt-5.6-sol');
+    fireEvent.click(screen.getByRole('button', { name: /resume autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+      }),
+      { silent: true },
+    ));
+  });
+
+  it('omits the provider override when left on the series default', async () => {
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    // Nothing pinned → the server resolves series.llm itself.
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false }, { silent: true },
+    ));
+  });
+
+  it('describes an in-flight run from the status payload start frame when re-attaching', async () => {
+    getPipelineAutopilotStatus.mockResolvedValue({
+      autopilot: { status: 'running', runId: 'r1' },
+      active: true,
+      start: { type: 'start', runId: 'r1', mode: 'dry-run', provider: 'codex', model: 'gpt-5-codex' },
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    expect(await screen.findByText(/on Codex \/ gpt-5-codex/)).toBeInTheDocument();
+    // mode rides the same frame, so the dry-run badge survives a mid-run attach.
+    expect(screen.getByText('dry-run')).toBeInTheDocument();
+  });
+
   it('clears to the default (not 0) when a round input is emptied', async () => {
     renderPanel({ id: 's1', targetFormat: 'comic' });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
@@ -162,6 +440,25 @@ describe('AutopilotPanel', () => {
     expect(screen.getByRole('button', { name: /resume autopilot/i })).toBeInTheDocument();
   });
 
+  it('restores run-local visual and gap choices when a paused run resumes', async () => {
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        resumeOptions: { includeVisual: false, fileGaps: true },
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    expect(screen.getByRole('checkbox', { name: /draft cover \+ all interior pages/i })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /file CoS tasks for gaps/i })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /resume autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: false, fileGaps: true }, { silent: true },
+    ));
+  });
+
   it('flags a divergence pause with a "not converging" badge (#1571)', async () => {
     renderPanel({
       id: 's1',
@@ -180,6 +477,49 @@ describe('AutopilotPanel', () => {
     });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     expect(screen.queryByText(/not converging/i)).not.toBeInTheDocument();
+  });
+
+  it('flags a reverted auto-resolve round with a "round reverted" badge', async () => {
+    // The draft is back to its pre-round state — say so, or the user has no way
+    // to tell this pause apart from one that left the round's edits in place.
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'verifyArc', pauseKind: 'regression' },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.getByText(/round reverted/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not converging/i)).not.toBeInTheDocument();
+  });
+
+  it('flags a failed AI repair call with a "provider failed" badge', async () => {
+    // A provider timeout / dead CLI is transient and says nothing about the
+    // draft — the badge has to separate it from a pause the user must edit for.
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'foundationGate', pauseKind: 'providerFailed' },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.getByText(/provider failed/i)).toBeInTheDocument();
+  });
+
+  it('flags an unfixable dimension and a spent budget with their own badges', async () => {
+    const { unmount } = renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'foundationGate', pauseKind: 'inapplicable' },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.getByText(/nothing to fix/i)).toBeInTheDocument();
+    unmount();
+
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: { status: 'paused', currentStep: 'foundationGate', pauseKind: 'budget' },
+    });
+    await waitFor(() => expect(screen.getByText(/budget reached/i)).toBeInTheDocument());
   });
 
   it('flags an editorial-checks pause with a "high findings" badge (#1613)', async () => {
@@ -293,6 +633,135 @@ describe('AutopilotPanel', () => {
     // The original Stop affordance is gone while cancelling.
     expect(screen.queryByRole('button', { name: /^stop$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/finishing the active step/i)).toBeInTheDocument();
+  });
+
+  // Pipeline self-improvement — the opt-in that lets a run diagnose PortOS's own
+  // automation and file a fix task against it.
+  describe('pipeline self-improvement', () => {
+    it('is off by default and persists the toggle on change', async () => {
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: /options/i }));
+      const toggle = screen.getByLabelText(/improve the pipeline itself/i);
+      expect(toggle).not.toBeChecked();
+      fireEvent.click(toggle);
+      await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith(
+        'pipelineEditorialChecks', { selfImprove: true }, { silent: true },
+      ));
+      // The filed task is always approval-gated — there is no auto-start knob.
+      expect(await screen.findByText(/waiting in your CoS approval queue/i)).toBeInTheDocument();
+    });
+
+    it('sends the toggle as a per-run override once edited', async () => {
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: /options/i }));
+      fireEvent.click(screen.getByLabelText(/improve the pipeline itself/i));
+      fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+      await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+        's1',
+        { includeVisual: true, fileGaps: false, selfImprove: true },
+        { silent: true },
+      ));
+    });
+
+    it('announces a filed PortOS fix from the terminal frame', async () => {
+      getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { status: 'running', runId: 'r1' }, active: true });
+      sseLatest = {
+        type: 'paused', runId: 'r1', reason: 'editorial review ran out of rounds',
+        selfImprove: { verdict: 'pipeline', area: 'editorial-check', title: 'Check pleasantries at beat altitude', filed: true },
+      };
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        expect.stringMatching(/Filed a PortOS fix task \(editorial-check\).*approve it in CoS/i),
+      ));
+    });
+
+    it('shows the verdict on the persisted status banner', async () => {
+      renderPanel({
+        id: 's1',
+        targetFormat: 'comic',
+        autopilot: {
+          status: 'paused', runId: 'r1', currentStep: 'editorialReview', lastError: 'ran out of rounds',
+          selfImprove: { verdict: 'pipeline', area: 'runner', title: 'Retry budget is never applied', filed: true },
+        },
+      });
+      expect(await screen.findByText(/Filed a PortOS fix task \(runner\).*approve it in CoS/i)).toBeInTheDocument();
+    });
+
+    it('says nothing when the verdict was that the story, not the code, needs work', async () => {
+      renderPanel({
+        id: 's1',
+        targetFormat: 'comic',
+        autopilot: { status: 'paused', runId: 'r1', selfImprove: { verdict: 'content', filed: false } },
+      });
+      await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+      expect(screen.queryByText(/PortOS fix task/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // Observing orchestrator — the opt-in that lets a run dispatch auto-approved
+  // pipeline fixes (PR + review loop + merge, no human gate) as it progresses.
+  describe('observing orchestrator', () => {
+    it('is off by default and persists the toggle on change', async () => {
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: /options/i }));
+      const toggle = screen.getByLabelText(/observing orchestrator/i);
+      expect(toggle).not.toBeChecked();
+      fireEvent.click(toggle);
+      await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith(
+        'pipelineEditorialChecks', { observer: true }, { silent: true },
+      ));
+      // The explainer must say the quiet part out loud: fixes dispatch and
+      // merge without an approval step, and enabling this is the consent.
+      expect(await screen.findByText(/merges after the review loop with no approval step/i)).toBeInTheDocument();
+    });
+
+    it('sends the toggle as a per-run override once edited', async () => {
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: /options/i }));
+      fireEvent.click(screen.getByLabelText(/observing orchestrator/i));
+      fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+      await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+        's1',
+        { includeVisual: true, fileGaps: false, observer: true },
+        { silent: true },
+      ));
+    });
+
+    it('renders a live observer:filed frame with the dispatched fix', async () => {
+      getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { status: 'running' }, active: true });
+      sseLatest = { type: 'observer:filed', runId: 'r1', area: 'editorial-check', title: 'Check pleasantries at beat altitude', filed: true };
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      expect(await screen.findByText(/Orchestrator dispatched a pipeline fix \(editorial-check\): Check pleasantries at beat altitude/i)).toBeInTheDocument();
+    });
+
+    it('announces the dispatched fixes from the terminal frame', async () => {
+      getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { status: 'running', runId: 'r1' }, active: true });
+      sseLatest = {
+        type: 'paused', runId: 'r1', reason: 'editorial review ran out of rounds',
+        observer: { passes: 2, filed: [{ area: 'runner', title: 'Retry budget is never applied', taskId: 't1', filed: true }] },
+      };
+      renderPanel({ id: 's1', targetFormat: 'comic' });
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        expect.stringMatching(/Orchestrator dispatched 1 pipeline fix.*review and merge on their own/i),
+      ));
+    });
+
+    it('lists the dispatched fixes on the persisted status banner', async () => {
+      renderPanel({
+        id: 's1',
+        targetFormat: 'comic',
+        autopilot: {
+          status: 'done', runId: 'r1',
+          observer: { passes: 1, filed: [{ area: 'pipeline-step', title: 'Verify beats before drafting text', taskId: 't1', filed: true }] },
+        },
+      });
+      expect(await screen.findByText(/Orchestrator dispatched 1 pipeline fix/i)).toBeInTheDocument();
+      expect(screen.getByText(/pipeline-step — Verify beats before drafting text/i)).toBeInTheDocument();
+    });
   });
 
   it('renders canon readiness gaps with a link to the issue Nouns page', async () => {

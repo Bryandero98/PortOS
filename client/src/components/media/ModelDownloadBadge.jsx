@@ -1,8 +1,8 @@
 // Inline "Available · 7.8 GB" / "Download (~8 GB)" badge for the image and
 // video gen model pickers. Drops below the model <select> so the user can
 // see — before hitting Render — whether their pick still needs a multi-GB
-// HF pull. Hitting Render is NOT blocked: lazy download remains the
-// fallback, so a user who just wants to fire and wait can keep doing that.
+// HF pull. Local generation forms block until required weights are present,
+// keeping downloads explicit and recoverable instead of hiding them in render.
 //
 // Three render states:
 //   1. cached     → green CheckCircle, "Available · <size>"
@@ -24,6 +24,9 @@ export default function ModelDownloadBadge({
   onDownload,     // () => void
   onCancel,       // () => void
   estimateLabel,  // e.g. "~8 GB" — caller derives from model entry name
+  disabled = false,
+  disabledReason,
+  disabledReasonId,
 }) {
   if (!status) {
     return <p className="text-[10px] text-gray-500 mt-1">Checking model cache…</p>;
@@ -87,8 +90,12 @@ export default function ModelDownloadBadge({
     <button
       type="button"
       onClick={onDownload}
-      className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-port-accent hover:text-white border border-port-border hover:border-port-accent rounded px-2 py-1"
-      title={status.repo ? `Pre-download ${status.repo} into ~/.cache/huggingface/hub/` : 'Pre-download model weights'}
+      disabled={disabled}
+      aria-describedby={disabled && disabledReason ? disabledReasonId : undefined}
+      className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-port-accent hover:text-white border border-port-border hover:border-port-accent rounded px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-port-accent disabled:hover:border-port-border"
+      title={disabled
+        ? disabledReason
+        : status.repo ? `Pre-download ${status.repo} into ~/.cache/huggingface/hub/` : 'Pre-download model weights'}
     >
       <Download className="w-3.5 h-3.5" />
       <span>Download{estimateLabel ? ` (${estimateLabel})` : ''}</span>
@@ -99,9 +106,11 @@ export default function ModelDownloadBadge({
 // Pull a size estimate out of the model's display name when the registry
 // embedded one (e.g. "Flux 2 Klein 4B (SDNQ 4-bit, ~8 GB @ 512px)"). The
 // registry isn't required to carry a structured size field, so we just
-// pluck whatever "~N GB" parenthetical the human-readable label included.
+// pluck whatever "~N GB" or "~N GiB" parenthetical the label included.
 export function deriveSizeEstimate(modelName) {
   if (!modelName) return null;
-  const m = String(modelName).match(/~\s*(\d+(?:\.\d+)?)\s*GB/i);
-  return m ? `~${m[1]} GB` : null;
+  const m = String(modelName).match(/~\s*(\d+(?:\.\d+)?)\s*(Gi?B)/i);
+  if (!m) return null;
+  const unit = m[2].toLowerCase() === 'gib' ? 'GiB' : 'GB';
+  return `~${m[1]} ${unit}`;
 }

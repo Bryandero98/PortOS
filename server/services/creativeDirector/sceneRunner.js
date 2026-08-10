@@ -34,6 +34,8 @@ import { verifyVideoPlayable } from '../../lib/ffmpeg.js';
 import { presetToRenderParams } from '../../lib/creativeDirectorPresets.js';
 import { CD_MAX_SCENE_RETRIES } from '../../lib/creativeDirectorPrompts.js';
 import { extractLastFrame, sampleEvaluationFrames } from '../videoGen/local.js';
+import { VIDEO_GEN_MODE } from '../videoGen/modes.js';
+import { grokVideoJobParams, resolveVideoBackendPin } from '../videoGen/backendPin.js';
 import { enqueueJob, mediaJobEvents } from '../mediaJobQueue/index.js';
 import { getSettings } from '../settings.js';
 import { updateScene, updateProject, getProject } from './local.js';
@@ -69,20 +71,42 @@ export async function runSceneRender(project, scene) {
   });
 
   const settings = await getSettings();
+  // Which backend renders this scene (#3135 gap): the project's own
+  // `renderBackend.video` pin — which is how a creative commission's
+  // `generation.videoMode` / `.videoModelId` reach the render — then the
+  // creative-agent render default, then the install-wide video pin, else local.
+  // Shared verbatim with the planner's enqueue tool via videoGen/backendPin.js.
+  //
+  // Before this, the scene path was unconditionally local: a commission pinned
+  // to Grok still rendered every scene on the MLX runtime, and the pythonPath
+  // guard below failed the whole project even when Grok was the pinned backend.
+  const videoPin = resolveVideoBackendPin(project, settings);
+  const useGrok = videoPin.mode === VIDEO_GEN_MODE.GROK;
+
   const pythonPath = settings.imageGen?.local?.pythonPath || null;
   // Fail fast when local video gen isn't configured. Without this guard the
   // job would be enqueued, fail inside `generateVideo`, retry up to
   // CD_MAX_SCENE_RETRIES, and pollute the persisted queue with N doomed entries
   // — none of which can ever succeed without operator intervention. Mark
   // the scene failed and let advanceAfterSceneSettled flag the project so
-  // the user can configure pythonPath and Resume from the UI.
-  if (!pythonPath) {
-    console.log(`❌ CD scene ${scene.sceneId}: local video gen not configured (settings.imageGen.local.pythonPath missing)`);
+  // the user can configure pythonPath and Resume from the UI. Only the local
+  // lane needs it — a Grok render shells out to the CLI and never touches
+  // Python (the media-job queue gates its own pythonPath check the same way).
+  if (!useGrok && !pythonPath) {
+    // A pin that named a cloud backend but resolved to local means the ladder
+    // degraded it (the backend's `enabled` toggle is off). Say so — otherwise
+    // the user reads "configure Python" on a project they explicitly pinned to
+    // Grok and has no way to tell that their pin was the thing that lapsed.
+    const lapsedPin = videoPin.requested;
+    const detail = lapsedPin && lapsedPin !== videoPin.mode
+      ? ` This project is pinned to '${lapsedPin}', but that backend is not enabled, so the render fell back to local.`
+      : '';
+    console.log(`❌ CD scene ${scene.sceneId}: local video gen not configured (settings.imageGen.local.pythonPath missing)${detail}`);
     await updateScene(project.id, scene.sceneId, {
       status: 'failed',
       evaluation: {
         accepted: false,
-        notes: 'Local video generation is not configured — set settings.imageGen.local.pythonPath in Settings > Image Gen.',
+        notes: `Local video generation is not configured — set settings.imageGen.local.pythonPath in Settings > Image Gen.${detail}`,
         sampledAt: new Date().toISOString(),
       },
     });
@@ -168,26 +192,52 @@ export async function runSceneRender(project, scene) {
     isContinuation: continuationSourceFromExtract && !!sourceImagePath,
   });
 
-  const params = {
-    pythonPath,
+  // Creative params are backend-agnostic; the render knobs are not. Grok has no
+  // frames/steps/guidance/LoRA dials (it takes a prose brief and a clip length),
+  // so passing the local geometry through would be noise the worker ignores —
+  // build only what each lane reads. `width`/`height` DO carry over: grok.js
+  // derives its base-image aspect ratio from them, which is how a 9:16 project
+  // stays 9:16 instead of falling back to the install's configured ratio.
+  const shared = {
     prompt: scene.prompt,
     negativePrompt: scene.negativePrompt || '',
-    modelId: project.modelId,
     width: renderParams.width,
     height: renderParams.height,
-    numFrames: renderParams.numFrames,
-    fps: renderParams.fps,
-    steps: renderParams.steps,
-    guidanceScale: renderParams.guidanceScale,
-    tiling: 'auto',
     sourceImagePath,
-    mode: sourceImagePath ? 'image' : 'text',
-    imageStrength: effectiveImageStrength,
-    // Smoke-test / dev knob: skips the mlx_video audio-gen pass to cut
-    // wall-clock per scene roughly in half. Project-level so every scene
-    // in the project inherits the same setting.
-    disableAudio: project.disableAudio === true,
   };
+  const params = useGrok
+    ? {
+      ...shared,
+      // Scene duration is authored in the local lane's continuous seconds;
+      // grokVideoJobParams snaps it up to a length Grok actually delivers.
+      // Geometry rides along in `shared` — grok.js reads it to derive the
+      // project's aspect ratio for the base image.
+      ...grokVideoJobParams(settings, { sourceImagePath, durationSeconds: scene.durationSeconds }),
+    }
+    : {
+      ...shared,
+      pythonPath,
+      // A pinned local model (the commission's `generation.videoModelId`, or the
+      // creative-agent render default) wins over the project's own modelId —
+      // the project's is the creation-time default, the pin is the user's
+      // explicit later choice.
+      modelId: videoPin.modelId || project.modelId,
+      numFrames: renderParams.numFrames,
+      fps: renderParams.fps,
+      steps: renderParams.steps,
+      guidanceScale: renderParams.guidanceScale,
+      tiling: 'auto',
+      mode: sourceImagePath ? 'image' : 'text',
+      imageStrength: effectiveImageStrength,
+      // Smoke-test / dev knob: skips the mlx_video audio-gen pass to cut
+      // wall-clock per scene roughly in half. Project-level so every scene
+      // in the project inherits the same setting.
+      disableAudio: project.disableAudio === true,
+    };
+
+  if (useGrok) {
+    console.log(`☁️  CD scene ${scene.sceneId} rendering on grok (${params.duration}s clip)`);
+  }
 
   const owner = `cd:${project.id}:${scene.sceneId}`;
   const { jobId } = enqueueJob({ kind: 'video', params, owner });

@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('./hfCache.js', () => ({
   inspectModelCache: vi.fn(async () => ({ cached: true, sizeBytes: 100, snapshotPath: '/snap' })),
+  findCachedRepoFile: vi.fn(async () => null),
 }));
 
 vi.mock('./hfDownload.js', () => ({
@@ -62,6 +63,20 @@ describe('startHfDownloadStream force', () => {
     expect(downloadHfRepo).toHaveBeenCalledWith(expect.objectContaining({ repo: 'org/encoder' }));
     const events = parseFrames(frames);
     expect(events.at(-1)).toMatchObject({ type: 'complete', message: 'org/encoder downloaded.' });
+  });
+
+  it('uses the immutable revision for cache inspection and download', async () => {
+    inspectModelCache.mockResolvedValueOnce({ cached: false, sizeBytes: 0, snapshotPath: null });
+    const revision = '1111111111111111111111111111111111111111';
+    const { req, res } = makeReqRes();
+    await startHfDownloadStream({
+      req, res,
+      repos: [{ repo: 'org/pinned', revision, only: [] }],
+    });
+    expect(inspectModelCache).toHaveBeenCalledWith('org/pinned', { revision });
+    expect(downloadHfRepo).toHaveBeenCalledWith(expect.objectContaining({
+      repo: 'org/pinned', revision,
+    }));
   });
 });
 
@@ -239,14 +254,20 @@ describe('startHfDownloadStream single-file + fallbacks (#3112)', () => {
   });
 
   it('reports every attempt when all sources fail', async () => {
-    downloadHfRepo.mockImplementation(({ repo }) => ({
-      promise: Promise.resolve({ ok: false, errorKind: 'x', errorMessage: `${repo} broke` }),
-      kill: vi.fn(),
-    }));
+    downloadHfRepo.mockImplementation(({ repo, onEvent }) => {
+      onEvent({ type: 'error', kind: 'x', message: `${repo} broke` });
+      return {
+        promise: Promise.resolve({ ok: false, errorKind: 'x', errorMessage: `${repo} broke` }),
+        kill: vi.fn(),
+      };
+    });
 
     const { req, res, frames } = makeReqRes();
     await startHfDownloadStream({ req, res, fallbacks: CANDIDATES, cachedFile: async () => false });
-    const last = parseFrames(frames).at(-1);
+    const events = parseFrames(frames);
+    const terminal = events.filter((event) => event.type === 'error');
+    expect(terminal).toHaveLength(1);
+    const last = terminal[0];
     expect(last).toMatchObject({ type: 'error', kind: 'all_sources_failed' });
     expect(last.message).toContain('org/official broke');
     expect(last.message).toContain('org/mirror-708gb broke');
@@ -358,5 +379,25 @@ describe('startHfDownloadStream repos (ALL must succeed)', () => {
 
     const parsed = parseFrames(frames);
     expect(parsed.at(-1)).toMatchObject({ type: 'complete', repos: ['org/repo-a', 'org/repo-b'], sizeBytes: 200 });
+  });
+
+  it('downloads only the exact files declared by a required aggregate target', async () => {
+    downloadHfRepo.mockReturnValue({ promise: Promise.resolve({ ok: true, sizeBytes: 50 }), kill: vi.fn() });
+    const { req, res, frames } = makeReqRes();
+    await startHfDownloadStream({
+      req,
+      res,
+      repos: [
+        { repo: 'org/base', only: [] },
+        { repo: 'org/adapters', only: ['profile/high.safetensors', 'profile/low.safetensors'] },
+      ],
+      pythonPath: '/runtime/bin/python3',
+    });
+    expect(downloadHfRepo).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      repo: 'org/adapters',
+      only: ['profile/high.safetensors', 'profile/low.safetensors'],
+      pythonPath: '/runtime/bin/python3',
+    }));
+    expect(parseFrames(frames).at(-1)).toMatchObject({ type: 'complete' });
   });
 });

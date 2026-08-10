@@ -12,13 +12,17 @@
  *                                          immediately; the active step/LLM call
  *                                          finishes before the terminal `canceled`
  *                                          frame (cooperative, between-step cancel).
- *   GET  /series/:id/autopilot/status   → { autopilot }   (resume / paused UI)
+ *   GET  /series/:id/autopilot/status   → { autopilot, active, start }
+ *                                          (resume / paused UI; `start` is the
+ *                                          in-flight run's start frame, which
+ *                                          names its provider/model)
  */
 
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
 import { validateRequest, MAX_CONVERGENCE_ROUNDS } from '../../lib/validation.js';
+import { EFFORT_LEVELS } from '../../lib/providerModels.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as autopilot from '../../services/pipeline/seriesAutopilot.js';
 import { READINESS_GATES } from '../../services/pipeline/editorialScore.js';
@@ -26,8 +30,30 @@ import { mapServiceError, providerOverrideShape } from './shared.js';
 
 const router = Router();
 
+const effortOverrideSchema = z.preprocess(
+  (v) => (v === '' ? undefined : v),
+  z.enum(EFFORT_LEVELS).optional(),
+);
+
+const autopilotLlmRouteSchema = z.object({
+  ...providerOverrideShape,
+  effortOverride: effortOverrideSchema,
+}).strict();
+
 const autopilotStartSchema = z.object({
   ...providerOverrideShape,
+  // Per-run reasoning effort (#3641). Soft, like the provider/model override: it
+  // applies to stages with no `effort` pin of their own, and stageRunner clamps it
+  // to the resolved provider ladder (dropping it entirely for a provider with no
+  // effort control). Validated against the union of every accepted level across
+  // effort-capable CLIs; '' (the UI "provider default" sentinel) means no override.
+  effortOverride: effortOverrideSchema,
+  // Optional per-run critic route. Creation/repair continues to use the run's
+  // provider/model/effort above; judges, verification, analytical editorial
+  // passes and pipeline diagnosis use this soft route instead. Exact stage pins
+  // from Prompts still win. This is deliberately per-run so experimenting with a
+  // lighter writer (for example Luna/max) does not globally repoint every series.
+  judgeLlm: autopilotLlmRouteSchema.optional(),
   // Draft cover + all interior pages once a story is ready. Accepted now;
   // honored when VISUAL_DRAFT_ENABLED ships (Phase 2). Defaults true per the
   // product decision (whole-series, full draft visuals).
@@ -91,6 +117,17 @@ const autopilotStartSchema = z.object({
   // comic issue is drafted the run mints + starts a Creative Director teaser video
   // per issue. Falls back to pipelineEditorialChecks.produceTeaser, then off.
   produceTeaser: z.boolean().optional(),
+  // Unlock-everything pre-pass. When true, the run's first step clears every
+  // lock this SERIES owns — the arc freeze + per-field arc locks, each volume's
+  // lock, every issue stage lock, and the universe-canon entries this series
+  // owns — so the autopilot can apply the fixes its editorial passes surface
+  // instead of pausing on findings it isn't allowed to resolve. Canon owned by
+  // (or shared with) another series in the same universe stays locked, and the
+  // pass never deletes anything. UNLIKE every other option here there is NO
+  // saved-setting fallback: it defaults to off on every run, so ticking it once
+  // can't arm lock-clearing for an unattended scheduled run (see
+  // seriesAutopilot/config.js#resolveAutopilotUnlockForRun).
+  unlockForRun: z.boolean().optional(),
   // Iterate-to-quality revision loop (CWQE Phase 7, #2171). When true, after the
   // editorial-health gate the run cycles the weakest drafted issue through
   // adversarial cuts + a judge-gated keep/revert, stopping on plateau /
@@ -103,6 +140,21 @@ const autopilotStartSchema = z.object({
   revisionMinCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionMaxCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionPlateauDelta: z.number().min(0).max(10).optional(),
+  // Pipeline self-improvement. When true, a run whose telemetry says the
+  // AUTOMATION limped (a pause, a run-ending error, an editorial check that
+  // threw, a retried child, a skipped step) spends one diagnosis call at its
+  // terminal and, on a pipeline verdict, files a PortOS fix task.
+  // That task always awaits human approval. Falls back to the persisted
+  // pipelineEditorialChecks.selfImprove setting, then off.
+  selfImprove: z.boolean().optional(),
+  // Observing orchestrator. When true, the run watches its own telemetry step
+  // by step and, when a step's fresh signals say the automation misbehaved,
+  // spends a bounded diagnosis call and dispatches an AUTO-APPROVED PortOS fix
+  // task — worktree-isolated, PR-opening, review-loop-then-merge, no human
+  // gate (the explicit opt-in IS the consent; see seriesAutopilot/observer.js).
+  // Supersedes the selfImprove terminal diagnosis when both are on. Falls back
+  // to the persisted pipelineEditorialChecks.observer setting, then off.
+  observer: z.boolean().optional(),
 });
 
 router.post('/series/:id/autopilot/start', asyncHandler(async (req, res) => {
@@ -137,7 +189,14 @@ router.post('/series/:id/autopilot/cancel', asyncHandler(async (req, res) => {
 
 router.get('/series/:id/autopilot/status', asyncHandler(async (req, res) => {
   const series = await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
-  res.json({ autopilot: series.autopilot || null, active: autopilot.isAutopilotActive(req.params.id) });
+  res.json({
+    autopilot: series.autopilot || null,
+    active: autopilot.isAutopilotActive(req.params.id),
+    // The in-flight run's `start` frame (mode, target, resolved provider/model),
+    // so a client attaching mid-run can describe a run it never saw begin — SSE
+    // replays only the last frame. null when no run is active.
+    start: autopilot.activeRunStart(req.params.id),
+  });
 }));
 
 export default router;

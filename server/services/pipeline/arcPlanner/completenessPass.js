@@ -267,6 +267,7 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
     providerDefault: options.providerDefault,
     modelOverride: options.modelOverride,
     modelDefault: options.modelDefault,
+    effortDefault: options.effortDefault,
     returnsJson: true,
     source: 'pipeline-manuscript-completeness',
   });

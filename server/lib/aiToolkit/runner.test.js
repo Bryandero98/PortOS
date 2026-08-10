@@ -329,6 +329,8 @@ describe('AI Toolkit runner — declared extension points', () => {
 
     expect(await runner.stopRun('x')).toBe(true);
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(runner.consumeExternalRunStop('x')).toBe(true);
+    expect(runner.consumeExternalRunStop('x')).toBe(false);
     // stopRun drops the entry, so a follow-up reports inactive.
     expect(await runner.isRunActive('x')).toBe(false);
     expect(await runner.stopRun('x')).toBe(false);
@@ -340,6 +342,16 @@ describe('AI Toolkit runner — declared extension points', () => {
     runner.registerExternalRun('api-run', controller);
     expect(await runner.stopRun('api-run')).toBe(true);
     expect(controller.abort).toHaveBeenCalledTimes(1);
+    expect(runner.consumeExternalRunStop('api-run')).toBe(true);
+  });
+
+  it('unregisterExternalRun clears a stale explicit-stop marker', async () => {
+    const runner = createRunnerService({ dataDir: './data' });
+    const child = { kill: vi.fn(), killed: false };
+    runner.registerExternalRun('done', child);
+    await runner.stopRun('done');
+    runner.unregisterExternalRun('done');
+    expect(runner.consumeExternalRunStop('done')).toBe(false);
   });
 
   it('deleteRun kills an in-flight external run before removing its dir', async () => {

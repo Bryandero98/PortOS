@@ -159,6 +159,46 @@ describe('grok provider — generateImage', () => {
     await closeChild();
   });
 
+  it('routes a reference-only render to image_edit — image_gen takes no input image', async () => {
+    await mkdir(FAKE_IMAGES_DIR, { recursive: true });
+    await writeFile(join(FAKE_IMAGES_DIR, 'ref-a.png'), 'fake');
+    await writeFile(join(FAKE_IMAGES_DIR, 'ref-b.png'), 'fake');
+    await grok.generateImage({ prompt: 'a fox', referenceImagePaths: ['ref-a.png', 'ref-b.png'] });
+    const prompt = promptOf();
+    expect(prompt).toContain('image_edit');
+    expect(prompt).toContain('`image` array');
+    expect(prompt).toContain(join(FAKE_IMAGES_DIR, 'ref-a.png'));
+    expect(prompt).toContain(join(FAKE_IMAGES_DIR, 'ref-b.png'));
+    // No source image, so no fidelity phrase — these are references, not an edit.
+    expect(prompt).not.toMatch(/transform the source image/i);
+    await closeChild();
+  });
+
+  it('puts the init image first and the references after it', async () => {
+    await mkdir(FAKE_IMAGES_DIR, { recursive: true });
+    await writeFile(join(FAKE_IMAGES_DIR, 'proof.png'), 'fake');
+    await writeFile(join(FAKE_IMAGES_DIR, 'ref-a.png'), 'fake');
+    await grok.generateImage({
+      prompt: 'cover art', initImagePath: 'proof.png', initImageStrength: 0.2,
+      referenceImagePaths: ['ref-a.png'],
+    });
+    const prompt = promptOf();
+    expect(prompt).toMatch(/source image at .*proof\.png/);
+    expect(prompt).toContain('FIRST in the tool');
+    expect(prompt.indexOf(join(FAKE_IMAGES_DIR, 'proof.png')))
+      .toBeLessThan(prompt.indexOf(join(FAKE_IMAGES_DIR, 'ref-a.png')));
+    await closeChild();
+  });
+
+  it('drops a reference path that escapes the gallery (defense-in-depth)', async () => {
+    await grok.generateImage({ prompt: 'a fox', referenceImagePaths: ['/etc/passwd'] });
+    const prompt = promptOf();
+    expect(prompt).not.toContain('/etc/passwd');
+    // Nothing survived, so it falls back to plain text-to-image.
+    expect(prompt).not.toContain('image_edit');
+    await closeChild();
+  });
+
   it('drops an initImagePath that escapes the gallery (defense-in-depth)', async () => {
     await grok.generateImage({ prompt: 'cover art', initImagePath: '/etc/passwd', initImageStrength: 0.2 });
     const prompt = promptOf();

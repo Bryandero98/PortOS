@@ -56,7 +56,7 @@ const { writeFile, readFile } = await import('fs/promises');
 const { atomicWrite } = await import('../lib/fileUtils.js');
 const runner = await import('./runner.js');
 const { analyzeError, ERROR_CATEGORIES } = await import('../lib/aiToolkit/errorDetection.js');
-const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedModel, emitRunStarted } = runner;
+const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedModel, emitRunStarted, finalizeRunRecord } = runner;
 
 // Minimal toolkit stub that satisfies executeCliRun's expectations. Mirrors the
 // real toolkit runner's declared external-run registry (registerExternalRun /
@@ -64,12 +64,32 @@ const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedMod
 // private `_portosActiveRuns` map.
 function fakeToolkit(errorDetection = null) {
   const externalRuns = new Map();
+  const externalStopRequests = new Set();
   return {
     services: {
       runner: {
-        registerExternalRun: (runId, killable) => externalRuns.set(runId, killable),
-        unregisterExternalRun: (runId) => externalRuns.delete(runId),
+        registerExternalRun: (runId, killable) => {
+          externalStopRequests.delete(runId);
+          externalRuns.set(runId, killable);
+        },
+        unregisterExternalRun: (runId) => {
+          externalRuns.delete(runId);
+          externalStopRequests.delete(runId);
+        },
         hasExternalRun: (runId) => externalRuns.has(runId),
+        consumeExternalRunStop: (runId) => {
+          const requested = externalStopRequests.has(runId);
+          externalStopRequests.delete(runId);
+          return requested;
+        },
+        stopRun: async (runId) => {
+          const child = externalRuns.get(runId);
+          if (!child) return false;
+          externalStopRequests.add(runId);
+          child.kill('SIGTERM');
+          externalRuns.delete(runId);
+          return true;
+        },
         _externalRuns: externalRuns,
       },
       errorDetection,
@@ -94,6 +114,153 @@ function makeChild() {
 beforeEach(() => {
   vi.clearAllMocks();
   setAIToolkit(fakeToolkit(), { dataDir: '/tmp/test-runner' });
+});
+
+describe('finalizeRunRecord — authoritative timeout classification', () => {
+  it('does not let story text misclassify exit 124 as a provider quota failure', async () => {
+    setAIToolkit(fakeToolkit({ analyzeError }), { dataDir: '/tmp/test-runner' });
+
+    const metadata = await finalizeRunRecord({
+      runId: 'run-story-timeout',
+      output: 'A character debates billing, payment, and insufficient credit.',
+      exitCode: 124,
+      success: false,
+      error: 'TUI run timed out after 600000ms',
+      startTime: Date.now(),
+    });
+
+    expect(metadata).toMatchObject({
+      success: false,
+      errorCategory: ERROR_CATEGORIES.TIMEOUT,
+      errorAnalysis: expect.objectContaining({ category: ERROR_CATEGORIES.TIMEOUT }),
+    });
+  });
+
+  it('records cancellation without scanning output or firing the provider-failure hook', async () => {
+    const errorDetection = { analyzeError: vi.fn() };
+    const onRunFailed = vi.fn();
+    setAIToolkit(fakeToolkit(errorDetection), {
+      dataDir: '/tmp/test-runner',
+      hooks: { onRunFailed },
+    });
+
+    const metadata = await finalizeRunRecord({
+      runId: 'run-canceled-story',
+      output: 'A character debates billing, payment, and insufficient credit.',
+      exitCode: 130,
+      success: false,
+      error: 'TUI canceled (signal SIGTERM)',
+      startTime: Date.now(),
+      extras: { canceled: true, completionReason: 'canceled' },
+    });
+
+    expect(metadata).toMatchObject({
+      success: false,
+      canceled: true,
+      errorCategory: ERROR_CATEGORIES.CANCELED,
+    });
+    expect(errorDetection.analyzeError).not.toHaveBeenCalled();
+    expect(onRunFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeCliRun — wall-clock timeout classification', () => {
+  // The CLI runner kills its own child on timeout, so the close event carries
+  // `exitCode: null` rather than the 124 finalizeRunRecord keys on. Without the
+  // runner's own timeout verdict, the close handler scanned the output — and
+  // Codex echoes the entire prompt to stdout, so one word of story prose
+  // ("credit") filed a 5-minute timeout as `quota-exceeded`, benching a healthy
+  // provider and spawning an investigation task.
+  it('classifies its own timeout kill as a timeout instead of scanning story text', async () => {
+    const child = makeChild();
+    spawn.mockReturnValue(child);
+    const onRunFailed = vi.fn();
+    setAIToolkit(fakeToolkit({ analyzeError }), {
+      dataDir: '/tmp/test-runner',
+      hooks: { onRunFailed },
+    });
+    const onComplete = vi.fn();
+    const provider = {
+      id: 'codex',
+      name: 'Codex CLI',
+      command: 'codex',
+      args: [],
+      defaultModel: 'gpt-test',
+      timeout: 1,
+    };
+
+    await executeCliRun({
+      runId: 'run-cli-timeout',
+      provider,
+      prompt: 'A story about a designer who sends the work on without demanding credit.',
+      workspacePath: TEST_WORKSPACE,
+      onComplete,
+    });
+    // Codex echoes the prompt back on stdout, which is how the quota-shaped
+    // word reaches the classifier at all.
+    child.stdout.emit('data', Buffer.from('...sends the work on without demanding credit.'));
+    // Let the 1ms timer fire, then settle the kill the way the OS would.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    child.emit('close', null, 'SIGKILL');
+    await flushMicrotasks();
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      completionReason: 'timeout',
+      errorCategory: ERROR_CATEGORIES.TIMEOUT,
+      errorAnalysis: expect.objectContaining({
+        category: ERROR_CATEGORIES.TIMEOUT,
+        // A timeout is not evidence the provider is unhealthy: it must not
+        // route to the actionable/fallback handling quota-exceeded triggers.
+        requiresFallback: false,
+        actionable: false,
+      }),
+    }));
+    expect(onComplete.mock.calls.at(-1)[0].error).toMatch(/timed out/i);
+  });
+});
+
+describe('executeCliRun — intentional cancellation', () => {
+  it('skips output classification and provider-failure hooks after stopRun', async () => {
+    const child = makeChild();
+    spawn.mockReturnValue(child);
+    const errorDetection = { analyzeError: vi.fn() };
+    const onRunFailed = vi.fn();
+    const toolkit = fakeToolkit(errorDetection);
+    setAIToolkit(toolkit, {
+      dataDir: '/tmp/test-runner',
+      hooks: { onRunFailed },
+    });
+    const onComplete = vi.fn();
+    const provider = {
+      id: 'codex',
+      name: 'Codex',
+      command: 'codex',
+      args: [],
+      defaultModel: 'gpt-test',
+      timeout: 5000,
+    };
+
+    await executeCliRun({
+      runId: 'run-cli-canceled',
+      provider,
+      prompt: 'A story about billing and credit.',
+      workspacePath: TEST_WORKSPACE,
+      onComplete,
+    });
+    await toolkit.services.runner.stopRun('run-cli-canceled');
+    child.emit('close', null, 'SIGTERM');
+    await flushMicrotasks();
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      canceled: true,
+      completionReason: 'canceled',
+      errorCategory: ERROR_CATEGORIES.CANCELED,
+    }));
+    expect(errorDetection.analyzeError).not.toHaveBeenCalled();
+    expect(onRunFailed).not.toHaveBeenCalled();
+  });
 });
 
 describe('executeCliRun — Codex sentinel suppression', () => {

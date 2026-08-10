@@ -15,7 +15,7 @@
 // `git`). See server/services/cosTaskGenerator.js for the claim-work router
 // that consumes trackerToClaimTaskType.
 
-import { readOriginRemoteUrl } from './gitRemote.js';
+import { getOriginInfo, readOriginRemoteUrl } from './gitRemote.js';
 
 // Every selectable value (UI + Zod enum). `'auto'` is the default; the rest are
 // concrete sources.
@@ -394,4 +394,97 @@ export async function resolveAppWorkTracker(app) {
   }
   const base = resolveWorkTracker({ configured, host });
   return { ...base, host, forge: forgeCliForTracker(base.resolved) };
+}
+
+/**
+ * Best-effort `group[/subgroup...]/project` display path from a GitLab origin
+ * URL. Cosmetic only — `glab` targets the project from the repo cwd, not this
+ * string — so callers degrade to the host classifier's fullName or the raw host
+ * rather than treating a null as "not a GitLab repo". Module-private: the only
+ * consumer is `resolveRepoForgeTarget` below, and this module's exports are
+ * re-exported flat from the `server/lib` barrel.
+ * @param {string|null|undefined} originUrl
+ * @returns {string|null}
+ */
+function gitlabProjectPath(originUrl) {
+  if (typeof originUrl !== 'string') return null;
+  // scheme://[user@]host[:port]/<path>  OR  [user@]host:<path>  — capture <path>,
+  // then strip a trailing `.git`.
+  const m = originUrl.trim().match(/^[a-zA-Z][\w+.-]*:\/\/(?:[^/@]+@)?[^/]+\/(.+)$/)
+    || originUrl.trim().match(/^(?:[^@/]+@)?[^/:]+:(.+)$/);
+  return m ? m[1].replace(/\.git$/i, '').replace(/\/$/, '') : null;
+}
+
+/**
+ * Resolve which forge a repo checkout's `origin` points at, together with
+ * everything a `gh`/`glab` caller needs to target it — or null when the origin
+ * isn't a forge PortOS can query (no remote, or a host that is neither
+ * GitHub- nor GitLab-family AND no `preferredForge` override applies — see
+ * below).
+ *
+ * The two branches deliberately differ, mirroring how the CLIs address a repo:
+ * - GitHub (incl. Enterprise) resolves through `githubRepoSpec`, whose
+ *   host-qualified `HOST/OWNER/REPO` selector keeps `gh --repo` deterministic on
+ *   a fork+upstream checkout and correct on enterprise hosts.
+ * - GitLab is classified straight off the HOST via the subgroup-safe
+ *   `hostFromOriginUrl`, NOT `getOriginInfo().fullName`: the latter's strict
+ *   `owner/repo` parse returns null for a nested `group/subgroup/project`
+ *   remote (the common GitLab layout), which would silently read as "not a
+ *   forge" even though `glab` resolves the project from its cwd regardless.
+ *   `repoSpec` is therefore null for GitLab — the caller must run `glab` in
+ *   `repoPath`.
+ *
+ * `preferredForge` ('github' | 'gitlab' | null) is the app's EXPLICITLY
+ * configured work tracker (never 'auto' — that already flows through the same
+ * `hostToWorkTracker` classification above, so it would already have matched
+ * here if it could). It's a fallback, tried only once both host-pattern checks
+ * above have failed: a self-hosted GitHub Enterprise Server or GitLab instance
+ * can run on ANY domain the operator picked (`git.mycompany.com`,
+ * `scm.mycompany.com`, …) — there is no hostname heuristic that can tell such a
+ * host apart from a non-forge remote, so the user's own pin is the only signal
+ * left. A genuinely wrong pin (e.g. a bitbucket.org origin pinned to 'github')
+ * still degrades gracefully: the resulting `gh`/`glab` call fails and the
+ * caller reports a transient "couldn't reach" error rather than PortOS lying
+ * upfront that the origin "isn't GitHub or GitLab".
+ *
+ * Never throws: a missing repo / unreadable origin degrades to null.
+ * @param {string} repoPath
+ * @param {{preferredForge?: 'github'|'gitlab'|null}} [options]
+ * @returns {Promise<{forge:'github'|'gitlab', fullName:string, repoSpec:string|null, apiHost:string|null}|null>}
+ */
+export async function resolveRepoForgeTarget(repoPath, { preferredForge = null } = {}) {
+  if (!repoPath) return null;
+  const origin = await getOriginInfo(repoPath).catch(() => null);
+  const githubSpec = githubRepoSpec(origin);
+  if (githubSpec) {
+    return {
+      forge: 'github',
+      fullName: origin.fullName,
+      repoSpec: githubSpec,
+      apiHost: githubApiHost(origin.host),
+    };
+  }
+  // Reuse the URL `getOriginInfo` already read rather than spawning a second
+  // `git remote get-url`. Its copy is credential-redacted (`://user:tok@` →
+  // `://***@`), which both consumers below tolerate — each matches the userinfo
+  // segment and discards it before reading the host / path.
+  const originUrl = origin?.originUrl || null;
+  const host = origin?.host || hostFromOriginUrl(originUrl);
+  if (hostToWorkTracker(host) === 'gitlab' || (preferredForge === 'gitlab' && host)) {
+    return {
+      forge: 'gitlab',
+      fullName: origin?.fullName || gitlabProjectPath(originUrl) || host,
+      repoSpec: null,
+      apiHost: null,
+    };
+  }
+  if (preferredForge === 'github' && origin?.fullName && host) {
+    return {
+      forge: 'github',
+      fullName: origin.fullName,
+      repoSpec: `${host}/${origin.fullName}`,
+      apiHost: githubApiHost(host),
+    };
+  }
+  return null;
 }

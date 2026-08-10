@@ -22,7 +22,9 @@
 
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, resolve as resolvePath } from 'node:path';
+import {
+  join, dirname, resolve as resolvePath, relative, sep, posix, win32,
+} from 'node:path';
 import { sha256File } from './fileUtils.js';
 
 // HF cache root resolution mirrors huggingface_hub's own precedence:
@@ -68,8 +70,19 @@ async function collectWeightFiles(dir, out) {
 // Returns the path of the most recently modified snapshot under a repo, or
 // null if no snapshots exist. HF writes snapshots/<sha>/ on every revision
 // pull; the latest mtime is the most recently downloaded.
-async function latestSnapshotDir(repoDir) {
+const HF_COMMIT_RE = /^[0-9a-f]{40}$/i;
+
+async function latestSnapshotDir(repoDir, revision = null) {
   const snapshotsRoot = join(repoDir, 'snapshots');
+  // PortOS-shipped model revisions are immutable HF commit hashes. Resolve an
+  // exact snapshot when one is supplied instead of accepting a newer/mutable
+  // `main` snapshot that happens to have the latest mtime.
+  if (revision != null) {
+    if (typeof revision !== 'string' || !HF_COMMIT_RE.test(revision)) return null;
+    const exact = join(snapshotsRoot, revision.toLowerCase());
+    const stat = await fs.stat(exact).catch(() => null);
+    return stat?.isDirectory() ? exact : null;
+  }
   let entries;
   try {
     entries = await fs.readdir(snapshotsRoot, { withFileTypes: true });
@@ -96,13 +109,13 @@ async function latestSnapshotDir(repoDir) {
 // file in the snapshot resolves to a non-zero blob. `sizeBytes` is the sum
 // of resolved weight-blob sizes (config/tokenizer files are tiny and ignored
 // so the displayed footprint reflects the user-meaningful download).
-export async function inspectModelCache(repoId) {
+export async function inspectModelCache(repoId, { revision = null } = {}) {
   if (!repoId || typeof repoId !== 'string') {
     return { cached: false, sizeBytes: 0, snapshotPath: null };
   }
   const root = getHfCacheRoot();
   const repoDir = join(root, repoToDirName(repoId));
-  const snapshotPath = await latestSnapshotDir(repoDir);
+  const snapshotPath = await latestSnapshotDir(repoDir, revision);
   if (!snapshotPath) {
     return { cached: false, sizeBytes: 0, snapshotPath: null };
   }
@@ -129,6 +142,40 @@ export async function inspectModelCache(repoId) {
 
 export const isModelCached = async (repoId) => (await inspectModelCache(repoId)).cached;
 
+// Return the exact cached snapshot directory for an immutable revision. The
+// Wan runner consumes this local path instead of a mutable `org/repo` handle,
+// which also guarantees its cache-only subprocess cannot select another
+// snapshot or trigger a hidden network fetch.
+export async function findCachedRepoSnapshot(repoId, revision) {
+  if (!repoId || typeof repoId !== 'string') return null;
+  if (!revision || typeof revision !== 'string') return null;
+  return latestSnapshotDir(join(getHfCacheRoot(), repoToDirName(repoId)), revision);
+}
+
+const isPathInside = (root, candidate) => {
+  const rel = relative(resolvePath(root), resolvePath(candidate));
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`)
+    && !posix.isAbsolute(rel) && !win32.isAbsolute(rel);
+};
+
+// HF filenames are repo-relative POSIX paths. Reject every alternate path
+// shape before touching disk: absolute paths, Windows separators, empty/dot
+// segments, and traversal. The final containment check is defense-in-depth for
+// future path-normalization changes.
+export const isSafeHfRepoRelativePath = (filename) => {
+  if (typeof filename !== 'string' || filename.length === 0) return false;
+  if (filename.includes('\\') || posix.isAbsolute(filename) || win32.isAbsolute(filename)) return false;
+  const parts = filename.split('/');
+  return !parts.some((part) => part === '' || part === '.' || part === '..');
+};
+
+const resolveRepoRelativeFile = (snapshotPath, filename) => {
+  if (!snapshotPath || !isSafeHfRepoRelativePath(filename)) return null;
+  const parts = filename.split('/');
+  const candidate = resolvePath(snapshotPath, ...parts);
+  return isPathInside(snapshotPath, candidate) ? candidate : null;
+};
+
 // Resolve ONE known file inside a repo's newest snapshot, without walking the
 // snapshot at all. `inspectModelCache` recursively collects and stats every
 // weight in the snapshot — correct when the question is "is this whole model
@@ -141,14 +188,56 @@ export const isModelCached = async (repoId) => (await inspectModelCache(repoId))
 // isn't resident. The `stat` FOLLOWS the symlink, so a dangling snapshot link
 // left by an interrupted download reports null rather than a plausible path
 // that fails on open — the same non-zero test inspectModelCache applies.
-export async function findCachedRepoFile(repoId, filename) {
+export async function findCachedRepoFile(repoId, filename, { revision = null } = {}) {
   if (!repoId || typeof repoId !== 'string') return null;
   if (!filename || typeof filename !== 'string') return null;
-  const snapshotPath = await latestSnapshotDir(join(getHfCacheRoot(), repoToDirName(repoId)));
+  const snapshotPath = await latestSnapshotDir(join(getHfCacheRoot(), repoToDirName(repoId)), revision);
   if (!snapshotPath) return null;
-  const candidate = join(snapshotPath, filename);
+  const candidate = resolveRepoRelativeFile(snapshotPath, filename);
+  if (!candidate) return null;
   const stat = await fs.stat(candidate).catch(() => null);
   return stat && stat.size > 0 ? candidate : null;
+}
+
+// Verify an explicit file subset inside an aggregate HF repo without walking
+// unrelated siblings. Lightning repositories commonly contain many adapters;
+// a PortOS profile needs only its pinned high/low-noise pair.
+export async function verifyCachedRepoFiles(repoId, filenames, { deep = false, revision = null } = {}) {
+  const base = {
+    repoId, status: 'missing', cached: false, sizeBytes: 0,
+    snapshotPath: null, checkedDeep: deep, files: [],
+  };
+  const wanted = Array.isArray(filenames)
+    ? filenames.filter((name) => typeof name === 'string' && name.length > 0)
+    : [];
+  if (!repoId || wanted.length === 0) return base;
+  const snapshotPath = await latestSnapshotDir(join(getHfCacheRoot(), repoToDirName(repoId)), revision);
+  if (!snapshotPath) return base;
+  const resolved = wanted.map((name) => ({ name, path: resolveRepoRelativeFile(snapshotPath, name) }));
+  const files = await Promise.all(resolved.map((file) => file.path
+    ? verifyWeightFile(file, { deep })
+    : Promise.resolve({ name: file.name, path: null, ok: false, reason: 'unsafe-path', sizeBytes: 0 })));
+  const anyBad = files.some((file) => !file.ok);
+  const anyMissing = files.some((file) => file.reason === 'missing-blob');
+  return {
+    repoId,
+    status: anyMissing ? 'missing' : (anyBad ? 'bad' : 'ok'),
+    cached: !anyBad,
+    sizeBytes: files.filter((file) => file.ok).reduce((sum, file) => sum + (file.sizeBytes || 0), 0),
+    snapshotPath,
+    checkedDeep: deep,
+    files,
+  };
+}
+
+export async function repairCachedRepoFiles(repoId, filenames, { deep = false, revision = null } = {}) {
+  const verify = await verifyCachedRepoFiles(repoId, filenames, { deep, revision });
+  if (verify.status !== 'bad') return { repoId, status: verify.status, deleted: [] };
+  const deleted = [];
+  for (const file of verify.files.filter((entry) => !entry.ok)) {
+    if (await repairCachedFile(file.path, { snapshotPath: verify.snapshotPath })) deleted.push(file.name);
+  }
+  return { repoId, status: 'bad', deleted };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +378,7 @@ async function verifyWeightFile(file, { deep }) {
 //   'bad'     — at least one weight file is corrupt/truncated/missing-blob
 // `files` carries a per-file `{ name, ok, reason, sizeBytes }` breakdown so the
 // repair path knows exactly which files to delete and the UI can explain why.
-export async function verifyModelCache(repoId, { deep = false } = {}) {
+export async function verifyModelCache(repoId, { deep = false, revision = null } = {}) {
   const base = {
     repoId, status: 'missing', cached: false, sizeBytes: 0,
     snapshotPath: null, checkedDeep: deep, files: [],
@@ -297,7 +386,7 @@ export async function verifyModelCache(repoId, { deep = false } = {}) {
   if (!repoId || typeof repoId !== 'string') return base;
   const root = getHfCacheRoot();
   const repoDir = join(root, repoToDirName(repoId));
-  const snapshotPath = await latestSnapshotDir(repoDir);
+  const snapshotPath = await latestSnapshotDir(repoDir, revision);
   if (!snapshotPath) return base;
   const weights = [];
   await collectWeightFiles(snapshotPath, weights);
@@ -328,23 +417,14 @@ export async function verifyModelCache(repoId, { deep = false } = {}) {
 // `hf_hub_download` (it keys on the cached etag, not the content) and never
 // re-fetched. Returns `{ repoId, status, deleted: [names] }`; an 'ok' or
 // 'missing' status deletes nothing (caller just re-downloads from scratch).
-export async function repairModelCache(repoId, { deep = false } = {}) {
-  const verify = await verifyModelCache(repoId, { deep });
+export async function repairModelCache(repoId, { deep = false, revision = null } = {}) {
+  const verify = await verifyModelCache(repoId, { deep, revision });
   if (verify.status !== 'bad') {
     return { repoId, status: verify.status, deleted: [] };
   }
   const deleted = [];
   for (const file of verify.files.filter((f) => !f.ok)) {
-    const lst = await fs.lstat(file.path).catch(() => null);
-    if (lst?.isSymbolicLink()) {
-      const target = await fs.readlink(file.path).catch(() => null);
-      if (target) {
-        const blobPath = resolvePath(dirname(file.path), target);
-        await fs.unlink(blobPath).catch(() => {});
-      }
-    }
-    await fs.unlink(file.path).catch(() => {});
-    deleted.push(file.name);
+    if (await repairCachedFile(file.path, { snapshotPath: verify.snapshotPath })) deleted.push(file.name);
   }
   return { repoId, status: 'bad', deleted };
 }
@@ -358,13 +438,36 @@ export async function repairModelCache(repoId, { deep = false } = {}) {
 // etag, not the content, so a stale blob with the right name is trusted and never
 // re-fetched (same reasoning as repairModelCache). Returns true when something
 // was removed.
-export async function repairCachedFile(path) {
+export async function repairCachedFile(path, { snapshotPath = null } = {}) {
   if (!path || typeof path !== 'string') return false;
+  const resolvedPath = resolvePath(path);
+  let boundedSnapshot = snapshotPath ? resolvePath(snapshotPath) : null;
+  let repoDir = null;
+  if (boundedSnapshot) {
+    repoDir = dirname(dirname(boundedSnapshot));
+  } else {
+    // Infer `<repo>/snapshots/<sha>` only for a canonical HF snapshot entry.
+    // Refuse arbitrary filesystem paths: this helper is a cache repair tool,
+    // not a general unlink primitive.
+    const marker = `${sep}snapshots${sep}`;
+    const markerIndex = resolvedPath.lastIndexOf(marker);
+    const shaEnd = markerIndex === -1
+      ? -1
+      : resolvedPath.indexOf(sep, markerIndex + marker.length);
+    if (markerIndex === -1 || shaEnd === -1) return false;
+    repoDir = resolvedPath.slice(0, markerIndex);
+    boundedSnapshot = resolvedPath.slice(0, shaEnd);
+  }
+  if (!isPathInside(boundedSnapshot, resolvedPath)) return false;
   const lst = await fs.lstat(path).catch(() => null);
   if (!lst) return false;
   if (lst.isSymbolicLink()) {
     const target = await fs.readlink(path).catch(() => null);
-    if (target) await fs.unlink(resolvePath(dirname(path), target)).catch(() => {});
+    const blobPath = target ? resolvePath(dirname(path), target) : null;
+    const blobRoot = join(repoDir, 'blobs');
+    if (blobPath && isPathInside(blobRoot, blobPath)) {
+      await fs.unlink(blobPath).catch(() => {});
+    }
   }
   await fs.unlink(path).catch(() => {});
   return true;

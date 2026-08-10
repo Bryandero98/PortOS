@@ -1,9 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
 // ── Mock the API surface ─────────────────────────────────────────────────────
 vi.mock('../services/api', () => ({
+  // Household subjects (#3658) — `self` plus one consenting partner.
+  getPrivacySubjects: vi.fn().mockResolvedValue([
+    {
+      id: '00000000-0000-4000-8000-000000000001', displayName: 'Me', relationship: 'self',
+      isSelf: true, consentCount: 1, recordCount: 2,
+    },
+    {
+      id: 'sub-2', displayName: 'Alex', relationship: 'partner',
+      isSelf: false, consentCount: 1, recordCount: 1,
+    },
+  ]),
+  createPrivacySubject: vi.fn(),
+  deletePrivacySubject: vi.fn(),
+  getPrivacySubjectConsents: vi.fn().mockResolvedValue([]),
   getPrivacyStatus: vi.fn().mockResolvedValue({
     keyConfigured: true,
     recordCounts: { address: 1, email: 1 },
@@ -60,7 +74,11 @@ vi.mock('../services/api', () => ({
 }));
 
 import Privacy from './Privacy';
-import { revealVaultRecord } from '../services/api';
+import {
+  revealVaultRecord, getVaultRecords, getPrivacyStatus, getPrivacySubjects,
+} from '../services/api';
+
+const SELF_ID = '00000000-0000-4000-8000-000000000001';
 
 function renderAt(path) {
   return render(
@@ -127,5 +145,61 @@ describe('Privacy Center', () => {
   it('stale :tab param falls back to Overview', async () => {
     renderAt('/privacy/bogus');
     await waitFor(() => expect(screen.getByText(/system of record/i)).toBeInTheDocument());
+  });
+
+  // ── Household subjects (#3658) ────────────────────────────────────────────
+  describe('household subjects', () => {
+    it('defaults the scope to self and lists the household in the switcher', async () => {
+      renderAt('/privacy/vault');
+      await waitFor(() => expect(screen.getByText('Home address')).toBeInTheDocument());
+      const select = await screen.findByLabelText('Subject');
+      expect(select).toHaveValue(SELF_ID);
+      expect(screen.getByRole('option', { name: /Alex · Partner/ })).toBeInTheDocument();
+      expect(getVaultRecords).toHaveBeenCalledWith(undefined, { subjectId: SELF_ID });
+    });
+
+    it('scopes every read to the subject named in the URL', async () => {
+      renderAt('/privacy/vault?subject=sub-2');
+      await waitFor(() => expect(getVaultRecords).toHaveBeenCalledWith(undefined, { subjectId: 'sub-2' }));
+      expect(getPrivacyStatus).toHaveBeenCalledWith({ subjectId: 'sub-2' });
+    });
+
+    it('flags when the view is scoped to someone other than self', async () => {
+      renderAt('/privacy/vault?subject=sub-2');
+      await waitFor(() => expect(screen.getByText(/not your own/i)).toBeInTheDocument());
+      expect(screen.getByText(/Viewing Alex/)).toBeInTheDocument();
+    });
+
+    it('switching subjects refetches under the new scope and lands in the URL', async () => {
+      renderAt('/privacy/vault');
+      await waitFor(() => screen.getByLabelText('Subject'));
+      fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'sub-2' } });
+      await waitFor(() => expect(getVaultRecords).toHaveBeenCalledWith(undefined, { subjectId: 'sub-2' }));
+      expect(screen.getByLabelText('Subject')).toHaveValue('sub-2');
+    });
+
+    it('flags a non-self scope immediately, before the subject list resolves', async () => {
+      // The tabs fetch on subjectId right away, so a bar that waits for the
+      // subject list to decide "is this me?" shows someone else's PII under
+      // self styling for the whole load window.
+      let resolveSubjects;
+      getPrivacySubjects.mockReturnValueOnce(new Promise((r) => { resolveSubjects = r; }));
+      renderAt('/privacy/vault?subject=sub-2');
+      await waitFor(() => expect(screen.getByText(/not your own/i)).toBeInTheDocument());
+      // Settle the deferred fetch inside act so the late state update lands here.
+      await act(async () => { resolveSubjects([]); });
+    });
+
+    it('flags an unresolvable subject rather than treating it as self', async () => {
+      renderAt('/privacy/vault?subject=deleted-subject');
+      await waitFor(() => expect(screen.getByText(/not your own/i)).toBeInTheDocument());
+    });
+
+    it('keeps a stale ?subject deep link labeled rather than blank', async () => {
+      renderAt('/privacy/vault?subject=deleted-subject');
+      const select = await screen.findByLabelText('Subject');
+      await waitFor(() => expect(select).toHaveValue('deleted-subject'));
+      expect(screen.getByRole('option', { name: 'Unknown subject' })).toBeInTheDocument();
+    });
   });
 });

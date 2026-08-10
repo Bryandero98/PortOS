@@ -13,7 +13,7 @@ import { declaresNoCommitCriterion } from '../taskTypeHooks.js';
 
 // A pre-#2696 gh/git coordinator run (branch-reconcile/issue-reconcile/branch-cleanup/
 // jira-status-report) carries a FOSSIL `result.validationPassed` — a boolean the old
-// `[task-<id>]` commit criterion stamped on a run that never makes such a commit (almost
+// commit criterion stamped on a run that never makes such a commit (almost
 // always `false`). recordTaskCompletion trusts a persisted boolean over the exit code, so
 // re-recording one verbatim would restore the very bucket migration 198 purged. These types
 // now declare NO commit criterion, so drop the fossil and let the exit-code success stand —
@@ -35,6 +35,12 @@ function withoutStaleCoordinatorVerdict(agent, task) {
  */
 export function initTaskLearning() {
   cosEvents.on('agent:completed', async (agent) => {
+    // A record retired by `resumeAgent` is a CONTINUATION, not an outcome: the run
+    // was paused by the user and its task is already back in the queue, where the
+    // resumed run will record the real verdict. Learning from it would charge the
+    // task type and model tier a phantom failure per pause, and double-count the
+    // task once the continuation finishes.
+    if (agent?.result?.resumed) return;
     // Get task info from agent
     const task = {
       id: agent.taskId,

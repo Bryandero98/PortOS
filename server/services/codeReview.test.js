@@ -31,6 +31,7 @@ import {
   __resetCodeReviewDefaultsCache,
   __resetReviewerCliInstalledCache,
 } from './codeReview.js'
+import { MODEL_SELECTABLE_REVIEWERS } from '../lib/cosValidation.js'
 
 // Minimal stand-ins for the deps resolveReviewLoopOptions is handed by its
 // callers (agentCliSpawning / agentCompletionCleanup) — kept trivial so the
@@ -70,6 +71,12 @@ describe('codeReview helpers', () => {
       lmstudioEffort: null,
       ollamaEffort: null,
     }
+    // Same for every model-selectable reviewer — `antigravity` joined the roster
+    // when agy's `--model` became pinnable (#3728), `grok` when `grok --model`
+    // did (#3729). Derived from the roster, because `pickCodeReviewDefaults`
+    // derives its keys the same way: a hand-listed copy would have to be edited
+    // in lockstep with every future addition and says nothing extra when it is.
+    const NO_MODELS = Object.fromEntries(MODEL_SELECTABLE_REVIEWERS.map((r) => [`${r}Model`, null]))
     it('returns the hardcoded fallback when settings has no codeReview slice', () => {
       expect(pickCodeReviewDefaults(null)).toEqual({
         reviewers: ['copilot'],
@@ -78,10 +85,7 @@ describe('codeReview helpers', () => {
         reviewerMaxRounds: {},
         stopMode: 'all',
         reviewerApplies: false,
-        lmstudioModel: null,
-        ollamaModel: null,
-        codexModel: null,
-        claudeModel: null,
+        ...NO_MODELS,
         ...NO_EFFORTS,
       })
       expect(pickCodeReviewDefaults({})).toEqual({
@@ -91,10 +95,7 @@ describe('codeReview helpers', () => {
         reviewerMaxRounds: {},
         stopMode: 'all',
         reviewerApplies: false,
-        lmstudioModel: null,
-        ollamaModel: null,
-        codexModel: null,
-        claudeModel: null,
+        ...NO_MODELS,
         ...NO_EFFORTS,
       })
     })
@@ -145,6 +146,8 @@ describe('codeReview helpers', () => {
           ollamaModel: 'codellama',
           codexModel: 'gpt-5.6-sol',
           claudeModel: 'qwen2.5:7b',
+          antigravityModel: 'gemini-3.6-flash',
+          grokModel: 'grok-code-fast-1',
         },
       })
       expect(out).toEqual({
@@ -161,6 +164,8 @@ describe('codeReview helpers', () => {
         ollamaModel: 'codellama',
         codexModel: 'gpt-5.6-sol',
         claudeModel: 'qwen2.5:7b',
+        antigravityModel: 'gemini-3.6-flash',
+        grokModel: 'grok-code-fast-1',
         ...NO_EFFORTS,
       })
     })
@@ -262,6 +267,19 @@ describe('codeReview helpers', () => {
       expect(cleared.reviewerModels).toEqual({})
     })
 
+    it('carries an antigravity model pin and splits a suffixed id into model + effort', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['antigravity'], antigravityModel: 'gemini-3.6-flash' } }
+      expect((await resolveReviewLoopOptions({}, testDeps)).reviewerModels)
+        .toEqual({ antigravity: 'gemini-3.6-flash' })
+      // `agy models` lists each tier as its own id; agy validates the model/effort
+      // PAIR, so a typed suffixed pin has to reach the invocation already split.
+      mockedSettings.current = { codeReview: { reviewers: ['antigravity'], antigravityModel: 'gemini-3.6-flash-high' } }
+      __resetCodeReviewDefaultsCache()
+      const split = await resolveReviewLoopOptions({}, testDeps)
+      expect(split.reviewerModels).toEqual({ antigravity: 'gemini-3.6-flash' })
+      expect(split.reviewerEfforts).toEqual({ antigravity: 'high' })
+    })
+
     it('drops a pin on a reviewer that takes no model', async () => {
       mockedSettings.current = { codeReview: { reviewers: ['copilot'] } }
       const out = await resolveReviewLoopOptions({ reviewerModels: { copilot: 'nope', '@bot': 'nope' } }, testDeps)
@@ -281,6 +299,82 @@ describe('codeReview helpers', () => {
       // An explicitly empty map is a real "no caps for this task" choice.
       const cleared = await resolveReviewLoopOptions({ reviewerMaxRounds: {} }, testDeps)
       expect(cleared.reviewerMaxRounds).toEqual({})
+    })
+
+    // The effort map is the twin of the model map above and rides the same
+    // returned bundle. Dropping the `reviewerEfforts` key here silently disables
+    // every per-reviewer effort pin across the review loop, so these pin the key
+    // itself as much as the precedence.
+    it('assembles a reviewer-keyed effort map from the per-reviewer scalars', async () => {
+      mockedSettings.current = {
+        codeReview: {
+          reviewers: ['codex', 'claude'],
+          codexEffort: 'xhigh',
+          claudeEffort: 'high',
+        },
+      }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerEfforts).toEqual({ codex: 'xhigh', claude: 'high' })
+    })
+
+    it('omits reviewers with no configured effort (absent = the reviewer\'s own default)', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['codex', 'claude'], codexEffort: 'high' } }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerEfforts).toEqual({ codex: 'high' })
+    })
+
+    it('returns an empty effort map when no reviewer has one configured', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['copilot', 'codex'] } }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerEfforts).toEqual({})
+    })
+
+    it('carries a local-LLM effort pin too, so a per-task one can reach the endpoint', async () => {
+      // `/api/code-review/local`'s own default reads the GLOBAL settings scalar
+      // and can't see a task-level pin, so the pin travels in this map instead.
+      mockedSettings.current = { codeReview: { reviewers: ['copilot', 'ollama'], ollamaEffort: 'low' } }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerEfforts).toEqual({ ollama: 'low' })
+    })
+
+    it('lets a task-level effort map (including an explicitly empty one) override the defaults', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['codex'], codexEffort: 'high' } }
+      const pinned = await resolveReviewLoopOptions({ reviewerEfforts: { codex: 'minimal' } }, testDeps)
+      expect(pinned.reviewerEfforts).toEqual({ codex: 'minimal' })
+      // An explicit `{}` is a real "use each reviewer's own default effort for
+      // this task" choice, not an absent field.
+      const cleared = await resolveReviewLoopOptions({ reviewerEfforts: {} }, testDeps)
+      expect(cleared.reviewerEfforts).toEqual({})
+    })
+
+    it('drops an effort pin a reviewer\'s own ladder does not accept', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['antigravity', 'copilot'] } }
+      // `agy` really does reject `--effort max`, and `copilot` is a GitHub review
+      // with no effort control at all — both are dropped, not clamped.
+      const out = await resolveReviewLoopOptions(
+        { reviewerEfforts: { antigravity: 'max', copilot: 'high', '@bot': 'high' } },
+        testDeps,
+      )
+      expect(out.reviewerEfforts).toEqual({})
+    })
+
+    it('strips only the unusable entries from a mixed effort map', async () => {
+      mockedSettings.current = { codeReview: { reviewers: ['codex', 'antigravity'] } }
+      const out = await resolveReviewLoopOptions(
+        { reviewerEfforts: { codex: 'minimal', antigravity: 'max' } },
+        testDeps,
+      )
+      // `minimal` is on codex's ladder and `max` is not on agy's — one bad entry
+      // must not take the whole map down with it.
+      expect(out.reviewerEfforts).toEqual({ codex: 'minimal' })
+    })
+
+    it('drops a stale out-of-ladder scalar from the saved defaults', async () => {
+      // settings.json is hand-editable, so the scalars are re-validated rather
+      // than trusted — an unusable level must not surface as a pin.
+      mockedSettings.current = { codeReview: { reviewers: ['antigravity'], antigravityEffort: 'ultra' } }
+      const out = await resolveReviewLoopOptions({}, testDeps)
+      expect(out.reviewerEfforts).toEqual({})
     })
   })
 

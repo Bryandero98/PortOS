@@ -617,8 +617,8 @@ describe('validation.js', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should reject timeout above 600000', () => {
-      const provider = { name: 'Test', type: 'cli', timeout: 700000 };
+    it('should reject timeout above the 12-hour ceiling', () => {
+      const provider = { name: 'Test', type: 'cli', timeout: 43_200_001 };
       const result = providerSchema.safeParse(provider);
       expect(result.success).toBe(false);
     });
@@ -1571,6 +1571,14 @@ describe('validation.js', () => {
       expect(out.judgeModel).toBe('heavy');
     });
 
+    it('preserves a per-stage effort pin (#3641) instead of stripping it', () => {
+      expect(stageConfigUpdateSchema.parse({ effort: 'high' }).effort).toBe('high');
+      // '' (the picker's "provider default" sentinel) and null both clear the pin.
+      expect(stageConfigUpdateSchema.parse({ effort: '' }).effort).toBeNull();
+      expect(stageConfigUpdateSchema.parse({ effort: null }).effort).toBeNull();
+      expect(stageConfigUpdateSchema.safeParse({ effort: 'turbo' }).success).toBe(false);
+    });
+
     it('accepts null judgeProvider/judgeModel as a cleared pin', () => {
       const out = stageConfigUpdateSchema.parse({ judgeProvider: null, judgeModel: null });
       expect(out.judgeProvider).toBeNull();
@@ -1595,9 +1603,9 @@ describe('validation.js', () => {
       expect(stageConfigUpdateSchema.parse({ timeout: 1000 }).timeout).toBe(1000);
     });
 
-    it('enforces the 30-minute upper bound', () => {
-      expect(stageConfigUpdateSchema.parse({ timeout: 1800000 }).timeout).toBe(1800000);
-      expect(stageConfigUpdateSchema.safeParse({ timeout: 1800001 }).success).toBe(false);
+    it('enforces the 12-hour upper bound', () => {
+      expect(stageConfigUpdateSchema.parse({ timeout: 43_200_000 }).timeout).toBe(43_200_000);
+      expect(stageConfigUpdateSchema.safeParse({ timeout: 43_200_001 }).success).toBe(false);
     });
 
     it('strips unknown keys (no prototype-pollution leak via spread merge)', () => {
@@ -1744,6 +1752,12 @@ describe('validation.js', () => {
       expect(pipelineEditorialChecksSettingsSchema.safeParse({ checkFindingsPauseThreshold: 2.5 }).success).toBe(false);
     });
 
+    it('rejects a saved unlockForRun default — the option is per-run only', () => {
+      // Persisting it would let `seriesAutopilotScheduler` (which reads this
+      // slice) arm lock-clearing on every unattended run of every series.
+      expect(pipelineEditorialChecksSettingsSchema.safeParse({ unlockForRun: true }).success).toBe(false);
+    });
+
     it('the settings slice accepts forward/older-peer custom-check shapes (lenient)', () => {
       // A def carrying a future field (or a not-yet-known scope) must not 400 an
       // unrelated settings save — runtime buildCustomCheck decides runnability.
@@ -1857,6 +1871,20 @@ describe('seriesAutopilotSettingsSchema (#2174)', () => {
       schedules: [{ seriesId: 's1', cron: '0 3 * * *', provider: '', model: '' }],
     });
     expect(parsed.schedules[0]).toEqual({ seriesId: 's1', cron: '0 3 * * *', enabled: false });
+  });
+
+  it('accepts an optional per-schedule effort and rejects an unknown level (#3641)', () => {
+    const parsed = seriesAutopilotSettingsSchema.parse({
+      schedules: [{ seriesId: 's1', cron: '0 3 * * *', effort: 'high' }],
+    });
+    expect(parsed.schedules[0].effort).toBe('high');
+    // Blank is the picker's "provider default" sentinel, not a pin.
+    expect(seriesAutopilotSettingsSchema.parse({
+      schedules: [{ seriesId: 's1', cron: '0 3 * * *', effort: '' }],
+    }).schedules[0].effort).toBeUndefined();
+    expect(seriesAutopilotSettingsSchema.safeParse({
+      schedules: [{ seriesId: 's1', cron: '0 3 * * *', effort: 'turbo' }],
+    }).success).toBe(false);
   });
 });
 

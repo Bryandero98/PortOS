@@ -4,13 +4,13 @@
  * currently set, and clearing either one snaps the slot back to the dual
  * upload+gallery picker.
  *
- * Presentational — all selection state and the visible-gallery list are owned
- * by the VideoGen page and passed in. `visibleGallery` is the pre-filtered
- * gallery option list (shared across pickers so the filter runs once per
- * gallery change).
+ * Presentational — all selection state is owned by the VideoGen page.
+ * `onBrowseGallery` opens that page's shared GalleryImagePicker modal (the same
+ * searchable thumbnail grid the Image Gen i2i form uses).
  */
 import { Upload } from 'lucide-react';
 import FilePickerButton from '../ui/FilePickerButton';
+import GalleryPickButton from './GalleryPickButton';
 import ImagePreview from './ImagePreview';
 
 export default function FramePanel({
@@ -18,8 +18,7 @@ export default function FramePanel({
   file,
   upload,
   uploadUrl,
-  visibleGallery,
-  onPickGallery,
+  onBrowseGallery,
   onUpload,
   onClear,
   alt,
@@ -49,17 +48,7 @@ export default function FramePanel({
         />
       ) : (
         <div className="space-y-1.5">
-          <select
-            value=""
-            onChange={(e) => onPickGallery(e.target.value || null)}
-            aria-label={`${label} — pick from gallery`}
-            className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-          >
-            <option value="">Pick from gallery…</option>
-            {visibleGallery.map((img) => (
-              <option key={img.filename} value={img.filename}>{img.filename}</option>
-            ))}
-          </select>
+          <GalleryPickButton label={label} onClick={onBrowseGallery} />
           <FilePickerButton
             accept="image/*"
             onChange={(e) => onUpload(e.target.files?.[0] || null)}

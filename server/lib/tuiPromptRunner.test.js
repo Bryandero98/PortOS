@@ -23,6 +23,7 @@ const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef } = v
     emitRunStarted: vi.fn(),
     registerActiveRun: vi.fn(),
     unregisterActiveRun: vi.fn(),
+    consumeRunStopRequested: vi.fn(() => false),
     getRunsPath: vi.fn(),
     // Real implementation (and its bad-workspace failure path) is covered by
     // lib/spawnCwd.test.js + services/runner.test.js; here it just needs to
@@ -50,6 +51,7 @@ vi.mock('./fileUtils.js', async () => {
 });
 
 import { cleanTuiResponse, resolveTuiResponseText, executeTuiRun } from './tuiPromptRunner.js';
+import { markHostShuttingDown, resetHostShutdownFlagForTests } from './hostShutdown.js';
 
 const makeFakePty = () => {
   const fake = {
@@ -270,7 +272,10 @@ describe('executeTuiRun', () => {
     runnerMocks.emitRunStarted.mockClear();
     runnerMocks.registerActiveRun.mockClear();
     runnerMocks.unregisterActiveRun.mockClear();
+    runnerMocks.consumeRunStopRequested.mockReset();
+    runnerMocks.consumeRunStopRequested.mockReturnValue(false);
     runnerMocks.getRunsPath.mockClear();
+    resetHostShutdownFlagForTests();
     shellMocks.registerExternalSession.mockClear();
     shellMocks.unregisterExternalSession.mockClear();
     shellMocks.isExternalSessionAttached.mockReset();
@@ -281,6 +286,7 @@ describe('executeTuiRun', () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    resetHostShutdownFlagForTests();
     vi.restoreAllMocks();
     await rm(runsTmpDirRef.current, { recursive: true, force: true }).catch(() => null);
   });
@@ -316,6 +322,40 @@ describe('executeTuiRun', () => {
   });
 
   describe('startup hooks', () => {
+    it('disables Codex multi-agent fan-out for one-shot prompt runs', async () => {
+      const provider = {
+        id: 'codex-tui', type: 'tui', command: '/opt/homebrew/bin/codex', defaultModel: 'gpt-x',
+      };
+      const promise = executeTuiRun({
+        runId: 'run-codex-one-shot', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE,
+      });
+      await flushAsync();
+
+      const args = ptySpawnMock.mock.calls[0][1];
+      expect(args).toContain('--disable');
+      expect(args[args.indexOf('--disable') + 1]).toBe('multi_agent');
+
+      ptyInstances[0].emitExit({ exitCode: 0 });
+      await promise;
+    });
+
+    it('does not add Codex feature flags to other one-shot TUI providers', async () => {
+      const provider = {
+        id: 'claude-tui', type: 'tui', command: 'claude', defaultModel: 'claude-fable-5',
+      };
+      const promise = executeTuiRun({
+        runId: 'run-claude-one-shot', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE,
+      });
+      await flushAsync();
+
+      expect(ptySpawnMock.mock.calls[0][1]).not.toContain('--disable');
+
+      ptyInstances[0].emitExit({ exitCode: 0 });
+      await promise;
+    });
+
     it('registers the PTY in the active-runs map and fires emitRunStarted with provider + defaultModel', async () => {
       const provider = {
         id: 'claude', type: 'tui', command: 'echo', defaultModel: 'claude-3.5',
@@ -445,6 +485,56 @@ describe('executeTuiRun', () => {
       expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         exitCode: 0,
+      }));
+    });
+
+    it('does not reap a quiet Codex reasoning pass before its response file exists', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      const provider = {
+        id: 'codex-tui', type: 'tui', command: 'codex',
+        tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500,
+      };
+      const runId = 'run-codex-quiet-reasoning';
+      const promise = executeTuiRun({
+        runId,
+        provider,
+        prompt: 'reason carefully and write the complete structured response',
+        workspacePath: TEST_WORKSPACE,
+        timeout: 60000,
+      });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData('OpenAI Codex ready> ');
+      await vi.advanceTimersByTimeAsync(2000); // paste
+      await vi.advanceTimersByTimeAsync(4000); // enter
+      pty.emitData('Working (0s • esc to interrupt)');
+
+      // This is well beyond the configured 500ms idle fallback. A generic TUI
+      // would have completed from its screen scrape, but Codex is still doing
+      // real work and has not written the authoritative response yet.
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushAsync();
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
+
+      const runDir = join(runsTmpDirRef.current, runId);
+      await mkdir(runDir, { recursive: true });
+      await writeFile(join(runDir, 'tui-response.txt'), '{"repaired":true}');
+      await vi.advanceTimersByTimeAsync(1100);
+      await vi.advanceTimersByTimeAsync(1100);
+      await flushAsync();
+      await promise;
+
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId,
+        success: true,
+        output: '{"repaired":true}',
+        extras: expect.objectContaining({
+          completionReason: 'response-file',
+          usedResponseFile: true,
+        }),
       }));
     });
 
@@ -715,6 +805,132 @@ describe('executeTuiRun', () => {
       }));
     });
 
+    it('fails as a timeout after Claude exhausts its internal request retries instead of parsing the error screen as output', async () => {
+      const provider = { id: 'claude', type: 'tui', command: 'claude' };
+      const onComplete = vi.fn();
+      const promise = executeTuiRun({ runId: 'run-request-timeout', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete, timeout: 60000 });
+      await flushAsync();
+
+      // Retry banners are recoverable and must not be interrupted. The final
+      // gutter-owned line is what Claude Code shows only after retry 10/10.
+      ptyInstances[0].emitData('⎿ Request timed out · Retrying in 38s · attempt 9/10\n');
+      expect(ptyInstances[0].kill).not.toHaveBeenCalled();
+      ptyInstances[0].emitData('  ⎿\u00a0Requesttimedout\n');
+
+      await promise;
+      expect(ptyInstances[0].kill).toHaveBeenCalled();
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-request-timeout',
+        success: false,
+        exitCode: 124,
+        error: expect.stringContaining('timed out'),
+        extras: expect.objectContaining({ completionReason: 'fallback-signal' }),
+      }));
+      expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+        success: false,
+        exitCode: 124,
+        completionReason: 'fallback-signal',
+      }));
+    });
+
+    it('keeps retrying when a PTY chunk boundary splits the retry banner right after "Request timed out"', async () => {
+      const provider = { id: 'claude', type: 'tui', command: 'claude' };
+      const promise = executeTuiRun({ runId: 'run-split-retry', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, timeout: 60000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      // Ink repaints the countdown on every tick and the tty delivers those
+      // frames in sub-frame chunks, so a split inside the ~30-char window
+      // between "out" and " · Retrying" is routine. Before #3715 this first
+      // chunk ALONE finalized the run as exitCode 124 and burned a fallback
+      // tier — killing the retry sequence the detector exists to protect.
+      pty.emitData('  ⎿ Request timed out');
+      await flushAsync();
+      expect(pty.kill).not.toHaveBeenCalled();
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
+
+      pty.emitData(' · Retrying in 38s · attempt 3/10\n');
+      await flushAsync();
+      expect(pty.kill).not.toHaveBeenCalled();
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
+
+      // Retries do eventually exhaust — the genuinely terminal banner (its own
+      // complete line) must still fail the run.
+      pty.emitData('  ⎿ Request timed out\n');
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-split-retry',
+        success: false,
+        exitCode: 124,
+        extras: expect.objectContaining({ completionReason: 'fallback-signal' }),
+      }));
+    });
+
+    it('flushes a held terminal banner at PTY exit rather than scraping the error screen as a success', async () => {
+      const provider = { id: 'claude', type: 'tui', command: 'claude' };
+      const promise = executeTuiRun({ runId: 'run-exit-timeout', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, timeout: 60000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      // No terminator yet, so the candidate is held rather than acted on.
+      pty.emitData('  ⎿ Request timed out');
+      await flushAsync();
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
+
+      // Claude Code exits 0 with the error screen still up. Process exit is the
+      // terminator the held candidate was waiting for.
+      pty.emitExit({ exitCode: 0, signal: undefined });
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-exit-timeout',
+        success: false,
+        exitCode: 124,
+        extras: expect.objectContaining({ completionReason: 'fallback-signal' }),
+      }));
+    });
+
+    it('salvages a settled response file when a fallback signal paints inside the size-stability window', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      const provider = { id: 'claude', type: 'tui', command: 'claude', tuiPromptDelayMs: 50 };
+      const runId = 'run-signal-salvage';
+      const promise = executeTuiRun({ runId, provider, prompt: 'write the review then finish up properly', workspacePath: TEST_WORKSPACE, timeout: 60000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData('claude code ready> ');
+      await vi.advanceTimersByTimeAsync(2000); // paste → response-file watcher armed
+      await vi.advanceTimersByTimeAsync(4000); // enter
+
+      const runDir = join(runsTmpDirRef.current, runId);
+      await mkdir(runDir, { recursive: true });
+      await writeFile(join(runDir, 'tui-response.txt'), 'the finished review body');
+      // Poll 1 only seeds the size-stability baseline — the run is NOT finalized
+      // yet even though the complete answer is already on disk.
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
+
+      // A follow-up provider request times out and paints the terminal banner
+      // inside that ≥1s window. Failing here would discard the finished
+      // response (resolveTuiResponseText only reads the file on success) and
+      // re-run an expensive stage on a fallback provider.
+      pty.emitData('\n  ⎿ Request timed out\n');
+      await flushAsync();
+      await promise;
+
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId,
+        success: true,
+        exitCode: 0,
+        output: 'the finished review body',
+        extras: expect.objectContaining({
+          completionReason: 'fallback-signal-response-file',
+          usedResponseFile: true,
+        }),
+      }));
+    });
+
     it('finishes with reason "exit" + exitCode 0 when the PTY closes cleanly', async () => {
       const provider = { id: 'claude', type: 'tui', command: 'echo' };
       const promise = executeTuiRun({ runId: 'run-exit', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete: undefined, timeout: 60000 });
@@ -802,6 +1018,42 @@ describe('executeTuiRun', () => {
         exitCode: 130,
         error: expect.stringContaining('SIGTERM'),
         extras: expect.objectContaining({ completionReason: 'killed' }),
+      }));
+    });
+
+    it('finalizes an explicit stop as canceled instead of a provider failure', async () => {
+      const provider = { id: 'claude', type: 'tui', command: 'echo' };
+      const onComplete = vi.fn();
+      runnerMocks.consumeRunStopRequested.mockReturnValueOnce(true);
+      const promise = executeTuiRun({ runId: 'run-stopped', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, onComplete, timeout: 60000 });
+      await flushAsync();
+
+      ptyInstances[0].emitExit({ exitCode: null, signal: 'SIGTERM' });
+
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-stopped',
+        success: false,
+        error: expect.stringContaining('canceled'),
+        extras: expect.objectContaining({ completionReason: 'canceled', canceled: true }),
+      }));
+      expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ canceled: true }));
+    });
+
+    it('finalizes a host-shutdown signal as an interruption instead of a provider failure', async () => {
+      const provider = { id: 'codex', type: 'tui', command: 'echo' };
+      markHostShuttingDown();
+      const promise = executeTuiRun({ runId: 'run-restart', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, timeout: 60000 });
+      await flushAsync();
+
+      ptyInstances[0].emitExit({ exitCode: null, signal: 2 });
+
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-restart',
+        success: false,
+        error: expect.stringContaining('PortOS shutdown'),
+        extras: expect.objectContaining({ completionReason: 'host-shutdown', canceled: true }),
       }));
     });
 

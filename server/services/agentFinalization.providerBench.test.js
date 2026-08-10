@@ -9,6 +9,13 @@
  * carries `benchMs`, and finalizeAgent honors it via the generic
  * `markProviderUnavailable` marker so `resolveAgentProviderAndModel` routes the
  * retry to a fallback until the deadline auto-recovers the provider.
+ *
+ * Every case here builds its `errorAnalysis` by running a real transcript through
+ * `detectImmediateFallbackSignal` / `analyzeAgentFailure` rather than hand-stamping
+ * `{ category, origin }`. A hand-stamped origin is how a real regression shipped
+ * green (#3635): the detector was rewritten so Claude Code's genuine usage-limit
+ * banners classified as `output-scan`, the gate stopped benching, and this suite
+ * never noticed because it had asserted against a shape it had written itself.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -25,6 +32,7 @@ vi.mock('./git.js', () => ({ resolveForgeForRepo: vi.fn(async () => ({ cli: 'gh'
 vi.mock('./cosEvents.js', () => ({ emitLog: vi.fn() }));
 vi.mock('./cosAgentLifecycle.js', () => ({
   getAgent: vi.fn(async () => null),
+  getAgentRecord: vi.fn(async () => null),
   updateAgent: vi.fn(async () => null),
   completeAgent: vi.fn(async () => null),
 }));
@@ -50,8 +58,10 @@ vi.mock('./agentErrorAnalysis.js', async (importOriginal) => ({
   resolveFailedTaskUpdate: vi.fn(async () => ({ status: 'pending', metadata: {} })),
   resolveTypeFailureSignal: vi.fn(() => ({ record: 'skip' })),
 }));
+vi.mock('../lib/gitCommitProbe.js', () => ({
+  committedDuringRun: vi.fn(async () => false),
+}));
 vi.mock('./agentRunTracking.js', () => ({
-  checkForTaskCommit: vi.fn(async () => false),
   createAgentRun: vi.fn(),
   completeAgentRun: vi.fn(async () => null),
 }));
@@ -61,6 +71,7 @@ vi.mock('./taskTypeHooks.js', () => ({
   resolveTaskHookType: vi.fn(() => null),
   declaresNoCommitCriterion: vi.fn(() => false),
   getTaskOutputHook: vi.fn(async () => null),
+  getTaskOutputPayloadPredicate: vi.fn(async () => null),
 }));
 vi.mock('./agentCompletion.js', () => ({ processAgentCompletion: vi.fn(async () => null) }));
 vi.mock('./agentSummaryExtraction.js', () => ({ extractSimplifySummaries: vi.fn(() => null) }));
@@ -109,6 +120,45 @@ describe('finalizeAgent provider sidelining', () => {
     expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
   });
 
+  // #3631, the broad half of the same gate: `detectImmediateFallbackSignal` used to
+  // stamp `origin: 'provider'` unconditionally, so an agent that merely PRINTED one
+  // of these banners benched a healthy provider for every subsequently dequeued
+  // task. These drive the REAL detector — hand-stamping `origin` is exactly how the
+  // sibling regression shipped green.
+  it.each([
+    ['prose quoting the banner', "The known failure mode is: We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly. — see errorDetection.js"],
+    ['a grep hit over a prior run\'s transcript', "data/cos/agents/agent-1/output.txt:412:  ⎿  We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."],
+    // The extra-usage status line has no loose alternative — quoting it inline
+    // does not even register as a signal, so there is nothing to bench on.
+    ['a quoted extra-usage status line', 'the tail showed "Now using extra usage" in a prior run'],
+  ])('does not bench when the agent merely printed the banner (%s)', async (_label, transcript) => {
+    const analysis = detectImmediateFallbackSignal(transcript);
+    expect(analysis?.origin ?? null).not.toBe('provider');
+    await failedRun(analysis);
+    expect(markProviderUnavailableMock).not.toHaveBeenCalled();
+    expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
+  });
+
+  it('still benches when the eligibility banner arrives as the run\'s own terminal output', async () => {
+    const analysis = detectImmediateFallbackSignal(
+      "starting the task…\n  ⎿  We're finishing verifying your account eligibility.\n This usually takes a moment. Please try again shortly.\r\n"
+    );
+    expect(analysis).toMatchObject({ category: 'auth-error', origin: 'provider' });
+    await failedRun(analysis);
+    expect(markProviderUnavailableMock).toHaveBeenCalledWith('antigravity-tui', expect.objectContaining({
+      reason: 'auth-error',
+    }));
+  });
+
+  it('still benches on the real extra-usage status line', async () => {
+    const analysis = detectImmediateFallbackSignal('Now using extra usage\n');
+    expect(analysis).toMatchObject({ category: 'usage-limit', origin: 'provider' });
+    await failedRun(analysis, 'claude-code-tui');
+    expect(markProviderUsageLimitMock).toHaveBeenCalledWith('claude-code-tui', expect.objectContaining({
+      category: 'usage-limit',
+    }));
+  });
+
   // The provenance gate is only as good as what `analyzeAgentFailure` promotes to
   // `origin: 'provider'`. The case above hand-stamps that origin, which is exactly
   // how a real regression shipped green: Claude Code's actual banners classified as
@@ -147,13 +197,14 @@ describe('finalizeAgent provider sidelining', () => {
   });
 
   it('leaves the usage-limit marker owning its own cooldown', async () => {
-    await failedRun({
-      hasError: true,
-      category: 'usage-limit',
-      origin: 'provider',
-      message: 'hit your usage limit',
-      requiresFallback: true,
-    }, 'claude-code-tui');
+    const analysis = analyzeAgentFailure(
+      'hit your usage limit · resets 6am\nthe transcript tail continues past the banner.',
+      { id: 'task-1' },
+      'claude',
+      {}
+    );
+    expect(analysis).toMatchObject({ category: 'usage-limit', origin: 'provider', requiresFallback: true });
+    await failedRun(analysis, 'claude-code-tui');
 
     // markUsageLimit parses its own window out of the provider's message, so it
     // keeps the dedicated marker rather than the flat per-category cooldown.
@@ -170,10 +221,17 @@ describe('finalizeAgent provider sidelining', () => {
   // loose alternatives (a bare "rate limit" / "quota exceeded" a failing test in
   // the agent's own workspace can print), and this gate used to key on the
   // category alone — so an agent's transcript could bench a healthy provider.
-  it.each(['auth-error', 'rate-limit', 'usage-limit'])(
+  // Each transcript below is text a task's OWN run can print.
+  it.each([
+    ['auth-error', 'Error: unauthorized while writing the snapshot fixture in the widget suite.\nmore output follows.'],
+    ['rate-limit', 'Error: the fixture asserted a rate limit banner renders for the widget list.\nmore output follows.'],
+    ['usage-limit', 'Error: quota exceeded for the fixture bucket while uploading the report artifact.\nmore output.'],
+  ])(
     'does not bench an output-scan %s that merely looks provider-ish',
-    async (category) => {
-      await failedRun({ hasError: true, category, origin: 'output-scan', message: 'looks provider-ish', requiresFallback: true });
+    async (category, transcript) => {
+      const analysis = analyzeAgentFailure(transcript, { id: 'task-1' }, 'claude', {});
+      expect(analysis).toMatchObject({ category, origin: 'output-scan' });
+      await failedRun(analysis);
       expect(markProviderUnavailableMock).not.toHaveBeenCalled();
       expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
       // No marker fired, so the lazy active-provider lookup must stay unread.
@@ -182,15 +240,30 @@ describe('finalizeAgent provider sidelining', () => {
   );
 
   it('does not bench an ordinary agent-work failure', async () => {
-    await failedRun({ hasError: true, category: 'test-failure', origin: 'output-scan', message: 'suite failed' });
+    const analysis = analyzeAgentFailure(
+      'The suite reported a test failure in the widget list module. Review the assertions and retry.',
+      { id: 'task-1' },
+      'claude',
+      {}
+    );
+    expect(analysis).toMatchObject({ category: 'test-failure', origin: 'output-scan' });
+    await failedRun(analysis);
     expect(markProviderUnavailableMock).not.toHaveBeenCalled();
     expect(markProviderUsageLimitMock).not.toHaveBeenCalled();
   });
 
   // A bad model id is REQUEST-specific: benching would take the provider's other
-  // working models offline over one wrong id.
+  // working models offline over one wrong id. Driven through the real detector so
+  // the `origin: 'provider'` half of the case is the one the classifier assigns.
   it('does not bench a provider-origin model-not-found', async () => {
-    await failedRun({ hasError: true, category: 'model-not-found', origin: 'provider', message: 'no such model' });
+    const analysis = analyzeAgentFailure(
+      'API Error: 404 Not Found model: example-model-v1\nthe run stopped here without retrying.',
+      { id: 'task-1' },
+      'claude',
+      {}
+    );
+    expect(analysis).toMatchObject({ category: 'model-not-found', origin: 'provider' });
+    await failedRun(analysis);
     expect(markProviderUnavailableMock).not.toHaveBeenCalled();
   });
 

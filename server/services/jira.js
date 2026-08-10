@@ -148,7 +148,13 @@ export function createJiraClient(instance) {
     get: (...args) => base.get(...args).then(checkToken, mapAuthError),
     post: (...args) => base.post(...args).then(checkToken, mapAuthError),
     put: (...args) => base.put(...args).then(checkToken, mapAuthError),
-    delete: (...args) => base.delete(...args).then(checkToken, mapAuthError)
+    delete: (...args) => base.delete(...args).then(checkToken, mapAuthError),
+    // Atlassian sunset the old `GET /rest/api/2/search` on Cloud only (410 Gone) in
+    // favor of `/search/jql`, which keeps the same v2 field shapes. Server/DC is on
+    // its own release cycle: the classic endpoint stays supported there, and an
+    // older DC version may not even serve `/search/jql` yet — so route on instance
+    // type instead of hardcoding one path. Every JQL search goes through here.
+    search: (params) => base.get(isCloud ? '/rest/api/2/search/jql' : '/rest/api/2/search', { params }).then(checkToken, mapAuthError)
   };
 }
 
@@ -286,9 +292,7 @@ export async function searchIssues(instanceId, jql, { fields = 'summary,status,l
   }
 
   const client = createJiraClient(instance);
-  const response = await client.get('/rest/api/2/search', {
-    params: { jql, fields, maxResults }
-  });
+  const response = await client.search({ jql, fields, maxResults });
 
   return (response.data.issues || []).map(issue => ({
     key: issue.key,
@@ -455,12 +459,10 @@ export async function fetchMyCurrentSprintTickets(instanceId, projectKey) {
   // JQL to find tickets assigned to current user in active sprint for the project
   const jql = `project = "${escapeJql(projectKey)}" AND assignee = currentUser() AND sprint in openSprints() ORDER BY priority DESC, updated DESC`;
 
-  const response = await client.get('/rest/api/2/search', {
-    params: {
-      jql,
-      fields: 'summary,status,priority,issuetype,assignee,updated,customfield_10106',
-      maxResults: 50
-    }
+  const response = await client.search({
+    jql,
+    fields: 'summary,status,priority,issuetype,assignee,updated,customfield_10106',
+    maxResults: 50
   });
 
   return response.data.issues.map(issue => ({
@@ -635,12 +637,10 @@ export async function searchEpics(instanceId, projectKey, query) {
   const safeQuery = escapeJql(query);
   const jql = `project = "${safeProject}" AND issuetype = Epic AND summary ~ "${safeQuery}" ORDER BY updated DESC`;
 
-  const response = await client.get('/rest/api/2/search', {
-    params: {
-      jql,
-      fields: 'summary,status',
-      maxResults: 10
-    }
+  const response = await client.search({
+    jql,
+    fields: 'summary,status',
+    maxResults: 10
   });
 
   return response.data.issues.map(issue => ({

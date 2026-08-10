@@ -130,10 +130,16 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
         </div>
       )}
 
+      {/* `error` is also how a card that read fine says it has nothing to
+          meter, so the note rides along — otherwise the one state where the
+          reading's age matters most is the one state that hides it. */}
       {quota.supported && !quota.pending && quota.error && (
         <div className="flex items-start gap-2 text-sm text-gray-400 py-1">
           <AlertTriangle size={15} className="text-port-warning mt-0.5 shrink-0" />
-          <span>{quota.error}</span>
+          <span>
+            {quota.error}
+            {quota.note && <span className="block text-xs text-gray-500 mt-1">{quota.note}</span>}
+          </span>
         </div>
       )}
 

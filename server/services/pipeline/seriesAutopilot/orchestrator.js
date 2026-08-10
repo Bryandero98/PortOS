@@ -17,10 +17,13 @@ import { runs } from './state.js';
 import {
   resolveAutopilotRounds, resolveAutopilotFoundationGate, resolveAutopilotFoundationThreshold,
   resolveAutopilotReadinessGate, resolveAutopilotCheckPauseThreshold, resolveAutopilotNotifyOnPause,
-  resolveAutopilotProduceTeaser, resolveAutopilotRevision,
+  resolveAutopilotProduceTeaser, resolveAutopilotRevision, resolveAutopilotLlm,
+  resolveAutopilotUnlockForRun, resolveAutopilotSelfImprove, resolveAutopilotObserver,
 } from './config.js';
+import { runSelfImproveDiagnosis } from './selfImprove.js';
+import { observerEnabled, runObserverPass, summarizeObserver } from './observer.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
-import { broadcast, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup } from './session.js';
+import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup, roleLlm } from './session.js';
 import { resolveNextStep } from './stepResolver.js';
 import { editorialSubsetIds } from './editorialSteps.js';
 import { dispatchStep } from './dispatch.js';
@@ -69,7 +72,23 @@ export async function startSeriesAutopilot(sId, options = {}) {
     checkFindingsPauseThreshold: resolveAutopilotCheckPauseThreshold(options, settings),
     notifyOnPause: resolveAutopilotNotifyOnPause(options, settings),
     produceTeaser: resolveAutopilotProduceTeaser(options, settings),
+    unlockForRun: resolveAutopilotUnlockForRun(options),
     ...resolveAutopilotRevision(options, settings),
+    // Pipeline self-improvement (opt-in): diagnose the AUTOMATION at the run's
+    // terminal and file a PortOS fix task when the pipeline — not the story — is
+    // what failed. Resolved here with the other gates so the signal tap in
+    // `broadcast` sees the flag from the run's very first frame.
+    selfImprove: resolveAutopilotSelfImprove(options, settings),
+    // Observing orchestrator (opt-in): watch the run's telemetry step by step
+    // and dispatch AUTO-APPROVED PortOS fix tasks (PR + review loop + merge, no
+    // human gate) as pipeline defects surface. Same early resolution so the
+    // signal tap retains frames from the first one.
+    observer: resolveAutopilotObserver(options, settings),
+    // Run provider/model: per-run override → the series' own `series.llm` →
+    // unset (stage pin / active provider downstream). Resolved ONCE here so the
+    // manual run, a scheduled run and the UI's "this run calls X / Y" copy all
+    // name the same thing, and so a resume re-reads a since-changed series LLM.
+    ...resolveAutopilotLlm(options, seriesRecord),
     severityWeights: mergeSeverityWeights(seriesRecord?.severityWeights),
     blockingSets: {
       arc: resolveBlockingSet(seriesRecord?.blockingSeverities, 'arc'),
@@ -96,7 +115,20 @@ export async function startSeriesAutopilot(sId, options = {}) {
     startedAt: new Date().toISOString(),
     mode,
     options: runOptions,
+    // Diagnosable telemetry retained for the opt-in self-improvement pass —
+    // appended by `broadcast` → `noteSignal`, bounded by MAX_SIGNALS (the
+    // overflow is counted in `signalsDropped`, not stored). Empty on every run
+    // that didn't opt in.
+    signals: [],
+    signalsDropped: 0,
     runState: {
+      // Unlock-everything pre-pass (opt-in, see unlockPass.js) has run this
+      // run. Boolean latch like arcVerified so the resolver routes there at
+      // most once, and a resume re-runs it (idempotent) against fresh state.
+      locksUnlocked: false,
+      // Character-first preflight. A new arc is generated only after the core
+      // cast has causal wants/needs/relationships to drive it.
+      characterFoundationEstablished: false,
       arcAttempted: false,
       arcVerified: false,
       // #2176 — foundation-quality gate satisfied this run (threshold cleared,
@@ -135,10 +167,91 @@ export async function startSeriesAutopilot(sId, options = {}) {
       revisionCyclesRun: 0,
       revisionScoreHistory: [],
       revisionConverged: false,
+      // Observing orchestrator state (opt-in, see observer.js). `observerCursor`
+      // is the index into `signals` the next mid-run pass reads from (each pass
+      // consumes its window so the same frames are never billed twice);
+      // `observerPassesRun` counts the bounded mid-run passes;
+      // `observerFindings` is the bounded log of dispatched tasks, carried to
+      // the terminal frame + marker.
+      observerCursor: 0,
+      observerPassesRun: 0,
+      observerFindings: [],
     },
     activeChild: null,
   };
   runs.set(sId, record);
+
+  // Shared `start` frame for both modes. `provider`/`model`/`effort` are the
+  // run's resolved soft defaults — what the panel shows as "this run calls X / Y";
+  // a stage pinned on the Prompts page still overrides them for that stage.
+  const startFrame = (target, extra = {}) => {
+    const judge = runOptions.judgeLlm ? roleLlm(record, 'judge') : null;
+    return {
+      type: 'start', runId, mode, target,
+      provider: runOptions.providerOverride ?? null,
+      model: runOptions.modelOverride ?? null,
+      effort: runOptions.effortOverride ?? null,
+      judge: judge ? {
+        provider: judge.providerOverride ?? null,
+        model: judge.modelOverride ?? null,
+        effort: judge.effortOverride ?? null,
+      } : null,
+      ...extra,
+    };
+  };
+
+  // Post-mortem hook for the opt-in diagnosis passes. Best-effort by contract:
+  // a diagnosis that throws must never turn a completed run into a failed one,
+  // so every terminal calls it through these catches. Never fires on a cancel
+  // (the user stopped it — there's no failure to explain) or a budget pause (an
+  // exhausted budget is a spend fact, not an automation defect, and there'd be
+  // no budget left to diagnose it with anyway). When the observing orchestrator
+  // is on it SUPERSEDES the one-shot self-improve post-mortem — same evidence,
+  // stronger action policy; running both would bill one run's telemetry twice
+  // and file near-duplicate tasks under different dedup keys. Returns
+  // `{ selfImprove, observer }` so each terminal spreads both marker fields.
+  const postMortem = async (outcome, reason = null) => {
+    if (observerEnabled(record)) {
+      // Let any in-flight mid-run pass land first — its frames must precede
+      // the terminal frame (SSE replays only the last payload), and its filing
+      // must be in the summary the marker persists.
+      await observerIdle();
+      await runObserverPass(sId, record, { phase: 'terminal', outcome, reason })
+        .catch((err) => {
+          console.log(`⚠️ autopilot: observer terminal pass failed for ${sId.slice(0, 12)}: ${err.message}`);
+        });
+      return { selfImprove: null, observer: summarizeObserver(record) };
+    }
+    const selfImprove = await runSelfImproveDiagnosis(sId, record, { outcome, reason })
+      .catch((err) => {
+        console.log(`⚠️ autopilot: self-improve diagnosis failed for ${sId.slice(0, 12)}: ${err.message}`);
+        return null;
+      });
+    return { selfImprove, observer: null };
+  };
+
+  // Mid-run observer beat: after each completed step, spend one bounded
+  // diagnosis pass when the step's fresh telemetry warrants it (see
+  // observer.js#shouldObserveStep — a clean step costs nothing). NOT awaited in
+  // the step loop — the pass rides a per-run promise chain so a heavy-model
+  // diagnosis never stalls the next pipeline step (the whole point is fixing
+  // the pipeline WHILE the run continues); the gate re-evaluates when the
+  // chained pass actually runs, so back-to-back enqueues collapse into cheap
+  // no-ops once the first pass consumes the window. Best-effort like the
+  // post-mortem: observing must never break the run.
+  let observerChain = Promise.resolve();
+  const observeStep = (step) => {
+    if (!observerEnabled(record)) return;
+    observerChain = observerChain
+      .then(() => runObserverPass(sId, record, { phase: 'step', stepKind: step.kind }))
+      .catch((err) => {
+        console.log(`⚠️ autopilot: observer pass failed for ${sId.slice(0, 12)}: ${err.message}`);
+        return null;
+      });
+  };
+  // Every terminal awaits this before broadcasting: a pass landing after the
+  // terminal frame would clobber the SSE replay payload clients resume from.
+  const observerIdle = () => observerChain.catch(() => null);
 
   // Fire-and-forget coordinator. The try/catch is the permitted boundary use —
   // an unhandled LLM rejection here would crash the process on Node ≥15.
@@ -156,7 +269,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         const editorialLlmCheckCount = checkPlan ? checkPlan.checks.filter((c) => c.kind === 'llm').length : undefined;
         const plan = buildDryRunPlan(series, issues, runOptions, { editorialLlmCheckCount });
         const planTotals = summarizePlanCost(plan);
-        broadcast(sId, { type: 'start', runId, mode, target: series.targetFormat, plan, planTotals });
+        broadcastStart(sId, startFrame(series.targetFormat, { plan, planTotals }));
         // Carry the plan on the terminal frame too: a dry-run emits start +
         // complete synchronously, often before the client attaches, and
         // attachSseClient replays only the LAST frame — so the plan would be
@@ -168,7 +281,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
 
       // EXECUTE.
       const series0 = await getSeries(sId);
-      broadcast(sId, { type: 'start', runId, mode, target: series0.targetFormat });
+      broadcastStart(sId, startFrame(series0.targetFormat));
       await persistMarker(sId, { status: 'running', runId, currentStep: null, residualFindings: [], lastError: null });
       // A resume is a fresh start: drop any stale pause banner up front so a run
       // that completes/errors without re-pausing doesn't leave a dead resume link.
@@ -196,8 +309,15 @@ export async function startSeriesAutopilot(sId, options = {}) {
           // failing checkIds on the frame so the UI flags it instead of "clean".
           const editorialCheckErroredIds = [...record.runState.editorialCheckErroredIds];
           const editorialCheckErrors = editorialCheckErroredIds.length;
-          await persistMarker(sId, { status: 'done', runId, currentStep: null, craftGapIssues, craftGapFindings, editorialCheckErrors });
-          broadcast(sId, { type: 'complete', runId, steps: ordinal, craftGapIssues, craftGapFindings, editorialCheckErrors, editorialCheckErroredIds, completedAt: new Date().toISOString() });
+          // A "complete" run can still have limped (a check threw, a child was
+          // retried, a step was skipped) — diagnose the automation BEFORE the
+          // terminal frame so the verdict rides it. No-ops unless the run opted
+          // in AND carries such a signal.
+          const pm = await postMortem('done', craftGapIssues || editorialCheckErrors
+            ? `completed with ${craftGapIssues} filed craft gap(s) and ${editorialCheckErrors} errored check(s)`
+            : null);
+          await persistMarker(sId, { status: 'done', runId, currentStep: null, craftGapIssues, craftGapFindings, editorialCheckErrors, ...pm });
+          broadcast(sId, { type: 'complete', runId, steps: ordinal, craftGapIssues, craftGapFindings, editorialCheckErrors, editorialCheckErroredIds, ...pm, completedAt: new Date().toISOString() });
           console.log(`✅ autopilot complete — series=${sId.slice(0, 12)} steps=${ordinal}${craftGapIssues ? ` (${craftGapIssues} issue(s) with filed script-craft gaps)` : ''}${editorialCheckErrors ? ` (${editorialCheckErrors} editorial check(s) errored: ${editorialCheckErroredIds.join(', ')})` : ''}`);
           return;
         }
@@ -229,12 +349,17 @@ export async function startSeriesAutopilot(sId, options = {}) {
         const selfGatingStep = step.kind === 'editorialChecks'
           || step.kind === 'editorialHealthGate'
           || step.kind === 'reverseOutline';
-        if (!selfGatingStep && !zeroRoundSkip) {
+        // Distinct from the self-gating steps (which bill, but decide for
+        // themselves when): `unlockLocks` makes no LLM call and bills nothing at
+        // all — it only clears lock bits — so pausing it on an exhausted budget
+        // would strand the run before its first real step for zero spend.
+        const costFreeStep = step.kind === 'unlockLocks';
+        if (!selfGatingStep && !costFreeStep && !zeroRoundSkip) {
           const budget = await getDomainBudgetStatus('cos');
           if (!budget.withinBudget) {
             const budgetReason = `daily cos ${budget.exceeded} budget reached`;
-            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: budgetReason });
-            broadcast(sId, { type: 'paused', runId, reason: budgetReason, completedAt: new Date().toISOString() });
+            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: budgetReason, pauseKind: 'budget' });
+            broadcast(sId, { type: 'paused', runId, reason: budgetReason, pauseKind: 'budget', completedAt: new Date().toISOString() });
             await notifyPause(record, sId, { reason: budgetReason, pauseKind: 'budget', currentStep: step.kind });
             console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
             return;
@@ -249,8 +374,12 @@ export async function startSeriesAutopilot(sId, options = {}) {
 
         if (result?.canceled || record.cancelRequested) break;
         if (result?.pause) {
-          await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, residualFindings: result.residual || [], lastError: result.reason, pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null });
-          broadcast(sId, { type: 'paused', runId, scope: step.kind, reason: result.reason, residualFindings: result.residual || [], pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, completedAt: new Date().toISOString() });
+          // Diagnose the automation BEFORE the terminal frame so the verdict
+          // rides it (a client tears its stream down on `paused`). No-ops unless
+          // the run opted into self-improvement.
+          const pm = await postMortem('paused', `${step.kind}: ${result.reason}`);
+          await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, residualFindings: result.residual || [], lastError: result.reason, pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, ...pm });
+          broadcast(sId, { type: 'paused', runId, scope: step.kind, reason: result.reason, residualFindings: result.residual || [], pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, ...pm, completedAt: new Date().toISOString() });
           await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
           // Only file the generic stalled task when the step didn't already file
           // a more specific gap (canon-undescribed, visual-no-pages, …) — else
@@ -268,17 +397,24 @@ export async function startSeriesAutopilot(sId, options = {}) {
           return;
         }
         broadcast(sId, { type: 'step:complete', kind: step.kind, seasonId: step.seasonId, issueId: step.issueId, ordinal });
+        observeStep(step);
       }
 
-      // Cancelled.
+      // Cancelled. No post-mortem (nothing to explain), but an in-flight
+      // observer pass must still land before the terminal frame.
+      await observerIdle();
       await persistMarker(sId, { status: 'paused', runId, currentStep: null, lastError: 'canceled by user' });
       broadcast(sId, { type: 'canceled', runId, steps: ordinal, completedAt: new Date().toISOString() });
       console.log(`🛑 autopilot canceled — series=${sId.slice(0, 12)} after ${ordinal} steps`);
     } catch (err) {
       const message = (err?.message || String(err)).slice(0, 1000);
       console.error(`❌ autopilot failed — series=${sId.slice(0, 12)} ${message}`);
-      await persistMarker(sId, { status: 'error', runId, lastError: message });
-      broadcast(sId, { type: 'error', runId, error: message, failedAt: new Date().toISOString() });
+      // Same ordering as the other terminals: diagnose first so the verdict can
+      // ride the `error` frame + marker rather than arriving after the client
+      // has torn its stream down.
+      const pm = await postMortem('error', message);
+      await persistMarker(sId, { status: 'error', runId, lastError: message, ...pm });
+      broadcast(sId, { type: 'error', runId, error: message, ...pm, failedAt: new Date().toISOString() });
       await fileGap(record, sId, {
         gapKind: 'run-error',
         summary: `The autonomous run failed and stopped: ${message}`,

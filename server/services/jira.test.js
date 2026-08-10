@@ -92,6 +92,40 @@ describe('createJiraClient expired-token detection', () => {
   });
 });
 
+describe('createJiraClient search endpoint routing', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const stubFetchOk = (body) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: name => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
+      json: async () => body
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  it('routes a Cloud instance to /rest/api/2/search/jql', async () => {
+    const fetchMock = stubFetchOk({ issues: [] });
+    const client = createJiraClient({ baseUrl: 'https://example.atlassian.net', email: 'me@x.com', apiToken: 'tok' });
+    await client.search({ jql: 'assignee = currentUser()', maxResults: 1 });
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toContain('/rest/api/2/search/jql');
+  });
+
+  it('keeps a Server/DC instance on the classic /rest/api/2/search — Atlassian only sunset it on Cloud, and an older DC version may not serve /search/jql at all', async () => {
+    const fetchMock = stubFetchOk({ issues: [] });
+    const client = createJiraClient({ baseUrl: 'https://jira.example.com', apiToken: 'pat' });
+    await client.search({ jql: 'assignee = currentUser()', maxResults: 1 });
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toContain('/rest/api/2/search?');
+    expect(url).not.toContain('/search/jql');
+  });
+});
+
 describe('buildColumnsFromBoardConfig', () => {
   const statusById = new Map([
     ['1', { name: 'To Do', category: 'To Do' }],

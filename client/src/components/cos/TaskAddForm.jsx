@@ -24,6 +24,10 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [useWorktree, setUseWorktree] = useState(false);
   const [openPR, setOpenPR] = useState(false);
   const [simplify, setSimplify] = useState(true);
+  // Hidden run-shape state, never a user-facing toggle: the slashdo catalog's
+  // deliverable posture (#3636/#3651). `undefined` = the form pins no opinion,
+  // so the server keeps its own default. Only a slashdo-backed template sets it.
+  const [worktreeChangesExpected, setWorktreeChangesExpected] = useState(undefined);
   const [prCompletion, setPrCompletion] = useState(DEFAULT_PR_COMPLETION);
   const [reviewers, setReviewers] = useState(DEFAULT_REVIEWERS);
   const [reviewUsernames, setReviewUsernames] = useState([]);
@@ -196,6 +200,11 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         : {})
     }));
     setSlashdoCommand(template.slashdoCommand || '');
+    // Hidden posture, so it follows `slashdoCommand` (set unconditionally above)
+    // rather than the tri-state rule the three visible toggles use: with no UI
+    // control to reveal or correct it, a posture left over from a previous
+    // template would silently ride along on the next one the user picks.
+    setWorktreeChangesExpected(template.settings?.worktreeChangesExpected);
     const settings = template.settings;
     if (settings && typeof settings === 'object') {
       // Only when the template also moves the app — otherwise the effect never
@@ -330,6 +339,9 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       useWorktree,
       openPR: useWorktree && openPR,
       simplify,
+      // Omitted entirely when no template pinned a posture — sending `undefined`
+      // would be indistinguishable from a deliberate `false` on the wire.
+      ...(worktreeChangesExpected !== undefined ? { worktreeChangesExpected } : {}),
       prCompletion: useWorktree && openPR ? prCompletion : undefined,
       // One gate for every per-reviewer field: they only apply when this task
       // opens a PR that PortOS reviews before merging.
@@ -366,6 +378,9 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     // Only clear form inputs after successful submission
     setNewTask(t => ({ ...t, description: '' }));
     setSlashdoCommand('');
+    // The posture belongs to the workflow the cleared template pinned, so it
+    // must not survive into the next, template-less task.
+    setWorktreeChangesExpected(undefined);
     setScreenshots([]);
     setAttachments([]);
 

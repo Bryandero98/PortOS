@@ -136,3 +136,107 @@ describe('NotesTab header touch targets', () => {
     expect(padRight).toBeGreaterThanOrEqual(rightOffset + clearWidth);
   });
 });
+
+/**
+ * The iCloud force-save escape hatch — #3717.
+ *
+ * The server refuses to overwrite a note whose bytes look offloaded, because that
+ * write blocks the process. The screen can false-positive on a genuinely-local
+ * file, and when it does no amount of retrying clears it — so the user gets a way
+ * through. These pin BOTH halves: the way through exists, and it never opens on
+ * its own.
+ */
+describe('NotesTab iCloud force save', () => {
+  const NOTE = { path: 'a.md', name: 'a', folder: '', size: 12, tags: [], modifiedAt: new Date().toISOString() };
+  // A refusal the server flags as `stalled` — its own before/after check found
+  // the download moved nothing, so retrying provably cannot clear it. Only this
+  // shape may arm the override.
+  const evicted = ({ stalled = true } = {}) =>
+    Object.assign(new Error('evicted'), { code: 'NOTE_EVICTED', context: { stalled } });
+
+  const openEditor = async () => {
+    await renderTab();
+    await act(async () => { fireEvent.click(screen.getByText('a')); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Edit' })); });
+  };
+
+  const clickSave = async () => {
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Save/ })); });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getNotesVaults.mockResolvedValue([{ id: 'vault-1', name: 'Example Vault', path: '/example/vault' }]);
+    api.detectNotesVaults.mockResolvedValue([]);
+    api.scanNotesVault.mockResolvedValue({ notes: [NOTE], total: 1 });
+    api.getNotesVaultFolders.mockResolvedValue({ folders: [] });
+    api.getNotesVaultTags.mockResolvedValue({ tags: [] });
+    api.getNote.mockResolvedValue({ ...NOTE, content: 'body', body: 'body', backlinks: [] });
+  });
+
+  it('offers no override on the first refusal', async () => {
+    api.updateNote.mockRejectedValue(evicted());
+    await openEditor();
+
+    await clickSave();
+
+    expect(screen.queryByRole('button', { name: 'Save anyway' })).toBeNull();
+  });
+
+  it('offers the override on the second consecutive refusal and forces only on that click', async () => {
+    api.updateNote.mockRejectedValue(evicted());
+    await openEditor();
+
+    await clickSave();
+    await clickSave();
+
+    // Neither ordinary save may have forced — that would make the override the
+    // retry default and re-admit the blocking write with no user decision.
+    for (const call of api.updateNote.mock.calls) {
+      expect(call[3]).toEqual({ force: false });
+    }
+
+    api.updateNote.mockResolvedValue({ ...NOTE, content: 'body' });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save anyway' })); });
+
+    expect(api.updateNote).toHaveBeenLastCalledWith('vault-1', 'a.md', 'body', { force: true });
+  });
+
+  it('hides the override once the user leaves edit mode', async () => {
+    // Outside edit mode there is no buffer the user meant to write, so a stray
+    // "Save anyway" click would issue the risky forced write for nothing.
+    api.updateNote.mockRejectedValue(evicted());
+    await openEditor();
+
+    await clickSave();
+    await clickSave();
+    expect(screen.getByRole('button', { name: 'Save anyway' })).toBeInTheDocument();
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Close editor' })); });
+
+    expect(screen.queryByRole('button', { name: 'Save anyway' })).toBeNull();
+  });
+
+  it('does not arm on an unrelated failure', async () => {
+    api.updateNote.mockRejectedValue(Object.assign(new Error('nope'), { code: 'INVALID_PATH' }));
+    await openEditor();
+
+    await clickSave();
+    await clickSave();
+
+    expect(screen.queryByRole('button', { name: 'Save anyway' })).toBeNull();
+  });
+
+  it('does not arm while a download is genuinely in flight', async () => {
+    // The transient case: waiting IS the right answer, and forcing here would
+    // issue the blocking write the guard exists to prevent. An impatient user
+    // clicking Save twice must not be handed the override.
+    api.updateNote.mockRejectedValue(evicted({ stalled: false }));
+    await openEditor();
+
+    await clickSave();
+    await clickSave();
+
+    expect(screen.queryByRole('button', { name: 'Save anyway' })).toBeNull();
+  });
+});

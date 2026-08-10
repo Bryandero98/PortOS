@@ -3,12 +3,14 @@
  * 2–8 gallery images at specific pixel-frame indices and the model
  * interpolates between them.
  *
- * Presentational — keyframe state, mutators, validation error, and the
- * visible-gallery list are owned by the VideoGen page and passed in. Only
- * rendered when the selected model supports keyframes (mode === 'fflf' &&
- * keyframesSupported); the parent gates that.
+ * Presentational — keyframe state, mutators, and the validation error are owned
+ * by the VideoGen page and passed in. Only rendered when the selected model
+ * supports keyframes (mode === 'fflf' && keyframesSupported); the parent gates
+ * that. `onBrowseKeyframe(i)` opens that page's shared GalleryImagePicker for
+ * the given row.
  */
 import { X, ListPlus } from 'lucide-react';
+import GalleryPickButton from './GalleryPickButton';
 import ImagePreview from './ImagePreview';
 
 export default function KeyframePanel({
@@ -16,10 +18,10 @@ export default function KeyframePanel({
   keyframesActive,
   keyframes,
   numFrames,
-  visibleGallery,
   keyframesError,
   onToggleMode,
   onAddKeyframe,
+  onBrowseKeyframe,
   onUpdateKeyframe,
   onRemoveKeyframe,
 }) {
@@ -43,18 +45,11 @@ export default function KeyframePanel({
           {keyframes.map((kf, i) => (
             <div key={i} className="flex items-start gap-2">
               <div className="flex-1 space-y-1">
-                <label htmlFor={`kf-file-${i}`} className="sr-only">{`Keyframe ${i + 1} gallery image`}</label>
-                <select
-                  id={`kf-file-${i}`}
-                  value={kf.file}
-                  onChange={(e) => onUpdateKeyframe(i, { file: e.target.value })}
-                  className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent"
-                >
-                  <option value="">Pick from gallery…</option>
-                  {visibleGallery.map((img) => (
-                    <option key={img.filename} value={img.filename}>{img.filename}</option>
-                  ))}
-                </select>
+                <GalleryPickButton
+                  label={`Keyframe ${i + 1}`}
+                  filled={!!kf.file}
+                  onClick={() => onBrowseKeyframe(i)}
+                />
                 {kf.file && (
                   <ImagePreview src={`/data/images/${kf.file}`} alt={`Keyframe ${i + 1}`} label={kf.file} />
                 )}

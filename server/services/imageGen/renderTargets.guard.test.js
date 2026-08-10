@@ -24,10 +24,18 @@ const SERVER_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 //   dispatcher pair: the request carries an explicit mode + cloudModel, so
 //   there is no render target to consult (the Image Gen page IS the manual
 //   surface).
+// - services/imageGen/prepareParams.js — the extracted pre-dispatch half of
+//   routes/imageGen.js, on the same request. It does NOT resolve a backend
+//   (`mode` is already resolved above it, through resolveRenderTargetConfig on
+//   the music-video path); it only reads `enabled` so a disabled provider is
+//   rejected BEFORE uploads are staged to PATHS.imageRefs. Rejecting later, in
+//   the route, strands those staged copies — the route's res.on('close') sweep
+//   covers only multer temps.
 const ALLOWED = new Set([
   'services/imageGen/cloudProviderConfig.js',
   'routes/imageGen.js',
   'services/imageGen/index.js',
+  'services/imageGen/prepareParams.js',
 ]);
 
 describe('render-target resolver guard (#3231)', () => {

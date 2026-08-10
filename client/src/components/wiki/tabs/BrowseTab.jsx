@@ -9,6 +9,9 @@ import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import { timeAgo, formatBytes } from '../../../utils/formatters';
 import { WIKI_CATEGORIES } from '../constants.jsx';
 import BrailleSpinner from '../../BrailleSpinner';
+import OfflineNotesNotice from '../../OfflineNotesNotice.jsx';
+import { useNoteSave } from '../../../hooks/useNoteSave.js';
+import ForceSaveNoteRow from '../../ForceSaveNoteRow.jsx';
 
 const WIKI_FOLDERS = WIKI_CATEGORIES.map(c => ({ key: c.folder, label: c.label, icon: c.icon, color: c.textClass }));
 const RAW_FOLDERS = [{ key: 'raw', label: 'Raw Sources', icon: FolderOpen, color: 'text-gray-400' }];
@@ -18,14 +21,22 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
   const [selectedNote, setSelectedNote] = useState(null);
   const [noteContent, setNoteContent] = useState('');
   const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [loadingNote, setLoadingNote] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState(new Set(['wiki/sources', 'wiki/entities', 'wiki/concepts']));
   const [activeSection, setActiveSection] = useState('wiki');
   const [tags, setTags] = useState([]);
+  // Tag counts under-report when iCloud hasn't downloaded some notes.
+  const [skippedTagNotes, setSkippedTagNotes] = useState(0);
   const [showTags, setShowTags] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const editorRef = useRef(null);
+
+  // Owns the write plus the iCloud force-save escape hatch (#3717).
+  const { saving, save, forceOffered, dismissForce } = useNoteSave({
+    vaultId,
+    notePath: selectedNote?.path || null,
+    content: noteContent
+  });
 
   // Handle deep-link from overview
   useEffect(() => {
@@ -45,17 +56,15 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
     setLoadingNote(false);
   };
 
-  const handleSaveNote = async () => {
-    if (!selectedNote) return;
-    setSaving(true);
-    const data = await api.updateNote(vaultId, selectedNote.path, noteContent).catch(() => null);
-    setSaving(false);
-    if (data) {
-      setSelectedNote(data);
-      setEditing(false);
-      toast.success('Note saved');
-      onRefresh();
-    }
+  // `force` is ONLY ever passed by <ForceSaveNoteRow>'s confirm (#3717) — never
+  // by the Save button or ⌘S.
+  const handleSaveNote = async (options) => {
+    const data = await save(options);
+    if (!data) return;
+    setSelectedNote(data);
+    setEditing(false);
+    toast.success('Note saved');
+    onRefresh();
   };
 
   const handleDeleteNote = async (notePath) => {
@@ -69,6 +78,7 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
   const loadTags = async () => {
     const data = await api.getNotesVaultTags(vaultId).catch(() => null);
     if (data?.tags) setTags(data.tags);
+    setSkippedTagNotes(data?.skippedUnavailable || 0);
   };
 
   const toggleFolder = (folder) => {
@@ -130,6 +140,7 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
         </div>
 
         {/* Tags */}
+        {showTags && <OfflineNotesNotice count={skippedTagNotes} className="mx-3 mt-2" />}
         {showTags && tags.length > 0 && (
           <div className="px-3 py-2 border-b border-port-border flex flex-wrap gap-1 max-h-24 overflow-auto">
             {tags.map(t => (
@@ -232,7 +243,7 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
                 {editing ? (
                   <>
                     <button
-                      onClick={handleSaveNote}
+                      onClick={() => handleSaveNote()}
                       disabled={saving}
                       className="flex items-center gap-1 px-3 py-1.5 rounded bg-port-accent text-white text-sm hover:bg-port-accent/80 disabled:opacity-50"
                     >
@@ -275,6 +286,15 @@ export default function BrowseTab({ vaultId, notes, rawNotes, allNotes, onRefres
                 onCancel={() => setConfirmDelete(null)}
               />
             )}
+
+            {/* Editor-only: outside edit mode there is no buffer the user meant to
+                write, and a stray "Save anyway" click would still issue the risky
+                forced write. */}
+            <ForceSaveNoteRow
+              offered={editing && forceOffered}
+              onConfirm={() => handleSaveNote({ force: true })}
+              onCancel={dismissForce}
+            />
 
             {/* Note content */}
             <div className="flex-1 min-h-0 overflow-auto flex">

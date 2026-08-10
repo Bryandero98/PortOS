@@ -6,11 +6,12 @@
  * Notes stay in their original vault directories — PortOS indexes but doesn't copy.
  */
 
-import { readFile, writeFile, readdir, stat, unlink } from 'fs/promises';
+import { writeFile, readdir, stat, unlink } from 'fs/promises';
 import { existsSync, realpathSync } from 'fs';
 import { join, relative, resolve, basename, dirname, extname, isAbsolute } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
+import { ICLOUD_NOT_MATERIALIZED, isSuspectedDataless, materializeAndWait, readIfMaterialized } from '../lib/icloudFile.js';
 
 const VAULTS_FILE = join(PATHS.brain, 'obsidian-vaults.json');
 
@@ -142,6 +143,35 @@ export async function detectVaults() {
 // NOTE SCANNING & READING
 // =============================================================================
 
+// The default Obsidian vault location is an iCloud ubiquity container
+// (DEFAULT_ICLOUD_OBSIDIAN above), so every note read here can hit a file macOS
+// has evicted to the cloud. A plain `readFile` on an evicted file BLOCKS
+// forever in the kernel and strands a libuv threadpool thread — and a vault
+// walk fires one read per note, so a single evicted vault can exhaust the whole
+// pool and take the server's filesystem access (including the UI bundle) down
+// with it. See server/lib/icloudFile.js.
+//
+// Returns `null` for an evicted note so each caller can skip it and degrade to
+// partial results, rather than failing the whole scan/search. Every other error
+// still propagates unchanged.
+async function readNoteContent(fullPath, skipped) {
+  return readIfMaterialized(fullPath, { label: 'Obsidian note' }).catch((err) => {
+    if (err.code === ICLOUD_NOT_MATERIALIZED) {
+      console.warn(`⚠️ Obsidian note evicted from local storage; skipping: ${fullPath}`);
+      if (skipped) skipped.count += 1;
+      return null;
+    }
+    throw err;
+  });
+}
+
+// A vault-wide reader that silently drops evicted notes would report "no results"
+// for a query whose answer is sitting in an un-downloaded note — the exact
+// absent-vs-unavailable collapse the project forbids. Each public reader below
+// therefore carries its own tally and reports `skippedUnavailable` alongside its
+// results, so the UI can say "N notes not downloaded yet" instead of "none".
+const newSkipTally = () => ({ count: 0 });
+
 /**
  * Scan a vault for markdown files. Reads only frontmatter (not full content)
  * for performance. Full content is loaded on individual note reads.
@@ -152,17 +182,18 @@ export async function scanVault(vaultId, { folder } = {}) {
   if (!existsSync(vault.path)) return { error: 'PATH_NOT_FOUND' };
 
   const notes = [];
-  await walkDir(vault.path, vault.path, notes, folder);
+  const skipped = newSkipTally();
+  await walkDir(vault.path, vault.path, notes, folder, skipped);
 
   notes.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
-  return { vault, notes, total: notes.length };
+  return { vault, notes, total: notes.length, skippedUnavailable: skipped.count };
 }
 
 /**
  * Light scan: reads only file stats and first ~1KB for frontmatter/tags.
  * Skips full content parsing for performance on large vaults.
  */
-async function walkDir(rootPath, currentPath, results, folderFilter) {
+async function walkDir(rootPath, currentPath, results, folderFilter, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -170,7 +201,7 @@ async function walkDir(rootPath, currentPath, results, folderFilter) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await walkDir(rootPath, fullPath, results, folderFilter);
+      await walkDir(rootPath, fullPath, results, folderFilter, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
       const relativePath = relative(rootPath, fullPath);
       const noteFolder = dirname(relativePath) === '.' ? '' : dirname(relativePath);
@@ -183,7 +214,8 @@ async function walkDir(rootPath, currentPath, results, folderFilter) {
       const stats = await stat(fullPath);
 
       // Read only first 2KB for frontmatter + inline tags (skip full content)
-      const fd = await readFile(fullPath, { encoding: 'utf-8', flag: 'r' });
+      const fd = await readNoteContent(fullPath, skipped);
+      if (fd === null) continue;
       const header = fd.length > 2048 ? fd.slice(0, 2048) : fd;
       const { frontmatter, tags } = parseNoteMetadata(header);
 
@@ -211,7 +243,13 @@ export async function getNote(vaultId, notePath, { includeBacklinks = true } = {
   }
   if (!existsSync(fullPath)) return { error: 'NOTE_NOT_FOUND' };
 
-  const content = await readFile(fullPath, 'utf-8');
+  const content = await readNoteContent(fullPath);
+  // Evicted, not missing — a distinct code so the UI can say "iCloud hasn't
+  // downloaded this note yet" instead of claiming it doesn't exist. The read was
+  // never issued, and a background `brctl download` is already in flight.
+  if (content === null) {
+    return { error: 'NOTE_EVICTED', message: 'This note is stored in iCloud and has not been downloaded to this Mac yet. A download was requested — try again shortly.' };
+  }
   const stats = await stat(fullPath);
   const { frontmatter, tags, wikilinks, body } = parseNoteMetadata(content);
 
@@ -233,13 +271,97 @@ export async function getNote(vaultId, notePath, { includeBacklinks = true } = {
   };
 }
 
-export async function updateNote(vaultId, notePath, content) {
+/**
+ * Overwrite an existing note.
+ *
+ * @param {string} vaultId
+ * @param {string} notePath - vault-relative path.
+ * @param {string} content
+ * @param {object} [options]
+ * @param {boolean} [options.force=false] - Bypass the iCloud dataless screen and
+ *   issue the write regardless. **Only ever set from a deliberate user action**
+ *   (see the escape-hatch note below); background mirrors must leave it off.
+ */
+export async function updateNote(vaultId, notePath, content, { force = false } = {}) {
   const vault = await getVaultById(vaultId);
   if (!vault) return { error: 'VAULT_NOT_FOUND' };
 
   const fullPath = resolveVaultPath(vault, notePath);
   if (!fullPath) return { error: 'INVALID_PATH' };
   if (!existsSync(fullPath)) return { error: 'NOTE_NOT_FOUND' };
+
+  // Overwriting an EVICTED note would block exactly like reading one — measured,
+  // not assumed: `writeFile`'s O_TRUNC does NOT skip materialization (822ms
+  // dataless vs 1ms materialized for the same call; see the syscall table in
+  // server/lib/icloudFile.js). Discarding every byte first is intuitively enough
+  // to make the download pointless, and the kernel disagrees.
+  //
+  // This matters beyond "a user clicked save": updateNote is reached from
+  // BACKGROUND mirrors via upsertNote — the Brain daily-log mirror and YouTube
+  // ingest — so a wedged iCloud could strand libuv threadpool slots with no user
+  // in the loop, which is the whole-UI outage #3704 fixed on the read side.
+  //
+  // A write must not silently skip, so unlike the read paths this materializes
+  // and WAITS (bounded, in a child process — cancellable, which the kernel write
+  // is not) rather than fire-and-forget. brctl exit 0 only means the download was
+  // accepted, so re-screen before trusting it and refuse if it's still dataless.
+  //
+  // ## The escape hatch (#3717)
+  //
+  // The screen infers "dataless" from `size > 0 && blocks === 0`, which also
+  // matches a genuinely-local sparse or `decmpfs`-compressed file. On a read that
+  // false positive self-limits; on this write path it was PERMANENT — `brctl`
+  // exits 0 with nothing to fetch, the re-screen still says dataless, and the
+  // note could never be saved again from the UI. `force` restores the user's
+  // agency. It re-admits exactly one blocking write, which is what this guard
+  // exists to prevent — so it must only ever arrive from an explicit click, never
+  // as a retry default, and never from `upsertNote`'s background mirrors.
+  if (force) {
+    console.warn(`⚠️ force-save bypassing the iCloud dataless screen for note: ${notePath}`);
+  } else if (await isSuspectedDataless(fullPath)) {
+    // Snapshot before/after so the refusal can say something TRUE about retrying.
+    // This does NOT gate the server's own write decision — that stays the
+    // re-screen below — but it IS the client's sole arming signal for the
+    // force-save override (see `throwOnError` in server/routes/notes.js), so
+    // loosening how `stalled` is computed widens the bypass. The re-screen is
+    // already the strictest form of "did it actually materialize" —
+    // `blocks` moving off zero IS the completion signal, so gating the write on
+    // `mtime` too would only let a still-dataless file through when a metadata
+    // sync touched it (#3717 option 1, taken for the message and rejected for the
+    // guard).
+    const before = await stat(fullPath).catch(() => null);
+    const materialized = await materializeAndWait(fullPath, { label: 'Obsidian note' });
+    if (await isSuspectedDataless(fullPath)) {
+      const after = await stat(fullPath).catch(() => null);
+      // Unknown (a stat failed) counts as "moved": never claim a download is
+      // hopeless on evidence we don't have.
+      const moved = !before || !after
+        || before.blocks !== after.blocks
+        || before.mtimeMs !== after.mtimeMs;
+      // "brctl succeeded AND nothing changed" is the signature of a download with
+      // nothing to fetch. A `false` here means the heal did NOT succeed (timed out
+      // against a wedged iCloud, exited non-zero, `brctl` missing, or a non-iCloud
+      // File Provider path brctl can't speak to), and every one of those also
+      // leaves blocks/mtime untouched. Reporting those as stalled would arm the
+      // force-save override on a genuinely evicted note and hand the user the
+      // uninterruptible write this guard exists to prevent — so they stay retryable.
+      //
+      // This narrows the false-positive window; it does not close it. `brctl` can
+      // exit 0 while a real download is still in flight (see the return contract
+      // on `materializeAndWait`), so a note whose bytes land after this check
+      // still reports stalled once. That is why `stalled` only ever *offers* the
+      // override — after a second round, behind a click that names the risk — and
+      // never bypasses anything on its own.
+      const stalled = materialized && !moved;
+      return {
+        error: 'NOTE_EVICTED',
+        stalled,
+        message: stalled
+          ? 'This note looks offloaded to iCloud, but asking iCloud to download it changed nothing, so waiting will not help. If the note really is on this Mac, save it again and choose "Save anyway".'
+          : 'This note is stored in iCloud and has not been downloaded to this Mac yet. A download was requested — try again shortly.'
+      };
+    }
+  }
 
   await writeFile(fullPath, content, 'utf-8');
   console.log(`📓 Updated note: ${notePath} in vault ${vault.name}`);
@@ -261,6 +383,20 @@ export async function createNote(vaultId, notePath, content = '') {
     return { error: 'NOTE_EXISTS', message: 'A note with this name already exists' };
   }
 
+  // No dataless screen here, deliberately (#3706): the `existsSync` above means
+  // this only ever writes a file that does NOT exist, and a path with no file at
+  // it cannot be a dataless vnode — there is nothing offloaded to materialize.
+  // The overwrite case is `updateNote`, which is guarded. Don't add a screen here
+  // "for symmetry"; it would cost a stat per created note and can never fire.
+  //
+  // The modern APFS dataless vnode is the ONLY eviction representation there is
+  // to handle (#3716). macOS' pre-APFS mechanism instead replaced the note with a
+  // sibling `.<name>.md.icloud` stub, which `existsSync(fullPath)` cannot see — so
+  // this would create a fresh file beside it and shadow the offloaded note. That
+  // representation was measured as non-occurring (zero placeholders across 223
+  // iCloud containers holding 373 evicted files, macOS 26 / APFS), and the probe
+  // `mortalLoomStore` used to carry for it was deleted rather than copied here.
+  // See the "only ONE representation" section in server/lib/icloudFile.js.
   await writeFile(fullPath, content, 'utf-8');
   console.log(`📓 Created note: ${notePath} in vault ${vault.name}`);
   return await getNote(vaultId, notePath, { includeBacklinks: false });
@@ -315,6 +451,17 @@ export async function deleteNote(vaultId, notePath) {
   if (!fullPath) return { error: 'INVALID_PATH' };
   if (!existsSync(fullPath)) return { error: 'NOTE_NOT_FOUND' };
 
+  // No dataless screen here, deliberately (#3713): `unlink` does NOT materialize
+  // an evicted vnode. That is measured, not inferred from POSIX — `link` is pure
+  // metadata too and it *does* materialize, so the analogy with `rename` was not
+  // safe to lean on. On a freshly-evicted iCloud file `unlinkSync` returned in
+  // 0.1 ms across three runs (two at 512 KB, one at 5 MB), versus 884 ms to
+  // `read` a separate, equally-sized 5 MB dataless fixture — a fresh subject per
+  // case, since the first materializing call heals the file. Deleting an
+  // offloaded note therefore cannot wedge the libuv
+  // threadpool the way `updateNote`'s overwrite could, and guarding it would be
+  // strictly worse than useless: the guard's own remedy is `materializeAndWait`,
+  // i.e. downloading every byte of a file purely to throw it away.
   await unlink(fullPath);
   console.log(`📓 Deleted note: ${notePath} from vault ${vault.name}`);
   return true;
@@ -333,7 +480,8 @@ export async function searchNotes(vaultId, query) {
   const queryLower = query.toLowerCase();
   // Compile regex once for count matching
   const countRe = new RegExp(escapeRegex(queryLower), 'g');
-  await searchDir(vault.path, vault.path, queryLower, countRe, results);
+  const skipped = newSkipTally();
+  await searchDir(vault.path, vault.path, queryLower, countRe, results, skipped);
 
   results.sort((a, b) => {
     if (a.titleMatch && !b.titleMatch) return -1;
@@ -341,10 +489,10 @@ export async function searchNotes(vaultId, query) {
     return b.matchCount - a.matchCount;
   });
 
-  return { results, total: results.length, query };
+  return { results, total: results.length, query, skippedUnavailable: skipped.count };
 }
 
-async function searchDir(rootPath, currentPath, query, countRe, results) {
+async function searchDir(rootPath, currentPath, query, countRe, results, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   // Kick off this directory's markdown reads concurrently (the disk-latency
@@ -355,7 +503,7 @@ async function searchDir(rootPath, currentPath, query, countRe, results) {
   for (const entry of entries) {
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
     if (entry.isFile() && extname(entry.name) === '.md') {
-      contentReads.set(entry.name, readFile(join(currentPath, entry.name), 'utf-8'));
+      contentReads.set(entry.name, readNoteContent(join(currentPath, entry.name), skipped));
     }
   }
 
@@ -364,9 +512,10 @@ async function searchDir(rootPath, currentPath, query, countRe, results) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await searchDir(rootPath, fullPath, query, countRe, results);
+      await searchDir(rootPath, fullPath, query, countRe, results, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
       const content = await contentReads.get(entry.name);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       const contentLower = content.toLowerCase();
       const nameLower = basename(entry.name, '.md').toLowerCase();
       const titleMatch = nameLower.includes(query);
@@ -413,7 +562,8 @@ export async function getVaultGraph(vaultId) {
   const edges = [];
   const noteMap = new Map();
 
-  await collectNotes(vault.path, vault.path, noteMap, nodes);
+  const skipped = newSkipTally();
+  await collectNotes(vault.path, vault.path, noteMap, nodes, skipped);
 
   // Build case-insensitive lookup for wikilink resolution
   const lowerMap = new Map();
@@ -434,11 +584,14 @@ export async function getVaultGraph(vaultId) {
     nodes: nodes.map(({ path, name, folder, tags }) => ({ path, name, folder, tags })),
     edges,
     totalNodes: nodes.length,
-    totalEdges: edges.length
+    totalEdges: edges.length,
+    // Evicted notes are missing from the graph entirely — and so is every edge
+    // into them, which would otherwise render a wrong topology as authoritative.
+    skippedUnavailable: skipped.count
   };
 }
 
-async function collectNotes(rootPath, currentPath, noteMap, nodes) {
+async function collectNotes(rootPath, currentPath, noteMap, nodes, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   // Read this directory's markdown files concurrently, but apply them in the
@@ -449,7 +602,7 @@ async function collectNotes(rootPath, currentPath, noteMap, nodes) {
   for (const entry of entries) {
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
     if (entry.isFile() && extname(entry.name) === '.md') {
-      contentReads.set(entry.name, readFile(join(currentPath, entry.name), 'utf-8'));
+      contentReads.set(entry.name, readNoteContent(join(currentPath, entry.name), skipped));
     }
   }
 
@@ -458,9 +611,10 @@ async function collectNotes(rootPath, currentPath, noteMap, nodes) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await collectNotes(rootPath, fullPath, noteMap, nodes);
+      await collectNotes(rootPath, fullPath, noteMap, nodes, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
       const content = await contentReads.get(entry.name);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       const relativePath = relative(rootPath, fullPath);
       const noteName = basename(entry.name, '.md');
       const { tags, wikilinks } = parseNoteMetadata(content);
@@ -577,7 +731,11 @@ async function findBacklinksInDir(rootPath, currentPath, targetLower, results) {
     if (entry.isDirectory()) {
       await findBacklinksInDir(rootPath, fullPath, targetLower, results);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
-      const content = await readFile(fullPath, 'utf-8');
+      // findBacklinks is supplementary to a note that already loaded, so an
+      // evicted neighbour is logged by readNoteContent but not surfaced as a
+      // count — the note itself is not misreported as empty.
+      const content = await readNoteContent(fullPath);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       WIKILINK_RE.lastIndex = 0;
       let match;
       while ((match = WIKILINK_RE.exec(content)) !== null) {
@@ -599,16 +757,17 @@ export async function getVaultTags(vaultId) {
   if (!existsSync(vault.path)) return { error: 'PATH_NOT_FOUND' };
 
   const tagCounts = new Map();
-  await collectTags(vault.path, vault.path, tagCounts);
+  const skipped = newSkipTally();
+  await collectTags(vault.path, vault.path, tagCounts, skipped);
 
   const tags = [...tagCounts.entries()]
     .map(([tag, count]) => ({ tag, count }))
     .sort((a, b) => b.count - a.count);
 
-  return { tags, total: tags.length };
+  return { tags, total: tags.length, skippedUnavailable: skipped.count };
 }
 
-async function collectTags(rootPath, currentPath, tagCounts) {
+async function collectTags(rootPath, currentPath, tagCounts, skipped) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -616,9 +775,10 @@ async function collectTags(rootPath, currentPath, tagCounts) {
     const fullPath = join(currentPath, entry.name);
 
     if (entry.isDirectory()) {
-      await collectTags(rootPath, fullPath, tagCounts);
+      await collectTags(rootPath, fullPath, tagCounts, skipped);
     } else if (entry.isFile() && extname(entry.name) === '.md') {
-      const content = await readFile(fullPath, 'utf-8');
+      const content = await readNoteContent(fullPath, skipped);
+      if (content === null) continue;   // evicted from iCloud — skip, don't block
       const { tags } = parseNoteMetadata(content);
       for (const tag of tags) {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);

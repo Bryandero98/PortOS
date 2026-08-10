@@ -74,8 +74,9 @@ function deriveTeaserBrief(series, issue, proposal) {
  * create (mirrors sendToCreativeDirector's orphan-cleanup).
  *
  * @param {string} issueId
- * @param {{ providerDefault?: string, modelDefault?: string, name?: string,
- *   aspectRatio?: string, quality?: string, targetDurationSeconds?: number }} [options]
+ * @param {{ providerDefault?: string, modelDefault?: string, effortDefault?: string, name?: string,
+ *   aspectRatio?: string, quality?: string, targetDurationSeconds?: number, modelId?: string,
+ *   renderBackend?: object }} [options]
  * @returns {Promise<{ project: object, proposal: object }>}
  */
 export async function produceVideoFromIssue(issueId, options = {}) {
@@ -107,6 +108,7 @@ export async function produceVideoFromIssue(issueId, options = {}) {
   const stageOpts = { source: 'pipeline-cd-teaser', returnsJson: true };
   if (options.providerDefault) stageOpts.providerDefault = options.providerDefault;
   if (options.modelDefault) stageOpts.modelDefault = options.modelDefault;
+  if (options.effortDefault) stageOpts.effortDefault = options.effortDefault;
   const { content } = await runStagedLLM(CD_BRIDGE_STAGE, variables, stageOpts);
   const proposal = shapeProposal(content);
   if (!proposal) {
@@ -124,10 +126,17 @@ export async function produceVideoFromIssue(issueId, options = {}) {
     name: options.name || `${issue.title || series?.name || 'Issue'} — Teaser`,
     aspectRatio: options.aspectRatio || '16:9',
     quality: options.quality || 'standard',
-    modelId: defaultVideoModelId(),
+    modelId: options.modelId || defaultVideoModelId(),
     targetDurationSeconds: options.targetDurationSeconds || 60,
     styleSpec: proposal.styleSpec || '',
     sourceIssueId: issueId,
+    // Carry the caller's render-backend pin (#3135) onto the teaser. The teaser
+    // is a SEPARATE CD project, so a creative commission that reaches this tool
+    // from its plan would otherwise render the run's actual deliverable on the
+    // install default while the commission says "Grok" — silently defeating the
+    // pin at the project boundary. Absent ⇒ null, i.e. today's behavior for the
+    // manual writers-room / pipeline send paths.
+    renderBackend: options.renderBackend || null,
   });
 
   let started;

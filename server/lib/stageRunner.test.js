@@ -22,6 +22,7 @@ vi.mock('../services/runner.js', () => ({
 const providers = await import('../services/providers.js');
 const prompts = await import('../services/promptService.js');
 const runner = await import('../services/runner.js');
+const { buildEffortArgs } = await import('./providerModels.js');
 const {
   runStagedLLM,
   runInlineLLM,
@@ -37,6 +38,7 @@ const {
   knownProviderContextWindow,
   resolveStageContext,
   resolveJudgeForStage,
+  resolveEffortHint,
   withLocalConcurrencyGate,
   LOCAL_LLM_MAX_CONCURRENCY,
 } = await import('./stageRunner.js');
@@ -182,6 +184,10 @@ describe('stageRunner — context windows', () => {
 describe('stageRunner — extractJson', () => {
   it('parses JSON inside markdown code fences', () => {
     expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+  it('recovers a response that serializes its remaining JSON tail as escaped text', () => {
+    const raw = '{"items":[{"id":"one"}\\n, {\\n  \\"id\\": \\"two\\"\\n}\\n]}';
+    expect(extractJson(raw)).toEqual({ items: [{ id: 'one' }, { id: 'two' }] });
   });
   it('extracts the first balanced object even when prose is prepended', () => {
     expect(extractJson('Sure! Here is the data: {"a":1,"b":2} cheers.')).toEqual({ a: 1, b: 2 });
@@ -572,8 +578,8 @@ describe('stageRunner — runStagedLLM dispatch', () => {
     expect(runner.executeCliRun.mock.calls[0][0].timeout).toBe(5000);
   });
 
-  it('rejects a too-large timeoutOverride (above 30-min cap) and falls back', async () => {
-    // Matches the route validator's max: anything > 1_800_000 is invalid,
+  it('rejects a too-large timeoutOverride (above 12-hour cap) and falls back', async () => {
+    // Matches the route validator's max: anything > 43_200_000 is invalid,
     // not silently clamped. Falls through to provider.timeout.
     prompts.getStage.mockReturnValue(null);
     providers.getActiveProvider.mockResolvedValue(cliProvider({ timeout: 5000 }));
@@ -714,5 +720,66 @@ describe('stageRunner — resolveJudgeForStage (writer/judge split, #2167)', () 
     const out = await resolveJudgeForStage({ model: 'default' }); // no provider pin → active
     expect(out.provider.id).toBe('writer-api');
     expect(out.model).toBe('wm-default');
+  });
+});
+
+describe('stageRunner — resolveEffortHint (#3641)', () => {
+  it('prefers an explicit effortOverride over every softer signal', () => {
+    expect(resolveEffortHint({ effort: 'low' }, { effortOverride: 'max', effortDefault: 'medium' })).toBe('max');
+  });
+
+  it('lets a deliberate stage.effort pin beat the run-level default', () => {
+    expect(resolveEffortHint({ effort: 'low' }, { effortDefault: 'high' })).toBe('low');
+  });
+
+  it('applies the run-level effortDefault to a stage with no pin', () => {
+    expect(resolveEffortHint({ model: 'quick' }, { effortDefault: 'high' })).toBe('high');
+    expect(resolveEffortHint(null, { effortDefault: 'high' })).toBe('high');
+  });
+
+  it('returns null when nothing sets an effort (provider config decides)', () => {
+    expect(resolveEffortHint(null, {})).toBeNull();
+    expect(resolveEffortHint({ model: 'quick' }, undefined)).toBeNull();
+  });
+});
+
+describe('stageRunner — effort threading into the run (#3641)', () => {
+  // The runner has no `effort` argument: `buildCliArgs` reads `provider.effort`
+  // off the per-run clone, so asserting on the clone IS asserting on what the
+  // spawned CLI gets.
+  const runWithEffort = async (provider, options) => {
+    providers.getActiveProvider.mockResolvedValue(provider);
+    runner.executeCliRun.mockImplementation(async ({ onComplete }) => { onComplete({ success: true }); });
+    await runStagedLLM('s', {}, options);
+    return runner.executeCliRun.mock.calls[0][0].provider;
+  };
+
+  it('hands the run-level effortDefault to the runner for an unpinned stage', async () => {
+    prompts.getStage.mockReturnValue(null);
+    const provider = await runWithEffort(cliProvider(), { effortDefault: 'high' });
+    expect(provider.effort).toBe('high');
+  });
+
+  it('hands the stage pin, not the run default, to the runner', async () => {
+    prompts.getStage.mockReturnValue({ effort: 'low' });
+    const provider = await runWithEffort(cliProvider(), { effortDefault: 'high' });
+    expect(provider.effort).toBe('low');
+  });
+
+  it('sets no effort on the run when nobody asked for one', async () => {
+    prompts.getStage.mockReturnValue(null);
+    const provider = await runWithEffort(cliProvider(), {});
+    expect(provider.effort).toBeUndefined();
+  });
+
+  it('emits the provider-appropriate flag, and nothing for a provider with no effort control', async () => {
+    // The drop/clamp lives in buildEffortArgs — feed it the SAME resolved hint
+    // stageRunner passes so the "safe to pass unconditionally" claim is proven
+    // end-to-end rather than assumed.
+    const effort = resolveEffortHint(null, { effortDefault: 'high' });
+    expect(buildEffortArgs(effort, { id: 'codex', command: 'codex' })).toEqual(['-c', 'model_reasoning_effort=high']);
+    expect(buildEffortArgs(effort, { id: 'claude-cli', command: 'claude' })).toEqual(['--effort', 'high']);
+    expect(buildEffortArgs(effort, { id: 'grok-cli', command: 'grok' })).toEqual([]);
+    expect(buildEffortArgs(effort, { id: 'openai-api', type: 'api' })).toEqual([]);
   });
 });

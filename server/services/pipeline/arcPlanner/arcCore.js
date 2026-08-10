@@ -11,12 +11,12 @@ import { runStagedLLM } from '../../../lib/stageRunner.js';
 import { ServerError } from '../../../lib/errorHandler.js';
 import { stripAnsi } from '../../../lib/ansiStrip.js';
 import { ARC_LOCKABLE_FIELDS, getSeries, updateSeries } from '../series.js';
-import { listIssues, recomputeIssueNumbersForSeries, updateIssue, updateStageWithLatest } from '../issues.js';
+import { listIssues, listIssuesForSeries, recomputeIssueNumbersForSeries, updateIssue, updateStageWithLatest, updateStagesWithLatest } from '../issues.js';
 import { emitRecordUpdated, withReexportSuppressed } from '../../sharing/recordEvents.js';
 import { getSeason } from '../seasons.js';
 import { READER_MAP_BEAT_KINDS, buildSeason, cleanThemes, renderArcShapeGuidance, renderArcShapePositionSummary, sanitizeArc, sanitizeReaderMap, sanitizeSeason, sanitizeSeasonList } from '../../../lib/storyArc.js';
 import { runPromptRefineRaw, trimChanges } from '../refineHelpers.js';
-import { ERR_VALIDATION, SHAPE_GUIDANCE_NONE, appendTickingClock, buildArcBaseContext, buildArcOverviewContext, buildNeighborVolumes, buildReaderMapContext, buildResolveContext, buildVerifyContext, compareIssuesByPosition, makeErr, matchIssueForEpisodeEdit, renderVolumeIssue, resolveWorldContext, seasonIdByNumberOf, shapeEpisodeResolutions, shapeFindings, shapeSeasonOutlines, shapeVerifyIssues } from './context.js';
+import { ERR_VALIDATION, SHAPE_GUIDANCE_NONE, appendTickingClock, buildArcBaseContext, buildArcOverviewContext, buildNeighborVolumes, buildReaderMapContext, buildResolveContext, buildVerifyContext, compareIssuesByPosition, findingIdSet, makeErr, matchIssueForEpisodeEdit, matchResolvedFindings, renderVolumeIssue, resolveWorldContext, seasonIdByNumberOf, shapeEpisodeResolutions, shapeFindings, shapeSeasonOutlines, shapeVerifyIssues } from './context.js';
 
 export async function generateArcOverview(seriesId, options = {}) {
   const series = await getSeries(seriesId);
@@ -35,6 +35,7 @@ export async function generateArcOverview(seriesId, options = {}) {
       providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
+      effortDefault: options.effortDefault,
       returnsJson: true,
       source: 'pipeline-arc-overview',
     },
@@ -103,6 +104,7 @@ export async function generateReaderMap(seriesId, options = {}) {
       providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
+      effortDefault: options.effortDefault,
       returnsJson: true,
       source: 'story-builder-reader-map',
     },
@@ -261,6 +263,7 @@ export async function verifyArc(seriesId, options = {}) {
       providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
+      effortDefault: options.effortDefault,
       returnsJson: true,
       source: 'pipeline-arc-verify',
     },
@@ -269,7 +272,7 @@ export async function verifyArc(seriesId, options = {}) {
   return { issues, raw: content, runId, providerId, model };
 }
 
-export async function buildVolumeVerifyContext(series, season, preloadedWorld) {
+export async function buildVolumeVerifyContext(series, season, preloadedWorld, { synopsisOnly = false } = {}) {
   const [allIssues, base] = await Promise.all([
     listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
@@ -277,7 +280,15 @@ export async function buildVolumeVerifyContext(series, season, preloadedWorld) {
   const volumeIssues = allIssues
     .filter((iss) => iss.seasonId === season.id)
     .sort(compareIssuesByPosition)
-    .map(renderVolumeIssue);
+    .map((issue) => (synopsisOnly
+      ? {
+        number: issue.number,
+        title: issue.title,
+        status: issue.status,
+        arcPosition: issue.arcPosition,
+        synopsis: (issue.stages?.idea?.input || '').trim() || null,
+      }
+      : renderVolumeIssue(issue)));
   // Volume-specific curve placement layered on top of base's arc-wide
   // shapeGuidance so the verifier can flag "this volume inverts the expected
   // fortune at its position."
@@ -316,7 +327,9 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
     );
   }
   const season = await getSeason(seriesId, seasonId);
-  const ctx = await buildVolumeVerifyContext(series, season, options.preloadedWorld);
+  const ctx = await buildVolumeVerifyContext(series, season, options.preloadedWorld, {
+    synopsisOnly: options.synopsisOnly === true,
+  });
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-volume-verify',
     ctx,
@@ -325,12 +338,54 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
       providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
+      effortDefault: options.effortDefault,
       returnsJson: true,
       source: 'pipeline-volume-verify',
     },
   );
   const issues = shapeVerifyIssues(content?.issues);
   return { issues, raw: content, runId, providerId, model, seasonId };
+}
+
+/**
+ * Split one auto-resolve response into the edits that actually name a finding
+ * the round was handed, and the ones to drop (#3724). Pure.
+ *
+ * Every entry in `arc` / `seasons[]` / `episodes[]` has to carry
+ * `resolves: ["f2", …]` naming at least one input finding — an edit that names
+ * none can't be closing anything, so applying it is all blast radius and no
+ * benefit. Returns `{ legacy, arc, arcDropped, seasons, seasonsDropped,
+ * episodes, episodesDropped }`.
+ *
+ * `legacy` is the escape hatch for an install whose `pipeline-arc-resolve.md`
+ * was customized before #3724 and therefore never got the migration: when NOT
+ * ONE entry in the whole response declares a `resolves` array, the model is
+ * plainly running the old contract, and dropping everything would silently turn
+ * auto-resolve into a no-op that burns a round per pass. Those responses are
+ * applied unkeyed (still as a sparse patch, which is strictly safer than the
+ * old full-list rewrite) and logged. A response that keys SOME of its edits is
+ * on the new contract, so its unkeyed entries are genuine drops.
+ */
+export function selectFindingKeyedEdits(content, findings) {
+  const validIds = findingIdSet(findings);
+  const isEdit = (e) => !!e && typeof e === 'object';
+  const arcEdit = isEdit(content?.arc) ? content.arc : null;
+  const seasonsRaw = (Array.isArray(content?.seasons) ? content.seasons : []).filter(isEdit);
+  const episodesRaw = (Array.isArray(content?.episodes) ? content.episodes : []).filter(isEdit);
+  const legacy = ![arcEdit, ...seasonsRaw, ...episodesRaw]
+    .some((e) => e && matchResolvedFindings(e, validIds).declared);
+  const targeted = (raw) => legacy || matchResolvedFindings(raw, validIds).matched.length > 0;
+  const seasons = seasonsRaw.filter(targeted);
+  const episodes = episodesRaw.filter(targeted);
+  return {
+    legacy,
+    arc: arcEdit && targeted(arcEdit) ? arcEdit : null,
+    arcDropped: !!arcEdit && !targeted(arcEdit),
+    seasons,
+    seasonsDropped: seasonsRaw.length - seasons.length,
+    episodes,
+    episodesDropped: episodesRaw.length - episodes.length,
+  };
 }
 
 // Per-episode (issue) records are NOT touched — those are user-owned scripts
@@ -379,17 +434,36 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
       providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
+      effortDefault: options.effortDefault,
       returnsJson: true,
       source: 'pipeline-arc-resolve',
     },
   );
 
+  // Keep only the edits that name a finding this round was handed (#3724). An
+  // untargeted rewrite is pure blast radius: it can't close anything, and every
+  // volume it touches is a chance to author the contradiction the next verify
+  // files as a brand-new blocker.
+  const edits = selectFindingKeyedEdits(content, findings);
+  // Only worth saying when there is actually something to apply unkeyed — a
+  // response that proposed NO edits reads as legacy too, and warning about a
+  // stale prompt there would be a lie.
+  if (edits.legacy && (edits.arc || edits.seasons.length || edits.episodes.length)) {
+    console.log(`⚠️ arc-resolve: response carries no resolves[] — applying it unkeyed (installed pipeline-arc-resolve.md predates #3724)`);
+  }
+  if (edits.arcDropped) {
+    console.log(`⚠️ arc-resolve: dropped the arc-level edit — it named no input finding`);
+  }
+  if (edits.seasonsDropped || edits.episodesDropped) {
+    console.log(`⚠️ arc-resolve: dropped ${edits.seasonsDropped} volume + ${edits.episodesDropped} episode edit(s) naming no input finding`);
+  }
+
   const arc = sanitizeArc({
-    logline: content?.arc?.logline || series.arc.logline || '',
-    summary: content?.arc?.summary || series.arc.summary || '',
-    themes: content?.arc?.themes ?? series.arc.themes,
-    protagonistArc: content?.arc?.protagonistArc ?? series.arc.protagonistArc ?? '',
-    shape: content?.arc?.shape ?? series.arc.shape ?? null,
+    logline: edits.arc?.logline || series.arc.logline || '',
+    summary: edits.arc?.summary || series.arc.summary || '',
+    themes: edits.arc?.themes ?? series.arc.themes,
+    protagonistArc: edits.arc?.protagonistArc ?? series.arc.protagonistArc ?? '',
+    shape: edits.arc?.shape ?? series.arc.shape ?? null,
     // The resolve prompt doesn't author the reader map — preserve any existing
     // one so auto-resolve never silently wipes a reader map the user already
     // built on the next step. Mirrors `generateArcOverview` above.
@@ -398,7 +472,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     tickingClock: series.arc?.tickingClock ?? null,
     // The resolve prompt doesn't author the foreshadowing ledger — take it if
     // present, else preserve any existing one so auto-resolve never wipes it.
-    foreshadowing: content?.arc?.foreshadowing ?? series.arc?.foreshadowing ?? null,
+    foreshadowing: edits.arc?.foreshadowing ?? series.arc?.foreshadowing ?? null,
     status: 'draft',
   });
 
@@ -406,45 +480,66 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // brand-new entry (no `id`), otherwise preserve the existing `id` so child
   // issues still join their season cleanly. The sanitizer enforces the
   // canonical shape regardless.
-  const existingById = new Map((series.seasons || []).map((s) => [s.id, s]));
-  const proposedSeasons = Array.isArray(content?.seasons) ? content.seasons : [];
-  // Track each entry's provenance (existing id vs freshly minted) so we can
-  // remap orphaned child issues after sanitization.
-  const seasonEntries = proposedSeasons.map((raw) => {
-    const existing = raw?.id ? existingById.get(raw.id) : null;
+  //
+  // `seasons[]` is a SPARSE PATCH LIST (#3724), not the full volume lineup: the
+  // response carries only the volumes the resolver actually edited, and every
+  // existing volume it left out rides through untouched below. That removes the
+  // old "omit a volume and it is deleted" footgun — deletion is now an explicit
+  // `notes` recommendation, matching how episode deletion already worked.
+  const proposedSeasons = edits.seasons;
+  // Resolve each proposal to an existing record BEFORE minting. The resolve
+  // prompt frequently returns a rewritten volume WITHOUT echoing its `id`;
+  // matching on id alone read that as a brand-new season and minted one. With
+  // `preserveDroppedSeasons` on (the autopilot's unlock-for-run mode) the
+  // original was then re-inserted alongside the mint — so every auto-resolve
+  // round ADDED a duplicate "Volume 1" instead of clearing a finding, and
+  // arc-verify could never converge. See the divergence pause on 2026-08-09.
+  const matchedExisting = matchProposedSeasons(series.seasons, proposedSeasons);
+  // Patched rewrites keyed by the record they land on, plus the genuinely-new
+  // volumes to append. Untouched existing volumes are carried through verbatim.
+  const patchedById = new Map();
+  const mintedSeasons = [];
+  proposedSeasons.forEach((raw, idx) => {
+    const existing = matchedExisting[idx];
     if (existing) {
-      return {
-        season: sanitizeSeason({
-          ...existing,
-          title: typeof raw.title === 'string' ? raw.title : existing.title,
-          number: Number.isFinite(raw.number) ? raw.number : existing.number,
-          logline: typeof raw.logline === 'string' ? raw.logline : existing.logline,
-          synopsis: typeof raw.synopsis === 'string' ? raw.synopsis : existing.synopsis,
-          endingHook: typeof raw.endingHook === 'string' ? raw.endingHook : existing.endingHook,
-          episodeCountTarget: Number.isFinite(raw.episodeCountTarget)
-            ? raw.episodeCountTarget
-            : existing.episodeCountTarget,
-          themes: Array.isArray(raw.themes) ? raw.themes : existing.themes,
-        }),
-        sourceId: existing.id,
-      };
+      patchedById.set(existing.id, sanitizeSeason({
+        ...existing,
+        title: typeof raw.title === 'string' ? raw.title : existing.title,
+        number: Number.isFinite(raw.number) ? raw.number : existing.number,
+        logline: typeof raw.logline === 'string' ? raw.logline : existing.logline,
+        synopsis: typeof raw.synopsis === 'string' ? raw.synopsis : existing.synopsis,
+        endingHook: typeof raw.endingHook === 'string' ? raw.endingHook : existing.endingHook,
+        episodeCountTarget: Number.isFinite(raw.episodeCountTarget)
+          ? raw.episodeCountTarget
+          : existing.episodeCountTarget,
+        themes: Array.isArray(raw.themes) ? raw.themes : existing.themes,
+      }));
+      return;
     }
-    return {
-      season: buildSeason({
-        number: raw?.number,
-        title: raw?.title,
-        logline: raw?.logline,
-        synopsis: raw?.synopsis,
-        endingHook: raw?.endingHook,
-        episodeCountTarget: raw?.episodeCountTarget,
-      }),
-      sourceId: null,
-    };
-  }).filter((entry) => entry?.season);
+    const minted = buildSeason({
+      number: raw?.number,
+      title: raw?.title,
+      logline: raw?.logline,
+      synopsis: raw?.synopsis,
+      endingHook: raw?.endingHook,
+      episodeCountTarget: raw?.episodeCountTarget,
+    });
+    if (minted) mintedSeasons.push(minted);
+  });
 
-  const seasons = sanitizeSeasonList(seasonEntries.map((e) => e.season));
+  const seasons = sanitizeSeasonList([
+    ...(series.seasons || []).map((s) => patchedById.get(s.id) || s),
+    ...mintedSeasons,
+  ]);
 
-  const { series: updated } = await commitSeasonsWithRemap(series, { arc, seasons });
+  // `preserveDroppedSeasons` (autopilot unlock-for-run) rides through so an
+  // auto-resolve can rewrite a volume but never delete one — see the option's
+  // contract on commitSeasonsWithRemap.
+  const { series: updated } = await commitSeasonsWithRemap(
+    series,
+    { arc, seasons },
+    { preserveDroppedSeasons: options.preserveDroppedSeasons === true },
+  );
 
   // Apply any episode-level synopsis corrections the resolver returned. This is
   // the heal capability that lets episode-scoped findings converge: when a
@@ -455,7 +550,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   const episodesResolved = await applyEpisodeResolutions(
     seriesId,
     updated,
-    shapeEpisodeResolutions(content?.episodes),
+    shapeEpisodeResolutions(edits.episodes),
   );
 
   const notes = typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '';
@@ -523,6 +618,107 @@ export async function applyEpisodeResolutions(seriesId, series, episodes) {
   return applied;
 }
 
+// The three `idea`-stage fields an auto-resolve round can rewrite, normalized so
+// the snapshot and the restore's dirty-check read the record the same way — a
+// fourth field would otherwise have to be added to two hand-rolled default lists
+// kept in lockstep.
+const ideaSnapshotOf = (stage) => ({
+  input: stage?.input ?? '',
+  output: stage?.output ?? '',
+  status: stage?.status ?? 'empty',
+});
+
+// Every issue in the series, without per-stage run history: `listIssues` caps at
+// 1000 (a longer series would lose its tail from the snapshot, making those
+// episodes unrestorable) and carries history payloads this projection throws
+// away. Shared by the snapshot and the restore.
+const listEpisodesForSnapshot = (seriesId) => listIssuesForSeries(seriesId, { withHistory: false });
+
+/**
+ * Capture everything ONE auto-resolve round can rewrite — the arc, the volume
+ * records, and each episode's planning synopsis (plus which volume it sits
+ * under) — so a round that leaves verification WORSE can be reverted instead of
+ * committed. Read-only; the caller holds the snapshot for the duration of the
+ * round (see `runArcVerify`'s regression guard).
+ *
+ * Deep-cloned: `getSeries` hands back the store record un-cloned, and a snapshot
+ * that aliases the record it is meant to restore is no snapshot at all.
+ */
+export async function snapshotArcState(seriesId) {
+  const [series, issues] = await Promise.all([getSeries(seriesId), listEpisodesForSnapshot(seriesId)]);
+  return {
+    seriesId,
+    arc: structuredClone(series.arc ?? null),
+    seasons: structuredClone(series.seasons || []),
+    episodes: issues.map((iss) => ({
+      id: iss.id,
+      seasonId: iss.seasonId ?? null,
+      idea: ideaSnapshotOf(iss.stages?.idea),
+    })),
+  };
+}
+
+/**
+ * Put a `snapshotArcState` capture back, restoring only what actually differs:
+ * the arc + volume list, any episode whose volume the round re-pointed, and any
+ * episode synopsis the round rewrote. Returns what it touched.
+ *
+ * Deliberately NOT routed through `commitSeasonsWithRemap`: that path merges,
+ * preserves and re-mints, which is right for applying a rewrite and wrong for
+ * undoing one — a rollback wants the exact prior record back, and it restores
+ * the child issues' `seasonId` itself so a volume the round minted can't strand
+ * the episodes it took. For the same reason it doesn't re-check `locked.arc`:
+ * the arc was writable when the round ran, and refusing to undo that round's
+ * damage because a lock flipped mid-run would strand the user with the damage.
+ * A locked `idea` stage IS skipped — the resolve pass never touched it.
+ *
+ * Only the autopilot's convergence loop calls this: it is the one caller that
+ * re-verifies after every resolve, so it is the only one that can tell a
+ * regressive round from a good one without paying for an extra verify. The
+ * manual `/arc/resolve` route and the foundation gate's structure fix run the
+ * same resolver with no rollback, deliberately.
+ */
+export async function restoreArcState(seriesId, snapshot) {
+  if (!snapshot || snapshot.seriesId !== seriesId || !Array.isArray(snapshot.episodes)) {
+    return { restored: false, episodesRestored: 0, reassignedIssueCount: 0 };
+  }
+  const issues = await listEpisodesForSnapshot(seriesId);
+  const byId = new Map(issues.map((iss) => [iss.id, iss]));
+  const stageUpdates = [];
+  const reassign = [];
+  for (const snap of snapshot.episodes) {
+    const cur = byId.get(snap.id);
+    // Gone since the snapshot — nothing to restore onto (auto-resolve never
+    // deletes issues, so this is a concurrent user edit, not the round).
+    if (!cur) continue;
+    if ((cur.seasonId ?? null) !== snap.seasonId) reassign.push(snap);
+    if (cur.stages?.idea?.locked === true) continue;
+    const idea = ideaSnapshotOf(cur.stages?.idea);
+    if (idea.input === snap.idea.input
+      && idea.output === snap.idea.output
+      && idea.status === snap.idea.status) continue;
+    stageUpdates.push({
+      issueId: snap.id,
+      stageId: 'idea',
+      computeFn: () => ({ ...snap.idea, errorMessage: '' }),
+    });
+  }
+  // Same write ordering as `commitSeasonsWithRemap`: seasons first, so a crash
+  // between writes can't leave an issue pointing at a volume that isn't in
+  // `series.seasons[]`.
+  await withReexportSuppressed('series', seriesId, async () => {
+    await updateSeries(seriesId, { arc: snapshot.arc, seasons: snapshot.seasons });
+    for (const snap of reassign) {
+      await updateIssue(snap.id, { seasonId: snap.seasonId }, { skipRenumber: true });
+    }
+    if (reassign.length) await recomputeIssueNumbersForSeries(seriesId);
+    await updateStagesWithLatest(seriesId, stageUpdates);
+  });
+  emitRecordUpdated('series', seriesId);
+  console.log(`↩️ arc-resolve: reverted a regressive round for series ${seriesId.slice(0, 12)} — ${stageUpdates.length} episode synopsis(es), ${reassign.length} reassignment(s)`);
+  return { restored: true, episodesRestored: stageUpdates.length, reassignedIssueCount: reassign.length };
+}
+
 // Preserve per-field arc locks. When `currentSeries.locked.arcFields[k]` is
 // true, the incoming arc's value for `k` is replaced with the existing one so
 // auto-resolve / regenerate flows can rewrite unlocked fields without
@@ -576,6 +772,207 @@ export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
   return merged;
 }
 
+// Re-insert every EXISTING season the rewrite dropped, without freezing the
+// ones it kept. Distinct from `mergeSeasonsWithLocks`: that one restores a
+// locked season's CONTENT verbatim (the user froze it); this one only
+// guarantees the record survives, so a same-id rewrite still applies in full.
+//
+// Used by the autopilot's `unlockForRun` mode — once that pass clears the
+// per-season locks, nothing else stops an LLM-proposed arc from silently
+// deleting a volume, and unlocking for EDITING must not become a licence to
+// DELETE (see seriesAutopilot/unlockPass.js).
+//
+// The preserved records go FIRST, and that ordering is load-bearing rather than
+// cosmetic: `sanitizeSeasonList` caps the list at SEASONS_PER_SERIES_MAX by
+// keeping the first N it sees. Appending them would mean an LLM that returned a
+// full cap's worth of brand-new volumes silently pushed every existing volume
+// past the cap — the sanitizer would drop them and `commitSeasonsWithRemap`
+// would then treat them as deleted and reassign their issues, which is exactly
+// the deletion this helper exists to refuse. Existing records therefore win the
+// cap; the rewrite's surplus new volumes are what gets trimmed. Final display
+// order is unaffected — `sanitizeSeasonList` sorts by `number` at the end.
+export function preserveDroppedSeasonRecords(currentSeasons, nextSeasons) {
+  if (!Array.isArray(nextSeasons)) return nextSeasons;
+  if (!Array.isArray(currentSeasons)) return nextSeasons;
+  const keptIds = new Set(nextSeasons.map((s) => s?.id).filter(Boolean));
+  const dropped = currentSeasons.filter((s) => s?.id && !keptIds.has(s.id));
+  return dropped.length === 0 ? nextSeasons : [...dropped, ...nextSeasons];
+}
+
+// Normalized title comparison, shared by the two season matchers below.
+const normTitle = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
+
+/**
+ * Resolve each LLM-proposed season to the EXISTING season record it is a
+ * rewrite of, so a rewrite lands on that record instead of minting a sibling.
+ * Returns an array parallel to `proposedSeasons` holding the matched existing
+ * season (or `null` when the proposal is genuinely new).
+ *
+ * Match priority mirrors `buildSeasonRemap`, and runs as three ordered passes
+ * rather than one greedy sweep so a proposal that DOES carry an `id` always
+ * wins its own record: a same-titled sibling processed earlier must not claim
+ * it and push the id-carrying proposal into minting a duplicate.
+ *   1. explicit `id`
+ *   2. normalized title (the resolve prompt is told to preserve titles)
+ *   3. `number`, only when exactly one unclaimed existing season has it
+ *
+ * Deliberately NOT a positional fallback — unlike `buildSeasonRemap`'s 1↔1
+ * pass, a wrong guess here doesn't just misfile child issues, it overwrites a
+ * volume's prose with another volume's rewrite. Unmatched proposals mint, which
+ * is the recoverable outcome.
+ */
+export function matchProposedSeasons(existingSeasons, proposedSeasons) {
+  const existing = Array.isArray(existingSeasons) ? existingSeasons.filter((s) => s?.id) : [];
+  const proposed = Array.isArray(proposedSeasons) ? proposedSeasons : [];
+  const matched = new Array(proposed.length).fill(null);
+  if (existing.length === 0) return matched;
+  const byId = new Map(existing.map((s) => [s.id, s]));
+  const claimed = new Set();
+
+  const claim = (idx, season) => {
+    matched[idx] = season;
+    claimed.add(season.id);
+  };
+
+  // Pass 1 — explicit id.
+  proposed.forEach((raw, idx) => {
+    const hit = raw?.id ? byId.get(raw.id) : null;
+    if (hit && !claimed.has(hit.id)) claim(idx, hit);
+  });
+
+  // Pass 2 — normalized title.
+  proposed.forEach((raw, idx) => {
+    if (matched[idx]) return;
+    const title = normTitle(raw?.title);
+    if (!title) return;
+    const hit = existing.find((s) => normTitle(s.title) === title && !claimed.has(s.id));
+    if (hit) claim(idx, hit);
+  });
+
+  // Pass 3 — unambiguous `number`.
+  proposed.forEach((raw, idx) => {
+    if (matched[idx]) return;
+    if (!Number.isFinite(raw?.number)) return;
+    const hits = existing.filter((s) => s.number === raw.number && !claimed.has(s.id));
+    if (hits.length === 1) claim(idx, hits[0]);
+  });
+
+  return matched;
+}
+
+// Prose fields a collapse may back-fill onto the surviving record. Only ever
+// used to fill a field that is EMPTY on the survivor — never to overwrite.
+const SEASON_FILLABLE_FIELDS = ['logline', 'synopsis', 'endingHook'];
+
+// Rescue content that only exists on the records being absorbed, so collapsing
+// a duplicate can't silently delete the one revision that had a synopsis.
+function backfillSeasonGaps(survivor, group) {
+  // Newest first — if several duplicates could fill a gap, the latest rewrite
+  // is the one the user last saw.
+  const donors = group
+    .filter((s) => s.id !== survivor.id)
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  let next = survivor;
+  for (const key of SEASON_FILLABLE_FIELDS) {
+    if (next[key]) continue;
+    const donor = donors.find((d) => d[key]);
+    if (donor) next = { ...next, [key]: donor[key] };
+  }
+  if (!next.themes?.length) {
+    const donor = donors.find((d) => d.themes?.length);
+    if (donor) next = { ...next, themes: donor.themes };
+  }
+  if (!next.episodeCountTarget) {
+    const donor = donors.find((d) => d.episodeCountTarget);
+    if (donor) next = { ...next, episodeCountTarget: donor.episodeCountTarget };
+  }
+  return next;
+}
+
+/** True when two or more seasons in the list share a `number`. Pure. */
+export function hasDuplicateSeasonNumbers(seasons) {
+  if (!Array.isArray(seasons)) return false;
+  const seen = new Set();
+  for (const s of seasons) {
+    if (!s) continue;
+    if (seen.has(s.number)) return true;
+    seen.add(s.number);
+  }
+  return false;
+}
+
+/**
+ * Collapse seasons that share a `number` down to one record per number, and
+ * report which ids were absorbed so the caller can re-point their child issues.
+ * Returns `{ seasons, absorbed: Map<absorbedId, survivorId> }`.
+ *
+ * Two volumes numbered the same is never a state a user can act on — the Arc
+ * Canvas renders both, a volume export can't tell which is canonical, and
+ * arc-verify files it as a blocking finding every round. Before
+ * `matchProposedSeasons` existed, auto-resolve manufactured exactly this shape,
+ * so the collapse doubles as the self-heal for installs that already diverged:
+ * the next arc write repairs the record without a migration (the file-migration
+ * runner executes before the Postgres pool, and series are db-primary).
+ *
+ * Survivor preference — the record with the strongest claim to the child
+ * issues, so a collapse never strands episodes:
+ *   1. `locked` (the user froze it)
+ *   2. most child issues
+ *   3. oldest `createdAt` (the original, not the bug's mint)
+ *
+ * A group holding TWO OR MORE locked records is left intact: silently deleting
+ * a user-frozen volume is worse than the duplicate, and only a human can say
+ * which freeze was intended. Those groups keep warning every write, which is
+ * the correct nag.
+ */
+export function collapseDuplicateSeasonNumbers(seasons, issueCountBySeasonId = new Map(), { log = true } = {}) {
+  const absorbed = new Map();
+  if (!Array.isArray(seasons)) return { seasons, absorbed };
+  const byNumber = new Map();
+  for (const s of seasons) {
+    if (!s) continue;
+    const group = byNumber.get(s.number);
+    if (group) group.push(s);
+    else byNumber.set(s.number, [s]);
+  }
+
+  const survivors = [];
+  for (const [number, group] of byNumber) {
+    if (group.length === 1) {
+      survivors.push(group[0]);
+      continue;
+    }
+    const lockedCount = group.filter((s) => s.locked === true).length;
+    if (lockedCount > 1) {
+      if (log) {
+        console.warn(
+          `⚠️ collapseDuplicateSeasonNumbers: volume ${number} has ${group.length} records including ${lockedCount} locked — left intact, unlock all but one to collapse`,
+        );
+      }
+      survivors.push(...group);
+      continue;
+    }
+    const episodes = (s) => issueCountBySeasonId.get(s.id) || 0;
+    const [survivor] = [...group].sort((a, b) => (
+      (b.locked === true ? 1 : 0) - (a.locked === true ? 1 : 0)
+      || episodes(b) - episodes(a)
+      || String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+    ));
+    survivors.push(backfillSeasonGaps(survivor, group));
+    for (const s of group) {
+      if (s.id !== survivor.id) absorbed.set(s.id, survivor.id);
+    }
+    if (log) {
+      console.warn(
+        `⚠️ collapseDuplicateSeasonNumbers: volume ${number} had ${group.length} records — kept ${survivor.id} (${episodes(survivor)} episode(s)), absorbed ${group.length - 1} into it`,
+      );
+    }
+  }
+  // Re-sort: `sanitizeSeasonList`'s number ordering is the contract consumers
+  // render straight from, and the group walk above emits in first-seen order.
+  return { seasons: survivors.sort((a, b) => (a.number || 0) - (b.number || 0)), absorbed };
+}
+
 /**
  * Persist a new `arc` + `seasons[]` onto a series, migrating any child issues
  * whose `seasonId` referenced a season that the new shape dropped or renamed.
@@ -594,8 +991,14 @@ export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
  * `currentSeries` identifies the target series. The helper refreshes the
  * latest snapshot before writing so locks toggled while an LLM run is in
  * flight are honored at commit time.
+ *
+ * `options.preserveDroppedSeasons` additionally re-inserts any existing season
+ * the new shape omitted, whether or not it was locked — the non-destructive
+ * guarantee the autopilot's `unlockForRun` mode relies on (it clears the very
+ * per-season locks that would otherwise have preserved them). Content rewrites
+ * to surviving seasons still apply; only deletion is refused.
  */
-export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
+export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }, options = {}) {
   const seriesId = currentSeries.id;
   const latestSeries = await getSeries(seriesId);
   if (latestSeries.locked?.arc === true) {
@@ -608,17 +1011,48 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
   // Per-season locks: restore any locked existing seasons over LLM-proposed
   // rewrites, and re-insert any locked seasons the LLM dropped. Re-sanitize
   // so the locked records merge with the new shape (sort by number, dedup).
-  const mergedSeasons = sanitizeSeasonList(
-    mergeSeasonsWithLocks(latestSeries.seasons, seasons),
+  const lockMerged = mergeSeasonsWithLocks(latestSeries.seasons, seasons);
+  let mergedSeasons = sanitizeSeasonList(
+    options.preserveDroppedSeasons === true
+      ? preserveDroppedSeasonRecords(latestSeries.seasons, lockMerged)
+      : lockMerged,
   );
+
+  // One `listIssues` for the whole commit — the collapse below needs per-season
+  // episode counts and the reassign sweep needs the same list.
+  let allIssues = null;
+  const loadIssues = async () => {
+    if (allIssues === null) allIssues = await listIssues({ seriesId });
+    return allIssues;
+  };
+
+  // Self-heal duplicate volume numbers on the way through. `sanitizeSeasonList`
+  // dedupes by `id` only, so two records both numbered 1 survive it happily —
+  // and that shape is a blocking arc-verify finding no amount of LLM rewriting
+  // can clear. Absorbed ids are threaded into the remap below so their episodes
+  // follow the survivor instead of falling into the ungrouped bucket.
+  let absorbed = new Map();
+  if (hasDuplicateSeasonNumbers(mergedSeasons)) {
+    const counts = new Map();
+    for (const iss of await loadIssues()) {
+      if (iss.seasonId) counts.set(iss.seasonId, (counts.get(iss.seasonId) || 0) + 1);
+    }
+    ({ seasons: mergedSeasons, absorbed } = collapseDuplicateSeasonNumbers(mergedSeasons, counts));
+  }
+
   const newIds = new Set(mergedSeasons.map((s) => s.id));
   const droppedOldSeasons = (latestSeries.seasons || []).filter((s) => !newIds.has(s.id));
   const oldIds = new Set((latestSeries.seasons || []).map((s) => s.id));
   const newlyMintedSeasons = mergedSeasons.filter((s) => !oldIds.has(s.id));
   const remap = buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons);
+  // An absorbed duplicate has a KNOWN survivor, which beats buildSeasonRemap's
+  // title/number inference — that pass only considers freshly-minted seasons as
+  // targets, so a duplicate absorbed into an existing record would otherwise
+  // map to null and orphan every episode under it.
+  for (const [absorbedId, survivorId] of absorbed) remap.set(absorbedId, survivorId);
   const droppedIdSet = new Set(droppedOldSeasons.map((s) => s.id));
   const reassignList = droppedIdSet.size
-    ? (await listIssues({ seriesId })).filter((iss) => droppedIdSet.has(iss.seasonId))
+    ? (await loadIssues()).filter((iss) => droppedIdSet.has(iss.seasonId))
     : [];
 
   // Mirrors `deleteSeason`'s bulk-reassign idiom — `skipRenumber` per call +

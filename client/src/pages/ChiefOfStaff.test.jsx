@@ -16,6 +16,8 @@ const api = vi.hoisted(() => ({
   getCosActionableInsights: vi.fn(),
   getCosBudgetUsage: vi.fn(),
   forceCosEvaluate: vi.fn(),
+  pauseCos: vi.fn(),
+  resumeCos: vi.fn(),
   forceHealthCheck: vi.fn(),
   updateCosConfig: vi.fn(),
   // HealthTab (rendered by the manual "Run Check" test) + its ProviderStatusCard.
@@ -71,6 +73,8 @@ beforeEach(() => {
   api.getCosLearning.mockResolvedValue(null);
   api.getProviderStatuses.mockResolvedValue({ providers: {} });
   api.getCosBudgetUsage.mockResolvedValue({ usage: {} });
+  api.pauseCos.mockResolvedValue({ success: true, pausedAt: '2026-01-01T00:00:00.000Z' });
+  api.resumeCos.mockResolvedValue({ success: true });
 });
 
 const renderConfigTab = () => render(
@@ -110,6 +114,39 @@ describe('ChiefOfStaff handleForceEvaluate', () => {
     await waitFor(() => expect(screen.queryAllByText('Evaluating tasks...').length).toBeGreaterThan(0));
     // Must pass { silent: true } so the custom catch is the only error toast.
     expect(api.forceCosEvaluate).toHaveBeenCalledWith({ silent: true });
+  });
+});
+
+describe('ChiefOfStaff daemon pause controls', () => {
+  it('pauses new CoS scheduling through the persistent pause API', async () => {
+    api.getCosStatus.mockResolvedValue({ running: true, paused: false, config, stats: {} });
+    renderConfigTab();
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /pause chief of staff scheduling/i }))[0]);
+
+    await waitFor(() => expect(api.pauseCos).toHaveBeenCalledWith(
+      'Paused from Chief of Staff controls',
+      { silent: true },
+    ));
+    expect(toast.success).toHaveBeenCalledWith('Chief of Staff paused');
+  });
+
+  it('resumes task dispatch only from an explicit Resume action', async () => {
+    api.getCosStatus.mockResolvedValue({
+      running: true,
+      paused: true,
+      pauseReason: 'Supervised maintenance',
+      config,
+      stats: {},
+    });
+    renderConfigTab();
+
+    expect((await screen.findAllByText('Paused')).length).toBeGreaterThan(0);
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /resume chief of staff scheduling/i }))[0]);
+
+    await waitFor(() => expect(api.resumeCos).toHaveBeenCalledWith({ silent: true }));
+    expect(toast.success).toHaveBeenCalledWith('Chief of Staff resumed');
   });
 });
 

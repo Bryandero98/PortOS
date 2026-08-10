@@ -4,6 +4,7 @@
  */
 
 import { readReadinessGate } from '../../../lib/editorial/index.js';
+import { resolveSeriesLlmOverride } from '../../../lib/seriesLlmOverride.js';
 import { READINESS_GATES } from '../editorialScore.js';
 
 // Bounded convergence loops — re-verify/re-review at most this many rounds, then
@@ -41,6 +42,17 @@ export const DEFAULT_FOUNDATION_GATE_ENABLED = true;
 // `maxChildRetries` option overrides it (plumbed through runOptions).
 export const MAX_CHILD_RETRIES = 1;
 
+// The one precedence rule every gate below follows for a BOOLEAN knob: an
+// explicit per-run option wins, then the persisted pipelineEditorialChecks
+// setting, then the module default. Hoisted so the file states it once — it was
+// open-coded in three resolvers and closed over twice more, which is how the
+// next gate ends up copying whichever variant it happened to land next to.
+const pickBool = (o, s, fallback) => {
+  if (typeof o === 'boolean') return o;
+  if (typeof s === 'boolean') return s;
+  return fallback;
+};
+
 // Resolve the effective round bounds for a run: an explicit per-run option wins,
 // then the persisted pipelineEditorialChecks setting, then the module default.
 // Returns integers only — a non-integer at any layer falls through to the next.
@@ -68,10 +80,8 @@ export function resolveAutopilotRounds(options = {}, settings = null) {
 // onto run options once at start so the loop, the dry-run plan, and a resume all
 // read the same effective values.
 export function resolveAutopilotFoundationGate(options = {}, settings = null) {
-  if (typeof options?.foundationGate === 'boolean') return options.foundationGate;
   const pec = settings?.pipelineEditorialChecks || {};
-  if (typeof pec?.foundationGate === 'boolean') return pec.foundationGate;
-  return DEFAULT_FOUNDATION_GATE_ENABLED;
+  return pickBool(options?.foundationGate, pec?.foundationGate, DEFAULT_FOUNDATION_GATE_ENABLED);
 }
 export function resolveAutopilotFoundationThreshold(options = {}, settings = null) {
   if (Number.isFinite(options?.foundationThreshold)) return options.foundationThreshold;
@@ -115,10 +125,8 @@ export function resolveAutopilotCheckPauseThreshold(options = {}, settings = nul
 // at every layer: per-run option wins, then the persisted setting, then true.
 export const DEFAULT_NOTIFY_ON_PAUSE = true;
 export function resolveAutopilotNotifyOnPause(options = {}, settings = null) {
-  if (typeof options?.notifyOnPause === 'boolean') return options.notifyOnPause;
   const pec = settings?.pipelineEditorialChecks || {};
-  if (typeof pec?.notifyOnPause === 'boolean') return pec.notifyOnPause;
-  return DEFAULT_NOTIFY_ON_PAUSE;
+  return pickBool(options?.notifyOnPause, pec?.notifyOnPause, DEFAULT_NOTIFY_ON_PAUSE);
 }
 
 // Autopilot → CD teaser deliverable (CDO Phase 3, #2185). Once a comic issue is
@@ -131,10 +139,8 @@ export function resolveAutopilotNotifyOnPause(options = {}, settings = null) {
 // all read the same effective flag.
 export const DEFAULT_PRODUCE_TEASER = false;
 export function resolveAutopilotProduceTeaser(options = {}, settings = null) {
-  if (typeof options?.produceTeaser === 'boolean') return options.produceTeaser;
   const pec = settings?.pipelineEditorialChecks || {};
-  if (typeof pec?.produceTeaser === 'boolean') return pec.produceTeaser;
-  return DEFAULT_PRODUCE_TEASER;
+  return pickBool(options?.produceTeaser, pec?.produceTeaser, DEFAULT_PRODUCE_TEASER);
 }
 
 // Does THIS run want to produce a teaser deliverable? Gated on the resolved
@@ -142,6 +148,25 @@ export function resolveAutopilotProduceTeaser(options = {}, settings = null) {
 // pointless on a text-only run).
 export function wantsTeaser(options = {}) {
   return options.produceTeaser === true && wantsVisual(options);
+}
+
+// Unlock-everything-first (see ./unlockPass.js). When on, the run's FIRST step
+// clears every lock this series owns — the arc freeze + per-field arc locks,
+// each volume's lock, every issue stage lock, and the universe-side records
+// this series owns — so the autopilot can actually apply the fixes the
+// editorial passes surface instead of pausing on findings it isn't allowed to
+// resolve.
+//
+// PER-RUN ONLY, deliberately — the one autopilot option with NO persisted
+// default (mirrors `readinessGate`, and unlike every other gate here). The rest
+// of this file's options are spend/quality knobs where a saved default is
+// harmless; this one rewrites protection state the user set by hand. A saved
+// default would be read by `seriesAutopilotScheduler`, so ticking the box once
+// in one series' panel would silently arm lock-clearing for every future
+// unattended scheduled run of EVERY series. Stamped onto run options at start
+// so the resolver, the dry-run plan and a resume all read the same flag.
+export function resolveAutopilotUnlockForRun(options = {}) {
+  return options?.unlockForRun === true;
 }
 
 // Iterate-to-quality revision loop (CWQE Phase 7, #2171). Opt-in per run; when
@@ -158,11 +183,6 @@ export const DEFAULT_REVISION_MAX_CYCLES = 2;
 export const DEFAULT_REVISION_PLATEAU_DELTA = 0.3;
 export function resolveAutopilotRevision(options = {}, settings = null) {
   const pec = settings?.pipelineEditorialChecks || {};
-  const bool = (o, s, fallback) => {
-    if (typeof o === 'boolean') return o;
-    if (typeof s === 'boolean') return s;
-    return fallback;
-  };
   const int = (o, s, fallback) => {
     if (Number.isInteger(o)) return o;
     if (Number.isInteger(s)) return s;
@@ -176,12 +196,78 @@ export function resolveAutopilotRevision(options = {}, settings = null) {
   const minCycles = int(options?.revisionMinCycles, pec?.revisionMinCycles, DEFAULT_REVISION_MIN_CYCLES);
   const maxCycles = int(options?.revisionMaxCycles, pec?.revisionMaxCycles, DEFAULT_REVISION_MAX_CYCLES);
   return {
-    revisionEnabled: bool(options?.revisionEnabled, pec?.revisionEnabled, DEFAULT_REVISION_ENABLED),
+    revisionEnabled: pickBool(options?.revisionEnabled, pec?.revisionEnabled, DEFAULT_REVISION_ENABLED),
     revisionMinCycles: Math.max(1, minCycles),
     // maxCycles never below minCycles — a misconfig can't strand the loop unable to run.
     revisionMaxCycles: Math.max(Math.max(1, minCycles), maxCycles),
     revisionPlateauDelta: Math.max(0, num(options?.revisionPlateauDelta, pec?.revisionPlateauDelta, DEFAULT_REVISION_PLATEAU_DELTA)),
   };
+}
+
+// Pipeline self-improvement — let a run diagnose the AUTOMATION, not just the
+// story. When a run ends badly (paused / errored) or finishes carrying unhealthy
+// telemetry (an editorial check that threw, a delegated child that had to be
+// retried, a convergence loop that never converged), the orchestrator can run
+// ONE meta-diagnosis pass over the run's own signal log and, when the verdict is
+// that PortOS itself is at fault (a missing editorial step earlier in the
+// pipeline, a prompt that keeps producing unusable output, a runner that
+// swallows a failure), file a CoS task against PortOS to fix it.
+//
+// Defaults OFF. It is a fresh burst of LLM spend AND it files work that changes
+// PortOS's own code, so it must be an explicit opt-in — a run with clean
+// telemetry never spends anything here even when enabled (see
+// `shouldDiagnose`). Per-run option wins, then the persisted
+// pipelineEditorialChecks setting, then the default.
+//
+// The filed task always awaits human approval and always opens a PR — see
+// selfImprove.js's header for why that isn't a knob.
+export const DEFAULT_SELF_IMPROVE = false;
+export function resolveAutopilotSelfImprove(options = {}, settings = null) {
+  const pec = settings?.pipelineEditorialChecks || {};
+  return pickBool(options?.selfImprove, pec?.selfImprove, DEFAULT_SELF_IMPROVE);
+}
+
+// Observing orchestrator — the continuous, self-dispatching sibling of the
+// self-improve post-mortem (see observer.js's header for the full contract).
+// When on, the run watches its own telemetry as it progresses; a step whose
+// fresh signals say the automation misbehaved spends a diagnosis call, and a
+// confident pipeline verdict files an AUTO-APPROVED CoS task that PRs and
+// merges without a human gate. Defaults OFF and must stay an explicit opt-in:
+// it is both fresh LLM spend and standing consent for unattended changes to
+// PortOS's own code. Per-run option wins, then the persisted
+// pipelineEditorialChecks setting, then the default — persistable like
+// selfImprove (a scheduled unattended run is exactly where the user wants the
+// pipeline hardening itself), unlike unlockForRun (which rewrites user-set
+// protection state and stays per-run only).
+export const DEFAULT_OBSERVER = false;
+export function resolveAutopilotObserver(options = {}, settings = null) {
+  const pec = settings?.pipelineEditorialChecks || {};
+  return pickBool(options?.observer, pec?.observer, DEFAULT_OBSERVER);
+}
+
+// Which provider/model do this run's LLM calls use? An explicit per-run
+// `providerOverride`/`modelOverride` wins (the Options picker, or the scheduler
+// mapping a schedule's provider/model); otherwise the run inherits the series'
+// own configured `series.llm` — the provider named in the series header, which
+// every other Pipeline LLM action already honors. Both absent stays undefined,
+// so stageRunner resolves stage pin → active provider as before. The precedence
+// (including why a foreign model id is dropped) lives in the shared
+// `resolveSeriesLlmOverride`; this only renames its keys to the run-option ones.
+//
+// Threaded as SOFT defaults (`providerDefault`/`modelDefault`, see
+// session.js#providerOverrideOpts), so a deliberate per-stage pin on the Prompts
+// page still wins and an unavailable provider falls through instead of throwing.
+export function resolveAutopilotLlm(options = {}, series = null) {
+  const { provider, model } = resolveSeriesLlmOverride(series, {
+    overrideProvider: options?.providerOverride,
+    overrideModel: options?.modelOverride,
+  });
+  // Reasoning effort (#3641) is per-run only — there is no series-level effort to
+  // inherit, so a blank choice stays undefined and each stage falls through to its
+  // own `effort` pin, then the provider's configured args. Threaded on the same
+  // soft channel as the provider/model (session.js#providerOverrideOpts →
+  // stageRunner's `effortDefault`), which clamps it per provider.
+  return { providerOverride: provider, modelOverride: model, effortOverride: options?.effortOverride || undefined };
 }
 
 // Effective "produce draft visuals?" decision. The `target` option overrides

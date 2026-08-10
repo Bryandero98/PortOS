@@ -676,6 +676,9 @@ async function runStageLLMOnce(issueId, stageId, template, ctx, options) {
       // per-stage `model` pin, mirroring providerIdDefault. Route callers pass
       // model (hard); autopilot passes modelIdDefault (soft).
       modelDefault: options.modelIdDefault,
+      // Soft run-level reasoning effort (Series Autopilot, #3641): loses to a
+      // per-stage `effort` pin, and the runner clamps/drops it per provider.
+      effortDefault: options.effortIdDefault,
       source: 'pipeline-text-stage',
     });
   } catch (err) {

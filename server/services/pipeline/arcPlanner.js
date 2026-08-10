@@ -35,7 +35,7 @@ export * from './arcPlanner/coverConcepts.js';
 // the split). Pulled back together here from their new home modules so the
 // existing `__testing` import contract is preserved.
 import { buildArcOverviewContext, shapeSeasonOutlines, buildVerifyContext, buildResolveContext, shapeVerifyIssues, shapeFindings, renderVolumeIssue, buildNeighborVolumes, buildBeatContinuityContext, shapeBeatResolutions } from './arcPlanner/context.js';
-import { buildVolumeVerifyContext, mergeArcWithLocks, mergeSeasonsWithLocks } from './arcPlanner/arcCore.js';
+import { buildVolumeVerifyContext, collapseDuplicateSeasonNumbers, hasDuplicateSeasonNumbers, matchProposedSeasons, mergeArcWithLocks, mergeSeasonsWithLocks, preserveDroppedSeasonRecords } from './arcPlanner/arcCore.js';
 import { applyBeatResolutions } from './arcPlanner/beatContinuity.js';
 import { buildSeasonEpisodesContext, shapeEpisodes } from './arcPlanner/episodeSeedPass.js';
 import { shapeCompletenessFindings, buildCompletenessContext } from './arcPlanner/completenessPass.js';
@@ -58,6 +58,10 @@ export const __testing = {
   buildNeighborVolumes,
   mergeArcWithLocks,
   mergeSeasonsWithLocks,
+  preserveDroppedSeasonRecords,
+  matchProposedSeasons,
+  hasDuplicateSeasonNumbers,
+  collapseDuplicateSeasonNumbers,
   buildBeatContinuityContext,
   shapeBeatResolutions,
   applyBeatResolutions,

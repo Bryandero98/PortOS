@@ -78,16 +78,27 @@ vi.mock('./codeReview.js', () => ({
   })
 }));
 
-vi.mock('./agentState.js', () => ({
+// Only the mutable registries are stubbed; the module's pure predicates
+// (isFalsyMeta et al., which the worktreeChangesExpected opt-out reads through)
+// come from the real module — it is import-free, so there is nothing to isolate,
+// and a hand-written copy would silently drift from the real metadata coercion.
+vi.mock('./agentState.js', async (importOriginal) => ({
+  ...await importOriginal(),
   activeAgents: new Map(),
   userTerminatedAgents: new Set(),
   pausedAgents: new Map(),
   registerSpawnedAgent: vi.fn(),
   unregisterSpawnedAgent: vi.fn(),
-  // Mirrors the real predicate (covers the TASKS.md string round-trip) — the
-  // worktreeChangesExpected opt-out reads through it.
-  isFalsyMeta: (value) => value === false || value === 'false',
 }));
+
+// ONE execGit double behind BOTH entry points. The commit half of the
+// work-evidence probe moved to `lib/gitCommitProbe.js` (#3637), which reaches
+// `lib/execGit.js` directly rather than through `git.js`'s re-export — so mocking
+// only `git.js` would leave the probe shelling out to real git. Sharing the spy
+// keeps every `vi.mocked(gitService.execGit)` override in this file authoritative
+// for the probe too.
+const { execGitMock } = vi.hoisted(() => ({ execGitMock: vi.fn() }));
+vi.mock('../lib/execGit.js', () => ({ execGit: execGitMock }));
 
 vi.mock('./git.js', () => ({
   // Default: worktree has changes so idle-complete succeeds. Tests that want
@@ -97,7 +108,7 @@ vi.mock('./git.js', () => ({
   // `git rev-list --count --since=…` for the commit half of the work-evidence
   // probe. Default: zero commits during the run, so a clean tree still fails —
   // the commit-and-push test overrides this to a non-zero count.
-  execGit: vi.fn().mockResolvedValue({ exitCode: 0, stdout: '0\n', stderr: '' }),
+  execGit: execGitMock,
   // No owner-matched gh account by default → empty overlay (ambient auth kept).
   resolveForgeTokenEnv: vi.fn().mockResolvedValue({}),
 }));
@@ -1020,6 +1031,71 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
+  // ── 1a-sexies. A programmatic-I/O run is judged by its PAYLOAD, not the tree ──
+  // A layered-intelligence run reasons over the app's goals and returns JSON that
+  // a deterministic step files as one tracker issue; its prompt FORBIDS touching
+  // the repo. Measuring it by worktree evidence blamed it for exactly the thing it
+  // was told not to do — the failure read "zero file changes" on a task that must
+  // change no files — and buried the real miss: no `.agent-done` payload landed,
+  // so nothing was filed.
+  const liTask = (metadata = {}) => ({
+    id: 'task-1',
+    description: 'do the thing',
+    taskType: 'internal',
+    metadata: { analysisType: 'layered-intelligence', useWorktree: true, openPR: false, discardWorktree: true, ...metadata },
+  });
+
+  it('idle-no-deliverable: a programmatic-I/O run with no sentinel fails on its OWN criterion', async () => {
+    await driveIdleWithWorkOnCleanTree({ task: liTask() });
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'idle-no-deliverable' })
+    );
+    // The worktree question is never asked — it measures nothing about this run.
+    expect(gitService.getStatus).not.toHaveBeenCalled();
+  });
+
+  it('idle-no-deliverable: the failure names the missing payload, not missing file changes', async () => {
+    await driveIdleWithWorkOnCleanTree({ task: liTask() });
+
+    const { error } = vi.mocked(agentLifecycle.finalizeAgent).mock.calls.at(-1)[0];
+    expect(error).toContain('.agent-done');
+    expect(error).not.toContain('zero uncommitted file changes');
+  });
+
+  // A DIRTY tree doesn't rescue it either: this type ships a payload, and stray
+  // edits in a worktree that is discarded unmerged are not the deliverable.
+  it('idle-no-deliverable: a dirty worktree does not substitute for the payload', async () => {
+    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: false, files: [{ path: 'f.txt', status: 'M' }] });
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    await driveToSubmittedAndWorking({ task: liTask() });
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'idle-no-deliverable' })
+    );
+  });
+
+  // The type-derived question must not leak to a code-editing task that merely
+  // carries the same worktree-disposal metadata: a quota-burn job can want a
+  // scratch checkout it builds in and never lands, and it declares that shape via
+  // `worktreeChangesExpected` instead.
+  it('idle-no-changes: a code-editing task keeps the worktree criterion', async () => {
+    await driveIdleWithWorkOnCleanTree({
+      task: { id: 'task-1', description: 'do the thing', metadata: { analysisType: 'security', discardWorktree: true } },
+    });
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, completionReason: 'idle-no-changes' })
+    );
+    expect(gitService.getStatus).toHaveBeenCalled();
+  });
+
   // ── 1a-quinquies. A COMMIT during the run is evidence of work ────────────────
   // The #2191 gate above read only UNCOMMITTED changes, so a job whose
   // deliverable is a commit — `/do:release`, `/do:pr` — idled out on a clean
@@ -1043,7 +1119,7 @@ describe('spawnTuiAgent runtime', () => {
     expect(gitService.execGit).toHaveBeenCalledWith(
       ['rev-list', '--count', expect.stringMatching(/^--since=\d{4}-/), 'HEAD'],
       '/tmp/ws',
-      { ignoreExitCode: true }
+      { ignoreExitCode: true, timeout: 10_000 }
     );
   });
 

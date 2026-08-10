@@ -116,24 +116,24 @@ This is intentionally NOT done in default mode — current dependency footprint 
 
 Defined in `package.json` (root + server + client) — kept current to dodge known upstream advisories:
 
-- `path-to-regexp@8.4.2`
-- `lodash@4.18.1`
-- `basic-ftp@6.0.1`
-- `follow-redirects@1.16.0`
-- `brace-expansion@5.0.5` (root/client; server pins `5.0.6`)
-- `js-yaml@4.2.0`
-- `qs@6.15.2` (server only)
-- `socket.io-parser@4.2.6`
-- `protobufjs@7.6.3` + `@protobufjs/utf8@1.1.1`
-- `ws@8.21.0`
-- `ip-address@10.2.0`
-- `picomatch@4.0.4`
-- `postcss@8.5.15`
-- `systeminformation@5.31.6`
-- `minimatch@3 → brace-expansion@1.1.15` (client only, scoped)
-- `three@0.184.0` (client only, keeps drei/fiber on one three copy)
+- `ws@8.21.3` (all three)
+- `lodash@4.18.1`, `follow-redirects@1.16.0`, `js-yaml@4.3.1`, `ip-address@10.5.0` (root + server)
+- `nanoid@3.3.18`, `socket.io-parser@4.2.7` (server + client)
+- `path-to-regexp@8.4.2` (server only)
+- `body-parser@2.3.0` (server only)
+- `qs@6.15.3` (server only)
+- `tar@7.5.22` (server only)
+- `engine.io@6.6.9` (server only)
+- `postcss@8.5.26` (server only)
+- `protobufjs@7.6.5` + `@protobufjs/utf8@1.1.2` (server only)
+- `sharp@0.35.3` (server only, collapses the nested copy `@huggingface/transformers` requests)
+- `brace-expansion@5.0.9` (client only)
+- `minimatch@3 → brace-expansion@1.1.18` (client only, scoped)
+- `three@0.185.1` (client only, keeps drei/fiber on one three copy)
 
 These exist purely to force-bump transitive deps; revisit if `npm audit` flags new advisories.
+
+**Keep this list in sync with the manifests** — a stale entry here reads as a pin that exists when it doesn't. `server/dependency-overrides.test.js` guards the pins themselves (cross-manifest version parity, plus a `MINIMUM_SAFE` floor per remediated advisory), but it does not read this document. When a floor moves because a *new* advisory covers the version already pinned — as `js-yaml@4.3.0` did under GHSA-5p4m-2wfm-xmqj — bump the pin, the `MINIMUM_SAFE` row, and this list together.
 
 **Not every compromised package warrants a pin.** A pin only helps when the installed version is *below* the top of its permitted range — otherwise there is nothing to force. The August 2026 `keyv` / `flat-cache` / `file-entry-cache` compromise deliberately got **no** pin: each range was already at its ceiling (highest published `keyv@4.x` *is* `4.5.4`, etc.), so a pin would have been a no-op, and the packages were removed outright instead. Check headroom (`npm view <pkg>@<major> version`) before adding an entry here.
 

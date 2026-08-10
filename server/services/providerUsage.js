@@ -24,7 +24,10 @@ import { enabledCloudImageModes } from './imageGen/modes.js';
  * `supported: false` means the provider has no queryable usage surface at all
  * (the UI renders a muted "not available" note, never an error). A supported
  * adapter that fails transiently returns `error` instead of throwing so one
- * broken CLI can't 500 the whole endpoint.
+ * broken CLI can't 500 the whole endpoint. `error` also carries the reason a
+ * reading that DID succeed has nothing to meter (a spent credit balance, a
+ * degraded panel) — in both cases it is the sentence to show in place of
+ * meters, so consumers must not word it as a failure.
  *
  * `metrics[]` is for a backend whose quota cannot be queried at all: it renders
  * as labelled stat tiles instead of a meter, so an adapter never has to invent
@@ -49,11 +52,16 @@ import { enabledCloudImageModes } from './imageGen/modes.js';
 //
 // The Codex CLI has no queryable usage command, but every session appends
 // `token_count` events carrying `rate_limits` (used %, window minutes, reset
-// epoch, plan type) to its rollout log. Reading the newest event costs zero
-// tokens; the numbers are "as of the last Codex session activity."
+// epoch, plan type) to its rollout log. Reading those events costs zero tokens;
+// the numbers are "as of the last Codex telemetry that reported a window" —
+// which is not always the newest event (see parseCodexRateLimits).
 
 const CODEX_SCAN_FILE_LIMIT = 15;
 const CODEX_TAIL_BYTES = 256 * 1024;
+// Longest window Codex meters (7 days) plus a day of slack for the timezone
+// its day-directory names are written in. A session older than this cannot
+// hold a window that has not already reset.
+const CODEX_MAX_WINDOW_MS = 8 * 24 * 60 * 60 * 1000;
 
 const codexHomeDir = () => process.env.CODEX_HOME || join(homedir(), '.codex');
 
@@ -66,12 +74,24 @@ function humanizeWindowMinutes(minutes) {
 }
 
 /**
- * Pure: extract the newest `rate_limits` payload from rollout-JSONL content.
- * Scans lines from the end. Returns `{ rateLimits, timestamp }` or null.
+ * Pure: pick the most informative `rate_limits` payload out of rollout-JSONL
+ * content, scanning lines from the end. Returns `{ rateLimits, timestamp }` or
+ * null.
+ *
+ * Most informative, NOT most recent: Codex emits a `rate_limits` event per
+ * limit bucket, and the credits bucket reports `primary: null, secondary:
+ * null` — no meters at all. Taking the newest line unconditionally let one of
+ * those wipe out a perfectly good "100% used, resets <date>" reading from a
+ * session minutes earlier, so an exhausted quota rendered as "No rate-limit
+ * data reported" instead of a full meter. So: prefer the newest payload that
+ * actually carries a usable (unexpired) window, and fall back to the newest
+ * window-less payload only when the text holds nothing better.
+ *
  * Exported for tests.
  */
-export function parseCodexRateLimits(jsonlText) {
+export function parseCodexRateLimits(jsonlText, { now = Date.now() } = {}) {
   const lines = String(jsonlText || '').split('\n');
+  let fallback = null;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line.includes('"rate_limits"')) continue;
@@ -82,15 +102,27 @@ export function parseCodexRateLimits(jsonlText) {
       continue; // tail-read can clip the oldest line in the chunk mid-JSON
     }
     const rateLimits = parsed?.payload?.rate_limits ?? parsed?.rate_limits;
-    if (rateLimits && typeof rateLimits === 'object') {
-      return { rateLimits, timestamp: parsed.timestamp || null };
-    }
+    if (!rateLimits || typeof rateLimits !== 'object') continue;
+    const entry = { rateLimits, timestamp: parsed.timestamp || null };
+    if (codexUsableWindows(rateLimits, now).length) return entry;
+    fallback ??= entry;
   }
-  return null;
+  return fallback;
 }
 
-function codexLimitEntry(scopeKey, window) {
+/**
+ * A window whose reset has already passed has rolled over — its used_percent
+ * describes a spent allowance, not the current one. This matters now that a
+ * reading can come from an older session: otherwise a week-old "100% used"
+ * meter would keep rendering long after the quota came back. One definition,
+ * because `codexNoWindowsMessage` explains the drop this decides.
+ */
+const codexWindowExpired = (window, now) =>
+  Number.isFinite(window?.resets_at) && window.resets_at * 1000 <= now;
+
+function codexLimitEntry(scopeKey, window, now) {
   if (!window || typeof window.used_percent !== 'number') return null;
+  if (codexWindowExpired(window, now)) return null;
   const windowLabel = humanizeWindowMinutes(window.window_minutes);
   const percentUsed = Math.round(window.used_percent);
   return {
@@ -111,36 +143,68 @@ function codexLimitEntry(scopeKey, window) {
   };
 }
 
+/** Pure: the usable (present, numeric, unexpired) meters in a payload. */
+function codexUsableWindows(rateLimits, now) {
+  return [
+    codexLimitEntry('session', rateLimits?.primary, now),
+    codexLimitEntry('week', rateLimits?.secondary, now)
+  ].filter(Boolean);
+}
+
+/**
+ * Pure: say WHY a payload produced no meters, so the card explains itself
+ * instead of falling through to the client's bare "No rate-limit data
+ * reported" — which reads as "we couldn't tell" when the telemetry actually
+ * did say something (a spent credit balance, a limit that has since reset).
+ */
+function codexNoWindowsMessage(rateLimits, now) {
+  const bucket = rateLimits?.limit_id ? ` for the "${rateLimits.limit_id}" limit` : '';
+  if (rateLimits?.rate_limit_reached_type) {
+    return `Codex reports its ${rateLimits.rate_limit_reached_type} rate limit reached${bucket}, with no window telemetry to meter.`;
+  }
+  // The windows were real and metered — they have simply rolled over since.
+  if ([rateLimits?.primary, rateLimits?.secondary].some((w) => codexWindowExpired(w, now))) {
+    return `Every rate-limit window Codex last reported${bucket} has since reset — run Codex once for a current reading.`;
+  }
+  const credits = rateLimits?.credits;
+  const balance = credits && !credits.unlimited && credits.has_credits === false
+    ? ` — credit balance ${credits.balance ?? 0}`
+    : '';
+  return `Codex reported no rate-limit windows${bucket} in its latest telemetry${balance}.`;
+}
+
 /**
  * Pure: map a codex `rate_limits` payload + event timestamp to the common
  * quota shape. Exported for tests.
  */
-export function mapCodexQuota(rateLimits, timestamp) {
-  const limits = [
-    codexLimitEntry('session', rateLimits.primary),
-    codexLimitEntry('week', rateLimits.secondary)
-  ].filter(Boolean);
+export function mapCodexQuota(rateLimits, timestamp, { now = Date.now() } = {}) {
+  const limits = codexUsableWindows(rateLimits, now);
   return {
     family: 'codex',
     label: 'Codex',
     supported: true,
-    plan: rateLimits.plan_type || 'unknown',
+    plan: rateLimits?.plan_type || 'unknown',
     limits,
     activity: [],
     approximate: true,
+    // Wording is "telemetry", not "session activity": the reading can come from
+    // an older session than the newest one when that session reported no window.
     note: timestamp
-      ? `As of the last Codex session activity (${timestamp}). Local telemetry only.`
-      : 'As of the last Codex session activity. Local telemetry only.',
+      ? `As of the last Codex rate-limit telemetry (${timestamp}). Local telemetry only.`
+      : 'As of the last Codex rate-limit telemetry. Local telemetry only.',
+    ...(limits.length ? {} : { error: codexNoWindowsMessage(rateLimits, now) }),
     fetchedAt: new Date().toISOString()
   };
 }
 
 /**
- * Newest-first rollout log paths under <codexHome>/sessions. Codex lays
- * sessions out as `sessions/YYYY/MM/DD/rollout-<ISO-timestamp>-<uuid>.jsonl`,
- * so directory and file names both sort chronologically — walk them in
- * descending lexicographic order and stop as soon as the scan limit is hit
- * (typically 1-2 leaf dirs touched, zero stat calls).
+ * Newest-first rollout logs under <codexHome>/sessions, as
+ * `{ path, dayStartMs }`. Codex lays sessions out as
+ * `sessions/YYYY/MM/DD/rollout-<ISO-timestamp>-<uuid>.jsonl`, so directory and
+ * file names both sort chronologically — walk them in descending lexicographic
+ * order and stop as soon as the scan limit is hit (typically 1-2 leaf dirs
+ * touched, zero stat calls). `dayStartMs` comes from the directory names, so
+ * a caller can age a file out without stat'ing it.
  */
 async function listCodexRolloutFiles(codexHome) {
   const sessionsDir = join(codexHome, 'sessions');
@@ -156,12 +220,16 @@ async function listCodexRolloutFiles(codexHome) {
     for (const month of await newestFirstDirs(join(sessionsDir, year))) {
       for (const day of await newestFirstDirs(join(sessionsDir, year, month))) {
         const dayDir = join(sessionsDir, year, month, day);
+        // Local midnight of the directory's date — the earliest instant any
+        // session inside it can have started. NaN for a non-date dir name,
+        // which compares false against every cutoff and so is never aged out.
+        const dayStartMs = new Date(`${year}-${month}-${day}T00:00:00`).getTime();
         const names = (await readdir(dayDir).catch(() => []))
           .filter((n) => n.startsWith('rollout-') && n.endsWith('.jsonl'))
           .sort()
           .reverse();
         for (const name of names) {
-          files.push(join(dayDir, name));
+          files.push({ path: join(dayDir, name), dayStartMs });
           if (files.length >= CODEX_SCAN_FILE_LIMIT) return files;
         }
       }
@@ -170,14 +238,29 @@ async function listCodexRolloutFiles(codexHome) {
   return files;
 }
 
-async function fetchCodexQuota({ codexHome = codexHomeDir() } = {}) {
+/** Exported for tests (which point `codexHome` at a fixture tree). */
+export async function fetchCodexQuota({ codexHome = codexHomeDir(), now = Date.now() } = {}) {
   const files = await listCodexRolloutFiles(codexHome);
-  for (const file of files) {
+  // Newest-usable-wins across files, exactly as parseCodexRateLimits applies it
+  // within one: keep the newest window-less reading as a fallback, but keep
+  // looking for one that carries a meter.
+  let fallback = null;
+  for (const { path: file, dayStartMs } of files) {
+    // Nothing older than the longest window can still hold an unexpired meter,
+    // so once a fallback is in hand those files can only repeat it — stop
+    // rather than tail-read every remaining session. Without this an install
+    // whose last Codex run has aged out re-reads the full CODEX_SCAN_FILE_LIMIT
+    // on every poll, and this adapter (unlike the others) has no cache.
+    if (fallback && dayStartMs < now - CODEX_MAX_WINDOW_MS) break;
     const tail = await readFileTail(file, CODEX_TAIL_BYTES);
     if (!tail) continue;
-    const found = parseCodexRateLimits(tail);
-    if (found) return mapCodexQuota(found.rateLimits, found.timestamp);
+    const found = parseCodexRateLimits(tail, { now });
+    if (!found) continue;
+    const quota = mapCodexQuota(found.rateLimits, found.timestamp, { now });
+    if (quota.limits.length) return quota;
+    fallback ??= quota;
   }
+  if (fallback) return fallback;
   return {
     family: 'codex',
     label: 'Codex',

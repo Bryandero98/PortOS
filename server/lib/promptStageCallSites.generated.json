@@ -83,6 +83,12 @@
   "pipeline-character-differentiate-cast": [
     "server/services/universeCanon.js"
   ],
+  "pipeline-character-foundation": [
+    "server/services/pipeline/foundationJudge.js"
+  ],
+  "pipeline-character-refine": [
+    "server/services/universeCanon.js"
+  ],
   "pipeline-comic-cover-concepts": [
     "server/services/pipeline/arcPlanner/coverConcepts.js"
   ],
@@ -237,6 +243,9 @@
   "pipeline-extract-scenes": [
     "server/lib/sceneExtractor.js"
   ],
+  "pipeline-foundation-repair": [
+    "server/services/pipeline/foundationJudge.js"
+  ],
   "pipeline-idea-expansion": [
     "server/services/pipeline/textStages.js"
   ],
@@ -254,6 +263,9 @@
   ],
   "pipeline-manuscript-fix": [
     "server/services/pipeline/manuscriptFix.js"
+  ],
+  "pipeline-observer": [
+    "server/services/pipeline/seriesAutopilot/observer.js"
   ],
   "pipeline-panel-editor": [
     "server/services/pipeline/readerPanel.js"
@@ -285,6 +297,9 @@
   ],
   "pipeline-season-episodes": [
     "server/services/pipeline/arcPlanner/episodeSeedPass.js"
+  ],
+  "pipeline-self-improve": [
+    "server/services/pipeline/seriesAutopilot/selfImprove.js"
   ],
   "pipeline-series-concept-judge": [
     "server/services/pipeline/seriesGenerate.js"

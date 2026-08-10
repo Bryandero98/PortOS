@@ -20,7 +20,7 @@ import * as codex from './codex.js';
 import * as grok from './grok.js';
 import * as agy from './agy.js';
 import {
-  IMAGE_GEN_MODE, IMAGE_GEN_MODES, CLOUD_IMAGE_GEN_MODES, editIncapableModeError, isEditCapableMode,
+  IMAGE_GEN_MODE, IMAGE_GEN_MODES, CLOUD_IMAGE_GEN_MODES, isEditCapableMode,
 } from './modes.js';
 import { resolveCloudProviderConfig } from './cloudProviderConfig.js';
 
@@ -97,14 +97,19 @@ export async function generateImage(params) {
   // so providers never see the raw field.
   const cloudModel = normalized.cloudModel;
   delete normalized.cloudModel;
-  // i2i is supported by local (mflux/diffusers --image-path), codex
-  // (gpt-image-2 image-edit via codex CLI's -i flag), and grok (image_edit).
-  // External SD-API has no i2i wiring in this codebase, so drop the init
-  // image there rather than failing the whole render — the prompt still
-  // produces a useful txt2img.
-  if (mode === IMAGE_GEN_MODE.EXTERNAL && (normalized.initImagePath || normalized.initImageStrength != null)) {
+  // Input images are supported by local (mflux/diffusers --image-path plus
+  // FLUX.2 --reference-images), codex (image_gen.referenced_image_paths via the
+  // CLI's -i flag), grok (image_edit.image) and agy (generate_image.ImagePaths).
+  // External SD-API has no input-image wiring in this codebase, so drop them
+  // there rather than failing the whole render — the prompt still produces a
+  // useful txt2img. (The route/prepareParams path rejects instead, because it
+  // has already staged uploads that would otherwise be orphaned; this branch
+  // covers direct in-process callers.)
+  if (!isEditCapableMode(mode)) {
     delete normalized.initImagePath;
     delete normalized.initImageStrength;
+    delete normalized.referenceImagePaths;
+    delete normalized.referenceImageStrengths;
   }
   // Cleaners are per-provider-mode. The route layer already resolves them so
   // the queue/route paths agree, but resolve here too for direct callers
@@ -121,9 +126,6 @@ export async function generateImage(params) {
   const cloud = resolveCloudProviderConfig(s, mode, { model: cloudModel });
   if (cloud) {
     if (!cloud.enabled) throw cloud.disabledError;
-    if (!isEditCapableMode(mode) && (normalized.initImagePath || normalized.referenceImagePaths?.length)) {
-      throw editIncapableModeError(mode);
-    }
     return CLOUD_PROVIDERS[mode].generateImage({ ...cloud.providerParams, cleanC2PA, denoise, ...normalized });
   }
   if (mode === IMAGE_GEN_MODE.LOCAL) {

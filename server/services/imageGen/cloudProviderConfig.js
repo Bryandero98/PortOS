@@ -24,7 +24,6 @@ import {
   CODEX_IMAGEGEN_DEFAULT_MODEL,
   IMAGE_GEN_MODE,
   QUEUEABLE_IMAGE_MODES,
-  isEditCapableMode,
 } from './modes.js';
 
 /**
@@ -40,6 +39,20 @@ import {
  *                   saved default for one queue item. Grok is `false`: its
  *                   `image_gen` tool runs on a fixed xAI backend with no model
  *                   knob at all, so accepting an override there would be a lie.
+ *  - `maxInputImages` — how many input images (init image + reference images,
+ *                   combined) the provider's image tool accepts, or `null` when
+ *                   its schema declares no maximum (PortOS's own form ceiling —
+ *                   MAX_REFERENCE_IMAGES in routes/imageGen.js — is then the
+ *                   only bound, expressed once where it is defined rather than
+ *                   restated here as a fake capability). Probed from the live
+ *                   tool schemas on 2026-08-09 — do NOT raise one on a
+ *                   provider's word, re-probe the schema. Applied in exactly one
+ *                   place: `resolveInputImages` (inputImages.js).
+ *  - `promptRequiredWithInputImage` — whether the provider still needs a text
+ *                   prompt when the render already carries an input image.
+ *                   `false` for the tools where the attached image is the whole
+ *                   instruction; `true` where the tool schema lists the prompt
+ *                   as required.
  *
  * `modelId`/`params` both take `(config, override)` where `override` is the
  * per-render model id (or a falsy value when the render inherits the saved
@@ -50,6 +63,9 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
     label: 'Codex Imagegen',
     errorCode: 'CODEX_IMAGEGEN_DISABLED',
     supportsModelOverride: true,
+    // `image_gen.referenced_image_paths` is a string[] with no declared maximum.
+    maxInputImages: null,
+    promptRequiredWithInputImage: false,
     modelId: (c, override) => override || c.model || CODEX_IMAGEGEN_DEFAULT_MODEL,
     params: (c, override) => ({
       codexPath: c.codexPath,
@@ -62,6 +78,9 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
     errorCode: 'GROK_IMAGEGEN_DISABLED',
     // Grok's image tools run on xAI's fixed image backend — no model knob.
     supportsModelOverride: false,
+    // `image_edit.image` is a string[] with no declared maximum — like codex.
+    maxInputImages: null,
+    promptRequiredWithInputImage: false,
     modelId: () => 'grok-imagegen',
     params: (g) => ({ grokPath: g.grokPath, aspectRatio: g.aspectRatio }),
   }),
@@ -69,6 +88,11 @@ export const CLOUD_PROVIDER_SPECS = Object.freeze({
     label: 'Agy Imagegen',
     errorCode: 'AGY_IMAGEGEN_DISABLED',
     supportsModelOverride: true,
+    // `generate_image.ImagePaths`: "you cannot pass in more than 3 images".
+    maxInputImages: 3,
+    // …and `Prompt` is in that tool's `required` list, so an image-only agy
+    // render has nothing to send.
+    promptRequiredWithInputImage: true,
     // The concrete cheap-tier pin (not the ANTIGRAVITY_CONFIGURED_DEFAULT
     // sentinel, which resolves to "no --model" and lets agy pick a possibly
     // reasoning-heavy session default) — see AGY_IMAGEGEN_DEFAULT_MODEL.
@@ -131,6 +155,28 @@ export function resolveCloudProviderConfig(settings, mode, overrides = {}) {
 }
 
 /**
+ * How many input images (init image + reference images, combined) `mode`'s
+ * image tool accepts. `null` for a non-cloud mode: the local runner's ceiling
+ * is the form's own slot count, and external takes none at all (it never
+ * reaches here — `isEditCapableMode` rejects it first).
+ */
+export const maxInputImages = (mode) => CLOUD_PROVIDER_SPECS[mode]?.maxInputImages ?? null;
+
+/**
+ * Does a cloud-CLI render need a text prompt, given whether it carries an input
+ * image? Text-to-image always does; with an input image it depends on whether
+ * the provider's tool lists the prompt as required (`promptRequiredWithInputImage`).
+ * Non-cloud modes return `false` — local and external both accept an empty
+ * prompt. Rejecting up front keeps the failure a 400 instead of a queued job
+ * that dies asynchronously.
+ */
+export const cloudPromptRequired = (mode, hasInputImage) => {
+  const spec = CLOUD_PROVIDER_SPECS[mode];
+  if (!spec) return false;
+  return !hasInputImage || spec.promptRequiredWithInputImage === true;
+};
+
+/**
  * Can the queue-backed surfaces render in `mode` right now? Cloud CLIs need
  * their opt-in toggle; local is always usable (its own pythonPath/model
  * validation happens per call site); external isn't queueable at all.
@@ -138,14 +184,16 @@ export function resolveCloudProviderConfig(settings, mode, overrides = {}) {
  * The predicate behind the candidate walk in `resolveMode`
  * (pipeline/visualStageHelpers.js), so the mode ladder no longer grows a
  * pairwise `if` per backend.
+ *
+ * There is no edit/i2i variant: every queueable backend accepts an input image
+ * (see EDIT_INCAPABLE_IMAGE_MODES, whose sole member — external — is not
+ * queueable), so an i2i render walks this exact ladder. #3243 threaded an
+ * `{ edit }` flag through here to route redraws away from Agy; that turned out
+ * to be a misreading of Agy's tool schema, and the flag is gone rather than
+ * left as a branch that can never be taken.
  */
-export function isModeUsable(settings, mode, { edit = false } = {}) {
+export function isModeUsable(settings, mode) {
   if (!QUEUEABLE_IMAGE_MODES.includes(mode)) return false;
-  // An edit render (i2i / "use proof as base" / refine) can only go to a backend
-  // that accepts an input image at all — #3243. Without this the ladder happily
-  // returned Agy for a redraw, and the failure surfaced asynchronously in the
-  // queue as AGY_IMAGE_EDIT_UNSUPPORTED, long after the request 200'd.
-  if (edit && !isEditCapableMode(mode)) return false;
   const cloud = resolveCloudProviderConfig(settings, mode);
   return cloud ? cloud.enabled : true;
 }
@@ -154,16 +202,13 @@ export function isModeUsable(settings, mode, { edit = false } = {}) {
  * First usable mode from an ordered candidate list, falling back to the
  * cloud providers (in `CLOUD_IMAGE_GEN_MODES` order) and finally local.
  *
- * Pass `{ edit: true }` when the render carries an input image: edit-incapable
- * backends are then skipped at every rung, so a record pinned to such a backend
- * FALLS THROUGH to the next usable one rather than failing. Falling through is
- * deliberate — a pin is a preference, and the surrounding pins already degrade
- * this way when a pinned backend is disabled (the enforceRenderBackendPin
- * contract). LOCAL is edit-capable, so the tail always resolves.
+ * A record pinned to a DISABLED backend falls through to the next usable one
+ * rather than failing — a pin is a preference (the enforceRenderBackendPin
+ * contract). LOCAL is always usable, so the tail always resolves.
  */
-export function pickUsableMode(settings, candidates = [], { edit = false } = {}) {
+export function pickUsableMode(settings, candidates = []) {
   const ordered = [...candidates, ...CLOUD_IMAGE_GEN_MODES, IMAGE_GEN_MODE.LOCAL];
-  return ordered.find((m) => m && isModeUsable(settings, m, { edit })) || IMAGE_GEN_MODE.LOCAL;
+  return ordered.find((m) => m && isModeUsable(settings, m)) || IMAGE_GEN_MODE.LOCAL;
 }
 
 /**

@@ -17,6 +17,70 @@ const SAFE_URL_MESSAGE = 'must be an http(s) URL';
 // imports keep working; the lib barrel also namespace-exports this module as
 // `privacyValidation`.
 
+// =============================================================================
+// HOUSEHOLD SUBJECTS (issue #3658)
+// =============================================================================
+// The Privacy Center works on behalf of one or more consenting people. `self`
+// is a seeded row at a FIXED uuid so the DDL (server/lib/db/schema/privacy.js),
+// the fresh-install seed (server/scripts/init-db.sql), and the services all
+// name the same row without a lookup — change all three or none.
+export const PRIVACY_SELF_SUBJECT_ID = '00000000-0000-4000-8000-000000000001';
+
+export const PRIVACY_SUBJECT_RELATIONSHIPS = Object.freeze([
+  'self', 'partner', 'child', 'parent', 'dependent', 'other',
+]);
+
+// How a subject's consent was captured. Carried verbatim from unbroker's
+// no-consent-no-action rule: the engine refuses to scan or submit for a subject
+// without at least one consent row, so this is an audit fact, not a UI label.
+export const PRIVACY_CONSENT_METHODS = Object.freeze([
+  'self', 'verbal', 'written', 'signed_form', 'guardian', 'power_of_attorney', 'other',
+]);
+
+// Scope of a consent row. `pii_vault` is what the v1 vault-create path already
+// writes; `broker_optout` narrows to the removal engine. The guard treats ANY
+// row for the subject as active consent (no revocation column exists — a
+// revoked subject is deleted, which hard-deletes their records).
+export const PRIVACY_CONSENT_SCOPES = Object.freeze(['pii_vault', 'broker_optout']);
+
+// A subject reference on an existing input/query. Optional everywhere — omitted
+// means `self`, so every pre-#3658 client keeps working unchanged.
+const subjectIdField = { subjectId: z.string().uuid().optional() };
+
+// The bare subject-scope query (`?subjectId=`) shared by every read endpoint
+// that carries no other filter — status readouts, the change list, the digest.
+export const privacySubjectScopeQuerySchema = z.object({
+  subjectId: z.string().uuid().optional(),
+  limit: z.string().optional(),
+  offset: z.string().optional(),
+}).strict();
+
+export const privacySubjectCreateSchema = z.object({
+  displayName: z.string().trim().min(1).max(200),
+  relationship: z.enum(PRIVACY_SUBJECT_RELATIONSHIPS).optional(),
+  // REQUIRED: a household member may not exist in the vault without a recorded
+  // consent method. The service writes the consent row in the same transaction.
+  consentMethod: z.enum(PRIVACY_CONSENT_METHODS),
+  consentNote: z.string().max(2000).optional(),
+}).strict();
+
+export const privacySubjectUpdateSchema = z.object({
+  displayName: z.string().trim().min(1).max(200).optional(),
+  relationship: z.enum(PRIVACY_SUBJECT_RELATIONSHIPS).optional(),
+}).strict();
+
+export const privacySubjectIdParamsSchema = z.object({
+  id: z.string().uuid(),
+}).strict();
+
+// POST /api/privacy/subjects/:id/consents — record a further consent (e.g. the
+// subject agreed to broker opt-outs after being added for vault records only).
+export const privacySubjectConsentSchema = z.object({
+  scope: z.enum(PRIVACY_CONSENT_SCOPES).optional(),
+  method: z.enum(PRIVACY_CONSENT_METHODS),
+  note: z.string().max(2000).optional(),
+}).strict();
+
 export const PRIVACY_VAULT_TYPES = Object.freeze([
   'legal_name', 'address', 'phone', 'email', 'dob',
   'ssn', 'passport', 'drivers_license', 'financial_account', 'custom',
@@ -72,6 +136,7 @@ export const privacyVaultCreateSchema = z.object({
   shareWithTwin: z.boolean().optional(),
   useForScans: z.boolean().optional(),
   notes: z.string().max(5000).optional(),
+  ...subjectIdField,
 }).strict().superRefine(rejectSensitiveScans);
 
 // PUT is a partial update. `type` is immutable (it drives masking + scan
@@ -91,6 +156,7 @@ export const privacyVaultUpdateSchema = z.object({
 
 export const privacyVaultListQuerySchema = z.object({
   type: z.enum(PRIVACY_VAULT_TYPES).optional(),
+  ...subjectIdField,
   ...paginationQueryFields,
 }).strict();
 
@@ -102,7 +168,8 @@ export const privacyVaultIdParamsSchema = z.object({
 // TRUSTED ORGANIZATIONS REGISTRY SCHEMAS (issue #2141, epic #2138)
 // =============================================================================
 // Zod schemas for `privacy_orgs` / `privacy_org_holdings` — db-primary Postgres,
-// machine-local (same federation-deferred scope as the vault, #2148).
+// machine-local and NEVER federated (same guarantee as the vault — ADR
+// docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
 
 export const PRIVACY_ORG_CATEGORIES = Object.freeze([
   'bank', 'utility', 'government', 'employer', 'subscription',
@@ -133,6 +200,7 @@ export const privacyOrgCreateSchema = z.object({
   contact: privacyOrgContactSchema.optional(),
   socialAccountId: z.string().max(200).nullable().optional(),
   notes: z.string().max(5000).optional(),
+  ...subjectIdField,
 }).strict();
 
 // PUT is a partial update — every field optional, same shape otherwise.
@@ -151,6 +219,7 @@ export const privacyOrgListQuerySchema = z.object({
   trust: z.enum(PRIVACY_ORG_TRUST_LEVELS).optional(),
   status: z.enum(PRIVACY_ORG_STATUSES).optional(),
   category: z.enum(PRIVACY_ORG_CATEGORIES).optional(),
+  ...subjectIdField,
   ...paginationQueryFields,
 }).strict();
 
@@ -172,7 +241,8 @@ export const privacyOrgHoldingsSetSchema = z.object({
 // CHANGE-OF-ADDRESS EVENTS + INVENTORY SCHEMAS (issue #2143, epic #2138)
 // =============================================================================
 // Zod schemas for `privacy_change_events` — db-primary Postgres, machine-local
-// (same federation-deferred scope as the vault, #2148). Declaring a change flips
+// and NEVER federated (same guarantee as the vault — ADR
+// docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148). Declaring a change flips
 // every `current` holding of the old vault record to `update_pending`; the
 // Changes tab then works that per-org checklist.
 
@@ -209,6 +279,11 @@ export const privacyChangeDeclareSchema = z.object({
   { message: 'provide either replacement or replacementRecordId, not both', path: ['replacement'] },
 );
 
+// GET /api/privacy/changes?subjectId= — a change event inherits its subject from
+// the OLD vault record, so there is no subjectId on the DECLARE body; it only
+// filters the list.
+export const privacyChangeListQuerySchema = privacySubjectScopeQuerySchema;
+
 export const privacyChangeIdParamsSchema = z.object({
   id: z.string().uuid(),
 }).strict();
@@ -222,7 +297,8 @@ export const privacyChangeOrgParamsSchema = z.object({
 // DATA-BROKER DATABASE + CASE LEDGER SCHEMAS (issue #2144, epic #2138)
 // =============================================================================
 // Zod schemas for `privacy_brokers` / `privacy_broker_cases` — db-primary
-// Postgres, machine-local (same federation-deferred scope as the vault, #2148).
+// Postgres, machine-local and NEVER federated (same guarantee as the vault —
+// ADR docs/decisions/2026-08-08-privacy-records-machine-local.md, #2148).
 // The broker rows themselves are curated seed / auto-refresh, not user-created,
 // so there is no broker create/update input schema — only read filters and the
 // scan/refresh action bodies.
@@ -247,6 +323,7 @@ export const privacyBrokerListQuerySchema = z.object({
 // GET /api/privacy/broker-cases?state=found
 export const privacyBrokerCaseListQuerySchema = z.object({
   state: z.enum(PRIVACY_BROKER_CASE_STATES).optional(),
+  ...subjectIdField,
   ...paginationQueryFields,
 }).strict();
 
@@ -287,6 +364,7 @@ export const privacyCaseTransitionSchema = z.object({
 // POST /api/privacy/scan — optional concurrency knob.
 export const privacyScanStartSchema = z.object({
   concurrency: z.number().int().min(1).max(6).optional(),
+  ...subjectIdField,
 }).strict();
 
 // =============================================================================
@@ -301,10 +379,11 @@ export const privacyScanStartSchema = z.object({
 // true) folds the verification poll into the same pass.
 export const privacyOptOutPassSchema = z.object({
   runVerification: z.boolean().optional(),
+  ...subjectIdField,
 }).strict();
 
 // POST /api/privacy/optout/verify — run only the verification pass. No body.
-export const privacyOptOutVerifySchema = z.object({}).strict();
+export const privacyOptOutVerifySchema = z.object({ ...subjectIdField }).strict();
 
 // A basic 5-field cron expression validator (minute hour dom month dow). Kept
 // permissive (tokens can be `*`, numbers, ranges, lists, steps) — the scheduler

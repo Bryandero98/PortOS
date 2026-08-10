@@ -13,6 +13,10 @@
  *   5. Provider-seed migrations — `makeProviderSeedMigration` collapses the
  *      read → guard → add-missing-ids → write shell every migration that ships
  *      a new `data/providers.json` entry repeats (149, 152, 185, 195, 201, 231).
+ *   6. Media-model-registry migrations — `readMediaRegistry` /
+ *      `writeMediaRegistry` collapse the strict-read → absent/unreadable skip →
+ *      platform-array guard shell shared by every migration that patches
+ *      `data/media-models.json` (244, 247, …).
  *
  * The runner (`scripts/run-migrations.js`) explicitly skips `_`-prefixed
  * files so this module is never imported as a migration.
@@ -22,6 +26,7 @@ import { readFile, writeFile, unlink, readdir, rename, mkdir, stat } from 'fs/pr
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { createHash } from 'crypto';
+import { atomicWrite, readJSONFileStrict } from '../../server/lib/fileUtils.js';
 
 // ---- monolithic → per-record split-migration family ----
 //
@@ -531,6 +536,49 @@ export async function readLayoutsDoc({ rootDir, label }) {
 /** Persist a layouts doc with the canonical 2-space indentation. */
 export async function writeLayoutsDoc(path, doc) {
   await writeFile(path, JSON.stringify(doc, null, 2));
+}
+
+// ---- media-model-registry migration family ----
+
+const MEDIA_MODELS_REL_PATH = 'data/media-models.json';
+
+/**
+ * Read `data/media-models.json` for a registry-patching migration. Collapses
+ * the preamble every such migration repeats (244, 247, …): resolve the path,
+ * strict-read it, and pull out one platform's entry array.
+ *
+ * `readJSONFileStrict`'s `ok` flag is what separates "never written" (fresh
+ * install — the seed in `data.reference/` already carries the change) from
+ * "unreadable or corrupt", where rewriting the file would destroy a registry we
+ * couldn't read. Both are skips, but only one of them is a warning.
+ *
+ * Returns `{ ok: false }` when the caller should do nothing, or
+ * `{ ok: true, config, entries, path }` — mutate `config` in place, then persist
+ * with `writeMediaRegistry(path, config)`. `platform` selects which
+ * `config.video.<platform>` array lands in `entries`.
+ */
+export async function readMediaRegistry({ rootDir, platform = 'macos' } = {}) {
+  const path = join(rootDir, MEDIA_MODELS_REL_PATH);
+  const { ok, value: config } = await readJSONFileStrict(path, null);
+  if (!ok) {
+    console.log(`⚠️ ${MEDIA_MODELS_REL_PATH}: unreadable or invalid JSON, skipping`);
+    return { ok: false };
+  }
+  if (config == null) {
+    console.log(`📄 ${MEDIA_MODELS_REL_PATH} not present — skipping (fresh install seeds from data.reference)`);
+    return { ok: false };
+  }
+  const entries = config?.video?.[platform];
+  if (!Array.isArray(entries)) {
+    console.log(`⚠️ ${MEDIA_MODELS_REL_PATH}: no video.${platform}[] array — skipping`);
+    return { ok: false };
+  }
+  return { ok: true, config, entries, path };
+}
+
+/** Persist a media-model registry with the canonical trailing-newline shape. */
+export async function writeMediaRegistry(path, config) {
+  await atomicWrite(path, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 // ---- brain seed-record migration family ----

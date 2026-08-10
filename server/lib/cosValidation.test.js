@@ -13,6 +13,11 @@ import {
   REVIEWER_CLI_BINARIES,
   REVIEWER_VALUES,
   EFFORT_SELECTABLE_REVIEWERS,
+  MODEL_CAPABLE_CLI_REVIEWERS,
+  MODEL_SELECTABLE_REVIEWERS,
+  pairReviewerModelsAndEfforts,
+  reviewerModelsFromDefaults,
+  buildReviewWithArgs,
   LOCAL_LLM_EFFORT_LEVELS,
   reviewerEffortLevels,
   normalizeReviewerEfforts,
@@ -22,6 +27,7 @@ import {
   buildReviewerEffortNote,
   sanitizeTaskMetadata,
   codeReviewSettingsSchema,
+  taskTemplateSettingsSchema,
 } from './cosValidation.js';
 import { LOCAL_AGENT_REVIEWERS } from './slashdoInvocation.js';
 import { EFFORT_LEVELS, CLAUDE_EFFORT_LEVELS, CODEX_EFFORT_LEVELS, ANTIGRAVITY_EFFORT_LEVELS } from './providerModels.js';
@@ -84,6 +90,30 @@ describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () =>
     expect(parsed.taskMetadata).toEqual({ useWorktree: true, worktreeChangesExpected: false });
     expect(createCosJobSchema.safeParse({ name: 'j', taskMetadata: { worktreeChangesExpected: 'nope' } }).success)
       .toBe(false);
+  });
+});
+
+describe('cosValidation quick-template deliverable posture (#3651)', () => {
+  it('taskTemplateSettingsSchema accepts worktreeChangesExpected (the block is .strict())', () => {
+    // taskTemplates.js copies the slashdo catalog posture onto each built-in
+    // template verbatim; a user saving such a template back would 400 if the
+    // strict settings block didn't declare the key.
+    const parsed = taskTemplateSettingsSchema.parse({ useWorktree: false, openPR: false, simplify: false, worktreeChangesExpected: false });
+    expect(parsed).toEqual({ useWorktree: false, openPR: false, simplify: false, worktreeChangesExpected: false });
+    expect(taskTemplateSettingsSchema.safeParse({ worktreeChangesExpected: true }).success).toBe(true);
+    expect(taskTemplateSettingsSchema.safeParse({ worktreeChangesExpected: 'nope' }).success).toBe(false);
+    expect(taskTemplateSettingsSchema.safeParse({ bogus: true }).success).toBe(false);
+  });
+
+  it('create-task accepts the boolean and the form-encoded string forms', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', worktreeChangesExpected: false }).worktreeChangesExpected).toBe(false);
+    expect(createCosTaskSchema.parse({ description: 'x', worktreeChangesExpected: true }).worktreeChangesExpected).toBe(true);
+    expect(createCosTaskSchema.parse({ description: 'x', worktreeChangesExpected: 'false' }).worktreeChangesExpected).toBe(false);
+    expect(createCosTaskSchema.parse({ description: 'x', worktreeChangesExpected: 'true' }).worktreeChangesExpected).toBe(true);
+    // Absent must stay absent — cosTaskStore only stamps metadata on a strict
+    // boolean, so "no opinion" has to survive as undefined.
+    expect(createCosTaskSchema.parse({ description: 'x' }).worktreeChangesExpected).toBeUndefined();
+    expect(createCosTaskSchema.safeParse({ description: 'x', worktreeChangesExpected: 'nope' }).success).toBe(false);
   });
 });
 
@@ -302,5 +332,94 @@ describe('client mirror of the reviewer effort ladders', () => {
     }
     // Alias parity too — the picker keys rows off stored slugs.
     expect(client.reviewerEffortLevels('gemini')).toEqual(reviewerEffortLevels('gemini'));
+  });
+
+  // Same failure mode one column over: a reviewer the picker offers a Model cell
+  // for but the server drops the pin from (or vice versa — a CLI whose `--model`
+  // the UI hides). The two rosters drove `antigravity` out of sync until #3728.
+  it('matches the server model-pin rosters', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    expect([...client.MODEL_CAPABLE_CLI_REVIEWERS].sort()).toEqual([...MODEL_CAPABLE_CLI_REVIEWERS].sort());
+    expect([...client.MODEL_SELECTABLE_REVIEWERS].sort()).toEqual([...MODEL_SELECTABLE_REVIEWERS].sort());
+  });
+});
+
+describe('per-reviewer model pins', () => {
+  it('keeps an antigravity model pin on the code-review settings slice', () => {
+    // `agy --model <id>` is real (unlike the effort-only support PortOS assumed
+    // before #3728), so the scalar has to survive the `.strict()` schema.
+    expect(codeReviewSettingsSchema.parse({ antigravityModel: 'gemini-3.6-flash' }).antigravityModel)
+      .toBe('gemini-3.6-flash');
+    // Structural characters would corrupt the emitted `antigravity[<model>]` token.
+    expect(codeReviewSettingsSchema.parse({ antigravityModel: 'a,b' }).antigravityModel).toBeUndefined();
+    expect(codeReviewSettingsSchema.parse({ antigravityModel: '  ' }).antigravityModel).toBeUndefined();
+  });
+
+  it('carries an antigravity model through the task schema and the sanitizer', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', reviewerModels: { antigravity: 'gemini-3.6-pro' } }).reviewerModels)
+      .toEqual({ antigravity: 'gemini-3.6-pro' });
+    expect(sanitizeTaskMetadata({ reviewerModels: { antigravity: 'gemini-3.6-pro', copilot: 'x' } }))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-pro' } });
+  });
+
+  it('splits an effort-suffixed antigravity id into a model/effort pair agy accepts', () => {
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash-high' }, {}))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-flash' }, reviewerEfforts: { antigravity: 'high' } });
+    // An explicitly pinned effort wins over the one baked into the id.
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash-high' }, { antigravity: 'low' }))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-flash' }, reviewerEfforts: { antigravity: 'low' } });
+    // …but an UNUSABLE stored effort doesn't get to suppress the baked one.
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash-low' }, { antigravity: 'max' }))
+      .toEqual({ reviewerModels: { antigravity: 'gemini-3.6-flash' }, reviewerEfforts: { antigravity: 'low' } });
+  });
+
+  it('leaves unsuffixed ids and every other reviewer untouched', () => {
+    expect(pairReviewerModelsAndEfforts({ antigravity: 'gemini-3.6-flash', codex: 'gpt-5.6-sol' }, { codex: 'high' }))
+      .toEqual({
+        reviewerModels: { antigravity: 'gemini-3.6-flash', codex: 'gpt-5.6-sol' },
+        reviewerEfforts: { codex: 'high' }
+      });
+    // A `-high` suffix on a NON-agy reviewer is part of the id, not an effort.
+    expect(pairReviewerModelsAndEfforts({ claude: 'qwen2.5:7b-high' }, {}))
+      .toEqual({ reviewerModels: { claude: 'qwen2.5:7b-high' }, reviewerEfforts: {} });
+    expect(pairReviewerModelsAndEfforts(undefined, undefined))
+      .toEqual({ reviewerModels: {}, reviewerEfforts: {} });
+  });
+
+  it('does not mutate the maps it was handed', () => {
+    const models = { antigravity: 'gemini-3.6-flash-high' };
+    const efforts = {};
+    pairReviewerModelsAndEfforts(models, efforts);
+    expect(models).toEqual({ antigravity: 'gemini-3.6-flash-high' });
+    expect(efforts).toEqual({});
+  });
+
+  // #3729: `grok --model <id>` is real and slashdo accepts a `grok[<model>]`
+  // bracket, but `grok` was absent from the roster, so every grok review ran on
+  // the CLI's own default and the picker rendered "Grok takes no model".
+  it('keeps a grok model pin on the code-review settings slice', () => {
+    expect(codeReviewSettingsSchema.parse({ grokModel: 'grok-code-fast-1' }).grokModel)
+      .toBe('grok-code-fast-1');
+    // Structural characters would corrupt the emitted `grok[<model>]` token.
+    expect(codeReviewSettingsSchema.parse({ grokModel: 'a]b' }).grokModel).toBeUndefined();
+    expect(codeReviewSettingsSchema.parse({ grokModel: '  ' }).grokModel).toBeUndefined();
+  });
+
+  it('carries a grok model through the task schema, sanitizer and defaults adapter', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', reviewerModels: { grok: 'grok-code-fast-1' } }).reviewerModels)
+      .toEqual({ grok: 'grok-code-fast-1' });
+    expect(sanitizeTaskMetadata({ reviewerModels: { grok: 'grok-code-fast-1', copilot: 'x' } }))
+      .toEqual({ reviewerModels: { grok: 'grok-code-fast-1' } });
+    expect(reviewerModelsFromDefaults({ grokModel: 'grok-code-fast-1' })).toEqual({ grok: 'grok-code-fast-1' });
+  });
+
+  it('emits the grok pin as a slashdo bracket, and never splits an effort off it', () => {
+    expect(buildReviewWithArgs(['grok'], { reviewerModels: { grok: 'grok-code-fast-1' } }))
+      .toBe('--review-with grok[grok-code-fast-1]');
+    // Only agy bakes an effort into the model id. A grok id passes through whole,
+    // and grok gains no effort pin from having one — its CLI takes no effort flag.
+    expect(pairReviewerModelsAndEfforts({ grok: 'grok-code-fast-1' }, {}))
+      .toEqual({ reviewerModels: { grok: 'grok-code-fast-1' }, reviewerEfforts: {} });
+    expect(reviewerEffortLevels('grok')).toBeNull();
   });
 });

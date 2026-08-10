@@ -188,6 +188,34 @@ describe('judgeIssue — end to end', () => {
     expect(fileUtils.atomicWrite).toHaveBeenCalledOnce();
   });
 
+  it('threads an autopilot critic route as soft defaults so a writer-stage judge pin can win', async () => {
+    issuesSvc.getIssue.mockResolvedValue(proseIssue());
+    stageRunner.runStagedLLM.mockResolvedValue({
+      content: validJudge(7), providerId: 'judge-x', model: 'jm-heavy', runId: 'run-soft',
+    });
+
+    await judgeIssue('iss-abc', {
+      providerDefault: 'codex-tui',
+      modelDefault: 'gpt-5.6-sol',
+      effortDefault: 'xhigh',
+    });
+
+    expect(stageRunner.resolveJudgeForStage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        providerDefault: 'codex-tui',
+        modelDefault: 'gpt-5.6-sol',
+        providerOverride: undefined,
+        modelOverride: undefined,
+      }),
+    );
+    expect(stageRunner.runStagedLLM).toHaveBeenCalledWith(
+      'pipeline-judge-issue',
+      expect.anything(),
+      expect.objectContaining({ effortDefault: 'xhigh' }),
+    );
+  });
+
   it('retries once when the first judge response rejects (malformed JSON)', async () => {
     issuesSvc.getIssue.mockResolvedValue(proseIssue());
     stageRunner.runStagedLLM

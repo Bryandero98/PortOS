@@ -76,19 +76,16 @@ const applyWorldStyle = (prompt, world, series = null) => {
 // The series' persisted per-record pin (#3231 Phase 3) sits between the
 // per-request override and the install-wide target pin: "this series renders
 // on codex" beats the surface default, loses to an explicit UI selection.
-// `edit` marks a render that carries an input image (i2i: "use proof as base",
-// a reference page, or a refine pass). Edit-incapable backends are skipped at
-// every rung so the ladder falls through instead of resolving to one that will
-// reject the job asynchronously (#3243). It DEFAULTS from `options.initImagePath`
-// so a call site that already carries the image on `options` — enqueueVisualImage,
-// the storyboard shot path — is covered without opting in; the sites that derive
-// the init image AFTER resolving the mode pass `{ edit: true }` explicitly.
-const resolveMode = (options, settings, series = null, { edit } = {}) => pickUsableMode(settings, [
+// An i2i render ("use proof as base", a reference page, a refine pass) walks
+// this same ladder — every queueable backend accepts an input image, so there
+// is nothing for it to skip. #3243 added an `edit` flag here to route redraws
+// away from Agy; Agy's tool does take input images, so the flag is gone.
+const resolveMode = (options, settings, series = null) => pickUsableMode(settings, [
   options.mode,
   recordRenderPin(series).mode,
   renderTargetDefaults(settings, RENDER_TARGET.PIPELINE_VISUAL).imageMode,
   settings?.imageGen?.mode,
-], { edit: edit ?? Boolean(options.initImagePath) });
+]);
 
 /**
  * Resolve trained character LoRAs for a pipeline render. Local mode only —

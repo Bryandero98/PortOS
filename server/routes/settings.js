@@ -58,26 +58,41 @@ const redactExternalTokens = (settings) => {
   return next;
 };
 
-// Write-path counterpart to the redaction above. Because GET /api/settings no
-// longer returns these tokens, a client that GETs settings, rebuilds a full
-// top-level object and PUTs it back (e.g. `patchSettingsSlice('imageGen.local',
-// …)`) would otherwise drop the persisted token — `updateSettings` shallow-
-// merges top-level keys, so an incoming `imageGen`/`civitai` replaces the
-// stored object wholesale. PUT /api/settings is never the write path for these
-// tokens (the dedicated /setup/hf-token and /loras/auth/civitai routes are), so
-// re-inject the persisted value whenever an incoming parent object omits it.
-// A parent absent from the patch needs nothing — the top-level merge keeps the
-// stored object (token included) untouched.
-const preserveWriteOnlyTokens = (next, current) => {
-  const carryOver = (parentKey, tokenKey) => {
+// Sub-keys this route must never clobber, because it isn't their write path.
+// `updateSettings` shallow-merges TOP-LEVEL keys, so an incoming `imageGen` /
+// `civitai` / `videoGen` object replaces the stored one wholesale — and a
+// client that GETs settings, rebuilds the parent and PUTs it back (e.g.
+// `patchSettingsSlice('imageGen.local', …)`) would drop any sub-key it never
+// saw or never rendered. A parent absent from the patch needs nothing — the
+// top-level merge keeps the stored object untouched.
+//
+//   - imageGen.hfToken / civitai.apiKey: write-only tokens, redacted out of
+//     GET, owned by /setup/hf-token and /loras/auth/civitai. Re-injected only
+//     when the incoming parent omits them, so those routes can still write.
+//   - videoGen.acceptedModelTerms: the install's restricted-model license
+//     acknowledgements, owned exclusively by /api/video-gen/model-terms — which
+//     is where an id is checked against a model that actually declares it. The
+//     stored value ALWAYS wins here, so a settings save can neither drop an
+//     acknowledgement (silently 403ing every gated render) nor mint one that
+//     no model's terms gate would ever match.
+const preserveExternallyOwnedKeys = (next, current) => {
+  const carryOver = (parentKey, childKey, { alwaysStored = false } = {}) => {
     const incoming = next[parentKey];
-    const stored = current?.[parentKey]?.[tokenKey];
-    if (isPlainObject(incoming) && !(tokenKey in incoming) && stored !== undefined) {
-      next[parentKey] = { ...incoming, [tokenKey]: stored };
+    const stored = current?.[parentKey]?.[childKey];
+    if (!isPlainObject(incoming)) return;
+    if (!alwaysStored && childKey in incoming) return;
+    if (stored === undefined) {
+      if (alwaysStored && childKey in incoming) {
+        const { [childKey]: _dropped, ...rest } = incoming;
+        next[parentKey] = rest;
+      }
+      return;
     }
+    next[parentKey] = { ...incoming, [childKey]: stored };
   };
   carryOver('imageGen', 'hfToken');
   carryOver('civitai', 'apiKey');
+  carryOver('videoGen', 'acceptedModelTerms', { alwaysStored: true });
   return next;
 };
 
@@ -252,9 +267,9 @@ router.put('/', asyncHandler(async (req, res) => {
   const { secrets: _ignoredSecrets, catalogUserTypes: _ignoredTypes, ...settingsPatch } = req.body || {};
   // updateSettingsWith (not updateSettings) so we can re-inject persisted
   // write-only tokens the incoming patch omits, against the freshest snapshot
-  // inside the write queue (see preserveWriteOnlyTokens).
+  // inside the write queue (see preserveExternallyOwnedKeys).
   const merged = await updateSettingsWith((current) =>
-    preserveWriteOnlyTokens({ ...current, ...settingsPatch }, current));
+    preserveExternallyOwnedKeys({ ...current, ...settingsPatch }, current));
   // The queue caches codex.parallelLimit in-process; sync it from the
   // merged value so a save takes effect without a restart and without
   // re-reading the file.

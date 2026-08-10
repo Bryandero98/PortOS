@@ -13,6 +13,7 @@ import { redactOutput } from '../lib/commandSecurity.js';
 import { stripAnsi } from '../lib/ansiStrip.js';
 import { retryHoldMetadata } from '../lib/taskRetryHold.js';
 import { isTruthyMeta } from './agentState.js';
+import { PRIMARY_CHECKOUT_MUTATED_CATEGORY, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
 
 // Max retries before blocking a task
 export const MAX_TASK_RETRIES = 3;
@@ -588,6 +589,18 @@ export const COMPLETION_REASON_ANALYSES = {
     message: 'Agent idled out with no file changes',
     suggestedFix: 'The agent stopped producing output without writing any files OR committing anything during the run. Check the raw transcript for where it stalled — a provider retry loop or a long-running command can outlast the idle reaper.'
   },
+  // The programmatic-I/O counterpart of the above: a layered-intelligence run
+  // delivers a `.agent-done` JSON payload, never a file change, so "no file
+  // changes" was both the wrong measurement and the wrong advice. Same
+  // `no-changes` category on purpose — the downstream taxonomies keep
+  // classifying it without a new token — but the prose names what actually
+  // went missing.
+  'idle-no-deliverable': {
+    category: 'no-changes',
+    actionable: false,
+    message: 'Agent idled out without writing its structured output',
+    suggestedFix: 'This task type is judged by the `.agent-done` payload an output hook consumes, not by file changes. The transcript often ENDS with the JSON the agent should have written to that file — a smaller model answering in the terminal instead of using a tool. Check the tail of the raw transcript, and prefer a model that reliably follows the write-the-file instruction.'
+  },
   'idle-no-activity': {
     category: 'startup-failure',
     actionable: false,
@@ -645,6 +658,37 @@ export const COMPLETION_REASON_ANALYSES = {
     escalation: 'Confirm the required CLI/tool is installed and on PATH for the agent user (or fix the command), then approve the retry.',
     message: 'Failed to start the agent session',
     suggestedFix: 'The shell/PTY session could not be created. Check system resources and the provider command configuration.'
+  },
+  // The runner refused the spawn outright — a command missing from its
+  // allowlist, malformed cliArgs, or the runner simply unreachable. No child
+  // ever existed, so there is no transcript to classify and the rejection prose
+  // (carried in as `completionError`) is the whole diagnosis.
+  //
+  // Deliberately NOT actionable, unlike its `spawn-error` sibling above: a
+  // rejection is frequently just a briefly-unreachable runner, and blocking the
+  // task for a human would park work that a plain retry fixes. A genuinely
+  // misconfigured command still surfaces — it fails identically every attempt
+  // and blocks on MAX_TASK_RETRIES, with the runner's own message attached.
+  // #3680: a worktree-isolated agent committed to the PRIMARY checkout instead
+  // of its worktree, leaving unreviewed commits on an unprotected branch. The
+  // finalize path (agentFinalization.js) builds a richer analysis naming the
+  // actual branch, commit count, and recovery command; this registration is the
+  // fallback for anything that re-analyzes the reason without that context (a
+  // recovered/archived run), and keeps the reason from falling through to a
+  // keyword sweep of the transcript. Reuses the existing `git-error` token
+  // rather than minting one, so the downstream taxonomies keep classifying it.
+  [PRIMARY_CHECKOUT_MUTATED_REASON]: {
+    category: PRIMARY_CHECKOUT_MUTATED_CATEGORY,
+    actionable: true,
+    escalation: PRIMARY_CHECKOUT_MUTATED_ESCALATION,
+    message: 'Worktree agent mutated the primary checkout',
+    suggestedFix: 'The agent was given its own git worktree and committed to the primary checkout anyway, so the primary is carrying commits nothing reviewed. The same work is almost certainly on the agent\'s branch too. Inspect the primary with `git log --oneline origin/<branch>..<branch>` and, once the content is confirmed preserved, restore it with `git reset --hard origin/<branch>` — PortOS will not run that for you, because it discards commits.'
+  },
+  'spawn-rejected': {
+    category: 'spawn-error',
+    actionable: false,
+    message: 'The runner rejected the spawn',
+    suggestedFix: 'No agent process was ever created — the cos-runner refused the spawn or was unreachable. Check that the runner is up and that the provider command is on its allowlist; the task is requeued for a retry either way.'
   }
 };
 
@@ -685,8 +729,13 @@ export function endsAwaitingUserInput(analysisOutput) {
   return AWAITING_INPUT_MARKERS.some(marker => marker.test(tail));
 }
 
-/** Idle-out reasons worth re-explaining as an unanswered prompt. */
-const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity']);
+/**
+ * Idle-out reasons worth re-explaining as an unanswered prompt. All three are
+ * "the reaper killed it" verdicts, so when the tail shows a selector or approval
+ * gate that IS the proximate cause — including for a programmatic-I/O run, whose
+ * payload went unwritten precisely because it never got past the prompt.
+ */
+const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-activity', 'idle-no-deliverable']);
 
 /**
  * Re-word an idle-out whose transcript ends on an unanswered prompt. The
@@ -839,9 +888,16 @@ export const INVESTIGATION_CIRCUIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 export const INVESTIGATION_CIRCUIT_MAX_CREATIONS = 3;
 let investigationCreationStamps = []; // ms timestamps, newest-last
 
-function investigationCircuitOpen(now) {
+/**
+ * How many investigation creations are still inside the rolling circuit window.
+ * Prunes aged-out stamps as a side effect, so the circuit auto-closes without a
+ * manual reset. The count (not just a boolean "open?") is what the caller needs:
+ * at the cap it suppresses the task entirely, and below the cap a non-zero count
+ * is the `failure-storm` loop signal that holds the task for a human.
+ */
+function recentInvestigationCreations(now) {
   investigationCreationStamps = investigationCreationStamps.filter(t => now - t < INVESTIGATION_CIRCUIT_WINDOW_MS);
-  return investigationCreationStamps.length >= INVESTIGATION_CIRCUIT_MAX_CREATIONS;
+  return investigationCreationStamps.length;
 }
 
 // Test hook — the stamp list is module state, so suites reset it between cases.
@@ -882,16 +938,115 @@ export function isInvestigationTask(task) {
     && task.description.trimStart().startsWith(INVESTIGATION_HEADLINE_PREFIX);
 }
 
-// Find an existing investigation task (user or internal queue) still tracking
-// this fingerprint in a non-terminal status.
-async function findOpenInvestigation(fingerprint) {
+// Every task across both queues, flattened. One read serves both the
+// fingerprint dedup scan and the failure-loop detection below.
+async function readAllTasksFlat() {
   const { user, cos } = await getAllTasks();
-  const tasks = [...(user?.tasks || []), ...(cos?.tasks || [])];
+  return [...(user?.tasks || []), ...(cos?.tasks || [])];
+}
+
+// Find an existing investigation task (user or internal queue) still tracking
+// this fingerprint in a non-terminal status. Pure.
+function findOpenInvestigationIn(tasks, fingerprint) {
   return tasks.find(t =>
     OPEN_INVESTIGATION_STATUSES.has(t.status) &&
     t.metadata?.investigationFingerprint === fingerprint
   ) || null;
 }
+
+// ===== Failure-loop detection / approval policy (#3714) =====
+
+// How recently a PRIOR investigation of the same cause must have finished for a
+// fresh failure to count as a LOOP rather than an unrelated recurrence. The
+// same fingerprint tripping again months later is new work (fingerprints are
+// coarse — `category:kind:app`, deliberately not keyed on the message); the same
+// fingerprint tripping again the day after we investigated it means the last
+// investigation did not hold, and burning another unattended agent on it just
+// spins. Wider than the circuit window on purpose: the circuit measures a storm
+// in progress, this measures "we already tried and it came back".
+export const INVESTIGATION_LOOP_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// How many investigations already filed inside the circuit window make the NEXT
+// one a storm rather than ordinary traffic. Derived from the circuit cap, not a
+// magic number: the last slot before the circuit stops filing tasks at all is
+// the one worth a human. A couple of unrelated agent failures in an hour is
+// normal on a busy install and must stay unattended — otherwise this gate
+// re-creates the stall it exists to remove.
+// The `max(1, …)` floor keeps a hypothetical cap of 1 from making the threshold
+// 0, which would hold EVERY investigation — the exact inversion of this policy.
+export const INVESTIGATION_STORM_HOLD_THRESHOLD = Math.max(1, INVESTIGATION_CIRCUIT_MAX_CREATIONS - 1);
+
+/**
+ * Did a genuine investigation of this fingerprint already finish inside the loop
+ * window? `auto-expired` completions don't count — the reaper flips those to
+ * `completed` because their origin tasks went away (cosTaskStore's
+ * `sweepResolvedFailureTasks`), so nothing was ever actually attempted and
+ * holding the next one for a human would punish a cleanup, not a loop. Pure.
+ */
+function priorInvestigationSettledRecently(tasks, fingerprint, now) {
+  return tasks.some((t) => {
+    if (t.status !== 'completed') return false;
+    if (t.metadata?.investigationFingerprint !== fingerprint) return false;
+    if (t.metadata?.resolution === 'auto-expired') return false;
+    const settledAt = Date.parse(t.metadata?.updatedAt);
+    // An undated completion can't be proved recent — treat it as old, so the
+    // default stays "auto-approve" rather than silently gating on a legacy task.
+    if (!Number.isFinite(settledAt)) return false;
+    return now - settledAt < INVESTIGATION_LOOP_WINDOW_MS;
+  });
+}
+
+/**
+ * Approval policy for a new investigation task.
+ *
+ * An agent failure is ordinary, expected traffic: the whole point of an
+ * investigation task is that CoS diagnoses its own failures without a human in
+ * the loop, so the DEFAULT is auto-approved and unattended. Human approval is
+ * reserved for a failure LOOP — the two shapes where letting another agent run
+ * unattended would just repeat what already didn't work:
+ *
+ *  - `repeat-fingerprint` — we investigated this exact cause within the last
+ *    {@link INVESTIGATION_LOOP_WINDOW_MS} and it is back.
+ *  - `failure-storm` — the circuit window is already at
+ *    {@link INVESTIGATION_STORM_HOLD_THRESHOLD} investigations, i.e. failures
+ *    are cascading rather than isolated. (One slot later the circuit stops
+ *    filing tasks at all; this is the last one before that ceiling.)
+ *
+ * Pure — every input is injected so the branching is unit-testable.
+ *
+ * @param {{ fingerprint: string, tasks: object[], recentCreations?: number, now?: number }} args
+ * @returns {{ approvalRequired: boolean, loopReason: 'repeat-fingerprint'|'failure-storm'|null }}
+ */
+export function resolveInvestigationApproval({
+  fingerprint,
+  tasks = [],
+  recentCreations = 0,
+  now = Date.now()
+} = {}) {
+  if (priorInvestigationSettledRecently(tasks, fingerprint, now)) {
+    return { approvalRequired: true, loopReason: 'repeat-fingerprint' };
+  }
+  if (recentCreations >= INVESTIGATION_STORM_HOLD_THRESHOLD) {
+    return { approvalRequired: true, loopReason: 'failure-storm' };
+  }
+  return { approvalRequired: false, loopReason: null };
+}
+
+// Namespace for the loop reason when it is stamped as the task's generic
+// `metadata.approvalReason` — the shared "why is this waiting on me?" key that
+// any approval-required producer can write (cosTaskGenerator already computes
+// the same concept for its safety-kind / confidence holds). Prefixing keeps this
+// producer's vocabulary from colliding with theirs in one flat namespace.
+const INVESTIGATION_APPROVAL_REASON_PREFIX = 'investigation-loop:';
+
+// Human-facing prose for each loop reason, rendered into the task body so the
+// user reading the queue knows WHY this one stopped for them when the previous
+// investigation did not. Counts are interpolated from the constants above so the
+// prose can't drift from the thresholds it describes.
+const LOOP_REASON_PROSE = {
+  'repeat-fingerprint': `This exact failure cause was already investigated within the last ${INVESTIGATION_LOOP_WINDOW_MS / (60 * 60 * 1000)} hours and it has come back — the previous fix did not hold, so this one is held for you instead of spawning another unattended agent that would repeat it.`,
+  'failure-storm': `${INVESTIGATION_STORM_HOLD_THRESHOLD} other agent failure(s) were already filed for investigation this hour, one slot short of the circuit breaker suppressing them entirely — failures are cascading rather than isolated, so this one is held for you rather than spending another unattended agent on a symptom.`
+};
 
 /**
  * Create an investigation task in COS-TASKS.md for a failed agent.
@@ -923,7 +1078,8 @@ async function doCreateInvestigationTask(agentId, originalTask, errorAnalysis) {
 
   // Durable-fingerprint dedup: one open investigation per failure cause.
   const fingerprint = buildInvestigationFingerprint(originalTask, analysis);
-  const existing = await findOpenInvestigation(fingerprint);
+  const allTasks = await readAllTasksFlat();
+  const existing = findOpenInvestigationIn(allTasks, fingerprint);
   if (existing) {
     emitLog('info', `⏭️ Skipping duplicate investigation for ${fingerprint}: ${existing.id} is still ${existing.status}`, {
       agentId, taskId: originalTask.id, fingerprint, existingTaskId: existing.id, existingStatus: existing.status
@@ -944,12 +1100,19 @@ async function doCreateInvestigationTask(agentId, originalTask, errorAnalysis) {
 
   // Rolling circuit breaker: cap creations per window across all fingerprints.
   const now = Date.now();
-  if (investigationCircuitOpen(now)) {
+  const recentCreations = recentInvestigationCreations(now);
+  if (recentCreations >= INVESTIGATION_CIRCUIT_MAX_CREATIONS) {
     emitLog('warn', `🔌 Investigation circuit OPEN — ${INVESTIGATION_CIRCUIT_MAX_CREATIONS} investigations created within the last hour; suppressing task for ${fingerprint}`, {
       agentId, taskId: originalTask.id, fingerprint
     });
     return null;
   }
+
+  // Auto-approved unless this failure is a LOOP (#3714) — an isolated agent
+  // failure is exactly the work CoS is meant to diagnose for itself.
+  const { approvalRequired, loopReason } = resolveInvestigationApproval({
+    fingerprint, tasks: allTasks, recentCreations, now
+  });
 
   // Every interpolated free-text field is redacted before it lands in the body —
   // this task is human-facing and may sync across federated peers, so no
@@ -962,9 +1125,22 @@ async function doCreateInvestigationTask(agentId, originalTask, errorAnalysis) {
 
   // Prefer the pattern's category-specific escalation prose; fall back to the
   // generic suggestedFix so uncustomized categories still read as an action.
-  const whatToApprove = analysis.escalation
+  const remedy = analysis.escalation
     || analysis.suggestedFix
     || 'Review the agent output, decide whether to fix the underlying config/code and retry, or close the task.';
+
+  // The body addresses whoever will actually act on this task: an unattended
+  // investigation agent in the default (auto-approved) case, the single PortOS
+  // user in the held case. Same remedy prose either way — only the framing, the
+  // held-reason section, and the "what unblocks" consequence differ.
+  const actionBlock = approvalRequired
+    ? [
+        `## What to approve\n${remedy}`,
+        `## Why this is held for you\n${LOOP_REASON_PROSE[loopReason]}`
+      ].join('\n\n')
+    : `## What to do\nNo approval needed — this investigation runs unattended. Diagnose the failure above, apply the fix, and leave the task's findings in your summary.\n\n${remedy}`;
+
+  const unblocks = `${approvalRequired ? 'Approving and applying' : 'Applying'} the fix lets the original task \`${originalTask.id}\` be retried; it will resume: ${originalDesc}.`;
 
   // The fingerprint rides in the headline so addTask's first-line dedup —
   // which sees no `metadata.app` on investigation tasks — tracks fingerprint
@@ -981,19 +1157,21 @@ Agent \`${agentId}\` failed while working on task \`${originalTask.id}\` (${orig
 - **Provider/model**: ${modelAttribution || 'not attributed'}
 ${snippet ? `- **Failure snippet (redacted)**:\n  > ${snippet}` : '- **Failure snippet**: (none captured)'}
 
-## What to approve
-${whatToApprove}
+${actionBlock}
 
 ## What unblocks
-Approving and applying the fix lets the original task \`${originalTask.id}\` be retried; it will resume: ${originalDesc}.`;
+${unblocks}`;
 
   const investigationTask = await addTask({
     description,
     priority: 'HIGH',
     context: `Auto-generated from agent ${agentId} failure`,
-    approvalRequired: true, // Require human approval before auto-fixing
+    approvalRequired,
     isInvestigation: true, // Meta-cascade guard marker (#2615)
     investigationFingerprint: fingerprint,
+    // Durable record of WHY this stopped for a human (null when it ran
+    // unattended) — readable from the queue without re-deriving the verdict.
+    approvalReason: loopReason && `${INVESTIGATION_APPROVAL_REASON_PREFIX}${loopReason}`,
     affectedTasks: [originalTask.id] // later same-fingerprint failures union in
   }, 'internal');
 
@@ -1001,17 +1179,21 @@ Approving and applying the fix lets the original task \`${originalTask.id}\` be 
   // description-level dedup returning an existing task is not a new creation.
   if (!investigationTask.duplicate) investigationCreationStamps.push(now);
 
-  emitLog('info', `Created investigation task ${investigationTask.id} for failed agent ${agentId}`, {
+  emitLog('info', `Created investigation task ${investigationTask.id} for failed agent ${agentId} — ${loopReason ? `held for approval (${loopReason})` : 'auto-approved'}`, {
     agentId,
     taskId: investigationTask.id,
-    errorCategory: category
+    errorCategory: category,
+    approvalRequired,
+    loopReason
   });
 
   cosEvents.emit('investigation:created', {
     investigationTaskId: investigationTask.id,
     failedAgentId: agentId,
     originalTaskId: originalTask.id,
-    errorAnalysis
+    errorAnalysis,
+    approvalRequired,
+    loopReason
   });
 
   return investigationTask;

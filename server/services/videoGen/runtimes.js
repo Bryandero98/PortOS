@@ -25,13 +25,20 @@ import { safeChildProcessEnv } from '../../lib/processEnv.js';
 export const LTX2_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3');
 export const LTX2_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx2.py');
 
-// Wan 2.2 MLX runtime — osama-ata/Wan2.2-mlx cloned at
-// ~/.portos/wan2.2-mlx/. The wrapper at scripts/generate_wan22.py
-// subprocesses upstream generate.py so PortOS releases don't drift from
-// upstream's CLI. Provisioned via `INSTALL_WAN22=1 bash scripts/setup-image-video.sh`.
-export const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'wan2.2-mlx', '.venv', 'bin', 'python3');
+// Wan 2.2 MLX runtime — pinned MLX-Gen checkout provisioned on demand.
+export const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'mlx-gen', '.venv', 'bin', 'python3');
 export const WAN22_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_wan22.py');
-export const WAN22_REPO_DIR = join(homedir(), '.portos', 'wan2.2-mlx');
+export const WAN22_REPO_DIR = join(homedir(), '.portos', 'mlx-gen');
+export const WAN22_EXPECTED_REVISION = '2452f0c12edcc8886eebf15772205ce9c417a618';
+
+// MiniMax H3 MLX runtime — PipeNetwork's Apple-Silicon port, provisioned only
+// after the user selects Install in Video Gen. The model weights remain a
+// separate, explicitly accepted/downloaded Hugging Face operation.
+export const MINIMAX_H3_VENV_PYTHON = join(homedir(), '.portos', 'minimax-h3-mlx', '.venv', 'bin', 'python3');
+export const MINIMAX_H3_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_minimax_h3.py');
+export const MINIMAX_H3_RUNTIME_PROBE_SCRIPT = join(PATHS.root, 'scripts', 'minimax_h3_runtime_probe.py');
+export const MINIMAX_H3_REPO_DIR = join(homedir(), '.portos', 'minimax-h3-mlx');
+export const MINIMAX_H3_EXPECTED_REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
 
 // HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
 // ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
@@ -53,13 +60,32 @@ const RUNTIME_FINGERPRINT_SCRIPT = join(PATHS.root, 'scripts', 'runtime_fingerpr
 // source of truth: the BYOV_VIDEO_RUNTIMES Set + the /setup/runtime-* routes
 // + the client install banner all derive from this map's keys.
 //
-// `importProbe` is a tiny Python expression run by isByovRuntimeReady() to
+// `importProbe` (or `probeArgs` for a dedicated script) is run by
+// isByovRuntimeReady() to
 // confirm the venv's *packages* are actually installed (not just the venv
 // binary). A partial install (e.g. setup script aborted after `uv venv`
 // before `uv pip install`) leaves the binary present but no torch — without
 // this probe the UI would hide the install banner and renders would fail
 // with a deep ImportError inside the runner script.
 export const BYOV_RUNTIME_INFO = Object.freeze({
+  minimax_h3: {
+    id: 'minimax_h3',
+    label: 'MiniMax H3 MLX',
+    venvPython: MINIMAX_H3_VENV_PYTHON,
+    repoDir: MINIMAX_H3_REPO_DIR,
+    installEnvVar: 'INSTALL_MINIMAX_H3',
+    repoUrl: 'https://github.com/PipeNetwork/minimax-h3-mlx',
+    expectedRevision: MINIMAX_H3_EXPECTED_REVISION,
+    // Source-only runtime: both status and the render helper verify this
+    // package is clean so a modified/untracked module cannot shadow the pin.
+    sourcePath: 'minimax_h3_mlx',
+    pinEnvVar: 'MINIMAX_H3_PIN',
+    // The port is source-only rather than pip-installed. The dedicated probe
+    // registers only the source package namespace; it never prepends the whole
+    // checkout, where an untracked root module could shadow a locked venv dep.
+    probeArgs: [MINIMAX_H3_RUNTIME_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
+    fingerprintPackages: ['mlx', 'mlx-metal', 'mlx-vlm', 'transformers', 'huggingface-hub'],
+  },
   hunyuan: {
     id: 'hunyuan',
     label: 'HunyuanVideo MLX',
@@ -80,13 +106,12 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: WAN22_VENV_PYTHON,
     repoDir: WAN22_REPO_DIR,
     installEnvVar: 'INSTALL_WAN22',
-    repoUrl: 'https://github.com/osama-ata/Wan2.2-mlx',
-    // Walks the package's __init__ chain so transitive deps absent from
-    // upstream's pyproject.toml (e.g. einops, imported by wan/modules/vae2_1.py)
-    // fail the probe instead of slipping past a flat torch/transformers check.
-    importProbe: 'import wan',
+    repoUrl: 'https://github.com/lpalbou/mlx-gen',
+    expectedRevision: WAN22_EXPECTED_REVISION,
+    pinEnvVar: 'WAN22_PIN',
+    importProbe: 'import mflux.models.wan.cli.wan_generate',
     // Mirror scripts/generate_wan22.py's emit_runtime_fingerprint package list.
-    fingerprintPackages: ['wan', 'mlx', 'mlx_metal', 'torch'],
+    fingerprintPackages: ['mlx-gen', 'mlx', 'mlx_metal', 'huggingface-hub'],
   },
   ltx2: {
     id: 'ltx2',
@@ -105,6 +130,18 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
 });
 
 export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(Object.keys(BYOV_RUNTIME_INFO)));
+
+// Runtimes whose FFLF *last* frame is a real conditioning anchor rather than an
+// advisory hint: ltx2 runs a true keyframe-interpolation pipeline, and
+// minimax_h3 packs both frames as fl2va conditioning rows. Every other runtime
+// conditions on a single frame and drops the other. Declared once here because
+// three consumers must agree — buildArgs (which forwards it), the last-frame
+// resize in local.js (wasted ffmpeg work otherwise), and the client's
+// "last frame is advisory" note, which reads it off the model payload via
+// `lastFrameAnchored`.
+export const LAST_FRAME_ANCHORED_RUNTIMES = Object.freeze(new Set(['ltx2', 'minimax_h3']));
+
+export const modelAnchorsLastFrame = (model) => LAST_FRAME_ANCHORED_RUNTIMES.has(model?.runtime);
 
 export function isByovRuntimeInstalled(runtimeId) {
   const info = BYOV_RUNTIME_INFO[runtimeId];
@@ -128,9 +165,14 @@ export async function isByovRuntimeReady(runtimeId) {
   const info = BYOV_RUNTIME_INFO[runtimeId];
   if (!info) return false;
   if (!existsSync(info.venvPython)) return false;
+  // Never execute a source checkout until its immutable revision and scoped
+  // executable package have passed the clean-status check. Keep this ahead of
+  // the positive readiness cache too: a checkout can be edited after an
+  // earlier successful probe.
+  if (info.expectedRevision && !await isByovRuntimeCurrent(runtimeId)) return false;
   if (readyCache.get(runtimeId) === true) return true;
   const probeOk = await new Promise((resolve) => {
-    const child = spawn(info.venvPython, ['-c', info.importProbe], {
+    const child = spawn(info.venvPython, info.probeArgs || ['-c', info.importProbe], {
       env: safeChildProcessEnv(),
       stdio: ['ignore', 'ignore', 'ignore'],
     });
@@ -142,6 +184,41 @@ export async function isByovRuntimeReady(runtimeId) {
   return probeOk;
 }
 
+// Resolve a checkout's exact revision without trusting a mutable tag/branch.
+// Runtimes without an expectedRevision remain current by definition. A stale
+// pinned checkout makes the UI offer Repair / Upgrade; nothing runs at boot.
+export function isPinnedSourceStatusClean(stdout, expectedRevision) {
+  const lines = String(stdout).split(/\r?\n/).filter(Boolean);
+  const oid = lines.find((line) => line.startsWith('# branch.oid '))?.slice('# branch.oid '.length);
+  return oid === expectedRevision && lines.every((line) => line.startsWith('# '));
+}
+
+export async function isByovRuntimeCurrent(runtimeId) {
+  const info = BYOV_RUNTIME_INFO[runtimeId];
+  if (!info?.expectedRevision) return true;
+  if (!existsSync(join(info.repoDir, '.git'))) return false;
+  return new Promise((resolve) => {
+    let stdout = '';
+    const args = info.sourcePath
+      ? ['-C', info.repoDir, 'status', '--porcelain=v2', '--branch', '--untracked-files=all', '--', info.sourcePath]
+      : ['-C', info.repoDir, 'rev-parse', 'HEAD'];
+    const child = spawn('git', args, {
+      env: safeChildProcessEnv(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve(false); }, 10000);
+    child.stdout.on('data', (chunk) => { if (stdout.length < 128) stdout += chunk.toString(); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const current = info.sourcePath
+        ? isPinnedSourceStatusClean(stdout, info.expectedRevision)
+        : stdout.trim() === info.expectedRevision;
+      resolve(code === 0 && current);
+    });
+    child.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
 // Throws the same shape the per-runtime buildArgs used to throw inline — a
 // 500 with a stable runtime-specific code the route layer and tests already
 // match against. The error codes are LTX2_VENV_MISSING / WAN22_VENV_MISSING
@@ -151,7 +228,7 @@ export function assertByovRuntimeInstalled(runtimeId) {
   if (!info) return;
   if (existsSync(info.venvPython)) return;
   throw new ServerError(
-    `${info.label} venv not found at ${info.venvPython}. Run \`${info.installEnvVar}=1 bash scripts/setup-image-video.sh\` to install.`,
+    `${info.label} runtime is not installed. Install or repair it from Video Gen's model setup panel.`,
     { status: 500, code: `${runtimeId.toUpperCase()}_VENV_MISSING` },
   );
 }

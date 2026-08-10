@@ -46,9 +46,13 @@ import { PR_COMPLETIONS } from '../lib/prDisposition.js';
 // the cap. 200 matches the limit github.js#syncRepos already uses.
 const PR_LIST_LIMIT = 200;
 
-// A watcher tick normally runs every 30 minutes. Six hours is long enough for
-// an ordinary CI queue, while still surfacing a wedged provider or branch
-// protection rule before a merge-only PR silently leaks forever.
+// The pending-merge sweep runs on its own CoS timer (`cos-pending-merge-sweep`
+// in cos.js) every 30 minutes. Six hours is long enough for an ordinary CI
+// queue, while still surfacing a wedged provider or branch protection rule
+// before a merge-only PR silently leaks forever. cos.js drives its interval off
+// PENDING_MERGE_SWEEP_INTERVAL_MS so `MAX_PENDING_MERGE_TICKS` keeps mapping to
+// wall-clock hours rather than to restarts (#3630).
+export const PENDING_MERGE_SWEEP_INTERVAL_MS = 30 * 60 * 1000;
 export const MAX_PENDING_MERGE_TICKS = 12;
 
 const GREEN_CHECK_VERDICTS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
@@ -326,8 +330,22 @@ export async function processPendingMergePrs(app) {
     const key = pendingMergeKey(entry);
     const prView = await readPendingPullRequest(repoSpec, entry.prNumber);
     if (!prView) {
-      outcomes.set(key, entry);
+      // An unreadable PR is still a cycle this entry spent pending, so it has to
+      // tick. A PR whose `gh pr view` fails PERMANENTLY (deleted PR, renamed
+      // repo, revoked token) would otherwise be re-queued unchanged forever:
+      // MAX_PENDING_MERGE_TICKS never fires, the entry leaks in apps.json, and
+      // we re-shell to `gh` on every cadence with nothing surfaced to the user.
+      // `result.errors` accounting is unchanged — the cycle is both an error and
+      // a tick.
       result.errors += 1;
+      const unreadable = { ...entry, ticks: entry.ticks + 1 };
+      if (unreadable.ticks >= MAX_PENDING_MERGE_TICKS) {
+        await notifyPendingMergeTimeout(app, entry, 'it could not be read from the forge');
+        outcomes.set(key, null);
+        result.timedOut += 1;
+      } else {
+        outcomes.set(key, unreadable);
+      }
       continue;
     }
     result.checked += 1;

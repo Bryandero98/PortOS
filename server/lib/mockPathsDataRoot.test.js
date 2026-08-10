@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, sep } from 'path';
 import { createTempDataRoot, makePathsProxy, mockNoPeers, mockNoPeerSync, mockPathsDataRoot } from './mockPathsDataRoot.js';
 
 describe('mockPathsDataRoot', () => {
@@ -27,16 +27,70 @@ describe('mockPathsDataRoot', () => {
 
   describe('makePathsProxy', () => {
     const fakeActual = {
-      PATHS: { data: '/real/data', images: '/real/images', logs: '/real/logs' },
+      PATHS: {
+        data: join('/real', 'data'),
+        images: join('/real', 'data', 'images'),
+        cosAgents: join('/real', 'data', 'cos', 'agents'),
+        // Outside data/ — must survive untouched, like PATHS.root / slashdo /
+        // browserDownloads do in the real fileUtils.
+        logs: join('/real', 'logs'),
+        // A near-miss sibling: `data-archive` shares the `data` PREFIX but is
+        // not INSIDE data/, so it must not be re-rooted.
+        dataArchive: join('/real', 'data-archive'),
+      },
       ensureDir: () => 'ensureDir-fn',
       otherFn: 42,
     };
+    const TMP = join('/tmp', 'x');
 
-    it('overrides only PATHS.data by default and passes other PATHS keys through', () => {
-      const proxy = makePathsProxy(fakeActual, { dataRoot: '/tmp/x' });
-      expect(proxy.PATHS.data).toBe('/tmp/x');
-      expect(proxy.PATHS.images).toBe('/real/images');
-      expect(proxy.PATHS.logs).toBe('/real/logs');
+    it('re-roots every PATHS member that lives under the real data/ dir', () => {
+      const proxy = makePathsProxy(fakeActual, { dataRoot: TMP });
+      expect(proxy.PATHS.data).toBe(TMP);
+      expect(proxy.PATHS.images).toBe(join(TMP, 'images'));
+      expect(proxy.PATHS.cosAgents).toBe(join(TMP, 'cos', 'agents'));
+    });
+
+    it('leaves PATHS members outside data/ alone, including prefix near-misses', () => {
+      const proxy = makePathsProxy(fakeActual, { dataRoot: TMP });
+      expect(proxy.PATHS.logs).toBe(join('/real', 'logs'));
+      expect(proxy.PATHS.dataArchive).toBe(join('/real', 'data-archive'));
+    });
+
+    it('re-roots the real fileUtils PATHS so no member still points into the live install', async () => {
+      const { PATHS } = await import('./fileUtils.js');
+      const proxy = makePathsProxy({ PATHS }, { dataRoot: TMP });
+
+      // Deliberately NOT the implementation's containment predicate — a plain
+      // prefix match over the PROXIED values. It is a superset of what the
+      // helper re-roots, so a member the helper failed to move is still caught
+      // here rather than being filtered out of the expectation alongside it.
+      const leaked = Object.entries(proxy.PATHS)
+        .filter(([, v]) => typeof v === 'string' && v.startsWith(PATHS.data))
+        .map(([k]) => k);
+      expect(leaked).toEqual([]);
+
+      // Hardcoded expectations — no shared derivation with the implementation.
+      expect(proxy.PATHS.data).toBe(TMP);
+      expect(proxy.PATHS.cos).toBe(join(TMP, 'cos'));
+      expect(proxy.PATHS.cosAgents).toBe(join(TMP, 'cos', 'agents'));
+      expect(proxy.PATHS.promptSkillsJobs).toBe(join(TMP, 'prompts', 'skills', 'jobs'));
+      expect(proxy.PATHS.brainSongbook).toBe(join(TMP, 'brain', 'songbook'));
+      expect(proxy.PATHS.digitalTwin).toBe(join(TMP, 'digital-twin'));
+
+      // Non-vacuity: most of PATHS must actually have moved.
+      const moved = Object.keys(PATHS).filter((k) => proxy.PATHS[k] !== PATHS[k]);
+      expect(moved.length).toBeGreaterThan(40);
+
+      // The four members that live outside data/ are untouched by construction.
+      for (const key of ['root', 'installRoot', 'slashdo', 'browserDownloads']) {
+        expect(proxy.PATHS[key]).toBe(PATHS[key]);
+      }
+    });
+
+    it('handles a trailing separator on the real PATHS.data', () => {
+      const trailing = { PATHS: { data: `/real/data${sep}`, images: '/real/data/images' } };
+      const proxy = makePathsProxy(trailing, { dataRoot: TMP });
+      expect(proxy.PATHS.images).toBe(join(TMP, 'images'));
     });
 
     it('passes non-PATHS exports through untouched', () => {

@@ -47,7 +47,7 @@ import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { constants as osConstants } from 'os';
 import { join } from 'path';
-import { open, readFile, rm, stat, readdir } from 'fs/promises';
+import { open, readFile, writeFile, rm, stat, readdir } from 'fs/promises';
 import { ensureDir, sleep } from './fileUtils.js';
 import { withSpawnCwdEnv } from './spawnCwd.js';
 
@@ -63,6 +63,25 @@ const PID_TIMEOUT_MS = 10000;
 // escalating to SIGKILL. Matches the in-session cancel escalation (8s) plus
 // slack for a final checkpoint write.
 const REAP_GRACE_MS = 12000;
+const GROUP_KILL_MARKER = 'kill-process-group';
+
+const signalPid = (pid, signal, killProcessGroup = false) => {
+  if (killProcessGroup) {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch {
+      // The child may not have established its own process group yet. Fall back
+      // to its exact PID; at that early point it cannot have spawned descendants.
+    }
+  }
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 // `wait` reports a signal-terminated child as 128+signum. Invert os signal
 // constants once so we can decode that back into Node's ('code', 'signal')
@@ -208,9 +227,14 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
  * @param {number} [opts.pollMs] - tail/poll cadence (default 250ms)
  * @param {boolean} [opts.cleanup] - remove controlDir after the job terminates
  *   (default false — keep the logs, e.g. inside a run dir for post-mortem)
+ * @param {boolean} [opts.killProcessGroup] - signal `-pid` on cancel/reap so a
+ *   group-leader wrapper and every runtime child terminate together. The job is
+ *   responsible for establishing its own process group before spawning children.
  * @returns {Promise<object>} ChildProcess-like handle (resolves once the PID is known)
  */
-export async function spawnDetached(bin, args = [], { env, cwd, controlDir, pollMs = DEFAULT_POLL_MS, cleanup = false } = {}) {
+export async function spawnDetached(bin, args = [], {
+  env, cwd, controlDir, pollMs = DEFAULT_POLL_MS, cleanup = false, killProcessGroup = false,
+} = {}) {
   if (!controlDir) throw new Error('spawnDetached requires a controlDir');
 
   // Windows has no POSIX `sh` for the double-fork, and pm2's process management
@@ -237,6 +261,7 @@ export async function spawnDetached(bin, args = [], { env, cwd, controlDir, poll
   const exitFile = join(controlDir, 'exit');
   const stdoutLog = join(controlDir, 'stdout.log');
   const stderrLog = join(controlDir, 'stderr.log');
+  const groupKillFile = join(controlDir, GROUP_KILL_MARKER);
 
   // Setup is filesystem I/O that can fail (permissions, a stale non-dir path,
   // disk full). Surface those as the handle's 'error' event — like a real
@@ -245,7 +270,9 @@ export async function spawnDetached(bin, args = [], { env, cwd, controlDir, poll
   // would bypass that and strand a `running` run or leak temp files. Deferred
   // so the listener is attached before it fires.
   const ensureControlDir = await ensureDir(controlDir).then(
-    () => Promise.all([pidFile, exitFile, stdoutLog, stderrLog].map((f) => rm(f, { force: true }))),
+    () => Promise.all([pidFile, exitFile, stdoutLog, stderrLog, groupKillFile].map((f) => rm(f, { force: true }))),
+  ).then(
+    () => (killProcessGroup ? writeFile(groupKillFile, '1') : null),
   ).then(() => null, (err) => err);
   if (ensureControlDir) {
     setImmediate(() => {
@@ -309,18 +336,12 @@ export async function spawnDetached(bin, args = [], { env, cwd, controlDir, poll
     }
   };
 
-  // Signal the job directly by PID (it has reparented away from our tree, but a
-  // direct PID signal still reaches it). Mirrors the original `proc.kill()`
-  // which also signalled the PID, not the group.
+  // Signal the reparented job by PID, or by its persisted opt-in process group
+  // when the wrapper owns runtime descendants that must never outlive it.
   handle.kill = (signal = 'SIGTERM') => {
     handle.killed = true;
     if (!handle.pid) return false;
-    try {
-      process.kill(handle.pid, signal);
-      return true;
-    } catch {
-      return false; // ESRCH — already gone
-    }
+    return signalPid(handle.pid, signal, killProcessGroup);
   };
 
   await awaitPid();
@@ -407,6 +428,7 @@ export async function reattachDetached(controlDir, { pollMs = DEFAULT_POLL_MS, c
   const pid = Number.parseInt(pidRaw, 10);
   if (!Number.isFinite(pid) || pid <= 0) return null;
   const exitWritten = (await readFile(join(controlDir, 'exit'), 'utf8').catch(() => '')).length > 0;
+  const killProcessGroup = (await readFile(join(controlDir, GROUP_KILL_MARKER), 'utf8').catch(() => '')).trim() === '1';
   // Dead PID with no exit sentinel → killed mid-run; nothing clean to stream
   // (the RESULT line was never written). Let the caller reap+fail.
   if (!exitWritten && !isAlive(pid)) return null;
@@ -418,17 +440,11 @@ export async function reattachDetached(controlDir, { pollMs = DEFAULT_POLL_MS, c
   handle.killed = false;
   handle.exitCode = null;
   handle.signalCode = null;
-  // Signal the survivor directly by PID (it reparented away from our tree, but
-  // a direct PID signal still reaches it) — mirrors spawnDetached's handle.kill
-  // so cancel/stall paths work identically on a re-attached run.
+  // Mirror spawnDetached's exact PID/group behavior so cancel/stall paths work
+  // identically on a re-attached run.
   handle.kill = (signal = 'SIGTERM') => {
     handle.killed = true;
-    try {
-      process.kill(pid, signal);
-      return true;
-    } catch {
-      return false; // ESRCH — already gone
-    }
+    return signalPid(pid, signal, killProcessGroup);
   };
 
   const { tick } = createLogTailer(handle, { controlDir, pollMs, cleanup });
@@ -492,6 +508,7 @@ export async function reapDetached(controlDir, { graceMs = REAP_GRACE_MS, pollMs
   const pidRaw = await readFile(join(controlDir, 'pid'), 'utf8').catch(() => '');
   const pid = Number.parseInt(pidRaw, 10);
   if (!Number.isFinite(pid) || pid <= 0) return { reaped: false };
+  const killProcessGroup = (await readFile(join(controlDir, GROUP_KILL_MARKER), 'utf8').catch(() => '')).trim() === '1';
   const exitWritten = async () => (await readFile(exitFile, 'utf8').catch(() => '')).length > 0;
   // Supervisor already recorded an exit → the job finished; nothing to reap.
   if (await exitWritten()) return { reaped: false };
@@ -500,7 +517,7 @@ export async function reapDetached(controlDir, { graceMs = REAP_GRACE_MS, pollMs
   // seconds before boot) is vanishingly unlikely on a single-user box; the same
   // trust the in-session cancel path places in the child PID.
   const wasAlive = isAlive(pid);
-  if (wasAlive) { try { process.kill(pid, 'SIGTERM'); } catch { /* raced its own exit */ } }
+  if (wasAlive) signalPid(pid, 'SIGTERM', killProcessGroup);
   // Wait for the supervisor's `exit` sentinel — its FINAL act after the child
   // dies — not just child death. That sentinel means the supervisor is fully
   // done writing into controlDir, so a resume that reuses the dir can't race a
@@ -511,7 +528,7 @@ export async function reapDetached(controlDir, { graceMs = REAP_GRACE_MS, pollMs
   for (let waited = 0; waited < hardCapMs; waited += pollMs) {
     await sleep(pollMs);
     if (await exitWritten()) return { reaped: wasAlive, pid };
-    if (waited >= graceMs && isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    if (waited >= graceMs && isAlive(pid)) signalPid(pid, 'SIGKILL', killProcessGroup);
   }
   return { reaped: wasAlive, pid };
 }

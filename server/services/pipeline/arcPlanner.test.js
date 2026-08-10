@@ -567,6 +567,25 @@ describe('arcPlanner — verifyVolume', () => {
     expect(out.seasonId).toBe(sea.id);
   });
 
+  it('can force synopsis-only verification for the pre-beat autopilot planning gate', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'Whole arc' } });
+    const sea = await seasonsSvc.createSeason(s.id, { title: 'V1', logline: 'volume' });
+    await issuesSvc.createIssue({
+      seriesId: s.id,
+      title: 'Ep 1',
+      seasonId: sea.id,
+      stages: { idea: { input: 'synopsis seed', output: 'existing beat sheet', status: 'ready' } },
+    });
+    stageRunnerSpy = vi.fn(async () => ({ content: { issues: [] }, runId: 'r', providerId: 'p', model: 'm' }));
+
+    await planner.verifyVolume(s.id, sea.id, { synopsisOnly: true });
+
+    const [volumeIssue] = JSON.parse(stageRunnerSpy.mock.calls[0][1].volumeIssuesJson);
+    expect(volumeIssue.synopsis).toBe('synopsis seed');
+    expect(volumeIssue).not.toHaveProperty('beats');
+  });
+
   it('includes only the immediate-neighbor volumes (prior + next), excluding self', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
@@ -724,7 +743,7 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(stageRunnerSpy.mock.calls[0][0]).toBe('pipeline-arc-verify');
   });
 
-  it('remaps child issues off dropped seasonIds onto matched replacements', async () => {
+  it('rewrites title-matched seasons in place when the LLM omits their ids', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
     const oldS1 = await seasonsSvc.createSeason(s.id, { title: 'The Velvet Pouch', episodeCountTarget: 3 });
@@ -735,8 +754,9 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     const i2 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: oldS2.id, title: 'Middle' });
     const i3 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: oldS3.id, title: 'Finale' });
 
-    // LLM returns seasons by title without preserving ids; the remap must
-    // reattach orphaned issues via normalized title match.
+    // LLM returns seasons by title without preserving ids. These are rewrites
+    // of the existing volumes, not new ones — `matchProposedSeasons` must land
+    // them on the existing records rather than minting title-alike siblings.
     stageRunnerSpy = vi.fn(async () => ({
       content: {
         arc: { logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
@@ -757,7 +777,9 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.applied).toBe(true);
     expect(out.series.seasons).toHaveLength(3);
     const [newS1, newS2, newS3] = out.series.seasons;
-    expect(newS1.id).not.toBe(oldS1.id); // freshly minted
+    // Rewritten in place — no mint, so nothing to remap and no duplicate
+    // "Volume 1" left behind.
+    expect([newS1.id, newS2.id, newS3.id]).toEqual([oldS1.id, oldS2.id, oldS3.id]);
 
     const finalI1 = await issuesSvc.getIssue(i1.id);
     const finalI2 = await issuesSvc.getIssue(i2.id);
@@ -767,28 +789,174 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(finalI3.seasonId).toBe(newS3.id);
   });
 
-  it('drops orphans to null seasonId when no replacement can be matched', async () => {
+  it('does not mint a duplicate volume across repeated unlock-for-run resolves', async () => {
+    // The divergence regression: the autopilot's unlock-for-run mode passes
+    // `preserveDroppedSeasons`, so a minted look-alike volume gets the original
+    // re-inserted next to it. Two rounds used to leave three Volume 1 records —
+    // a blocking arc-verify finding that no further round could clear.
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Salt at the Root', episodeCountTarget: 12 });
+    const ep = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Ep 1' });
+
+    let round = 0;
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
+        // Same volume, rewritten synopsis, id omitted — verbatim the shape the
+        // resolve prompt returns.
+        seasons: [{ number: 1, title: 'Salt at the Root', synopsis: `revision ${++round}`, endingHook: '', episodeCountTarget: 12 }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    for (let i = 0; i < 2; i += 1) {
+      await planner.resolveVerifyIssues(s.id, {
+        findings: [{ severity: 'high', problem: 'X', suggestion: 'Y' }],
+        preserveDroppedSeasons: true,
+      });
+    }
+
+    const after = await seriesSvc.getSeries(s.id);
+    expect(after.seasons).toHaveLength(1);
+    expect(after.seasons[0].id).toBe(v1.id);
+    expect(after.seasons[0].synopsis).toBe('revision 2'); // the rewrite still applied
+    expect((await issuesSvc.getIssue(ep.id)).seasonId).toBe(v1.id);
+  });
+
+  it('treats an empty seasons[] as a no-op, not a volume wipe (#3724 sparse patch)', async () => {
+    // `seasons[]` is a SPARSE patch list: a resolve round that edits nothing at
+    // the volume level leaves the lineup — and every episode under it — alone.
+    // Before #3724 this same response deleted the only volume and dropped its
+    // issue into the ungrouped bucket.
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
     const oldS = await seasonsSvc.createSeason(s.id, { title: 'Only Season', episodeCountTarget: 3 });
     const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: oldS.id, title: 'Orphan' });
 
-    // LLM returns zero seasons — nothing to remap to, issue should go ungrouped.
     stageRunnerSpy = vi.fn(async () => ({
       content: {
-        arc: { logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
+        arc: { resolves: ['f1'], logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
         seasons: [],
-        notes: 'collapsed',
+        notes: 'recommend collapsing Only Season — not doing it here',
       },
       runId: 'r', providerId: 'p', model: 'm',
     }));
 
-    await planner.resolveVerifyIssues(s.id, {
+    const out = await planner.resolveVerifyIssues(s.id, {
       findings: [{ severity: 'medium', problem: 'X', suggestion: 'Y' }],
     });
 
-    const finalI1 = await issuesSvc.getIssue(i1.id);
-    expect(finalI1.seasonId).toBeNull();
+    expect(out.series.arc.logline).toBe('L2'); // the targeted arc edit still lands
+    expect(out.series.seasons.map((x) => x.id)).toEqual([oldS.id]);
+    expect((await issuesSvc.getIssue(i1.id)).seasonId).toBe(oldS.id);
+  });
+
+  it('leaves volumes the response omits exactly as they are', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Vol 1', synopsis: 'v1 original', episodeCountTarget: 3 });
+    const v2 = await seasonsSvc.createSeason(s.id, { number: 2, title: 'Vol 2', synopsis: 'v2 original', episodeCountTarget: 3 });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { resolves: ['f1'], logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
+        // Only volume 2 was edited — volume 1 isn't in the response at all.
+        seasons: [{ resolves: ['f1'], id: v2.id, number: 2, title: 'Vol 2', synopsis: 'v2 rewritten' }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'volume 2 drops the mentor', suggestion: 'pay it off' }],
+    });
+
+    expect(out.series.seasons.map((x) => x.id)).toEqual([v1.id, v2.id]);
+    expect(out.series.seasons[0].synopsis).toBe('v1 original'); // untouched
+    expect(out.series.seasons[1].synopsis).toBe('v2 rewritten');
+  });
+
+  it('drops arc / volume / episode edits that name no input finding', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'original summary' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Vol 1', synopsis: 'v1 original', episodeCountTarget: 2 });
+    const v2 = await seasonsSvc.createSeason(s.id, { number: 2, title: 'Vol 2', synopsis: 'v2 original', episodeCountTarget: 2 });
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Ep' });
+    await issuesSvc.updateStage(issue.id, 'idea', { input: 'ep original', status: 'empty' });
+    const fresh = await issuesSvc.getIssue(issue.id);
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        // Untargeted arc rewrite — dropped. `resolves` naming an id the round
+        // never handed out counts as naming nothing.
+        arc: { resolves: ['f9'], logline: 'HIJACKED', summary: 'HIJACKED', themes: [], protagonistArc: '' },
+        seasons: [
+          { resolves: ['f1'], id: v1.id, number: 1, title: 'Vol 1', synopsis: 'v1 rewritten' },
+          { resolves: [], id: v2.id, number: 2, title: 'Vol 2', synopsis: 'v2 collateral rewrite' },
+        ],
+        episodes: [{ seasonNumber: 1, episodeNumber: fresh.number, synopsis: 'ep collateral rewrite' }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'volume 1 stages the eclipse twice', suggestion: 'fix' }],
+    });
+
+    expect(out.series.arc.logline).toBe('L');
+    expect(out.series.arc.summary).toBe('original summary');
+    expect(out.series.seasons[0].synopsis).toBe('v1 rewritten'); // the one targeted edit lands
+    expect(out.series.seasons[1].synopsis).toBe('v2 original');
+    expect(out.episodesResolved).toEqual([]);
+    expect((await issuesSvc.getIssue(issue.id)).stages.idea.input).toBe('ep original');
+  });
+
+  it('applies an unkeyed response as a legacy patch (install still on the pre-#3724 prompt)', async () => {
+    // A customized `pipeline-arc-resolve.md` never gets migration 245, so its
+    // model can't know about `resolves`. Dropping everything would silently turn
+    // auto-resolve into a round-burning no-op — those responses apply unkeyed,
+    // still under the safer sparse-patch semantics.
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Vol 1', synopsis: 'v1 original', episodeCountTarget: 2 });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
+        seasons: [{ id: v1.id, number: 1, title: 'Vol 1', synopsis: 'v1 rewritten' }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'X', suggestion: 'Y' }],
+    });
+
+    expect(out.series.arc.logline).toBe('L2');
+    expect(out.series.seasons[0].synopsis).toBe('v1 rewritten');
+  });
+
+  it('renders findings into the prompt stamped with stable findingIds', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { resolves: ['f2'], logline: 'L2', summary: 'S' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [
+        { severity: 'high', problem: 'first defect', suggestion: '' },
+        { severity: 'high', problem: 'second defect', suggestion: '' },
+      ],
+    });
+
+    const { findingsJson } = stageRunnerSpy.mock.calls[0][1];
+    expect(JSON.parse(findingsJson).map((f) => f.findingId)).toEqual(['f1', 'f2']);
   });
 
   it('preserves series.arc.readerMap when the resolve LLM does not author one', async () => {
@@ -974,6 +1142,131 @@ describe('arcPlanner — resolveVerifyIssues', () => {
   });
 });
 
+describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
+  const findings = [{ problem: 'a' }, { problem: 'b' }];
+  const select = (content) => planner.selectFindingKeyedEdits(content, findings);
+
+  it('keeps edits naming an input finding and drops the rest', () => {
+    const out = select({
+      arc: { resolves: ['f2'], logline: 'x' },
+      seasons: [{ resolves: ['f1'] }, { resolves: ['f7'] }, { resolves: [] }],
+      episodes: [{ resolves: ['f1'] }, {}],
+    });
+    expect(out.legacy).toBe(false);
+    expect(out.arc?.logline).toBe('x');
+    expect(out.arcDropped).toBe(false);
+    expect(out.seasons).toHaveLength(1);
+    expect(out.seasonsDropped).toBe(2);
+    expect(out.episodes).toHaveLength(1);
+    expect(out.episodesDropped).toBe(1);
+  });
+
+  it('normalizes ids (case + whitespace) and ignores non-string entries', () => {
+    const out = select({ seasons: [{ resolves: [' F1 ', 42, null, 'f1'] }] });
+    expect(out.seasons).toHaveLength(1);
+  });
+
+  it('drops an untargeted arc block while keeping the volumes that are targeted', () => {
+    const out = select({ arc: { resolves: [] }, seasons: [{ resolves: ['f1'] }] });
+    expect(out.arc).toBeNull();
+    expect(out.arcDropped).toBe(true);
+    expect(out.seasons).toHaveLength(1);
+  });
+
+  it('falls back to legacy (apply-all) only when NOTHING in the response declares resolves', () => {
+    const legacy = select({ arc: { logline: 'x' }, seasons: [{ id: 's1' }], episodes: [{ synopsis: 'y' }] });
+    expect(legacy).toMatchObject({ legacy: true, arcDropped: false, seasonsDropped: 0, episodesDropped: 0 });
+    expect(legacy.arc?.logline).toBe('x');
+    // One keyed entry proves the model is on the new contract — the unkeyed
+    // siblings in the SAME response are then genuine drops, not legacy.
+    expect(select({ seasons: [{ resolves: ['f1'] }, { id: 's2' }] }))
+      .toMatchObject({ legacy: false, seasonsDropped: 1 });
+  });
+
+  it('tolerates a missing/garbage response', () => {
+    expect(select(null)).toMatchObject({ legacy: true, arc: null, seasons: [], episodes: [] });
+    expect(select({ arc: 'not an object', seasons: 'nope', episodes: [null, 3] }))
+      .toMatchObject({ arc: null, seasons: [], episodes: [] });
+  });
+});
+
+describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollback)', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  // Stand up the shape one auto-resolve round can touch: an arc, two volumes,
+  // and an episode under each carrying a planning synopsis.
+  async function seedArc() {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'original logline', summary: 'original summary' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'v1 synopsis', episodeCountTarget: 2 });
+    const v2 = await seasonsSvc.createSeason(s.id, { title: 'Volume 2', synopsis: 'v2 synopsis', episodeCountTarget: 2 });
+    const e1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Ep 1' });
+    const e2 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v2.id, title: 'Ep 2' });
+    await issuesSvc.updateStage(e1.id, 'idea', { input: 'e1 planning synopsis' });
+    await issuesSvc.updateStage(e2.id, 'idea', { input: 'e2 planning synopsis' });
+    return { s, v1, v2, e1, e2 };
+  }
+
+  it('puts back the arc, the volume list and the episode synopses a round rewrote', async () => {
+    const { s, v1, v2, e1, e2 } = await seedArc();
+    const snapshot = await planner.snapshotArcState(s.id);
+
+    // Simulate the damage a regressive resolve round does: rewrite the arc,
+    // rewrite a volume, mint a third one, move an episode onto it, and rewrite
+    // the other episode's synopsis (clearing its beats the way
+    // applyEpisodeResolutions does).
+    const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'rewritten logline', summary: 'rewritten summary' },
+      seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
+    });
+    await issuesSvc.updateIssue(e2.id, { seasonId: minted.id });
+    await issuesSvc.updateStage(e1.id, 'idea', { input: 'rewritten e1 synopsis', output: '', status: 'empty' });
+
+    const result = await planner.restoreArcState(s.id, snapshot);
+    expect(result).toMatchObject({ restored: true, episodesRestored: 1, reassignedIssueCount: 1 });
+
+    const series = await seriesSvc.getSeries(s.id);
+    expect(series.arc.logline).toBe('original logline');
+    expect(series.seasons.map((x) => x.id)).toEqual([v1.id, v2.id]);
+    expect(series.seasons[0].synopsis).toBe('v1 synopsis');
+    // The minted volume is gone, so the episode it took has to come back with
+    // it — otherwise the rollback strands it in the ungrouped bucket.
+    expect((await issuesSvc.getIssue(e2.id)).seasonId).toBe(v2.id);
+    expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('e1 planning synopsis');
+  });
+
+  it('leaves a locked idea stage alone (the resolve pass never touched it)', async () => {
+    const { s, e1 } = await seedArc();
+    const snapshot = await planner.snapshotArcState(s.id);
+    await issuesSvc.updateStage(e1.id, 'idea', { input: 'user edit after the snapshot', locked: true });
+
+    const result = await planner.restoreArcState(s.id, snapshot);
+    expect(result.episodesRestored).toBe(0);
+    expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('user edit after the snapshot');
+  });
+
+  it('refuses a snapshot that belongs to another series, and a missing one', async () => {
+    const { s } = await seedArc();
+    const other = await planner.snapshotArcState((await seedArc()).s.id);
+    expect(await planner.restoreArcState(s.id, other)).toMatchObject({ restored: false });
+    expect(await planner.restoreArcState(s.id, null)).toMatchObject({ restored: false });
+    // Untouched by the refused restores.
+    expect((await seriesSvc.getSeries(s.id)).arc.logline).toBe('original logline');
+  });
+
+  it('snapshots by value — a later write cannot mutate what was captured', async () => {
+    const { s } = await seedArc();
+    const snapshot = await planner.snapshotArcState(s.id);
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'mutated', summary: 'mutated' } });
+    expect(snapshot.arc.logline).toBe('original logline');
+  });
+});
+
 describe('arcPlanner — shapeEpisodeResolutions', () => {
   it('keeps well-formed entries and drops malformed ones', () => {
     const out = planner.shapeEpisodeResolutions([
@@ -1001,6 +1294,10 @@ describe('arcPlanner — shapeEpisodeResolutions', () => {
   });
 });
 
+// Shared by every commitSeasonsWithRemap case below — they all commit a fresh
+// draft arc and vary only the seasons.
+const DRAFT_ARC = Object.freeze({ logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' });
+
 describe('arcPlanner — commitSeasonsWithRemap', () => {
   beforeEach(() => {
     fileStore.clear();
@@ -1023,7 +1320,7 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
       { id: 'sea-fresh-2', number: 2, title: 'Six Blocks Down', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 3, themes: [] },
     ];
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: freshSeasons,
     });
 
@@ -1043,7 +1340,7 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
 
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [{ ...oldS1, logline: 'updated' }],
     });
     expect(out.reassignedIssueCount).toBe(0);
@@ -1058,7 +1355,7 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
 
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [],
     });
     expect(out.reassignedIssueCount).toBe(1);
@@ -1125,6 +1422,31 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
     });
     expect(out.series.arc.logline).toBe('latest locked logline');
     expect(out.series.arc.summary).toBe('incoming summary');
+  });
+
+  it('self-heals a pre-existing duplicate volume number and keeps its episodes attached', async () => {
+    const s = await setupSeries();
+    const keep = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Salt at the Root', episodeCountTarget: 12 });
+    const dupe = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Salt at the Root', episodeCountTarget: 12 });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: keep.id, title: 'Ep 1' });
+    // An episode stranded under the duplicate must follow the survivor, not
+    // fall into the ungrouped bucket.
+    const i2 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: dupe.id, title: 'Stranded' });
+
+    const cur = await seriesSvc.getSeries(s.id);
+    expect(cur.seasons).toHaveLength(2);
+
+    // A perfectly ordinary arc write — the heal rides along with it.
+    const out = await planner.commitSeasonsWithRemap(
+      cur,
+      { arc: DRAFT_ARC, seasons: cur.seasons },
+      { preserveDroppedSeasons: true },
+    );
+
+    expect(out.series.seasons).toHaveLength(1);
+    expect(out.series.seasons[0].id).toBe(keep.id);
+    expect((await issuesSvc.getIssue(i1.id)).seasonId).toBe(keep.id);
+    expect((await issuesSvc.getIssue(i2.id)).seasonId).toBe(keep.id);
   });
 });
 
@@ -1194,7 +1516,7 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     await seasonsSvc.updateSeason(s.id, s1.id, { locked: true });
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [
         // LLM tries to rewrite the locked season's content under the same id.
         { id: s1.id, number: 1, title: 'LLM rewrite', logline: 'LLM logline', synopsis: 'LLM synopsis', endingHook: '', episodeCountTarget: 9, themes: [] },
@@ -1215,7 +1537,7 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: s1.id, title: 'Pilot' });
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       // LLM proposed dropping the locked season entirely.
       seasons: [],
     });
@@ -1232,7 +1554,7 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     const unlocked = await seasonsSvc.createSeason(s.id, { title: 'Editable', episodeCountTarget: 4, number: 2 });
     const cur = await seriesSvc.getSeries(s.id);
     const out = await planner.commitSeasonsWithRemap(cur, {
-      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      arc: DRAFT_ARC,
       seasons: [
         { id: locked.id, number: 1, title: 'LLM rewrite of frozen', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 1, themes: [] },
         { id: unlocked.id, number: 2, title: 'Editable v2', logline: 'updated', synopsis: '', endingHook: '', episodeCountTarget: 5, themes: [] },
@@ -1244,6 +1566,205 @@ describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
     expect(frozenAfter.locked).toBe(true);
     expect(editableAfter.title).toBe('Editable v2');
     expect(editableAfter.episodeCountTarget).toBe(5);
+  });
+
+  // `preserveDroppedSeasons` — the autopilot's unlock-for-run mode clears the
+  // per-season locks above, so this is what keeps a rewrite from DELETING a
+  // volume once they're gone.
+  it('keeps an UNLOCKED season the rewrite dropped, and still applies rewrites to survivors', async () => {
+    const s = await setupSeries();
+    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
+    const kept = await seasonsSvc.createSeason(s.id, { title: 'Old title', episodeCountTarget: 3, number: 2 });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: dropped.id, title: 'Pilot' });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: DRAFT_ARC,
+      seasons: [{ id: kept.id, number: 2, title: 'New title', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 4, themes: [] }],
+    }, { preserveDroppedSeasons: true });
+    expect(out.series.seasons.map((x) => x.id)).toContain(dropped.id);
+    expect(out.series.seasons.find((x) => x.id === kept.id).title).toBe('New title');
+    // The dropped volume's issue stays attached — nothing was reassigned away.
+    expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(dropped.id);
+  });
+
+  // Regression: preserved records must survive `sanitizeSeasonList`'s
+  // first-N cap. Appending them meant a rewrite returning a full cap's worth of
+  // brand-new volumes pushed every existing volume past the cap, the sanitizer
+  // dropped them, and the remap then reassigned their issues — the exact
+  // deletion `preserveDroppedSeasons` exists to refuse.
+  it('keeps existing volumes when the rewrite returns a full cap of brand-new ones', async () => {
+    const s = await setupSeries();
+    const existing = await seasonsSvc.createSeason(s.id, { title: 'Must survive', episodeCountTarget: 3, number: 1 });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: existing.id, title: 'Pilot' });
+    const cur = await seriesSvc.getSeries(s.id);
+    // SEASONS_PER_SERIES_MAX brand-new volumes, none reusing the existing id.
+    const flood = Array.from({ length: 50 }, (_, i) => ({
+      id: `sea-new-${i}`, number: i + 10, title: `New ${i}`,
+      logline: '', synopsis: '', endingHook: '', episodeCountTarget: 3, themes: [],
+    }));
+    const out = await planner.commitSeasonsWithRemap(cur, { arc: DRAFT_ARC, seasons: flood }, { preserveDroppedSeasons: true });
+    expect(out.series.seasons.map((x) => x.id)).toContain(existing.id);
+    // Its issue was never reassigned to a surviving volume.
+    expect(await issuesSvc.getIssue(i1.id).then((i) => i.seasonId)).toBe(existing.id);
+  });
+
+  it('still drops an unlocked season when the flag is off (default behavior unchanged)', async () => {
+    const s = await setupSeries();
+    const dropped = await seasonsSvc.createSeason(s.id, { title: 'Would vanish', episodeCountTarget: 3, number: 1 });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, { arc: DRAFT_ARC, seasons: [] });
+    expect(out.series.seasons.map((x) => x.id)).not.toContain(dropped.id);
+  });
+});
+
+// Non-destructive guarantee behind the autopilot's unlock-for-run mode: once
+// that pass clears the per-season locks, nothing else stops an LLM-proposed arc
+// from deleting a volume — so the commit re-inserts dropped records while still
+// applying content rewrites to the ones that survived.
+describe('arcPlanner — preserveDroppedSeasonRecords', () => {
+  const { preserveDroppedSeasonRecords } = planner.__testing;
+
+  it('re-appends a dropped season without freezing the ones that survived', () => {
+    const current = [{ id: 'sea-a', number: 1, title: 'Drop me' }, { id: 'sea-b', number: 2, title: 'Old' }];
+    const next = [{ id: 'sea-b', number: 2, title: 'Rewritten' }];
+    const merged = preserveDroppedSeasonRecords(current, next);
+    expect(merged).toHaveLength(2);
+    expect(merged.find((s) => s.id === 'sea-b').title).toBe('Rewritten');
+    expect(merged.find((s) => s.id === 'sea-a')).toBe(current[0]);
+  });
+
+  it('returns next untouched when nothing was dropped', () => {
+    const current = [{ id: 'sea-a', number: 1 }];
+    const next = [{ id: 'sea-a', number: 1, title: 'x' }];
+    expect(preserveDroppedSeasonRecords(current, next)).toBe(next);
+  });
+
+  it('is a no-op for a missing/empty current list or a non-array next', () => {
+    const next = [{ id: 'a' }];
+    expect(preserveDroppedSeasonRecords([], next)).toBe(next);
+    expect(preserveDroppedSeasonRecords(null, next)).toBe(next);
+    expect(preserveDroppedSeasonRecords([{ id: 'a' }], null)).toBeNull();
+  });
+});
+
+// The duplicate-volume divergence (2026-08-09): auto-resolve returned a
+// rewritten Volume 1 without echoing its id, `preserveDroppedSeasons` re-inserted
+// the original alongside the mint, and arc-verify filed "three records numbered
+// 1" as a blocking finding — one MORE finding than the round started with, every
+// round, until the autopilot paused for no net progress.
+describe('arcPlanner — matchProposedSeasons', () => {
+  const { matchProposedSeasons } = planner.__testing;
+  const existing = [
+    { id: 'sea-a', number: 1, title: 'Salt at the Root' },
+    { id: 'sea-b', number: 2, title: 'Six Blocks Down' },
+  ];
+
+  it('matches an id-less rewrite to the existing record by title', () => {
+    const matched = matchProposedSeasons(existing, [
+      { number: 1, title: 'salt at the ROOT  ', synopsis: 'rewritten' },
+    ]);
+    expect(matched[0]).toBe(existing[0]);
+  });
+
+  it('matches by number when the title was rewritten too', () => {
+    const matched = matchProposedSeasons(existing, [{ number: 2, title: 'A New Name' }]);
+    expect(matched[0]).toBe(existing[1]);
+  });
+
+  it('lets an id-carrying proposal win its own record over a same-titled sibling', () => {
+    // Greedy single-pass matching would let the title-only proposal claim
+    // sea-a first, forcing the id-carrying one to mint a duplicate.
+    const matched = matchProposedSeasons(existing, [
+      { number: 1, title: 'Salt at the Root' },
+      { id: 'sea-a', number: 1, title: 'Salt at the Root' },
+    ]);
+    expect(matched[1]).toBe(existing[0]);
+    expect(matched[0]).toBeNull();
+  });
+
+  it('leaves a genuinely new volume unmatched so it mints', () => {
+    expect(matchProposedSeasons(existing, [{ number: 3, title: 'Brand New' }])).toEqual([null]);
+  });
+
+  it('refuses an ambiguous number match', () => {
+    const dupes = [
+      { id: 'sea-a', number: 1, title: 'One' },
+      { id: 'sea-b', number: 1, title: 'Two' },
+    ];
+    expect(matchProposedSeasons(dupes, [{ number: 1, title: 'Neither' }])).toEqual([null]);
+  });
+
+  it('tolerates missing/empty inputs', () => {
+    expect(matchProposedSeasons(null, [{ number: 1 }])).toEqual([null]);
+    expect(matchProposedSeasons(existing, null)).toEqual([]);
+  });
+});
+
+describe('arcPlanner — collapseDuplicateSeasonNumbers', () => {
+  const { collapseDuplicateSeasonNumbers, hasDuplicateSeasonNumbers } = planner.__testing;
+
+  it('detects duplicate numbers', () => {
+    expect(hasDuplicateSeasonNumbers([{ number: 1 }, { number: 2 }])).toBe(false);
+    expect(hasDuplicateSeasonNumbers([{ number: 1 }, { number: 1 }])).toBe(true);
+    expect(hasDuplicateSeasonNumbers(null)).toBe(false);
+  });
+
+  it('keeps the record holding the episodes and reports the absorbed ids', () => {
+    // The live shape: the original carries the 12 episodes, the two mints are
+    // newer and empty.
+    const seasons = [
+      { id: 'sea-orig', number: 1, title: 'V1', createdAt: '2026-05-11T00:00:00.000Z', updatedAt: '2026-05-11T00:00:00.000Z', synopsis: 'original', themes: ['t'] },
+      { id: 'sea-dup1', number: 1, title: 'V1', createdAt: '2026-08-09T14:25:00.000Z', updatedAt: '2026-08-09T14:25:00.000Z', synopsis: 'rev a', themes: [] },
+      { id: 'sea-dup2', number: 1, title: 'V1', createdAt: '2026-08-09T14:30:00.000Z', updatedAt: '2026-08-09T14:30:00.000Z', synopsis: 'rev b', themes: [] },
+    ];
+    const { seasons: out, absorbed } = collapseDuplicateSeasonNumbers(
+      seasons,
+      new Map([['sea-orig', 12]]),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('sea-orig');
+    expect(out[0].synopsis).toBe('original'); // never clobbered by a duplicate
+    expect([...absorbed]).toEqual([['sea-dup1', 'sea-orig'], ['sea-dup2', 'sea-orig']]);
+  });
+
+  it('back-fills only fields the survivor left empty, newest duplicate first', () => {
+    const seasons = [
+      { id: 'sea-orig', number: 1, title: 'V1', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', synopsis: '', endingHook: 'keep me', themes: [] },
+      { id: 'sea-old', number: 1, title: 'V1', createdAt: '2026-02-01T00:00:00.000Z', updatedAt: '2026-02-01T00:00:00.000Z', synopsis: 'stale', endingHook: 'drop me', themes: ['old'] },
+      { id: 'sea-new', number: 1, title: 'V1', createdAt: '2026-03-01T00:00:00.000Z', updatedAt: '2026-03-01T00:00:00.000Z', synopsis: 'freshest', endingHook: 'drop me too', themes: ['new'] },
+    ];
+    const { seasons: out } = collapseDuplicateSeasonNumbers(seasons, new Map([['sea-orig', 3]]));
+    expect(out[0].id).toBe('sea-orig');
+    expect(out[0].synopsis).toBe('freshest');
+    expect(out[0].endingHook).toBe('keep me');
+    expect(out[0].themes).toEqual(['new']);
+  });
+
+  it('prefers a locked record over a better-populated unlocked one', () => {
+    const seasons = [
+      { id: 'sea-loose', number: 1, title: 'V1', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'sea-locked', number: 1, title: 'V1', locked: true, createdAt: '2026-02-01T00:00:00.000Z' },
+    ];
+    const { seasons: out, absorbed } = collapseDuplicateSeasonNumbers(seasons, new Map([['sea-loose', 9]]));
+    expect(out[0].id).toBe('sea-locked');
+    expect(absorbed.get('sea-loose')).toBe('sea-locked');
+  });
+
+  it('leaves a group with two locked records intact rather than deleting a frozen volume', () => {
+    const seasons = [
+      { id: 'sea-l1', number: 1, title: 'V1', locked: true },
+      { id: 'sea-l2', number: 1, title: 'V1', locked: true },
+    ];
+    const { seasons: out, absorbed } = collapseDuplicateSeasonNumbers(seasons, new Map());
+    expect(out).toHaveLength(2);
+    expect(absorbed.size).toBe(0);
+  });
+
+  it('leaves a clean list untouched and keeps number ordering', () => {
+    const seasons = [{ id: 'b', number: 2 }, { id: 'a', number: 1 }];
+    const { seasons: out, absorbed } = collapseDuplicateSeasonNumbers(seasons, new Map());
+    expect(out.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(absorbed.size).toBe(0);
   });
 });
 

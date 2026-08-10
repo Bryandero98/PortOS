@@ -154,6 +154,16 @@ export async function createImageGenVenv() {
 // Video gen
 export const getVideoGenStatus = (options = {}) => request('/video-gen/status', options);
 export const listVideoModels = (options) => request('/video-gen/models', options);
+// Install-wide acknowledgement of a restricted model's reviewed license, keyed
+// by the exact `termsGate.id`. Persisted server-side so accepting once (on any
+// render surface) authorizes every other one, including background producers.
+// Both return `{ accepted: [termsId, ...] }`.
+export const getVideoModelTerms = (options = {}) => request('/video-gen/model-terms', options);
+export const setVideoModelTerms = (termsId, accepted, options = {}) => request('/video-gen/model-terms', {
+  method: 'POST',
+  body: JSON.stringify({ termsId, accepted }),
+  ...options,
+});
 // `{ models: [...], textEncoder: { repo, cached, sizeBytes } }`. Same shape
 // contract as the image variant + a text-encoder block since the active
 // encoder is a separate multi-GB pull.

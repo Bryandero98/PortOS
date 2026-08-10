@@ -172,7 +172,7 @@ PortOS no longer falls back silently, so a misconfigured app now surfaces as one
 |---|---|
 | `❌ Workspace path does not exist: <path>` (run fails immediately) | The Repository Path points somewhere that isn't there. Fix it in Apps and re-run. |
 | `❌ Workspace path is not a directory: <path>` | The Repository Path points at a file. Set it to the repo folder. |
-| `❌ App '<id>' has no usable Repository Path` (CoS task is **blocked**, no agent starts) | The app record has an empty Repository Path, or couldn't be found at all. Set it in Apps, then re-run the task. |
+| `❌ App '<id>' didn't resolve to a repository directory` (CoS task is **blocked**, no agent starts) | The app record has an empty Repository Path, or nothing in Apps matches that id/name at all. Set the path in Apps — or clear the app from the task if it doesn't belong to one — then re-run it. The task stays in **Blocked** until you do. |
 
 **Note for Windows**: use a real filesystem path with a drive letter (`C:\...`). Both `C:\Users\...` and `C:/Users/...` work, as does a leading `~`; a path inside OneDrive-redirected folders is fine as long as it exists locally.
 

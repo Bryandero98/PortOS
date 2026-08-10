@@ -234,6 +234,27 @@ describe('completeAgent budget-ledger ordering (#1683)', () => {
     consoleSpy.mockRestore();
   });
 
+  it('does not charge stats.errors for a record retired by a resume', async () => {
+    // `resumeAgent` retires a PAUSED record here so it stops showing as paused. The
+    // run wasn't a failure — the user paused it and its task is already requeued, so
+    // the continuation lands in one of these counters itself. Counting it reports an
+    // error the user caused deliberately and never saw.
+    mockCosState.state.agents['agent-resumed'] = {
+      id: 'agent-resumed', status: 'paused', metadata: { taskType: 'user' }
+    };
+    mockCosState.state.agents['agent-failed'] = {
+      id: 'agent-failed', status: 'running', metadata: { taskType: 'user' }
+    };
+
+    await completeAgent('agent-resumed', { success: false, resumed: true, resumedTaskId: 'task-abc' });
+    expect(mockCosState.state.stats.errors).toBe(0);
+    expect(mockCosState.state.agents['agent-resumed'].status).toBe('completed');
+
+    // An ordinary failure still counts.
+    await completeAgent('agent-failed', { success: false, exitCode: 1 });
+    expect(mockCosState.state.stats.errors).toBe(1);
+  });
+
   it('skips usage accounting for user tasks but still emits agent:completed', async () => {
     const agentId = 'agent-user';
     mockCosState.state.agents[agentId] = {

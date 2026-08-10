@@ -12,6 +12,68 @@
 // see the hint under the Frames dropdown.
 export const FRAME_OPTIONS = [25, 49, 73, 97, 121, 145, 169, 193, 217, 241, 265, 313, 361, 481];
 export const FPS_OPTIONS = [16, 24, 30];
+// Chain ceiling — mirrors the route's own 1..8 cap on `chunks` (and on the
+// per-chunk prompt list), which bounds worst-case wall time at 8 × ~5min.
+// Exported so the Chunks picker and the Remix restore can't drift from it.
+export const MAX_CHUNKS = 8;
+export const CHUNK_OPTIONS = Array.from({ length: MAX_CHUNKS }, (_, i) => i + 1);
+
+// Continuation context window — how many of the prior chunk's frames each
+// subsequent chunk conditions on. Display-side mirror of
+// `server/lib/videoContinuity.js` (which stays the authority: it defaults,
+// clamps, and picks the strategy). Pinned against drift by
+// `server/lib/videoContinuity.parity.test.js`.
+//
+// `0` is a real option, not "unset" — it opts back into seeding the next chunk
+// from a single extracted last frame, which is what every runtime without an
+// extend pipeline does anyway.
+export const DEFAULT_CONTEXT_FRAMES = 22;
+export const CONTEXT_FRAME_OPTIONS = [0, 11, 22, 45, 73];
+// Only a runtime with a video-conditioned extend pipeline can use a window;
+// elsewhere the server ignores the value, so the control stays hidden rather
+// than offering a knob that does nothing.
+export const supportsContextWindow = (model) => model?.runtime === 'ltx2';
+export const WAN_FRAME_OPTIONS = [...new Set([
+  ...FRAME_OPTIONS,
+  41, 61, 81, 101, 161, 201, 321,
+])].sort((a, b) => a - b);
+
+export const isValidFrameCountForModel = (value, model) => {
+  const frames = Number(value);
+  if (Array.isArray(model?.frameOptions) && model.frameOptions.length > 0) {
+    return Number.isInteger(frames) && model.frameOptions.includes(frames);
+  }
+  const stride = Number(model?.frameStride);
+  return Number.isInteger(frames) && frames > 0
+    && Number.isFinite(stride) && stride > 0
+    && (frames - 1) % stride === 0;
+};
+export const frameOptionsForModel = (model, currentValue = null) => {
+  const options = Array.isArray(model?.frameOptions) && model.frameOptions.length > 0
+    ? model.frameOptions
+    : Number(model?.frameStride) === 4 ? WAN_FRAME_OPTIONS : FRAME_OPTIONS;
+  const frames = Number(currentValue);
+  return isValidFrameCountForModel(frames, model) && !options.includes(frames)
+    ? [...options, frames].sort((a, b) => a - b)
+    : options;
+};
+export const fpsOptionsForModel = (model) => Array.isArray(model?.fpsOptions) && model.fpsOptions.length > 0
+  ? model.fpsOptions
+  : FPS_OPTIONS;
+const nearestOption = (value, options) => options.reduce(
+  (best, option) => Math.abs(option - Number(value)) < Math.abs(best - Number(value)) ? option : best,
+  options[0],
+);
+export const normalizeFramesForModel = (value, model) => isValidFrameCountForModel(value, model)
+  ? Number(value)
+  : nearestOption(value, frameOptionsForModel(model));
+export const normalizeFpsForModel = (value, model) => nearestOption(value, fpsOptionsForModel(model));
+
+// One capability predicate for both the Advanced audio controls and prompt
+// shaping. A model that cannot disable its jointly-generated audio (MiniMax
+// H3) also cannot honor LTX's "No music" prompt-envelope control; hidden state
+// must never continue altering the payload after a model switch.
+export const supportsVideoAudioControls = (model) => model?.supportsDisableAudio !== false;
 
 // Per-edge bounds for video: mirrors the videoGen route (64..2048) and the
 // server's floor-to-multiple-of-64 (generateVideo in local.js). Shared by the
@@ -20,12 +82,12 @@ export const FPS_OPTIONS = [16, 24, 30];
 export const VIDEO_EDGE_BOUNDS = { min: 64, max: 2048, step: 64 };
 
 // Resolve a video model's memory footprint in GB. Prefers the explicit
-// `memoryGb` field, falling back to a "~NN GB" hint in the display name, then
+// `memoryGb` field, falling back to a "~NN GB/GiB" hint in the display name, then
 // +Infinity so an unknown model never spuriously "fits" a memory budget.
 export const videoModelMemoryGb = (model) => {
   const explicit = Number(model?.memoryGb);
   if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  const match = String(model?.name || '').match(/~\s*(\d+(?:\.\d+)?)\s*GB/i);
+  const match = String(model?.name || '').match(/~\s*(\d+(?:\.\d+)?)\s*Gi?B/i);
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 };
 
@@ -118,14 +180,16 @@ export const icResolutionIssue = (spec, width, height) => {
   return `${spec.label} mode needs a resolution divisible by ${scale} (its reference encoder downscales by ${scale}); got ${width}×${height}.`;
 };
 
-// Mode-compatibility predicate for the Model dropdown. a2v and the IC-LoRA
-// remix modes require the ltx2 runtime (dgrauet's pipeline) — the legacy
-// mlx_video pipeline has no audio-conditioned mode and no IC pipeline, and
-// Wan/Hunyuan don't either. Server enforces the same rules in
-// routes/videoGen.js (A2V_REQUIRES_LTX2 / IC_LORA_REQUIRES_LTX2); filtering
-// client-side keeps the dropdown honest so the user can't pick a doomed model.
+// The one mode-compatibility predicate — used by the Model dropdown and by
+// every "can this model do i2v?" gate on the page. a2v and the IC-LoRA remix
+// modes stay runtime-gated because they're ltx2 pipeline capabilities rather
+// than per-entry facts (the remix ids come from the IC-LoRA weight registry);
+// the server enforces the same rules in routes/videoGen.js (A2V_REQUIRES_LTX2 /
+// IC_LORA_REQUIRES_LTX2). Every other mode is answered by `supportedModes`,
+// which the server resolves for EVERY entry (server/lib/videoModeProfiles.js,
+// #3737), so an absent list means the payload didn't come from the registry.
 export const isModelAllowedForMode = (model, mode) => {
   if (!model) return false;
   if (mode === 'a2v' || isIcLoraMode(mode)) return model.runtime === 'ltx2';
-  return true;
+  return Array.isArray(model.supportedModes) && model.supportedModes.includes(mode);
 };

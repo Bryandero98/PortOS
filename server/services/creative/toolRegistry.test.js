@@ -340,6 +340,20 @@ describe('budget charging', () => {
     expect(recordDomainUsage).not.toHaveBeenCalled();
   });
 
+  // `unlockForRun` clears locks the user set BY HAND. It is per-run-only and
+  // unticked on every render precisely so a human arms it each time — an LLM
+  // agent picking it out of this tool's free-form `options` passthrough would
+  // be exactly the unattended lock-clearing the option is designed to prevent.
+  it('strips unlockForRun from the autopilot options an agent passes, keeping the rest', async () => {
+    setMode('execute');
+    const out = await dispatchCreativeTool('pipeline_startSeriesAutopilot', {
+      seriesId: 'ser1',
+      options: { unlockForRun: true, includeVisual: true },
+    });
+    expect(out.ok).toBe(true);
+    expect(startSeriesAutopilot).toHaveBeenCalledWith('ser1', { includeVisual: true });
+  });
+
   // #2220 — the cover-render tools wrap the shared render+persist service so an
   // orchestrated cover completes like a user-driven one; they charge as renders.
   it('dispatches pipeline_renderComicCover through the shared render service and charges one render action', async () => {

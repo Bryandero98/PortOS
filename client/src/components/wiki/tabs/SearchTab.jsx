@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import * as api from '../../../services/api';
 import { Search, FileText, X, RefreshCw, Tag } from 'lucide-react';
+import OfflineNotesNotice from '../../OfflineNotesNotice.jsx';
 
 export default function SearchTab({ vaultId }) {
   const navigate = useNavigate();
@@ -56,6 +57,7 @@ export default function SearchTab({ vaultId }) {
       {/* Results */}
       {results && (
         <div>
+          <OfflineNotesNotice count={results.skippedUnavailable} className="mb-3" />
           <div className="text-sm text-gray-500 mb-3">
             {results.total} result{results.total !== 1 ? 's' : ''} for &ldquo;{results.query}&rdquo;
           </div>

@@ -25,12 +25,25 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
-import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x, extractEvaluationFrames } from '../../lib/ffmpeg.js';
+import {
+  findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x,
+  extractEvaluationFrames, probeFrameCount, trimVideoFromFrame,
+  hasAudioStream, buildTrimConcatArgs,
+} from '../../lib/ffmpeg.js';
+import {
+  resolveContextFrames, resolveContinuityStrategy, extendLatentFrames,
+  contextPrefixFrames, tailWindowStartFrame,
+} from '../../lib/videoContinuity.js';
 import { hfChildEnv } from '../../lib/hfToken.js';
+import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
-import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath } from './generateVideoHelpers.js';
+import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename } from '../loras.js';
 import { isMlxVideoLtxLoraCapable } from '../../lib/runners.js';
+import {
+  isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
+} from '../../lib/videoDisclosure.js';
+import { getSettings } from '../settings.js';
 import {
   isIcLoraMode, icLoraSpecForMode, resolveIcLoraWeight,
   assertIcReferenceCount, icResolutionIssue,
@@ -40,20 +53,26 @@ import {
   LTX2_HELPER_SCRIPT,
   WAN22_VENV_PYTHON,
   WAN22_HELPER_SCRIPT,
-  WAN22_REPO_DIR,
+  MINIMAX_H3_VENV_PYTHON,
+  MINIMAX_H3_HELPER_SCRIPT,
+  MINIMAX_H3_REPO_DIR,
+  MINIMAX_H3_EXPECTED_REVISION,
   HUNYUAN_VENV_PYTHON,
   HUNYUAN_HELPER_SCRIPT,
   HUNYUAN_REPO_DIR,
   BYOV_RUNTIME_INFO,
   BYOV_VIDEO_RUNTIMES,
+  modelAnchorsLastFrame,
   assertByovRuntimeInstalled,
   invalidateByovReadyCache,
   pickDeathFingerprint,
 } from './runtimes.js';
 import { loadHistory, saveHistory, mutateVideoHistory } from './history.js';
+import { videoModeContractError, videoChainUnsupportedError, VIDEO_MODE_GATED_RUNTIMES } from './modeContract.js';
 // Re-export the extracted runtime + history surface so existing deep imports
 // (`from '../videoGen/local.js'`) keep resolving every symbol they used to.
 export * from './runtimes.js';
+export * from './modeContract.js';
 export { loadHistory, saveHistory, mutateVideoHistory };
 
 // LoRA wrapper for the notapalindrome `mlx_video` runtime. The stock
@@ -132,7 +151,11 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 export const resolveVideoModel = (modelId) =>
   getVideoModels().find((m) => m.id === modelId) || VIDEO_MODELS[modelId] || null;
 
-export const listVideoModels = () => getVideoModels();
+// Decorated with the one runtime capability the client can't derive: whether an
+// FFLF last frame is a real anchor. Declared in runtimes.js, surfaced here so
+// the Video Gen form reads it off the model instead of keeping its own list.
+export const listVideoModels = () => getVideoModels()
+  .map((m) => ({ ...m, lastFrameAnchored: modelAnchorsLastFrame(m) }));
 
 export const defaultVideoModelId = () => getDefaultVideoModelId();
 
@@ -492,12 +515,11 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
   }
   if (helperMode === 'extend') {
     args.push('--extend-from-video', extendFromVideoPath);
-    // Translate the user's requested numFrames into a latent-frame count
-    // for ExtendPipeline. 1 latent ≈ 8 pixel frames, with no leading +1
-    // because the source already supplies the anchor frame. Floor at 1
-    // so a too-small numFrames still produces something.
-    const extendLatents = Math.max(1, Math.floor(Number(numFrames) / 8));
-    args.push('--extend-frames', String(extendLatents));
+    // Translate the user's requested numFrames into a latent-frame count for
+    // ExtendPipeline. Shared with the chain orchestrator, which needs the same
+    // number to work out how much of the render is echoed source (see
+    // `lib/videoContinuity.js`) — the two MUST agree or the trim is wrong.
+    args.push('--extend-frames', String(extendLatentFrames(numFrames)));
     args.push('--extend-direction', 'after');
   }
   if (helperMode === 'a2v') {
@@ -517,37 +539,143 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
   return { bin: LTX2_VENV_PYTHON, args };
 };
 
-// Build args for the Wan 2.2 MLX helper. The helper subprocesses upstream
-// `generate.py` from the cloned osama-ata/Wan2.2-mlx repo. The wrapper
-// translates PortOS's stable arg surface (prompt, output, image) into
-// upstream's --task / --size / --ckpt_dir form so PortOS releases don't
-// fight upstream CLI changes.
-const buildWan22Args = ({ model, prompt, width, height, numFrames, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
+// The render-side adapter for the shared mode/source contract: `prepareParams`
+// wants the error value (it unlinks staged uploads first), this path just
+// throws, and it names its inputs by resolved path rather than by presence.
+// EVERY gated runtime goes through here — do not re-type a mode rule.
+const assertRenderModeContract = ({
+  model, mode, sourceImagePath, lastImagePath, keyframes,
+  extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths,
+}) => {
+  const err = videoModeContractError({
+    model,
+    mode,
+    hasFirstImage: !!sourceImagePath,
+    hasLastImage: !!lastImagePath,
+    keyframes,
+    extendFromVideo: extendFromVideoPath,
+    audioFile: audioFilePath,
+    audioStartSec,
+    icReferences: icReferencePaths,
+  });
+  if (err) throw err;
+};
+
+// Build args for the pinned MLX-Gen Wan CLI. The helper itself never downloads:
+// all base + profile weights must already be present through the UI flow.
+const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
   assertByovRuntimeInstalled('wan22');
+  const requestedMode = mode || (sourceImagePath ? 'image' : 'text');
+  assertRenderModeContract({ model, mode, sourceImagePath });
   const args = [
     WAN22_HELPER_SCRIPT,
-    '--repo-dir', WAN22_REPO_DIR,
-    '--task', model.mode === 'i2v' ? 'i2v-A14B' : 't2v-A14B',
-    '--model-repo', model.repo,
+    '--model-repo', wanModelPath,
     '--prompt', prompt,
     '--width', String(width),
     '--height', String(height),
     '--num-frames', String(numFrames),
+    '--fps', String(fps),
     '--steps', String(steps),
     '--guidance', String(guidance ?? 5.0),
     '--seed', String(seed),
     '--output', outputPath,
   ];
-  if (model.mode === 'i2v') {
-    if (!sourceImagePath) {
-      throw new ServerError(
-        'Wan 2.2 i2v requires a source image — upload one before running this model.',
-        { status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' },
-      );
-    }
-    args.push('--image', sourceImagePath);
+  if (negativePrompt) args.push('--negative-prompt', negativePrompt);
+  if (model.guidance2 != null) args.push('--guidance-2', String(model.guidance2));
+  if (model.flowShift != null) args.push('--flow-shift', String(model.flowShift));
+  if (model.solver) args.push('--solver', model.solver);
+  // The contract above already rejected image mode without a source.
+  if (requestedMode === 'image') args.push('--image', sourceImagePath);
+  for (const weight of wanRequiredWeights) {
+    args.push('--lora-path', weight.path);
+    args.push('--lora-target-role', weight.role);
   }
   return { bin: WAN22_VENV_PYTHON, args };
+};
+
+// Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
+// only exact, already-cached HF revisions; every network download remains an
+// explicit Video Gen UI action guarded by the model's terms acknowledgement.
+const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath }) => {
+  assertByovRuntimeInstalled('minimax_h3');
+  assertRenderModeContract({
+    model,
+    mode,
+    sourceImagePath,
+    lastImagePath,
+    keyframes,
+    extendFromVideoPath,
+    audioFilePath,
+    audioStartSec,
+    icReferencePaths,
+  });
+  if (negativePrompt?.trim()) {
+    throw new ServerError(
+      'MiniMax H3 is CFG-distilled and does not accept a negative prompt.',
+      { status: 400, code: 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED' },
+    );
+  }
+  if (disableAudio) {
+    throw new ServerError(
+      'MiniMax H3 jointly generates video and audio; its audio track cannot be disabled.',
+      { status: 400, code: 'MINIMAX_H3_AUDIO_REQUIRED' },
+    );
+  }
+  if (tiling && tiling !== 'auto') {
+    throw new ServerError(
+      'MiniMax H3 does not expose a tiling mode.',
+      { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
+    );
+  }
+  if (!Array.isArray(model.frameOptions) || !model.frameOptions.includes(Number(numFrames))) {
+    throw new ServerError(
+      `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${numFrames}.`,
+      { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
+    );
+  }
+  if (Number(fps) !== 24) {
+    throw new ServerError(
+      `MiniMax H3 runs at a fixed 24 fps; got ${fps}.`,
+      { status: 400, code: 'MINIMAX_H3_INVALID_FPS' },
+    );
+  }
+  if (typeof model.repo !== 'string' || typeof model.revision !== 'string') {
+    throw new ServerError(
+      `MiniMax H3 model "${model.id}" is missing its pinned transformer repo or revision.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const checkpoint = Array.isArray(model.requiredWeights) ? model.requiredWeights[0] : null;
+  const files = Array.isArray(checkpoint?.files) ? checkpoint.files : [];
+  if (!checkpoint?.repo || !checkpoint?.revision || files.length === 0) {
+    throw new ServerError(
+      `MiniMax H3 model "${model.id}" is missing its pinned upstream checkpoint files.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const args = [
+    MINIMAX_H3_HELPER_SCRIPT,
+    '--runtime-dir', MINIMAX_H3_REPO_DIR,
+    '--runtime-revision', MINIMAX_H3_EXPECTED_REVISION,
+    '--model-repo', model.repo,
+    '--model-revision', model.revision,
+    '--checkpoint-repo', checkpoint.repo,
+    '--checkpoint-revision', checkpoint.revision,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--steps', String(steps),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  for (const file of files) args.push('--checkpoint-file', file);
+  // Anchor order is packed order: the helper stretches the FIRST keyframe onto
+  // the canvas as the geometry anchor, so a first-frame image must lead.
+  if (sourceImagePath) args.push('--image', sourceImagePath, '--anchor', 'first');
+  if (lastImagePath) args.push('--image', lastImagePath, '--anchor', 'last');
+  return { bin: MINIMAX_H3_VENV_PYTHON, args };
 };
 
 // Allowed precision tokens for runners that expose dtype as a CLI flag. The
@@ -588,7 +716,7 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
@@ -622,7 +750,10 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
     );
   }
   if (model.runtime === 'wan22') {
-    return buildWan22Args({ model, prompt, width, height, numFrames, steps, guidance, seed, sourceImagePath, mode, outputPath });
+    return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
+  }
+  if (model.runtime === 'minimax_h3') {
+    return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath });
   }
   if (model.runtime === 'hunyuan') {
     return buildHunyuanArgs({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath });
@@ -717,7 +848,7 @@ export const DEFAULT_NUM_FRAMES = 121;
 // a still regardless of how many frames carry it.
 export const IC_STILL_REFERENCE_FRAMES = 9;
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = DEFAULT_NUM_FRAMES, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -727,6 +858,87 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   const model = resolveVideoModel(modelId);
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  // Final execution-boundary gate for a restricted model's license. Route
+  // preparation also rejects early, but internal producers, persisted jobs, and
+  // retries all reach this function directly — so authorization is resolved
+  // HERE, from the install's recorded acknowledgements, rather than trusted
+  // from a caller-supplied parameter. Read at execution time, so a withdrawn
+  // acknowledgement (or a license revision that mints a new id) fails a job
+  // that was queued while it was still accepted. Ungated models never pay for
+  // the settings read.
+  if (videoModelTermsGateId(model)
+    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
+    throw videoModelTermsError(model);
+  }
+  // Validate the mode contract before cache lookups, image resize, or staging
+  // work. Internal producers and persisted/retried jobs bypass route
+  // preparation, so silently dropping one of these inputs here would render a
+  // materially different video than the caller requested. Ungated runtimes
+  // (ltx2 / mlx_video / hunyuan) fall through untouched.
+  //
+  // Promote before checking: the route sets both fields, but a direct caller
+  // that only staged `uploadedTempPath` would otherwise pass the mode guard and
+  // then render text-only with its image dropped.
+  if (VIDEO_MODE_GATED_RUNTIMES.has(model.runtime)) sourceImagePath ||= uploadedTempPath;
+  assertRenderModeContract({
+    model,
+    mode,
+    sourceImagePath,
+    lastImagePath,
+    keyframes,
+    extendFromVideoPath,
+    audioFilePath,
+    audioStartSec,
+    icReferencePaths,
+  });
+  numFrames = numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
+  let wanModelPath = null;
+  const wanRequiredWeights = [];
+  if (model.runtime === 'wan22') {
+    const frameStride = Number(model.frameStride);
+    if (Number.isFinite(frameStride) && frameStride > 0 && (Number(numFrames) - 1) % frameStride !== 0) {
+      throw new ServerError(
+        `${model.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
+        { status: 400, code: 'WAN22_INVALID_FRAME_COUNT' },
+      );
+    }
+    if (typeof model.revision !== 'string' || !model.revision) {
+      throw new ServerError(
+        `Wan model "${modelId}" is missing an immutable Hugging Face revision.`,
+        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+      );
+    }
+    const baseCache = await inspectModelCache(model.repo, { revision: model.revision });
+    if (!baseCache.cached || !baseCache.snapshotPath) {
+      throw new ServerError(
+        `${model.name} revision ${model.revision.slice(0, 8)} is not fully cached. Download or repair it in Video Gen before rendering.`,
+        { status: 400, code: 'WAN22_MODEL_NOT_CACHED' },
+      );
+    }
+    wanModelPath = baseCache.snapshotPath;
+    for (const dep of Array.isArray(model.requiredWeights) ? model.requiredWeights : []) {
+      const files = Array.isArray(dep?.files) ? dep.files : [];
+      const roles = Array.isArray(dep?.targetRoles) ? dep.targetRoles : [];
+      if (!dep?.repo || !dep?.revision || files.length === 0 || files.length !== roles.length) {
+        throw new ServerError(
+          `Wan model "${modelId}" has an invalid requiredWeights entry.`,
+          { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+        );
+      }
+      const paths = await Promise.all(files.map((file) => findCachedRepoFile(
+        dep.repo, file, { revision: dep.revision },
+      )));
+      for (let i = 0; i < files.length; i += 1) {
+        if (!paths[i]) {
+          throw new ServerError(
+            `${model.name} is missing required weight ${files[i]}. Download or repair its dependencies in Video Gen.`,
+            { status: 400, code: 'WAN22_REQUIRED_WEIGHT_NOT_CACHED' },
+          );
+        }
+        wanRequiredWeights.push({ path: paths[i], role: roles[i] });
+      }
+    }
+  }
   // Only require the legacy mlx_video pythonPath when the chosen runtime
   // actually uses it. ltx2/wan22/hunyuan resolve their own venv path inside
   // buildArgs — gating them on the unrelated mlx_video setting locks users
@@ -781,8 +993,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const w = Math.floor(Number(width) / 64) * 64;
   const h = Math.floor(Number(height) / 64) * 64;
   const actualSeed = seed != null && seed !== '' ? Number(seed) : Math.floor(Math.random() * 2147483647);
-  let actualSteps = steps ? Number(steps) : model.steps;
-  let actualGuidance = guidanceScale != null && guidanceScale !== '' ? Number(guidanceScale) : model.guidance;
+  let actualSteps = model.samplerLocked ? model.steps : (steps ? Number(steps) : model.steps);
+  let actualGuidance = model.samplerLocked
+    ? model.guidance
+    : (guidanceScale != null && guidanceScale !== '' ? Number(guidanceScale) : model.guidance);
   // Opt-in T2V Standard two-stage perf experiment — overrides steps/guidance
   // (and adds an explicit stage-2 step count) only for a plain default text
   // render when PORTOS_T2V_TWO_STAGE is on. No-op otherwise.
@@ -818,8 +1032,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   //
   // Skip the last-image resize when buildArgs / the Python child won't
   // actually consume it:
-  //  - ltx2 true-FFLF consumes both --image and --last-image, so resize the
-  //    last frame even when a source image is also present.
+  //  - A last-frame-anchored runtime (see LAST_FRAME_ANCHORED_RUNTIMES) really
+  //    consumes both frames — ltx2 via --image/--last-image, MiniMax H3 via
+  //    --image/--anchor pairs — so resize the last frame even when a source
+  //    image is also present.
   //  - On macOS/mlx_video the FFLF fallback only consumes the last image when
   //    no source image is also provided (single conditioning frame only).
   //    Anything else is a no-op, so resizing is wasted ffmpeg work.
@@ -827,7 +1043,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   //    status, but the diffusers pipeline only reads --image — the script
   //    never opens the last-frame file, so no resize is needed there either.
   const lastImageWillBeUsed = !!lastImagePath && !IS_WIN && mode === 'fflf'
-    && (model.runtime === 'ltx2' || !sourceImagePath);
+    && (modelAnchorsLastFrame(model) || !sourceImagePath);
   // A non-null `keyframes` that ISN'T a length-≥2 array is malformed —
   // fail fast instead of silently dropping it (which would produce an
   // unexpected text/i2v render with the user's anchors ignored). The
@@ -856,10 +1072,17 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     }
     return { resolved: resizedPath, tempPath: resizedPath };
   };
-  const { resolved: resolvedSourceImage, tempPath: resizedSrcTempPath } = await resizeImage(sourceImagePath, 'src');
-  const { resolved: resolvedLastImage, tempPath: resizedLastTempPath } = lastImageWillBeUsed
-    ? await resizeImage(lastImagePath, 'last')
-    : { resolved: lastImagePath, tempPath: null };
+  // Two independent ffmpeg spawns — fan out for the same reason the keyframe
+  // loop below does, so a true-FFLF render doesn't pay them back to back.
+  const [
+    { resolved: resolvedSourceImage, tempPath: resizedSrcTempPath },
+    { resolved: resolvedLastImage, tempPath: resizedLastTempPath },
+  ] = await Promise.all([
+    resizeImage(sourceImagePath, 'src'),
+    lastImageWillBeUsed
+      ? resizeImage(lastImagePath, 'last')
+      : { resolved: lastImagePath, tempPath: null },
+  ]);
   // Resize each multi-keyframe image to the target resolution (the helper
   // requires exact W×H, same as i2v). Indices pass through unchanged.
   // Each ffmpeg subprocess is independent — fan out so 8 keyframes don't
@@ -991,6 +1214,23 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     // from `keyframes` even when caller omitted `mode`, so without this the
     // history entry would say 'text' for a multi-keyframe render.
     mode: mode || (hasMultiKeyframes ? 'fflf' : sourceImagePath ? 'image' : 'text'),
+    // Durable re-render provenance (#3696). `seed` above is ALWAYS the resolved
+    // seed (a caller-omitted seed was rolled into `actualSeed` before the child
+    // ever ran), so a random-seed render records the seed it actually used and
+    // a Finish re-render reproduces the same composition rather than re-rolling.
+    // `conditioning` inventories what else steered this render — empty means
+    // prompt + seed + dials are the whole input. `renderInputsVersion` is the
+    // marker that both are trustworthy; records without it are legacy and must
+    // not be assumed unconditioned. Neither field carries a staging path.
+    renderInputsVersion: RENDER_INPUTS_VERSION,
+    conditioning: describeRenderConditioning({
+      sourceImagePath: resolvedSourceImage,
+      lastImagePath: resolvedLastImage,
+      keyframes: resolvedKeyframes,
+      extendFromVideoPath,
+      audioFilePath,
+      icReferencePaths: resolvedIcReferencePaths,
+    }),
     // Stamp the experimental fast-path so A/B analysis can tell a two-stage
     // render apart from a user who happened to pick 8 steps — comparing it
     // against the default Standard render is the whole point of the knob.
@@ -1030,7 +1270,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
@@ -1061,13 +1301,24 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // python helpers can authenticate snapshot_download() against gated repos
   // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
   // a gated repo, but the merge is harmless when no token is configured.
-  const childEnv = await hfChildEnv();
+  const childEnv = model.runtime === 'minimax_h3'
+    ? safeChildProcessEnv()
+    : await hfChildEnv();
   delete childEnv.PYTHONPATH;
   // Force unbuffered Python I/O so tqdm + loguru + our own STAGE: prints flush
   // immediately. Without this, child stdio is line-buffered against a pipe and
   // long inference loops emit nothing to handleLine() for minutes — the UI
   // looks dead even when the model is making progress.
   childEnv.PYTHONUNBUFFERED = '1';
+  if (model.runtime === 'minimax_h3') {
+    // The H3 repositories are public and the runner is cache-only. Do not hand
+    // it an ambient saved HF credential it neither needs nor may transmit.
+    delete childEnv.HF_TOKEN;
+    delete childEnv.HUGGING_FACE_HUB_TOKEN;
+    childEnv.HF_HUB_DISABLE_IMPLICIT_TOKEN = '1';
+    childEnv.HF_HUB_OFFLINE = '1';
+    childEnv.TRANSFORMERS_OFFLINE = '1';
+  }
   // `spawnDetached` double-forks the render child so it reparents to init
   // (PPID=1) and leaves pm2's process tree — without this a `pm2 restart
   // portos-server` (e.g. on the memory ceiling) SIGINTs the in-flight render
@@ -1081,6 +1332,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     env: childEnv,
     controlDir: join(PATHS.videos, '.detached', jobId),
     cleanup: true,
+    killProcessGroup: model.runtime === 'wan22' || model.runtime === 'minimax_h3',
   });
   activeProcess = proc;
 
@@ -1323,7 +1575,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
             // disagreed — drop the cached "ready" so the next /runtime-status
             // re-probes and the install banner re-appears.
             invalidateByovReadyCache(runtimeInfo.id);
-            reason = `Python module '${missingPyModule}' is missing from the ${runtimeInfo.label} venv. Re-run the installer via Settings → Video (or \`${runtimeInfo.installEnvVar}=1 bash scripts/setup-image-video.sh\`).`;
+            reason = `Python module '${missingPyModule}' is missing from the ${runtimeInfo.label} runtime. Use Install / Repair in Video Gen's model setup panel.`;
           } else {
             reason = `Python module '${missingPyModule}' is missing. Install it into the configured Python environment and retry.`;
           }
@@ -1369,11 +1621,27 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   return { jobId, generationId: jobId, filename, mode: 'local', model: modelId };
 }
 
-// Generate a chain of N video chunks where each chunk's last frame seeds
-// the next, then stitch them into a single longer clip. Reports progress +
-// terminal events against the OUTER jobId (so the mediaJobQueue's dispatcher
-// sees one logical job through the chain) while each inner chunk runs as a
-// normal generateVideo() with its own inner jobId, file, and history entry.
+// Generate a chain of N video chunks, each conditioned on the one before it,
+// then stitch them into a single longer clip. Reports progress + terminal
+// events against the OUTER jobId (so the mediaJobQueue's dispatcher sees one
+// logical job through the chain) while each inner chunk runs as a normal
+// generateVideo() with its own inner jobId, file, and history entry.
+//
+// Continuation strategy (`lib/videoContinuity.js`, tunable via
+// `contextFrames`):
+//
+//   'window' — chunk N+1 is an `extend` render conditioned on a clip cut from
+//     the last `contextFrames` frames of chunk N, so the model inherits the
+//     scene's MOTION, not just its final pose. Requires a runtime with an
+//     extend pipeline (ltx2 today) and applies whatever mode the chain started
+//     in. Because extend returns `source + extension`, each windowed chunk
+//     opens with an echo of the window; that echo is measured and dropped
+//     inside the stitch's concat filter graph, so the timeline holds each
+//     frame exactly once while the chunk files stay as the model rendered
+//     them.
+//   'frame' — the historical hop: extract chunk N's last frame and run chunk
+//     N+1 as image-to-video off that still. What every other runtime gets, and
+//     what `contextFrames: 0` opts back into.
 //
 // On completion the inner chunk entries are hidden so only the stitched clip
 // is visible by default; the user can toggle hidden in the gallery to
@@ -1383,12 +1651,48 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 // child is SIGTERM'd by cancel() and surfaces a 'failed' event we translate
 // into a chain-level failure. Already-completed inner chunks are hidden but
 // not deleted (the partial output is still on disk if the user wants it).
-export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest }) {
+//
+// `chunkPrompts` (#3695) optionally steers each chunk individually: entry i is
+// chunk i's prompt, and a null/blank/missing entry falls back to the main
+// `prompt`. It is destructured out of `rest` on purpose so the per-chunk
+// generateVideo() calls below never receive the whole list.
+export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames, jobId: outerJobId, ...rest }) {
   const totalChunks = Number(chunks) || 1;
   if (totalChunks === 1) {
     return generateVideo({ jobId: outerJobId, ...rest });
   }
   if (!outerJobId) throw new ServerError('generateChainedVideo requires jobId', { status: 500, code: 'INTERNAL' });
+
+  const chainModel = resolveVideoModel(rest.modelId || defaultVideoModelId());
+  const chainError = videoChainUnsupportedError(chainModel);
+  if (chainError) throw chainError;
+
+  // How chunk N+1 sees chunk N. 'window' hands LTX-2's extend pipeline the
+  // prior chunk's last `windowFrames` frames (motion + appearance); 'frame'
+  // is the historical single-still i2v hop, and is what every runtime without
+  // an extend pipeline resolves to. See lib/videoContinuity.js.
+  const windowFrames = resolveContextFrames(contextFrames);
+  const continuity = resolveContinuityStrategy({ model: chainModel, contextFrames: windowFrames });
+  // Mirrors generateVideo's own default — the trim math converts frame indices
+  // to audio timestamps, so it can't run on an undefined rate.
+  const chainFps = Number(rest.fps) > 0 ? Number(rest.fps) : 24;
+  // Latents each chained chunk asks ExtendPipeline to append. buildLtx2Args
+  // derives the same number from the same numFrames; the trim below subtracts
+  // the pixel frames they decode to, so the two have to stay in step —
+  // INCLUDING when the caller omitted numFrames. `numFrames` is optional on
+  // the route, and generateVideo resolves the same default before deriving
+  // `--extend-frames`; resolving it there but not here made the orchestrator
+  // assume an 8-frame extension against a ~120-frame one, so the prefix trim
+  // would have kept 8 frames of each hop and thrown the rest away.
+  // Optional-chained on purpose: `videoChainUnsupportedError` waves an
+  // unresolvable model through (an unknown runtime resolves to the base mode
+  // set, which includes 'image'), so a model removed between enqueue and
+  // dispatch reaches here as null. Falling back keeps the chain's first chunk
+  // the thing that reports it — generateVideo throws a 400 "Unknown video
+  // model: X" — instead of a null-deref out of the dispatcher.
+  const chunkExtendLatents = extendLatentFrames(
+    rest.numFrames ?? chainModel?.defaultFrames ?? DEFAULT_NUM_FRAMES,
+  );
 
   const chainState = { stopped: false };
   activeChain = chainState;
@@ -1401,14 +1705,24 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
 
   const chunkIds = [];
   let currentSource = rest.sourceImagePath;
-  // For extend mode, track the prior chunk's full video path so ExtendPipeline
-  // can condition on the entire clip (motion + visual content) rather than just
-  // a single last frame.
-  let currentExtendFromVideo = rest.extendFromVideoPath ?? null;
-  // First chunk preserves the user's mode (text, image, or extend). Subsequent
-  // chunks are conditioned differently depending on the original mode:
-  //   - extend: keep mode='extend', pass prior chunk's full video as extendFromVideoPath
-  //   - all others: image-conditioned on the previous chunk's extracted last frame
+  // 'window' continuation: the tail slice of the prior chunk that the next one
+  // conditions on. A fresh short clip per hop, NOT the prior chunk's whole
+  // output — extend_from_video returns `source + extension`, so conditioning
+  // on the full clip would make every chunk re-contain the one before it (the
+  // stitch then repeats that content once per hop) while the conditioning cost
+  // grew with the chain. Written under tmpdir and deleted when the chain ends.
+  let currentContextClip = null;
+  const contextClipPaths = [];
+  // Echoed-context cut for each chunk that has one: where the chunk's own new
+  // footage starts, and how many frames it therefore contributes. Handed to
+  // stitchVideos, which applies the cuts in its concat filter graph — the
+  // chunk files themselves are never rewritten, so the chain pays exactly one
+  // encode (the stitch) instead of one per chunk plus the stitch.
+  const chunkTrims = new Map();
+  // First chunk always preserves the user's mode (text, image, fflf or extend)
+  // and is never trimmed: in an extend chain its output is `source clip +
+  // extension`, and the source clip belongs in the result exactly once — here.
+  // Chunks 1+ take the resolved continuity path instead.
   const firstMode = rest.mode || (currentSource ? 'image' : 'text');
 
   const runChunk = (i) => new Promise((resolve, reject) => {
@@ -1458,27 +1772,38 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
       ? Number(rest.seed) + i
       : undefined;
 
-    const isExtendChain = firstMode === 'extend' && i > 0;
+    // Chunks 1+ on a window-continuity chain re-enter as extend renders
+    // conditioned on the tail clip built after the previous chunk, whatever
+    // mode the chain STARTED in — a text or i2v chain gets the same motion
+    // carry-over an extend chain does, instead of restarting from a still.
+    const isWindowHop = continuity === 'window' && i > 0;
+    // Per-chunk beat (#3695). `chunkPrompts` is already normalized (blank →
+    // null) by prepareVideoGenParams, but re-guard on emptiness here too so a
+    // direct service caller can't hand a chunk an empty prompt — an absent beat
+    // must always resolve to the main prompt, never to ''.
+    const beat = chunkPrompts?.[i];
+    const chunkPrompt = (typeof beat === 'string' && beat.trim() !== '') ? beat : rest.prompt;
+
     generateVideo({
       ...rest,
+      prompt: chunkPrompt,
       seed: chunkSeed,
       jobId: innerJobId,
-      // extend chain: subsequent chunks condition on the prior clip's full
-      // video — ExtendPipeline.extend_from_video needs the entire video, not
-      // just the last frame, to avoid reintroducing seams.
-      // image/text chain: condition on the extracted last frame as before.
-      sourceImagePath: isExtendChain ? null : currentSource,
-      extendFromVideoPath: isExtendChain ? currentExtendFromVideo : (i === 0 ? rest.extendFromVideoPath : null),
+      // window hop: condition on the tail clip cut from the prior chunk, so
+      // the model reads motion out of it rather than a single static pose.
+      // frame hop: condition on the prior chunk's extracted last frame.
+      sourceImagePath: isWindowHop ? null : currentSource,
+      extendFromVideoPath: isWindowHop ? currentContextClip : (i === 0 ? rest.extendFromVideoPath : null),
       // Only the first chunk consumes the user's uploadedTempPath (durable
-      // copy under data/uploads). Later chunks use a frame extracted from a
-      // prior render (image chain) or the prior chunk's video (extend chain).
+      // copy under data/uploads). Later chunks condition on the prior chunk
+      // instead — a tail window (window hop) or an extracted frame (frame hop).
       uploadedTempPath: i === 0 ? rest.uploadedTempPath : null,
       uploadedTempPaths: i === 0 ? (rest.uploadedTempPaths || []) : [],
       hidden: true,
-      mode: isExtendChain ? 'extend' : (i === 0 ? firstMode : 'image'),
-      // After the first chunk, drop FFLF-style last image — chained continuation
-      // is single-conditioned on the previous chunk's tail frame (or full video
-      // for extend mode).
+      mode: isWindowHop ? 'extend' : (i === 0 ? firstMode : 'image'),
+      // After the first chunk, drop FFLF-style last image — chained
+      // continuation conditions on one thing, the tail of the chunk before it,
+      // and has no second anchor to pin an end frame to.
       lastImagePath: i === 0 ? rest.lastImagePath : null,
       // Multi-keyframe interpolation only makes sense for the first chunk
       // (the user pinned specific frame indices in a single clip). Subsequent
@@ -1491,14 +1816,24 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
     });
   });
 
+  // The conditioning windows are scratch input to the next chunk, never
+  // output — drop them on every terminal path (both of which always run) so a
+  // long chain doesn't leave a trail of clips in tmpdir. Best-effort and
+  // fire-and-forget: a leftover temp file must never fail a finished render.
+  const cleanupContextClips = () => {
+    for (const p of contextClipPaths) unlink(p).catch(() => {});
+    contextClipPaths.length = 0;
+  };
   const finishOk = (payload) => {
     if (activeChain === chainState) activeChain = null;
+    cleanupContextClips();
     videoGenEvents.emit('completed', { generationId: outerJobId, ...payload });
     broadcastSse(outerJob, { type: 'complete', result: payload });
     closeJobAfterDelay(jobs, outerJobId);
   };
   const finishFail = (error) => {
     if (activeChain === chainState) activeChain = null;
+    cleanupContextClips();
     videoGenEvents.emit('failed', { generationId: outerJobId, error });
     broadcastSse(outerJob, { type: 'error', error });
     closeJobAfterDelay(jobs, outerJobId);
@@ -1520,32 +1855,98 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
         finishFail(completed.error);
         return;
       }
-      if (i < totalChunks - 1) {
-        if (firstMode === 'extend') {
-          // For extend chains, subsequent chunks condition on the entire prior
-          // clip via ExtendPipeline.extend_from_video — no frame extraction
-          // needed. The chunk's output file is always <innerJobId>.mp4 under
-          // PATHS.videos (see generateVideo: filename = `${jobId}.mp4`).
-          currentExtendFromVideo = join(PATHS.videos, `${chunkIds[chunkIds.length - 1]}.mp4`);
-        } else {
-          // extractLastFrame caches by id, so re-clicks (e.g. from gallery
-          // "Continue") don't re-spawn ffmpeg.
+      // The chunk's output file is always <innerJobId>.mp4 under PATHS.videos
+      // (see generateVideo: filename = `${jobId}.mp4`).
+      const chunkId = chunkIds[chunkIds.length - 1];
+      const chunkPath = join(PATHS.videos, `${chunkId}.mp4`);
+
+      if (continuity === 'window') {
+        // One probe serves both cuts below. Neither rewrites chunkPath, so the
+        // count stays valid for both — worth keeping to one call because
+        // probeFrameCount falls back to a full decode pass when the container
+        // header carries no nb_frames.
+        // eslint-disable-next-line no-await-in-loop
+        const frames = await probeFrameCount(chunkPath);
+
+        // A window hop's render is `context window + new frames`. The window is
+        // the tail of the chunk before it, which the stitched timeline already
+        // holds, so record where the new footage starts and let the stitch drop
+        // the echo in its filter graph. Measured from the RENDERED length rather
+        // than from the window we supplied: the VAE snaps the encoded context up
+        // to a latent boundary, so the echo is usually a few frames longer than
+        // what we handed in.
+        let contextPrefix = 0;
+        if (i > 0) {
+          contextPrefix = contextPrefixFrames({ totalFrames: frames, extendLatents: chunkExtendLatents });
+          if (contextPrefix <= 0) {
+            console.log(`⚠️ Chunk ${i + 1}/${totalChunks} context prefix unmeasurable (frames=${frames ?? 'unknown'}), leaving it untrimmed`);
+          }
+        }
+        // Record the measurement even when there's nothing to cut (chunk 0, or
+        // an unmeasurable prefix). An extend render's file is `source +
+        // extension`, so a chunk's own history `numFrames` — the count it was
+        // REQUESTED at — understates what it contributes to the timeline, and
+        // that's the only other number the stitch could fall back on.
+        if (frames != null) chunkTrims.set(chunkId, { startFrame: contextPrefix, frames: frames - contextPrefix });
+
+        if (i < totalChunks - 1) {
+          // Cut the next hop's conditioning window off this chunk's tail. Both
+          // the count and the cut clamp: a window longer than the chunk simply
+          // conditions on all of it.
+          //
+          // An unprobeable length clamps the same way, which means the whole
+          // chunk becomes the window — the unbounded conditioning this exists
+          // to avoid, for one hop. It self-corrects (the next chunk's prefix
+          // trim measures the echo off the render, not off the window), but say
+          // so rather than letting the fallback be silent.
+          if (frames == null) {
+            console.log(`⚠️ Chunk ${i + 1}/${totalChunks} length unprobeable — conditioning the next chunk on the whole clip instead of a ${windowFrames}-frame window`);
+          }
+          const contextPath = join(tmpdir(), `chaincontext-${chunkId}.mp4`);
           // eslint-disable-next-line no-await-in-loop
-          const frame = await extractLastFrame(chunkIds[chunkIds.length - 1]).catch((err) => ({ error: err.message }));
-          if (frame?.error) {
+          const cut = await trimVideoFromFrame(chunkPath, contextPath, {
+            // Floored at the echo the stitch is going to drop: the window must
+            // come from this chunk's OWN footage, never from the replay of the
+            // one before it. (The chunk file still holds that replay now that
+            // the cut happens at stitch time.)
+            startFrame: Math.max(contextPrefix, tailWindowStartFrame({ totalFrames: frames, frames: windowFrames })),
+            fps: chainFps,
+          });
+          if (!cut.ok) {
             await setHistoryItemsHidden(chunkIds, true);
-            finishFail(`Failed to extract frame between chunks: ${frame.error}`);
+            finishFail(`Failed to build the continuation context window between chunks: ${cut.reason}`);
             return;
           }
-          currentSource = join(PATHS.images, frame.filename);
+          contextClipPaths.push(contextPath);
+          currentContextClip = contextPath;
         }
+      } else if (i < totalChunks - 1) {
+        // extractLastFrame caches by id, so re-clicks (e.g. from gallery
+        // "Continue") don't re-spawn ffmpeg.
+        // eslint-disable-next-line no-await-in-loop
+        const frame = await extractLastFrame(chunkId).catch((err) => ({ error: err.message }));
+        if (frame?.error) {
+          await setHistoryItemsHidden(chunkIds, true);
+          finishFail(`Failed to extract frame between chunks: ${frame.error}`);
+          return;
+        }
+        currentSource = join(PATHS.images, frame.filename);
       }
     }
+
     const stitched = await stitchVideos(chunkIds, {
       id: outerJobId,
       filenamePrefix: 'chained',
       historyKey: 'chainedFrom',
       promptOverride: rest.prompt || null,
+      // Persist the beats alongside the stitched clip so the gallery entry (and
+      // a Remix off it) carries the same source of truth the chain rendered
+      // from — the individual chunk entries only ever hold their own resolved
+      // prompt, which loses which of them were explicit beats vs. fallbacks.
+      chunkPrompts: chunkPrompts?.some(Boolean) ? chunkPrompts : null,
+      // Echoed-context prefixes to cut out of each windowed chunk as the
+      // timeline is assembled, rather than by pre-encoding the chunk files.
+      trims: chunkTrims.size ? chunkTrims : null,
     }).catch((err) => ({ error: err.message }));
     if (stitched?.error) {
       await setHistoryItemsHidden(chunkIds, true);
@@ -1715,19 +2116,44 @@ export async function sampleEvaluationFrames(jobId, count = 5) {
 }
 
 // Concat selected videos (preserving order) into a single MP4. Uses ffmpeg's
-// concat demuxer which is stream-copy, so it's fast and lossless — but the
-// inputs must share codec/resolution. The Media History page already only
+// concat demuxer with a stream copy, so it's fast and lossless — but the
+// inputs must then share codec/resolution. The Media History page already only
 // lets users stitch from a single model so this holds in practice.
 //
+// A caller that needs leading frames dropped from some inputs passes `trims`
+// instead; that switches to a concat FILTER GRAPH, which applies the cuts and
+// the concat in one encode. Nothing else reaches the filter graph, so the
+// hand-stitch path from Media History keeps its stream-copy fast path.
+//
 // `opts` lets the chained-render code reuse the same ffmpeg path with a
-// different identity (id, filename prefix, history-link key, prompt) without
-// duplicating the validation + concat-manifest plumbing.
+// different identity (id, filename prefix, history-link key, prompt, per-chunk
+// beats) without duplicating the validation + concat-manifest plumbing.
 export async function stitchVideos(videoIds, opts = {}) {
   const {
     id = randomUUID(),
     filenamePrefix = 'stitched',
     historyKey = 'stitchedFrom',
     promptOverride = null,
+    // Per-chunk prompt beats to record on the stitched entry (#3695) — chained
+    // renders only; a hand-stitched clip has no beats.
+    chunkPrompts = null,
+    // Optional `Map<videoId, { startFrame, frames }>` — leading frames to drop
+    // from an input, and the frame count it contributes once they're gone.
+    //
+    // A chained render's windowed chunks open with an echo of the tail window
+    // they were conditioned on, which the timeline already holds. Cutting that
+    // echo in this concat's filter graph costs nothing beyond the timeline
+    // encode; pre-trimming each chunk file instead would add one full encode
+    // per chunk and re-grade the trimmed chunks relative to their siblings.
+    //
+    // Both numbers are MEASUREMENTS of the file, which is why they have to
+    // come from the caller: a history entry's own `numFrames` is the count the
+    // clip was RENDERED at — a render parameter Remix reuses — and an extend
+    // render's output is `source + extension`, so its file is materially
+    // longer than that. `startFrame: 0` is therefore meaningful on its own:
+    // "no cut, but here is the real length." Only a non-zero offset routes the
+    // concat through the filter graph.
+    trims = null,
   } = opts;
   if (!Array.isArray(videoIds) || videoIds.length < 2) {
     throw new ServerError('Need at least 2 videos to stitch', { status: 400, code: 'VALIDATION_ERROR' });
@@ -1750,29 +2176,99 @@ export async function stitchVideos(videoIds, opts = {}) {
     if (!existsSync(p)) throw new ServerError(`Missing: ${basename(p)}`, { status: 404, code: 'NOT_FOUND' });
   }
 
+  // Measured cut + contribution per input, in `videos` order. A zero offset
+  // means the input joins whole (the entry is then purely a length
+  // measurement); any non-zero offset routes the whole concat through the
+  // filter graph, since only that path can express a cut.
+  const trimPlan = videos.map((v) => {
+    const entry = trims?.get?.(v.id);
+    if (!entry) return null;
+    const frames = Number(entry.frames);
+    return {
+      startFrame: Math.max(0, Math.floor(Number(entry.startFrame) || 0)),
+      frames: Number.isFinite(frames) && frames >= 0 ? frames : null,
+    };
+  });
+
   const listFile = join(tmpdir(), `concat-${id}.txt`);
-  // ffmpeg concat-demuxer escape: per its docs, single quotes in filenames
-  // must be replaced with `'\''`. Inside quoted strings ffmpeg also treats
-  // backslash as an escape character — on Windows where paths are
-  // `C:\foo\bar.mp4`, that corrupts the path. Normalize to forward slashes
-  // (which ffmpeg accepts on Windows just fine) before quoting.
-  const escapeForConcat = (p) => p.replace(/\\/g, '/').replace(/'/g, "'\\''");
-  await writeFile(listFile, videoPaths.map((p) => `file '${escapeForConcat(p)}'`).join('\n'));
+  // Set before the write, not after: `writeFile` creates and truncates the
+  // file before it writes, so a failure partway through still leaves one on
+  // disk to clean up. Unlinking a file that was never created is a no-op here.
+  let listFileWritten = false;
+  const writeConcatList = async () => {
+    // ffmpeg concat-demuxer escape: per its docs, single quotes in filenames
+    // must be replaced with `'\''`. Inside quoted strings ffmpeg also treats
+    // backslash as an escape character — on Windows where paths are
+    // `C:\foo\bar.mp4`, that corrupts the path. Normalize to forward slashes
+    // (which ffmpeg accepts on Windows just fine) before quoting.
+    const escapeForConcat = (p) => p.replace(/\\/g, '/').replace(/'/g, "'\\''");
+    listFileWritten = true;
+    await writeFile(listFile, videoPaths.map((p) => `file '${escapeForConcat(p)}'`).join('\n'));
+  };
 
   const outFilename = `${filenamePrefix}-${id}.mp4`;
   const outPath = join(PATHS.videos, outFilename);
 
+  // `captureStderr` keeps the last line of ffmpeg's own diagnostics on the
+  // error, so a failure reads as something other than a bare "Stitch failed" —
+  // which can't tell a filter-graph parse error from a full disk. Split on \r
+  // as well as \n: ffmpeg separates its progress lines with a bare carriage
+  // return, so a failure mid-encode would otherwise trail a run of them behind
+  // the line that matters.
+  const runFfmpeg = (args, { captureStderr = false } = {}) => new Promise((resolve, reject) => {
+    const proc = spawn(ffmpeg, args, { env: safeChildProcessEnv(), stdio: captureStderr ? ['ignore', 'ignore', 'pipe'] : 'ignore' });
+    let tail = '';
+    proc.stderr?.on('data', (d) => { tail = `${tail}${d}`.slice(-400); });
+    proc.on('close', (code) => code === 0
+      ? resolve()
+      : reject(new ServerError(`Stitch failed${tail ? `: ${tail.split(/[\r\n]+/).filter(Boolean).pop()?.trim() || ''}` : ''}`, { status: 500, code: 'FFMPEG_FAILED' })));
+    proc.on('error', (err) => reject(new ServerError(`ffmpeg failed to spawn: ${err.message}`, { status: 500, code: 'FFMPEG_FAILED' })));
+  });
+
+  // Inputs with a real cut, as opposed to the measurement-only entries. Zero
+  // means the demuxer can do the job.
+  const cutCount = trimPlan.filter((t) => t?.startFrame > 0).length;
+  // Tracks whether the cuts actually made it into the output, so `numFrames`
+  // below reports the timeline that exists rather than the one we asked for.
+  let trimsApplied = cutCount > 0;
   // Use a try/finally so the concat list temp file is cleaned up even when
   // ffmpeg rejects — otherwise it leaks one file per failed stitch.
   try {
-    await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpeg, ['-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', outPath], { env: safeChildProcessEnv(), stdio: 'ignore' });
-      proc.on('close', (code) => code === 0 ? resolve() : reject(new ServerError('Stitch failed', { status: 500, code: 'FFMPEG_FAILED' })));
-      proc.on('error', (err) => reject(new ServerError(`ffmpeg failed to spawn: ${err.message}`, { status: 500, code: 'FFMPEG_FAILED' })));
-    });
+    if (trimsApplied) {
+      const args = buildTrimConcatArgs({
+        inputs: videoPaths.map((path, i) => ({ path, startFrame: trimPlan[i]?.startFrame || 0 })),
+        outPath,
+        // Canonical geometry/rate for the graph's normalization filters. Taken
+        // from the first input the same way modelId/seed are below — every
+        // caller that reaches here stitches one model's own output.
+        width: videos[0].width,
+        height: videos[0].height,
+        fps: videos[0].fps,
+        // `concat=a=1` needs an audio leg from EVERY input; one silent clip in
+        // the set makes the whole graph video-only.
+        withAudio: (await Promise.all(videoPaths.map((p) => hasAudioStream(p)))).every(Boolean),
+      });
+      const failure = args
+        ? await runFfmpeg(args, { captureStderr: true }).then(() => null, (err) => err)
+        : new Error('could not build the concat filter graph');
+      if (failure) {
+        // Degrade rather than throw away a whole chained render: the untrimmed
+        // inputs were never re-encoded, so they're still in codec lockstep and
+        // the stream-copy concat below can salvage the clip. The cost is the
+        // echoed context replaying at each trimmed seam.
+        console.log(`⚠️ Trimmed concat failed (${failure.message}) — falling back to a stream copy; ${cutCount} seam(s) will repeat their context`);
+        trimsApplied = false;
+      }
+    }
+    if (!trimsApplied) {
+      await writeConcatList();
+      // This one is fatal — its rejection is what the caller surfaces — so it
+      // needs the cause even more than the survivable run above does.
+      await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', outPath], { captureStderr: true });
+    }
     await optimizeForStreaming(outPath);
   } finally {
-    await unlink(listFile).catch(() => {});
+    if (listFileWritten) await unlink(listFile).catch(() => {});
   }
 
   const thumb = await generateThumbnail(outPath, id);
@@ -1785,12 +2281,23 @@ export async function stitchVideos(videoIds, opts = {}) {
     seed: videos[0].seed ?? 0,
     width: videos[0].width,
     height: videos[0].height,
-    numFrames: videos.reduce((sum, v) => sum + (v.numFrames || 0), 0),
+    // What each input actually contributes. A measured plan wins over the
+    // entry's own `numFrames` either way — but when the cuts didn't make it
+    // into the output, the input contributes its WHOLE measured length
+    // (`startFrame + frames`), not the trimmed length we asked for.
+    numFrames: videos.reduce((sum, v, i) => {
+      const plan = trimPlan[i];
+      const measured = plan?.frames == null
+        ? null
+        : (trimsApplied ? plan.frames : plan.startFrame + plan.frames);
+      return sum + (measured ?? v.numFrames ?? 0);
+    }, 0),
     fps: videos[0].fps,
     filename: outFilename,
     thumbnail: thumb,
     createdAt: new Date().toISOString(),
     [historyKey]: videoIds,
+    ...(Array.isArray(chunkPrompts) ? { chunkPrompts } : {}),
     // Inherit applied LoRAs from the first constituent clip (a chunk chain
     // shares one LoRA set across all chunks), so the visible stitched entry
     // round-trips LoRAs on Remix the same way a single render does — mirrors

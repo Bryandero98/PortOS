@@ -62,6 +62,160 @@ export function divergencePauseReason(gate, blockingCount, rounds) {
     + `${rounds} consecutive ${plural} of auto-resolve. Paused for review. ${fix}, then resume.`;
 }
 
+// ---------------------------------------------------------------------------
+// Auto-resolve REGRESSION guard — one altitude tighter than the divergence
+// guard above. Divergence asks "is the loop still making progress?" over several
+// rounds and pauses on the state it finds; this asks "did THIS round's edits
+// make the draft worse?" so the caller can put the pre-resolve state back before
+// pausing. Without it, a resolve pass that rewrites the arc into MORE blocking
+// findings than it was handed is committed permanently, and the run pauses on
+// damage it caused itself.
+// ---------------------------------------------------------------------------
+
+// Normalizer behind the finding matcher, hoisted so the regexes aren't rebuilt
+// per finding per round.
+const normFindingText = (v) => String(v ?? '')
+  .toLowerCase()
+  .replace(/[^a-z0-9 ]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+// Singularize one token so "volumes"/"volume" and "stages"/"stage" don't read
+// as two different words — the single most common way the verifier re-words
+// itself between calls.
+const stemToken = (tok) => (tok.endsWith('s') ? tok.slice(0, -1) : tok);
+
+// Words that carry no identity for a verify finding: ordinary connective tissue
+// plus the structural nouns ("volume", "episode", "arc", …) that appear in
+// nearly every finding this gate sees. Dropped before scoring so the overlap
+// below reflects what a finding is ABOUT, not the vocabulary the whole corpus
+// shares — two unrelated findings that both say "volume" must not read as one.
+// Stemmed through `stemToken` on the way in (so entries stay naturally spelled
+// here and still match the stemmed tokens they have to filter), which also
+// covers each one's plural.
+const FINDING_STOPWORDS = new Set((
+  'a an and are as at be been both but by can could did do does each ever every for from had has have in'
+  + ' into is it more most never no not of on one only or other same should some still than that the'
+  + ' their then there these this those to two was were when which while with would'
+  + ' arc book chapter episode issue season series story volume'
+).split(' ').map(stemToken));
+
+// Content tokens of one finding field. Tokens shorter than 3 chars are noise
+// (numbers, "v1", articles the normalizer already split off).
+function contentTokens(value) {
+  const out = new Set();
+  for (const raw of normFindingText(value).split(' ')) {
+    const tok = stemToken(raw);
+    if (tok.length < 3 || FINDING_STOPWORDS.has(tok)) continue;
+    out.add(tok);
+  }
+  return out;
+}
+
+// Shared content tokens of two findings' prose, plus the containment score:
+// shared over the SMALLER token set, so a terse restatement of a long finding
+// still scores high (Jaccard would punish it for the length difference).
+function overlapStats(a, b) {
+  const left = contentTokens(a);
+  const right = contentTokens(b);
+  if (left.size === 0 || right.size === 0) return { shared: 0, score: 0 };
+  let shared = 0;
+  for (const tok of left) if (right.has(tok)) shared += 1;
+  return { shared, score: shared / Math.min(left.size, right.size) };
+}
+
+/** Containment overlap of two findings' prose, 0..1. Pure. */
+export const findingTextOverlap = (a, b) => overlapStats(a, b).score;
+
+// How much of the smaller finding's prose must be shared before two findings
+// from different verify calls are treated as the same one, and how many content
+// tokens that has to amount to. The token floor is what keeps a one-word
+// coincidence from scoring 1.0: "fix volume 3" and "fix arc one" both reduce to
+// {fix} once the structural nouns are dropped.
+export const FINDING_MATCH_MIN_OVERLAP = 0.4;
+const FINDING_MATCH_MIN_SHARED = 2;
+// Both relax when the two findings name the same place — a location that already
+// agrees is corroboration, so less of the prose has to.
+export const FINDING_MATCH_MIN_OVERLAP_SAME_LOCATION = 0.25;
+const FINDING_MATCH_MIN_SHARED_SAME_LOCATION = 1;
+
+/**
+ * True when two locations name the same place. Whole-word containment covers
+ * "volume 3" vs "volume 3 act two" (the same place at two altitudes) while
+ * refusing prefixes, so "v1" can't swallow "v10" nor "volume 3" "volume 30".
+ * Pure.
+ */
+export function sameFindingLocation(a, b) {
+  const locA = normFindingText(a);
+  const locB = normFindingText(b);
+  if (!locA || !locB) return false;
+  if (locA === locB) return true;
+  const [short, long] = locA.length <= locB.length ? [locA, locB] : [locB, locA];
+  return ` ${long} `.includes(` ${short} `);
+}
+
+/**
+ * True when two findings — filed by two SEPARATE verifier calls — are the same
+ * underlying problem. Pure.
+ *
+ * Identity is deliberately loose about WORDING, because the verifier re-words
+ * itself freely between calls: it re-punctuates, re-cases, paraphrases the
+ * problem, and re-labels the location when a resolve round renumbers volumes.
+ * An exact fingerprint of that prose reads every round's findings as brand new,
+ * which is how the regression guard below silently missed the 1 → 3 → 5
+ * divergence it was written for.
+ *
+ * It is NOT loose about SUBJECT. A shared location is corroboration, never proof
+ * — two genuinely different defects routinely sit in the same volume, and
+ * treating them as one would revert a round that closed what it targeted and
+ * merely exposed something else next door. So the problem text always has to
+ * agree; naming the same place only lowers how much of it must.
+ *
+ * Severity is NOT part of the identity — every finding here is already in the
+ * gate's blocking set, and the verifier moves a finding between `high` and
+ * `medium` freely, which would otherwise hide it from the guard.
+ */
+export function sameFinding(a, b) {
+  const corroborated = sameFindingLocation(a?.location, b?.location);
+  const { shared, score } = overlapStats(a?.problem, b?.problem);
+  return shared >= (corroborated ? FINDING_MATCH_MIN_SHARED_SAME_LOCATION : FINDING_MATCH_MIN_SHARED)
+    && score >= (corroborated ? FINDING_MATCH_MIN_OVERLAP_SAME_LOCATION : FINDING_MATCH_MIN_OVERLAP);
+}
+
+/**
+ * True when the round that produced `after` REGRESSED: it left more blocking
+ * findings than the `before` set it was asked to close, AND at least one of
+ * those targeted findings is still standing. Pure.
+ *
+ * That second half is what keeps this from rejecting good work: a round that
+ * closed everything it targeted and merely exposed findings that were latent
+ * underneath is progress, even when the raw count went up, so it is allowed to
+ * stand (the divergence guard still catches it if the loop stalls from there).
+ * A round that closed nothing and added more is damage.
+ *
+ * A round that held the count is NOT this guard's business either — it bought
+ * nothing, but it also broke nothing, and the divergence guard's patience is
+ * what absorbs a verifier that re-files the same set with slightly different
+ * prose. Only a GROWING blocking set gets reverted here.
+ */
+export function isResolveRegression(before, after) {
+  const targeted = Array.isArray(before) ? before : [];
+  const current = Array.isArray(after) ? after : [];
+  if (current.length <= targeted.length) return false;
+  return targeted.some((t) => current.some((c) => sameFinding(t, c)));
+}
+
+// Pause reason for a gate whose auto-resolve round was reverted — distinct from
+// both "ran out of rounds" and "stopped converging": the state the user is being
+// handed is the one from BEFORE the round, and saying so is the difference
+// between a trustworthy pause and an unexplained rewind.
+export function regressionPauseReason(gate, beforeCount, afterCount) {
+  const { label, fix } = PAUSE_GATES[gate];
+  return `${label} auto-resolve made the draft worse — the round it ran on ${beforeCount} blocking finding(s) `
+    + `came back with ${afterCount} and still hadn't closed what it was given, so its edits were reverted. `
+    + `Paused for review with the original ${beforeCount} finding(s). ${fix}, then resume.`;
+}
+
 // Foundation gate pause reasons (#2176) — the gate converges on a WEIGHTED
 // SCORE, not a finding count, so it needs its own wording (score vs. threshold)
 // rather than the finding-count phrasing of convergencePauseReason. Shares

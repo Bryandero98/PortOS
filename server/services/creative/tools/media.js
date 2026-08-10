@@ -8,11 +8,11 @@ import { z } from 'zod';
 import { enqueueJob } from '../../mediaJobQueue/index.js';
 import { ASPECT_PRESETS, QUALITY_PRESETS, presetToRenderParams } from '../../../lib/creativeDirectorPresets.js';
 import { getSettings } from '../../settings.js';
-import { IMAGE_GEN_MODE, resolveQueueImageMode, resolveQueueImageEditMode } from '../../imageGen/modes.js';
+import { IMAGE_GEN_MODE, resolveQueueImageMode } from '../../imageGen/modes.js';
 import { renderTargetDefaults, resolveRenderTargetConfig } from '../../imageGen/cloudProviderConfig.js';
 import { RENDER_TARGET } from '../../../lib/renderTargets.js';
-import { VIDEO_GEN_MODE, VIDEO_GEN_MODES, resolveVideoMode, hasVideoPin } from '../../videoGen/modes.js';
-import { nearestGrokDuration } from '../../../lib/grokVideoClip.js';
+import { VIDEO_GEN_MODE, VIDEO_GEN_MODES } from '../../videoGen/modes.js';
+import { grokVideoJobParams, resolveVideoBackendPin } from '../../videoGen/backendPin.js';
 import { COST_RENDER, resolveOwner } from './shared.js';
 
 const paramsSchema = z.object({ params: z.record(z.any()).default({}), owner: z.string().optional() });
@@ -120,24 +120,20 @@ function attachMusicBedTag(params, ctx) {
  * byte-identical" contract this change rests on, so it's a separate concern.
  */
 async function enforceRenderBackendPin(kind, params, project) {
-  const pin = project?.renderBackend?.[kind];
   const settings = await getSettings().catch(() => null);
   if (!settings) return params;
-  const targetDefaults = renderTargetDefaults(settings, RENDER_TARGET.CREATIVE_AGENT);
+
   // Each lane has a pin ladder (#3231): the project's own renderBackend pin
   // (per-record, wins) → the install-wide creative-agent renderDefaults pin
   // → (video only, Phase 4) the install-wide `settings.videoGen.mode` pin.
   // When NO source pins the lane, params pass through untouched — the "auto
   // is byte-identical" contract above.
-  if (kind === 'image') {
-    if (!pin?.mode && !targetDefaults.imageMode) return params;
-  } else if (!pin?.mode && !hasVideoPin(settings, { target: RENDER_TARGET.CREATIVE_AGENT })) {
-    return params;
-  }
-
   if (kind === 'video') {
-    const mode = resolveVideoMode(pin?.mode, settings, { target: RENDER_TARGET.CREATIVE_AGENT });
-    if (mode !== VIDEO_GEN_MODE.GROK) {
+    // The video ladder is shared verbatim with the scene-render path via
+    // videoGen/backendPin.js, so the two enqueue surfaces resolve identically.
+    const videoPin = resolveVideoBackendPin(project, settings);
+    if (!videoPin.pinned) return params;
+    if (videoPin.mode !== VIDEO_GEN_MODE.GROK) {
       // Local video: `params.mode` is the t2v/i2v SEMANTIC for this lane (see
       // videoGen/modes.js), so a local pin must NOT stamp the backend name over
       // it — overwriting a real semantic ('fflf', 'a2v', 'extend', an IC-LoRA id)
@@ -159,42 +155,31 @@ async function enforceRenderBackendPin(kind, params, project) {
       // over the target default's (same precedence as the mode ladder); local
       // is the only video backend that consumes a model id, so no cross-
       // provider leak guard is needed here.
-      const pinnedModelId = pin?.modelId || targetDefaults.videoModel;
-      return pinnedModelId ? { ...base, modelId: pinnedModelId } : base;
+      return videoPin.modelId ? { ...base, modelId: videoPin.modelId } : base;
     }
-    const grok = settings.imageGen?.grok || {};
-    // videoGen/grok.js reads the same `imageGen.grok` slice the image path does
-    // (one CLI, one config). `videoMode` carries the semantic the local lane
-    // keeps in `mode`, matching what routes/videoGen.js enqueues.
-    //
-    // Clip length crosses a contract boundary here: the local lane derives frame
-    // count from `durationSeconds` (which is what the planner writes and what
-    // enforceVideoRenderPreset reconciles), while grok's worker reads `duration`
-    // and silently falls back to 6s for anything absent or undeliverable. Without
-    // the translation a 10s commission would quietly render a 6s clip. Prefer an
-    // explicit `duration` if some caller already set one; else map the step's
-    // durationSeconds, else the project's target, through grok's own
-    // 6/10-only normalization (lib/grokVideoClip.js) so we snap the same way the
-    // provider would rather than passing a length it can't deliver.
+    // Clip length crosses a contract boundary into the grok lane (see
+    // grokVideoJobParams). Prefer an explicit `duration` if some caller already
+    // set one; else the step's `durationSeconds` (what the planner writes and
+    // what enforceVideoRenderPreset reconciles); else the project's target.
     const requestedSeconds = params?.duration ?? params?.durationSeconds ?? project?.targetDurationSeconds;
     return {
       ...params,
-      mode: VIDEO_GEN_MODE.GROK,
-      videoMode: params?.sourceImagePath ? 'image' : 'text',
-      grokPath: grok.grokPath,
-      duration: nearestGrokDuration(requestedSeconds),
-      ...(grok.aspectRatio ? { aspectRatio: grok.aspectRatio } : {}),
+      ...grokVideoJobParams(settings, {
+        sourceImagePath: params?.sourceImagePath,
+        durationSeconds: requestedSeconds,
+      }),
     };
   }
 
-  const wantsEdit = !!params?.initImagePath || params?.referenceImagePaths?.length > 0;
+  const pin = project?.renderBackend?.[kind];
+  const targetDefaults = renderTargetDefaults(settings, RENDER_TARGET.CREATIVE_AGENT);
+  if (!pin?.mode && !targetDefaults.imageMode) return params;
+
   // Project pin (explicit, per-record) → creative-agent renderDefaults pin —
   // both usability-laddered so a disabled backend degrades instead of failing
-  // a nightly commission.
-  const requested = pin?.mode || targetDefaults.imageMode;
-  const mode = wantsEdit
-    ? resolveQueueImageEditMode(requested, settings)
-    : resolveQueueImageMode(requested, settings);
+  // a nightly commission. One ladder covers text-to-image and edit/reference
+  // renders alike: every queueable backend accepts input images.
+  const mode = resolveQueueImageMode(pin?.mode || targetDefaults.imageMode, settings);
   // Mode is laddered above; this threads the creative-agent renderDefaults
   // imageModel into the cloud job params (#3231). The project's own
   // `pin.modelId` is deliberately NOT passed as the cloud model override —

@@ -8,7 +8,21 @@
  * cached at boot — there's no hot-reload).
  *
  * Schema (see seed defaults below for the full picture):
- *   - video.macos[], video.windows[]: { id, name, repo?, steps, guidance, broken? }
+ *   - video.macos[], video.windows[]: { id, name, repo?, steps, guidance, broken?, disclosure? }
+ *       `disclosure` is optional provenance/licensing metadata (issue #3674):
+ *       { modelCardUrl?, weightsLicense?: { name, url }, runtimeLicense?: { name, url },
+ *         estimatedDownloadGb?, reviewedAt? }. Every key is optional and an
+ *       absent key means "not established" — the UI renders it as Unknown
+ *       rather than guessing. Canonical fields (repo/revision/runtime/memoryGb/
+ *       supportedModes/requiredWeights) are NOT duplicated inside it. Shipped
+ *       values live in lib/videoDisclosure.js and are backfilled at load.
+ *       `finishModelId` (optional, issue #3696) names the delivery model a
+ *       fast draft entry finishes into — declared in lib/videoFinishProfiles.js,
+ *       backfilled at load, and validated (invalid edges are dropped, loudly).
+ *       `supportedModes` (issue #3737) is resolved for EVERY entry by
+ *       getVideoModels() from lib/videoModeProfiles.js's per-runtime table when
+ *       the entry doesn't declare its own, so no consumer has to treat "absent"
+ *       as "supports everything". A declared list always wins.
  *   - video.defaultMacos / video.defaultWindows: id of the default model
  *   - image[]: { id, name, steps, guidance, broken? }
  *   - textEncoders[]: { id, label, repo, localPath? }
@@ -21,6 +35,9 @@ import { PATHS, expandHome } from './fileUtils.js';
 import { isPlainObject } from './objects.js';
 import { RUNNER_FAMILIES } from './runners.js';
 import { ServerError } from './errorHandler.js';
+import { applyVideoDisclosures } from './videoDisclosure.js';
+import { applyVideoFinishProfiles, sanitizeFinishProfiles } from './videoFinishProfiles.js';
+import { applyVideoSupportedModes } from './videoModeProfiles.js';
 // fileUtils.ensureDir is async/Promise-returning; this module needs a
 // synchronous version because `loadMediaModels()` is called at import-time
 // from videoGen/imageGen modules, which can't await before exporting.
@@ -33,15 +50,21 @@ const IS_WIN = process.platform === 'win32';
 const DEFAULT_REGISTRY = {
   _doc: 'PortOS media model registry. Edit to add models, tune defaults, or switch the text encoder. Restart the server to apply changes.',
   video: {
-    macos: [
+    // `applyVideoDisclosures` attaches the shipped provenance/licensing block
+    // (lib/videoDisclosure.js) to each entry, so the seed written on a fresh
+    // install, the in-memory defaults, and data.reference/media-models.json all
+    // carry the same disclosure without repeating it inline here.
+    // `applyVideoFinishProfiles` attaches the shipped draft → delivery
+    // `finishModelId` edges (lib/videoFinishProfiles.js) the same way, so the
+    // Finish relationship is declared in one place instead of inline here.
+    macos: applyVideoFinishProfiles(applyVideoDisclosures([
       // notapalindrome's mlx-video-with-audio runtime — single PyPI package,
       // T2V/I2V only, FFLF degrades to last-frame conditioning (one --image arg).
-      // LTX-2 (the older 42 GB model) stays deprecated — superseded by 2.3.
-      // The 2.3 Unified Beta and Distilled Q4 are no longer deprecated:
-      // 2.3 Unified bf16 is the quality ceiling for the mlx_video runtime, and
-      // is now practical on 128 GB unified-memory hardware. Distilled Q4 is
-      // still the shipped default because it works on smaller boxes.
-      { id: 'ltx2_unified',       name: 'LTX-2 Unified (~42 GB)',          repo: 'notapalindrome/ltx2-mlx-av',     runtime: 'mlx_video', steps: 30, guidance: 3.0, deprecated: true },
+      // LTX-2 Unified (the older 42 GB model) was retired in favour of 2.3 —
+      // see RETIRED_VIDEO_MODELS. 2.3 Unified bf16 is the quality ceiling for
+      // the mlx_video runtime and is practical on 128 GB unified-memory
+      // hardware, while Distilled Q4 is both smaller and better than LTX-2 was,
+      // and stays the shipped default because it works on smaller boxes.
       { id: 'ltx23_unified',      name: 'LTX-2.3 Unified Beta (~48 GB, bf16 quality ceiling)', repo: 'notapalindrome/ltx23-mlx-av',    runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)',   repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       // dgrauet's ltx-2-mlx runtime — true KeyframeInterpolationPipeline,
@@ -49,28 +72,181 @@ const DEFAULT_REGISTRY = {
       // via `INSTALL_LTX2=1 bash scripts/setup-image-video.sh`.
       { id: 'ltx23_dgrauet_q4',   name: 'LTX-2.3 dgrauet Q4 (~16 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q8',   name: 'LTX-2.3 dgrauet Q8 (~25 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q8', runtime: 'ltx2', steps: 8, guidance: 3.0 },
-      // Wan 2.2 (Alibaba) — pure-MLX port at osama-ata/Wan2.2-mlx, weights
-      // at Wan-AI/Wan2.2-T2V-A14B. Requires a dedicated venv synced via
-      // `INSTALL_WAN22=1 bash scripts/setup-image-video.sh` (clones the
-      // runtime repo into ~/.portos/wan2.2-mlx). MoE-A14B = 14B active
-      // params at inference, ~28 GB resident at bf16.
+      // MiniMax H3 joint video+audio through PipeNetwork's pinned MLX port.
+      // The quantized DiT is one HF snapshot; the released conditioner + VAEs
+      // are an exact selective file set from MiniMax's upstream snapshot. Both
+      // downloads are explicit in Video Gen, and render-time resolution is
+      // cache-only. The server-owned disclosure attaches the mandatory,
+      // versioned territory/license acceptance gate.
       {
-        id: 'wan22_t2v_a14b',
-        name: 'Wan 2.2 T2V A14B (~28 GB, MoE-14B-active)',
-        repo: 'Wan-AI/Wan2.2-T2V-A14B',
+        id: 'minimax_h3_8bit',
+        name: 'MiniMax H3 MLX 8-bit (joint video + audio, ~103 GB download, 128 GB RAM)',
+        repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+        revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
+        runtime: 'minimax_h3',
+        // H3 is an fl2va model: it conditions on up to two keyframes anchored
+        // at the first / last latent frame. 'image' anchors one at 'first',
+        // 'fflf' anchors both.
+        supportedModes: ['text', 'image', 'fflf'],
+        defaultFrames: 124,
+        frameOptions: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
+        fpsOptions: [24],
+        memoryGb: 128,
+        steps: 8,
+        guidance: 0,
+        samplerLocked: true,
+        samplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.',
+        supportsNegativePrompt: false,
+        supportsTiling: false,
+        supportsDisableAudio: false,
+        requiredWeights: [{
+          repo: 'MiniMaxAI/MiniMax-H3',
+          revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
+          files: [
+            'LICENSE',
+            'FL2VA/model_index.json',
+            'FL2VA/audio_vae/config.json',
+            'FL2VA/audio_vae/metadata.json',
+            'FL2VA/audio_vae/model.safetensors',
+            'FL2VA/text_encoder/config.json',
+            'FL2VA/text_encoder/model-00001-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00002-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00003-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00004-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00005-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00006-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00007-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00008-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00009-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00010-of-00014.safetensors',
+            'FL2VA/text_encoder/model-00011-of-00014.safetensors',
+            // The pinned port truncates Qwen3-VL at layer 50. Index shards
+            // 12/13 contain only layers 53-63 and are intentionally omitted;
+            // shard 14 remains necessary for the final norm tensor.
+            'FL2VA/text_encoder/model-00014-of-00014.safetensors',
+            'FL2VA/text_encoder/model.safetensors.index.json',
+            // Keyframe conditioning runs each image through the Qwen3-VL
+            // processor (AutoProcessor reads the `processor/` directory, not
+            // `tokenizer/`) before the vision tower, whose weights already ride
+            // along in shard 14. ~11 MB total, so it stays in the base download
+            // rather than becoming a second opt-in pull.
+            'FL2VA/processor/chat_template.json',
+            'FL2VA/processor/merges.txt',
+            'FL2VA/processor/preprocessor_config.json',
+            'FL2VA/processor/tokenizer.json',
+            'FL2VA/processor/tokenizer_config.json',
+            'FL2VA/processor/video_preprocessor_config.json',
+            'FL2VA/processor/vocab.json',
+            'FL2VA/tokenizer/merges.txt',
+            'FL2VA/tokenizer/tokenizer.json',
+            'FL2VA/tokenizer/tokenizer_config.json',
+            'FL2VA/tokenizer/vocab.json',
+            'FL2VA/video_vae/config.json',
+            'FL2VA/video_vae/source/config.json',
+            'FL2VA/video_vae/source/model.safetensors',
+          ],
+        }],
+      },
+      // Wan 2.2 through pinned MLX-Gen. Generation is cache-only: PortOS owns
+      // the explicit base/adaptor downloads and uses the saved HF token.
+      {
+        id: 'wan22_ti2v_5b',
+        name: 'Wan 2.2 TI2V 5B Q8 (~17 GiB download, text + image)',
+        repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
+        revision: '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3',
         runtime: 'wan22',
-        mode: 't2v',
+        supportedModes: ['text', 'image'],
+        frameStride: 4,
+        fpsOptions: [16, 20, 24],
+        memoryGb: 24,
         steps: 25,
         guidance: 5.0,
+        flowShift: 3.0,
+        solver: 'unipc',
+      },
+      {
+        id: 'wan22_t2v_a14b',
+        name: 'Wan 2.2 T2V A14B Q8 (~40 GiB download, 64+ GB RAM)',
+        repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+        revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798',
+        runtime: 'wan22',
+        supportedModes: ['text'],
+        frameStride: 4,
+        fpsOptions: [16, 20, 24],
+        memoryGb: 48,
+        steps: 20,
+        guidance: 4.0,
+        guidance2: 3.0,
+        flowShift: 3.0,
+        solver: 'unipc',
       },
       {
         id: 'wan22_i2v_a14b',
-        name: 'Wan 2.2 I2V A14B (~28 GB, image-to-video)',
-        repo: 'Wan-AI/Wan2.2-I2V-A14B',
+        name: 'Wan 2.2 I2V A14B Q8 (~40 GiB download, 64+ GB RAM)',
+        repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit',
+        revision: '1a17fbea2649c576de844e08e79fe56296751efa',
         runtime: 'wan22',
-        mode: 'i2v',
-        steps: 25,
-        guidance: 5.0,
+        supportedModes: ['image'],
+        frameStride: 4,
+        fpsOptions: [16, 20, 24],
+        memoryGb: 48,
+        steps: 20,
+        guidance: 3.5,
+        guidance2: 3.5,
+        flowShift: 3.0,
+        solver: 'unipc',
+      },
+      {
+        id: 'wan22_t2v_a14b_lightning',
+        name: 'Wan 2.2 T2V A14B Lightning Q8 (~40 GiB download, 64+ GB RAM, 4-step)',
+        repo: 'AbstractFramework/wan2.2-t2v-a14b-diffusers-8bit',
+        revision: '39ee5f1f630789956f29f40b5c2c6d48c6e9a798',
+        runtime: 'wan22',
+        supportedModes: ['text'],
+        frameStride: 4,
+        fpsOptions: [16, 20, 24],
+        memoryGb: 48,
+        steps: 4,
+        guidance: 1.0,
+        guidance2: 1.0,
+        flowShift: 5.0,
+        solver: 'euler',
+        samplerLocked: true,
+        requiredWeights: [{
+          repo: 'lightx2v/Wan2.2-Lightning',
+          revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+          files: [
+            'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
+            'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+          ],
+          targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
+        }],
+      },
+      {
+        id: 'wan22_i2v_a14b_lightning',
+        name: 'Wan 2.2 I2V A14B Lightning Q8 (~40 GiB download, 64+ GB RAM, 4-step)',
+        repo: 'AbstractFramework/wan2.2-i2v-a14b-diffusers-8bit',
+        revision: '1a17fbea2649c576de844e08e79fe56296751efa',
+        runtime: 'wan22',
+        supportedModes: ['image'],
+        frameStride: 4,
+        fpsOptions: [16, 20, 24],
+        memoryGb: 48,
+        steps: 4,
+        guidance: 1.0,
+        guidance2: 1.0,
+        flowShift: 5.0,
+        solver: 'euler',
+        samplerLocked: true,
+        requiredWeights: [{
+          repo: 'lightx2v/Wan2.2-Lightning',
+          revision: '18bccf8884ec0a078eed79785eb4ef13ea16ce1e',
+          files: [
+            'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
+            'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+          ],
+          targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
+        }],
       },
       // HunyuanVideo (Tencent) — MLX port at gaurav-nelson/HunyuanVideo_MLX,
       // weights at tencent/HunyuanVideo. 13B params, ~60 GB resident at bf16.
@@ -87,16 +263,15 @@ const DEFAULT_REGISTRY = {
         name: 'HunyuanVideo (13B — fp32-only on MPS, ~4-8 hr per render)',
         repo: 'tencent/HunyuanVideo',
         runtime: 'hunyuan',
-        mode: 't2v',
         steps: 30,
         guidance: 6.0,
         precision: 'fp32',
         deprecated: true,
       },
-    ],
-    windows: [
+    ])),
+    windows: applyVideoFinishProfiles(applyVideoDisclosures([
       { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
-    ],
+    ])),
     defaultMacos: 'ltx23_distilled_q4',
     defaultWindows: 'ltx_video',
   },
@@ -454,6 +629,9 @@ const appendNewlyShippedEntries = (userList, defaultList, shippedIds) => {
 // with 'mlx_video' (the legacy default) for known-legacy ids so the
 // dispatch in videoGen/local.js routes them through `python -m
 // mlx_video.generate_av` rather than treating undefined as ltx2.
+// 'ltx2_unified' is retired (see RETIRED_VIDEO_MODELS) but stays here: an
+// install that re-pointed its entry at a fork keeps that entry, and it still
+// needs the runtime backfill.
 const LEGACY_MLX_VIDEO_IDS = new Set(['ltx2_unified', 'ltx23_unified', 'ltx23_distilled_q4', 'ltx_video']);
 const backfillRuntime = (list) => {
   if (!Array.isArray(list)) return list;
@@ -463,6 +641,59 @@ const backfillRuntime = (list) => {
     if (LEGACY_MLX_VIDEO_IDS.has(entry.id)) return { ...entry, runtime: 'mlx_video' };
     return entry;
   });
+};
+
+// Built-in video models that were delivered to installs and have since been
+// withdrawn. Dropping an id from DEFAULT_REGISTRY is NOT enough on its own: the
+// user's persisted list is what the pickers read, and appendNewlyShippedEntries
+// only ever adds. This is the load-time twin of the retirement migration (247
+// for ltx2_unified) — and it is the load-bearing half, because the registry is
+// cached at import time, BEFORE bootstrapServices() runs migrations, and
+// persistRegistry writes the whole cached object back on the next registry
+// edit. Without this the migration's deletion is undone by the same boot that
+// applied it.
+//
+// `replacement` repoints a `defaultMacos`/`defaultWindows` that named the
+// retired model. getDefaultVideoModelId() would otherwise fall back to the
+// first available entry, which is not necessarily the intended successor.
+//
+// Preservation guard mirrors backfillKvRepo: an entry whose `repo` no longer
+// matches the shipped one is a fork the user pointed at deliberately, so it
+// stays — that is also the escape hatch for anyone who wants a retired model
+// back.
+//
+// Exported so the matching retirement migration can assert it froze the same
+// id/repo/replacement — a typo in either copy would otherwise turn one half of
+// the retirement into a silent no-op with every test still green.
+export const RETIRED_VIDEO_MODELS = Object.freeze({
+  ltx2_unified: Object.freeze({
+    shippedRepo: 'notapalindrome/ltx2-mlx-av',
+    replacement: 'ltx23_distilled_q4',
+  }),
+});
+
+const isRetired = (entry) => {
+  if (!isPlainObject(entry) || typeof entry.id !== 'string') return false;
+  const spec = RETIRED_VIDEO_MODELS[entry.id];
+  // `spec &&` is load-bearing, not defensive: several entries (the Windows
+  // `ltx_video`) carry no `repo` at all, and without the guard an absent spec
+  // would compare `undefined === undefined` and retire every one of them.
+  return Boolean(spec) && entry.repo === spec.shippedRepo;
+};
+
+const dropRetiredEntries = (list) => (
+  Array.isArray(list) ? list.filter((entry) => !isRetired(entry)) : list
+);
+
+// Repoint a platform default that named a model this load just retired. Falls
+// through to the original id when the successor isn't installed either — then
+// getDefaultVideoModelId()'s "unknown default → first available" warning is the
+// honest outcome, rather than naming a model this install doesn't have.
+const resolveRetiredDefault = (configuredId, entries) => {
+  const replacement = RETIRED_VIDEO_MODELS[configuredId]?.replacement;
+  if (!replacement) return configuredId;
+  if (entries.some((entry) => entry?.id === configuredId)) return configuredId; // fork kept it
+  return entries.some((entry) => entry?.id === replacement) ? replacement : configuredId;
 };
 
 // Build the initial shippedIds set for one platform on first encounter
@@ -558,6 +789,22 @@ const normalizeRegistry = (parsed) => {
     list: [...shippedImageIds, ...imageResult.newlyShipped],
   };
 
+  // applyVideoDisclosures is the load-time twin of migration 237: installs
+  // that persisted their registry before `disclosure` existed pick it up
+  // here without waiting for the migration, and both paths share the same
+  // preservation guards (user value wins, forked repo keeps Unknown).
+  // dropRetiredEntries is the same arrangement for migration 247, and runs
+  // FIRST so a withdrawn model isn't handed a disclosure or a Finish edge on
+  // its way out. sanitizeFinishProfiles runs LAST (after the backfill and
+  // after the user's own entries are merged in) so an edge that points at a
+  // model this install deleted — or a hand-edited typo — is dropped with a
+  // warning instead of surfacing a Finish button targeting nothing.
+  const videoEntries = (entries) => sanitizeFinishProfiles(applyVideoFinishProfiles(
+    applyVideoDisclosures(backfillRuntime(dropRetiredEntries(entries))),
+  ));
+  const macosEntries = videoEntries(macosResult.entries);
+  const windowsEntries = videoEntries(windowsResult.entries);
+
   return {
     ...DEFAULT_REGISTRY,
     ...safe,
@@ -566,8 +813,14 @@ const normalizeRegistry = (parsed) => {
     video: {
       ...DEFAULT_REGISTRY.video,
       ...safeVideo,
-      macos: backfillRuntime(macosResult.entries),
-      windows: backfillRuntime(windowsResult.entries),
+      macos: macosEntries,
+      windows: windowsEntries,
+      defaultMacos: resolveRetiredDefault(
+        safeVideo.defaultMacos ?? DEFAULT_REGISTRY.video.defaultMacos, macosEntries,
+      ),
+      defaultWindows: resolveRetiredDefault(
+        safeVideo.defaultWindows ?? DEFAULT_REGISTRY.video.defaultWindows, windowsEntries,
+      ),
     },
     _shippedDefaults: {
       ...(safe._shippedDefaults || {}),
@@ -843,10 +1096,15 @@ export const removeUserModelEntry = (id) => {
 const platformBroken = (broken) =>
   broken === true || (typeof broken === 'string' && broken === (IS_WIN ? 'windows' : 'macos'));
 
+// `supportedModes` is resolved HERE rather than in normalizeRegistry (#3737):
+// deriving on read covers the load path, the user-model mutators (which bypass
+// normalizeRegistry) and peer-synced entries in one place, and keeps the derived
+// list out of data/media-models.json — a persisted copy would read back as a
+// *declared* list that no later correction to VIDEO_RUNTIME_MODES could reach.
 export const getVideoModels = () => {
   const reg = loadMediaModels();
   const list = IS_WIN ? (reg.video.windows || []) : (reg.video.macos || []);
-  return list.filter((m) => !platformBroken(m.broken));
+  return applyVideoSupportedModes(list.filter((m) => !platformBroken(m.broken)));
 };
 
 export const getDefaultVideoModelId = () => {

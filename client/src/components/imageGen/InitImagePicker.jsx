@@ -24,11 +24,13 @@ export default function InitImagePicker({
   backend = 'local',
   disabled = false,
 }) {
-  // i2i runs on both local (FLUX) and codex; the "Flux only" caveat applies only
-  // to the local backend (non-FLUX local models ignore the init image).
+  // i2i runs on every backend the page offers it for. The "Flux only" caveat is
+  // a LOCAL-runner constraint (non-FLUX mflux/diffusers models ignore the init
+  // image) — the cloud CLIs each feed it to their own image tool, so the caveat
+  // must not follow them.
   const subtitle = editOnly
     ? '(required — this model edits an existing image)'
-    : backend === 'codex' ? '(image-to-image)' : '(image-to-image — Flux only)';
+    : backend === 'local' ? '(image-to-image — Flux only)' : '(image-to-image)';
   return (
     <div>
       <label className="block text-xs font-medium text-gray-400 mb-1">

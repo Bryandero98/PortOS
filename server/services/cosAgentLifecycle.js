@@ -185,7 +185,11 @@ export async function completeAgent(agentId, result = {}) {
 
     if (result.success) {
       state.stats.tasksCompleted++;
-    } else {
+    } else if (!result.resumed) {
+      // `resumed` records are retired by `resumeAgent`, not failed: the user paused
+      // the run and its task is already requeued, so the continuation will land in
+      // one of these two counters itself. Counting it here reports an error the user
+      // caused deliberately and never saw.
       state.stats.errors = (state.stats.errors || 0) + 1;
     }
 

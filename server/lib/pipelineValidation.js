@@ -15,6 +15,7 @@ import { WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS } from './writersRoomPresets.
 import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
 import { BIBLE_LIMITS, RELATIONSHIP_LINK_TYPES, RELATIONSHIP_OPPOSITION_AXES, ATTACHMENT_ROLES } from './storyBible.js';
 import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
+import { EFFORT_LEVELS } from './providerModels.js';
 import { CHECK_SCOPES, CHECK_SEVERITIES } from './editorial/checkRegistry.js';
 import { SHOT_TYPES, SCREEN_DIRECTIONS } from './shotGrammar.js';
 
@@ -255,6 +256,36 @@ export const pipelineEditorialChecksSettingsSchema = z.object({
   revisionMinCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionMaxCycles: z.number().int().min(1).max(MAX_CONVERGENCE_ROUNDS).optional(),
   revisionPlateauDelta: z.number().min(0).max(10).optional(),
+  // NOTE: the autopilot's `unlockForRun` option is deliberately NOT stored here.
+  // Every knob in this slice is a spend/quality default that is harmless to
+  // reuse unattended; unlocking rewrites protection state the user set by hand,
+  // and `seriesAutopilotScheduler` reads this slice — so a saved default would
+  // arm lock-clearing for every scheduled run of every series. It is a per-run
+  // option only (see seriesAutopilot/config.js#resolveAutopilotUnlockForRun).
+  // Pipeline self-improvement. When on, a run that ends badly (or finishes with
+  // unhealthy telemetry) spends ONE extra LLM call diagnosing whether the
+  // AUTOMATION is at fault — a missing editorial step earlier in the pipeline, a
+  // prompt producing unusable output, a runner swallowing a failure — and files
+  // a CoS task against PortOS itself to fix it. Defaults OFF (opt-in): it is
+  // fresh LLM spend AND it queues work that changes PortOS's own code.
+  // The filed task always awaits human approval, runs in a worktree and opens a
+  // PR — that is not configurable, matching every other autonomously generated
+  // code-editing task in PortOS. Optional + additive so older peers fall
+  // through to off.
+  selfImprove: z.boolean().optional(),
+  // Observing orchestrator — the continuous, self-dispatching sibling of
+  // selfImprove. When on, an autopilot run watches its own telemetry step by
+  // step and dispatches AUTO-APPROVED PortOS fix tasks (worktree + PR + review
+  // loop + merge, no human gate) as pipeline defects surface, so unattended
+  // runs continuously harden the pipeline itself. Defaults OFF (opt-in): it is
+  // fresh LLM spend AND standing consent for unattended changes to PortOS's own
+  // code — enabling it is that consent (see seriesAutopilot/observer.js for the
+  // structural guards: execute-mode only, budget-gated, pass-capped, raised
+  // confidence bar, full PR review loop). Persistable deliberately, unlike
+  // unlockForRun: a scheduled unattended run is exactly where the user wants
+  // the pipeline improving itself. Optional + additive so older peers fall
+  // through to off.
+  observer: z.boolean().optional(),
 }).strict();
 
 // Cursor-context payload for the CD-bridge suggest route — identical shape to
@@ -556,6 +587,16 @@ export const stageConfigUpdateSchema = z.object({
   // saved config, so schema parity is required in the same change.
   judgeProvider: z.string().nullable().optional(),
   judgeModel: z.string().nullable().optional(),
+  // Per-stage reasoning-effort pin (#3641). Optional and opt-in: with no pin the
+  // stage inherits a run-level `effortDefault` (Series Autopilot's run effort),
+  // then the provider's own config. Validated against the union of every accepted
+  // effort value across effort-capable CLIs — the runner clamps a level the chosen
+  // provider doesn't offer down its ladder. `null`/'' clears the pin. Without this
+  // key the `.strip()` below would silently drop a pin on save.
+  effort: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.enum(EFFORT_LEVELS).nullable().optional(),
+  ),
   // Multi-candidate draft gate (#2169, CWQE Phase 5). Opt-in, DEFAULT OFF
   // (draftAttempts 1 = single generation, no gate) because each extra attempt
   // multiplies generation + judge cost. When > 1, generateStage re-rolls a fresh

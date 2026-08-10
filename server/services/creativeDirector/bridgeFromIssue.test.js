@@ -124,4 +124,23 @@ describe('produceVideoFromIssue (#2185)', () => {
     const stageOpts = mockRunStagedLLM.mock.calls[0][2];
     expect(stageOpts).toMatchObject({ providerDefault: 'anthropic', modelDefault: 'opus' });
   });
+
+  it('carries the caller\'s render-backend pin and video model onto the teaser (#3135)', async () => {
+    // The teaser is the deliverable when a creative commission's plan reaches
+    // this tool — minting it unpinned would render on the install default while
+    // the commission says "Grok".
+    await produceVideoFromIssue('iss-1', {
+      renderBackend: { video: { mode: 'grok' } },
+      modelId: 'wan-2.2',
+    });
+    expect(mockCreateProject.mock.calls[0][0]).toMatchObject({
+      renderBackend: { video: { mode: 'grok' } },
+      modelId: 'wan-2.2',
+    });
+  });
+
+  it('mints an unpinned teaser on the install default when no caller pins one', async () => {
+    await produceVideoFromIssue('iss-1');
+    expect(mockCreateProject.mock.calls[0][0]).toMatchObject({ renderBackend: null, modelId: 'ltx-model' });
+  });
 });

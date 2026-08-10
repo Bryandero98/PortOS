@@ -228,7 +228,7 @@ export const generateThumbnail = async (videoPath, jobId) => {
 // (`-count_frames stream=nb_read_frames`) for containers that don't expose
 // nb_frames in their header. Returns null when both paths fail or the
 // reported count is unusable.
-const probeFrameCount = async (videoPath) => {
+export const probeFrameCount = async (videoPath) => {
   const run = async (countFrames) => {
     const stdout = await runFfprobe([
       '-v', 'error',
@@ -340,6 +340,193 @@ export const extractEvaluationFrames = async (videoPath, jobId, count = 5) => {
   return frameIndices.map((_, i) => `${jobId}-f${i + 1}.jpg`);
 };
 
+// The one H.264 encode profile every re-encoding path here shares. Visually
+// lossless to most viewers and plays everywhere — but the reason it's a
+// constant rather than three inlined copies is that clips encoded by DIFFERENT
+// paths get concatenated together (a chained render's trimmed chunks join its
+// untrimmed ones), and a mismatch there shows up as one segment being graded
+// differently from its neighbours. Callers append their own `-c:a`.
+export const H264_ENCODE_ARGS = Object.freeze([
+  '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'medium',
+]);
+export const AAC_ENCODE_ARGS = Object.freeze(['-c:a', 'aac', '-b:a', '192k']);
+
+// Move a freshly-encoded temp file over the file it replaces.
+//
+// POSIX rename atomically replaces an existing destination in one syscall. On
+// Windows, fs.rename fails when the destination already exists — but a simple
+// unlink-first would destroy the original if the subsequent rename failed
+// (locked file, AV scan, transient permissions). Move the original aside to a
+// .bak first, install the new file, and restore the backup on any failure, so
+// the worst case is "the operation was skipped", never "the video is gone".
+//
+// Extracted because three callers (`trimVideoFromFrame`, `upscaleVideo2x`,
+// `optimizeForStreaming`) need this identical rollback, and a data-loss-
+// sensitive path with three copies is one that eventually gets fixed in only
+// two of them. `label` names the operation for the failure message.
+//
+// Returns `{ ok: true, outPath }` or `{ ok: false, reason }`.
+const installEncodedVideo = async (tmpPath, targetPath, label) => {
+  let backupPath = null;
+  try {
+    if (IS_WIN) {
+      backupPath = `${targetPath}.bak.${randomUUID()}`;
+      await rename(targetPath, backupPath).catch((err) => {
+        if (err?.code === 'ENOENT') { backupPath = null; return; }
+        throw err;
+      });
+    }
+    await rename(tmpPath, targetPath);
+    if (backupPath) await unlink(backupPath).catch(() => {});
+    return { ok: true, outPath: targetPath };
+  } catch (err) {
+    if (backupPath) await rename(backupPath, targetPath).catch(() => {});
+    await unlink(tmpPath).catch(() => {});
+    return { ok: false, reason: `Failed to install ${label} video: ${err.message}` };
+  }
+};
+
+// Keep frames [startFrame, end) of a clip, dropping everything before it.
+//
+// Both halves of the chained-render context window need exactly this cut: the
+// tail window handed to LTX-2's extend pipeline is "keep the last N frames"
+// (startFrame = total - N), and trimming the echoed context back off an extend
+// render is "keep everything after the echo" (startFrame = prefix length). See
+// `lib/videoContinuity.js` for how those indices are derived.
+//
+// Frame-exact by construction: the `trim` filter cuts on a frame INDEX rather
+// than a timestamp, so the seam can't drift by a frame the way an `-ss` seek
+// can — and a one-frame drift here is a visible stutter or a repeated frame in
+// the stitched clip. `atrim` cuts the audio at the matching timestamp so LTX's
+// jointly-generated soundtrack stays in sync; a silent clip takes `-an`
+// instead, because referencing a missing audio stream aborts the whole run.
+//
+// Re-encodes (a frame-index cut can't be stream-copied — the new first frame
+// is almost never a keyframe). Callers that then concat the result must
+// re-encode at concat time too rather than relying on `-c copy`.
+//
+// `outPath` may be the input path: the encode goes to a sibling temp file and
+// is renamed into place, so a failure leaves the original untouched.
+//
+// Returns `{ ok: true, outPath }` or `{ ok: false, reason }`.
+export const trimVideoFromFrame = async (videoPath, outPath, { startFrame, fps } = {}) => {
+  if (typeof videoPath !== 'string' || !videoPath) return { ok: false, reason: 'invalid video path' };
+  if (typeof outPath !== 'string' || !outPath) return { ok: false, reason: 'invalid output path' };
+  if (!existsSync(videoPath)) return { ok: false, reason: 'video file missing' };
+  const start = Math.max(0, Math.floor(Number(startFrame) || 0));
+  const rate = Number(fps);
+  if (!Number.isFinite(rate) || rate <= 0) return { ok: false, reason: `invalid fps: ${fps}` };
+  const ffmpeg = await findFfmpeg();
+  if (!ffmpeg) return { ok: false, reason: 'ffmpeg not found' };
+
+  const inPlace = resolvePath(videoPath) === resolvePath(outPath);
+  const encodePath = inPlace ? `${videoPath}.trim.mp4` : outPath;
+  if (!inPlace) await ensureDir(dirname(outPath));
+
+  const audio = await hasAudioStream(videoPath);
+  const result = await runFfmpegProcess({
+    bin: ffmpeg,
+    args: [
+      '-i', videoPath,
+      '-vf', `trim=start_frame=${start},setpts=PTS-STARTPTS`,
+      ...(audio
+        // atrim takes seconds; the frame index converts exactly because the
+        // clips this runs on are CFR renders straight out of the model.
+        ? ['-af', `atrim=start=${(start / rate).toFixed(6)},asetpts=PTS-STARTPTS`, ...AAC_ENCODE_ARGS]
+        : ['-an']),
+      ...H264_ENCODE_ARGS,
+      '-movflags', '+faststart',
+      '-y', encodePath,
+    ],
+  });
+  if (!result.ok) {
+    await unlink(encodePath).catch(() => {});
+    return { ok: false, reason: `ffmpeg trim failed: ${result.reason}` };
+  }
+  if (!inPlace) return { ok: true, outPath };
+  return installEncodedVideo(encodePath, videoPath, 'trimmed');
+};
+
+// Build the ffmpeg argv that concatenates a list of clips where SOME of them
+// must drop a leading run of frames first (`startFrame > 0`).
+//
+// Why a filter graph rather than trimming the files and running the concat
+// demuxer over them: a frame-index trim can't be stream-copied, so cutting
+// each clip in place costs one full encode per clip — and it also knocks the
+// trimmed clips out of codec lockstep with the untrimmed ones, forcing the
+// concat itself to re-encode too. Doing the cut inside the concat's own graph
+// collapses all of that into the single timeline encode that was going to
+// happen anyway, and leaves the source clips byte-identical on disk.
+//
+// Mirrors the shape `services/videoTimeline/local.js` renders projects with —
+// including the belt-and-suspenders normalization. `scale`+`pad`+`setsar` and
+// `fps=` on the video leg, `aresample`+`aformat` on the audio leg, are what
+// keep ffmpeg from aborting the whole run with "Input link parameters do not
+// match" when the inputs disagree even slightly. `width`/`height`/`fps` are
+// each applied only when they resolve to a usable number, so a caller that
+// doesn't know a canonical value simply gets no normalization for it rather
+// than an `undefined` in the graph.
+//
+// `withAudio` must be true only when EVERY input carries an audio stream
+// (`hasAudioStream`): `concat=a=1` needs an audio leg from each input, and
+// referencing `[k:a]` on a silent clip aborts the run. A mixed set takes the
+// video-only graph, which is what a chain of silent AI renders wants anyway.
+export const buildTrimConcatArgs = ({ inputs, outPath, width, height, fps, withAudio = false }) => {
+  const clips = Array.isArray(inputs) ? inputs : [];
+  if (clips.length < 2) return null;
+  const canonW = Number(width);
+  const canonH = Number(height);
+  const rate = Number(fps);
+  const hasDims = Number.isFinite(canonW) && canonW > 0 && Number.isFinite(canonH) && canonH > 0;
+  const hasRate = Number.isFinite(rate) && rate > 0;
+  // An audio leg on a trimmed input needs `atrim`'s start TIMESTAMP, which
+  // only exists if we know the frame rate. Without one, drop the audio rather
+  // than emit a graph whose audio and video are offset from each other.
+  const trimsAudio = clips.some((c) => Math.floor(Number(c?.startFrame) || 0) > 0);
+  const audio = Boolean(withAudio) && (hasRate || !trimsAudio);
+
+  const filters = [];
+  const concatStreams = [];
+  clips.forEach((clip, i) => {
+    const startFrame = Math.max(0, Math.floor(Number(clip?.startFrame) || 0));
+    // `trim` leads the chain on purpose. `start_frame` is an index into the
+    // frames the filter SEES, so cutting before `fps=` resamples keeps it an
+    // index into the source — which is what the caller measured with
+    // `probeFrameCount`. It also means the discarded frames never get scaled
+    // or padded, which on a windowed chain is roughly half of every chunk.
+    const video = [
+      ...(startFrame > 0 ? [`trim=start_frame=${startFrame}`] : []),
+      'setpts=PTS-STARTPTS',
+      ...(hasDims ? [`scale=${canonW}:${canonH}:force_original_aspect_ratio=decrease,pad=${canonW}:${canonH}:(ow-iw)/2:(oh-ih)/2,setsar=1`] : []),
+      ...(hasRate ? [`fps=${rate}`] : []),
+    ];
+    filters.push(`[${i}:v]${video.join(',')}[v${i}]`);
+    if (audio) {
+      const track = [
+        // The frame index converts exactly because these are CFR renders.
+        ...(startFrame > 0 ? [`atrim=start=${(startFrame / rate).toFixed(6)}`] : []),
+        'asetpts=PTS-STARTPTS',
+        'aresample=48000',
+        'aformat=sample_fmts=fltp:channel_layouts=stereo',
+      ];
+      filters.push(`[${i}:a]${track.join(',')}[a${i}]`);
+    }
+    concatStreams.push(audio ? `[v${i}][a${i}]` : `[v${i}]`);
+  });
+  filters.push(`${concatStreams.join('')}concat=n=${clips.length}:v=1:a=${audio ? 1 : 0}[outv]${audio ? '[outa]' : ''}`);
+
+  return [
+    ...clips.flatMap((clip) => ['-i', clip.path]),
+    '-filter_complex', filters.join(';'),
+    '-map', '[outv]',
+    ...(audio ? ['-map', '[outa]'] : []),
+    ...H264_ENCODE_ARGS,
+    ...(audio ? AAC_ENCODE_ARGS : ['-an']),
+    '-movflags', '+faststart',
+    '-y', outPath,
+  ];
+};
+
 // 2× Lanczos upscale of an MP4 in place. Doubles width and height while
 // preserving the exact aspect ratio and the audio track. Used as a quick
 // post-render export option for LTX renders that come out at sub-720p
@@ -378,10 +565,7 @@ export const upscaleVideo2x = async (videoPath) => {
     args: [
       '-i', videoPath,
       '-vf', 'scale=iw*2:-2:flags=lanczos',
-      '-c:v', 'libx264',
-      '-pix_fmt', 'yuv420p',
-      '-crf', '18',
-      '-preset', 'medium',
+      ...H264_ENCODE_ARGS,
       '-c:a', 'copy',
       '-movflags', '+faststart',
       '-y', tmpPath,
@@ -391,23 +575,7 @@ export const upscaleVideo2x = async (videoPath) => {
     await unlink(tmpPath).catch(() => {});
     return { ok: false, reason: 'ffmpeg upscale failed' };
   }
-  let backupPath = null;
-  try {
-    if (IS_WIN) {
-      backupPath = `${videoPath}.bak.${randomUUID()}`;
-      await rename(videoPath, backupPath).catch((err) => {
-        if (err?.code === 'ENOENT') { backupPath = null; return; }
-        throw err;
-      });
-    }
-    await rename(tmpPath, videoPath);
-    if (backupPath) await unlink(backupPath).catch(() => {});
-    return { ok: true, outPath: videoPath };
-  } catch (err) {
-    if (backupPath) await rename(backupPath, videoPath).catch(() => {});
-    await unlink(tmpPath).catch(() => {});
-    return { ok: false, reason: `Failed to install upscaled video: ${err.message}` };
-  }
+  return installEncodedVideo(tmpPath, videoPath, 'upscaled');
 };
 
 // MP4s with the moov atom at the END require browsers to download the entire
@@ -423,27 +591,8 @@ export const optimizeForStreaming = async (videoPath) => {
     args: ['-i', videoPath, '-c', 'copy', '-movflags', '+faststart', '-y', tmpPath],
   });
   if (!result.ok) { await unlink(tmpPath).catch(() => {}); return; }
-  // POSIX rename atomically replaces an existing dest in one syscall. On
-  // Windows, fs.rename fails when the destination already exists — but a
-  // simple unlink-first would destroy the rendered video if the subsequent
-  // rename failed (locked file, AV scan, transient permissions). Move the
-  // original aside to a .bak first, then install the optimized file, and
-  // restore the backup on any failure so the worst case is "faststart
-  // skipped", not "rendered video lost".
-  let backupPath = null;
-  try {
-    if (IS_WIN) {
-      backupPath = `${videoPath}.bak.${randomUUID()}`;
-      await rename(videoPath, backupPath).catch((err) => {
-        if (err?.code === 'ENOENT') { backupPath = null; return; }
-        throw err;
-      });
-    }
-    await rename(tmpPath, videoPath);
-    if (backupPath) await unlink(backupPath).catch(() => {});
-  } catch (err) {
-    if (backupPath) await rename(backupPath, videoPath).catch(() => {});
-    await unlink(tmpPath).catch(() => {});
-    console.log(`⚠️ Failed to install streaming-optimized video at ${videoPath}: ${err.message}`);
-  }
+  // Best-effort: faststart is a nicety, so a failed install is logged and
+  // swallowed rather than surfaced — the original clip is already restored.
+  const installed = await installEncodedVideo(tmpPath, videoPath, 'streaming-optimized');
+  if (!installed.ok) console.log(`⚠️ ${installed.reason} (at ${videoPath})`);
 };

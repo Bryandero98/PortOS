@@ -22,6 +22,7 @@ import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO, RECORD_RENDER_MODEL_MAX } f
 import { GROK_VIDEO_DURATIONS } from './grokVideoClip.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { EFFORT_LEVELS } from './providerModels.js';
+import { MAX_TIMEOUT as AI_RUN_TIMEOUT_MAX_MS, MIN_TIMEOUT as AI_RUN_TIMEOUT_MIN_MS } from './aiToolkit/constants.js';
 
 // Clip lengths grok's image_to_video delivers, as a Zod union built from the
 // single shared list (see grokVideoClip.js). `z.literal` per value rather than
@@ -415,7 +416,7 @@ export const providerSchema = z.object({
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
   defaultModel: z.string().nullable().optional(),
-  timeout: z.number().int().min(1000).max(600000).optional(),
+  timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional(),
   enabled: z.boolean().optional(),
   // Explicit opt-in to attach the API key to an arbitrary (non-local,
   // non-allowlisted) endpoint — mirrors the aiToolkit providerSchema. Guards
@@ -439,7 +440,7 @@ export const runSchema = z.object({
   workspaceId: z.string(),
   command: z.string().optional(),
   prompt: z.string().optional(),
-  timeout: z.number().int().min(1000).max(600000).optional()
+  timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional()
 });
 
 // =============================================================================
@@ -616,6 +617,11 @@ export const seriesAutopilotScheduleSchema = z.object({
   timezone: z.string().min(1).max(64).optional(),
   provider: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(120).optional()),
   model: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(200).optional()),
+  // Optional per-schedule reasoning effort (#3641), mapped to the run's
+  // `effortOverride`. Validated against the union of accepted levels across
+  // effort-capable CLIs; the runner clamps a level the chosen provider doesn't
+  // offer and drops it for a provider with no effort control.
+  effort: z.preprocess((v) => (v === '' ? undefined : v), z.enum(EFFORT_LEVELS).optional()),
 }).strict();
 
 export const seriesAutopilotSettingsSchema = z.object({
@@ -1115,6 +1121,19 @@ export const renderDefaultsSettingsSchema = z.object(
 export const videoGenSettingsSchema = z.object({
   mode: videoModePinSchema,
   defaultModelId: z.preprocess(emptyToNull, z.string().trim().max(64).nullable().optional()),
+  // Install-wide acknowledgement of restricted-model license gates, stored as
+  // the exact reviewed-license ids (`termsGate.id`). Written through
+  // POST /api/video-gen/model-terms; typed here so a Settings save can't put
+  // junk where the render gate reads authorization from.
+  acceptedModelTerms: z.array(z.string().trim().min(1).max(128)).max(50).optional(),
+});
+
+// POST /api/video-gen/model-terms — record (or withdraw) the acknowledgement of
+// one restricted model's reviewed license. `termsId` is the exact versioned
+// gate id; the route rejects ids no shipped model declares.
+export const videoModelTermsSchema = z.object({
+  termsId: z.string().trim().min(1).max(128),
+  accepted: z.boolean(),
 });
 
 // Per-RECORD render pin (#3231 Phase 3) — the flat `imageMode`/`imageModelId`

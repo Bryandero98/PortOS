@@ -20,6 +20,7 @@ import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normal
 import { isPlainObject } from '../lib/objects.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
+import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, isAgentPausedTask, resolvePausedTaskResume, retirePausedAgent } from '../lib/taskPauseHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
@@ -43,6 +44,18 @@ export const PRIORITY_VALUES = {
 };
 
 const CLAIM_KEY_SET = new Set(CLAIM_METADATA_KEYS);
+
+
+// Blocked categories that mean "paused until something outside the task
+// changes", not "this task is finished with". A pause keeps the resume pointer
+// (see updateTask) and is never auto-expired by the failure reaper (see
+// NON_REAPABLE_BLOCKED_CATEGORIES, which includes these) — the task is expected
+// to run again once the cooldown lapses or the user fixes the config.
+export const PAUSED_BLOCKED_CATEGORIES = new Set([
+  'orphan-cooldown',   // timed cooldown; unblockExpiredOrphanCooldowns revives it
+  'app-unresolved',    // the task's app has no usable Repository Path
+  'workspace-invalid'  // the resolved workspace isn't a usable directory
+]);
 
 // A task is terminal once it is completed or blocked — the same set cosTaskMerge's
 // release-on-transition uses. Consumed by the LI cross-peer verdict consume (#2779) to
@@ -321,6 +334,11 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // affectedTasks names every task blocked on the cause (later dedup hits union in).
     if (taskData.isInvestigation === true) metadata.isInvestigation = true;
     if (taskData.investigationFingerprint) metadata.investigationFingerprint = taskData.investigationFingerprint;
+    // Why an approval-required task is waiting on the user, as a namespaced token
+    // (e.g. `investigation-loop:repeat-fingerprint`). Producer-agnostic on purpose
+    // — any producer that holds a task can write it and the UI explains the hold
+    // without a per-producer key. Absent on auto-approved tasks.
+    if (taskData.approvalReason) metadata.approvalReason = taskData.approvalReason;
     if (Array.isArray(taskData.affectedTasks) && taskData.affectedTasks.length > 0) metadata.affectedTasks = taskData.affectedTasks;
     if (taskData.createJiraTicket) metadata.createJiraTicket = true;
     // Boolean flags: persist both true and false so users can explicitly override defaults.
@@ -492,9 +510,64 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
 }
 
 /**
- * Update an existing task
+ * Update an existing task.
+ *
+ * Wraps the persisted write with the rest of the pause release (#3730). Dropping
+ * `PAUSE_METADATA_KEYS` on the blocked transition (below) stops a revived task from
+ * advertising a pause it no longer has, but a pause is not only bookkeeping: the run
+ * that paused left a branch — usually a whole worktree — behind, and the resumed run
+ * has to be POINTED at it or it starts clean and redoes that work. Resolving that
+ * pointer lived in `resumeAgent`, so the Resume dialog resumed properly while every
+ * other door into `blocked(agent-paused) → pending` (the Tasks-tab status toggle's
+ * bare `{ status: 'pending' }`, and `reviveBlockedTask` on behalf of on-demand Run /
+ * pipeline advance / Creative Director / manual job trigger / voice dispatch) still
+ * spawned a second agent on a clean workspace. Owning it at the transition fixes
+ * them all, and future callers by construction.
+ *
+ * The resolve runs BEFORE the lock and the retire AFTER it. Both reach the agent
+ * layer through the registered adapter, and `retirePausedAgent` writes agent state
+ * via `completeAgent` — which takes the same non-reentrant `withStateLock`, so
+ * running either inside would deadlock. Resolving first is also what keeps the task
+ * from ever being `pending` (spawnable) without its pointer.
  */
 export async function updateTask(taskId, updates, taskType = 'user', { now = Date.now() } = {}) {
+  const release = await preparePauseRelease(taskId, updates);
+  const result = await writeTaskUpdate(taskId, release ? { ...updates, metadata: release.metadata } : updates, taskType, { now });
+  if (release && !result?.error) {
+    await retirePausedAgent(release.agentId, taskId, result?.metadata?.existingBranch || null);
+  }
+  return result;
+}
+
+/**
+ * Is this update releasing a user pause, and if so what does the resumed run need?
+ *
+ * `null` for every other update — including a paused task moving to any status but
+ * `pending` (terminating a paused task is not a resume; nothing to point at, and the
+ * record's retirement belongs to whatever terminated it), and a pending flip on a
+ * task nobody paused. `pausedAgentId` is required: without it there is no record to
+ * resolve a pointer from or retire, so the flip is an ordinary unblock.
+ */
+async function preparePauseRelease(taskId, updates) {
+  if (updates?.status !== 'pending') return null;
+  const task = await getTaskById(taskId).catch(() => null);
+  if (!isAgentPausedTask(task)) return null;
+  const agentId = task.metadata?.pausedAgentId;
+  if (!agentId) return null;
+
+  // Fails open to "start clean" the way every other resume-pointer caller does:
+  // un-blocking the task matters more than resuming it in place, and the worktree
+  // stays on disk for a human either way.
+  const pointer = await resolvePausedTaskResume(task).catch(err => {
+    console.error(`❌ Resume pointer for task ${taskId} could not be resolved: ${err.message}`);
+    return {};
+  });
+  // The caller's own metadata still wins — the Resume dialog's provider/model/context
+  // overrides, and a caller that resolved a pointer itself.
+  return { agentId, metadata: { ...pointer, ...(updates.metadata || {}) } };
+}
+
+async function writeTaskUpdate(taskId, updates, taskType, { now }) {
   return withStateLock(async () => {
   const state = await loadState();
   const filePath = taskType === 'user'
@@ -528,9 +601,18 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
     if (updates[f] !== undefined) updatedMetadata[f] = updates[f] ?? undefined;
   }
 
-  // Clear blocked/failure metadata when transitioning out of blocked status
+  // Clear blocked/failure metadata when transitioning out of blocked status.
+  //
+  // The PAUSE keys go with them (`PAUSE_METADATA_KEYS`, lib/taskPauseHold.js).
+  // `resumeAgent` is not the only way a paused task runs again — a dedupe revive, an
+  // autopilot re-dispatch, an orphan-cooldown expiry, or a human unblocking it from
+  // the task list all flip it back to `pending` through here. Clearing only in
+  // `resumeAgent` left every one of those paths running a task that still advertised
+  // a live pause: the UI kept showing it parked, and `resumeAgent` on the still-paused
+  // agent record then read its own pause as spent and spawned a SECOND agent on a
+  // fresh task. The clear belongs at the transition, not at one caller.
   if (updates.status && updates.status !== 'blocked' && tasks[taskIndex].status === 'blocked') {
-    for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'failureCount', 'lastErrorCategory', 'lastFailureAt']) {
+    for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'failureCount', 'lastErrorCategory', 'lastFailureAt', ...PAUSE_METADATA_KEYS]) {
       delete updatedMetadata[key];
     }
   }
@@ -545,12 +627,16 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   // long-merged branch. Only cleared on terminal statuses — a `pending` retry is
   // exactly who needs the pointer intact.
   //
-  // An `orphan-cooldown` block is the exception: it is a TIMED PAUSE, not a
-  // terminal state — `unblockExpiredOrphanCooldowns` (cosTaskGenerator.js) flips it
-  // back to `pending` on its own once `cooldownUntil` passes. Stripping the pointer
-  // there means the revived task starts clean and abandons the worktree its dead
-  // agent left behind, which is exactly the recovery this mechanism exists for.
-  if (isTerminalTaskStatus(updates.status) && updatedMetadata.blockedCategory !== 'orphan-cooldown') {
+  // PAUSE-shaped blocks are the exception (`PAUSED_BLOCKED_CATEGORIES`): the task
+  // is waiting on something outside itself and is expected to run again, so its
+  // pointer is not spent. `orphan-cooldown` is a TIMED pause —
+  // `unblockExpiredOrphanCooldowns` (cosTaskGenerator.js) flips it back to
+  // `pending` once `cooldownUntil` passes. The workspace blocks are a CONFIG pause:
+  // the app's Repository Path is missing/unreachable, and the user fixes it and
+  // revives the task. Stripping the pointer in either case means the revived task
+  // starts clean and abandons the worktree its dead agent left behind — which is
+  // exactly the recovery this mechanism exists for.
+  if (isTerminalTaskStatus(updates.status) && !PAUSED_BLOCKED_CATEGORIES.has(updatedMetadata.blockedCategory)) {
     delete updatedMetadata.existingBranch;
     delete updatedMetadata.resumedFromAgentId;
     delete updatedMetadata.resumeWorktreePath;
@@ -803,9 +889,16 @@ export const DEFAULT_REAP_LIMIT = 50;
 // stale failure artifact — the reaper leaves these alone. Everything else with a
 // `blockedCategory` is a failure-path block and therefore reapable.
 const NON_REAPABLE_BLOCKED_CATEGORIES = new Set([
-  'user-terminated',      // user explicitly stopped the agent
-  'agent-paused',         // user paused; resumable on demand
-  'challenge-escalation'  // parked awaiting the user's arbitration
+  'user-terminated',        // user explicitly stopped the agent
+  AGENT_PAUSED_CATEGORY,    // user paused; resumable on demand
+  'challenge-escalation', // parked awaiting the user's arbitration
+  // The workspace blocks are an OPEN user decision, not a stale failure: the task
+  // is waiting for the app's Repository Path to be fixed, and auto-completing it
+  // at 14 days would silently retire work nobody decided to drop. (The third
+  // pause category, `orphan-cooldown`, stays reapable — it revives itself in
+  // ~30 minutes, so one still sitting there after 14 days IS stale.)
+  'app-unresolved',
+  'workspace-invalid'
 ]);
 
 // Durable marker + legacy-headline fallback for an investigation task. Kept

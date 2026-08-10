@@ -39,9 +39,10 @@ export const getAgentActivityStats = (agentId, days = 7) =>
 export const getCosStatus = () => request('/cos');
 export const startCos = (options = {}) => request('/cos/start', { method: 'POST', ...options });
 export const stopCos = (options = {}) => request('/cos/stop', { method: 'POST', ...options });
-export const pauseCos = (reason) => request('/cos/pause', {
+export const pauseCos = (reason, options = {}) => request('/cos/pause', {
   method: 'POST',
-  body: JSON.stringify({ reason })
+  body: JSON.stringify({ reason }),
+  ...options,
 });
 export const resumeCos = (options = {}) => request('/cos/resume', { method: 'POST', ...options });
 export const getCosConfig = (options) => request('/cos/config', options);
@@ -109,6 +110,15 @@ export const terminateCosAgent = (id) => request(`/cos/agents/${id}/terminate`, 
 export const pauseCosAgent = (id, reason, options = {}) => request(`/cos/agents/${id}/pause`, {
   method: 'POST',
   body: JSON.stringify({ reason }),
+  ...options
+});
+// Resume a PAUSED agent: the server requeues that agent's own task on the branch
+// and worktree its run left behind. `overrides` are the resume dialog's edits
+// (extra context, provider/model/effort/app) — omit a field to keep the paused
+// run's value.
+export const resumeCosAgent = (id, overrides = {}, options = {}) => request(`/cos/agents/${id}/resume`, {
+  method: 'POST',
+  body: JSON.stringify(overrides),
   ...options
 });
 export const killCosAgent = (id, options = {}) => request(`/cos/agents/${id}/kill`, { method: 'POST', ...options });
