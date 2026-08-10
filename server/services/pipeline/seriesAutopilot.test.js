@@ -1458,12 +1458,27 @@ describe('isResolveRegression (pure resolve-round damage check)', () => {
       .toBeLessThan(0.4);
     expect(sameFinding(f('the mentor subplot is dropped', 'V3'), f('the finale hook is unresolved', 'V4')))
       .toBe(false);
-    // A location label can't swallow a longer one that starts the same way —
-    // containment matches whole words, not prefixes.
+    // A single shared word is a coincidence, not an identity: both of these
+    // reduce to {fix} once the structural nouns are dropped, which would
+    // otherwise score a perfect 1.0 containment.
+    expect(sameFinding(f('fix volume 3', 'volume 3'), f('fix arc one', 'arc one'))).toBe(false);
+  });
+
+  it('needs the PROBLEM to agree — a shared location alone is not one finding', () => {
+    // Two genuinely different defects routinely sit in the same volume. Fusing
+    // them would revert a round that closed what it targeted and merely exposed
+    // something else next door — the over-strict rollback this guard must avoid.
+    expect(sameFinding(f('the eclipse is staged twice', 'volume 3'), f('the mentor never returns', 'volume 3')))
+      .toBe(false);
+    // Naming the same place only LOWERS how much of the prose has to agree.
+    expect(sameFinding(
+      f('the eclipse is staged twice across the opening volumes', 'volume 3'),
+      f('eclipse staged as a first-time event in two places, and the mentor thread also stalls here', 'volume 3 — act two'),
+    )).toBe(true);
+    // Whole-word location containment: a label can't swallow a longer one that
+    // starts the same way.
     expect(sameFinding(f('x', 'V1'), f('y', 'V10'))).toBe(false);
     expect(sameFinding(f('x', 'volume 3'), f('y', 'volume 30'))).toBe(false);
-    // The same place at two altitudes IS one location.
-    expect(sameFinding(f('x', 'volume 3'), f('y', 'volume 3 — act two'))).toBe(true);
   });
 });
 

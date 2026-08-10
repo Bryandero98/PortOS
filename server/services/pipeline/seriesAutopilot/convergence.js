@@ -112,58 +112,74 @@ function contentTokens(value) {
   return out;
 }
 
-/**
- * Containment overlap of two findings' prose: shared content tokens over the
- * SMALLER token set, so a terse restatement of a long finding still scores high
- * (Jaccard would punish it for the length difference). 0 when either side has
- * no content tokens. Pure.
- */
-export function findingTextOverlap(a, b) {
+// Shared content tokens of two findings' prose, plus the containment score:
+// shared over the SMALLER token set, so a terse restatement of a long finding
+// still scores high (Jaccard would punish it for the length difference).
+function overlapStats(a, b) {
   const left = contentTokens(a);
   const right = contentTokens(b);
-  if (left.size === 0 || right.size === 0) return 0;
+  if (left.size === 0 || right.size === 0) return { shared: 0, score: 0 };
   let shared = 0;
   for (const tok of left) if (right.has(tok)) shared += 1;
-  return shared / Math.min(left.size, right.size);
+  return { shared, score: shared / Math.min(left.size, right.size) };
 }
 
+/** Containment overlap of two findings' prose, 0..1. Pure. */
+export const findingTextOverlap = (a, b) => overlapStats(a, b).score;
+
 // How much of the smaller finding's prose must be shared before two findings
-// from different verify calls are treated as the same one.
+// from different verify calls are treated as the same one, and how many content
+// tokens that has to amount to. The token floor is what keeps a one-word
+// coincidence from scoring 1.0: "fix volume 3" and "fix arc one" both reduce to
+// {fix} once the structural nouns are dropped.
 export const FINDING_MATCH_MIN_OVERLAP = 0.4;
+const FINDING_MATCH_MIN_SHARED = 2;
+// Both relax when the two findings name the same place — a location that already
+// agrees is corroboration, so less of the prose has to.
+export const FINDING_MATCH_MIN_OVERLAP_SAME_LOCATION = 0.25;
+const FINDING_MATCH_MIN_SHARED_SAME_LOCATION = 1;
+
+/**
+ * True when two locations name the same place. Whole-word containment covers
+ * "volume 3" vs "volume 3 act two" (the same place at two altitudes) while
+ * refusing prefixes, so "v1" can't swallow "v10" nor "volume 3" "volume 30".
+ * Pure.
+ */
+export function sameFindingLocation(a, b) {
+  const locA = normFindingText(a);
+  const locB = normFindingText(b);
+  if (!locA || !locB) return false;
+  if (locA === locB) return true;
+  const [short, long] = locA.length <= locB.length ? [locA, locB] : [locB, locA];
+  return ` ${long} `.includes(` ${short} `);
+}
 
 /**
  * True when two findings — filed by two SEPARATE verifier calls — are the same
  * underlying problem. Pure.
  *
- * Identity is deliberately COARSE, because the verifier re-words itself freely
- * between calls: it re-punctuates, re-cases, paraphrases the problem, and
- * re-labels the location when a resolve round renumbers volumes. An exact
- * fingerprint of that prose reads every round's findings as brand new, which is
- * how the regression guard below silently missed the 1 → 3 → 5 divergence it
- * was written for. Two findings match when they name the same place OR restate
- * the same problem.
+ * Identity is deliberately loose about WORDING, because the verifier re-words
+ * itself freely between calls: it re-punctuates, re-cases, paraphrases the
+ * problem, and re-labels the location when a resolve round renumbers volumes.
+ * An exact fingerprint of that prose reads every round's findings as brand new,
+ * which is how the regression guard below silently missed the 1 → 3 → 5
+ * divergence it was written for.
  *
- * Coarse is the safe direction: collapsing two similar findings into one only
- * makes the guard MORE willing to call a growing round damage, and a rollback
- * costs the user a reverted LLM round, not their draft (the pre-resolve state
- * is what gets restored).
+ * It is NOT loose about SUBJECT. A shared location is corroboration, never proof
+ * — two genuinely different defects routinely sit in the same volume, and
+ * treating them as one would revert a round that closed what it targeted and
+ * merely exposed something else next door. So the problem text always has to
+ * agree; naming the same place only lowers how much of it must.
  *
  * Severity is NOT part of the identity — every finding here is already in the
  * gate's blocking set, and the verifier moves a finding between `high` and
  * `medium` freely, which would otherwise hide it from the guard.
  */
 export function sameFinding(a, b) {
-  const locA = normFindingText(a?.location);
-  const locB = normFindingText(b?.location);
-  if (locA && locB) {
-    if (locA === locB) return true;
-    // Containment covers "volume 3" vs "volume 3 act two" (the same place at two
-    // altitudes). Matched on WHOLE WORDS — space-padded on both sides — so "v1"
-    // can't swallow "v10" and "volume 3" can't swallow "volume 30".
-    const [short, long] = locA.length <= locB.length ? [locA, locB] : [locB, locA];
-    if (` ${long} `.includes(` ${short} `)) return true;
-  }
-  return findingTextOverlap(a?.problem, b?.problem) >= FINDING_MATCH_MIN_OVERLAP;
+  const corroborated = sameFindingLocation(a?.location, b?.location);
+  const { shared, score } = overlapStats(a?.problem, b?.problem);
+  return shared >= (corroborated ? FINDING_MATCH_MIN_SHARED_SAME_LOCATION : FINDING_MATCH_MIN_SHARED)
+    && score >= (corroborated ? FINDING_MATCH_MIN_OVERLAP_SAME_LOCATION : FINDING_MATCH_MIN_OVERLAP);
 }
 
 /**
