@@ -209,14 +209,20 @@ def validate_args(args: argparse.Namespace) -> None:
 
 def load_keyframes(paths: list[str]) -> list:
     """Open each conditioning image upright, in RGB, in the order given."""
+    # Every path is checked before anything is opened, so a bad second keyframe
+    # doesn't cost a decode of the first — and the message names the PortOS-side
+    # cause rather than surfacing Pillow's bare FileNotFoundError.
+    for path in paths:
+        if not Path(path).is_file():
+            raise RuntimeError(f"Conditioning image is missing: {path}")
+    # Imported only once there is something to decode: a text-only run never
+    # pulls Pillow in, and the missing-file path above stays dependency-free.
+    if not paths:
+        return []
     from PIL import Image, ImageOps
 
     images = []
     for path in paths:
-        # Checked explicitly so a bad path reports the PortOS-side cause rather
-        # than Pillow's bare FileNotFoundError.
-        if not Path(path).is_file():
-            raise RuntimeError(f"Conditioning image is missing: {path}")
         with Image.open(path) as handle:
             image = handle.convert("RGB")
         # In place: PortOS hands us ffmpeg-normalized PNGs with no orientation

@@ -114,9 +114,13 @@ describe('generate_minimax_h3.py', () => {
   });
 
   // Reading the keyframes happens before the ~83 GB load, so a bad path costs
-  // a second rather than an hour.
-  it('fails a missing conditioning image before any model load', () => {
+  // a second rather than an hour. Both branches asserted here run WITHOUT
+  // Pillow — CI's bare python3 has no PIL, and blocking `import PIL` on them
+  // would make a missing-file report (and every text-only run) need it.
+  it('fails a missing conditioning image without importing Pillow', () => {
     const output = runPython(`${importRunner}\n${[
+      'import sys',
+      'sys.modules["PIL"] = None  # make any `from PIL import ...` fail loudly',
       'try:',
       '    runner.load_keyframes(["/nonexistent/first.png"])',
       'except RuntimeError as exc:',
@@ -125,6 +129,31 @@ describe('generate_minimax_h3.py', () => {
       '    raise SystemExit("missing keyframe was accepted")',
     ].join('\n')}`);
     expect(output).toMatch(/Conditioning image is missing/i);
+  });
+
+  it('skips the Pillow import entirely for a text-only run', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys',
+      'sys.modules["PIL"] = None',
+      'print(runner.load_keyframes([]))',
+    ].join('\n')}`);
+    expect(output.trim()).toBe('[]');
+  });
+
+  // A later keyframe's bad path must not cost a decode of the earlier one.
+  it('validates every keyframe path before opening any of them', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys, tempfile',
+      'sys.modules["PIL"] = None',
+      'with tempfile.NamedTemporaryFile(suffix=".png") as good:',
+      '    try:',
+      '        runner.load_keyframes([good.name, "/nonexistent/last.png"])',
+      '    except RuntimeError as exc:',
+      '        print(str(exc))',
+      '    else:',
+      '        raise SystemExit("missing second keyframe was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/Conditioning image is missing: \/nonexistent\/last\.png/);
   });
 
   it('emits the video_path JSON completion contract on stdout', () => {
