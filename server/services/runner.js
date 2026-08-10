@@ -10,8 +10,9 @@ import { resolveSpawnCwd } from '../lib/spawnCwd.js';
 import { hasModelFlag, extractBakedModel } from '../lib/providerModels.js';
 import { buildCliArgs, prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
-import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
+import { createImmediateFallbackSignalDetector, ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn } from '../lib/bufferedSpawn.js';
+import { isHostShuttingDown } from '../lib/hostShutdown.js';
 import {
   setAIToolkitInstance,
   getAIToolkitInstance,
@@ -107,8 +108,14 @@ export async function finalizeRunRecord({ runId, output, exitCode, success, erro
   metadata.outputSize = Buffer.byteLength(output);
   if (error) metadata.error = error;
   if (extras && typeof extras === 'object') Object.assign(metadata, extras);
+  const canceled = metadata.canceled === true;
 
-  if (!success && toolkit.services.errorDetection) {
+  if (!success && canceled) {
+    // Cancellation is an operator/host lifecycle outcome, not evidence about
+    // provider health. Keep it explicit for /runs without scanning story text
+    // (which may contain quota-like words) or firing the provider-failure hook.
+    metadata.errorCategory = ERROR_CATEGORIES.CANCELED;
+  } else if (!success && toolkit.services.errorDetection) {
     // Exit 124 is the host's authoritative wall-clock timeout. Do not scan the
     // model's entire TUI screen/prompt for a competing category in that case:
     // story text can legitimately contain words such as "credit" or
@@ -132,7 +139,7 @@ export async function finalizeRunRecord({ runId, output, exitCode, success, erro
   // already persisted by this point, so a failing hook must not un-finalize it.
   if (success) {
     safeSettle(() => runnerConfig.hooks?.onRunCompleted?.(metadata, output), 'onRunCompleted');
-  } else {
+  } else if (!canceled) {
     safeSettle(() => runnerConfig.hooks?.onRunFailed?.(metadata, metadata.error, output), 'onRunFailed');
   }
 
@@ -330,7 +337,7 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   // exactly once. The finalizer always merges into createRun's metadata instead
   // of replacing attribution fields on the spawn-error path.
   let finalizationPromise = null;
-  const finalizeTerminal = async ({ exitCode, spawnError = null }) => {
+  const finalizeTerminal = async ({ exitCode, signal = null, spawnError = null }) => {
     const metadataStr = await readFile(metadataPath, 'utf-8').catch(() => '{}');
     let metadata = {};
     try {
@@ -351,6 +358,13 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
     // workspace the run never used is the confusion this fixes (#3180).
     metadata.workspacePath ??= effectiveCwd;
 
+    // Consume before unregistering: unregisterExternalRun deliberately clears
+    // stale markers, while this close event is the one place that can turn the
+    // marker into a canceled terminal outcome.
+    const stopRequested = toolkit.services.runner.consumeExternalRunStop?.(runId) === true;
+    const hostInterrupted = !!signal && isHostShuttingDown();
+    const canceled = !spawnError && !immediateFallbackAnalysis && (stopRequested || hostInterrupted);
+
     try {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       toolkit.services.runner.unregisterExternalRun(runId);
@@ -362,12 +376,19 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
       metadata.endTime = new Date().toISOString();
       metadata.duration = Date.now() - startTime;
       metadata.exitCode = exitCode;
-      metadata.success = spawnError ? false : exitCode === 0 && !immediateFallbackAnalysis;
+      metadata.success = spawnError ? false : exitCode === 0 && !immediateFallbackAnalysis && !canceled;
       metadata.outputSize = Buffer.byteLength(output);
 
       if (spawnError) {
         metadata.error = `Spawn failed: ${spawnError.message}`;
         metadata.errorCategory = 'spawn_error';
+      } else if (canceled) {
+        metadata.canceled = true;
+        metadata.completionReason = hostInterrupted ? 'host-shutdown' : 'canceled';
+        metadata.error = hostInterrupted
+          ? `CLI interrupted by PortOS shutdown${signal ? ` (signal ${signal})` : ''}`
+          : `CLI canceled${signal ? ` (signal ${signal})` : ''}`;
+        metadata.errorCategory = ERROR_CATEGORIES.CANCELED;
       } else if (!metadata.success && toolkit.services.errorDetection) {
         // A mid-stream fallback signal (e.g. usage-limit hit) SIGTERM-kills the
         // child; even an exit 0 must remain a failure so fallback can run.
@@ -383,7 +404,7 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
       // the terminal result or prevents the caller from settling.
       if (metadata.success) {
         safeSettle(() => runnerConfig.hooks?.onRunCompleted?.(metadata, output), `Run ${runId} onRunCompleted hook`);
-      } else {
+      } else if (!canceled) {
         safeSettle(() => runnerConfig.hooks?.onRunFailed?.(metadata, metadata.error, output), `Run ${runId} onRunFailed hook`);
       }
       safeSettle(() => onComplete?.(metadata), `Run ${runId} onComplete`);
@@ -400,8 +421,11 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
         error: `Run finalization failed: ${err.message}`,
         errorCategory: 'finalization_error',
         outputSize: Buffer.byteLength(output),
+        ...(canceled ? { canceled: true, completionReason: hostInterrupted ? 'host-shutdown' : 'canceled' } : {}),
       };
-      safeSettle(() => runnerConfig.hooks?.onRunFailed?.(failMetadata, failMetadata.error, output), `Run ${runId} onRunFailed hook`);
+      if (!canceled) {
+        safeSettle(() => runnerConfig.hooks?.onRunFailed?.(failMetadata, failMetadata.error, output), `Run ${runId} onRunFailed hook`);
+      }
       safeSettle(() => onComplete?.(failMetadata), `Run ${runId} onComplete`);
       return failMetadata;
     }
@@ -415,8 +439,8 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
     void finalizeOnce({ exitCode: -1, spawnError: err });
   });
 
-  childProcess.on('close', (code) => {
-    void finalizeOnce({ exitCode: code });
+  childProcess.on('close', (code, signal) => {
+    void finalizeOnce({ exitCode: code, signal });
   });
 
   return runId;
@@ -441,6 +465,15 @@ export function unregisterActiveRun(runId) {
   // No-throw read: cleanup paths may run after the toolkit is gone (e.g.
   // shutdown), so use `getAIToolkitInstance()` rather than `requireToolkit()`.
   getAIToolkitInstance()?.services?.runner?.unregisterExternalRun?.(runId);
+}
+
+/**
+ * Consume the toolkit's one-shot marker that says stopRun initiated this
+ * external child/PTY exit. The TUI runner reads it inside onExit before its
+ * normal cleanup unregisters the run.
+ */
+export function consumeRunStopRequested(runId) {
+  return getAIToolkitInstance()?.services?.runner?.consumeExternalRunStop?.(runId) === true;
 }
 
 export async function stopRun(runId) {

@@ -6,6 +6,7 @@
  */
 
 export const ERROR_CATEGORIES = {
+  CANCELED: 'canceled',
   RATE_LIMIT: 'rate-limit',
   USAGE_LIMIT: 'usage-limit',
   AUTH_ERROR: 'auth-error',

@@ -753,6 +753,30 @@ describe('promptRunner — retry-with-fallback', () => {
     return { isAvailable, markUnavailable, markUsageLimit, getFallbackProvider };
   }
 
+  it('does not retry, bench, or escalate a canceled TUI run', async () => {
+    const status = mockToolkitWithFallback();
+    const primaryTui = tuiProvider({ id: 'primary-tui', name: 'Primary TUI', defaultModel: 'primary-model' });
+    tuiRunner.executeTuiRun.mockImplementation(async ({ onComplete }) => {
+      onComplete({
+        success: false,
+        canceled: true,
+        error: 'TUI interrupted by PortOS shutdown (signal 2)',
+      });
+    });
+
+    await expect(runPromptThroughProvider({
+      provider: primaryTui,
+      prompt: 'p',
+      source: 'test',
+    })).rejects.toMatchObject({ code: 'RUN_CANCELED', canceled: true });
+
+    expect(runner.executeApiRun).not.toHaveBeenCalled();
+    expect(status.getFallbackProvider).not.toHaveBeenCalled();
+    expect(status.markUnavailable).not.toHaveBeenCalled();
+    expect(autoFixer.noteFallbackStarted).not.toHaveBeenCalled();
+    expect(autoFixer.escalateProviderFailure).not.toHaveBeenCalled();
+  });
+
   it('retries with the configured fallback and resolves with usedFallback flag when primary CLI fails', async () => {
     const status = mockToolkitWithFallback();
 

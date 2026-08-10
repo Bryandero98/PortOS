@@ -64,12 +64,32 @@ const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedMod
 // private `_portosActiveRuns` map.
 function fakeToolkit(errorDetection = null) {
   const externalRuns = new Map();
+  const externalStopRequests = new Set();
   return {
     services: {
       runner: {
-        registerExternalRun: (runId, killable) => externalRuns.set(runId, killable),
-        unregisterExternalRun: (runId) => externalRuns.delete(runId),
+        registerExternalRun: (runId, killable) => {
+          externalStopRequests.delete(runId);
+          externalRuns.set(runId, killable);
+        },
+        unregisterExternalRun: (runId) => {
+          externalRuns.delete(runId);
+          externalStopRequests.delete(runId);
+        },
         hasExternalRun: (runId) => externalRuns.has(runId),
+        consumeExternalRunStop: (runId) => {
+          const requested = externalStopRequests.has(runId);
+          externalStopRequests.delete(runId);
+          return requested;
+        },
+        stopRun: async (runId) => {
+          const child = externalRuns.get(runId);
+          if (!child) return false;
+          externalStopRequests.add(runId);
+          child.kill('SIGTERM');
+          externalRuns.delete(runId);
+          return true;
+        },
         _externalRuns: externalRuns,
       },
       errorDetection,
@@ -114,6 +134,76 @@ describe('finalizeRunRecord — authoritative timeout classification', () => {
       errorCategory: ERROR_CATEGORIES.TIMEOUT,
       errorAnalysis: expect.objectContaining({ category: ERROR_CATEGORIES.TIMEOUT }),
     });
+  });
+
+  it('records cancellation without scanning output or firing the provider-failure hook', async () => {
+    const errorDetection = { analyzeError: vi.fn() };
+    const onRunFailed = vi.fn();
+    setAIToolkit(fakeToolkit(errorDetection), {
+      dataDir: '/tmp/test-runner',
+      hooks: { onRunFailed },
+    });
+
+    const metadata = await finalizeRunRecord({
+      runId: 'run-canceled-story',
+      output: 'A character debates billing, payment, and insufficient credit.',
+      exitCode: 130,
+      success: false,
+      error: 'TUI canceled (signal SIGTERM)',
+      startTime: Date.now(),
+      extras: { canceled: true, completionReason: 'canceled' },
+    });
+
+    expect(metadata).toMatchObject({
+      success: false,
+      canceled: true,
+      errorCategory: ERROR_CATEGORIES.CANCELED,
+    });
+    expect(errorDetection.analyzeError).not.toHaveBeenCalled();
+    expect(onRunFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeCliRun — intentional cancellation', () => {
+  it('skips output classification and provider-failure hooks after stopRun', async () => {
+    const child = makeChild();
+    spawn.mockReturnValue(child);
+    const errorDetection = { analyzeError: vi.fn() };
+    const onRunFailed = vi.fn();
+    const toolkit = fakeToolkit(errorDetection);
+    setAIToolkit(toolkit, {
+      dataDir: '/tmp/test-runner',
+      hooks: { onRunFailed },
+    });
+    const onComplete = vi.fn();
+    const provider = {
+      id: 'codex',
+      name: 'Codex',
+      command: 'codex',
+      args: [],
+      defaultModel: 'gpt-test',
+      timeout: 5000,
+    };
+
+    await executeCliRun({
+      runId: 'run-cli-canceled',
+      provider,
+      prompt: 'A story about billing and credit.',
+      workspacePath: TEST_WORKSPACE,
+      onComplete,
+    });
+    await toolkit.services.runner.stopRun('run-cli-canceled');
+    child.emit('close', null, 'SIGTERM');
+    await flushMicrotasks();
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      canceled: true,
+      completionReason: 'canceled',
+      errorCategory: ERROR_CATEGORIES.CANCELED,
+    }));
+    expect(errorDetection.analyzeError).not.toHaveBeenCalled();
+    expect(onRunFailed).not.toHaveBeenCalled();
   });
 });
 

@@ -38,8 +38,9 @@ import { join, resolve } from 'path';
 import { ensureDir, PATHS, tryReadFile } from './fileUtils.js';
 import { createStreamingAnsiStripper, stripAnsi } from './ansiStrip.js';
 import { createImmediateFallbackSignalDetector, createTerminalModelErrorDetector } from './aiToolkit/errorDetection.js';
-import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, resolveRunCwd } from '../services/runner.js';
+import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, consumeRunStopRequested, resolveRunCwd } from '../services/runner.js';
 import { registerExternalSession, unregisterExternalSession, isExternalSessionAttached } from '../services/shell.js';
+import { isHostShuttingDown } from './hostShutdown.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   PASTE_MARKER_POLL_MS,
@@ -309,7 +310,7 @@ ${prompt}`;
   };
 
   return new Promise((resolve) => {
-    const finish = async ({ success, exitCode = 0, error = null, reason = 'completed' }) => {
+    const finish = async ({ success, exitCode = 0, error = null, reason = 'completed', canceled = false }) => {
       if (finalized) return;
       finalized = true;
       // Tracks whether the normal-path onComplete was reached, so the catch
@@ -351,12 +352,18 @@ ${prompt}`;
         // set post-write and never made it to disk → /runs replay missed it).
         const metadata = await finalizeRunRecord({
           runId, output: responseText, exitCode, success, error, startTime,
-          extras: { completionReason: reason, usedResponseFile, outputTruncated: outputBufferTruncated },
+          extras: {
+            completionReason: reason,
+            usedResponseFile,
+            outputTruncated: outputBufferTruncated,
+            ...(canceled ? { canceled: true } : {}),
+          },
         }).catch((err) => {
           console.error(`❌ TUI run ${runId} finalize failed: ${err.message}`);
           return {
             exitCode, success, error: error || err.message,
             duration: Date.now() - startTime, completionReason: reason,
+            ...(canceled ? { canceled: true } : {}),
           };
         });
         onCompleteInvoked = true;
@@ -387,6 +394,7 @@ ${prompt}`;
             onComplete?.({
               runId, success: false, exitCode, error: `finish() failed: ${err?.message || err}`,
               duration: Date.now() - startTime, completionReason: reason,
+              ...(canceled ? { canceled: true } : {}),
             });
           } catch (cbErr) {
             console.error(`❌ TUI run ${runId} onComplete threw during finish() error handling: ${cbErr?.message || cbErr}`);
@@ -476,6 +484,13 @@ ${prompt}`;
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       const killed = !!signal;
+      // pm2 tree-kills descendants during a PortOS restart, while /runs Stop
+      // kills this registered PTY through runner.stopRun. Both are intentional
+      // interruptions, not provider failures: never scan the story transcript
+      // for a bogus quota marker, bench the provider, or launch a fallback.
+      const stopRequested = consumeRunStopRequested(runId);
+      const hostInterrupted = killed && isHostShuttingDown();
+      const canceled = killed && (stopRequested || hostInterrupted);
       const finalExitCode = typeof exitCode === 'number' ? exitCode : (killed ? 130 : 0);
       const success = !killed && finalExitCode === 0;
       // Always set an explicit error string when finishing as failure. The
@@ -486,7 +501,11 @@ ${prompt}`;
       // captured output so failures are actionable from /runs without
       // re-running.
       let error = null;
-      if (killed) {
+      if (hostInterrupted) {
+        error = `TUI interrupted by PortOS shutdown (signal ${signal})`;
+      } else if (stopRequested) {
+        error = `TUI canceled (signal ${signal})`;
+      } else if (killed) {
         error = `TUI killed (signal ${signal})`;
       } else if (!success) {
         const tail = outputBuffer.slice(-200).trim();
@@ -498,7 +517,8 @@ ${prompt}`;
         success,
         exitCode: finalExitCode,
         error,
-        reason: killed ? 'killed' : 'exit'
+        reason: hostInterrupted ? 'host-shutdown' : (stopRequested ? 'canceled' : (killed ? 'killed' : 'exit')),
+        canceled,
       });
     });
 

@@ -160,6 +160,10 @@ export function createRunnerService(config = {}) {
   // See server/lib/aiToolkit/CLAUDE.md (override contract).
   let cliRunnerOverride = null;
   const externalRuns = new Map();
+  // A host runner sees only the child/PTY exit event. Remember when that exit
+  // was initiated through stopRun so it can distinguish a user cancellation
+  // from an unexpected provider crash and avoid fallback/bench telemetry.
+  const externalStopRequests = new Set();
 
   async function ensureRunsDir() {
     if (!existsSync(RUNS_PATH)) {
@@ -261,9 +265,20 @@ export function createRunnerService(config = {}) {
     // Track a host-spawned run's killable handle (ChildProcess or node-pty IPty —
     // both expose `.kill(signal?)`; AbortController exposes `.abort()`) so
     // stopRun/isRunActive/deleteRun account for it alongside the toolkit's own.
-    registerExternalRun(runId, killable) { externalRuns.set(runId, killable); },
-    unregisterExternalRun(runId) { externalRuns.delete(runId); },
+    registerExternalRun(runId, killable) {
+      externalStopRequests.delete(runId);
+      externalRuns.set(runId, killable);
+    },
+    unregisterExternalRun(runId) {
+      externalRuns.delete(runId);
+      externalStopRequests.delete(runId);
+    },
     hasExternalRun(runId) { return externalRuns.has(runId); },
+    consumeExternalRunStop(runId) {
+      const requested = externalStopRequests.has(runId);
+      externalStopRequests.delete(runId);
+      return requested;
+    },
 
     async createRun(options) {
       const {
@@ -833,6 +848,7 @@ export function createRunnerService(config = {}) {
       // and drop it so a later isRunActive reports false.
       const external = externalRuns.get(runId);
       if (external) {
+        externalStopRequests.add(runId);
         if (external.kill && !external.killed) killProcessTree(external);
         else if (external.abort) external.abort();
         externalRuns.delete(runId);

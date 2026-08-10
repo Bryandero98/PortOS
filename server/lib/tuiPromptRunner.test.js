@@ -23,6 +23,7 @@ const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef } = v
     emitRunStarted: vi.fn(),
     registerActiveRun: vi.fn(),
     unregisterActiveRun: vi.fn(),
+    consumeRunStopRequested: vi.fn(() => false),
     getRunsPath: vi.fn(),
     // Real implementation (and its bad-workspace failure path) is covered by
     // lib/spawnCwd.test.js + services/runner.test.js; here it just needs to
@@ -50,6 +51,7 @@ vi.mock('./fileUtils.js', async () => {
 });
 
 import { cleanTuiResponse, resolveTuiResponseText, executeTuiRun } from './tuiPromptRunner.js';
+import { markHostShuttingDown, resetHostShutdownFlagForTests } from './hostShutdown.js';
 
 const makeFakePty = () => {
   const fake = {
@@ -270,7 +272,10 @@ describe('executeTuiRun', () => {
     runnerMocks.emitRunStarted.mockClear();
     runnerMocks.registerActiveRun.mockClear();
     runnerMocks.unregisterActiveRun.mockClear();
+    runnerMocks.consumeRunStopRequested.mockReset();
+    runnerMocks.consumeRunStopRequested.mockReturnValue(false);
     runnerMocks.getRunsPath.mockClear();
+    resetHostShutdownFlagForTests();
     shellMocks.registerExternalSession.mockClear();
     shellMocks.unregisterExternalSession.mockClear();
     shellMocks.isExternalSessionAttached.mockReset();
@@ -281,6 +286,7 @@ describe('executeTuiRun', () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    resetHostShutdownFlagForTests();
     vi.restoreAllMocks();
     await rm(runsTmpDirRef.current, { recursive: true, force: true }).catch(() => null);
   });
@@ -836,6 +842,42 @@ describe('executeTuiRun', () => {
         exitCode: 130,
         error: expect.stringContaining('SIGTERM'),
         extras: expect.objectContaining({ completionReason: 'killed' }),
+      }));
+    });
+
+    it('finalizes an explicit stop as canceled instead of a provider failure', async () => {
+      const provider = { id: 'claude', type: 'tui', command: 'echo' };
+      const onComplete = vi.fn();
+      runnerMocks.consumeRunStopRequested.mockReturnValueOnce(true);
+      const promise = executeTuiRun({ runId: 'run-stopped', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, onComplete, timeout: 60000 });
+      await flushAsync();
+
+      ptyInstances[0].emitExit({ exitCode: null, signal: 'SIGTERM' });
+
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-stopped',
+        success: false,
+        error: expect.stringContaining('canceled'),
+        extras: expect.objectContaining({ completionReason: 'canceled', canceled: true }),
+      }));
+      expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ canceled: true }));
+    });
+
+    it('finalizes a host-shutdown signal as an interruption instead of a provider failure', async () => {
+      const provider = { id: 'codex', type: 'tui', command: 'echo' };
+      markHostShuttingDown();
+      const promise = executeTuiRun({ runId: 'run-restart', provider, prompt: 'a prompt long enough', workspacePath: TEST_WORKSPACE, timeout: 60000 });
+      await flushAsync();
+
+      ptyInstances[0].emitExit({ exitCode: null, signal: 2 });
+
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-restart',
+        success: false,
+        error: expect.stringContaining('PortOS shutdown'),
+        extras: expect.objectContaining({ completionReason: 'host-shutdown', canceled: true }),
       }));
     });
 

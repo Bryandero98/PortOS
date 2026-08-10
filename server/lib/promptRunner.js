@@ -607,6 +607,13 @@ export async function runPromptThroughProvider(args) {
     }
   }
 
+  // An explicit Stop or host shutdown is a lifecycle outcome, not a failed AI
+  // attempt. Do not enter any correction/fallback tier, mark the provider
+  // unavailable, or escalate an investigation task.
+  if (firstError?.canceled || firstError?.code === 'RUN_CANCELED') {
+    throw stripFallbackContext(firstError);
+  }
+
   {
     // Only retry when the failure came from the execution layer (annotated
     // by safeReject with effectiveProvider) or is a synthetic schema/type
@@ -1192,6 +1199,10 @@ async function executeProviderRunOnce({ provider, prompt, source, model, effort 
     const onComplete = (result) => {
       if (result?.error || result?.success === false) {
         const err = new Error(result?.error || `${labelByType[effectiveProvider.type] || effectiveProvider.type} execution failed`);
+        if (result?.canceled === true) {
+          err.code = 'RUN_CANCELED';
+          err.canceled = true;
+        }
         if (result?.errorAnalysis && typeof result.errorAnalysis === 'object') {
           err.errorAnalysis = result.errorAnalysis;
         }
