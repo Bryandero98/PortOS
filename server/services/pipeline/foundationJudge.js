@@ -47,7 +47,7 @@ import { BIBLE_SOURCE, sanitizeCharacter } from '../../lib/storyBible.js';
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 import { getUniverse, updateUniverse } from '../universeBuilder.js';
 import { isBlankString, isBlankArray } from '../universeCharacterExpand.js';
-import { expandWorldTemplate } from '../universeBuilderExpand.js';
+import { expandWorldTemplate, narrativeRepairTargets } from '../universeBuilderExpand.js';
 import { getSeries, updateSeries } from './series.js';
 import { listIssues } from './issues.js';
 import { getSeriesCanon } from './seriesCanon.js';
@@ -526,19 +526,44 @@ function renderArc(series, issues = [], { maxChars = Infinity, includeArcTransit
   return lines.join('\n');
 }
 
-function renderWorldFoundation(universe) {
+// Below this the named-canon line carries no usable signal — render the
+// omission marker instead of a handful of dangling entity names.
+const NAMED_CANON_MIN_CHARS = 200;
+
+/**
+ * Render the world as the worldbuilding dimension is scored on it, bounded by
+ * `maxChars`.
+ *
+ * The budget is spent by dropping the NAMED-CANON inventory, never the narrative
+ * spine. Causal rules, costs, hard limits, and failure modes live in the premise
+ * and style notes; the entity list is the noun inventory whose over-supply the
+ * judge already penalizes, and it is the part that grows without bound. Slicing
+ * the joined block instead (what this did before) cut the TAIL of the premise —
+ * exactly where a freshly authored ruleset lands — so a world repair the judge
+ * had just demanded became invisible to the next judge, the score never moved,
+ * and the foundation gate burned its rounds against a repair it could not see.
+ */
+function renderWorldFoundation(universe, { maxChars = Infinity } = {}) {
   if (!universe) return '(no linked universe — worldbuilding cannot be judged from canon)';
-  const entities = renderEntitiesSummary(universe, { maxPerKind: { characters: 0 } }) || '(no named places or objects)';
   const influences = universe.influences && typeof universe.influences === 'object'
     ? `Embrace: ${(universe.influences.embrace || []).join(', ') || '—'}; Avoid: ${(universe.influences.avoid || []).join(', ') || '—'}`
     : '(none)';
-  return [
+  const spine = [
     `Universe logline: ${universe.logline || '(none)'}`,
     `Universe premise: ${universe.premise || '(none)'}`,
     `Universe style: ${universe.styleNotes || '(none)'}`,
     `Influences: ${influences}`,
-    `Named canon: ${entities}`,
   ].join('\n');
+  const entities = renderEntitiesSummary(universe, { maxPerKind: { characters: 0 } }) || '(no named places or objects)';
+  const canonLine = `Named canon: ${entities}`;
+  const remaining = maxChars - spine.length - 1;
+  if (canonLine.length <= remaining) return `${spine}\n${canonLine}`;
+  if (remaining >= NAMED_CANON_MIN_CHARS) return `${spine}\n${canonLine.slice(0, remaining - 1).trimEnd()}…`;
+  if (spine.length <= maxChars) return `${spine}\nNamed canon: [omitted to fit the judging budget]`;
+  // The spine alone overruns: the premise is larger than this judge model's
+  // world budget. Slicing is unavoidable here, but say so rather than letting
+  // the judge score a silently amputated world.
+  return `${spine.slice(0, maxChars)}\n\n[world summary truncated for judging]`;
 }
 
 // Build the judge's variable bag from the whole foundation. Content is budgeted
@@ -547,20 +572,17 @@ function renderWorldFoundation(universe) {
 function buildFoundationContext({ series, universe, canon, issues = [], contentMax }) {
   const characters = Array.isArray(canon?.characters) ? canon.characters : [];
   const seriesCharacters = seriesFoundationCharacters(characters, series, issues);
-  const worldEntitiesSummary = renderWorldFoundation(universe);
   const characterRoster = seriesCharacters.length
     ? seriesCharacters.map((character) => renderCharacterLine(character, { core: true })).join('\n')
     : '(no canon characters)';
   const sectionMax = Math.max(1_000, Math.floor(contentMax / 3));
+  const world = renderWorldFoundation(universe, { maxChars: sectionMax });
   // Character quality lives in the choices between start and end, not merely
   // the endpoints. Reuse the canonical authored-arc renderer here so the judge
   // sees decisions, relapses, sacrifices, and their issue placement. The
   // repair prompt keeps the legacy compact summary because it already receives
   // the full `series.characterArcs` JSON separately.
   const arcText = renderArc(series, issues, { includeArcTransitions: true });
-  const world = worldEntitiesSummary.length > sectionMax
-    ? `${worldEntitiesSummary.slice(0, sectionMax)}\n\n[world summary truncated for judging]`
-    : worldEntitiesSummary;
   const roster = characterRoster.length > sectionMax
     ? `${characterRoster.slice(0, sectionMax)}\n\n[character roster truncated for judging]`
     : characterRoster;
@@ -1169,7 +1191,17 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
   });
   // `wrote === false` means every refinable field is locked — report it so the
   // gate pauses 'inapplicable' for human review instead of silently no-op-ing.
-  return wrote ? { applied: true } : { applied: false, reason: 'every refinable world field is locked' };
+  if (!wrote) return { applied: false, reason: 'every refinable world field is locked' };
+  // A repair that landed against a field already at its storage ceiling had to
+  // consolidate existing prose to make room. Say so on the fix frame: when the
+  // gate later pauses on non-convergence, "the premise is full" is the fact that
+  // tells a human to prune the bible rather than re-run the same repair.
+  const saturated = Object.entries(narrativeRepairTargets(universe))
+    .filter(([, budget]) => budget.saturated)
+    .map(([field]) => field);
+  return saturated.length
+    ? { applied: true, reason: `world bible ${saturated.join(' and ')} sat at the storage ceiling; the repair had to consolidate existing canon to fit` }
+    : { applied: true };
 }
 
 /**
@@ -1251,6 +1283,7 @@ export const __testing = {
   isFoundationStale,
   buildFoundationContext,
   renderArc,
+  renderWorldFoundation,
   renderCharacterLine,
   REPAIR_OUTLINE_MAX_CHARS,
   CHARACTER_FOUNDATION_BATCH_SIZE,

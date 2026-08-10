@@ -43,6 +43,48 @@ const LABEL_MAX = 80;
 const NARRATIVE_REPAIR_MAX_ATTEMPTS = 3;
 const NARRATIVE_REPAIR_HEADROOM = [0.9, 0.8];
 
+// A judge-directed narrative repair must ADD material — an operational ruleset,
+// a missing cost, a named hard limit — to a bible field that EARLIER repairs may
+// already have filled to its storage ceiling. Enforcing only the hard cap made
+// that unsatisfiable: with a premise sitting at 19,995 of 20,000 characters
+// there is no room for the rules the judge asked for, so the model returned a
+// same-size rewrite, the field passed validation (it was under the cap), the
+// foundation judge re-read an unchanged world, scored it identically, and the
+// autopilot's foundation gate burned every round on a repair that could not
+// physically land. Saturated fields therefore get a WRITE TARGET below the cap
+// plus an explicit consolidate-then-extend mandate, and the storage contract is
+// checked against that target — so the existing retry ladder forces the
+// consolidation instead of accepting a no-op rewrite.
+export const NARRATIVE_REPAIR_WRITE_HEADROOM = 0.85;
+
+// The narrative-bible scalars a foundation repair persists, with their hard
+// storage caps. Single source for the write budget, the prompt contract, and
+// the violation check so the three can't drift.
+const NARRATIVE_FIELD_CAPS = Object.freeze([
+  ['logline', LOGLINE_MAX],
+  ['premise', PREMISE_MAX],
+  ['styleNotes', STYLE_NOTES_MAX],
+]);
+
+/**
+ * Per-field write budget for a narrative repair, derived from what is ALREADY
+ * stored. A field under the headroom mark may use its full cap (nothing to make
+ * room for); a saturated one is asked to come back under the headroom target so
+ * the repair has somewhere to go. Pure + unit-tested.
+ *
+ * @returns {Record<string, { max, target, priorLength, saturated }>}
+ */
+export function narrativeRepairTargets(prior = {}) {
+  const targets = {};
+  for (const [key, max] of NARRATIVE_FIELD_CAPS) {
+    const priorLength = typeof prior?.[key] === 'string' ? prior[key].trim().length : 0;
+    const headroomTarget = Math.floor(max * NARRATIVE_REPAIR_WRITE_HEADROOM);
+    const saturated = priorLength > headroomTarget;
+    targets[key] = { max, priorLength, saturated, target: saturated ? headroomTarget : max };
+  }
+  return targets;
+}
+
 // Bible/prompt fields the LLM sees as "current universe state" so re-expansion
 // stays consistent with prior refinements. Derived from LOCKABLE_FIELDS so a
 // new lockable field automatically reaches this prompt; excludes starterPrompt
@@ -65,6 +107,7 @@ function buildExpansionPrompt({
   priorStyleNotes = '',
   locked = {},
   foundationDirective = '',
+  writeTargets,
 }) {
   const embrace = Array.isArray(influences?.embrace)
     ? influences.embrace.filter(Boolean)
@@ -110,17 +153,38 @@ ${stateLines.join('\n\n')}\n`
   // unchanged, but give judge-directed repairs the narrow contract they can
   // actually apply.
   if (narrativeOnly) {
+    // Name the budget the validator will actually enforce. A saturated field
+    // also gets its current size, because "write at most N" is not actionable
+    // when the model is simultaneously told to preserve an established value
+    // that is already larger than N — it has to know consolidation is the job.
+    const budgetLine = (key) => {
+      const { target, saturated, priorLength } = writeTargets[key];
+      return saturated
+        ? `max ${target} characters — the established ${key} is already ${priorLength} characters, so the repair CANNOT be appended: consolidate the existing prose under that budget first, then add what the directive requires`
+        : `max ${target} characters`;
+    };
+    const saturatedFields = NARRATIVE_FIELD_CAPS
+      .map(([key]) => key)
+      .filter((key) => writeTargets[key].saturated);
+    const consolidationSection = saturatedFields.length
+      ? `\n# Consolidation mandate — ${saturatedFields.join(', ')} ${saturatedFields.length === 1 ? 'is' : 'are'} at the storage ceiling
+The repair does not fit alongside the current text, so making room is part of this task, not optional.
+- Merge duplicated lore, collapse parallel examples into one precise sentence, and cut ornamental restatement and throat-clearing.
+- Never drop a causal rule, hard limit, cost, failure mode, named entity, faction, or site-specific operation to save space — those are the load-bearing content. Cut the prose around them.
+- Never truncate: no sentence, paragraph, rule, or list item may end unfinished.
+- Silently count characters before answering. A response over budget is rejected in full.\n`
+      : '';
     return `You are a senior speculative-fiction worldbuilder repairing the narrative bible for a comic/TV series. This is a focused continuity repair, not a visual-exploration or canon-invention pass.
 
 # Starter idea
 ${starterPrompt}
-${influencesSection}${currentStateSection}${foundationSection}
+${influencesSection}${currentStateSection}${foundationSection}${consolidationSection}
 # Output contract
 Return one JSON object with exactly these top-level keys and no others:
 
-- logline: string, one sentence (max ${LOGLINE_MAX} characters).
-- premise: string, 1-3 concise paragraphs (max ${PREMISE_MAX} characters) defining the setting, conflict, stakes, and every operational rule needed to satisfy the repair directive.
-- styleNotes: string (max ${STYLE_NOTES_MAX} characters) preserving the established tonal and sensory identity while making any worldbuilding guidance concrete enough for writers to apply.
+- logline: string, one sentence (${budgetLine('logline')}).
+- premise: string, concise paragraphs (${budgetLine('premise')}) defining the setting, conflict, stakes, and every operational rule needed to satisfy the repair directive.
+- styleNotes: string (${budgetLine('styleNotes')}) preserving the established tonal and sensory identity while making any worldbuilding guidance concrete enough for writers to apply.
 
 # Repair rules
 - Resolve the judge's exact contradiction or omission. Do not answer it with extra lore that leaves the named causal problem intact.
@@ -263,14 +327,11 @@ const extractJson = (raw) => {
   );
 };
 
-const narrativeRepairViolations = (parsed) => [
-  ['logline', LOGLINE_MAX],
-  ['premise', PREMISE_MAX],
-  ['styleNotes', STYLE_NOTES_MAX],
-].flatMap(([key, max]) => {
+const narrativeRepairViolations = (parsed, writeTargets) => NARRATIVE_FIELD_CAPS.flatMap(([key]) => {
+  const { target } = writeTargets[key];
   const value = typeof parsed?.[key] === 'string' ? parsed[key].trim() : '';
   if (!value) return [`${key} is missing`];
-  return value.length > max ? [`${key} exceeds ${max} characters (got ${value.length})`] : [];
+  return value.length > target ? [`${key} exceeds ${target} characters (got ${value.length})`] : [];
 });
 
 const hasCompleteNarrativeCandidate = (candidate) => (
@@ -279,17 +340,21 @@ const hasCompleteNarrativeCandidate = (candidate) => (
   ))
 );
 
-function buildNarrativeCompressionPrompt({ candidate, violations, compressionAttempt }) {
+function buildNarrativeCompressionPrompt({
+  candidate, violations, compressionAttempt, writeTargets,
+}) {
   const headroom = NARRATIVE_REPAIR_HEADROOM[Math.min(
     compressionAttempt - 1,
     NARRATIVE_REPAIR_HEADROOM.length - 1,
   )];
-  const targets = {
-    logline: Math.floor(LOGLINE_MAX * headroom),
-    premise: Math.floor(PREMISE_MAX * headroom),
-    styleNotes: Math.floor(STYLE_NOTES_MAX * headroom),
-  };
-  const source = Object.fromEntries(['logline', 'premise', 'styleNotes'].map((key) => [
+  // Shrink from the effective WRITE target, not the hard cap — a saturated field
+  // is already budgeted below its cap, and compressing to 90% of the cap would
+  // hand back a draft that violates the same contract it just failed.
+  const targets = Object.fromEntries(NARRATIVE_FIELD_CAPS.map(([key]) => [
+    key,
+    Math.floor(writeTargets[key].target * headroom),
+  ]));
+  const source = Object.fromEntries(NARRATIVE_FIELD_CAPS.map(([key]) => [
     key,
     typeof candidate?.[key] === 'string' ? candidate[key].trim() : '',
   ]));
@@ -455,6 +520,12 @@ export async function expandWorldTemplate({
   const { provider, selectedModel } = await resolveProviderAndModel({ providerId, model });
   assertProvider(provider, { message: "No AI provider available for universe expansion" });
 
+  // Derived from what is ALREADY stored, once, before the retry loop: the write
+  // budget must not drift between the prompt that asks for the repair and the
+  // contract that validates it.
+  const writeTargets = narrativeRepairTargets({
+    logline: priorLogline, premise: priorPremise, styleNotes: priorStyleNotes,
+  });
   const fullPrompt = buildExpansionPrompt({
     starterPrompt: starterPrompt.trim(),
     influences: safeInfluences,
@@ -466,6 +537,7 @@ export async function expandWorldTemplate({
     locked,
     foundationDirective,
     narrativeOnly,
+    writeTargets,
   });
   const totalIn = safeInfluences.embrace.length + safeInfluences.avoid.length;
   const preservedVarCount = Object.values(preservedVariations || {}).reduce(
@@ -500,6 +572,7 @@ export async function expandWorldTemplate({
           candidate: parsed,
           violations: narrativeViolations,
           compressionAttempt: attempt,
+          writeTargets,
         })
         : `${fullPrompt}\n\n# Storage-contract retry\nThe previous response was incomplete: ${narrativeViolations.join('; ')}. Return a complete replacement with every required field; do not omit or leave any field blank.`
       : fullPrompt;
@@ -523,7 +596,7 @@ export async function expandWorldTemplate({
       `🌍 Universe Builder parsed JSON — keys=[${Object.keys(parsed || {}).join(",")}] categoryKeys=[${Object.keys(parsed?.categories || {}).join(",")}] compositeSheets=${Array.isArray(parsed?.compositeSheets) ? parsed.compositeSheets.length : 0}`,
     );
     if (!narrativeOnly) break;
-    narrativeViolations = narrativeRepairViolations(parsed);
+    narrativeViolations = narrativeRepairViolations(parsed, writeTargets);
     if (narrativeViolations.length === 0) break;
     if (attempt + 1 < maxAttempts) {
       const retryMode = hasCompleteNarrativeCandidate(parsed)
@@ -533,8 +606,17 @@ export async function expandWorldTemplate({
     }
   }
   if (narrativeViolations.length > 0) {
+    // Name the saturated fields in the message: when a repair can't fit, the
+    // actionable next step for a human is "consolidate the bible", which is not
+    // obvious from a bare character count.
+    const saturated = NARRATIVE_FIELD_CAPS
+      .map(([key]) => key)
+      .filter((key) => writeTargets[key].saturated);
+    const saturationNote = saturated.length
+      ? ` The stored ${saturated.join(' and ')} already fills its budget, so the repair has no room — consolidate the world bible and retry.`
+      : '';
     throw new ServerError(
-      `Universe Builder narrative repair failed its storage contract after ${NARRATIVE_REPAIR_MAX_ATTEMPTS} attempts: ${narrativeViolations.join('; ')}`,
+      `Universe Builder narrative repair failed its storage contract after ${NARRATIVE_REPAIR_MAX_ATTEMPTS} attempts: ${narrativeViolations.join('; ')}.${saturationNote}`,
       { status: 502, code: 'LLM_OUTPUT_CONTRACT' },
     );
   }

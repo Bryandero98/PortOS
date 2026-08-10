@@ -16,14 +16,23 @@ vi.mock('../../lib/stageRunner.js', () => ({
 }));
 
 vi.mock('../promptService.js', () => ({ getStage: vi.fn(() => ({ name: 'writer' })) }));
-vi.mock('../universeBuilder.js', () => ({
+// Storage is stubbed; the record-shape layer is real. `universeBuilder/sanitize.js`
+// is the pure constants+sanitizers half of the barrel (no storage, no peer-sync),
+// so pulling it in keeps the real LOGLINE_MAX/PREMISE_MAX/STYLE_NOTES_MAX the
+// narrative write budget is derived from instead of a mock copy that can drift.
+vi.mock('../universeBuilder.js', async () => ({
+  ...(await import('../universeBuilder/sanitize.js')),
   getUniverse: vi.fn(async () => null),
   updateUniverse: vi.fn(async (id, patch) => ({ id, ...patch })),
 }));
 vi.mock('../universeCharacterExpand.js', async (importActual) => ({
   ...(await importActual()),
 }));
-vi.mock('../universeBuilderExpand.js', () => ({
+// Only the LLM round-trip is mocked. `narrativeRepairTargets` is pure write-budget
+// math the world repair reports saturation from — re-implementing it in the mock
+// would make these tests agree with a copy instead of the real contract.
+vi.mock('../universeBuilderExpand.js', async (importActual) => ({
+  ...(await importActual()),
   expandWorldTemplate: vi.fn(async () => ({ logline: 'L2', premise: 'P2', styleNotes: 'S2', influences: null })),
 }));
 vi.mock('./series.js', async (importActual) => ({
@@ -453,6 +462,51 @@ describe('foundation judge context — complete planning altitude', () => {
     });
     expect(ctx.arc).toContain('point-of-no-return (issue 7)');
     expect(ctx.arc).toContain('Confesses the altered log to the crew and yields crisis authority.');
+  });
+});
+
+describe('renderWorldFoundation — budget spends the noun inventory, not the rules', () => {
+  const rulesTail = 'RESONANCE RULESET: range 40m, cost one week of hearing, fails in wet air, cannot cross bone.';
+  const worldWithRules = (entityCount) => ({
+    logline: 'A colony sings its machines awake.',
+    premise: `${'Established lore paragraph. '.repeat(200)}${rulesTail}`,
+    styleNotes: 'Humid, tactile, close third person.',
+    places: Array.from({ length: entityCount }, (_, index) => ({
+      id: `plc-${index}`,
+      name: `Place ${index}`,
+      description: `A named location the judge already has plenty of. ${'detail '.repeat(20)}`,
+    })),
+  });
+
+  it('keeps the premise tail — where a freshly authored ruleset lands — and drops canon nouns instead', () => {
+    const world = worldWithRules(60);
+    const unbounded = __testing.renderWorldFoundation(world);
+    expect(unbounded).toContain('Named canon:');
+    expect(unbounded).toContain(rulesTail);
+
+    const budgeted = __testing.renderWorldFoundation(world, { maxChars: 6_500 });
+    expect(budgeted.length).toBeLessThanOrEqual(6_500 + 60);
+    // The repair the judge asked for survives the budget…
+    expect(budgeted).toContain(rulesTail);
+    // …and the entity inventory is what paid for it.
+    expect(budgeted).not.toContain('Place 59');
+  });
+
+  it('omits the canon line outright rather than rendering a useless stub', () => {
+    const out = __testing.renderWorldFoundation(worldWithRules(60), { maxChars: 5_900 });
+    expect(out).toContain('Named canon: [omitted to fit the judging budget]');
+    expect(out).toContain(rulesTail);
+  });
+
+  it('still marks a truncation when the narrative spine alone overruns the budget', () => {
+    const out = __testing.renderWorldFoundation(worldWithRules(2), { maxChars: 1_000 });
+    expect(out.length).toBeLessThanOrEqual(1_000 + 40);
+    expect(out).toContain('[world summary truncated for judging]');
+  });
+
+  it('reports a missing universe unchanged', () => {
+    expect(__testing.renderWorldFoundation(null, { maxChars: 10 }))
+      .toBe('(no linked universe — worldbuilding cannot be judged from canon)');
   });
 });
 
