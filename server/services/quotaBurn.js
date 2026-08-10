@@ -149,7 +149,11 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
   // against a card with no numbers on it, so it fails closed like every other
   // unknown, and holds even under force.
   if (card.pending) return { skipReason: 'reading provider quota…' };
-  if (card.error) return { skipReason: `quota read failed: ${card.error}` };
+  // `error` covers both a failed read and a successful one with nothing to
+  // meter (see the card contract in providerUsage.js) — either way there are no
+  // numbers to burn against, so the reason quotes the card rather than
+  // asserting a failure that may not have happened.
+  if (card.error) return { skipReason: `quota unavailable: ${card.error}` };
   // A card can declare it carries no spendable headroom (`burnable: false`) —
   // e.g. the Image Gen card, whose 0%-left meter is an OBSERVED refusal, not a
   // measured allowance. Burning against it would dispatch work to a backend that
