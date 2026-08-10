@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // providerUsage imports the provider config service (toolkit-backed) and the
 // claude CLI wrapper — mock both so this suite stays hermetic.
@@ -31,8 +31,12 @@ vi.mock('./imageGenQuota.js', () => ({
   } : null))
 }));
 
+import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 import {
-  parseCodexRateLimits, mapCodexQuota, resolveEnabledFamilies, getProviderQuotas,
+  parseCodexRateLimits, mapCodexQuota, fetchCodexQuota, resolveEnabledFamilies, getProviderQuotas,
   parseAgyUsage, parseGrokUsage, agyRefreshToIso, __resetUsageScrapeCache,
 } from './providerUsage.js';
 import { getAllProviders } from './providers.js';
@@ -93,21 +97,63 @@ const SAMPLE_RATE_LIMITS = {
   plan_type: 'pro'
 };
 
+// Fixed clock BEFORE both sample resets, so window-expiry filtering is
+// deterministic instead of "whenever the suite happens to run".
+const SAMPLE_NOW = Date.parse('2025-12-31T12:00:00Z');
+
+// Shape Codex emits for its window-less credits bucket: a rate_limits payload
+// with both meters null. Invented values only.
+const CREDITS_ONLY_RATE_LIMITS = {
+  limit_id: 'premium',
+  primary: null,
+  secondary: null,
+  credits: { has_credits: false, unlimited: false, balance: '0' },
+  plan_type: null,
+  rate_limit_reached_type: null
+};
+
 describe('parseCodexRateLimits', () => {
   it('returns the newest rate_limits event in the log', () => {
     const older = codexLine({ ...SAMPLE_RATE_LIMITS, primary: { ...SAMPLE_RATE_LIMITS.primary, used_percent: 3 } }, '2026-01-01T00:00:00Z');
     const newer = codexLine(SAMPLE_RATE_LIMITS, '2026-01-02T00:00:00Z');
     const text = [older, '{"type":"other"}', newer, '{"type":"trailing"}'].join('\n');
-    const found = parseCodexRateLimits(text);
+    const found = parseCodexRateLimits(text, { now: SAMPLE_NOW });
     expect(found.timestamp).toBe('2026-01-02T00:00:00Z');
     expect(found.rateLimits.primary.used_percent).toBe(7);
+  });
+
+  it('prefers an older payload WITH windows over a newer window-less one', () => {
+    // The regression: an exhausted quota's newest event is the credits bucket,
+    // which carries no meters. Taking it hid the real "100% used" reading.
+    const withWindows = codexLine({ ...SAMPLE_RATE_LIMITS, primary: { ...SAMPLE_RATE_LIMITS.primary, used_percent: 100 } }, '2026-01-01T00:00:00Z');
+    const creditsOnly = codexLine(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T00:30:00Z');
+    const found = parseCodexRateLimits([withWindows, creditsOnly].join('\n'), { now: SAMPLE_NOW });
+    expect(found.timestamp).toBe('2026-01-01T00:00:00Z');
+    expect(found.rateLimits.primary.used_percent).toBe(100);
+  });
+
+  it('falls back to the newest window-less payload when nothing better exists', () => {
+    const older = codexLine({ ...CREDITS_ONLY_RATE_LIMITS, limit_id: 'stale' }, '2026-01-01T00:00:00Z');
+    const newer = codexLine(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T00:30:00Z');
+    const found = parseCodexRateLimits([older, newer].join('\n'), { now: SAMPLE_NOW });
+    expect(found.timestamp).toBe('2026-01-01T00:30:00Z');
+    expect(found.rateLimits.limit_id).toBe('premium');
+  });
+
+  it('does not treat an already-reset window as a reason to prefer a payload', () => {
+    // Both windows expired, so the newest payload wins on recency alone.
+    const expired = codexLine(SAMPLE_RATE_LIMITS, '2026-01-01T00:00:00Z');
+    const creditsOnly = codexLine(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T00:30:00Z');
+    const afterReset = Date.parse('2026-02-01T00:00:00Z'); // past both resets_at
+    const found = parseCodexRateLimits([expired, creditsOnly].join('\n'), { now: afterReset });
+    expect(found.timestamp).toBe('2026-01-01T00:30:00Z');
   });
 
   it('skips a clipped (unparseable) line and keeps scanning', () => {
     const clipped = codexLine(SAMPLE_RATE_LIMITS).slice(20); // broken head from a tail-read
     const good = codexLine(SAMPLE_RATE_LIMITS);
     // clipped line is NEWER (later in file) — parser must fall back to the good one
-    expect(parseCodexRateLimits([good, clipped].join('\n'))).not.toBeNull();
+    expect(parseCodexRateLimits([good, clipped].join('\n'), { now: SAMPLE_NOW })).not.toBeNull();
   });
 
   it('returns null when no rate_limits event exists', () => {
@@ -118,19 +164,116 @@ describe('parseCodexRateLimits', () => {
 
 describe('mapCodexQuota', () => {
   it('maps primary/secondary windows to the common limit shape', () => {
-    const quota = mapCodexQuota(SAMPLE_RATE_LIMITS, '2026-01-02T00:00:00Z');
+    const quota = mapCodexQuota(SAMPLE_RATE_LIMITS, '2026-01-02T00:00:00Z', { now: SAMPLE_NOW });
     expect(quota).toMatchObject({ family: 'codex', supported: true, plan: 'pro', approximate: true });
     expect(quota.limits).toHaveLength(2);
     expect(quota.limits[0]).toMatchObject({ key: 'session', label: 'Current 5h window', percentUsed: 7, percentRemaining: 93 });
     expect(quota.limits[1]).toMatchObject({ key: 'week', label: 'Current week', percentUsed: 26, percentRemaining: 74 });
     expect(quota.limits[0].resetsAt).toBe(new Date(1767225600 * 1000).toISOString());
     expect(quota.note).toContain('2026-01-02T00:00:00Z');
+    expect(quota.error).toBeUndefined();
+  });
+
+  it('renders a fully-spent window as a 100%-used meter, not an empty card', () => {
+    const spent = { ...SAMPLE_RATE_LIMITS, primary: null, secondary: { used_percent: 100, window_minutes: 10080, resets_at: 1767830400 } };
+    const quota = mapCodexQuota(spent, '2026-01-02T00:00:00Z', { now: SAMPLE_NOW });
+    expect(quota.limits).toHaveLength(1);
+    expect(quota.limits[0]).toMatchObject({ key: 'week', percentUsed: 100, percentRemaining: 0 });
+    expect(quota.error).toBeUndefined();
   });
 
   it('omits windows with no usable used_percent', () => {
-    const quota = mapCodexQuota({ primary: { used_percent: 50, window_minutes: 300 }, secondary: null, plan_type: null }, null);
+    const quota = mapCodexQuota({ primary: { used_percent: 50, window_minutes: 300 }, secondary: null, plan_type: null }, null, { now: SAMPLE_NOW });
     expect(quota.limits).toHaveLength(1);
     expect(quota.plan).toBe('unknown');
+  });
+
+  it('drops a window whose reset has already passed', () => {
+    const quota = mapCodexQuota(SAMPLE_RATE_LIMITS, null, { now: Date.parse('2026-01-05T00:00:00Z') });
+    expect(quota.limits.map((l) => l.key)).toEqual(['week']); // 5h window reset on the 1st
+  });
+
+  it('explains a window-less credits payload instead of leaving the card blank', () => {
+    const quota = mapCodexQuota(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T00:30:00Z', { now: SAMPLE_NOW });
+    expect(quota.limits).toHaveLength(0);
+    expect(quota.error).toContain('credit balance 0');
+    expect(quota.error).toContain('premium');
+  });
+
+  it('names the reached limit type when the payload reports one', () => {
+    const quota = mapCodexQuota({ ...CREDITS_ONLY_RATE_LIMITS, rate_limit_reached_type: 'weekly' }, null, { now: SAMPLE_NOW });
+    expect(quota.error).toContain('weekly');
+  });
+
+  it('says the windows have reset when every reported window expired', () => {
+    const quota = mapCodexQuota(SAMPLE_RATE_LIMITS, null, { now: Date.parse('2026-02-01T00:00:00Z') });
+    expect(quota.limits).toHaveLength(0);
+    expect(quota.error).toContain('has since reset');
+  });
+});
+
+describe('fetchCodexQuota', () => {
+  // Codex lays sessions out as sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl.
+  const writeSession = async (codexHome, { day, name, lines }) => {
+    const dir = join(codexHome, 'sessions', ...day.split('-'));
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `rollout-${name}.jsonl`), `${lines.join('\n')}\n`);
+  };
+
+  let codexHome;
+  beforeEach(async () => {
+    codexHome = await mkdtemp(join(tmpdir(), 'portos-codex-usage-'));
+  });
+  afterEach(async () => {
+    await rm(codexHome, { recursive: true, force: true });
+  });
+
+  const NOW = Date.parse('2026-01-01T06:00:00Z');
+  const liveWindow = (usedPercent) => ({
+    limit_id: 'codex',
+    primary: null,
+    secondary: { used_percent: usedPercent, window_minutes: 10080, resets_at: NOW / 1000 + 86400 },
+    plan_type: 'pro'
+  });
+
+  it('reports the spent meter from an older SESSION when the newest one has no windows', async () => {
+    // The reported bug end to end: the last session Codex ran only reported its
+    // window-less credits bucket, so the exhausted weekly meter recorded by the
+    // session before it went missing and the card read as "nothing to report".
+    await writeSession(codexHome, { day: '2026-01-01', name: '2026-01-01T04-00-00-aaa', lines: [codexLine(liveWindow(100), '2026-01-01T04:00:00Z')] });
+    await writeSession(codexHome, { day: '2026-01-01', name: '2026-01-01T05-00-00-bbb', lines: [codexLine(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T05:00:00Z')] });
+
+    const quota = await fetchCodexQuota({ codexHome, now: NOW });
+    expect(quota.limits).toHaveLength(1);
+    expect(quota.limits[0]).toMatchObject({ key: 'week', percentUsed: 100 });
+    expect(quota.note).toContain('2026-01-01T04:00:00Z');
+    expect(quota.error).toBeUndefined();
+  });
+
+  it('explains itself when no session anywhere reports a window', async () => {
+    await writeSession(codexHome, { day: '2026-01-01', name: '2026-01-01T05-00-00-bbb', lines: [codexLine(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T05:00:00Z')] });
+
+    const quota = await fetchCodexQuota({ codexHome, now: NOW });
+    expect(quota.limits).toHaveLength(0);
+    expect(quota.error).toContain('credit balance 0');
+    expect(quota.note).toContain('2026-01-01T05:00:00Z'); // the reading's age still travels
+  });
+
+  it('stops reading sessions older than the longest window once it has a fallback', async () => {
+    // Nothing that old can hold an unexpired meter, so re-reading it every poll
+    // is pure cost — this adapter has no cache to absorb it.
+    await writeSession(codexHome, { day: '2025-12-01', name: '2025-12-01T05-00-00-ccc', lines: [codexLine(liveWindow(42), '2025-12-01T05:00:00Z')] });
+    await writeSession(codexHome, { day: '2026-01-01', name: '2026-01-01T05-00-00-bbb', lines: [codexLine(CREDITS_ONLY_RATE_LIMITS, '2026-01-01T05:00:00Z')] });
+
+    const quota = await fetchCodexQuota({ codexHome, now: NOW });
+    expect(quota.limits).toHaveLength(0); // the month-old session was never opened
+    expect(quota.note).toContain('2026-01-01T05:00:00Z');
+  });
+
+  it('says to run Codex once when there are no session logs at all', async () => {
+    const quota = await fetchCodexQuota({ codexHome, now: NOW });
+    expect(quota).toMatchObject({ family: 'codex', supported: true, limits: [] });
+    expect(quota.error).toContain('No Codex session logs found');
   });
 });
 
