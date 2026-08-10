@@ -132,6 +132,7 @@
 // Process/runner layer — owns the live agent maps and the OS-level signals.
 export {
   pauseAgent,           // running → paused (process stopped, worktree preserved)
+  resumeAgent,          // paused → completed, task requeued on the preserved branch
   killAgent,            // running → completed (immediate SIGKILL)
   terminateAgent,       // running → completed (SIGTERM, SIGKILL fallback)
   getAgentProcessStats, // read, not a transition — but it needs the process layer

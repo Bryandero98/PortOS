@@ -1353,6 +1353,17 @@ export const slashdoTaskSchema = createCosTaskSchema
     issueAuthorFilter: z.enum(ISSUE_AUTHOR_FILTERS).optional(),
   });
 
+// POST /api/cos/agents/:id/resume — the resume dialog's edits for a paused
+// agent's next run. PICKED from createCosTaskSchema for the same reason
+// slashdoTaskSchema is: one vocabulary and one set of preprocessors for the
+// provider/model/effort knobs, whichever form supplied them. Every field is
+// optional — the resume requeues the paused agent's OWN task, so an untouched
+// dialog is a valid "resume exactly as it was". `description` only matters on
+// the fallback path where the paused task is gone and a fresh one is queued.
+export const resumeCosAgentSchema = createCosTaskSchema
+  .pick({ description: true, context: true, model: true, provider: true, effort: true, app: true, screenshots: true })
+  .partial();
+
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags
  * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`reviewerApplies`)

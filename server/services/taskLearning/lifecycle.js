@@ -35,6 +35,12 @@ function withoutStaleCoordinatorVerdict(agent, task) {
  */
 export function initTaskLearning() {
   cosEvents.on('agent:completed', async (agent) => {
+    // A record retired by `resumeAgent` is a CONTINUATION, not an outcome: the run
+    // was paused by the user and its task is already back in the queue, where the
+    // resumed run will record the real verdict. Learning from it would charge the
+    // task type and model tier a phantom failure per pause, and double-count the
+    // task once the continuation finishes.
+    if (agent?.result?.resumed) return;
     // Get task info from agent
     const task = {
       id: agent.taskId,

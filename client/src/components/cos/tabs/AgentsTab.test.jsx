@@ -9,6 +9,8 @@ vi.mock('../../../services/api', () => ({
   getCosAgentDates: vi.fn(),
   getCosAgentsByDate: vi.fn(),
   clearCompletedCosAgents: vi.fn(),
+  resumeCosAgent: vi.fn(),
+  addCosTask: vi.fn(),
 }));
 
 vi.mock('../../ui/Toast', () => ({
@@ -16,9 +18,12 @@ vi.mock('../../ui/Toast', () => ({
 }));
 
 vi.mock('./AgentCard', () => ({
-  default: ({ agent, onFeedbackChange }) => (
+  default: ({ agent, onFeedbackChange, onResume }) => (
     <div data-testid={`agent-${agent.id}`}>
       <span>{agent.metadata?.taskDescription}</span>
+      {onResume && (
+        <button type="button" onClick={() => onResume(agent)}>Resume {agent.id}</button>
+      )}
       {!agent.feedback?.rating && (
         <button
           type="button"
@@ -34,7 +39,26 @@ vi.mock('./AgentCard', () => ({
   ),
 }));
 
-vi.mock('./ResumeAgentModal', () => ({ default: () => null }));
+// Stands in for the real dialog's submit: the payload shape it hands back is
+// what AgentsTab has to route to the right endpoint.
+vi.mock('./ResumeAgentModal', () => ({
+  default: ({ agent, onSubmit }) => (
+    <button
+      type="button"
+      onClick={() => onSubmit({
+        description: `[Resume] ${agent.metadata?.taskDescription}`,
+        context: 'previous context',
+        provider: 'claude',
+        model: 'claude-opus-5',
+        effort: 'high',
+        app: '',
+        type: 'user',
+      }).catch(() => {})}
+    >
+      Submit resume
+    </button>
+  ),
+}));
 vi.mock('../../ui/InlineConfirmRow', () => ({ default: () => null }));
 
 import * as api from '../../../services/api';
@@ -67,6 +91,49 @@ beforeEach(() => {
   api.getCosLearningDurations.mockResolvedValue({});
   api.getCosAgentDates.mockResolvedValue({ dates: [] });
   api.getCosAgentsByDate.mockResolvedValue([]);
+});
+
+describe('AgentsTab resume routing', () => {
+  const pausedAgent = {
+    id: 'agent-paused',
+    taskId: 'task-abc',
+    status: 'paused',
+    startedAt: '2026-07-13T09:00:00.000Z',
+    metadata: { taskDescription: 'Half-finished work' },
+  };
+
+  it('resumes a PAUSED agent in place instead of queueing a second task', async () => {
+    const user = userEvent.setup();
+    api.resumeCosAgent.mockResolvedValue({ success: true, taskId: 'task-abc', mode: 'requeued' });
+    renderTab([pausedAgent]);
+    await act(async () => {});
+
+    await user.click(screen.getByRole('button', { name: 'Resume agent-paused' }));
+    await user.click(screen.getByRole('button', { name: 'Submit resume' }));
+
+    await waitFor(() => expect(api.resumeCosAgent).toHaveBeenCalledWith(
+      'agent-paused',
+      expect.objectContaining({ provider: 'claude', model: 'claude-opus-5', effort: 'high' }),
+      { silent: true },
+    ));
+    expect(api.addCosTask).not.toHaveBeenCalled();
+  });
+
+  it('still queues a fresh task for a COMPLETED agent, which has no task to requeue', async () => {
+    const user = userEvent.setup();
+    api.addCosTask.mockResolvedValue({ id: 'task-new' });
+    renderTab([completedAgent('done', 'Finished work')]);
+    await act(async () => {});
+
+    await user.click(screen.getByRole('button', { name: 'Resume done' }));
+    await user.click(screen.getByRole('button', { name: 'Submit resume' }));
+
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalledWith(
+      expect.objectContaining({ description: '[Resume] Finished work' }),
+      { silent: true },
+    ));
+    expect(api.resumeCosAgent).not.toHaveBeenCalled();
+  });
 });
 
 describe('AgentsTab feedback review queue', () => {
