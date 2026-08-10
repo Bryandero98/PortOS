@@ -11,7 +11,9 @@ const api = vi.hoisted(() => ({
 
 vi.mock('../services/api', () => api);
 
-const UsagePage = (await import('./UsagePage')).default;
+const UsagePageModule = await import('./UsagePage');
+const UsagePage = UsagePageModule.default;
+const { arrangeQuotaCells } = UsagePageModule;
 
 const usage = {
   totalSessions: 1,
@@ -143,6 +145,28 @@ describe('UsagePage per-provider refresh', () => {
 
     await waitFor(() => expect(screen.queryByText('Grok')).not.toBeInTheDocument());
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
+  });
+});
+
+describe('arrangeQuotaCells', () => {
+  const q = (family) => ({ family, label: family });
+
+  it('orders Claude, Antigravity, then a shared Codex+Grok cell, then the rest', () => {
+    // Server order deliberately differs from display order.
+    const cells = arrangeQuotaCells(['claude', 'codex', 'agy', 'grok', 'imagegen'].map(q));
+    expect(cells.map((c) => c.cards.map((card) => card.family))).toEqual([
+      ['claude'], ['agy'], ['codex', 'grok'], ['imagegen']
+    ]);
+  });
+
+  it('collapses a shared cell to the one family of the pair that is enabled', () => {
+    const cells = arrangeQuotaCells([q('grok'), q('claude')]);
+    expect(cells.map((c) => c.key)).toEqual(['claude', 'grok']);
+  });
+
+  it('renders a family it has no display preference for exactly once, in server order', () => {
+    const cells = arrangeQuotaCells([q('imagegen'), q('newthing')]);
+    expect(cells.map((c) => c.cards.map((card) => card.family))).toEqual([['imagegen'], ['newthing']]);
   });
 });
 
