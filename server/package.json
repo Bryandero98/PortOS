@@ -16,18 +16,18 @@
   },
   "dependencies": {
     "@googleapis/calendar": "^15.0.0",
-    "@googleapis/gmail": "^17.0.0",
+    "@googleapis/gmail": "^18.0.0",
     "express": "5.2.1",
     "google-auth-library": "^11.0.0",
     "kokoro-js": "1.2.1",
     "node-pty": "1.2.0-beta.14",
     "pdf-lib": "^1.17.1",
-    "pg": "8.22.0",
+    "pg": "8.23.0",
     "pm2": "7.0.3",
     "sharp": "0.35.3",
     "socket.io": "4.8.3",
     "socket.io-client": "4.8.3",
-    "undici": "^8.9.0",
+    "undici": "^8.10.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -39,7 +39,7 @@
     "lodash": "4.18.1",
     "follow-redirects": "1.16.0",
     "body-parser": "2.3.0",
-    "js-yaml": "4.3.0",
+    "js-yaml": "4.3.1",
     "tar": "7.5.22",
     "engine.io": "6.6.9",
     "qs": "6.15.3",
@@ -47,8 +47,9 @@
     "socket.io-parser": "4.2.7",
     "protobufjs": "7.6.5",
     "@protobufjs/utf8": "1.1.2",
-    "ws": "8.21.1",
-    "ip-address": "10.4.0",
-    "postcss": "8.5.25"
+    "ws": "8.21.3",
+    "ip-address": "10.5.0",
+    "postcss": "8.5.26",
+    "nanoid": "3.3.18"
   }
 }
