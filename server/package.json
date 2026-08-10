@@ -15,7 +15,7 @@
     "test:db:ci": "vitest run --config vitest.config.db.js --bail=1 --reporter=default --reporter=github-actions"
   },
   "dependencies": {
-    "@googleapis/calendar": "^15.0.0",
+    "@googleapis/calendar": "^16.0.0",
     "@googleapis/gmail": "^18.0.0",
     "express": "5.2.1",
     "google-auth-library": "^11.0.0",
