@@ -26,6 +26,18 @@
  * A branch with no upstream to compare against can't be cleared, so it still
  * reports (an unpushed commit is unreviewed by definition).
  *
+ * "The upstream does not have it" is a question about CONTENT, not SHAs (#3744).
+ * This repo rebase-merges PRs, so a commit that merged upstream carries a
+ * DIFFERENT sha there than the copy a local `git merge --ff-only <branch>` put on
+ * the primary. Comparing shas alone reads that copy as unpushed, and the
+ * patch-id attribution below then blames whichever agent's branch also carries
+ * the same upstream commit — which, after a `/do:pr` rebase, is most of them.
+ * That is how a run whose PR had already MERGED was failed for branch-jacking a
+ * commit it did not author and that was never stranded. So the upstream
+ * exclusion asks `git cherry`, matching the patch-id precision already used on
+ * the attribution side; the two must agree, or the mismatch itself manufactures
+ * failures.
+ *
  * Movement that survives the checks above is still not enough to FAIL the run.
  * The primary checkout is a shared global resource — a concurrent coding-on-main
  * agent, the human's own terminal, `update.sh`'s `git pull --rebase --autostash`,
@@ -185,12 +197,62 @@ async function resolveAgentBranchSha(checkoutPath, agentBranch) {
 }
 
 /**
+ * The commits `driftedHead` carries that the upstream lacks BY CONTENT (#3744) —
+ * `git cherry <upstream> <driftedHead> <runBase>`, keeping only the `+` lines
+ * (no patch-equivalent upstream). Merge commits are excluded by `git cherry`
+ * itself, matching the `noMerges` counts.
+ *
+ * This is the sha-based `upstream..head` count made patch-id-precise. It matters
+ * because PortOS rebase-merges PRs: the merged commit's sha upstream differs
+ * from the copy on the primary, so a sha comparison reports "unpushed" for
+ * content that is fully pushed and reviewed.
+ *
+ * The `runBase` limit keeps a PRE-run unpushed commit out of the set (it is not
+ * this run's doing). A limit that no longer exists in the history — the baseline
+ * commit rewritten by a mid-run `git pull --rebase` on the primary — widens the
+ * walk rather than breaking it, and the patch-equivalence filter still drops
+ * every rewritten copy, since a rebase preserves patch-ids.
+ *
+ * Returns null when there is no upstream to compare against, or `git cherry`
+ * could not run — both of which the caller must treat as "no patch-level verdict
+ * available" and fall back to the sha counts, never as "verified clean".
+ * NON-THROWING.
+ */
+async function listStrandedByPatch(checkoutPath, { runBase, upstream, driftedHead }) {
+  if (!upstream) return null;
+  const result = await execGit(
+    ['cherry', upstream, driftedHead, runBase],
+    checkoutPath,
+    { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+  ).catch(() => null);
+  if (!result || result.exitCode !== 0) return null;
+  return (result.stdout || '')
+    .split('\n')
+    .filter(line => line.startsWith('+ '))
+    .map(line => line.slice(2).trim())
+    .filter(Boolean);
+}
+
+/**
  * Is `descendant` STRICTLY ahead of `ancestor` — reachable from it, and not the same
  * commit? Non-throwing; an unresolvable comparison returns false, which the caller
  * treats as "no reason to skip the attribution checks".
  */
 async function isStrictlyAhead(checkoutPath, ancestor, descendant) {
   if (!ancestor || !descendant || ancestor === descendant) return false;
+  return isAncestorOrSame(checkoutPath, ancestor, descendant);
+}
+
+/**
+ * Is `ancestor` still reachable from `descendant` (or the same commit)? Used to ask
+ * whether the spawn-time baseline survived the run — a mid-run `git pull --rebase`
+ * on the primary rewrites its local commits and orphans that sha. Non-throwing; an
+ * unresolvable comparison returns false, so an unreadable history reports the
+ * baseline as rewritten rather than quoting a commit count derived from it.
+ */
+async function isAncestorOrSame(checkoutPath, ancestor, descendant) {
+  if (!ancestor || !descendant) return false;
+  if (ancestor === descendant) return true;
   const result = await execGit(
     ['merge-base', '--is-ancestor', ancestor, descendant],
     checkoutPath,
@@ -334,14 +396,30 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
     upstream ? countCommitsAhead(baseline.path, upstream, current.head) : Promise.resolve(null),
   ]);
 
+  // The same question asked by patch-id rather than by sha (#3744) — null when
+  // there is no upstream or the walk failed, which must NOT read as "clean".
+  // Skipped when the sha count already cleared the checkout: it can only agree.
+  const strandedByPatch = unpushedCount === 0
+    ? []
+    : await listStrandedByPatch(baseline.path, { runBase: baseline.head, upstream, driftedHead: current.head });
+
   // Same branch, nothing local-only: the checkout was pulled forward onto commits
   // that are already upstream (reviewed, merged, pushed). Nothing was stranded, so
-  // there is nothing for a human to recover.
-  if (current.branch === baseline.branch && unpushedCount === 0) {
+  // there is nothing for a human to recover. An empty patch-level set clears it
+  // just as a zero sha count does — a rebase-merged copy is upstream content
+  // wearing a local sha, and telling a human to `reset --hard` over it is the
+  // false alarm this guard exists to avoid.
+  if (current.branch === baseline.branch && (unpushedCount === 0 || strandedByPatch?.length === 0)) {
     return { drifted: false, fastForwarded: true, baseline, current, commitCount };
   }
 
-  const message = formatDriftMessage({ baseline, current, commitCount });
+  // Did the baseline commit survive the run? A `git pull --rebase` on the primary
+  // REWRITES the local commits it replays, orphaning the sha stamped at spawn — at
+  // which point `commitCount` counts the whole post-fork history rather than the
+  // run's movement, and the prose ("16 new commits") badly overstates what moved.
+  // Say so instead of quoting a number that no longer means what it says.
+  const baselineRewritten = !(await isAncestorOrSame(baseline.path, baseline.head, current.head));
+  const message = formatDriftMessage({ baseline, current, commitCount, baselineRewritten });
 
   // Second gate (#3703): stranded commits are only a failure if THIS agent could
   // have produced them. Attribution runs whenever there is (or should be) a
@@ -350,7 +428,13 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   // manufacture a failure out of a check that could not run. Only a pure branch
   // switch that stranded exactly zero commits skips it (nothing to blame on
   // anyone) and keeps its benign `git checkout` report.
-  const strandedCount = unpushedCount === null ? commitCount : unpushedCount;
+  // Prefer the patch-level verdict when there is one; a resolved empty set means
+  // nothing is stranded even where the sha count disagrees. Null falls back to the
+  // sha count, and a null THERE falls back to the movement count, which is
+  // unresolvable-and-therefore-fail-open below.
+  const strandedCount = strandedByPatch
+    ? strandedByPatch.length
+    : (unpushedCount === null ? commitCount : unpushedCount);
   if (strandedCount === null || strandedCount > 0) {
     const attributed = await isDriftAttributableToAgent(baseline.path, {
       runBase: baseline.head,
@@ -372,18 +456,23 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
     commitCount,
     unpushedCount,
     message,
-    suggestedFix: formatDriftRecovery({ current, baseline, commitCount, unpushedCount, agentBranch }),
+    suggestedFix: formatDriftRecovery({ current, baseline, commitCount, unpushedCount, strandedCount, agentBranch }),
   };
 }
 
 /** Human-readable "what moved". Pure. */
-export function formatDriftMessage({ baseline, current, commitCount }) {
+export function formatDriftMessage({ baseline, current, commitCount, baselineRewritten = false }) {
   const branchPart = current.branch === baseline.branch
     ? `branch ${current.branch}`
     : `branch ${baseline.branch} → ${current.branch}`;
   const countPart = commitCount === null
     ? 'commit count unresolved'
-    : `${commitCount} new commit${commitCount === 1 ? '' : 's'}`;
+    : baselineRewritten
+      // The baseline is off the current history (a rebase replayed it under a new
+      // sha), so the count spans the fork point, not the run. Label it as such
+      // rather than passing it off as "N new commits".
+      ? `baseline rewritten by a rebase; ${commitCount} commit${commitCount === 1 ? '' : 's'} since the abandoned baseline`
+      : `${commitCount} new commit${commitCount === 1 ? '' : 's'}`;
   return `Worktree agent mutated the primary checkout ${baseline.path}: ${branchPart}, HEAD ${short(baseline.head)} → ${short(current.head)} (${countPart})`;
 }
 
@@ -396,7 +485,7 @@ export function formatDriftMessage({ baseline, current, commitCount }) {
  * reset, nothing to discard, no reason to scare the reader with `--hard`), while
  * stranded commits need the inspect-then-reset flow. Pure.
  */
-export function formatDriftRecovery({ current, baseline = null, commitCount, unpushedCount = null, agentBranch }) {
+export function formatDriftRecovery({ current, baseline = null, commitCount, unpushedCount = null, strandedCount = null, agentBranch }) {
   if (unpushedCount === 0 && baseline?.branch && baseline.branch !== current.branch) {
     return [
       `A worktree-isolated agent left the PRIMARY checkout on \`${current.branch}\` instead of \`${baseline.branch}\`.`,
@@ -408,9 +497,12 @@ export function formatDriftRecovery({ current, baseline = null, commitCount, unp
     : 'Check the agent\'s own branch (and for an open PR) for the same commits before discarding anything.';
   // The actionable number is what the upstream is MISSING, not how far HEAD moved
   // — a pull that also carried the agent's commit moves HEAD further than the
-  // damage goes.
-  const strandedCount = unpushedCount === null ? commitCount : unpushedCount;
-  const countPhrase = strandedCount === null ? 'commits' : `${strandedCount} commit${strandedCount === 1 ? '' : 's'}`;
+  // damage goes. `strandedCount` is the caller's patch-level tally when it has
+  // one; the sha counts are the fallback.
+  const stranded = strandedCount === null
+    ? (unpushedCount === null ? commitCount : unpushedCount)
+    : strandedCount;
+  const countPhrase = stranded === null ? 'commits' : `${stranded} commit${stranded === 1 ? '' : 's'}`;
   return [
     `A worktree-isolated agent committed to the PRIMARY checkout instead of its worktree, leaving \`${current.branch}\` carrying ${countPhrase} PortOS never reviewed.`,
     alsoOn,
