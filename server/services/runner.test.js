@@ -164,6 +164,62 @@ describe('finalizeRunRecord — authoritative timeout classification', () => {
   });
 });
 
+describe('executeCliRun — wall-clock timeout classification', () => {
+  // The CLI runner kills its own child on timeout, so the close event carries
+  // `exitCode: null` rather than the 124 finalizeRunRecord keys on. Without the
+  // runner's own timeout verdict, the close handler scanned the output — and
+  // Codex echoes the entire prompt to stdout, so one word of story prose
+  // ("credit") filed a 5-minute timeout as `quota-exceeded`, benching a healthy
+  // provider and spawning an investigation task.
+  it('classifies its own timeout kill as a timeout instead of scanning story text', async () => {
+    const child = makeChild();
+    spawn.mockReturnValue(child);
+    const onRunFailed = vi.fn();
+    setAIToolkit(fakeToolkit({ analyzeError }), {
+      dataDir: '/tmp/test-runner',
+      hooks: { onRunFailed },
+    });
+    const onComplete = vi.fn();
+    const provider = {
+      id: 'codex',
+      name: 'Codex CLI',
+      command: 'codex',
+      args: [],
+      defaultModel: 'gpt-test',
+      timeout: 1,
+    };
+
+    await executeCliRun({
+      runId: 'run-cli-timeout',
+      provider,
+      prompt: 'A story about a designer who sends the work on without demanding credit.',
+      workspacePath: TEST_WORKSPACE,
+      onComplete,
+    });
+    // Codex echoes the prompt back on stdout, which is how the quota-shaped
+    // word reaches the classifier at all.
+    child.stdout.emit('data', Buffer.from('...sends the work on without demanding credit.'));
+    // Let the 1ms timer fire, then settle the kill the way the OS would.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    child.emit('close', null, 'SIGKILL');
+    await flushMicrotasks();
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      completionReason: 'timeout',
+      errorCategory: ERROR_CATEGORIES.TIMEOUT,
+      errorAnalysis: expect.objectContaining({
+        category: ERROR_CATEGORIES.TIMEOUT,
+        // A timeout is not evidence the provider is unhealthy: it must not
+        // route to the actionable/fallback handling quota-exceeded triggers.
+        requiresFallback: false,
+        actionable: false,
+      }),
+    }));
+    expect(onComplete.mock.calls.at(-1)[0].error).toMatch(/timed out/i);
+  });
+});
+
 describe('executeCliRun — intentional cancellation', () => {
   it('skips output classification and provider-failure hooks after stopRun', async () => {
     const child = makeChild();

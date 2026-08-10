@@ -241,6 +241,9 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   let output = '';
   let immediateFallbackAnalysis = null;
   let childProcess = null;
+  // Set by the wall-clock timeout below so the close handler can classify the
+  // kill as a timeout instead of scanning the model's output for a category.
+  let timeoutError = null;
   const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
 
   const abortForImmediateFallbackSignal = (text) => {
@@ -314,6 +317,11 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   const timeoutHandle = effectiveTimeout > 0 ? setTimeout(() => {
     if (childProcess && !childProcess.killed) {
       console.log(`⏱️ Run ${runId} timed out after ${effectiveTimeout}ms`);
+      // Record the verdict BEFORE the kill: the close handler cannot otherwise
+      // tell this SIGKILL apart from a provider failure, and killProcessTree
+      // leaves `exitCode: null` — not the 124 the TUI runner synthesizes for
+      // the same condition.
+      timeoutError = `CLI run timed out after ${effectiveTimeout}ms`;
       killProcessTree(childProcess);
     }
   }, effectiveTimeout) : null;
@@ -392,7 +400,23 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
       } else if (!metadata.success && toolkit.services.errorDetection) {
         // A mid-stream fallback signal (e.g. usage-limit hit) SIGTERM-kills the
         // child; even an exit 0 must remain a failure so fallback can run.
-        const errorAnalysis = immediateFallbackAnalysis || toolkit.services.errorDetection.analyzeError(output, exitCode);
+        //
+        // Our own wall-clock timeout is authoritative about WHY the child died,
+        // so analyze that message rather than the output — the same guard
+        // `finalizeRunRecord` applies to exit 124 for TUI runs. Codex echoes the
+        // whole prompt to stdout, so scanning `output` for a category let one
+        // word of story prose ("…without demanding credit.") match the
+        // billing/credit pattern and file a plain 5-minute timeout as
+        // `quota-exceeded`: a healthy provider benched and an investigation task
+        // spawned over a run that simply needed longer (#3726).
+        // A mid-stream signal outranks the clock in both places: it names a
+        // specific provider condition, where the timeout only says the run ran
+        // out of time — and the two can coexist if the deadline lands between
+        // the signal's kill and the child's close.
+        const timedOut = !!timeoutError && !immediateFallbackAnalysis;
+        if (timedOut) metadata.completionReason = 'timeout';
+        const errorAnalysis = immediateFallbackAnalysis
+          || toolkit.services.errorDetection.analyzeError(timedOut ? timeoutError : output, exitCode);
         metadata.error = errorAnalysis.message || `Process exited with code ${exitCode}`;
         metadata.errorCategory = errorAnalysis.category;
         metadata.errorAnalysis = errorAnalysis;
