@@ -15,7 +15,7 @@
  * returns a per-dimension `{ score, gap, fix }` and a weighted composite the
  * autopilot gate spends: proceed once the weighted score clears a configurable
  * threshold AND every dimension clears its floor; otherwise the bounded improve loop (in
- * seriesAutopilot.js `runFoundationGate`) targets the weakest dimension, applies
+ * seriesAutopilot.js `runFoundationGate`) targets the largest weighted deficit, applies
  * the fix through the OWNING service (never a raw write, `force:false`
  * everywhere), and re-judges.
  *
@@ -664,7 +664,7 @@ export async function judgeFoundation(seriesId, { providerId, model, effort, for
     ...judge,
   };
   await saveSnapshot(snapshot);
-  console.log(`🏛️ foundation judge — series=${seriesId.slice(0, 12)} weighted=${judge.weightedScore} weakest=${weak?.dimension || '—'}(${weak?.score ?? '—'}) via ${judgeProvider.id}/${judgeModel || '(default)'}`);
+  console.log(`🏛️ foundation judge — series=${seriesId.slice(0, 12)} weighted=${judge.weightedScore} target=${weak?.dimension || '—'}(${weak?.score ?? '—'}) via ${judgeProvider.id}/${judgeModel || '(default)'}`);
   return snapshot;
 }
 

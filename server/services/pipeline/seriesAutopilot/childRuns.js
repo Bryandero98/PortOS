@@ -263,7 +263,7 @@ export async function runCharacterFoundation(seriesId, record) {
 
 // Foundation-quality convergence loop (#2176). Mirrors runArcVerify but gates on
 // a WEIGHTED SCORE (not a blocking-findings count): judge the whole foundation,
-// and while it's below the threshold, target the weakest dimension, apply the
+// and while it's below the threshold, target the largest weighted deficit, apply the
 // fix through the owning service (universe refine / character expand / arc
 // resolve — force:false, never a raw write), then re-judge. The re-judge is
 // content-hash-cached, so an unchanged foundation short-circuits (no LLM) and

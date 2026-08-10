@@ -273,7 +273,7 @@ function frameLabel(f) {
     case 'resolve:rollback': return `${f.scope} auto-resolve went from ${f.before} to ${f.after} blocking finding(s) — `
       + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`;
     // #2176 — foundation-gate telemetry.
-    case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · weakest: ${f.weakest}` : ''}`;
+    case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · next target: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
     // #1578 — per-check telemetry forwarded from the editorial-checks runner.
     case 'check:start': return `Editorial check: ${f.label || f.checkId}…`;
@@ -855,7 +855,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                 />
               </div>
               <p className="text-[11px] text-gray-500">
-                Weighted quality bar (0–10: worldbuilding 40%, character 30%, structure 20%, craft 10%) the foundation must clear before drafting; the run improves the weakest dimension up to the round limit, then pauses for review.
+                Weighted quality bar (0–10: worldbuilding 40%, character 30%, structure 20%, craft 10%) the foundation must clear before drafting; the run repairs the largest weighted deficit up to the round limit, then pauses for review.
               </p>
             </>
           ) : null}

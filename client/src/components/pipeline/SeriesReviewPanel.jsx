@@ -384,7 +384,7 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
           <div className="flex flex-wrap gap-2 text-[11px]">
             {review.foundation && Number.isFinite(review.foundation.weightedScore) ? (
               <span className="px-2 py-0.5 rounded border border-port-border bg-port-bg text-gray-300" title={review.foundation.oneLineVerdict || ''}>
-                Foundation {review.foundation.weightedScore}/10{review.foundation.weakest ? ` · weakest: ${review.foundation.weakest}` : ''}
+                Foundation {review.foundation.weightedScore}/10{review.foundation.weakest ? ` · next target: ${review.foundation.weakest}` : ''}
               </span>
             ) : null}
             {review.health && Number.isFinite(review.health.score) ? (
