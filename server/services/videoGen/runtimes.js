@@ -131,6 +131,18 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
 
 export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(Object.keys(BYOV_RUNTIME_INFO)));
 
+// Runtimes whose FFLF *last* frame is a real conditioning anchor rather than an
+// advisory hint: ltx2 runs a true keyframe-interpolation pipeline, and
+// minimax_h3 packs both frames as fl2va conditioning rows. Every other runtime
+// conditions on a single frame and drops the other. Declared once here because
+// three consumers must agree — buildArgs (which forwards it), the last-frame
+// resize in local.js (wasted ffmpeg work otherwise), and the client's
+// "last frame is advisory" note, which reads it off the model payload via
+// `lastFrameAnchored`.
+export const LAST_FRAME_ANCHORED_RUNTIMES = Object.freeze(new Set(['ltx2', 'minimax_h3']));
+
+export const modelAnchorsLastFrame = (model) => LAST_FRAME_ANCHORED_RUNTIMES.has(model?.runtime);
+
 export function isByovRuntimeInstalled(runtimeId) {
   const info = BYOV_RUNTIME_INFO[runtimeId];
   if (!info) return false;

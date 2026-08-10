@@ -50,6 +50,9 @@ import {
   loadHistory,
   DEFAULT_NUM_FRAMES,
 } from './local.js';
+// Straight from the leaf, not through local.js: the suites that exercise this
+// module mock local.js wholesale, and a mocked rule table would assert nothing.
+import { miniMaxH3InputError, videoChainUnsupportedError } from './modeContract.js';
 
 /**
  * Best-effort unlink of every multipart temp file the parser wrote before the
@@ -393,20 +396,34 @@ async function resolvePreparedParams({
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
   }
-  // MiniMax H3's released MLX path is text-only, fixed-24fps, joint A/V and
-  // CFG-distilled. Fail before queue persistence so a direct API caller cannot
-  // enqueue a request whose controls the runtime would silently ignore.
-  if (effectiveModel?.runtime === 'minimax_h3') {
-    const hasImageInput = Boolean(
-      uploads.sourceImage || uploads.lastImage || body.sourceImageFile
-      || body.lastImageFile || body.keyframes?.length || body.extendFromVideoId,
-    );
-    if ((body.mode && body.mode !== 'text') || hasImageInput) {
+  // Chunk chaining needs image-to-video on any runtime — the same rule
+  // generateChainedVideo enforces at dispatch, applied once here so a doomed
+  // chain never reaches the persisted queue.
+  if (body.chunks != null && Number(body.chunks) > 1) {
+    const chainError = videoChainUnsupportedError(effectiveModel);
+    if (chainError) {
       await cleanupStaged();
-      throw new ServerError(
-        'MiniMax H3 MLX currently supports text-to-video only; remove image/keyframe conditioning.',
-        { status: 400, code: 'MINIMAX_H3_MODE_UNSUPPORTED' },
-      );
+      throw chainError;
+    }
+  }
+  // MiniMax H3's released MLX path is fixed-24fps, joint A/V and CFG-distilled,
+  // and conditions on at most two keyframes (first / last latent frame). Fail
+  // before queue persistence so a direct API caller cannot enqueue a request
+  // whose controls the runtime would silently ignore.
+  if (effectiveModel?.runtime === 'minimax_h3') {
+    // Same rule table the render boundary throws from, so the two entry points
+    // can't disagree about which shapes are legal or which code they return.
+    const h3InputError = miniMaxH3InputError({
+      mode: body.mode,
+      hasFirstImage: Boolean(uploads.sourceImage || body.sourceImageFile),
+      hasLastImage: Boolean(uploads.lastImage || body.lastImageFile),
+      supportedModes: effectiveModel.supportedModes,
+      keyframes: body.keyframes,
+      extendFromVideo: body.extendFromVideoId,
+    });
+    if (h3InputError) {
+      await cleanupStaged();
+      throw h3InputError;
     }
     if (body.negativePrompt?.trim()) {
       await cleanupStaged();
@@ -427,13 +444,6 @@ async function resolvePreparedParams({
       throw new ServerError(
         'MiniMax H3 does not expose a tiling mode.',
         { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
-      );
-    }
-    if (body.chunks != null && Number(body.chunks) > 1) {
-      await cleanupStaged();
-      throw new ServerError(
-        `${effectiveModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
-        { status: 400, code: 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE' },
       );
     }
     const frames = Number(body.numFrames ?? effectiveModel.defaultFrames);
@@ -485,13 +495,6 @@ async function resolvePreparedParams({
       throw new ServerError(
         'Wan 2.2 text-to-video cannot consume a source image — switch to image mode or remove the source.',
         { status: 400, code: 'WAN22_TEXT_MODE_SOURCE_CONFLICT' },
-      );
-    }
-    if (body.chunks != null && Number(body.chunks) > 1 && !supportedModes.includes('image')) {
-      await cleanupStaged();
-      throw new ServerError(
-        `${effectiveModel.name} cannot generate chunks > 1 because continuation requires image-to-video support.`,
-        { status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' },
       );
     }
     const numFrames = body.numFrames != null ? Number(body.numFrames) : DEFAULT_NUM_FRAMES;

@@ -46,7 +46,7 @@ vi.mock('../../lib/mediaModels.js', () => ({
       id: 'minimax_h3_8bit', name: 'MiniMax H3 MLX 8-bit', runtime: 'minimax_h3',
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
       revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
-      supportedModes: ['text'], defaultFrames: 124,
+      supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
       frameOptions: [124, 141, 158], fpsOptions: [24],
       steps: 8, guidance: 0, samplerLocked: true,
       termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
@@ -1771,12 +1771,13 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(spawnDetached).not.toHaveBeenCalled();
   });
 
+  // H3 anchors keyframes at the first/last latent frame only, so the ltx2
+  // arbitrary-index array and every non-keyframe conditioning channel stay out.
   it.each([
-    ['uploaded image', { uploadedTempPath: '/mock/source.png' }],
     ['keyframes', { keyframes: [{ path: '/mock/first.png', frame: 0 }, { path: '/mock/last.png', frame: 140 }] }],
-    ['extension video', { extendFromVideoPath: '/mock/prior.mp4' }],
-    ['audio file', { audioFilePath: '/mock/audio.wav' }],
-    ['IC reference', { icReferencePaths: ['/mock/reference.mp4'] }],
+    ['extension video', { mode: 'extend', extendFromVideoPath: '/mock/prior.mp4' }],
+    ['audio file', { mode: 'a2v', audioFilePath: '/mock/audio.wav' }],
+    ['IC reference', { mode: 'ic-restyle', icReferencePaths: ['/mock/reference.mp4'] }],
   ])('rejects direct %s conditioning before any child is spawned', async (_label, conditioning) => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     vi.mocked(spawnDetached).mockClear();
@@ -1791,6 +1792,60 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     })).rejects.toMatchObject({ code: 'MINIMAX_H3_MODE_UNSUPPORTED' });
 
     expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // Each mode has exactly one legal image shape; a mismatch must fail rather
+  // than silently render a different clip than the caller asked for.
+  it.each([
+    ['text mode with a source image', { mode: 'text', sourceImagePath: '/mock/source.png' }, 'MINIMAX_H3_TEXT_MODE_SOURCE_CONFLICT'],
+    ['image mode with no image', { mode: 'image' }, 'MINIMAX_H3_I2V_REQUIRES_IMAGE'],
+    ['image mode with a last frame', { mode: 'image', sourceImagePath: '/mock/source.png', lastImagePath: '/mock/last.png' }, 'MINIMAX_H3_I2V_LAST_IMAGE_CONFLICT'],
+    ['fflf mode with no frames', { mode: 'fflf' }, 'MINIMAX_H3_FFLF_REQUIRES_IMAGE'],
+  ])('rejects %s before any child is spawned', async (_label, fields, code) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    await expect(generateVideo({
+      jobId: 'h3-image-shape',
+      modelId: 'minimax_h3_8bit',
+      termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      ...fields,
+    })).rejects.toMatchObject({ code });
+
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // The helper stretches the FIRST keyframe onto the canvas as the geometry
+  // anchor, so packed order has to put the first frame ahead of the last.
+  it.each([
+    ['image', { mode: 'image', sourceImagePath: '/mock/source.png' }, ['first']],
+    ['fflf', { mode: 'fflf', sourceImagePath: '/mock/source.png', lastImagePath: '/mock/last.png' }, ['first', 'last']],
+    ['fflf with only a last frame', { mode: 'fflf', lastImagePath: '/mock/last.png' }, ['last']],
+    ['text', { mode: 'text' }, []],
+  ])('forwards %s conditioning as anchored --image pairs', async (_label, fields, expectedAnchors) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-keyframes',
+      modelId: 'minimax_h3_8bit',
+      termsAcceptance: 'minimax-h3-community-license-2026-08-02',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24,
+      ...fields,
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    // Paths are the ffmpeg-resized copies, so assert the anchors and that each
+    // one directly follows its own --image rather than the literal input path.
+    expect(args.flatMap((arg, i) => (
+      arg === '--image' ? [args[i + 2] === '--anchor' ? args[i + 3] : 'UNPAIRED'] : []
+    ))).toEqual(expectedAnchors);
   });
 
   it('uses the pinned cache-only helper, locked sampler and credential-free environment', async () => {

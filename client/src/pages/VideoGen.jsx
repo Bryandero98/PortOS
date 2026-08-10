@@ -153,7 +153,7 @@ export default function VideoGen() {
     sourceImageFile, sourceImageUpload, sourceUploadUrl,
     pickSourceImage, uploadSourceImage, clearSourceImage,
     lastImageFile, lastImageUpload, lastUploadUrl,
-    pickLastImage, uploadLastImage, clearLastImage,
+    pickLastImage, uploadLastImage, clearLastImage, lastFrameIsAdvisory,
     keyframesMode, keyframes, keyframesSupported, keyframesActive, keyframesError, keyframesBlocked,
     toggleKeyframesMode, addKeyframe, updateKeyframe, removeKeyframe,
     extendFromVideoId, extendingFrame, handleExtendPick, extendModeBlocked,
@@ -897,10 +897,10 @@ export default function VideoGen() {
                   onUpload={uploadLastImage}
                   onClear={clearLastImage}
                   alt="End frame"
-                  advisoryNote={{
+                  advisoryNote={lastFrameIsAdvisory ? {
                     text: 'Experimental — last frame is advisory.',
-                    title: 'FFLF backend support is experimental — LTX/mlx_video uses the start frame and treats the last frame as advisory.',
-                  }}
+                    title: `FFLF backend support is experimental — the ${currentModel?.runtime || 'selected'} runtime conditions on the start frame only and treats the last frame as advisory.`,
+                  } : null}
                   hint={{
                     text: 'Tip: use keyframes that share scene geometry — same camera, same subject. The model interpolates between them; unrelated images produce a visual cut.',
                     title: 'FFLF works best when the two frames depict the same scene with continuous geometry. Both runtimes (notapalindrome and dgrauet) benefit from this.',

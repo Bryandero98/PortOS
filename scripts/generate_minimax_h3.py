@@ -5,6 +5,10 @@ The Video Gen UI owns every network operation. This helper resolves only the
 exact revisions already present in Hugging Face's cache, loads PipeNetwork's
 pinned source checkout, emits PortOS progress/runtime frames, and writes one
 joint video-and-audio MP4.
+
+Conditioning is H3's own `fl2va` keyframe path: zero images is text-to-video,
+one `--image first` is image-to-video, and a `first` + `last` pair is FFLF.
+Each `--image` needs its own `--anchor`, in the same order.
 """
 
 from __future__ import annotations
@@ -47,6 +51,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=int, default=FPS)
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--image", action="append", default=[],
+                        help="keyframe conditioning image (repeatable, max 2)")
+    parser.add_argument("--anchor", action="append", default=[], choices=["first", "last"],
+                        help="latent anchor for each --image, in the same order")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 
@@ -189,11 +197,49 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit(f"MiniMax H3 frame count must be 17n+5; got {args.num_frames}.")
     if args.steps < 2:
         raise SystemExit("MiniMax H3 needs at least 2 sigma grid points.")
+    if len(args.anchor) != len(args.image):
+        raise SystemExit(
+            f"MiniMax H3 needs one --anchor per --image; got {len(args.image)} images and {len(args.anchor)} anchors."
+        )
+    # H3's fl2va conditioning defines exactly two latent anchors, so a repeated
+    # anchor would silently overwrite one keyframe's position with another's.
+    if len(set(args.anchor)) != len(args.anchor):
+        raise SystemExit(f"MiniMax H3 anchors must be distinct; got {args.anchor}.")
+
+
+def load_keyframes(paths: list[str]) -> list:
+    """Open each conditioning image upright, in RGB, in the order given."""
+    # Every path is checked before anything is opened, so a bad second keyframe
+    # doesn't cost a decode of the first — and the message names the PortOS-side
+    # cause rather than surfacing Pillow's bare FileNotFoundError.
+    for path in paths:
+        if not Path(path).is_file():
+            raise RuntimeError(f"Conditioning image is missing: {path}")
+    # Imported only once there is something to decode: a text-only run never
+    # pulls Pillow in, and the missing-file path above stays dependency-free.
+    if not paths:
+        return []
+    from PIL import Image, ImageOps
+
+    images = []
+    for path in paths:
+        with Image.open(path) as handle:
+            image = handle.convert("RGB")
+        # In place: PortOS hands us ffmpeg-normalized PNGs with no orientation
+        # tag, and the copying form would duplicate every pixel buffer for
+        # nothing — then hold it across the 83 GB load below.
+        ImageOps.exif_transpose(image, in_place=True)
+        images.append(image)
+    return images
 
 
 def main() -> int:
     args = parse_args()
     validate_args(args)
+    # Read the keyframes first: everything below is a git probe, ~35 HF cache
+    # lookups and an mlx/transformers import, so an unreadable conditioning
+    # image should not cost seconds before it reports.
+    images = load_keyframes(args.image)
 
     # PortOS cancels this helper by process group; ffmpeg inherits the group and
     # cannot remain behind muxing after the user presses Cancel. Establish the
@@ -236,7 +282,9 @@ def main() -> int:
         pipe = MiniMaxH3Pipeline.from_pretrained(
             checkpoint_dir,
             transformer_dir=transformer_dir,
-            load_vision=False,
+            # The Qwen3-VL vision tower is only loaded when a keyframe needs
+            # encoding — a text-only run keeps skipping it.
+            load_vision=bool(images),
         )
 
     print("STAGE:inference", file=sys.stderr, flush=True)
@@ -247,6 +295,8 @@ def main() -> int:
             duration_seconds=args.num_frames / FPS,
             num_inference_steps=args.steps,
             seed=args.seed,
+            images=images or None,
+            keyframe_anchors=tuple(args.anchor),
             height=args.height,
             width=args.width,
             drop_adaln=True,

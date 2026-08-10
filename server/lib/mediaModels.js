@@ -80,7 +80,10 @@ const DEFAULT_REGISTRY = {
         repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
         revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
         runtime: 'minimax_h3',
-        supportedModes: ['text'],
+        // H3 is an fl2va model: it conditions on up to two keyframes anchored
+        // at the first / last latent frame. 'image' anchors one at 'first',
+        // 'fflf' anchors both.
+        supportedModes: ['text', 'image', 'fflf'],
         defaultFrames: 124,
         frameOptions: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
         fpsOptions: [24],
@@ -118,6 +121,18 @@ const DEFAULT_REGISTRY = {
             // shard 14 remains necessary for the final norm tensor.
             'FL2VA/text_encoder/model-00014-of-00014.safetensors',
             'FL2VA/text_encoder/model.safetensors.index.json',
+            // Keyframe conditioning runs each image through the Qwen3-VL
+            // processor (AutoProcessor reads the `processor/` directory, not
+            // `tokenizer/`) before the vision tower, whose weights already ride
+            // along in shard 14. ~11 MB total, so it stays in the base download
+            // rather than becoming a second opt-in pull.
+            'FL2VA/processor/chat_template.json',
+            'FL2VA/processor/merges.txt',
+            'FL2VA/processor/preprocessor_config.json',
+            'FL2VA/processor/tokenizer.json',
+            'FL2VA/processor/tokenizer_config.json',
+            'FL2VA/processor/video_preprocessor_config.json',
+            'FL2VA/processor/vocab.json',
             'FL2VA/tokenizer/merges.txt',
             'FL2VA/tokenizer/tokenizer.json',
             'FL2VA/tokenizer/tokenizer_config.json',

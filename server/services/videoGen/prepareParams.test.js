@@ -69,7 +69,7 @@ const H3_MODEL = {
   id: 'minimax_h3_8bit',
   name: 'MiniMax H3 MLX 8-bit',
   runtime: 'minimax_h3',
-  supportedModes: ['text'],
+  supportedModes: ['text', 'image', 'fflf'],
   defaultFrames: 124,
   frameOptions: [124, 141, 158],
   fpsOptions: [24],
@@ -395,21 +395,49 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
   });
 
   it.each([
-    [{ mode: 'image' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
+    [{ mode: 'extend' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
     [{ extendFromVideoId: '00000000-0000-4000-8000-000000000001' }, 'MINIMAX_H3_MODE_UNSUPPORTED'],
+    [{ mode: 'image' }, 'MINIMAX_H3_I2V_REQUIRES_IMAGE'],
+    [{ mode: 'text', sourceImageFile: 'first.png' }, 'MINIMAX_H3_TEXT_MODE_SOURCE_CONFLICT'],
+    [{ mode: 'image', sourceImageFile: 'first.png', lastImageFile: 'last.png' }, 'MINIMAX_H3_I2V_LAST_IMAGE_CONFLICT'],
+    [{ mode: 'fflf' }, 'MINIMAX_H3_FFLF_REQUIRES_IMAGE'],
     [{ negativePrompt: 'blur' }, 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED'],
     [{ disableAudio: true }, 'MINIMAX_H3_AUDIO_REQUIRED'],
     [{ tiling: 'full' }, 'MINIMAX_H3_TILING_UNSUPPORTED'],
-    [{ chunks: 2 }, 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE'],
     [{ numFrames: 125 }, 'MINIMAX_H3_INVALID_FRAME_COUNT'],
     [{ fps: 30 }, 'MINIMAX_H3_INVALID_FPS'],
   ])('rejects an unsupported H3 request (%o)', async (fields, code) => {
     await expect(prepare({
       modelId: H3_MODEL.id,
-      mode: 'text',
       termsAcceptance: H3_TERMS,
       ...fields,
     })).rejects.toMatchObject({ status: 400, code });
+  });
+
+  it('rejects chunks > 1 only while the entry lacks image-to-video', async () => {
+    listVideoModels.mockReturnValue([{ ...H3_MODEL, supportedModes: ['text'] }]);
+    await expect(prepare({
+      modelId: H3_MODEL.id, mode: 'text', termsAcceptance: H3_TERMS, chunks: 2,
+    })).rejects.toMatchObject({ status: 400, code: 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE' });
+
+    listVideoModels.mockReturnValue([H3_MODEL]);
+    const prepared = await prepare({
+      modelId: H3_MODEL.id, mode: 'text', termsAcceptance: H3_TERMS, chunks: 2,
+    });
+    expect(prepared.effectiveChunks).toBe(2);
+  });
+
+  it.each([
+    ['image', { mode: 'image', sourceImageFile: 'first.png' }],
+    ['fflf', { mode: 'fflf', sourceImageFile: 'first.png', lastImageFile: 'last.png' }],
+  ])('accepts %s keyframe conditioning', async (_label, fields) => {
+    const prepared = await prepare({
+      modelId: H3_MODEL.id,
+      termsAcceptance: H3_TERMS,
+      ...fields,
+    });
+    expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
+    expect(prepared.sourceImagePath).toBe('/mock/images/first.png');
   });
 
   it('accepts another supported temporal shape at fixed 24 fps', async () => {
