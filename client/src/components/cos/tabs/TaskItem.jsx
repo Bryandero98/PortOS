@@ -37,6 +37,16 @@ const statusIcons = {
   challenged: <Scale size={16} aria-hidden="true" className="text-port-warning" />
 };
 
+// Why an approval-required task is waiting on the user, keyed by the namespaced
+// `metadata.approvalReason` token its producer stamped. Today only the auto-filed
+// agent-failure investigations write one (server:
+// agentErrorAnalysis.resolveInvestigationApproval); other producers that hold a
+// task add their own entries here rather than a parallel field.
+const APPROVAL_REASON_HINTS = {
+  'investigation-loop:repeat-fingerprint': 'Held for you: this same failure cause was investigated within the last 24 hours and came back.',
+  'investigation-loop:failure-storm': 'Held for you: this hour is nearly out of investigation budget — failures are cascading, not isolated.'
+};
+
 // Get success rate styling based on percentage
 function getSuccessRateStyle(rate) {
   if (rate >= 70) return { bg: 'bg-port-success/15', text: 'text-port-success', label: 'high' };
@@ -51,6 +61,10 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
   const taskSource = isSystem ? 'internal' : 'user';
   const idScope = isSystem ? 'sys' : 'user';
   const requiresApproval = isSystem && task.approvalRequired;
+  // Name the hold's reason on the APPROVE button so "why is this one waiting on
+  // me?" is answerable without opening the body (#3714). Undefined for producers
+  // that stamp no reason, which leaves the button's plain label untouched.
+  const approvalHint = APPROVAL_REASON_HINTS[task.metadata?.approvalReason] || undefined;
   const [editing, setEditingInternal] = useState(false);
   const setEditing = useCallback((val) => {
     setEditingInternal(val);
@@ -257,7 +271,8 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
                 onClick={handleApprove}
                 disabled={approving}
                 className="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors disabled:opacity-50"
-                aria-label={`Approve task ${task.id}`}
+                title={approvalHint}
+                aria-label={approvalHint ? `Approve task ${task.id} — ${approvalHint}` : `Approve task ${task.id}`}
               >
                 {approving ? 'APPROVING…' : 'APPROVE'}
               </button>

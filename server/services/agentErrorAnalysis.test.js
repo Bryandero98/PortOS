@@ -21,6 +21,9 @@ import {
   MAX_TASK_RETRIES,
   INVESTIGATION_CIRCUIT_WINDOW_MS,
   INVESTIGATION_CIRCUIT_MAX_CREATIONS,
+  INVESTIGATION_LOOP_WINDOW_MS,
+  INVESTIGATION_STORM_HOLD_THRESHOLD,
+  resolveInvestigationApproval,
   __resetInvestigationCircuit
 } from './agentErrorAnalysis.js';
 import { detectImmediateFallbackSignal } from '../lib/aiToolkit/errorDetection.js';
@@ -503,11 +506,12 @@ describe('createInvestigationTask guards (#2615)', () => {
     await createInvestigationTask('agent-1', failedTask, analysis);
     expect(addTask).toHaveBeenCalledWith(expect.objectContaining({
       priority: 'HIGH',
-      approvalRequired: true,
+      approvalRequired: false, // isolated failure — runs unattended (#3714)
       isInvestigation: true,
       investigationFingerprint: 'startup-failure:user:none',
       affectedTasks: ['task-1']
     }), 'internal');
+    expect(addTask.mock.calls[0][0].approvalReason).toBeFalsy();
   });
 
   it('unions a later same-fingerprint failure into the surviving investigation\'s affectedTasks and body', async () => {
@@ -636,6 +640,135 @@ describe('createInvestigationTask guards (#2615)', () => {
     expect(store).toHaveLength(1);
     expect(first).toBe(store[0]);  // creator gets the created task
     expect(second).toBe(store[0]); // second create deduped to the same task
+  });
+});
+
+describe('resolveInvestigationApproval (failure-loop policy, #3714)', () => {
+  const FP = 'startup-failure:user:none';
+  const NOW = Date.parse('2026-08-10T12:00:00.000Z');
+  const settled = (offsetMs, overrides = {}) => ({
+    id: 'inv-old',
+    status: 'completed',
+    metadata: {
+      investigationFingerprint: FP,
+      updatedAt: new Date(NOW - offsetMs).toISOString(),
+      ...overrides
+    }
+  });
+
+  it('auto-approves an isolated failure — the default, so CoS diagnoses itself unattended', () => {
+    expect(resolveInvestigationApproval({ fingerprint: FP, tasks: [], now: NOW }))
+      .toEqual({ approvalRequired: false, loopReason: null });
+  });
+
+  it('holds for a human when the same cause was already investigated inside the loop window', () => {
+    const tasks = [settled(INVESTIGATION_LOOP_WINDOW_MS - 1000)];
+    expect(resolveInvestigationApproval({ fingerprint: FP, tasks, now: NOW }))
+      .toEqual({ approvalRequired: true, loopReason: 'repeat-fingerprint' });
+  });
+
+  it('auto-approves again once the prior investigation ages out of the loop window', () => {
+    const tasks = [settled(INVESTIGATION_LOOP_WINDOW_MS + 1000)];
+    expect(resolveInvestigationApproval({ fingerprint: FP, tasks, now: NOW }).approvalRequired).toBe(false);
+  });
+
+  it('ignores an auto-expired prior — the reaper completed it, nothing was ever attempted', () => {
+    const tasks = [settled(1000, { resolution: 'auto-expired' })];
+    expect(resolveInvestigationApproval({ fingerprint: FP, tasks, now: NOW }).approvalRequired).toBe(false);
+  });
+
+  it('ignores an undated prior completion rather than gating on an unprovable timestamp', () => {
+    const tasks = [{ id: 'inv-legacy', status: 'completed', metadata: { investigationFingerprint: FP } }];
+    expect(resolveInvestigationApproval({ fingerprint: FP, tasks, now: NOW }).approvalRequired).toBe(false);
+  });
+
+  it('ignores a recent completion for a DIFFERENT fingerprint', () => {
+    const tasks = [settled(1000, { investigationFingerprint: 'network-error:user:none' })];
+    expect(resolveInvestigationApproval({ fingerprint: FP, tasks, now: NOW }).approvalRequired).toBe(false);
+  });
+
+  it('holds for a human once the circuit window is at the storm threshold', () => {
+    expect(resolveInvestigationApproval({
+      fingerprint: FP, tasks: [], recentCreations: INVESTIGATION_STORM_HOLD_THRESHOLD, now: NOW
+    })).toEqual({ approvalRequired: true, loopReason: 'failure-storm' });
+  });
+
+  it('leaves ordinary traffic below the storm threshold unattended', () => {
+    expect(resolveInvestigationApproval({
+      fingerprint: FP, tasks: [], recentCreations: INVESTIGATION_STORM_HOLD_THRESHOLD - 1, now: NOW
+    }).approvalRequired).toBe(false);
+  });
+
+  it('keeps the storm threshold below the circuit cap so the held slot is reachable', () => {
+    // At the cap no task is filed at all, so a threshold >= cap would mean the
+    // failure-storm hold could never actually happen.
+    expect(INVESTIGATION_STORM_HOLD_THRESHOLD).toBeGreaterThan(0);
+    expect(INVESTIGATION_STORM_HOLD_THRESHOLD).toBeLessThan(INVESTIGATION_CIRCUIT_MAX_CREATIONS);
+  });
+
+  it('prefers the repeat-fingerprint reason over failure-storm when both fire', () => {
+    const tasks = [settled(1000)];
+    expect(resolveInvestigationApproval({
+      fingerprint: FP, tasks, recentCreations: INVESTIGATION_STORM_HOLD_THRESHOLD, now: NOW
+    }).loopReason).toBe('repeat-fingerprint');
+  });
+});
+
+describe('createInvestigationTask approval wiring (#3714)', () => {
+  const failedTask = { id: 'task-1', description: 'do the thing', taskType: 'user', metadata: {} };
+  const analysis = { category: 'startup-failure', message: 'Agent exited during startup' };
+
+  beforeEach(() => {
+    addTask.mockReset();
+    addTask.mockResolvedValue({ id: 'investigation-1' });
+    updateTask.mockReset();
+    updateTask.mockResolvedValue({});
+    mockEmptyStore();
+    __resetInvestigationCircuit();
+  });
+
+  it('runs unattended up to the storm threshold, then holds and records the loop reason', async () => {
+    // Distinct categories so each call mints its own fingerprint and reaches
+    // the circuit rather than deduping into the previous investigation.
+    for (let i = 0; i < INVESTIGATION_STORM_HOLD_THRESHOLD; i++) {
+      await createInvestigationTask(`agent-${i}`, { ...failedTask, id: `task-${i}` }, { category: `cat-${i}`, message: 'x' });
+      expect(addTask.mock.calls[i][0].approvalRequired).toBe(false);
+    }
+
+    await createInvestigationTask('agent-storm', { ...failedTask, id: 'task-storm' }, { category: 'network-error', message: 'x' });
+    const held = addTask.mock.calls[INVESTIGATION_STORM_HOLD_THRESHOLD][0];
+    expect(held.approvalRequired).toBe(true);
+    expect(held.approvalReason).toBe('investigation-loop:failure-storm');
+    expect(held.description).toContain('## What to approve');
+    expect(held.description).toContain('## Why this is held for you');
+    expect(held.description).toContain('cascading');
+  });
+
+  it('holds a repeat of a cause investigated within the loop window', async () => {
+    const done = {
+      id: 'inv-done',
+      status: 'completed',
+      metadata: {
+        investigationFingerprint: 'startup-failure:user:none',
+        updatedAt: new Date(Date.now() - 60_000).toISOString()
+      }
+    };
+    getAllTasks.mockResolvedValue({ user: { tasks: [] }, cos: { tasks: [done] } });
+
+    await createInvestigationTask('agent-1', failedTask, analysis);
+    const created = addTask.mock.calls[0][0];
+    expect(created.approvalRequired).toBe(true);
+    expect(created.approvalReason).toBe('investigation-loop:repeat-fingerprint');
+    expect(created.description).toContain('## Why this is held for you');
+    // The held body asks the USER to approve; the unattended one never does.
+    expect(created.description).toContain('Approving and applying the fix');
+  });
+
+  it('marks an auto-approved investigation as unattended in its own body', async () => {
+    await createInvestigationTask('agent-1', failedTask, analysis);
+    const body = addTask.mock.calls[0][0].description;
+    expect(body).toContain('No approval needed');
+    expect(body).not.toContain('Approving and applying the fix');
   });
 });
 
@@ -926,7 +1059,7 @@ describe('createInvestigationTask body', () => {
 
   const bodyOf = () => addTask.mock.calls[0][0].description;
 
-  it('renders the What happened / What to approve / What unblocks template with category-specific prose', async () => {
+  it('renders the What happened / What to do / What unblocks template with category-specific prose', async () => {
     await createInvestigationTask('agent-1', { id: 'task-9', description: 'ship the thing' }, {
       category: 'model-not-found',
       message: 'Model "claude-4-ultra" not found',
@@ -936,7 +1069,10 @@ describe('createInvestigationTask body', () => {
     });
     const body = bodyOf();
     expect(body).toContain('## What happened');
-    expect(body).toContain('## What to approve');
+    // Isolated failure → unattended, so the action section addresses the agent.
+    expect(body).toContain('## What to do');
+    expect(body).not.toContain('## What to approve');
+    expect(body).not.toContain('## Why this is held for you');
     expect(body).toContain('## What unblocks');
     expect(body).toContain('model-not-found');
     expect(body).toContain('claude-4-ultra'); // provider/model attribution
