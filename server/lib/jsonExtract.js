@@ -222,6 +222,54 @@ function escapeControlCharsInStrings(input) {
 }
 
 /**
+ * Close a string whose final quote was omitted immediately before a structural
+ * `}` / `]` line. A raw line break is illegal inside JSON strings; when its next
+ * non-horizontal-whitespace character closes the containing object or array,
+ * the only structurally coherent interpretation is that the prose value ended
+ * before the line break. Other raw newlines remain untouched for the existing
+ * control-character escape repair.
+ */
+function closeStringBeforeStructuralLine(input) {
+  if (typeof input !== 'string' || !input) return input;
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+    if (ch === '\n' || ch === '\r') {
+      let next = i + 1;
+      while (next < input.length && (input[next] === ' ' || input[next] === '\t')) next += 1;
+      if (input[next] === '}' || input[next] === ']') {
+        out += '"';
+        inString = false;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
  * Escape a quote that appears inside a JSON string without its required
  * backslash. A quote can close a JSON string only when the next non-whitespace
  * character is a structural delimiter (`:`, `,`, `}`, or `]`) or the document
@@ -282,6 +330,7 @@ function escapeBareQuotesInStrings(input) {
  *     result when the reconstructed whole document parses.
  *   - Unescaped quotation marks inside prose string values — escape only a
  *     quote that cannot legally close the string because prose follows it.
+ *   - A missing closing quote immediately before a structural `}` / `]` line.
  *   - Raw control chars (literal newlines/tabs) inside a string value —
  *     escaped to their `\n`/`\t`/`\uXXXX` forms (see
  *     escapeControlCharsInStrings). Common when a model writes a long
@@ -315,8 +364,14 @@ export function tryParseWithRepair(jsonText) {
     if (!tailResult.error) return tailResult;
   }
 
-  const escapedQuotes = escapeBareQuotesInStrings(unescapedTail);
-  if (escapedQuotes !== unescapedTail) {
+  const closedStrings = closeStringBeforeStructuralLine(unescapedTail);
+  if (closedStrings !== unescapedTail) {
+    const closedResult = safeParse(closedStrings);
+    if (!closedResult.error) return closedResult;
+  }
+
+  const escapedQuotes = escapeBareQuotesInStrings(closedStrings);
+  if (escapedQuotes !== closedStrings) {
     const quotesResult = safeParse(escapedQuotes);
     if (!quotesResult.error) return quotesResult;
   }

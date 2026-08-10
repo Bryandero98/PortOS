@@ -112,6 +112,25 @@ describe('jsonExtract.tryParseWithRepair', () => {
     });
   });
 
+  it('closes a prose string whose final quote is missing before its structural close line', () => {
+    const bad = '{\n  "dimensions": {\n    "world": {\n      "score": 8,\n      "fix": "Make each culture arise from its own history.\n    },\n    "craft": { "score": 7 }\n  }\n}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: {
+        dimensions: {
+          world: { score: 8, fix: 'Make each culture arise from its own history.' },
+          craft: { score: 7 },
+        },
+      },
+    });
+  });
+
+  it('preserves an ordinary raw multiline string for the control-character repair', () => {
+    const bad = '{"body":"line one\nline two","ok":true}';
+    expect(tryParseWithRepair(bad)).toEqual({
+      value: { body: 'line one\nline two', ok: true },
+    });
+  });
+
   it('combines serialized-tail and bare-quote repairs in one completed response', () => {
     const bad = '{"items":[{"voice":"plain"}\\n, {\\n  \\"voice\\": \\"Calls it \\"witness\\" before answering.\\"\\n}\\n]}';
     expect(tryParseWithRepair(bad)).toEqual({
