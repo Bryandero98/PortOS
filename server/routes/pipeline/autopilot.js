@@ -248,6 +248,7 @@ router.get('/series/:id/autopilot/status', asyncHandler(async (req, res) => {
   res.json({
     autopilot: series.autopilot || null,
     active: autopilot.isAutopilotActive(req.params.id),
+    pauseRequested: autopilot.isAutopilotPauseRequested(req.params.id),
     // The in-flight run's `start` frame (mode, target, resolved provider/model),
     // so a client attaching mid-run can describe a run it never saw begin — SSE
     // replays only the last frame. null when no run is active.

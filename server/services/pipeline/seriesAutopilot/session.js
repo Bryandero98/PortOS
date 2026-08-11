@@ -23,6 +23,11 @@ export function isAutopilotActive(seriesId) {
   return !!run && !run.finished;
 }
 
+export function isAutopilotPauseRequested(seriesId) {
+  const run = runs.get(seriesId);
+  return !!run && !run.finished && run.pauseRequested === true;
+}
+
 // The `start` frame of an IN-FLIGHT run (null when none is active). Everything
 // a client needs to describe a run it didn't watch begin — mode (the dry-run
 // badge), target, the resolved run provider/model — lives on that frame, but

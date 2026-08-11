@@ -3167,11 +3167,13 @@ describe('autopilot conductor', () => {
     const { runId } = await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
     const requested = autopilot.pauseSeriesAutopilot(seriesId);
     expect(requested).toBe(true);
+    expect(autopilot.isAutopilotPauseRequested(seriesId)).toBe(true);
     expect(autopilot.__testing.runs.get(seriesId)?.lastPayload).toMatchObject({
       type: 'pause:acknowledged',
       runId,
     });
     await waitFor(runFinished(seriesId));
+    expect(autopilot.isAutopilotPauseRequested(seriesId)).toBe(false);
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last).toMatchObject({ type: 'paused', pauseKind: 'manual' });
     expect(last?.reason).toMatch(/paused by user after the active step completed/i);

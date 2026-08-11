@@ -450,6 +450,7 @@ function Findings({ items }) {
 export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate }) {
   const seriesId = series?.id;
   const [active, setActive] = useState(false);
+  const [pausePending, setPausePending] = useState(false);
   const [starting, setStarting] = useState(false);
   const [mode, setMode] = useState(null);
   const [plan, setPlan] = useState(null);
@@ -733,6 +734,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
         // SSE replays only the last frame, so the run's `start` frame comes back
         // on the status payload instead — same shape, same reader.
         if (s.start) applyStartFrame(s.start);
+        setPausePending(s.pauseRequested === true);
         setActive(true);
       })
       .catch(() => null);
@@ -757,6 +759,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // Ignore a terminal frame left over from a previous run (stale `latest`).
     if (activeRunIdRef.current && latest.runId && latest.runId !== activeRunIdRef.current) return;
     setActive(false);
+    setPausePending(false);
     getPipelineSeries(seriesId, { silent: true }).then((s) => { if (s) onSeriesUpdateRef.current?.(s); }).catch(() => null);
     listPipelineIssues(seriesId, { silent: true }).then((is) => onIssuesUpdateRef.current?.(Array.isArray(is) ? is : [])).catch(() => null);
     if (latest.type === 'complete') {
@@ -836,11 +839,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, separateJudgeLlm, judgeProviderOverride, judgeModelOverride, judgeEffortOverride, stageLlm, options, persistRounds]);
 
   const cancel = useCallback(async () => {
+    setPausePending(false);
     await cancelPipelineAutopilot(seriesId).catch(() => null);
   }, [seriesId]);
 
   const pause = useCallback(async () => {
-    await pausePipelineAutopilot(seriesId).catch(() => null);
+    const result = await pausePipelineAutopilot(seriesId).catch(() => null);
+    setPausePending(result?.pauseRequested === true);
   }, [seriesId]);
 
   const checkCanon = useCallback(async () => {
@@ -859,7 +864,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // disabled "Cancelling…" state so the user gets feedback (and can't re-fire
   // cancel) while the active step finishes and the terminal frame arrives.
   const canceling = active && latest?.type === 'cancel:acknowledged';
-  const pausing = active && latest?.type === 'pause:acknowledged';
+  const pausing = active && (pausePending || latest?.type === 'pause:acknowledged');
   const runLabel = ap?.status === 'paused' ? 'Resume autopilot'
     : ap?.status === 'done' ? 'Run autopilot again'
       : 'Run autopilot';

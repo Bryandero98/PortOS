@@ -743,6 +743,18 @@ describe('AutopilotPanel', () => {
     expect(screen.getByText(/pausing safely.*finishing the active step/i)).toBeInTheDocument();
   });
 
+  it('keeps Pausing… sticky when a later progress frame replaces the acknowledgment', async () => {
+    getPipelineAutopilotStatus.mockResolvedValue({
+      autopilot: { status: 'running', runId: 'r1' },
+      active: true,
+      pauseRequested: true,
+    });
+    sseLatest = { type: 'foundation:round', runId: 'r1', round: 2, weightedScore: 7.2 };
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    expect(await screen.findByRole('button', { name: /pausing/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /stop now/i })).toBeEnabled();
+  });
+
   // Pipeline self-improvement — the opt-in that lets a run diagnose PortOS's own
   // automation and file a fix task against it.
   describe('pipeline self-improvement', () => {
