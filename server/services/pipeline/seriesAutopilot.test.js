@@ -2158,6 +2158,11 @@ describe('autopilot conductor', () => {
     // blind to finding identity, so the rejected candidate's own findings ride
     // along for the human deciding whether the pause was worth it.
     expect(last?.discardedFindings).toEqual(rounds[2]);
+    // The persisted marker must agree with the broadcast frame. These are two
+    // separate writes off one payload, and a field that reaches only the live
+    // stream vanishes on reload — which is when the user actually reviews it.
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.discardedFindings).toEqual(rounds[2]);
   });
 
   it('a blocker increase reaches the regression guard even when it lands on the round cap', async () => {

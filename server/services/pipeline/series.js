@@ -122,11 +122,13 @@ export const ARC_LOCKABLE_FIELDS = Object.freeze([
 export const AUTOPILOT_STATUSES = Object.freeze(['idle', 'running', 'paused', 'done', 'error']);
 export const AUTOPILOT_STEP_MAX = 80;
 export const AUTOPILOT_ERROR_MAX = 1000;
-// The residual set is the user's work queue, so it holds the whole backlog; the
-// discarded set is diagnostic context for one decision and is capped tighter.
-// Exported because the arc loop bounds its own emission to the same number —
-// otherwise the live SSE frame would carry findings the record then drops.
-export const AUTOPILOT_RESIDUAL_MAX = 50;
+// The residual set is the user's work queue, so it holds the whole backlog.
+const AUTOPILOT_RESIDUAL_MAX = 50;
+// The discarded set is diagnostic context for a single decision, so it is capped
+// tighter. This one is exported because the arc loop slices its own emission to
+// this same constant — otherwise the live SSE frame would carry findings the
+// record then silently drops, and the two would disagree about what was thrown
+// away. The residual cap needs no such export: nothing emits residual pre-bounded.
 export const AUTOPILOT_DISCARDED_MAX = 20;
 
 const sanitizeAutopilotLlmRoute = (raw) => {
