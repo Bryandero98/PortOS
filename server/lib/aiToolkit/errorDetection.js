@@ -135,10 +135,10 @@ const TUI_GUTTER_PREFIX = '^(?:[\\s│┃╎⎿⏺●•]|\\[stderr\\])*';
 const IMMEDIATE_FALLBACK_SIGNALS = [
   {
     // Antigravity leaves its composer visible while Google verifies account
-    // eligibility, so a CoS TUI agent can appear ready, accept a paste, then
-    // do no work until the idle reaper eventually kills it. This exact two-line
-    // banner is provider chrome (not a generic auth word an agent may print),
-    // making it safe to fail immediately and let the task select a fallback.
+    // eligibility, so a CoS agent can appear ready, accept a paste, then do no
+    // work until the idle reaper eventually kills it. This exact two-line banner
+    // is provider chrome (not a generic auth word an agent may print), so it is
+    // safe to act on and let the task select a fallback.
     //
     // NOT actionable: the account is fine and nothing in PortOS config is wrong
     // — Google is mid-verification and says so ("try again shortly"). Marking it
@@ -148,6 +148,30 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
     // sidelines the provider for the auth-error cooldown (providerCooldown.js)
     // so that retry resolves onto a fallback rather than re-dying on the same
     // banner three seconds later.
+    //
+    // ── CANONICAL ACCOUNT of the 2026-08-11 incident (other sites point here) ──
+    // `graceMs` exists because killing on sight was wrong: this banner is the
+    // FRONT of agy's eligibility handshake, not its verdict. agy's own CLI log
+    // shows the run authenticating fine (`OAuth: authenticated successfully`,
+    // keyring token refreshed for another hour) and then retrying
+    // `v1internal:loadCodeAssist` while the composer shows this notice. PortOS
+    // killed the session 0.85–1.5s after the paste, so `streamGenerateContent`
+    // was NEVER reached. Every agy CoS run from 2026-08-07 on died this way
+    // (5/5, each in 3–5s), while the same account + model answered instantly
+    // over `--print` and over a PTY whose eligibility was already warm.
+    //
+    // Two INDEPENDENT axes, easy to conflate — a signal sets each on its own:
+    //   • `actionable` — must a HUMAN do something? (bad key ⇒ yes; this ⇒ no)
+    //   • `graceMs`    — can a LIVE session profitably wait it out? A usage
+    //     limit is equally self-resolving but resets in hours, so it stays at 0
+    //     (fail now) while this waits.
+    //
+    // Why 60s: the observed handshake retries are sub-second and Google's own
+    // copy says "this usually takes a moment", so 60s is far past any plausible
+    // settle while staying under the 180s default TUI idle timeout — a genuinely
+    // stuck provider still fails over sooner than the idle reaper would have
+    // caught it, which is the whole point of an immediate signal.
+    graceMs: 60000,
     pattern: /We're finishing verifying your account eligibility\.\s*This usually takes a moment\. Please try again shortly\./i,
     // The banner sentence is distinctive, but it is not chrome-ONLY: it matches
     // anywhere in the stream, so an agent that merely quotes it (investigating
@@ -427,6 +451,12 @@ export function detectImmediateFallbackSignal(text, { lineStartTrusted = true } 
       // Signals are actionable-by-default (a human has to do something); a
       // signal opts out when the provider says the condition clears on its own.
       actionable: signal.actionable !== false,
+      // How long a consumer holding a LIVE session should hold it open for this
+      // condition to clear before failing over. 0 (the default) = fail now, which
+      // is every signal except a transient provider handshake. Always a number so
+      // consumers branch on `> 0` without an `undefined` check. See the
+      // account-eligibility entry for why this is a duration and not a boolean.
+      graceMs: Number.isFinite(signal.graceMs) && signal.graceMs > 0 ? signal.graceMs : 0,
       suggestedFix: signal.suggestedFix,
       // Provider CHROME benches the provider host-side; text the agent itself
       // could have printed must not (#3631). See resolveSignalOrigin.

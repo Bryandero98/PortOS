@@ -238,6 +238,21 @@ describe('Error Detection', () => {
       });
     });
 
+    // The banner is the FRONT of agy's eligibility handshake, not its verdict —
+    // a consumer holding a live session must wait it out rather than kill on
+    // sight (see the signal's canonical comment for the 5/5 run-loss incident).
+    it('gives the eligibility banner a grace window instead of an immediate kill', () => {
+      expect(detectImmediateFallbackSignal(
+        "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+      )).toMatchObject({ graceMs: 60000 });
+    });
+
+    // `actionable` and `graceMs` are independent axes: a usage limit is equally
+    // self-resolving, but it resets in hours — no live session can wait it out.
+    it('leaves other signals at graceMs 0 so they still fail immediately', () => {
+      expect(detectImmediateFallbackSignal('Now using extra usage\n')).toMatchObject({ graceMs: 0 });
+    });
+
     it('detects the Claude extra-usage status line', () => {
       const result = detectImmediateFallbackSignal('Now using extra usage');
       expect(result).toMatchObject({

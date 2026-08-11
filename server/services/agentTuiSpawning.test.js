@@ -1656,14 +1656,87 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
-  it('fails immediately when Antigravity reports that account eligibility is still being verified', async () => {
+  // ── Antigravity account-eligibility banner: a WAIT, not a verdict ───────────
+  // The banner paints while agy's `loadCodeAssist` handshake is still retrying;
+  // the CLI's own log shows the session authenticated fine and generating
+  // normally once it settles. Killing on sight cost every agy CoS run from
+  // 2026-08-07 on (5/5, each dead 3–5s in). So the signal now arms a
+  // grace window (the signal's own `graceMs`) instead of finalizing immediately.
+  const ELIGIBILITY_BANNER =
+    "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.";
+
+  // Drive agy to a submitted prompt, which is where the banner really appears
+  // (agent-09824620: composer up, paste lands, THEN the banner paints). Starting
+  // from a bare spawn instead would let the 45s tui-not-ready deadline finalize
+  // the run before the grace window is ever reached, masking what's under test.
+  const driveAgyToSubmittedPrompt = async () => {
     runSpawn({ tuiConfig: agyTuiConfig });
     await flushMicrotasks();
-
-    await capturedOnData(Buffer.from(
-      "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
-    ));
+    // Shell turns paste mode off to run the command, agy turns it back on at
+    // alt-screen entry, then its composer footer says the input box is live.
+    await capturedOnData(Buffer.from(`${PASTE_OFF}Antigravity CLI 1.1.12\n`));
     await flushMicrotasks();
+    await capturedOnData(Buffer.from(`${PASTE_ON}Welcome to the Antigravity CLI.\n Signing in...\n`));
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from(`>\n${AGY_COMPOSER_FOOTER}Gemini 3.6 Flash · high`));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+    // Echo the prompt back the way a real TUI renders it into the input buffer,
+    // so paste verification passes and the submit Enter goes out (issue #2192).
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(4000); // past PASTE_TO_ENTER_FALLBACK_MS (3500ms)
+    await flushMicrotasks();
+  };
+
+  it('holds the session open when Antigravity reports that account eligibility is still being verified', async () => {
+    await driveAgyToSubmittedPrompt();
+
+    await capturedOnData(Buffer.from(ELIGIBILITY_BANNER));
+    await flushMicrotasks();
+    // The old behavior finalized here, within a second of the banner.
+    await vi.advanceTimersByTimeAsync(30000);
+    await flushMicrotasks();
+
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+  });
+
+  it('resumes the run when the eligibility banner clears and agy starts generating', async () => {
+    await driveAgyToSubmittedPrompt();
+
+    await capturedOnData(Buffer.from(ELIGIBILITY_BANNER));
+    await flushMicrotasks();
+    // agy settles its handshake and paints its in-flight chrome.
+    await capturedOnData(Buffer.from('Generating...\nesc to cancel'));
+    await flushMicrotasks();
+
+    // Past the grace deadline — the run must NOT be failed over to a fallback.
+    await vi.advanceTimersByTimeAsync(70000);
+    await flushMicrotasks();
+
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'fallback-signal' })
+    );
+  });
+
+  it('falls back once the eligibility banner outlasts its grace window with no generation', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    await driveAgyToSubmittedPrompt();
+
+    await capturedOnData(Buffer.from(ELIGIBILITY_BANNER));
+    await flushMicrotasks();
+    // Only idle composer chrome repaints — no sign of life.
+    await capturedOnData(Buffer.from('> ? for shortcuts'));
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(70000);
+    vi.useRealTimers();
+    await completeDone;
 
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({

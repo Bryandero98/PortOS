@@ -64,6 +64,7 @@ import {
   RAW_BUFFER_HEADROOM,
   buildTuiInvocation,
   detectMissingTuiBinary,
+  createSelfClearingSignalGate,
 } from './tuiHandshake.js';
 import { buildCliChildEnv } from './cliChildEnv.js';
 import { isCodexCommand } from './codex.js';
@@ -321,6 +322,12 @@ ${prompt}`;
   let idleWatchTimer = null;
   let responseFileWatchTimer = null;
   let hardTimeoutTimer = null;
+  // Holds the wait-it-out window for a provider signal carrying a `graceMs`
+  // (agy's account-eligibility banner). Unlike the long-running agent path this
+  // needs its OWN timer: `idleWatchTimer` is created lazily on the first
+  // post-prompt chunk and may not exist yet when the banner paints.
+  let selfClearingTimer = null;
+  const selfClearingGate = createSelfClearingSignalGate();
 
   const cleanupTimers = () => {
     // Stop the post-paste accumulator from growing on any chunk that lands
@@ -332,6 +339,7 @@ ${prompt}`;
     if (idleWatchTimer) { clearInterval(idleWatchTimer); idleWatchTimer = null; }
     if (responseFileWatchTimer) { clearInterval(responseFileWatchTimer); responseFileWatchTimer = null; }
     if (hardTimeoutTimer) { clearTimeout(hardTimeoutTimer); hardTimeoutTimer = null; }
+    if (selfClearingTimer) { clearTimeout(selfClearingTimer); selfClearingTimer = null; }
   };
 
   return new Promise((resolve) => {
@@ -478,10 +486,39 @@ ${prompt}`;
         }
         onData?.(stripped);
 
+        // While a grace window is open, every chunk is evidence about whether the
+        // provider came back; the gate closes itself the moment it is, which also
+        // lifts the idle suppression below instead of holding it to the deadline.
+        if (selfClearingGate.observe(stripped)) {
+          if (selfClearingTimer) { clearTimeout(selfClearingTimer); selfClearingTimer = null; }
+          console.log(`✅ TUI run ${runId} provider signal cleared — generating again`);
+        }
+
         const fallbackSignal = detectImmediateFallbackSignal(stripped)
           || detectTerminalModelError(stripped)
           || detectTerminalRequestTimeout(stripped);
-        if (fallbackSignal) {
+        // Branch on the SIGNAL's own grace window, never on gate state: the
+        // detector buffers ~512 chars, so a banner keeps matching for many chunks
+        // after it has scrolled off. Reading gate state here would let one of
+        // those stale matches fall through to an immediate kill the moment the
+        // gate closed. A graceful signal can only ever arm a window (or be
+        // ignored, when one is already open or the provider already recovered).
+        if (fallbackSignal?.graceMs > 0) {
+          if (selfClearingGate.arm(fallbackSignal, Date.now())) {
+            console.log(`⏳ TUI run ${runId} holding for a self-clearing provider signal (${Math.round(fallbackSignal.graceMs / 1000)}s): ${fallbackSignal.message}`);
+            selfClearingTimer = setTimeout(() => {
+              selfClearingTimer = null;
+              // No clock argument: this timer IS this window's deadline, and it
+              // is one-shot — a deadline re-check that came up a millisecond
+              // short would strand the gate armed with nothing left to retry it.
+              const expired = selfClearingGate.takeExpired();
+              if (finalized || !expired) return;
+              finishWithFallbackSignal(expired).catch((err) => {
+                console.error(`❌ TUI run ${runId} deferred fallback-signal handling failed: ${err?.message || err}`);
+              });
+            }, fallbackSignal.graceMs);
+          }
+        } else if (fallbackSignal) {
           // Fire-and-forget like every other finish() call from this PTY
           // callback; finish() itself never rejects and the salvage read can't
           // throw, so the catch is belt-and-braces for a callback boundary.
@@ -511,6 +548,13 @@ ${prompt}`;
           // natural process exit or an explicit Stop. Unattended pipeline runs
           // keep the snappy idle threshold for throughput.
           if (isExternalSessionAttached(runId)) return;
+          // A run waiting out a provider handshake is silent by design, and the
+          // only thing on screen is the banner. Idle-completing here would
+          // finalize SUCCESS and scrape that error screen as the answer — the
+          // bogus-response failure this file guards against elsewhere. Bounded
+          // twice over: the gate closes on the first sign of generation, and its
+          // own timer resolves the deadline regardless.
+          if (selfClearingGate.armed) return;
           const idle = Date.now() - lastOutputAt;
           if (idle >= idleThresholdMs) {
             if (requiresResponseFileForIdleCompletion) return;
