@@ -62,7 +62,7 @@ export const ACCEPTED_OLD_MD5 = {
 export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-overview.md':   '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
   'pipeline-arc-verify.md':     '83347e7d923580a3062033ab39b3c14b', // post-250 arc spine checkpoint
-  'pipeline-arc-resolve.md':    '0787128babf3c4c50e2f2cdb60214030', // post-252 (corrective-pass avoid list)
+  'pipeline-arc-resolve.md':    '0611db539437083621e19bb88b005e8d', // post-253 (spine-scoped rounds)
   'pipeline-volume-verify.md':  '49458d36700cb94e34806d536ffe2940', // post-019
 };
 

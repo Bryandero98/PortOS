@@ -509,11 +509,14 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
 export async function buildVerifyContext(series, preloadedWorld, { spineOnly = false } = {}) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const [issues, base, canon] = await Promise.all([
-    listIssues({ seriesId: series.id }),
+    // Spine mode renders no episode leaves, so don't pay for the load — every
+    // issue's full record (stage run history included) fetched and sanitized to
+    // be thrown away one line later.
+    spineOnly ? [] : listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
     getSeriesPlanningCanon(series),
   ]);
-  const tree = groupIssuesBySeasonTree(seasons, spineOnly ? [] : issues, {
+  const tree = groupIssuesBySeasonTree(seasons, issues, {
     // `synopsis` key (not `beats`) so it matches the prompt's existing
     // language; sourced from idea.input which carries the LLM's logline+synopsis.
     renderLeaf: (iss) => ({
@@ -712,9 +715,14 @@ export function matchResolvedFindings(raw, validIds) {
  * `findingsJson`: asking the resolver to close a problem the plan no longer has
  * is how a corrective pass invents a fresh contradiction. Absent/empty on a
  * first attempt, which leaves the prompt section out entirely.
+ *
+ * `options.spineOnly` renders the same episode-empty plan the pre-episode
+ * checkpoint's verify saw, and sets the `arcSpineOnly` flag the prompt gates
+ * its scope prohibition on — see `resolveVerifyIssues` for why the two halves
+ * have to agree (#3789).
  */
 export async function buildResolveContext(series, findings, preloadedWorld, options = {}) {
-  const ctx = await buildVerifyContext(series, preloadedWorld);
+  const ctx = await buildVerifyContext(series, preloadedWorld, { spineOnly: options.spineOnly === true });
   const structure = recommendStructure(series.issueCountTarget);
   const avoid = shapeFindings(options.avoid);
   return {

@@ -68,6 +68,18 @@ When rewriting the arc + volume synopses, preserve the picked shape — do not c
 {{seasonsTreeJson}}
 ```
 
+{{#arcSpineOnly}}
+This is the pre-episode **arc-spine checkpoint**. The episode arrays are
+intentionally empty — no episode lineup exists yet, and the verification pass
+that produced the findings below judged this same episode-free plan. Resolve
+every finding by editing the **arc and the volumes only**. Do **not** return an
+`episodes[]` array: the server discards it here, so an episode rewrite spends
+the round without closing anything. Every instruction below about anchoring in
+per-episode synopses, or about correcting an episode whose own content caused a
+finding, describes the later full-arc gate and does not apply at this
+checkpoint.
+{{/arcSpineOnly}}
+
 ## Structural recommendation
 
 The recommended structure for this issue budget is **{{recommendedStructure}}** ({{recommendedSeasonCount}} volumes, per-volume counts {{recommendedPerSeasonJson}}). Comic-as-TV industry norm is 6–10 issues per volume; deviate from this only if a finding explicitly demands it.
