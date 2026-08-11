@@ -1608,6 +1608,8 @@ export async function applyFoundationFix(seriesId, dimension, {
   judgeProviderDefault,
   judgeModelDefault,
   judgeEffortDefault,
+  judgeOnRunCreated,
+  judgeOnRunSettled,
   preserveDroppedSeasons = false,
   onRunCreated,
   onRunSettled,
@@ -1676,8 +1678,8 @@ export async function applyFoundationFix(seriesId, dimension, {
       providerDefault: judgeProviderDefault,
       modelDefault: judgeModelDefault,
       effortDefault: judgeEffortDefault,
-      onRunCreated,
-      onRunSettled,
+      onRunCreated: judgeOnRunCreated,
+      onRunSettled: judgeOnRunSettled,
     };
     const runGuardedStructureRepair = async () => {
       const first = await resolveVerifyIssues(seriesId, { findings, ...resolveOptions });

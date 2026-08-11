@@ -1023,22 +1023,28 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
       .mockResolvedValueOnce({ issues: [blocker] })
       .mockResolvedValueOnce({ issues: [] });
 
+    const writerOnRunCreated = vi.fn();
+    const judgeOnRunCreated = vi.fn();
     const r = await applyFoundationFix('ser-1', 'structure', {
       finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
       providerOverride: 'writer-provider',
       modelOverride: 'writer-model',
       effortOverride: 'max',
+      onRunCreated: writerOnRunCreated,
       judgeProviderDefault: 'judge-provider',
       judgeModelDefault: 'judge-model',
       judgeEffortDefault: 'xhigh',
+      judgeOnRunCreated,
     });
 
     expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledTimes(2);
     expect(arcPlanner.resolveVerifyIssues).toHaveBeenNthCalledWith(2, 'ser-1', expect.objectContaining({
       findings: [blocker], providerDefault: 'writer-provider', modelDefault: 'writer-model', effortDefault: 'max',
+      onRunCreated: writerOnRunCreated,
     }));
     expect(arcPlanner.verifyArc).toHaveBeenNthCalledWith(1, 'ser-1', expect.objectContaining({
       providerDefault: 'judge-provider', modelDefault: 'judge-model', effortDefault: 'xhigh',
+      onRunCreated: judgeOnRunCreated,
     }));
     expect(arcPlanner.restoreArcState).not.toHaveBeenCalled();
     expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 4 });

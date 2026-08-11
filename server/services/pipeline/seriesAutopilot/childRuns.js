@@ -734,6 +734,7 @@ export async function runFoundationGate(seriesId, record) {
     let fix;
     const repairRunIds = [];
     const creativeHooks = providerOverrideOpts(record);
+    const repairJudgeHooks = providerOverrideOpts(record, 'judge');
     try {
       fix = await applyFoundationFix(seriesId, weak.dimension, {
         finding: snap.dimensions?.[weak.dimension] || {},
@@ -742,6 +743,8 @@ export async function runFoundationGate(seriesId, record) {
         judgeProviderDefault: judgeLlm.providerOverride,
         judgeModelDefault: judgeLlm.modelOverride,
         judgeEffortDefault: judgeLlm.effortOverride,
+        judgeOnRunCreated: repairJudgeHooks.onRunCreated,
+        judgeOnRunSettled: repairJudgeHooks.onRunSettled,
         ...seasonPreserveOpts(record),
         effortOverride: creativeLlm.effortOverride,
         onRunCreated: (runId) => {
