@@ -34,6 +34,9 @@ import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
+// Dependency-free leaf holding the shared agent maps + the runner-mode flag,
+// read by `isRunnerHolding` below.
+import { useRunner } from './agentState.js';
 
 // Shared state management (extracted to avoid circular deps)
 import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, canQueueImprovementTasks, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
@@ -532,8 +535,17 @@ export async function forceSpawnTask(taskId) {
   if (task.status !== 'pending') return { error: `Task is ${task.status}, not pending` };
   if (task.approvalRequired) return { error: 'Task requires approval before it can be spawned' };
 
+  if (!isDaemonRunning()) return { error: 'CoS daemon is stopped — start it before force-spawning tasks' };
+
   const state = await loadState();
   if (state.paused) return { error: 'CoS daemon is paused — resume before force-spawning tasks' };
+  // Dispatch HOLDS a task while the runner is down rather than failing it —
+  // right for the autonomous queue, wrong for an explicit "Run now", which would
+  // get `{ success: true }` and a "Spawning" toast for a task that quietly stays
+  // pending. Say what is actually wrong instead.
+  if (await isRunnerHolding()) {
+    return { error: 'CoS Runner is not reachable — start the cos-runner app before force-spawning tasks' };
+  }
   const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
   if (runningAgents >= state.config.maxConcurrentAgents) {
     return { error: `No available agent slots (${runningAgents}/${state.config.maxConcurrentAgents})` };
@@ -756,6 +768,21 @@ export function isRunning() {
 }
 
 /**
+ * Is spawning currently held because the CoS Runner is down?
+ *
+ * The single predicate behind the three places that must agree: the dequeue
+ * gate, `tryImmediateSpawn`, and `forceSpawnTask`'s refusal. False in direct
+ * mode, where there is no runner to be down. `cosRunnerClient` is imported
+ * lazily (mirroring cosAgentLifecycle's runner calls) so a static edge doesn't
+ * drag socket.io-client into the graph of every suite that loads this module.
+ */
+async function isRunnerHolding() {
+  if (!useRunner) return false;
+  const { isRunnerReachable } = await import('./cosRunnerClient.js');
+  return !(await isRunnerReachable());
+}
+
+/**
  * Attempt to immediately spawn a newly added user task if there are available agent slots.
  * This bypasses the evaluation interval for user-submitted tasks so they start instantly.
  */
@@ -764,6 +791,11 @@ async function tryImmediateSpawn(task) {
 
   const paused = await isPaused();
   if (paused) return;
+
+  if (await isRunnerHolding()) {
+    emitLog('debug', `⏳ Queued task ${task.id} - CoS Runner is down`);
+    return;
+  }
 
   const state = await loadState();
   const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
@@ -1146,6 +1178,15 @@ async function spawnDequeuePriority4IdleReview(ctx) {
  */
 async function dequeueNextTask({ ignoreTaskId = null } = {}) {
   if (!isDaemonRunning()) return;
+
+  // In runner mode the cos-runner app owns every agent process, so a cycle run
+  // while it is down can only produce holds. Bail before the tiers rather than
+  // after: they drain on-demand requests, advance review cooldowns, bind the
+  // synthetic app-review marker, and spend `capacity` — side effects a hold
+  // downstream cannot take back. Same shape as the `availableSlots <= 0` gate
+  // below; "the runner is off" is the same fact as "there is nowhere to spawn".
+  // `connection:ready` re-runs this the moment the runner returns.
+  if (await isRunnerHolding()) return;
 
   // A global pause stops scheduled/autonomous spawning, but NOT explicit user
   // triggers: on-demand requests (Priority 0) are processed even while paused so

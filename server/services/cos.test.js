@@ -1207,6 +1207,55 @@ describe('forceSpawnTask — pre-validate provider before task:ready', () => {
     expect(resolveIdx, 'provider resolution must precede the task:ready emit')
       .toBeLessThan(readyIdx);
   });
+
+  // Same failure mode, two more sources of a doomed spawn. A stopped daemon was
+  // never checked at all (only `paused` was), and in runner mode the spawn path
+  // now HOLDS the task while the cos-runner app is down instead of failing it —
+  // right for the autonomous queue, wrong for an explicit "Run now", which would
+  // get `{ success: true }` and a "Spawning" toast for a task that quietly stays
+  // pending. Both must answer with an actionable error instead.
+  it('refuses to force-spawn while the daemon is stopped', () => {
+    const stoppedIdx = forceFn.indexOf('!isDaemonRunning()');
+    expect(stoppedIdx, 'forceSpawnTask must check that the daemon is running').toBeGreaterThan(-1);
+    expect(stoppedIdx, 'the stopped check must precede the task:ready emit')
+      .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
+  });
+
+  it('refuses to force-spawn while the runner is holding', () => {
+    const holdIdx = forceFn.indexOf('isRunnerHolding');
+    expect(holdIdx, 'forceSpawnTask must consult the runner hold').toBeGreaterThan(-1);
+    expect(holdIdx, 'the runner check must precede the task:ready emit')
+      .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
+  });
+});
+
+describe('the runner-down hold — spawn-side gates', () => {
+  // Dispatch holds a task while the cos-runner app is down (the `task:ready`
+  // listener in subAgentSpawner.js, covered behaviorally in
+  // subAgentSpawner.runnerHold.test.js). The dequeue must ALSO bail before its
+  // priority tiers run: they drain on-demand requests, advance review cooldowns,
+  // bind the synthetic app-review marker, and spend `capacity` — side effects a
+  // downstream hold cannot take back.
+  const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
+
+  it('bails on the runner hold before doing any tier work', () => {
+    const holdIdx = dequeueFn.indexOf('isRunnerHolding');
+    expect(holdIdx, 'dequeueNextTask must consult the runner hold').toBeGreaterThan(-1);
+    expect(holdIdx, 'the hold must be checked before capacity is computed')
+      .toBeLessThan(dequeueFn.indexOf('createDequeueCapacity'));
+  });
+
+  it('gates the immediate user-task spawn on the same predicate', () => {
+    const immediateFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function tryImmediateSpawn'));
+    expect(immediateFn).toMatch(/isRunnerHolding/);
+  });
+
+  // Direct mode has no runner to be down; probing there would hold every spawn
+  // on an install that never runs the cos-runner app.
+  it('is a no-op in direct mode', () => {
+    const holdFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function isRunnerHolding'));
+    expect(holdFn).toMatch(/if\s*\(!useRunner\)\s*return false/);
+  });
 });
 
 describe('addTask — first-line dedup', () => {

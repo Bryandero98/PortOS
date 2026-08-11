@@ -28,6 +28,7 @@ import {
   initCosRunnerConnection,
   onCosRunnerEvent,
   isRunnerAvailable,
+  isRunnerReachable,
   getRunnerHealth,
   spawnAgentViaRunner,
   getActiveAgentsFromRunner,
@@ -59,14 +60,20 @@ describe('cosRunnerClient', () => {
   // initCosRunnerConnection
   // ===========================================================================
   describe('initCosRunnerConnection', () => {
-    it('should create a socket connection with correct options', () => {
+    // The attempt budget is UNBOUNDED on purpose: the runner is a separate PM2
+    // app the user can stop for as long as they like, and this socket is the
+    // only transport for agent output/completion events. A finite budget (this
+    // was 10 attempts at 1s) permanently gave up on a runner that came back a
+    // minute later. The delay cap keeps a long outage to one probe every 10s.
+    it('should create a socket connection that reconnects indefinitely with capped backoff', () => {
       initCosRunnerConnection();
       expect(io).toHaveBeenCalledWith(
         expect.stringContaining('5558'),
         expect.objectContaining({
           reconnection: true,
-          reconnectionAttempts: 10,
-          reconnectionDelay: 1000
+          reconnectionAttempts: Infinity,
+          reconnectionDelay: 1000,
+          reconnectionDelayMax: 10000
         })
       );
     });
@@ -138,6 +145,27 @@ describe('cosRunnerClient', () => {
       fetchWithTimeout.mockRejectedValue(new Error('Connection refused'));
       const result = await isRunnerAvailable();
       expect(result).toBe(false);
+    });
+  });
+
+  // ===========================================================================
+  // isRunnerReachable — the spawn-path liveness gate
+  // ===========================================================================
+  describe('isRunnerReachable', () => {
+    // This is asked on every dispatch, and during an outage on every dequeue
+    // trigger. The socket this module already owns holds the answer, so the
+    // steady-state cost must be zero I/O.
+    it('reads the socket instead of probing once the connection exists', async () => {
+      initCosRunnerConnection();
+
+      await expect(isRunnerReachable()).resolves.toBe(true);
+      expect(fetchWithTimeout).not.toHaveBeenCalled();
+
+      capturedSocket.connected = false;
+      await expect(isRunnerReachable()).resolves.toBe(false);
+      expect(fetchWithTimeout).not.toHaveBeenCalled();
+
+      capturedSocket.connected = true;
     });
   });
 
