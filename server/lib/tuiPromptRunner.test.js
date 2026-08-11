@@ -779,6 +779,64 @@ describe('executeTuiRun', () => {
       }));
     });
 
+    // ── agy account-eligibility banner: a WAIT, not a verdict ─────────────────
+    // The banner paints while agy's `loadCodeAssist` handshake is still retrying
+    // and the CLI generates normally once it settles, so a self-clearing signal
+    // arms a grace window instead of killing the PTY on sight.
+    const ELIGIBILITY_BANNER =
+      "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.";
+
+    it('holds a run open for the eligibility banner and resumes when agy starts generating', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      const provider = { id: 'antigravity', type: 'tui', command: 'agy', tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500 };
+      const onComplete = vi.fn();
+      const promise = executeTuiRun({ runId: 'run-eligibility-ok', provider, prompt: 'do thing big enough to clear the prompt guard', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete, timeout: 600000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData(ELIGIBILITY_BANNER);
+      await vi.advanceTimersByTimeAsync(5000);
+      // The old behavior killed the PTY within a second of the banner.
+      expect(pty.kill).not.toHaveBeenCalled();
+
+      // agy settles its handshake and paints its in-flight chrome.
+      pty.emitData('Generating...\nesc to cancel');
+      await vi.advanceTimersByTimeAsync(70000);
+      await flushAsync();
+
+      expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalledWith(expect.objectContaining({
+        extras: expect.objectContaining({ completionReason: 'fallback-signal' }),
+      }));
+      vi.useRealTimers();
+      pty.emitExit(0);
+      await promise;
+    });
+
+    it('falls back once the eligibility banner outlasts its grace window with no generation', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      const provider = { id: 'antigravity', type: 'tui', command: 'agy', tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500 };
+      const onComplete = vi.fn();
+      const promise = executeTuiRun({ runId: 'run-eligibility-stuck', provider, prompt: 'do thing big enough to clear the prompt guard', workspacePath: TEST_WORKSPACE, onData: undefined, onComplete, timeout: 600000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData(ELIGIBILITY_BANNER);
+      // Only idle composer chrome repaints — no sign of life. Notably this must
+      // NOT idle-complete as success and scrape the banner as the response.
+      pty.emitData('> ? for shortcuts');
+      await vi.advanceTimersByTimeAsync(70000);
+      await flushAsync();
+
+      await promise;
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId: 'run-eligibility-stuck',
+        success: false,
+        exitCode: 1,
+        error: expect.stringContaining('account eligibility'),
+        extras: expect.objectContaining({ completionReason: 'fallback-signal' }),
+      }));
+    });
+
     it('early-fails with reason "fallback-signal" when the model id is rejected (Bedrock invalid identifier) instead of idling to a bogus-scrape success', async () => {
       const provider = { id: 'claude', type: 'tui', command: 'claude' };
       const onComplete = vi.fn();

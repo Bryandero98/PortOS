@@ -452,6 +452,125 @@ export function createWorkActivityTracker() {
   };
 }
 
+// Chrome a TUI paints only while a model request is actually IN FLIGHT. agy
+// swaps its idle composer footer (`? for shortcuts`) for `esc to cancel` and an
+// animated `Generating…` for exactly as long as the request runs; Claude Code and
+// Codex render their bulleted elapsed counter, so WORK_COUNTER_PATTERN's shape is
+// spliced in (rather than re-spelled) to keep the two from drifting apart.
+//
+// Measured against real transcripts: the five agy runs killed on the eligibility
+// banner (2026-08-07 → 2026-08-11) contain ZERO `esc to cancel` and ZERO
+// `Generating`, while healthy agy runs from 2026-08-05 carry 40–48 and 55–206
+// respectively — a clean separation, which is what makes this usable as the
+// "did the provider recover?" verdict.
+export const GENERATION_ACTIVITY_PATTERN =
+  new RegExp(`esc to cancel|Generating\\s*[.·•…]|${WORK_COUNTER_PATTERN.source}`, 'i');
+
+// Rolling tail kept across chunks so in-flight chrome split by a PTY chunk
+// boundary (`esc to ` + `cancel`) still matches. The sibling trackers below each
+// learned this the hard way — see createReviewLoopTracker's docblock.
+const GENERATION_ACTIVITY_TAIL_CAP = 64;
+
+/**
+ * Stateful latch for "the TUI is actively generating a response". Feed it each
+ * ANSI-stripped chunk via `observe(strippedText)`; it becomes (and stays)
+ * `active` once any in-flight chrome appears, and returns true on the call that
+ * flipped it (so a caller can react to the transition).
+ *
+ * Unlike `createWorkActivityTracker` this deliberately does NOT try to be
+ * echo-proof, because its callers feed it a window that cannot contain the
+ * prompt echo: observation starts only AFTER a provider banner has armed a grace
+ * window, which is strictly after the paste has rendered. Within that window ANY
+ * sign of life is the answer we want, so a loose pattern is the correct bias — a
+ * false "recovered" merely falls back to the ordinary idle reaper, whereas a
+ * false "still stuck" throws away a run that was about to work.
+ *
+ * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
+ */
+export function createGenerationActivityTracker() {
+  let active = false;
+  let tail = '';
+  return {
+    observe(strippedText) {
+      if (active) return true;
+      if (typeof strippedText !== 'string' || !strippedText) return false;
+      tail = (tail + strippedText).slice(-GENERATION_ACTIVITY_TAIL_CAP);
+      if (GENERATION_ACTIVITY_PATTERN.test(tail)) active = true;
+      return active;
+    },
+    get active() { return active; },
+  };
+}
+
+/**
+ * The wait-it-out policy for a provider signal that carries a `graceMs` (today:
+ * agy's account-eligibility banner — see IMMEDIATE_FALLBACK_SIGNALS in
+ * aiToolkit/errorDetection.js for the canonical account of why it exists).
+ *
+ * Owns the whole state machine so the consumers can't drift: arm-once (a
+ * repainting TUI re-matches constantly and must not restart the clock),
+ * feed-the-tracker only inside the window, disarm the moment the provider is
+ * demonstrably generating again, and hand back a verdict at the deadline. Each
+ * consumer keeps only its own timing mechanism — `agentTuiSpawning` folds the
+ * deadline into its existing 5s idle poll, while `tuiPromptRunner` needs a
+ * `setTimeout` because its idle watcher is created lazily on the first
+ * post-prompt chunk and may not exist yet when the banner paints.
+ *
+ * Usage per chunk: `gate.observe(stripped)` then, on a match,
+ * `gate.arm(analysis, Date.now())`. `gate.armed` is the idle-suppression
+ * predicate — a session waiting out a handshake is silent by design, and letting
+ * an idle reaper finalize it would report a bogus success that scrapes the
+ * banner as the answer. `gate.takeExpired(Date.now())` returns the analysis to
+ * fail over with, or null while still waiting / after a recovery.
+ *
+ * @returns {{ arm: (analysis: object, nowMs: number) => boolean,
+ *             observe: (strippedText: string) => boolean,
+ *             takeExpired: (nowMs: number) => object|null,
+ *             readonly armed: boolean }}
+ */
+export function createSelfClearingSignalGate() {
+  let armed = null; // { analysis, deadlineAt }
+  let activity = null;
+  // Latched once a window is ridden out successfully, which suppresses re-arming
+  // for the rest of the run. This is not just tidiness: the caller's detector is
+  // a BUFFERED stream matcher (createImmediateFallbackSignalDetector keeps a
+  // 512-char window), so the banner keeps matching for many chunks after the
+  // provider has recovered. Without this latch the first post-recovery chunk
+  // re-arms a fresh window and fails the run over 60s later — the exact bug the
+  // grace window exists to prevent. A genuine second banner is therefore ignored
+  // rather than re-waited; the provider has demonstrably worked once, and the
+  // idle reaper remains the backstop if it truly wedges.
+  let recovered = false;
+  return {
+    get armed() { return armed !== null; },
+    get recovered() { return recovered; },
+    arm(analysis, nowMs) {
+      if (armed || recovered || !analysis || !(analysis.graceMs > 0)) return false;
+      armed = { analysis, deadlineAt: nowMs + analysis.graceMs };
+      activity = createGenerationActivityTracker();
+      return true;
+    },
+    // Returns true on the call that ends the window because the provider came
+    // back — disarming here (rather than at the deadline) is what stops a
+    // recovered run from sitting under idle suppression for the rest of the
+    // window.
+    observe(strippedText) {
+      if (!armed || !activity.observe(strippedText)) return false;
+      armed = null;
+      activity = null;
+      recovered = true;
+      return true;
+    },
+    takeExpired(nowMs) {
+      if (!armed || nowMs < armed.deadlineAt) return null;
+      const { analysis } = armed;
+      armed = null;
+      activity = null;
+      return analysis;
+    },
+  };
+}
+
 // A SINGLE Enter after a large bracketed paste is unreliable: the TUI can still
 // be processing/reflowing the multi-line paste when the `\r` arrives and
 // swallow it, leaving the whole prompt sitting unsent in the input box. The

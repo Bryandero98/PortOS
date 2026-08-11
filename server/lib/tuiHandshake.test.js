@@ -12,6 +12,8 @@ import {
   MIN_WORK_COUNTER_SPAN_MS,
   extractWorkCounterSeconds,
   createWorkActivityTracker,
+  createGenerationActivityTracker,
+  createSelfClearingSignalGate,
   MERGE_QUEUE_IDLE_TIMEOUT_MS,
   isMergeQueueSignal,
   createMergeQueueTracker,
@@ -237,6 +239,128 @@ describe('tuiHandshake — paste timing constants', () => {
     tracker.observe('Begin working on the task now.', 3000);
     tracker.observe('Opus 4.8 │ agent-92ed2c56', 4000);
     expect(tracker.active).toBe(false);
+  });
+
+  // Verdict for agy's self-clearing eligibility banner: did the provider come
+  // back? The chrome below is lifted from real transcripts — healthy agy runs
+  // (2026-08-05) carry `esc to cancel`/`Generating…`; the five runs killed on the
+  // banner (2026-08-07 → 08-11) carry neither.
+  it('createGenerationActivityTracker latches on agy in-flight chrome', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe('> ? for shortcuts');
+    expect(tracker.active).toBe(false);
+    tracker.observe('Generating...');
+    expect(tracker.active).toBe(true);
+  });
+
+  it('createGenerationActivityTracker latches on the esc-to-cancel footer', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe('esc to cancelGemini 3.6 Flash   high');
+    expect(tracker.active).toBe(true);
+  });
+
+  it('createGenerationActivityTracker also admits the Claude/Codex elapsed counter', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe('(12s · esc to interrupt)');
+    expect(tracker.active).toBe(true);
+  });
+
+  it('createGenerationActivityTracker stays inactive on the stuck agy banner screen', () => {
+    const tracker = createGenerationActivityTracker();
+    // Verbatim from agent-09824620's raw.txt, ANSI-stripped.
+    tracker.observe('[Pasted text #1 +43 lines]');
+    tracker.observe('Verifying your account...');
+    tracker.observe("We're finishing verifying your account eligibility.");
+    tracker.observe('This usually takes a moment. Please try again shortly.');
+    tracker.observe('> ? for shortcutsGemini 3.6 Flash   high');
+    expect(tracker.active).toBe(false);
+  });
+
+  it('createGenerationActivityTracker stays latched once active', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe('Generating...');
+    tracker.observe('> ? for shortcuts');
+    expect(tracker.active).toBe(true);
+  });
+
+  it('createGenerationActivityTracker ignores non-string input', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe(undefined);
+    tracker.observe(null);
+    expect(tracker.active).toBe(false);
+  });
+
+  // The sibling trackers each had to learn this after review found the miss.
+  it('createGenerationActivityTracker matches chrome split across PTY chunks', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe('esc to ');
+    expect(tracker.active).toBe(false);
+    tracker.observe('cancel');
+    expect(tracker.active).toBe(true);
+  });
+
+  describe('createSelfClearingSignalGate', () => {
+    const BANNER = { message: 'eligibility', graceMs: 60000 };
+
+    it('arms once and reports the deadline only after it passes', () => {
+      const gate = createSelfClearingSignalGate();
+      expect(gate.arm(BANNER, 1000)).toBe(true);
+      expect(gate.armed).toBe(true);
+      expect(gate.takeExpired(60000)).toBeNull();
+      expect(gate.takeExpired(61000)).toBe(BANNER);
+      expect(gate.armed).toBe(false);
+    });
+
+    it('refuses to re-arm while open, so a repainting banner cannot restart the clock', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm(BANNER, 1000);
+      expect(gate.arm(BANNER, 50000)).toBe(false);
+      // Deadline still measured from the FIRST sighting, not the latest repaint.
+      expect(gate.takeExpired(61001)).toBe(BANNER);
+    });
+
+    it('ignores a signal with no grace window', () => {
+      const gate = createSelfClearingSignalGate();
+      expect(gate.arm({ message: 'usage limit', graceMs: 0 }, 1000)).toBe(false);
+      expect(gate.armed).toBe(false);
+    });
+
+    it('closes on the first sign of generation instead of holding to the deadline', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm(BANNER, 1000);
+      expect(gate.observe('Generating...')).toBe(true);
+      expect(gate.armed).toBe(false);
+      // Nothing left to fail over with — the run continues.
+      expect(gate.takeExpired(61000)).toBeNull();
+    });
+
+    // The caller's detector buffers ~512 chars, so the banner keeps matching well
+    // after recovery. Re-arming on one of those stale matches would fail the run
+    // over 60s later — the exact bug the grace window exists to prevent.
+    it('does not re-arm on a stale banner match after the provider recovered', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm(BANNER, 1000);
+      gate.observe('Generating...');
+      expect(gate.recovered).toBe(true);
+      expect(gate.arm(BANNER, 2000)).toBe(false);
+      expect(gate.takeExpired(120000)).toBeNull();
+    });
+
+    it('does not treat pre-arm output as evidence of recovery', () => {
+      const gate = createSelfClearingSignalGate();
+      expect(gate.observe('Generating...')).toBe(false);
+      gate.arm(BANNER, 1000);
+      // Only the banner screen repaints from here — still stuck.
+      gate.observe('> ? for shortcuts');
+      expect(gate.takeExpired(61001)).toBe(BANNER);
+    });
+
+    it('honors a per-signal grace window rather than one global constant', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm({ message: 'slow warmup', graceMs: 5000 }, 0);
+      expect(gate.takeExpired(4999)).toBeNull();
+      expect(gate.takeExpired(5000)).toMatchObject({ graceMs: 5000 });
+    });
   });
 
   it('pins work-activity detection constants', () => {
