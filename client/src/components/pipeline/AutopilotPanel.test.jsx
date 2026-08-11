@@ -381,6 +381,41 @@ describe('AutopilotPanel', () => {
     ));
   });
 
+  it('can route one stage and role to a specialist model', async () => {
+    getProviders.mockResolvedValue({
+      activeProvider: 'codex-tui',
+      providers: [{
+        id: 'codex-tui', name: 'Codex TUI', type: 'cli', enabled: true,
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
+      }],
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex-tui', model: 'gpt-5.6-luna' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByLabelText(/override a specific stage and role/i));
+    expect(screen.getByLabelText('Stage override')).toHaveValue('foundationGate');
+    expect(screen.getByLabelText('Role')).toHaveValue('creative');
+    const models = screen.getAllByLabelText('Model');
+    fireEvent.change(models[1], { target: { value: 'gpt-5.6-sol' } });
+    const efforts = screen.getAllByLabelText('Thinking effort');
+    fireEvent.change(efforts[1], { target: { value: 'xhigh' } });
+    expect(screen.getByText(/Active: Codex TUI \/ gpt-5\.6-sol \/ xhigh/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      {
+        includeVisual: true,
+        fileGaps: false,
+        stageLlm: {
+          foundationGate: {
+            creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+          },
+        },
+      },
+      { silent: true },
+    ));
+  });
+
   it('restores split LLM routing when a paused run is resumed', async () => {
     getProviders.mockResolvedValue({
       activeProvider: 'codex-tui',

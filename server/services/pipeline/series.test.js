@@ -924,6 +924,12 @@ describe('pipeline series service', () => {
             effortOverride: 'xhigh',
             ignored: true,
           },
+          stageLlm: {
+            foundationGate: {
+              creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh', ignored: true },
+            },
+            typoStage: { judge: { modelOverride: 'discard-me' } },
+          },
         },
       }).resumeOptions).toEqual({
         includeVisual: false,
@@ -935,6 +941,11 @@ describe('pipeline series service', () => {
           providerOverride: 'codex-tui',
           modelOverride: 'gpt-5.6-sol',
           effortOverride: 'xhigh',
+        },
+        stageLlm: {
+          foundationGate: {
+            creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+          },
         },
       });
     });

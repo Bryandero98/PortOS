@@ -343,6 +343,44 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
       providerOverride: 'manual-judge', modelOverride: 'manual-model', effortOverride: undefined,
     });
   });
+
+  it('routes one stage and role to an explicit specialist without changing other steps', () => {
+    const routed = {
+      currentStep: 'foundationGate',
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+        stageLlm: {
+          foundationGate: {
+            creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+          },
+        },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(routed, 'creative')).toEqual({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+    });
+    expect(autopilot.__testing.roleLlm(routed, 'judge')).toEqual({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+    });
+    routed.currentStep = 'generateEpisodes';
+    expect(autopilot.__testing.roleLlm(routed, 'creative')).toEqual({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+    });
+  });
+
+  it('does not carry a role model across a stage-level provider change', () => {
+    const routed = {
+      currentStep: 'foundationGate',
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        stageLlm: { foundationGate: { creative: { providerOverride: 'ollama' } } },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(routed, 'creative')).toEqual({
+      providerOverride: 'ollama', modelOverride: undefined, effortOverride: 'max',
+    });
+  });
 });
 
 // The precedence itself is covered by server/lib/seriesLlmOverride.test.js —
@@ -1832,6 +1870,33 @@ describe('autopilot conductor', () => {
         providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
       },
     });
+  });
+
+  it('foundation gate: applies and persists a stage-specific creative route', async () => {
+    foundationScore = 3;
+    foundationFixApplied = true;
+    const { seriesId } = await seedComplete();
+    const stageLlm = {
+      foundationGate: {
+        creative: {
+          providerOverride: 'codex-tui',
+          modelOverride: 'gpt-5.6-sol',
+          effortOverride: 'xhigh',
+        },
+      },
+    };
+    await autopilot.startSeriesAutopilot(seriesId, {
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-luna',
+      effortOverride: 'max',
+      stageLlm,
+      maxFoundationRounds: 2,
+    });
+    await waitFor(runFinished(seriesId));
+    expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, expect.any(String), expect.objectContaining({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+    }));
+    expect((await seriesSvc.getSeries(seriesId)).autopilot?.resumeOptions).toMatchObject({ stageLlm });
   });
 
   it('foundation gate: repairs a below-floor character dimension even when the weighted score passes', async () => {

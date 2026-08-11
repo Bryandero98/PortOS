@@ -64,6 +64,24 @@ const DEFAULT_OBSERVER = false;
 // Evidence is collected regardless; routing stays opt-in so a series cannot
 // silently switch models merely because a sample threshold was reached.
 const DEFAULT_AUTO_SELECT_MODELS = false;
+const AUTOPILOT_LLM_STAGES = [
+  ['characterFoundation', 'Character foundation'],
+  ['generateArc', 'Generate arc'],
+  ['repairArcStructure', 'Repair arc structure'],
+  ['verifyArcSpine', 'Verify arc spine'],
+  ['generateEpisodes', 'Generate episodes'],
+  ['foundationGate', 'Foundation quality gate'],
+  ['verifyArc', 'Verify arc'],
+  ['beatSheet', 'Beat sheets'],
+  ['beatContinuity', 'Beat continuity'],
+  ['textStages', 'Draft text stages'],
+  ['scriptVerify', 'Verify scripts'],
+  ['editorialReview', 'Editorial review'],
+  ['reverseOutline', 'Reverse outline'],
+  ['editorialChecks', 'Editorial checks'],
+  ['revisionCycle', 'Revision cycle'],
+  ['produceTeaser', 'Produce teaser'],
+];
 // Threshold input: a [0,10] number (0.5 steps allowed — NOT integer-rounded like
 // the round clamps), blank/invalid → the default.
 const clampFoundationThreshold = (n, fallback) => {
@@ -501,6 +519,13 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [judgeProviderOverride, setJudgeProviderOverride] = useState('');
   const [judgeModelOverride, setJudgeModelOverride] = useState('');
   const [judgeEffortOverride, setJudgeEffortOverride] = useState('');
+  // Optional routes scoped to one Autopilot step + role. This is the UI side of
+  // the model-performance loop: a user can pin a proven specialist (or run an
+  // experiment) without repointing every creative or judge call in the run.
+  const [stageLlm, setStageLlm] = useState({});
+  const [editStageLlm, setEditStageLlm] = useState(false);
+  const [selectedStageLlm, setSelectedStageLlm] = useState('foundationGate');
+  const [selectedStageRole, setSelectedStageRole] = useState('creative');
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
   const [modelMetrics, setModelMetrics] = useState(null);
@@ -522,6 +547,8 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     setJudgeProviderOverride(resume?.judgeLlm?.providerOverride || '');
     setJudgeModelOverride(resume?.judgeLlm?.modelOverride || '');
     setJudgeEffortOverride(resume?.judgeLlm?.effortOverride || '');
+    setStageLlm(resume?.stageLlm || {});
+    setEditStageLlm(!!resume?.stageLlm && Object.keys(resume.stageLlm).length > 0);
   }, [
     seriesId,
     series?.autopilot?.status,
@@ -531,6 +558,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     series?.autopilot?.resumeOptions?.judgeLlm?.providerOverride,
     series?.autopilot?.resumeOptions?.judgeLlm?.modelOverride,
     series?.autopilot?.resumeOptions?.judgeLlm?.effortOverride,
+    series?.autopilot?.resumeOptions?.stageLlm,
   ]);
 
   useEffect(() => {
@@ -606,6 +634,42 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     judgeProvider,
     judgeModel,
   );
+  const selectedStageRoute = stageLlm?.[selectedStageLlm]?.[selectedStageRole] || {};
+  const stageBaseProviderId = selectedStageRole === 'judge' ? judgeProviderId : effProviderId;
+  const stageBaseModel = selectedStageRole === 'judge' ? judgeModel : effModel;
+  const stageBaseEffort = selectedStageRole === 'judge'
+    ? (judgeEffortOverride || effortOverride)
+    : effortOverride;
+  const stageProviderId = selectedStageRoute.providerOverride || stageBaseProviderId;
+  const stageModel = selectedStageRoute.modelOverride
+    || ((!selectedStageRoute.providerOverride || selectedStageRoute.providerOverride === stageBaseProviderId)
+      ? stageBaseModel
+      : '');
+  const stageProvider = providers.find((p) => p.id === stageProviderId);
+  const stageModels = useMemo(
+    () => assignmentModelOptions(null, providers, stageProviderId),
+    [providers, stageProviderId],
+  );
+  const stageEffort = resolveCliEffort(
+    selectedStageRoute.effortOverride || stageBaseEffort,
+    stageProvider,
+    stageModel,
+  );
+  const updateSelectedStageRoute = useCallback((patch) => {
+    setStageLlm((current) => {
+      const currentRoute = current?.[selectedStageLlm]?.[selectedStageRole] || {};
+      const nextRoute = Object.fromEntries(
+        Object.entries({ ...currentRoute, ...patch }).filter(([, value]) => !!value),
+      );
+      const nextStage = { ...(current?.[selectedStageLlm] || {}) };
+      if (Object.keys(nextRoute).length > 0) nextStage[selectedStageRole] = nextRoute;
+      else delete nextStage[selectedStageRole];
+      const next = { ...current };
+      if (Object.keys(nextStage).length > 0) next[selectedStageLlm] = nextStage;
+      else delete next[selectedStageLlm];
+      return next;
+    });
+  }, [selectedStageLlm, selectedStageRole]);
 
   // Load the persisted option defaults so the Options controls reflect the
   // install's settings. The autopilot reads the same settings server-side, so we
@@ -746,6 +810,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           ...(judgeEffortOverride ? { effortOverride: judgeEffortOverride } : {}),
         },
       } : {}),
+      ...(Object.keys(stageLlm).length > 0 ? { stageLlm } : {}),
     };
     const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...unlockOverride, ...llmOverride }, { silent: true })
       .catch((err) => { toast.error(err.message || 'Could not start autopilot'); return null; });
@@ -765,7 +830,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     setActive(true);
     // `options` is the single dep for every persisted option — the registry reads
     // live values through refs, so no option can be forgotten here.
-  }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, separateJudgeLlm, judgeProviderOverride, judgeModelOverride, judgeEffortOverride, options, persistRounds]);
+  }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, separateJudgeLlm, judgeProviderOverride, judgeModelOverride, judgeEffortOverride, stageLlm, options, persistRounds]);
 
   const cancel = useCallback(async () => {
     await cancelPipelineAutopilot(seriesId).catch(() => null);
@@ -921,6 +986,91 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                 </p>
               </div>
             ) : null}
+            <div className="border-t border-port-border/70 pt-2 mt-1 flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={editStageLlm}
+                  onChange={(e) => {
+                    setEditStageLlm(e.target.checked);
+                    if (!e.target.checked) setStageLlm({});
+                  }}
+                />
+                Override a specific stage and role
+              </label>
+              {editStageLlm ? (
+                <>
+                  <p className="text-[11px] text-gray-400">
+                    Stage route overrides win over run-wide and learned routes for the selected role. They are restored when a run pauses.
+                  </p>
+                  <div className="flex flex-wrap gap-2 max-w-2xl">
+                <div>
+                  <label htmlFor="autopilot-stage-llm" className="block text-[11px] text-gray-400 mb-1">Stage override</label>
+                  <select
+                    id="autopilot-stage-llm"
+                    value={selectedStageLlm}
+                    onChange={(e) => setSelectedStageLlm(e.target.value)}
+                    className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-xs text-gray-200"
+                  >
+                    {AUTOPILOT_LLM_STAGES.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="autopilot-stage-role" className="block text-[11px] text-gray-400 mb-1">Role</label>
+                  <select
+                    id="autopilot-stage-role"
+                    value={selectedStageRole}
+                    onChange={(e) => setSelectedStageRole(e.target.value)}
+                    className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-xs text-gray-200"
+                  >
+                    <option value="creative">Creative / repair</option>
+                    <option value="judge">Judge / verify</option>
+                  </select>
+                </div>
+              </div>
+              <div className="max-w-md">
+                <ProviderModelSelector
+                  providers={providers}
+                  selectedProviderId={selectedStageRoute.providerOverride || ''}
+                  effectiveProviderId={stageProviderId}
+                  selectedModel={selectedStageRoute.modelOverride || ''}
+                  availableModels={stageModels}
+                  onProviderChange={(id) => updateSelectedStageRoute({
+                    providerOverride: id,
+                    modelOverride: '',
+                    effortOverride: '',
+                  })}
+                  onModelChange={(model) => updateSelectedStageRoute({ modelOverride: model })}
+                  effort={selectedStageRoute.effortOverride || ''}
+                  onEffortChange={(effort) => updateSelectedStageRoute({ effortOverride: effort })}
+                  label="Override this stage and role"
+                  compact
+                  alwaysShowModel
+                  emptyProviderOption={`Role default (${providerDisplayName(providers, stageBaseProviderId, '—')})`}
+                  emptyModelOption={stageBaseModel ? `Role default (${stageBaseModel})` : 'Role default model'}
+                />
+                {Object.keys(selectedStageRoute).length > 0 ? (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-[11px] text-port-accent">
+                      Active: {providerModelLabel(providers, stageProviderId, stageModel)}{stageEffort ? ` / ${stageEffort}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedStageRoute({
+                        providerOverride: '', modelOverride: '', effortOverride: '',
+                      })}
+                      className="text-[11px] text-gray-500 hover:text-white"
+                    >
+                      Clear override
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+                </>
+              ) : null}
+            </div>
           </div>
           <label className="flex items-center gap-2 text-xs text-gray-300">
             <input type="checkbox" checked={opt.autoSelectModels} onChange={(e) => options.edit('autoSelectModels', e.target.checked)} />

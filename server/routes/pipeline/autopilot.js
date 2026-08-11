@@ -44,6 +44,14 @@ const autopilotLlmRouteSchema = z.object({
   effortOverride: effortOverrideSchema,
 }).strict();
 
+const autopilotStageLlmSchema = z.partialRecord(
+  z.enum(seriesSvc.AUTOPILOT_LLM_STAGE_KINDS),
+  z.object({
+    creative: autopilotLlmRouteSchema.optional(),
+    judge: autopilotLlmRouteSchema.optional(),
+  }).strict(),
+);
+
 const autopilotStartSchema = z.object({
   ...providerOverrideShape,
   // Per-run reasoning effort (#3641). Soft, like the provider/model override: it
@@ -58,6 +66,10 @@ const autopilotStartSchema = z.object({
   // from Prompts still win. This is deliberately per-run so experimenting with a
   // lighter writer (for example Luna/max) does not globally repoint every series.
   judgeLlm: autopilotLlmRouteSchema.optional(),
+  // Optional per-step routes for experiments and evidence-backed specialization.
+  // A stage route wins over learned and run-wide routes for that role, while an
+  // exact Prompts-stage pin remains authoritative inside stageRunner.
+  stageLlm: autopilotStageLlmSchema.optional(),
   // Draft cover + all interior pages once a story is ready. Accepted now;
   // honored when VISUAL_DRAFT_ENABLED ships (Phase 2). Defaults true per the
   // product decision (whole-series, full draft visuals).

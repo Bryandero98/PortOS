@@ -130,6 +130,24 @@ const AUTOPILOT_RESIDUAL_MAX = 50;
 // record then silently drops, and the two would disagree about what was thrown
 // away. The residual cap needs no such export: nothing emits residual pre-bounded.
 export const AUTOPILOT_DISCARDED_MAX = 20;
+export const AUTOPILOT_LLM_STAGE_KINDS = Object.freeze([
+  'characterFoundation',
+  'generateArc',
+  'repairArcStructure',
+  'verifyArcSpine',
+  'generateEpisodes',
+  'foundationGate',
+  'verifyArc',
+  'beatSheet',
+  'beatContinuity',
+  'textStages',
+  'scriptVerify',
+  'editorialReview',
+  'reverseOutline',
+  'editorialChecks',
+  'revisionCycle',
+  'produceTeaser',
+]);
 
 const sanitizeAutopilotLlmRoute = (raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -139,6 +157,22 @@ const sanitizeAutopilotLlmRoute = (raw) => {
   if (providerOverride) out.providerOverride = providerOverride;
   if (modelOverride) out.modelOverride = modelOverride;
   if (EFFORT_LEVELS.includes(raw.effortOverride)) out.effortOverride = raw.effortOverride;
+  return Object.keys(out).length ? out : null;
+};
+
+const sanitizeAutopilotStageLlm = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  for (const step of AUTOPILOT_LLM_STAGE_KINDS) {
+    const stage = raw[step];
+    if (!stage || typeof stage !== 'object' || Array.isArray(stage)) continue;
+    const creative = sanitizeAutopilotLlmRoute(stage.creative);
+    const judge = sanitizeAutopilotLlmRoute(stage.judge);
+    if (creative || judge) out[step] = {
+      ...(creative ? { creative } : {}),
+      ...(judge ? { judge } : {}),
+    };
+  }
   return Object.keys(out).length ? out : null;
 };
 
@@ -160,6 +194,8 @@ const sanitizeAutopilotResumeOptions = (raw) => {
   if (baseLlm?.effortOverride) out.effortOverride = baseLlm.effortOverride;
   const judgeLlm = sanitizeAutopilotLlmRoute(raw.judgeLlm);
   if (judgeLlm) out.judgeLlm = judgeLlm;
+  const stageLlm = sanitizeAutopilotStageLlm(raw.stageLlm);
+  if (stageLlm) out.stageLlm = stageLlm;
   if (typeof raw.autoSelectModels === 'boolean') out.autoSelectModels = raw.autoSelectModels;
   return Object.keys(out).length ? out : null;
 };

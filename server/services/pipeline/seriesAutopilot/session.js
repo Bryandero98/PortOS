@@ -114,6 +114,7 @@ export async function persistMarker(seriesId, patch) {
       ...(run.options.modelOverride ? { modelOverride: run.options.modelOverride } : {}),
       ...(run.options.effortOverride ? { effortOverride: run.options.effortOverride } : {}),
       ...(run.options.judgeLlm ? { judgeLlm: run.options.judgeLlm } : {}),
+      ...(run.options.stageLlm ? { stageLlm: run.options.stageLlm } : {}),
       autoSelectModels: run.options.autoSelectModels === true,
     }
     : null;
@@ -213,11 +214,38 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // stageRunner's `providerDefault`/`modelDefault` at the leaf call while keeping
 // its existing hard `providerOverride`/`providerId` + `modelOverride`/`model`
 // params untouched for manual route callers.
+const inheritLlmRoute = (route, base) => {
+  if (!route || typeof route !== 'object') return base;
+  const providerOverride = route.providerOverride || base.providerOverride;
+  // A model id belongs to its provider. When a route changes provider and
+  // leaves model blank, use that provider's default instead of carrying a model
+  // across. Same-provider and effort-only routes deliberately inherit it.
+  const providerChanged = !!route.providerOverride
+    && route.providerOverride !== base.providerOverride;
+  return {
+    providerOverride,
+    modelOverride: route.modelOverride || (providerChanged ? undefined : base.modelOverride),
+    effortOverride: route.effortOverride || base.effortOverride,
+  };
+};
+
 export const roleLlm = (record, role = 'creative') => {
-  const base = record?.options || {};
-  const learned = base.autoSelectModels === true
-    && base.modelRoutesExplicit?.[role] !== true
-    ? base.modelRecommendations?.[record?.currentStep]?.[role]
+  const options = record?.options || {};
+  const base = {
+    providerOverride: options.providerOverride,
+    modelOverride: options.modelOverride,
+    effortOverride: options.effortOverride,
+  };
+  const roleRoute = role === 'judge'
+    ? inheritLlmRoute(options.judgeLlm, base)
+    : base;
+  const stageRoute = options.stageLlm?.[record?.currentStep]?.[role];
+  if (stageRoute && typeof stageRoute === 'object' && Object.keys(stageRoute).length > 0) {
+    return inheritLlmRoute(stageRoute, roleRoute);
+  }
+  const learned = options.autoSelectModels === true
+    && options.modelRoutesExplicit?.[role] !== true
+    ? options.modelRecommendations?.[record?.currentStep]?.[role]
     : null;
   if (learned) {
     return {
@@ -226,28 +254,7 @@ export const roleLlm = (record, role = 'creative') => {
       effortOverride: learned.effortOverride,
     };
   }
-  const route = role === 'judge' && base.judgeLlm && typeof base.judgeLlm === 'object'
-    ? base.judgeLlm
-    : null;
-  if (!route) {
-    return {
-      providerOverride: base.providerOverride,
-      modelOverride: base.modelOverride,
-      effortOverride: base.effortOverride,
-    };
-  }
-  const providerOverride = route.providerOverride || base.providerOverride;
-  // A model id belongs to its provider. When the judge route changes provider
-  // and leaves model blank, use that provider's default instead of carrying the
-  // creative provider's model across. A same-provider/effort-only judge route
-  // deliberately inherits the creative model.
-  const providerChanged = !!route.providerOverride
-    && route.providerOverride !== base.providerOverride;
-  return {
-    providerOverride,
-    modelOverride: route.modelOverride || (providerChanged ? undefined : base.modelOverride),
-    effortOverride: route.effortOverride || base.effortOverride,
-  };
+  return roleRoute;
 };
 
 const runLifecycle = (record, role) => ({
