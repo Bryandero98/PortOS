@@ -405,10 +405,11 @@ export function selectFindingKeyedEdits(content, findings, { spineOnly = false }
   };
 }
 
-// Per-episode (issue) records are NOT touched — those are user-owned scripts
-// and shouldn't get clobbered by a structural fix. If a finding's only
-// actionable resolution would require deleting issues, the LLM is told to
-// flag that in the response's `notes` field rather than executing it.
+// Episode (issue) records are never CREATED or DELETED here, and their drafted
+// scripts are never clobbered — a full-arc round may rewrite an episode's
+// planning synopsis (see `applyEpisodeResolutions`), and nothing else. If a
+// finding's only actionable resolution would require deleting issues, the LLM
+// is told to flag that in the response's `notes` field rather than executing it.
 // `options.findings` empty / omitted = re-run verify first and resolve
 // everything it returns. `options.avoid` is the optional "a previous attempt at
 // these same findings authored THESE and was reverted" list (see

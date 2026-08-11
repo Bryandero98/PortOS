@@ -509,9 +509,9 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
 export async function buildVerifyContext(series, preloadedWorld, { spineOnly = false } = {}) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const [issues, base, canon] = await Promise.all([
-    // Spine mode renders no episode leaves, so don't pay for the load — every
-    // issue's full record (stage run history included) fetched and sanitized to
-    // be thrown away one line later.
+    // Spine mode renders no episode leaves, so skip the load rather than fetch
+    // and sanitize every issue's full record (stage run history included) only
+    // for `groupIssuesBySeasonTree` to drop it.
     spineOnly ? [] : listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
     getSeriesPlanningCanon(series),
