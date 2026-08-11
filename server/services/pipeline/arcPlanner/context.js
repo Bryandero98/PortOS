@@ -519,11 +519,18 @@ export async function buildVerifyContext(series, preloadedWorld, { spineOnly = f
   const tree = groupIssuesBySeasonTree(seasons, issues, {
     // `synopsis` key (not `beats`) so it matches the prompt's existing
     // language; sourced from idea.input which carries the LLM's logline+synopsis.
+    // `arcRole` is required, not decorative: the verify prompt's arc-role
+    // imbalance check (#6) reports "zero pilot/finale" purely from this leaf, so
+    // omitting it made that finding unsatisfiable — a volume with a correct
+    // pilot and finale still got flagged, every pass. The foundation gate's
+    // structure arm reverts whenever verifyArc leaves any blocker, so that one
+    // permanent false positive stalled the gate on plans with nothing wrong.
     renderLeaf: (iss) => ({
       number: iss.number,
       title: iss.title,
       status: iss.status,
       arcPosition: iss.arcPosition,
+      arcRole: iss.arcRole || null,
       synopsis: (iss.stages?.idea?.input || '').trim() || null,
     }),
     seasonFields: (s) => ({

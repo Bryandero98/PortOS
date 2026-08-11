@@ -558,6 +558,28 @@ describe('arcPlanner — verifyArc', () => {
     ]);
   });
 
+  // The verify prompt's arc-role imbalance check (#6) can only see what this
+  // leaf renders. While `arcRole` was missing from it, a volume with a correct
+  // pilot and finale still reported "zero pilot/finale" on every pass — and
+  // because the foundation gate's structure arm reverts whenever verifyArc
+  // leaves any blocker, that permanent false positive stalled the gate.
+  it('renders each episode arcRole so the arc-role imbalance check can see it', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'S' } });
+    const sea = await seasonsSvc.createSeason(s.id, { title: 'V1' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 1', seasonId: sea.id, arcPosition: 1, arcRole: 'pilot' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 2', seasonId: sea.id, arcPosition: 2 });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 3', seasonId: sea.id, arcPosition: 3, arcRole: 'finale' });
+
+    stageRunnerSpy = vi.fn(async () => ({ content: { issues: [] }, runId: 'r1', providerId: 'p', model: 'm' }));
+    await planner.verifyArc(s.id);
+
+    const tree = JSON.parse(stageRunnerSpy.mock.calls[0][1].seasonsTreeJson);
+    // null (not absent) for the middle episode — "no role" has to be legible as
+    // a value, or the check can't tell an unset role from a dropped field.
+    expect(tree[0].episodes.map((e) => e.arcRole)).toEqual(['pilot', null, 'finale']);
+  });
+
   it('drops malformed verify issues + defaults severity to medium', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
