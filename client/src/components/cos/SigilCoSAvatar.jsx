@@ -4,7 +4,7 @@ import { Float, MeshDistortMaterial, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 import { AGENT_STATES } from './constants';
 import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
-import CoSAvatarFrame from './CoSAvatarFrame';
+import CoSCanvasGuard from './CoSCanvasGuard';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
 
 function SigilCore({ color, state, speaking }) {
@@ -286,7 +286,7 @@ function Scene({ state, speaking, background }) {
 
 export default function SigilCoSAvatar({ state, speaking, background = false }) {
   return (
-    <CoSAvatarFrame label="Sigil 3D avatar. Drag to rotate." background={background}>
+    <CoSCanvasGuard label="Sigil 3D avatar. Drag to rotate." background={background}>
       <Canvas
         camera={{ position: [0, 0.1, 3.7], fov: 45 }}
         style={{ width: '100%', height: '100%', background: 'transparent' }}
@@ -294,6 +294,6 @@ export default function SigilCoSAvatar({ state, speaking, background = false }) 
       >
         <Scene state={state} speaking={speaking} background={background} />
       </Canvas>
-    </CoSAvatarFrame>
+    </CoSCanvasGuard>
   );
 }

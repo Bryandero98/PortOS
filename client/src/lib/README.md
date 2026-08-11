@@ -119,6 +119,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `unsorted.js` | Synthetic "Unsorted" collection from media not filed in any real collection. |
 | `upsertByIdPrepend.js` | Newest-first upsert into an id-keyed list. |
 | `uuid.js` | `uuidv4()` — spec-valid v4 uuid that also works on **insecure origins**. Reach for this instead of `crypto.randomUUID()`, which only exists in a secure context (HTTPS / localhost) and throws `crypto.randomUUID is not a function` for the many users who reach PortOS over plain HTTP via Tailscale. Falls back to `crypto.getRandomValues` (available on insecure origins), then `Math.random`. |
+| `webglSupport.js` | `isWebGLAvailable()` — memoized probe for a creatable WebGL/WebGL2 context. CoS 3D avatars (and similar r3f mounts) call this before `<Canvas>` so headless Chrome / no-GPU displays degrade to a hint instead of unhandled `WebGLRenderer` rejections. |
 | `voiceLabel.js` | `formatVoiceLabel(v, engine?)` — display label for a TTS voice record. Engine-specific formatters plug into a lookup table; new engines extend that map. |
 
 ## Page-scoped pure helpers

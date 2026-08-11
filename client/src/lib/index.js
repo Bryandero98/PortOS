@@ -143,5 +143,6 @@ export * from './quotaBurnPatch.js';
 export * from './tribeCadence.js';
 export * from './universeBuilderExpand.js';
 export * from './uuid.js';
+export * from './webglSupport.js';
 export * from './wrSceneCursor.js';
 export * from './writingGuide.js';
