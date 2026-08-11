@@ -4,8 +4,8 @@ import { Float, MeshDistortMaterial, Sparkles, Stars } from '@react-three/drei';
 import * as THREE from 'three';
 import { AGENT_STATES } from './constants';
 import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
-import CoSAvatarFrame from './CoSAvatarFrame';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
+import CoSCanvasGuard from './CoSCanvasGuard';
 
 // Central mystical core - an artifact of unknown origin
 function EsotericCore({ color, state, speaking }) {
@@ -205,7 +205,7 @@ function Scene({ state, speaking, background }) {
 
 export default function EsotericCoSAvatar({ state, speaking, background = false }) {
   return (
-    <CoSAvatarFrame label="Esoteric 3D avatar. Drag to rotate." background={background}>
+    <CoSCanvasGuard label="Esoteric 3D avatar. Drag to rotate." background={background}>
       <Canvas
         camera={{ position: [0, 0, 5], fov: 45 }}
         style={{ width: '100%', height: '100%', background: 'transparent' }}
@@ -213,6 +213,6 @@ export default function EsotericCoSAvatar({ state, speaking, background = false 
       >
         <Scene state={state} speaking={speaking} background={background} />
       </Canvas>
-    </CoSAvatarFrame>
+    </CoSCanvasGuard>
   );
 }

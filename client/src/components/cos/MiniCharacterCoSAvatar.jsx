@@ -1,10 +1,10 @@
-import { useRef, useMemo, useEffect, useState, Suspense, Component } from 'react';
+import { useRef, useMemo, useEffect, useState, Suspense } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { AGENT_STATES } from './constants';
 import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
-import CoSAvatarFrame from './CoSAvatarFrame';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
+import CoSCanvasGuard from './CoSCanvasGuard';
 import useClonedGltf, { GltfPrimitive } from '../../hooks/useClonedGltf';
 
 // Kenney Mini Characters (CC0) ship 32 named clips. We map the CoS agent
@@ -148,25 +148,6 @@ function MissingModelHint({ background = false, bundled = false }) {
   );
 }
 
-// Error boundary so a corrupt/missing GLB or a GET that returns a non-GLTF
-// body (the HEAD probe only confirms r.ok, not valid GLTF) degrades to the
-// missing-model hint instead of white-screening the whole CoS page.
-class AvatarErrorBoundary extends Component {
-  constructor(props) {
-    super(props);
-    this.state = { failed: false };
-  }
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  componentDidCatch(err) {
-    console.warn(`⚠️ Mini-character avatar failed to load: ${err?.message || err}`);
-  }
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
-}
-
 function LoadingPlaceholder({ background = false }) {
   return (
     <div className={`${background ? 'relative w-full h-full min-h-full' : 'relative w-full max-w-[8rem] lg:max-w-[12rem] aspect-[5/6]'} flex items-center justify-center`}>
@@ -193,18 +174,20 @@ export default function MiniCharacterCoSAvatar({ state, speaking, background = f
   if (!modelPresent) return <MissingModelHint background={background} bundled={bundled} />;
 
   return (
-    <CoSAvatarFrame label="Mini-character avatar. Drag to rotate." background={background}>
-      <AvatarErrorBoundary fallback={<MissingModelHint background={background} bundled={bundled} />}>
-        <Canvas
-          camera={{ position: [0, 0.2, 3.0], fov: 40 }}
-          style={{ width: '100%', height: '100%', background: 'transparent' }}
-          gl={{ alpha: true, antialias: true }}
-        >
-          <Suspense fallback={null}>
-            <Scene state={state} speaking={speaking} background={background} variant={variant} />
-          </Suspense>
-        </Canvas>
-      </AvatarErrorBoundary>
-    </CoSAvatarFrame>
+    <CoSCanvasGuard
+      label="Mini-character avatar. Drag to rotate."
+      background={background}
+      fallback={<MissingModelHint background={background} bundled={bundled} />}
+    >
+      <Canvas
+        camera={{ position: [0, 0.2, 3.0], fov: 40 }}
+        style={{ width: '100%', height: '100%', background: 'transparent' }}
+        gl={{ alpha: true, antialias: true }}
+      >
+        <Suspense fallback={null}>
+          <Scene state={state} speaking={speaking} background={background} variant={variant} />
+        </Suspense>
+      </Canvas>
+    </CoSCanvasGuard>
   );
 }

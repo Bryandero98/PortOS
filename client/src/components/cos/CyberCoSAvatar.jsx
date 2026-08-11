@@ -4,7 +4,7 @@ import { Float, MeshDistortMaterial, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 import { AGENT_STATES } from './constants';
 import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
-import CoSAvatarFrame from './CoSAvatarFrame';
+import CoSCanvasGuard from './CoSCanvasGuard';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
 
 // Holographic wireframe skull/head geometry
@@ -438,7 +438,7 @@ function Scene({ state, speaking, background }) {
 
 export default function CyberCoSAvatar({ state, speaking, background = false }) {
   return (
-    <CoSAvatarFrame label="Cyber 3D avatar. Drag to rotate." background={background}>
+    <CoSCanvasGuard label="Cyber 3D avatar. Drag to rotate." background={background}>
       <Canvas
         camera={{ position: [0, 0, 3.5], fov: 45 }}
         style={{ width: '100%', height: '100%', background: 'transparent' }}
@@ -446,6 +446,6 @@ export default function CyberCoSAvatar({ state, speaking, background = false }) 
       >
         <Scene state={state} speaking={speaking} background={background} />
       </Canvas>
-    </CoSAvatarFrame>
+    </CoSCanvasGuard>
   );
 }

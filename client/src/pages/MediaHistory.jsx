@@ -30,6 +30,12 @@ const FILTERS = [
   { id: 'video', label: 'Videos' },
 ];
 
+// Progressive grid: a mature install can hold 1k–2k+ gallery items. Mounting
+// every MediaCard + <img> at once freezes the tab and spikes memory. Search/
+// filter still run over the full list; only the painted window is limited.
+const INITIAL_VISIBLE = 60;
+const LOAD_MORE = 60;
+
 export default function MediaHistory() {
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
@@ -40,6 +46,7 @@ export default function MediaHistory() {
   const [selected, setSelected] = useState([]); // video ids
   const [stitching, setStitching] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const { annotations, toggleStar, updateAnnotation, getCardProps } = useMediaAnnotations();
   // URL-driven preview (`?preview=<filename>`) so the lightbox is deep-linkable.
   // Match against the full `items` list (not the filtered view) so a shared link
@@ -85,6 +92,17 @@ export default function MediaHistory() {
   const filtered = useMemo(
     () => favoritesOnly ? kindFiltered.filter((i) => annotations[i.key]?.starred) : kindFiltered,
     [kindFiltered, favoritesOnly, annotations]
+  );
+
+  // Reset the painted window when the user changes what they're looking at so
+  // "Show more" progress from one filter doesn't hide a short result set.
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE);
+  }, [filter, query, favoritesOnly]);
+
+  const visibleItems = useMemo(
+    () => filtered.slice(0, visibleCount),
+    [filtered, visibleCount]
   );
   const counts = useMemo(() => {
     const c = { all: 0, image: 0, video: 0 };
@@ -244,34 +262,45 @@ export default function MediaHistory() {
                 : <>Nothing here yet. Try <Link to="/media/image" className="text-port-accent hover:underline">Image</Link> or <Link to="/media/video" className="text-port-accent hover:underline">Video</Link>.</>}
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-          {filtered.map((it) => {
-            const inStitch = stitchMode && it.kind === 'video';
-            const idx = inStitch ? selected.indexOf(it.id) : -1;
-            return (
-              <MediaCard
-                key={it.key}
-                item={it}
-                onPreview={(media) => setPreview(media)}
-                onClick={inStitch ? () => toggleSelect(it.id) : undefined}
-                onRemix={!stitchMode ? handleRemix : undefined}
-                onSendToImage={!stitchMode ? handleSendToImage : undefined}
-                onSendToVideo={!stitchMode ? handleSendToVideo : undefined}
-                onSendTo3d={!stitchMode ? handleSendTo3d : undefined}
-                onContinue={!stitchMode ? handleContinue : undefined}
-                onUpscale={!stitchMode && it.kind === 'video' ? handleUpscale : undefined}
-                onDelete={!stitchMode ? handleDelete : undefined}
-                selectionLabel={idx !== -1 ? idx + 1 : null}
-                selected={idx !== -1}
-                disabled={stitchMode && it.kind !== 'video'}
-                hideActions={stitchMode}
-                {...getCardProps(it.key)}
-                onToggleStar={!stitchMode ? toggleStar : undefined}
-                onAnnotate={!stitchMode && it.kind === 'image' ? (m) => navigate(`/media/annotate/${encodeURIComponent(m.key)}`) : undefined}
-              />
-            );
-          })}
-        </div>
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+            {visibleItems.map((it) => {
+              const inStitch = stitchMode && it.kind === 'video';
+              const idx = inStitch ? selected.indexOf(it.id) : -1;
+              return (
+                <MediaCard
+                  key={it.key}
+                  item={it}
+                  onPreview={(media) => setPreview(media)}
+                  onClick={inStitch ? () => toggleSelect(it.id) : undefined}
+                  onRemix={!stitchMode ? handleRemix : undefined}
+                  onSendToImage={!stitchMode ? handleSendToImage : undefined}
+                  onSendToVideo={!stitchMode ? handleSendToVideo : undefined}
+                  onSendTo3d={!stitchMode ? handleSendTo3d : undefined}
+                  onContinue={!stitchMode ? handleContinue : undefined}
+                  onUpscale={!stitchMode && it.kind === 'video' ? handleUpscale : undefined}
+                  onDelete={!stitchMode ? handleDelete : undefined}
+                  selectionLabel={idx !== -1 ? idx + 1 : null}
+                  selected={idx !== -1}
+                  disabled={stitchMode && it.kind !== 'video'}
+                  hideActions={stitchMode}
+                  {...getCardProps(it.key)}
+                  onToggleStar={!stitchMode ? toggleStar : undefined}
+                  onAnnotate={!stitchMode && it.kind === 'image' ? (m) => navigate(`/media/annotate/${encodeURIComponent(m.key)}`) : undefined}
+                />
+              );
+            })}
+          </div>
+          {filtered.length > visibleCount && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((n) => n + LOAD_MORE)}
+              className="w-full py-2.5 text-xs text-port-accent hover:text-white bg-port-border/30 hover:bg-port-border/50 rounded-lg transition-colors min-h-[44px]"
+            >
+              Show more ({filtered.length - visibleCount} remaining)
+            </button>
+          )}
+        </>
       )}
 
       <MediaPreview
