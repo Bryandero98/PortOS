@@ -849,8 +849,87 @@ html[data-port-theme-mode="day"] .always-dark [class~="hover:text-gray-100"]:hov
 html[data-port-theme-mode="day"] .always-dark [class~="hover:text-slate-100"]:hover {
   color: rgb(255 255 255) !important;
 }
-html[data-port-theme-mode="day"] .always-dark [class~="aria-pressed:text-white"][aria-pressed="true"] {
-  color: rgb(255 255 255) !important;
+
+/* === Media overlay chrome ===
+   Labels, status bars, badges, and small control panels that float over an
+   image, a video, or a 3D canvas.
+
+   The old idiom — `bg-black/65 text-white` — breaks on a day theme: the remap
+   above rewrites `text-white` to the theme's dark ink while the black scrim
+   stays black, so the label renders dark-on-black. `.always-dark` pins the text
+   back to white but leaves a black slab floating over a cream page.
+
+   These classes take the theme's own card + text pairing instead, so overlay
+   chrome matches the page and its contrast is the theme's own card contrast —
+   over a dark canvas, a light one, or a photograph. Written as a literal alpha
+   rather than `bg-port-card/NN` (floored opaque for content cards) or
+   `--port-overlay-alpha` (tuned for full-screen modal backdrops, and low enough
+   on several themes to drop muted ink under AA once an arbitrary image shows
+   through). At 0.9 there is nothing left for a `backdrop-blur` to soften, so
+   don't add one.
+
+   This is the successor to the two older answers to the same problem, and the
+   rule for picking between the three is:
+   - `.port-media-overlay*` — the default for new overlay chrome.
+   - `.always-dark` (above) — only when the surface underneath is genuinely
+     fixed-dark regardless of theme: video-player chrome, a terminal, a
+     full-screen lightbox.
+   - `.cybercity-themed` (below) — a page-scoped `!important` remap of the
+     City HUD's fixed cyberpunk palette. Legacy shape, kept because that HUD is
+     authored against a fixed palette on purpose; don't add a second one. */
+.port-media-overlay {
+  background-color: rgb(var(--port-card) / 0.9);
+}
+
+/* Solid variant for a small label sitting directly on photography, where even
+   10% show-through takes its contrast from whatever pixels it lands on. Same
+   fill as `.port-menu-surface` (above) for the same reason — an opaque themed
+   surface with arbitrary content behind it and no backdrop to sit on — but no
+   `!important`, since these labels are not fighting a `bg-port-card/NN`. */
+.port-media-overlay-strong {
+  background-color: rgb(var(--port-card));
+}
+
+/* Zero-specificity so the default ink is a fallback, not an override: an
+   overlay that carries its own `text-port-success` / `text-port-text-muted`
+   utility keeps it. */
+:where(.port-media-overlay, .port-media-overlay-strong) {
+  color: rgb(var(--port-text));
+}
+
+/* Interactive overlay chrome — buttons inside an overlay panel, and buttons
+   that ARE one. `hover:bg-white/15` is the companion idiom to the black scrim
+   and disappears against a light one.
+
+   The state tint rides on `background-image` so it composites OVER whatever
+   scrim the element already carries instead of replacing it — a button that is
+   its own `.port-media-overlay-strong` would otherwise go transparent on
+   hover. That is also why the app-wide `--port-hover-bg` / `--port-active-bg`
+   pair isn't reused here: `--port-active-bg` is a gradient on six of the eight
+   themes, so it cannot ride this mechanism, and a hover that reused its token
+   while pressed did not would drift the two states apart. */
+.port-media-overlay-item:hover,
+.port-media-overlay-item[aria-pressed="true"] {
+  background-image: linear-gradient(
+    var(--port-overlay-item-tint),
+    var(--port-overlay-item-tint)
+  );
+}
+
+.port-media-overlay-item:hover {
+  --port-overlay-item-tint: rgb(var(--port-text) / 0.12);
+}
+
+.port-media-overlay-item[aria-pressed="true"] {
+  --port-overlay-item-tint: rgb(var(--port-accent) / 0.22);
+}
+
+.port-media-overlay-item[aria-pressed="true"]:hover {
+  --port-overlay-item-tint: rgb(var(--port-accent) / 0.32);
+}
+
+.port-media-overlay-divider {
+  background-color: rgb(var(--port-text) / 0.2);
 }
 
 /* === City (formerly CyberCity) HUD theming ===

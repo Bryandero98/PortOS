@@ -274,8 +274,8 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
           onSelect={handleSelect}
         />
       </Canvas>
-      <div className="always-dark absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg bg-black/70 px-2 py-1.5 text-[10px] text-gray-300 backdrop-blur-sm">
-        <span className="mr-1 whitespace-nowrap text-gray-400">Background</span>
+      <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
+        <span className="mr-1 whitespace-nowrap text-port-text-muted">Background</span>
         <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Preview background">
           {BACKGROUND_PRESETS.map((preset) => (
             <button
@@ -284,13 +284,13 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
               aria-label={preset.label}
               aria-pressed={selectedPreset === preset.id}
               onClick={() => setBackground(preset.value)}
-              className="rounded px-1.5 py-1 hover:bg-white/15 aria-pressed:bg-white/25 aria-pressed:text-white"
+              className="port-media-overlay-item rounded px-1.5 py-1"
             >
               {preset.label}
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-1 rounded px-1.5 py-1 hover:bg-white/15">
+        <label className="port-media-overlay-item flex items-center gap-1 rounded px-1.5 py-1">
           Custom
           <input
             type="color"
@@ -300,8 +300,8 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
             className="h-4 w-5 rounded border-0 bg-transparent p-0"
           />
         </label>
-        <span className="mx-1 hidden h-3 w-px bg-white/20 sm:block" />
-        <label htmlFor={explodeSliderId} className="whitespace-nowrap text-gray-400">
+        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+        <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
           Explode
         </label>
         <input
@@ -315,21 +315,21 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
           onChange={(event) => setExplode(Number(event.target.value))}
           className="h-1 w-20 cursor-pointer accent-port-accent disabled:cursor-not-allowed disabled:opacity-40 sm:w-28"
         />
-        <span className="w-8 tabular-nums text-gray-400">{Math.round(explode * 100)}%</span>
+        <span className="w-8 tabular-nums text-port-text-muted">{Math.round(explode * 100)}%</span>
         {explode > 0 && (
           <button
             type="button"
             onClick={() => setExplode(0)}
-            className="rounded px-1.5 py-1 hover:bg-white/15"
+            className="port-media-overlay-item rounded px-1.5 py-1"
           >
             Reassemble
           </button>
         )}
       </div>
       {selectedId && (
-        <div className="always-dark absolute right-2 top-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg bg-black/70 px-2 py-1.5 text-[10px] text-gray-200 backdrop-blur-sm">
-          <span className="truncate font-medium text-white">{selection.names[selectedId] || selectedId}</span>
-          <code className="truncate text-gray-400">{selectedId}</code>
+        <div className="port-media-overlay absolute right-2 top-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-[10px]">
+          <span className="truncate font-medium">{selection.names[selectedId] || selectedId}</span>
+          <code className="truncate text-port-text-muted">{selectedId}</code>
           {/* Which declared joint (if any) drives the picked part — the diagnostic
               that turns "it says articulation-ready" into something checkable. */}
           {articulation.jointsByPartId[selectedId] && (
@@ -344,14 +344,14 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
             type="button"
             aria-label="Clear part selection"
             onClick={() => handleSelect(null)}
-            className="rounded px-1.5 py-0.5 hover:bg-white/15"
+            className="port-media-overlay-item rounded px-1.5 py-0.5"
           >
             Clear
           </button>
         </div>
       )}
-      <div className="always-dark pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
-        <span className="rounded bg-black/60 px-2 py-1 text-gray-300">
+      <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
+        <span className="port-media-overlay rounded px-2 py-1">
           Drag to orbit · scroll to zoom · click a part to identify it
         </span>
         {/* Never "animation-ready": nothing here is skinned. The badge says only
@@ -359,8 +359,8 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
             that predates the contract has none and reads as a static assembly. */}
         <span
           className={articulation.articulationReady
-            ? 'rounded bg-port-success/20 px-2 py-1 text-port-success'
-            : 'rounded bg-black/60 px-2 py-1 text-gray-400'}
+            ? 'port-media-overlay rounded px-2 py-1 text-port-success'
+            : 'port-media-overlay rounded px-2 py-1 text-port-text-muted'}
         >
           {articulation.articulationReady
             ? `Articulation-ready · ${articulation.jointCount} joints · ${articulation.socketCount} pivot${articulation.socketCount === 1 ? '' : 's'}`
