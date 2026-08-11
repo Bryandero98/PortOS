@@ -469,7 +469,19 @@ describe('arcPlanner — commitEpisodesToIssues', () => {
 
   it('reuses an exact set of empty ungrouped placeholders when Autopilot requests it', async () => {
     const s = await setupSeries();
-    const first = await issuesSvc.createIssue({ seriesId: s.id, title: 'Placeholder A' });
+    const first = await issuesSvc.createIssue({
+      seriesId: s.id,
+      title: 'Placeholder A',
+      stages: {
+        idea: {
+          status: 'empty',
+          input: '',
+          output: '',
+          lastRunId: 'run-rejected',
+          runHistory: [{ runId: 'run-archived', createdAt: '2026-01-01T00:00:00.000Z', input: 'Old plan', output: '' }],
+        },
+      },
+    });
     const second = await issuesSvc.createIssue({
       seriesId: s.id,
       title: 'Placeholder B',
@@ -485,6 +497,9 @@ describe('arcPlanner — commitEpisodesToIssues', () => {
     expect(reused.map((issue) => issue.id)).toEqual([first.id, second.id]);
     expect(reused.map((issue) => issue.title)).toEqual(['Opening', 'Turn']);
     expect(reused.every((issue) => issue.seasonId === 'sea-example')).toBe(true);
+    expect(reused[0].stages.idea.lastRunId).toBeNull();
+    expect(reused[0].stages.idea.runHistory).toHaveLength(1);
+    expect(reused[0].stages.idea.runHistory[0].runId).toBe('run-archived');
     expect(reused[1].stages.comicPages.pages).toHaveLength(1);
     expect(await issuesSvc.listIssues({ seriesId: s.id })).toHaveLength(2);
   });

@@ -191,9 +191,14 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
  * Builder's "generate issues from arc" action so both mint byte-identical
  * issue shapes. The episode's logline + synopsis land in `stages.idea.input`.
  */
-const hasNarrativeWork = (issue) => TEXT_STAGE_IDS.some((stageId) => {
+// Archived runHistory is deliberately NOT current work: preserving it while a
+// rejected draft's now-empty placeholder receives a new episode seed is the
+// point of reuse. Protect only present narrative or a genuinely in-flight
+// stage. A stale lastRunId on an empty terminal stage is attribution for the
+// archived version, not content that should force duplicate issue creation.
+const hasCurrentNarrativeWork = (issue) => TEXT_STAGE_IDS.some((stageId) => {
   const stage = issue?.stages?.[stageId];
-  return Boolean(stage?.input?.trim() || stage?.output?.trim() || stage?.lastRunId || (stage?.runHistory || []).length);
+  return Boolean(stage?.input?.trim() || stage?.output?.trim() || stage?.status === 'generating');
 });
 
 export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], {
@@ -209,7 +214,7 @@ export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], 
     ? (await listIssues({ seriesId })).filter((issue) => !issue.seasonId)
     : [];
   const reusable = ungrouped
-    .filter((issue) => !hasNarrativeWork(issue))
+    .filter((issue) => !hasCurrentNarrativeWork(issue))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
   const canReuse = reusable.length === episodes.length && episodes.length > 0;
   if (reuseUngrouped && episodes.length > 0 && ungrouped.length > 0 && !canReuse) {
@@ -240,6 +245,11 @@ export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], 
         idea: {
           status: ep.synopsis ? 'edited' : 'empty',
           input: [ep.logline, ep.synopsis].filter(Boolean).join('\n\n'),
+          // Reused placeholders can carry an archived run id even though the
+          // active text was intentionally cleared. The episode-plan seed was
+          // not produced by that old run; clear active attribution while the
+          // per-stage merge preserves runHistory.
+          lastRunId: null,
         },
       },
     };
