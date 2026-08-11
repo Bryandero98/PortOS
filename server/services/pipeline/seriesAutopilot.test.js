@@ -274,6 +274,13 @@ beforeEach(() => {
   // Reset settings to empty so a test that set persisted convergence rounds
   // doesn't leak its default into the next test.
   getSettings.mockImplementation(async () => ({}));
+  // `clearAllMocks` above keeps implementations, and the foundation-gate tests
+  // set persistent ones. `mockReset` restores the implementation each was
+  // constructed with, so a stalled-foundation test can't leak into the next.
+  judgeFoundation.mockReset();
+  applyFoundationFix.mockReset();
+  snapshotFoundationState.mockReset();
+  restoreFoundationState.mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -1963,7 +1970,7 @@ describe('autopilot conductor', () => {
       .toEqual(['worldbuilding', 'structure', 'craft']);
   });
 
-  it('foundation gate: reverts a repair that leaves its target unchanged while lowering the aggregate', async () => {
+  it('foundation gate: reverts a repair that leaves its target unchanged, then retries it from the checkpoint', async () => {
     const snapshot = (weightedScore) => ({
       seriesId: 'ser-example', status: 'complete', weightedScore,
       dimensions: {
@@ -1983,14 +1990,27 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
     await waitFor(runFinished(seriesId));
 
-    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
-    expect(last?.pauseKind).toBe('regression');
-    expect(last?.reason).toMatch(/character repair did not improve its target \(7 → 7; weighted 7\.2 → 7\.1\)/);
-    expect(applyFoundationFix).toHaveBeenCalledTimes(1);
-    expect(restoreFoundationState).toHaveBeenCalledWith(seriesId, checkpoint);
-    expect(last?.residualFindings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ location: expect.stringContaining('character'), problem: 'Aruun privacy is mislabeled as a relapse.' }),
-    ]));
+    // The rejected edits are rolled back to the checkpoint that was taken before
+    // them — but one bad proposal does not end a 4-round budget, so the same
+    // dimension is repaired again, and the retry is told what was reverted.
+    // The pre-repair verdict rides along so the restored content keeps its
+    // matching cached judgment instead of forcing a re-judge on resume.
+    expect(restoreFoundationState).toHaveBeenCalledWith(
+      seriesId,
+      checkpoint,
+      { judge: expect.objectContaining({ weightedScore: 7.2 }) },
+    );
+    const characterRepairs = applyFoundationFix.mock.calls.filter(([, dimension]) => dimension === 'character');
+    expect(characterRepairs.length).toBeGreaterThan(1);
+    expect(characterRepairs[0][2].finding.gap).toBe('Aruun privacy is mislabeled as a relapse.');
+    expect(characterRepairs[0][2].finding.retryReason).toBeUndefined();
+    expect(characterRepairs[1][2].finding).toMatchObject({
+      // The ORIGINAL gap — the foundation is back at the pre-repair checkpoint.
+      gap: 'Aruun privacy is mislabeled as a relapse.',
+      retryReason: expect.stringMatching(/REVERTED/),
+    });
+    // The rewound judgment is reused instead of paying for an identical re-judge.
+    expect(judgeFoundation).toHaveBeenCalledTimes(3);
   });
 
   it('foundation gate: keeps a tied character repair that objectively filled blank cast fields', async () => {
@@ -2032,7 +2052,7 @@ describe('autopilot conductor', () => {
     expect(applyFoundationFix.mock.calls.map(([, dimension]) => dimension)).toEqual(['character', 'character']);
   });
 
-  it('foundation gate: rejects the first repair when the same target fails to improve', async () => {
+  it('foundation gate: pauses only after repeated rejected repairs exhaust the same target', async () => {
     const stalled = {
       seriesId: 'ser-example', status: 'complete', weightedScore: 7,
       dimensions: {
@@ -2046,17 +2066,86 @@ describe('autopilot conductor', () => {
         craft: { score: 10, gap: 'clean', fix: 'none' },
       },
     };
-    judgeFoundation
-      .mockImplementationOnce(async () => stalled)
-      .mockImplementationOnce(async () => stalled);
+    judgeFoundation.mockImplementation(async () => stalled);
+    let checkpointSeq = 0;
+    snapshotFoundationState.mockImplementation(async (sId) => {
+      checkpointSeq += 1;
+      return { seriesId: sId, marker: `checkpoint-${checkpointSeq}` };
+    });
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
     await waitFor(runFinished(seriesId));
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'regression' });
-    expect(judgeFoundation).toHaveBeenCalledTimes(2);
+    // Every rejected attempt was rolled back — to the checkpoint taken just
+    // before IT, so no retry ever builds on a rejected edit — and the pause says so.
+    expect(applyFoundationFix.mock.calls.length).toBeGreaterThan(1);
+    expect(restoreFoundationState.mock.calls.map(([, cp]) => cp.marker))
+      .toEqual(applyFoundationFix.mock.calls.map((_call, index) => `checkpoint-${index + 1}`));
+    expect(last?.reason).toMatch(/reverted to the pre-repair checkpoint/);
+    for (const [, , options] of applyFoundationFix.mock.calls) {
+      expect(options.finding.gap).toBe(stalled.dimensions.worldbuilding.gap);
+    }
+    // The residual describes the RESTORED foundation the user is handed back.
+    expect(last?.residualFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        location: expect.stringContaining('worldbuilding'),
+        problem: stalled.dimensions.worldbuilding.gap,
+      }),
+    ]));
+  });
+
+  it('foundation gate: stops immediately when a rejected repair cannot be rolled back', async () => {
+    const stalled = {
+      seriesId: 'ser-example', status: 'complete', weightedScore: 7,
+      dimensions: {
+        worldbuilding: { score: 7, gap: 'The scarcity mechanism is undefined.', fix: 'Define it.' },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    };
+    judgeFoundation.mockImplementation(async () => stalled);
+    restoreFoundationState.mockResolvedValueOnce({ restored: false, reason: 'universe.premise' });
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'regression' });
+    expect(last?.reason).toMatch(/checkpoint verification failed after rollback: universe\.premise/);
+    // An unverified checkpoint is the one case that must NOT be retried.
     expect(applyFoundationFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('foundation gate: accepts a retry that improves its target after an earlier attempt was reverted', async () => {
+    const snapshot = (weightedScore, worldbuilding) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: worldbuilding, gap: 'The scarcity mechanism is undefined.', fix: 'Define it.' },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    });
+    judgeFoundation
+      // Round 1: worldbuilding is the weak target.
+      .mockImplementationOnce(async () => snapshot(7, 5))
+      // Round 2: the repair moved nothing and cost aggregate score → reverted.
+      .mockImplementationOnce(async () => snapshot(6.6, 5))
+      // Round 3 re-judges the SECOND attempt (the rewound round reuses the
+      // round-1 verdict), which earned its keep and clears the gate.
+      .mockImplementationOnce(async () => snapshot(9, 9));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(restoreFoundationState).toHaveBeenCalledTimes(1);
+    expect(applyFoundationFix.mock.calls.filter(([, d]) => d === 'worldbuilding')).toHaveLength(2);
   });
 
   it('foundation gate: gives a newly exposed gap at the same score its own repair window', async () => {

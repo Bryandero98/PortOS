@@ -54,7 +54,7 @@ export const AUTOPILOT_TERMINAL_TYPES = new Set(['complete', 'paused', 'canceled
 // `reason` arguments instead.
 export const SIGNAL_FRAME_TYPES = Object.freeze(new Set([
   'note', 'step:skip', 'verify:round', 'resolve:round', 'resolve:rollback', 'resolve:isolate', 'check:complete',
-  'foundation:round', 'foundation:fix', 'canon:repair', 'child:retry', 'child:escalate',
+  'foundation:round', 'foundation:fix', 'foundation:rollback', 'canon:repair', 'child:retry', 'child:escalate',
   'revision:cycle', 'revision:converged', 'gap:filed',
 ]));
 

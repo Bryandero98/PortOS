@@ -313,6 +313,12 @@ function frameLabel(f) {
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · next target: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
+    // A repair whose re-judge showed no gain is rewound. Like resolve:rollback,
+    // say whether the gate is retrying from the restored checkpoint — otherwise
+    // every revert reads as "this run is about to stop".
+    case 'foundation:rollback': return `Foundation ${f.dimension} repair did not improve its target `
+      + `(${f.targetBefore} → ${f.targetAfter}) — ${f.reverted ? 'reverted that repair' : 'could not revert that repair'}`
+      + `${f.retrying ? ', retrying from the checkpoint' : ''}`;
     // #1578 — per-check telemetry forwarded from the editorial-checks runner.
     case 'check:start': return `Editorial check: ${f.label || f.checkId}…`;
     case 'check:complete': {
