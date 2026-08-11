@@ -289,7 +289,8 @@ export function createRunnerService(config = {}) {
         workspaceName = 'default',
         timeout,
         source = 'devtools',
-        fallbackProviderId = null
+        fallbackProviderId = null,
+        effort = null,
       } = options;
 
       if (!providerService) {
@@ -368,6 +369,7 @@ export function createRunnerService(config = {}) {
         originalProviderId: usedFallback ? providerId : null,
         usedFallback,
         model: recordModel,
+        effort,
         workspacePath,
         workspaceName,
         source,

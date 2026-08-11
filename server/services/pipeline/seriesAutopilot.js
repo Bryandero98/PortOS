@@ -80,6 +80,7 @@ export * from './seriesAutopilot/session.js';
 export * from './seriesAutopilot/diagnosisCore.js';
 export * from './seriesAutopilot/selfImprove.js';
 export * from './seriesAutopilot/observer.js';
+export * from './seriesAutopilot/modelPerformance.js';
 export * from './seriesAutopilot/childRuns.js';
 export * from './seriesAutopilot/editorialSteps.js';
 export * from './seriesAutopilot/visualSteps.js';

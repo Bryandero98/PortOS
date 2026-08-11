@@ -19,7 +19,9 @@ import {
   resolveAutopilotReadinessGate, resolveAutopilotCheckPauseThreshold, resolveAutopilotNotifyOnPause,
   resolveAutopilotProduceTeaser, resolveAutopilotRevision, resolveAutopilotLlm,
   resolveAutopilotUnlockForRun, resolveAutopilotSelfImprove, resolveAutopilotObserver,
+  resolveAutopilotAutoSelectModels,
 } from './config.js';
+import { getModelPerformanceReport } from './modelPerformance.js';
 import { runSelfImproveDiagnosis } from './selfImprove.js';
 import { observerEnabled, runObserverPass, summarizeObserver } from './observer.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
@@ -63,6 +65,21 @@ export async function startSeriesAutopilot(sId, options = {}) {
   // a resume re-reads them fresh. Loading the series here is cheap; a missing
   // series (deleted mid-run) falls through to the frozen defaults.
   const seriesRecord = await getSeries(sId).catch(() => null);
+  const autoSelectModels = resolveAutopilotAutoSelectModels(options, settings);
+  const modelPerformance = autoSelectModels
+    ? await getModelPerformanceReport().catch((err) => {
+      console.log(`⚠️ autopilot: model-performance read failed: ${err.message}`);
+      return { recommendations: {} };
+    })
+    : { recommendations: {} };
+  const creativeRouteExplicit = !!(
+    options?.providerOverride || options?.modelOverride || options?.effortOverride
+  );
+  const judgeRouteExplicit = !!(
+    options?.judgeLlm?.providerOverride
+    || options?.judgeLlm?.modelOverride
+    || options?.judgeLlm?.effortOverride
+  );
   const runOptions = {
     ...options,
     ...resolveAutopilotRounds(options, settings),
@@ -84,6 +101,12 @@ export async function startSeriesAutopilot(sId, options = {}) {
     // human gate) as pipeline defects surface. Same early resolution so the
     // signal tap retains frames from the first one.
     observer: resolveAutopilotObserver(options, settings),
+    autoSelectModels,
+    modelRecommendations: modelPerformance.recommendations || {},
+    modelRoutesExplicit: {
+      creative: creativeRouteExplicit,
+      judge: judgeRouteExplicit,
+    },
     // Run provider/model: per-run override → the series' own `series.llm` →
     // unset (stage pin / active provider downstream). Resolved ONCE here so the
     // manual run, a scheduled run and the UI's "this run calls X / Y" copy all
@@ -180,6 +203,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
     },
     activeChild: null,
     activeLlmRunId: null,
+    currentStep: null,
   };
   runs.set(sId, record);
 
@@ -198,6 +222,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         model: judge.modelOverride ?? null,
         effort: judge.effortOverride ?? null,
       } : null,
+      autoSelectModels: runOptions.autoSelectModels,
       ...extra,
     };
   };
@@ -369,6 +394,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         }
 
         ordinal += 1;
+        record.currentStep = step.kind;
         await persistMarker(sId, { status: 'running', runId, currentStep: step.kind });
         broadcast(sId, { type: 'step:start', kind: step.kind, seasonId: step.seasonId, issueId: step.issueId, ordinal, reason: step.reason });
 

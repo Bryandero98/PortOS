@@ -28,6 +28,7 @@ import {
   regressionPauseReason, sameFinding, isBlockingSetRegression, isIsolatedFixSafe,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
+import { recordModelOutcome } from './modelPerformance.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
 
 const MAX_PLANNING_GATE_HANDOFFS = 6;
@@ -580,18 +581,29 @@ export async function runFoundationGate(seriesId, record) {
     // nothing) returns the cached score with no LLM call — this IS the fast-pass
     // that stops an already-clean foundation looping. A real change (any fix, or
     // a user edit) flips the pinned hash and re-judges automatically.
+    let judgeRunId = null;
+    const judgeHooks = providerOverrideOpts(record, 'judge');
     const snap = await judgeFoundation(seriesId, {
       providerDefault: judgeLlm.providerOverride,
       modelDefault: judgeLlm.modelOverride,
       effortDefault: judgeLlm.effortOverride,
-      onRunCreated: providerOverrideOpts(record, 'judge').onRunCreated,
-      onRunSettled: providerOverrideOpts(record, 'judge').onRunSettled,
+      onRunCreated: (runId) => {
+        judgeRunId = runId;
+        judgeHooks.onRunCreated(runId);
+      },
+      onRunSettled: judgeHooks.onRunSettled,
     });
     // A cached (content-hash unchanged) verdict did no LLM work — don't bill it.
     if (!snap.cached) await recordDomainUsage('cos', { actions: 1 });
     const score = snap.weightedScore ?? 0;
     const gate = foundationGateStatus(snap.dimensions, score, threshold);
     const weak = foundationFixTarget(snap.dimensions, threshold);
+    if (!snap.cached && judgeRunId) {
+      await recordModelOutcome(judgeRunId, {
+        role: 'judge', stage: 'foundationGate', outcome: 'valid',
+        target: weak?.dimension || 'foundation', scoreAfter: score,
+      }).catch(() => {});
+    }
     broadcast(seriesId, {
       type: 'foundation:round', round, weightedScore: score, threshold,
       dimensionFloor: gate.dimensionFloor, failingDimensions: gate.failingDimensions,
@@ -615,6 +627,11 @@ export async function runFoundationGate(seriesId, record) {
       // if it makes another latent dimension judgeable.
       const earned = targetImproved || (targetTied && gapChanged && score >= beforeWeighted);
       if (!earned) {
+        await Promise.all((pendingRepair.runIds || []).map((runId) => recordModelOutcome(runId, {
+          role: 'creative', stage: 'foundationGate', outcome: 'rejected', target: dimension,
+          scoreBefore: beforeTargetScore, scoreAfter: afterTargetScore,
+          weightedBefore: beforeWeighted, weightedAfter: score,
+        }).catch(() => {})));
         const rollback = await restoreFoundationState(seriesId, pendingRepair.snapshot);
         const reason = rollback.restored
           ? `Foundation ${dimension} repair did not improve its target (${beforeTargetScore} → ${afterTargetScore}; weighted ${beforeWeighted} → ${score}), so its edits were reverted to the pre-repair checkpoint.`
@@ -633,6 +650,11 @@ export async function runFoundationGate(seriesId, record) {
           discarded: discardedSet(residualFindings(snap.dimensions)),
         };
       }
+      await Promise.all((pendingRepair.runIds || []).map((runId) => recordModelOutcome(runId, {
+        role: 'creative', stage: 'foundationGate', outcome: 'accepted', target: dimension,
+        scoreBefore: beforeTargetScore, scoreAfter: afterTargetScore,
+        weightedBefore: beforeWeighted, weightedAfter: score,
+      }).catch(() => {})));
       pendingRepair = null;
     }
     if (gate.passes) {
@@ -710,6 +732,8 @@ export async function runFoundationGate(seriesId, record) {
     // this throws, so there is no retry left to attempt here.
     const repairSnapshot = await snapshotFoundationState(seriesId);
     let fix;
+    const repairRunIds = [];
+    const creativeHooks = providerOverrideOpts(record);
     try {
       fix = await applyFoundationFix(seriesId, weak.dimension, {
         finding: snap.dimensions?.[weak.dimension] || {},
@@ -720,8 +744,11 @@ export async function runFoundationGate(seriesId, record) {
         judgeEffortDefault: judgeLlm.effortOverride,
         ...seasonPreserveOpts(record),
         effortOverride: creativeLlm.effortOverride,
-        onRunCreated: providerOverrideOpts(record).onRunCreated,
-        onRunSettled: providerOverrideOpts(record).onRunSettled,
+        onRunCreated: (runId) => {
+          repairRunIds.push(runId);
+          creativeHooks.onRunCreated(runId);
+        },
+        onRunSettled: creativeHooks.onRunSettled,
       });
     } catch (err) {
       const detail = (err?.message || String(err)).slice(0, 300);
@@ -747,6 +774,9 @@ export async function runFoundationGate(seriesId, record) {
     // review rather than burning the remaining rounds re-judging an unchanged
     // foundation.
     if (fix?.applied !== true) {
+      await Promise.all(repairRunIds.map((runId) => recordModelOutcome(runId, {
+        role: 'creative', stage: 'foundationGate', outcome: 'invalid', target: weak.dimension,
+      }).catch(() => {})));
       return {
         pause: true,
         pauseKind: 'inapplicable',
@@ -762,6 +792,7 @@ export async function runFoundationGate(seriesId, record) {
       dimension: weak.dimension,
       judge: snap,
       snapshot: repairSnapshot,
+      runIds: repairRunIds,
     };
     changed = true;
   }

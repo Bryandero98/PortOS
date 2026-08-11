@@ -11,6 +11,7 @@ import {
   startPipelineAutopilot,
   cancelPipelineAutopilot,
   getPipelineAutopilotStatus,
+  getPipelineAutopilotModelMetrics,
   pipelineAutopilotSseUrl,
   getPipelineSeriesCanonReadiness,
   getPipelineSeries,
@@ -60,6 +61,9 @@ const DEFAULT_SELF_IMPROVE = false;
 // fix tasks (worktree + PR + review loop + merge, no human gate) as pipeline
 // defects surface. Supersedes the selfImprove terminal diagnosis when both on.
 const DEFAULT_OBSERVER = false;
+// Evidence is collected regardless; routing stays opt-in so a series cannot
+// silently switch models merely because a sample threshold was reached.
+const DEFAULT_AUTO_SELECT_MODELS = false;
 // Threshold input: a [0,10] number (0.5 steps allowed — NOT integer-rounded like
 // the round clamps), blank/invalid → the default.
 const clampFoundationThreshold = (n, fallback) => {
@@ -188,6 +192,11 @@ const OPTION_SPECS = {
   // hardening itself.
   observer: {
     defaultValue: DEFAULT_OBSERVER,
+    read: readBoolean,
+    persistOnEdit: true,
+  },
+  autoSelectModels: {
+    defaultValue: DEFAULT_AUTO_SELECT_MODELS,
     read: readBoolean,
     persistOnEdit: true,
   },
@@ -494,6 +503,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [judgeEffortOverride, setJudgeEffortOverride] = useState('');
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
+  const [modelMetrics, setModelMetrics] = useState(null);
   // Provider/model/effort the ACTIVE run reported on its start frame — what the
   // live progress line names, so a run started elsewhere (or by the scheduler)
   // still says which provider (and how hard it thinks) it is spending on.
@@ -534,6 +544,14 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       .catch(() => null); // picker degrades to the "series default" option only
     return () => { canceled = true; };
   }, []);
+
+  useEffect(() => {
+    let canceled = false;
+    getPipelineAutopilotModelMetrics(seriesId, { silent: true })
+      .then((data) => { if (!canceled) setModelMetrics(data); })
+      .catch(() => null);
+    return () => { canceled = true; };
+  }, [seriesId]);
 
   // Disarm the unlock consent whenever the panel switches series. This
   // component is reused across `seriesId` changes rather than remounted, so
@@ -904,6 +922,15 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
               </div>
             ) : null}
           </div>
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <input type="checkbox" checked={opt.autoSelectModels} onChange={(e) => options.edit('autoSelectModels', e.target.checked)} />
+            Let autopilot choose models from stage-specific results
+          </label>
+          {opt.autoSelectModels ? (
+            <p className="text-[11px] text-gray-500">
+              Uses separate technical and quality outcomes by step, role, provider, model and effort. A route needs at least {modelMetrics?.minimumQualitySamples ?? 2} quality-reviewed samples; explicit choices above and exact Prompts-stage pins still win. Current history: {modelMetrics?.evidenceRuns ?? 0} attributed run{modelMetrics?.evidenceRuns === 1 ? '' : 's'}, {modelMetrics?.metrics?.reduce((sum, metric) => sum + (metric.qualityEvaluated || 0), 0) ?? 0} quality-reviewed.
+            </p>
+          ) : null}
           <label className="flex items-center gap-2 text-xs text-gray-300">
             <input type="checkbox" checked={includeVisual} onChange={(e) => setIncludeVisual(e.target.checked)} />
             Draft cover + all interior pages (comic targets)

@@ -6,6 +6,7 @@ vi.mock('../../services/api', () => ({
   startPipelineAutopilot: vi.fn(),
   cancelPipelineAutopilot: vi.fn(),
   getPipelineAutopilotStatus: vi.fn(),
+  getPipelineAutopilotModelMetrics: vi.fn(),
   pipelineAutopilotSseUrl: (id) => `/api/pipeline/series/${id}/autopilot/progress`,
   getPipelineSeriesCanonReadiness: vi.fn(),
   getPipelineSeries: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('../../hooks/usePipelineProgress', () => ({
 import {
   startPipelineAutopilot,
   getPipelineAutopilotStatus,
+  getPipelineAutopilotModelMetrics,
   getPipelineSeriesCanonReadiness,
   getPipelineSeries,
   listPipelineIssues,
@@ -52,6 +54,7 @@ beforeEach(() => {
   sseLatest = null;
   sseFrames = [];
   getPipelineAutopilotStatus.mockResolvedValue({ autopilot: null, active: false });
+  getPipelineAutopilotModelMetrics.mockResolvedValue({ evidenceRuns: 0, minimumQualitySamples: 2, metrics: [], recommendations: {} });
   getPipelineSeries.mockResolvedValue(null);
   listPipelineIssues.mockResolvedValue([]);
   startPipelineAutopilot.mockResolvedValue({ runId: 'r1', mode: 'execute', alreadyRunning: false });
@@ -88,6 +91,29 @@ describe('AutopilotPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: false, fileGaps: true }, { silent: true },
+    ));
+  });
+
+  it('persists and sends evidence-based model selection only after opt-in', async () => {
+    getPipelineAutopilotModelMetrics.mockResolvedValue({
+      evidenceRuns: 6,
+      minimumQualitySamples: 2,
+      metrics: [{ qualityEvaluated: 4 }],
+      recommendations: {},
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const toggle = screen.getByLabelText(/choose models from stage-specific results/i);
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith(
+      'pipelineEditorialChecks', { autoSelectModels: true }, { silent: true },
+    ));
+    expect(await screen.findByText(/6 attributed runs, 4 quality-reviewed/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false, autoSelectModels: true }, { silent: true },
     ));
   });
 

@@ -286,6 +286,10 @@ export const pipelineEditorialChecksSettingsSchema = z.object({
   // the pipeline improving itself. Optional + additive so older peers fall
   // through to off.
   observer: z.boolean().optional(),
+  // Evidence-based Series Autopilot routing. Metrics are collected regardless;
+  // this opt-in permits sufficiently sampled recommendations to become the
+  // run's soft provider/model/effort defaults. Explicit run/stage pins win.
+  autoSelectModels: z.boolean().optional(),
 }).strict();
 
 // Cursor-context payload for the CD-bridge suggest route — identical shape to

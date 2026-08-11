@@ -11,7 +11,7 @@ import { addNotification, removeByMetadata, NOTIFICATION_TYPES, PRIORITY_LEVELS 
 import { getSeries, updateSeries } from '../series.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
-import { stopRun } from '../../runner.js';
+import { patchRunMetadata, stopRun } from '../../runner.js';
 import { runs, autopilotEvents, noteSignal } from './state.js';
 
 // ---------------------------------------------------------------------------
@@ -114,6 +114,7 @@ export async function persistMarker(seriesId, patch) {
       ...(run.options.modelOverride ? { modelOverride: run.options.modelOverride } : {}),
       ...(run.options.effortOverride ? { effortOverride: run.options.effortOverride } : {}),
       ...(run.options.judgeLlm ? { judgeLlm: run.options.judgeLlm } : {}),
+      autoSelectModels: run.options.autoSelectModels === true,
     }
     : null;
   await updateSeries(seriesId, {
@@ -214,6 +215,17 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // params untouched for manual route callers.
 export const roleLlm = (record, role = 'creative') => {
   const base = record?.options || {};
+  const learned = base.autoSelectModels === true
+    && base.modelRoutesExplicit?.[role] !== true
+    ? base.modelRecommendations?.[record?.currentStep]?.[role]
+    : null;
+  if (learned) {
+    return {
+      providerOverride: learned.providerOverride,
+      modelOverride: learned.modelOverride,
+      effortOverride: learned.effortOverride,
+    };
+  }
   const route = role === 'judge' && base.judgeLlm && typeof base.judgeLlm === 'object'
     ? base.judgeLlm
     : null;
@@ -238,21 +250,31 @@ export const roleLlm = (record, role = 'creative') => {
   };
 };
 
+const runLifecycle = (record, role) => ({
+  onRunCreated: (runId) => {
+    record.activeLlmRunId = runId;
+    patchRunMetadata(runId, {
+      autopilotSystem: 'series',
+      autopilotRunId: record.runId || null,
+      pipelineStage: record.currentStep || 'unknown',
+      pipelineRole: role,
+    }).catch(() => {});
+    // Close the race where Stop lands after createRun but before provider
+    // execution registers its child process.
+    if (record.cancelRequested) stopRun(runId).catch(() => {});
+  },
+  onRunSettled: (runId) => {
+    if (record.activeLlmRunId === runId) record.activeLlmRunId = null;
+  },
+});
+
 export const providerOverrideOpts = (record, role = 'creative') => {
   const llm = roleLlm(record, role);
   return {
     providerDefault: llm.providerOverride,
     modelDefault: llm.modelOverride,
     effortDefault: llm.effortOverride,
-    onRunCreated: (runId) => {
-      record.activeLlmRunId = runId;
-      // Close the race where Stop lands after createRun but before provider
-      // execution registers its child process.
-      if (record.cancelRequested) stopRun(runId).catch(() => {});
-    },
-    onRunSettled: (runId) => {
-      if (record.activeLlmRunId === runId) record.activeLlmRunId = null;
-    },
+    ...runLifecycle(record, role),
   };
 };
 export const providerIdOpts = (record, role = 'creative') => {
@@ -261,6 +283,7 @@ export const providerIdOpts = (record, role = 'creative') => {
     providerIdDefault: llm.providerOverride,
     modelIdDefault: llm.modelOverride,
     effortIdDefault: llm.effortOverride,
+    ...runLifecycle(record, role),
     // Multi-candidate draft gate (#2169): bill one cos action per re-roll and stop
     // re-rolling when the daily budget is spent. Only ever invoked by
     // generateStage's runDraftGate on a judgeable stage with draftAttempts > 1 — a

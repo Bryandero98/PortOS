@@ -293,6 +293,16 @@ export function resolveAutopilotObserver(options = {}, settings = null) {
   return pickBool(options?.observer, pec?.observer, DEFAULT_OBSERVER);
 }
 
+// Evidence-based provider/model/effort routing. Off by default until the user
+// opts in: run history is still collected while off, but an existing series or
+// stage choice must not silently change merely because enough samples accrued.
+// When enabled, explicit per-run choices and exact stage pins remain stronger.
+export const DEFAULT_AUTO_SELECT_MODELS = false;
+export function resolveAutopilotAutoSelectModels(options = {}, settings = null) {
+  const pec = settings?.pipelineEditorialChecks || {};
+  return pickBool(options?.autoSelectModels, pec?.autoSelectModels, DEFAULT_AUTO_SELECT_MODELS);
+}
+
 // Which provider/model do this run's LLM calls use? An explicit per-run
 // `providerOverride`/`modelOverride` wins (the Options picker, or the scheduler
 // mapping a schedule's provider/model); otherwise the run inherits the series'

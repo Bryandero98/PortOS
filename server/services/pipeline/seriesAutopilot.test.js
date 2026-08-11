@@ -318,6 +318,31 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
       providerOverride: 'claude-code-tui', modelOverride: undefined, effortOverride: 'high',
     });
   });
+
+  it('uses learned stage/role routing only when that role has no explicit run choice', () => {
+    const learned = {
+      currentStep: 'foundationGate',
+      options: {
+        autoSelectModels: true,
+        providerOverride: 'series-default',
+        modelOverride: 'series-model',
+        modelRoutesExplicit: { creative: false, judge: true },
+        modelRecommendations: {
+          foundationGate: {
+            creative: { providerOverride: 'ollama', modelOverride: 'local-14b' },
+            judge: { providerOverride: 'codex', modelOverride: 'judge-model' },
+          },
+        },
+        judgeLlm: { providerOverride: 'manual-judge', modelOverride: 'manual-model' },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(learned, 'creative')).toEqual({
+      providerOverride: 'ollama', modelOverride: 'local-14b', effortOverride: undefined,
+    });
+    expect(autopilot.__testing.roleLlm(learned, 'judge')).toEqual({
+      providerOverride: 'manual-judge', modelOverride: 'manual-model', effortOverride: undefined,
+    });
+  });
 });
 
 // The precedence itself is covered by server/lib/seriesLlmOverride.test.js —
@@ -863,6 +888,17 @@ describe('resolveAutopilotUnlockForRun (config gate)', () => {
   // lock-clearing on every scheduled run of every series.
   it('ignores a persisted setting entirely — per-run only', () => {
     expect(autopilot.resolveAutopilotUnlockForRun({}, { pipelineEditorialChecks: { unlockForRun: true } })).toBe(false);
+  });
+});
+
+describe('resolveAutopilotAutoSelectModels (config gate)', () => {
+  it('defaults off, supports a saved default, and lets a run override it', () => {
+    expect(autopilot.resolveAutopilotAutoSelectModels({}, null)).toBe(false);
+    expect(autopilot.resolveAutopilotAutoSelectModels({}, { pipelineEditorialChecks: { autoSelectModels: true } })).toBe(true);
+    expect(autopilot.resolveAutopilotAutoSelectModels(
+      { autoSelectModels: false },
+      { pipelineEditorialChecks: { autoSelectModels: true } },
+    )).toBe(false);
   });
 });
 
@@ -2087,7 +2123,9 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
-    expect(series.autopilot?.resumeOptions).toEqual({ includeVisual: false, fileGaps: true });
+    expect(series.autopilot?.resumeOptions).toEqual({
+      includeVisual: false, fileGaps: true, autoSelectModels: false,
+    });
   });
 
   it('does not notify on a clean complete (#1615)', async () => {

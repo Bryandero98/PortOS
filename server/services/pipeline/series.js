@@ -160,6 +160,7 @@ const sanitizeAutopilotResumeOptions = (raw) => {
   if (baseLlm?.effortOverride) out.effortOverride = baseLlm.effortOverride;
   const judgeLlm = sanitizeAutopilotLlmRoute(raw.judgeLlm);
   if (judgeLlm) out.judgeLlm = judgeLlm;
+  if (typeof raw.autoSelectModels === 'boolean') out.autoSelectModels = raw.autoSelectModels;
   return Object.keys(out).length ? out : null;
 };
 // Why a bounded-retry gate paused the run. Convergence gates (#1571):

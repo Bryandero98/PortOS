@@ -1140,6 +1140,7 @@ async function executeProviderRunOnce({
       prompt,
       source,
       workspacePath: effectiveCwd,
+      effort,
     });
     runId = runResult.runId;
     if (runResult.provider && runResult.provider.id !== provider.id) {

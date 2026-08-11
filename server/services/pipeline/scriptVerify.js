@@ -201,7 +201,9 @@ function mergeVerifyIssues(first, second) {
 // the only caller; #1514 renamed the provider field from `providerId` to match
 // the soft-default channel, and #1558 did the same for the model — `modelIdDefault`
 // replaces the old hard `model` so a pinned stage's own model is no longer beaten.)
-export async function verifyComicScript(issueId, { providerIdDefault, modelIdDefault, effortIdDefault } = {}) {
+export async function verifyComicScript(issueId, {
+  providerIdDefault, modelIdDefault, effortIdDefault, onRunCreated, onRunSettled,
+} = {}) {
   const issue = await getIssue(issueId);
   const script = (issue.stages?.comicScript?.output || '').trim();
   if (!script) return { issues: [], skipped: 'no-comic-script' };
@@ -236,6 +238,8 @@ export async function verifyComicScript(issueId, { providerIdDefault, modelIdDef
     modelDefault: modelIdDefault,
     effortDefault: effortIdDefault,
     source: 'pipeline-script-verify',
+    onRunCreated,
+    onRunSettled,
   });
 
   return {

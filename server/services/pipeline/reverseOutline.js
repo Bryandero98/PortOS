@@ -233,7 +233,10 @@ async function buildManuscriptCorpus(seriesId) {
  *   - force — re-segment even when the manuscript hash is unchanged
  *   - signal — AbortSignal checked before the persist
  */
-export async function generateReverseOutline(seriesId, { providerId, providerIdDefault, model, modelIdDefault, effortIdDefault, force = false, signal } = {}) {
+export async function generateReverseOutline(seriesId, {
+  providerId, providerIdDefault, model, modelIdDefault, effortIdDefault,
+  force = false, signal, onRunCreated, onRunSettled,
+} = {}) {
   assertValidSeriesId(seriesId);
   const { corpus, byNumber } = await buildManuscriptCorpus(seriesId);
   if (!corpus.trim()) return { seriesId, status: 'no-content' };
@@ -276,6 +279,8 @@ export async function generateReverseOutline(seriesId, { providerId, providerIdD
     modelDefault: modelIdDefault,
     effortDefault: effortIdDefault,
     source: 'pipeline-reverse-outline',
+    onRunCreated,
+    onRunSettled,
   });
 
   if (signal?.aborted) return { seriesId, status: 'canceled' };

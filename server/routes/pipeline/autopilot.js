@@ -25,6 +25,10 @@ import { validateRequest, MAX_CONVERGENCE_ROUNDS } from '../../lib/validation.js
 import { EFFORT_LEVELS } from '../../lib/providerModels.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as autopilot from '../../services/pipeline/seriesAutopilot.js';
+import {
+  getModelPerformanceReport,
+  recordModelOutcome,
+} from '../../services/pipeline/seriesAutopilot/modelPerformance.js';
 import { READINESS_GATES } from '../../services/pipeline/editorialScore.js';
 import { mapServiceError, providerOverrideShape } from './shared.js';
 
@@ -170,7 +174,23 @@ const autopilotStartSchema = z.object({
   // Supersedes the selfImprove terminal diagnosis when both are on. Falls back
   // to the persisted pipelineEditorialChecks.observer setting, then off.
   observer: z.boolean().optional(),
+  // Learn from technical + editorial outcomes and use the best sufficiently
+  // sampled eligible provider/model/effort for each step and role. Explicit
+  // run choices and exact stage pins still win.
+  autoSelectModels: z.boolean().optional(),
 });
+
+const modelOutcomeSchema = z.object({
+  runId: z.string().uuid(),
+  role: z.enum(['creative', 'judge']),
+  stage: z.string().trim().min(1).max(80),
+  outcome: z.enum(['accepted', 'rejected', 'valid', 'invalid']),
+  target: z.string().trim().max(120).optional(),
+  scoreBefore: z.number().finite().optional(),
+  scoreAfter: z.number().finite().optional(),
+  weightedBefore: z.number().finite().optional(),
+  weightedAfter: z.number().finite().optional(),
+}).strict();
 
 router.post('/series/:id/autopilot/start', asyncHandler(async (req, res) => {
   // 404 before we kick off if the series doesn't exist.
@@ -212,6 +232,23 @@ router.get('/series/:id/autopilot/status', asyncHandler(async (req, res) => {
     // replays only the last frame. null when no run is active.
     start: autopilot.activeRunStart(req.params.id),
   });
+}));
+
+router.get('/series/:id/autopilot/model-metrics', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  res.json(await getModelPerformanceReport());
+}));
+
+// Operator correction/backfill tool: a technically successful run can still be
+// rejected by a later quality gate. Recording that distinction is the core of
+// the selector's evidence, and this endpoint lets an operator annotate historic
+// runs or correct a misclassified outcome without editing run files by hand.
+router.post('/series/:id/autopilot/model-outcomes', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const body = validateRequest(modelOutcomeSchema, req.body ?? {});
+  const recorded = await recordModelOutcome(body.runId, body);
+  if (!recorded) throw new ServerError('AI run not found', { status: 404, code: 'RUN_NOT_FOUND' });
+  res.json({ success: true, runId: body.runId });
 }));
 
 export default router;

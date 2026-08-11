@@ -487,6 +487,7 @@ export async function runStageScopedInlineLLM(stageName, prompt, options = {}) {
 async function executeStagePrompt({ stage, label, prompt, options }) {
   const provider = await resolveProviderForStage(stage, options);
   const resolvedModel = resolveModel(provider, resolveModelHint(stage, options));
+  const effectiveEffort = resolveEffortHint(stage, options);
   // resolveEffectiveModel gates the override per provider type and, for
   // CLI providers with a baked --model/-m flag in args, extracts the
   // args-pinned model id so the run record + log line reflect what
@@ -522,6 +523,7 @@ async function executeStagePrompt({ stage, label, prompt, options }) {
     model: effectiveModel,
     prompt,
     source: options.source || 'staged-llm',
+    effort: effectiveEffort,
     // createRun.timeout is returned but not persisted into metadata.json
     // by the toolkit (only providerId/model/source/etc. are written at
     // creation time). We always patch below to record the effective
@@ -544,7 +546,7 @@ async function executeStagePrompt({ stage, label, prompt, options }) {
   // also patch provider id/name/model so /runs attribution matches the
   // provider that actually ran. Best-effort: attribution, not load-bearing.
   const recordedTimeout = effectiveTimeout ?? effectiveProvider.timeout ?? DEFAULT_TIMEOUT_MS;
-  const metadataPatch = { timeout: recordedTimeout };
+  const metadataPatch = { timeout: recordedTimeout, effort: effectiveEffort };
   if (fellBack) {
     metadataPatch.model = effectiveModel;
     metadataPatch.providerId = effectiveProvider.id;
@@ -574,7 +576,7 @@ async function executeStagePrompt({ stage, label, prompt, options }) {
     // Reasoning effort (#3641). Always passed: the runner clamps it to the
     // provider's ladder and omits the flag entirely for a provider with no
     // effort control, so no capability check is needed here.
-    effort: resolveEffortHint(stage, options),
+    effort: effectiveEffort,
     onRunCreated: options.onRunCreated,
     onRunSettled: options.onRunSettled,
   });
