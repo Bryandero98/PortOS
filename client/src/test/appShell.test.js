@@ -25,9 +25,6 @@ import { fileURLToPath } from 'url';
 const CLIENT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const html = readFileSync(join(CLIENT_ROOT, 'index.html'), 'utf8');
 
-// Every <link> tag in the shell, as whole tags (attributes may span lines).
-const linkTags = html.match(/<link\b[^>]*>/gs) || [];
-
 // `<noscript>` content is inert while JS is enabled, so a blocking stylesheet
 // in there can't stall the app's boot. With JS off the SPA can't render at all,
 // which makes it moot — so the render-blocking guard scans the shell WITHOUT
