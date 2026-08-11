@@ -145,10 +145,19 @@ vi.mock('./scriptVerify.js', () => ({ verifyComicScript }));
 
 let canonReady = true;
 let canonUndescribed = [];
+let canonBlockingIssues = [];
 const checkSeriesCanonReadiness = vi.fn(async (seriesId) => ({
-  seriesId, ready: canonReady, issues: [], blockingIssues: [], undescribed: canonUndescribed,
+  seriesId, ready: canonReady, issues: [], blockingIssues: canonBlockingIssues, undescribed: canonUndescribed,
 }));
 vi.mock('./canonReadiness.js', () => ({ checkSeriesCanonReadiness }));
+
+const describeCanonFromProse = vi.fn(async () => {
+  canonReady = true;
+  canonUndescribed = [];
+  canonBlockingIssues = [];
+  return { report: { filled: 1, none: [], skippedLocked: [] }, runId: 'run-canon-repair' };
+});
+vi.mock('../universeCanon.js', () => ({ describeCanonFromProse }));
 
 // Foundation-quality gate (#2176). Drive the judged weighted score + the fix
 // router per test. Default: a clean foundation (10) so the gate passes on the
@@ -240,6 +249,7 @@ beforeEach(() => {
   scriptVerifyFindings = [];
   canonReady = true;
   canonUndescribed = [];
+  canonBlockingIssues = [];
   foundationScore = 10;
   foundationDimensionScores = null;
   foundationFixApplied = true;
@@ -3198,6 +3208,26 @@ describe('autopilot conductor', () => {
     expect(visualSpies.enqueueComicCover).not.toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
+  });
+
+  it('backfills drawn canon from prose before pausing visual production', async () => {
+    const { seriesId, issueId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, { universeId: 'uni-1' });
+    await issuesSvc.updateStage(issueId, 'prose', ready('Kai wears a patched saffron pressure coat with a cracked brass respirator.'));
+    const noun = { id: 'c1', name: 'Kai', kind: 'character', locked: false };
+    canonReady = false;
+    canonUndescribed = [noun];
+    canonBlockingIssues = [{ issueId, number: 1, title: 'I1', none: [noun] }];
+
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: true });
+    await waitFor(runFinished(seriesId));
+
+    expect(describeCanonFromProse).toHaveBeenCalledWith('uni-1', expect.objectContaining({
+      corpus: expect.stringContaining('saffron pressure coat'),
+      targets: [{ id: 'c1', kind: 'character' }],
+    }));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(visualSpies.enqueueComicCover).toHaveBeenCalled();
   });
 
   it('files only the specific gap (not also the generic stalled) when canon pauses', async () => {

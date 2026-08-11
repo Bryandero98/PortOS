@@ -341,6 +341,7 @@ function frameLabel(f) {
       return `Unlocked ${parts.join(', ')}${kept.length ? ` · kept ${kept.join(' + ')} locked` : ''}`;
     }
     case 'render:queued': return `Queued draft render: ${f.target}`;
+    case 'canon:repair': return `Canon repair: ${f.filled || 0} described from prose${f.unsupported ? ` · ${f.unsupported} unsupported` : ''}`;
     case 'gap:filed': return `Filed CoS task (${f.gapKind})`;
     // Pipeline self-improvement post-mortem. Only the START frame is live — the
     // verdict rides the terminal frame (a client tears its stream down there).

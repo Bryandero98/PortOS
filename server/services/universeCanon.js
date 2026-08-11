@@ -257,7 +257,12 @@ const hasDescription = (kind, entry) => {
  * written, and only into entries that are STILL empty + unlocked at write time.
  */
 export async function describeCanonFromProse(universeId, opts = {}) {
-  const { corpus, targets, providerOverride, modelOverride } = opts;
+  const {
+    corpus, targets,
+    providerOverride, modelOverride,
+    providerDefault, modelDefault, effortDefault,
+    onRunCreated, onRunSettled,
+  } = opts;
   if (typeof corpus !== 'string' || !corpus.trim()) {
     throw new ServerError('describeCanonFromProse: corpus is required', {
       status: 400, code: 'UNIVERSE_CANON_NO_CORPUS',
@@ -301,6 +306,11 @@ export async function describeCanonFromProse(universeId, opts = {}) {
   }, {
     providerOverride,
     modelOverride,
+    providerDefault,
+    modelDefault,
+    effortDefault,
+    onRunCreated,
+    onRunSettled,
     returnsJson: true,
     source: 'universe-canon-describe-from-prose',
   });
@@ -359,10 +369,10 @@ export async function describeCanonFromProse(universeId, opts = {}) {
       return Object.keys(patch).length ? patch : null;
     });
     console.log(`📝 Universe canon describe-from-prose — universe=${shortId(universeId)} filled=${report.filled} none=${report.none.length} thin=${report.thin.length} runId=${shortId(result.runId)}`);
-    return { universe: updated || universe, report };
+    return { universe: updated || universe, report, runId: result.runId };
   }
   console.log(`📝 Universe canon describe-from-prose — universe=${shortId(universeId)} filled=0 none=${report.none.length} thin=${report.thin.length} runId=${shortId(result.runId)}`);
-  return { universe, report };
+  return { universe, report, runId: result.runId };
 }
 
 /**

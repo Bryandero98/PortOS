@@ -205,8 +205,11 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
     });
   }
   if (VISUAL_DRAFT_ENABLED && wantsVisual(options) && wantsComic(series, options)) {
-    // canonVerify runs an LLM pass but bills no cos action (token-only) — 0 budget.
-    plan.push({ kind: 'canonVerify', count: 1, note: 'descriptive integrity of drawn nouns (no budget cost)', estActions: 0 });
+    // The deterministic check is free. When it finds a blank drawn noun it may
+    // conditionally call the strict prose-grounded backfill before pausing; the
+    // snapshot cannot know that future script reference set, so keep the base
+    // estimate at zero and name the conditional spend explicitly.
+    plan.push({ kind: 'canonVerify', count: 1, note: 'descriptive integrity of drawn nouns (may spend one LLM call per affected issue to backfill strictly from prose)', estActions: 0 });
     const visualNeeded = ordered.filter((i) => !visualReady(i)).length;
     // Each draft render bills one cos action: cover + back per issue, plus one per
     // interior page. The interior-page count isn't known until the script parses,
