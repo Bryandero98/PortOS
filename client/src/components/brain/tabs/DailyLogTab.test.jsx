@@ -393,7 +393,7 @@ describe('DailyLogTab autosave', () => {
       obsidianPath: null,
     };
     let calls = 0;
-    api.updateDailyLog.mockImplementation(async (date, content, opts) => {
+    api.updateDailyLog.mockImplementation(async (date, content, _opts) => {
       calls += 1;
       if (calls === 1) {
         const err = new Error('Daily log was modified since you last loaded it');
