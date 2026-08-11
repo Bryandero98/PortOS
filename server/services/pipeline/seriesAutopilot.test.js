@@ -179,6 +179,10 @@ const judgeFoundation = vi.fn(async () => ({
 const applyFoundationFix = vi.fn(async (_sId, dimension) => ({ dimension, applied: foundationFixApplied }));
 const snapshotFoundationState = vi.fn(async (seriesId) => ({ seriesId, marker: 'foundation-checkpoint' }));
 const restoreFoundationState = vi.fn(async () => ({ restored: true, episodesRestored: 0 }));
+// Objective blank-field count behind the character arm's tie-breaker. Default:
+// an unchanged cast (the checkpoint read and the post-repair read agree), so a
+// tie stays a tie unless a test says the repair actually filled fields.
+const readFoundationCharacterBlanks = vi.fn(async () => 0);
 vi.mock('./foundationJudge.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -188,6 +192,7 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
     establishCharacterFoundation: (...args) => establishCharacterFoundation(...args),
     snapshotFoundationState: (...args) => snapshotFoundationState(...args),
     restoreFoundationState: (...args) => restoreFoundationState(...args),
+    readFoundationCharacterBlanks: (...args) => readFoundationCharacterBlanks(...args),
   };
 });
 
@@ -1986,6 +1991,45 @@ describe('autopilot conductor', () => {
     expect(last?.residualFindings).toEqual(expect.arrayContaining([
       expect.objectContaining({ location: expect.stringContaining('character'), problem: 'Aruun privacy is mislabeled as a relapse.' }),
     ]));
+  });
+
+  it('foundation gate: keeps a tied character repair that objectively filled blank cast fields', async () => {
+    // The 2026-08-11 stall: the character repair authored every blank visual
+    // field on the core cast, the judge held character at 5 (its prompt showed
+    // each authored field as a presence marker, not the design), and unrelated
+    // worldbuilding noise dropped the aggregate — so a complete character pass
+    // was reverted. Filled fields on disk now outrank the tied score.
+    const snapshot = (weightedScore, worldbuilding) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: worldbuilding, gap: 'External societies read as negotiation venues.', fix: 'Add daily practices.' },
+        character: { score: 5, gap: 'Every core character has blank visual fields.', fix: 'Author the visual foundation.' },
+        structure: { score: 5, gap: 'The climax occurs in two places.', fix: 'Reconcile issue 11 and 12.' },
+        craft: { score: 8, gap: 'The exemplars are all one culture.', fix: 'Add an external-culture exemplar.' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snapshot(6.5, 8))
+      .mockImplementationOnce(async () => snapshot(6.1, 7))
+      .mockImplementationOnce(async () => ({
+        seriesId: 'ser-example', status: 'complete', weightedScore: 8,
+        dimensions: {
+          worldbuilding: { score: 8, gap: 'g', fix: 'f' },
+          character: { score: 8, gap: 'g', fix: 'f' },
+          structure: { score: 8, gap: 'g', fix: 'f' },
+          craft: { score: 8, gap: 'g', fix: 'f' },
+        },
+      }));
+    // 25 blank fields across the repairable cast before the repair, none after.
+    readFoundationCharacterBlanks.mockResolvedValueOnce(25).mockResolvedValueOnce(0);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+
+    expect(restoreFoundationState).not.toHaveBeenCalled();
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(applyFoundationFix.mock.calls.map(([, dimension]) => dimension)).toEqual(['character', 'character']);
   });
 
   it('foundation gate: rejects the first repair when the same target fails to improve', async () => {

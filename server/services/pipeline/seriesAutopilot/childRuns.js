@@ -15,7 +15,8 @@ import {
 } from '../arcPlanner.js';
 import {
   judgeFoundation, applyFoundationFix, establishCharacterFoundation, foundationGateStatus, foundationFixTarget,
-  residualFindings, snapshotFoundationState, restoreFoundationState, DEFAULT_FOUNDATION_THRESHOLD,
+  residualFindings, snapshotFoundationState, restoreFoundationState, readFoundationCharacterBlanks,
+  DEFAULT_FOUNDATION_THRESHOLD,
 } from '../foundationJudge.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
@@ -669,10 +670,23 @@ export async function runFoundationGate(seriesId, record) {
         { location: dimension, problem: beforeDimension.gap || '' },
         { location: dimension, problem: afterDimension.gap || '' },
       );
+      // A character repair's work is objectively measurable without asking an
+      // LLM: count the blank framework/visual fields across the repairable cast
+      // before and after. A judge that renders or reads the cast wrongly can
+      // report a tied score over a foundation it can no longer see — that cost
+      // a complete five-sheet character design pass on 2026-08-11, discarded
+      // because the judge prompt showed each authored field as the bare word
+      // `ready`. Filled fields are a fact on disk, so they outrank a tie.
+      const blanksAfter = pendingRepair.characterBlanksBefore === null
+        ? null
+        : await readFoundationCharacterBlanks(seriesId).catch(() => null);
+      const objectivelyFilled = blanksAfter !== null && blanksAfter < pendingRepair.characterBlanksBefore;
       // A tie can represent a deeper newly exposed layer, but only when the
       // aggregate did not regress. A strictly improved target is accepted even
       // if it makes another latent dimension judgeable.
-      const earned = targetImproved || (targetTied && gapChanged && score >= beforeWeighted);
+      const earned = targetImproved
+        || (targetTied && objectivelyFilled)
+        || (targetTied && gapChanged && score >= beforeWeighted);
       if (!earned) {
         await Promise.all((pendingRepair.runIds || []).map((runId) => recordModelOutcome(runId, {
           role: 'creative', stage: 'foundationGate', outcome: 'rejected', target: dimension,
@@ -789,6 +803,12 @@ export async function runFoundationGate(seriesId, record) {
     // promptRunner has already walked its full fallback cascade by the time
     // this throws, so there is no retry left to attempt here.
     const repairSnapshot = await snapshotFoundationState(seriesId);
+    // Measured off the checkpoint's own cast so the before/after pair differs
+    // only in character content — null for every other dimension, which is what
+    // switches the objective check off.
+    const characterBlanksBefore = weak.dimension === 'character'
+      ? await readFoundationCharacterBlanks(seriesId, repairSnapshot?.universe?.characters).catch(() => null)
+      : null;
     let fix;
     const repairRunIds = [];
     const creativeHooks = providerOverrideOpts(record);
@@ -864,6 +884,7 @@ export async function runFoundationGate(seriesId, record) {
       judge: snap,
       snapshot: repairSnapshot,
       runIds: retainedRepairRunIds,
+      characterBlanksBefore,
     };
     changed = true;
   }

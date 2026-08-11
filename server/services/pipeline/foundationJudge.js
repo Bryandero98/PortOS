@@ -494,6 +494,39 @@ function repairableSeriesFoundationCharacters(characters, series, issues = []) {
     .filter((character) => character?.locked !== true);
 }
 
+/**
+ * Blank foundation fields across the cast a `character` repair is allowed to
+ * write — the series roster minus locked members, over the SAME framework +
+ * visual field sets the character dimension is scored on.
+ *
+ * This is the gate's objective, LLM-free second opinion on a repair the judge
+ * scored as a tie. A judge can misread the cast — a presence-marker render once
+ * showed every authored design as the bare word `ready`, so a complete five-sheet
+ * character foundation was scored as absent and thrown away — but "25 named
+ * fields went from empty to authored" is a fact on disk, not an opinion.
+ */
+export function countFoundationCharacterBlanks(characters, series, issues = []) {
+  const targets = repairableSeriesFoundationCharacters(characters, series, issues);
+  return rankFoundationCharacters(targets, series, issues)
+    .reduce((total, { blanks }) => total + blanks, 0);
+}
+
+/**
+ * `countFoundationCharacterBlanks` against live records. Pass `charactersOverride`
+ * to measure a checkpoint's cast (the pre-repair snapshot) against the same
+ * series/issue roster the live count uses, so only the cast content differs.
+ */
+export async function readFoundationCharacterBlanks(seriesId, charactersOverride = null) {
+  assertValidSeriesId(seriesId);
+  const series = await getSeries(seriesId);
+  const [universe, issues] = await Promise.all([
+    series?.universeId ? getUniverse(series.universeId).catch(() => null) : null,
+    listIssues({ seriesId }),
+  ]);
+  const characters = Array.isArray(charactersOverride) ? charactersOverride : universe?.characters;
+  return countFoundationCharacterBlanks(characters, series, issues);
+}
+
 const joinedLength = (lines) => lines.reduce((total, line) => total + line.length + 1, 0);
 
 const pluralLines = (count) => (count === 1 ? 'line' : 'lines');

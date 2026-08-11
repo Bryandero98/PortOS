@@ -81,6 +81,7 @@ const {
   thinnestCharacter,
   rankFoundationCharacters,
   seriesFoundationCharacters,
+  countFoundationCharacterBlanks,
   foundationInputsHash,
   FOUNDATION_DIMENSIONS,
   FOUNDATION_WEIGHTS,
@@ -399,6 +400,43 @@ describe('rankFoundationCharacters — core-cast repair targets', () => {
       name: `Cast ${index + 1}`,
     }));
     expect(seriesFoundationCharacters(characters, {})).toHaveLength(6);
+  });
+});
+
+describe('countFoundationCharacterBlanks — objective repair evidence', () => {
+  const series = { characterArcs: [{ characterId: 'chr-lead', characterName: 'Lead' }] };
+  const blankLead = { id: 'chr-lead', name: 'Lead', role: 'protagonist' };
+  const authoredLead = {
+    ...blankLead,
+    ghost: 'g', wound: 'w', lie: 'l', want: 'wa', need: 'n', coreTheme: 'c', motivations: 'm', speechPattern: 's',
+    secrets: ['one'],
+    physicalDescription: 'p', visualNotes: 'v', silhouetteNotes: 'si', visualIdentity: 'vi',
+    colorPalette: [{ name: 'Rope Tan', hex: '#B89A6A' }],
+  };
+
+  it('drops to zero once every framework and visual field is authored', () => {
+    expect(countFoundationCharacterBlanks([blankLead], series)).toBe(14);
+    expect(countFoundationCharacterBlanks([authoredLead], series)).toBe(0);
+  });
+
+  it('counts only the repairable roster — locked and unreferenced cast are excluded', () => {
+    const cast = [
+      blankLead,
+      { id: 'chr-locked', name: 'Locked', locked: true },
+      { id: 'chr-extra', name: 'Extra' },
+    ];
+    const lockedSeries = {
+      characterArcs: [
+        { characterId: 'chr-lead', characterName: 'Lead' },
+        { characterId: 'chr-locked', characterName: 'Locked' },
+      ],
+    };
+    // Only the unlocked, story-referenced lead contributes its 14 blanks.
+    expect(countFoundationCharacterBlanks(cast, lockedSeries)).toBe(14);
+  });
+
+  it('treats a missing cast as nothing to measure rather than throwing', () => {
+    expect(countFoundationCharacterBlanks(null, series)).toBe(0);
   });
 });
 
