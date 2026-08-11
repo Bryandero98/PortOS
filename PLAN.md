@@ -49,21 +49,12 @@ rest — each is a perf/cleanup item, none is a correctness bug:
   last-writer-wins isn't guaranteed to be newest-content. Only affects installs
   with the "Auto-mirror to Obsidian on every save" toggle on. Consider also
   re-wording that toggle's label, whose "every save" now means something new.
-- [ ] Close the dictation/autosave overwrite race properly. Today the client
-  *parks* autosave when a voice segment lands while the user has unsaved edits
-  (`voiceConflict` in `client/src/components/brain/tabs/DailyLogTab.jsx`), because
-  `setJournalContent` replaces content wholesale and would drop the segment. The
-  park cannot close the narrow race where a segment lands server-side *after* a
-  PUT is already in flight. Deeper fix: merge the incoming segment into the
-  textarea client-side (the socket payload carries `text`, and the `!dirty` branch
-  already performs exactly that merge — this would delete the flag and its ~6 touch
-  sites), backed by an `updatedAt` precondition on the PUT so the server rejects a
-  stale overwrite instead of the client predicting it. `updatedAt` is already
-  stamped and already kept client-side; no precondition mechanism exists server-side
-  yet (no `If-Match`/`ifMatch` anywhere). Needs real-device validation of caret
-  behavior when the textarea is rewritten under the user — that risk is why it was
-  not done unilaterally in an autosave PR, and it reverses the deliberate existing
-  "save or refresh to see it" product decision.
+- [x] Close the dictation/autosave overwrite race properly. The client now
+  merges an incoming voice segment into the textarea (append-at-end, caret
+  restored) even while dirty, and PUTs carry `ifMatchUpdatedAt` so a concurrent
+  append that advances the LWW clock returns 409 `STALE_JOURNAL` with the current
+  entry — the client folds missing voice segments in and retries once. Removes
+  the `voiceConflict` park and the "save or refresh to see it" product decision.
 - [ ] Extract a `useAutosave` hook when a second consumer appears. The daily log
   now has ~60 lines of autosave machinery inline (debounce + max-wait ceiling +
   single-flight + failure-toast dedup + blur/visibility/unmount flush). The only
