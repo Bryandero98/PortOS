@@ -9,6 +9,7 @@ import {
   detectTerminalModelError,
   detectTerminalRequestTimeout,
   extractWaitTime,
+  isRunCanceledError,
   ERROR_CATEGORIES
 } from './errorDetection.js';
 
@@ -517,6 +518,23 @@ describe('Error Detection', () => {
       });
       expect(result.hasError).toBe(true);
       expect(result.waitTime).toBeTruthy();
+    });
+  });
+
+  describe('isRunCanceledError', () => {
+    it('recognizes both markers the runners stamp on a canceled terminal', () => {
+      // promptRunner stamps the code; the runner metadata carries the flag.
+      expect(isRunCanceledError(Object.assign(new Error('TUI canceled (signal 15)'), { code: 'RUN_CANCELED' }))).toBe(true);
+      expect(isRunCanceledError(Object.assign(new Error('CLI canceled (signal SIGTERM)'), { canceled: true }))).toBe(true);
+    });
+
+    it('does not claim an ordinary provider failure — which would suppress a real diagnosis', () => {
+      expect(isRunCanceledError(new Error('TUI exited with code 1: model unavailable'))).toBe(false);
+      // A run that merely mentions cancellation in its text is still a failure.
+      expect(isRunCanceledError(new Error('the user canceled their subscription'))).toBe(false);
+      expect(isRunCanceledError({ canceled: false, code: 'RUN_FAILED' })).toBe(false);
+      expect(isRunCanceledError(null)).toBe(false);
+      expect(isRunCanceledError(undefined)).toBe(false);
     });
   });
 });

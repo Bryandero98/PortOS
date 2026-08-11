@@ -23,6 +23,29 @@ export const ERROR_CATEGORIES = {
   UNKNOWN: 'unknown'
 };
 
+/**
+ * Was this rejection an intentional stop rather than a failed AI attempt?
+ *
+ * A canceled terminal — a Stop of the in-flight run, a coordinator cancelling
+ * its own active LLM call, or a host shutdown tree-killing the child — is
+ * finalized with `canceled: true` on the run metadata, and the prompt runner
+ * stamps `code: 'RUN_CANCELED'` onto the rejection it raises from it.
+ *
+ * Every caller that CLASSIFIES a failure — picks a pause kind, files a gap /
+ * investigation task, benches a provider, marks a run `error` — must ask this
+ * FIRST. A cancellation is evidence about the operator, not about the provider
+ * or the automation: treating it as a defect files spurious follow-up work and
+ * spends a post-mortem diagnosing a human pressing Stop. Lives here (rather
+ * than beside the code that stamps it) so the classifying callers can ask
+ * without importing the whole provider/runner graph.
+ *
+ * @param {*} err — a rejection from an LLM call
+ * @returns {boolean}
+ */
+export const isRunCanceledError = (err) => (
+  !!err && (err.code === 'RUN_CANCELED' || err.canceled === true)
+);
+
 // Order matters — more specific patterns first.
 const ERROR_PATTERNS = [
   {

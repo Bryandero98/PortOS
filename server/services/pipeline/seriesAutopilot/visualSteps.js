@@ -6,6 +6,7 @@
 
 import { buildRenderSlot } from '../../../lib/renderSlot.js';
 import { parseComicScript } from '../../../lib/comicScriptParser.js';
+import { isRunCanceledError } from '../../../lib/aiToolkit/errorDetection.js';
 import { getDomainBudgetStatus, recordDomainUsage } from '../../domainUsage.js';
 import { getIssue, updateStageWithLatest } from '../issues.js';
 import { slotKeyForVariant } from '../owners.js';
@@ -219,6 +220,13 @@ export async function runProduceTeaser(sId, issueId, record) {
     return {};
   } catch (err) {
     const message = (err?.message || String(err)).slice(0, 300);
+    // A Stop that lands during the treatment call is not a failed deliverable —
+    // end the run as canceled rather than filing a "retry the teaser" gap task
+    // for work the user themselves interrupted.
+    if (isRunCanceledError(err)) {
+      broadcast(sId, { type: 'step:skip', kind: 'produceTeaser', issueId, reason: `teaser production canceled: ${message}` });
+      return { canceled: true };
+    }
     broadcast(sId, { type: 'step:skip', kind: 'produceTeaser', issueId, reason: `teaser production failed: ${message}` });
     await fileGap(record, sId, {
       gapKind: 'teaser-failed',

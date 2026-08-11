@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'crypto';
 import { getDomainMode } from '../../../lib/domainAutonomy.js';
+import { isRunCanceledError } from '../../../lib/aiToolkit/errorDetection.js';
 import { mergeSeverityWeights, resolveBlockingSet } from '../../../lib/editorial/index.js';
 import { loadState } from '../../cosState.js';
 import { getDomainBudgetStatus } from '../../domainUsage.js';
@@ -282,6 +283,10 @@ export async function startSeriesAutopilot(sId, options = {}) {
 
   // Fire-and-forget coordinator. The try/catch is the permitted boundary use —
   // an unhandled LLM rejection here would crash the process on Node ≥15.
+  // `ordinal` (completed-step count) lives outside the try so the catch's
+  // cancellation terminal can report how far the run got, exactly as the
+  // cooperative between-steps cancel does.
+  let ordinal = 0;
   (async () => {
     try {
       // DRY-RUN: enumerate the plan, no side effects.
@@ -317,7 +322,6 @@ export async function startSeriesAutopilot(sId, options = {}) {
         broadcast(sId, { type: 'note', message: 'Draft visual rendering is not enabled in this build — running to text-ready + editorial review.' });
       }
 
-      let ordinal = 0;
       while (!record.cancelRequested) {
         const series = await getSeries(sId);
         const issues = await listIssues({ seriesId: sId });
@@ -419,8 +423,10 @@ export async function startSeriesAutopilot(sId, options = {}) {
             ...pm,
           };
           await persistMarker(sId, { status: 'paused', currentStep: step.kind, lastError: result.reason, ...pausePayload });
-          broadcast(sId, { type: 'paused', scope: step.kind, reason: result.reason, ...pausePayload, completedAt: new Date().toISOString() });
-          await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
+          // File BEFORE the terminal frame, for the same reason the post-mortem
+          // runs first: fileGap emits its own `gap:filed` frame, and SSE replay
+          // keeps only the LAST payload — filing afterwards leaves a client that
+          // attaches post-run replaying `gap:filed` and never seeing the pause.
           // Only file the generic stalled task when the step didn't already file
           // a more specific gap (canon-undescribed, visual-no-pages, …) — else
           // fileGaps would create two CoS tasks for one underlying problem (the
@@ -433,6 +439,8 @@ export async function startSeriesAutopilot(sId, options = {}) {
               context: JSON.stringify(result.residual || []).slice(0, 1000),
             });
           }
+          broadcast(sId, { type: 'paused', scope: step.kind, reason: result.reason, ...pausePayload, completedAt: new Date().toISOString() });
+          await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
           console.log(`⏸️  autopilot paused (${step.kind}) — series=${sId.slice(0, 12)}: ${result.reason}`);
           return;
         }
@@ -448,18 +456,36 @@ export async function startSeriesAutopilot(sId, options = {}) {
       console.log(`🛑 autopilot canceled — series=${sId.slice(0, 12)} after ${ordinal} steps`);
     } catch (err) {
       const message = (err?.message || String(err)).slice(0, 1000);
+      // A step's LLM call can be stopped mid-flight — this run's Cancel reaches
+      // through to `stopRun(activeLlmRunId)`, /runs Stop kills the same pty, and
+      // a PortOS restart tree-kills it — and the prompt runner surfaces all
+      // three as a RUN_CANCELED rejection rather than a step result the loop
+      // could inspect. That is a lifecycle outcome, not an automation defect:
+      // route it to the same resumable `paused` + `canceled` terminal the
+      // cooperative between-steps cancel uses. Reporting `error` here would
+      // spend a post-mortem diagnosing the operator and file a `run-error` gap
+      // task for a human pressing Stop.
+      if (isRunCanceledError(err)) {
+        await observerIdle();
+        await persistMarker(sId, { status: 'paused', runId, currentStep: null, lastError: message });
+        broadcast(sId, { type: 'canceled', runId, steps: ordinal, reason: message, completedAt: new Date().toISOString() });
+        console.log(`🛑 autopilot canceled — series=${sId.slice(0, 12)} after ${ordinal} steps: ${message}`);
+        return;
+      }
       console.error(`❌ autopilot failed — series=${sId.slice(0, 12)} ${message}`);
       // Same ordering as the other terminals: diagnose first so the verdict can
       // ride the `error` frame + marker rather than arriving after the client
       // has torn its stream down.
       const pm = await postMortem('error', message);
       await persistMarker(sId, { status: 'error', runId, lastError: message, ...pm });
-      broadcast(sId, { type: 'error', runId, error: message, ...pm, failedAt: new Date().toISOString() });
+      // Filed before the frame for the same replay reason as the pause terminal:
+      // `gap:filed` would otherwise be the last retained payload.
       await fileGap(record, sId, {
         gapKind: 'run-error',
         summary: `The autonomous run failed and stopped: ${message}`,
         context: message,
       }).catch(() => {});
+      broadcast(sId, { type: 'error', runId, error: message, ...pm, failedAt: new Date().toISOString() });
     } finally {
       record.finished = true;
       scheduleCleanup(sId, record);

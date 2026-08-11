@@ -3363,6 +3363,70 @@ describe('autopilot conductor', () => {
     }
   });
 
+  // fileGap emits its own `gap:filed` frame and SSE replay keeps only the last
+  // payload — so a gap filed after the terminal frame leaves a client that
+  // attaches post-run replaying `gap:filed` and never learning the run ended.
+  it('keeps the terminal frame last when a pause also files a gap task', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'unresolved plot hole' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, maxArcVerifyRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    expect(addTask).toHaveBeenCalled();
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('paused');
+  });
+
+  // An intentional stop reaches the conductor as a rejection, not as a step
+  // result it can inspect: this run's Cancel calls stopRun on the active LLM
+  // run, /runs Stop kills the same pty, and a restart tree-kills it — all three
+  // surface as RUN_CANCELED out of the prompt runner. Landing that in the error
+  // terminal marked the series `error`, spent a post-mortem diagnosing the
+  // operator, and filed a `run-error` CoS task for a human pressing Stop.
+  const canceledRejection = () => Object.assign(new Error('TUI canceled (signal 15)'), {
+    code: 'RUN_CANCELED',
+    canceled: true,
+  });
+  const filedGapKinds = () => addTask.mock.calls.map(([task]) => task.description);
+
+  it('ends as canceled — not error — when a step\'s LLM call is stopped mid-flight', async () => {
+    arcSpies.verifyArc.mockRejectedValueOnce(canceledRejection());
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('canceled');
+    const series = await seriesSvc.getSeries(seriesId);
+    // `paused`, so Resume picks the run back up from the next missing step.
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.lastError).toMatch(/canceled/i);
+    expect(filedGapKinds().some((d) => /run-error/.test(d))).toBe(false);
+  });
+
+  it('still reports a genuine step failure as error and files the run-error gap', async () => {
+    arcSpies.verifyArc.mockRejectedValueOnce(new Error('provider returned nothing'));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('error');
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('error');
+    expect(filedGapKinds().some((d) => /run-error/.test(d))).toBe(true);
+  });
+
+  // The foundation gate catches its own repair failures and pauses on
+  // `providerFailed` ("switch the repair provider/model first") — advice that
+  // makes no sense for a repair the user themselves stopped.
+  it('treats a stopped foundation repair as canceled, not a provider failure', async () => {
+    foundationScore = 5;
+    applyFoundationFix.mockRejectedValueOnce(canceledRejection());
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('canceled');
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.pauseKind).toBeNull();
+    expect(filedGapKinds().some((d) => /stalled|run-error/.test(d))).toBe(false);
+  });
+
   it('recoverStuckAutopilots demotes a running marker to paused', async () => {
     const series = await seriesSvc.createSeries({ name: 'S', logline: 'L', premise: 'P' });
     await seriesSvc.updateSeries(series.id, { autopilot: { status: 'running', runId: 'dead' } });

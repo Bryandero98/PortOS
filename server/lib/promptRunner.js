@@ -31,7 +31,7 @@ import { getActiveProvider, getProviderById, getAllProviders } from '../services
 import { executeTuiRun } from './tuiPromptRunner.js';
 import { ServerError } from './errorHandler.js';
 import { PROVIDER_TYPES } from './aiToolkit/constants.js';
-import { analyzeError, ERROR_CATEGORIES } from './aiToolkit/errorDetection.js';
+import { analyzeError, ERROR_CATEGORIES, isRunCanceledError } from './aiToolkit/errorDetection.js';
 import { isSchemaTypeCategory, resolveProviderBench } from './providerCooldown.js';
 import { isGenerationModel } from './localModelHeuristics.js';
 import { getAIToolkitInstance } from './aiToolkitState.js';
@@ -615,7 +615,7 @@ export async function runPromptThroughProvider(args) {
   // An explicit Stop or host shutdown is a lifecycle outcome, not a failed AI
   // attempt. Do not enter any correction/fallback tier, mark the provider
   // unavailable, or escalate an investigation task.
-  if (firstError?.canceled || firstError?.code === 'RUN_CANCELED') {
+  if (isRunCanceledError(firstError)) {
     throw stripFallbackContext(firstError);
   }
 

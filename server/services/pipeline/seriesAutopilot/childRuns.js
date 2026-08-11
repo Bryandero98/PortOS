@@ -5,6 +5,7 @@
  */
 
 import { sleep } from '../../../lib/fileUtils.js';
+import { isRunCanceledError } from '../../../lib/aiToolkit/errorDetection.js';
 import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries, AUTOPILOT_DISCARDED_MAX } from '../series.js';
 import { listIssues, getIssue, isStageReady } from '../issues.js';
@@ -506,6 +507,11 @@ export async function runCharacterFoundation(seriesId, record) {
     broadcast(seriesId, {
       type: 'foundation:fix', phase: 'pre-arc', dimension: 'character', applied: false, reason: detail,
     });
+    // A Stop (this run's Cancel, a /runs Stop, a host shutdown) killed the call
+    // mid-flight. The spend above is real, but the run ended by request — hand
+    // the loop a cancellation so it reaches the `canceled` terminal instead of
+    // pausing with a "fix the provider" banner nobody asked for.
+    if (isRunCanceledError(err)) return { canceled: true };
     return {
       pause: true,
       pauseKind: 'providerFailed',
@@ -760,6 +766,10 @@ export async function runFoundationGate(seriesId, record) {
       broadcast(seriesId, {
         type: 'foundation:fix', round, dimension: weak.dimension, applied: false, reason: detail,
       });
+      // Same rule as the pre-arc pass: an intentional stop is not a provider
+      // failure, so end the run as canceled rather than pausing on a defect the
+      // user never hit.
+      if (isRunCanceledError(err)) return { canceled: true };
       return {
         pause: true,
         pauseKind: 'providerFailed',
