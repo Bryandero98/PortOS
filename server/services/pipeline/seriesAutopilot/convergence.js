@@ -209,11 +209,11 @@ export function isResolveRegression(before, after) {
 // both "ran out of rounds" and "stopped converging": the state the user is being
 // handed is the one from BEFORE the round, and saying so is the difference
 // between a trustworthy pause and an unexplained rewind.
-export function regressionPauseReason(gate, beforeCount, afterCount) {
+export function regressionPauseReason(gate, beforeCount, afterCount, bestCount = beforeCount) {
   const { label, fix } = PAUSE_GATES[gate];
   return `${label} auto-resolve made the draft worse — the round it ran on ${beforeCount} blocking finding(s) `
-    + `came back with ${afterCount} and still hadn't closed what it was given, so its edits were reverted. `
-    + `Paused for review with the original ${beforeCount} finding(s). ${fix}, then resume.`;
+    + `came back with ${afterCount}, so its edits were reverted regardless of how the verifier reworded the findings. `
+    + `Paused for review with the best verified ${bestCount}-finding state from this gate. ${fix}, then resume.`;
 }
 
 // Foundation gate pause reasons (#2176) — the gate converges on a WEIGHTED

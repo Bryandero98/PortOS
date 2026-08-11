@@ -293,24 +293,52 @@ const DEFAULT_ID_PREFIX = Object.freeze({
 export const isStr = (v) => typeof v === 'string';
 export const trimTo = (v, max) => (isStr(v) ? v.trim().slice(0, max) : '');
 
+// Smallest share of the budget a sentence-boundary cut may keep. A cut that
+// lands above this wins over a mid-sentence clip; below it, gutting the record
+// costs more than the ragged edge does.
+//
+// This was 0.6, which rejected a valid sentence break at 53% of a field's budget
+// and fell through to a nearly-at-cap whole-word fragment. The next verification
+// round then flagged the sanitizer-authored incomplete sentence, and every
+// over-cap replacement reproduced it. A single-sentence field (logline, ending
+// hook) is the common case: its first terminator is often its ONLY one, so a
+// floor near the top of the budget rejects the clean cut it was meant to prefer.
+const SENTENCE_CUT_FLOOR = 0.3;
+
+// A sentence terminator that actually ENDS a sentence: `.`/`!`/`?` plus any
+// closing quote or bracket, and then either whitespace or the end of the window.
+// Requiring that lookahead is what keeps "Dr. Vey" and "3.5" from reading as
+// breaks; allowing `$` is what lets a terminator sitting flush against the
+// budget edge count, which `lastIndexOf('. ')` missed because it demanded a
+// trailing space that the slice had already cut off.
+const SENTENCE_END_RE = /[.!?]["'’”)\]]*(?=\s|$)/g;
+const COMMON_ABBREVIATION_RE = /\b(?:dr|etc|jr|mr|mrs|ms|prof|sr|st|vs)\.$/i;
+
 // Boundary-aware cap for PROSE fields (loglines, synopses, ending hooks). A hard
 // `slice(0, max)` clips mid-word ("...tracing the brand and"), which downstream
 // verify passes flag as "truncated mid-sentence" — and because a resolver then
 // regenerates an over-cap value that gets re-clipped the same way, the
 // verify→resolve loop never converges. When the text fits, it's returned
 // untouched. When it must be clipped, back off to the last sentence terminator
-// (. ! ?) within the budget; if there's no sentence break in the last ~40% of
-// the budget (one run-on sentence), fall back to the last whitespace boundary so
-// the result still ends on a whole word. Never returns more than `max` chars.
+// (. ! ?) within the budget, provided that cut keeps at least
+// SENTENCE_CUT_FLOOR of it; otherwise (one run-on sentence, or a break so early
+// that honoring it would gut the field) fall back to the last whitespace
+// boundary so the result still ends on a whole word. Never returns more than
+// `max` chars.
 export function trimToClause(v, max) {
   if (!isStr(v)) return '';
   const s = v.trim();
   if (s.length <= max) return s;
   const window = s.slice(0, max);
-  // Prefer the last sentence terminator, but only if it's not so early that we'd
-  // drop most of the content (keep at least ~60% of the budget).
-  const sentence = Math.max(window.lastIndexOf('. '), window.lastIndexOf('! '), window.lastIndexOf('? '));
-  if (sentence >= Math.floor(max * 0.6)) return window.slice(0, sentence + 1).trim();
+  // Prefer the last real sentence terminator in the window. `end` is the cut
+  // point (exclusive) so trailing quotes/brackets ride along with the period.
+  let end = -1;
+  SENTENCE_END_RE.lastIndex = 0;
+  for (let m = SENTENCE_END_RE.exec(window); m; m = SENTENCE_END_RE.exec(window)) {
+    if (m[0][0] === '.' && COMMON_ABBREVIATION_RE.test(window.slice(0, m.index + 1))) continue;
+    end = m.index + m[0].length;
+  }
+  if (end >= Math.floor(max * SENTENCE_CUT_FLOOR)) return window.slice(0, end).trim();
   // No usable sentence break — clip on the last whole word instead of mid-word.
   const space = window.lastIndexOf(' ');
   return (space > 0 ? window.slice(0, space) : window).trim();
@@ -1463,5 +1491,3 @@ export function mergeExtractedBible(existing, incoming, kind, {
 
   return existing.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
 }
-
-

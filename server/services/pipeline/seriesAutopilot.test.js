@@ -1922,6 +1922,10 @@ describe('autopilot conductor', () => {
     // Bailed at round 3 — NOT all 6 rounds (the whole point: budget saved).
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     // Persisted through sanitizeAutopilot so the resume banner survives a reload.
@@ -2018,16 +2022,17 @@ describe('autopilot conductor', () => {
     expect(last?.residualFindings).toEqual([restatements[0]]);
   });
 
-  it('keeps a round that closed what it targeted, even when new findings surface', async () => {
-    // Guard against the over-strict rollback: this round DID clear the finding
-    // it was handed, and the two that follow were latent underneath. Reverting
-    // it would throw away real progress, so the loop keeps the edits and falls
-    // through to the existing divergence guard when it stops improving.
+  it('rolls back blocker-count growth even when the resolver closed its targeted finding', async () => {
+    // Finding identity is not a safe acceptance gate: a rewrite can close the
+    // one finding it was handed while exposing two different blockers and still
+    // leave the draft operationally worse. Preserve the demonstrated lower-count
+    // state and let a human decide whether the latent trade is worthwhile.
     const first = { severity: 'high', problem: 'first eclipse staged twice', location: 'V1' };
     const latent = [
       { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' },
       { severity: 'high', problem: 'finale hook is unresolved', location: 'V4' },
     ];
+    arcSpies.verifyArc.mockReset();
     arcSpies.verifyArc
       .mockImplementationOnce(async () => ({ issues: [first] }))
       .mockImplementationOnce(async () => ({ issues: latent }))
@@ -2036,10 +2041,43 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
-    expect(last?.pauseKind).toBe('divergence');
-    expect(last?.residualFindings).toEqual(latent);
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual([first]);
+  });
+
+  it('restores the best verified snapshot in a 4 → 2 → 4 regression', async () => {
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    const rounds = [holes(4, 'initial'), holes(2, 'best'), holes(4, 'regressed'), holes(5, 'never reached')];
+    arcSpies.verifyArc.mockReset();
+    rounds.forEach((result) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues: result })));
+    const initialSnapshot = { marker: 'initial', arc: null, seasons: [], episodes: [] };
+    const bestSnapshot = { marker: 'best', arc: null, seasons: [], episodes: [] };
+    arcSpies.snapshotArcState
+      .mockImplementationOnce(async () => initialSnapshot)
+      .mockImplementationOnce(async () => bestSnapshot);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 12 });
+    await waitFor(runFinished(seriesId));
+
+    // The first increase stops the loop; the 5-blocker round is never spent.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(2);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/best verified 2-finding state/);
+    expect(last?.residualFindings).toEqual(rounds[1]);
   });
 
   it('a default-cap arc run is unaffected by the divergence guard (maxRounds still wins)', async () => {
@@ -2054,6 +2092,10 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.pauseKind).toBe('maxRounds');
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+    );
   });
 
   it('a per-run override beats the persisted maxArcVerifyRounds setting', async () => {
