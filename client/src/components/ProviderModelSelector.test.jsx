@@ -125,19 +125,19 @@ describe('ProviderModelSelector', () => {
         providers: OLLAMA,
         selectedProviderId: 'ollama',
         selectedModel: 'qwen3.6:35b',
-        availableModels: ['qwen3.6:35b', 'gemma4:e4b'],
+        availableModels: ['qwen3.6:35b', 'gemma3:4b'],
         highlightToolUse: true,
       });
       const labels = [...screen.getAllByRole('combobox')[1].querySelectorAll('option')].map((o) => o.textContent);
-      expect(labels).toEqual(['qwen3.6:35b · 🔧 tool use', 'gemma4:e4b · ⚠ no known tool use']);
+      expect(labels).toEqual(['qwen3.6:35b · 🔧 tool use', 'gemma3:4b · ⚠ no known tool use']);
     });
 
     it('warns when the selected LOCAL model cannot call tools', () => {
       renderSelector({
         providers: OLLAMA,
         selectedProviderId: 'ollama',
-        selectedModel: 'gemma4:e4b',
-        availableModels: ['qwen3.6:35b', 'gemma4:e4b'],
+        selectedModel: 'gemma3:4b',
+        availableModels: ['qwen3.6:35b', 'gemma3:4b'],
         highlightToolUse: true,
       });
       expect(screen.getByText(/recognized tool-calling model/i)).toBeInTheDocument();
@@ -147,10 +147,10 @@ describe('ProviderModelSelector', () => {
       // "Default model" (blank) isn't a no-op — the resolver runs the provider's
       // defaultModel, which here is a non-tool local model.
       renderSelector({
-        providers: [{ id: 'ollama', name: 'Ollama', defaultModel: 'gemma4:e4b' }],
+        providers: [{ id: 'ollama', name: 'Ollama', defaultModel: 'gemma3:4b' }],
         selectedProviderId: 'ollama',
         selectedModel: '',
-        availableModels: ['qwen3.6:35b', 'gemma4:e4b'],
+        availableModels: ['qwen3.6:35b', 'gemma3:4b'],
         alwaysShowModel: true,
         emptyModelOption: 'Default model',
         highlightToolUse: true,
@@ -163,7 +163,7 @@ describe('ProviderModelSelector', () => {
         providers: OLLAMA,
         selectedProviderId: 'ollama',
         selectedModel: 'qwen3.6:35b',
-        availableModels: ['qwen3.6:35b', 'gemma4:e4b'],
+        availableModels: ['qwen3.6:35b', 'gemma3:4b'],
         highlightToolUse: true,
       });
       expect(screen.queryByText(/recognized tool-calling model/i)).not.toBeInTheDocument();
@@ -186,11 +186,11 @@ describe('ProviderModelSelector', () => {
       renderSelector({
         providers: OLLAMA,
         selectedProviderId: 'ollama',
-        selectedModel: 'gemma4:e4b',
-        availableModels: ['qwen3.6:35b', 'gemma4:e4b'],
+        selectedModel: 'gemma3:4b',
+        availableModels: ['qwen3.6:35b', 'gemma3:4b'],
       });
       const labels = [...screen.getAllByRole('combobox')[1].querySelectorAll('option')].map((o) => o.textContent);
-      expect(labels).toEqual(['qwen3.6:35b', 'gemma4:e4b']);
+      expect(labels).toEqual(['qwen3.6:35b', 'gemma3:4b']);
       expect(screen.queryByText(/recognized tool-calling model/i)).not.toBeInTheDocument();
     });
   });

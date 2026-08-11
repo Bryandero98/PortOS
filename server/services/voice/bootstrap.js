@@ -223,10 +223,10 @@ const DEFAULT_TOOL_MODEL_CHAIN = () => {
   const override = process.env.PORTOS_VOICE_DEFAULT_TOOL_MODEL;
   if (override) return [override];
   return [
-    'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF',     // 4B, ~2.6 GB, current non-thinking Qwen3
-    'lmstudio-community/Llama-3.2-3B-Instruct-GGUF',      // 3B, ~2 GB, smaller fallback
-    'lmstudio-community/Qwen2.5-7B-Instruct-GGUF',        // 7B, ~4.7 GB, classic workhorse
-    'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF', // 8B, ~4.7 GB, Llama fallback
+    'lmstudio-community/Qwen2.5-3B-Instruct-GGUF',            // 3B, ~2 GB, no thinking phase at all
+    'lmstudio-community/functiongemma-270m-it-GGUF',          // 270M, ~300 MB, function-calling specialist
+    'lmstudio-community/granite-4.1-8b-GGUF',                 // 8B, ~5.3 GB, tools without a thinking mode
+    'lmstudio-community/Ministral-3-8B-Instruct-2512-GGUF',   // 8B, ~6 GB, Instruct (not the Reasoning build)
   ];
 };
 
