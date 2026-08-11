@@ -930,19 +930,13 @@ export async function spawnTuiAgent({
   // spawn error into the record. Runs outside the Express request lifecycle, so
   // there is no middleware to bubble to.
   //
-  // The REASON depends on which half failed. On the durable-runner path every
-  // throw is a runner-hop failure — a `fetch failed` while the runner restarts,
-  // or the runner answering with a refusal — and no agent process ever existed,
-  // so it finalizes as `spawn-rejected`: non-actionable, the task retries, and a
-  // persistent misconfiguration still blocks on MAX_TASK_RETRIES with the
-  // runner's own message attached. The direct-CLI runner path made this exact
-  // split already (agentLifecycle.js, `spawn-rejected is its own reason,
-  // deliberately NOT the TUI's spawn-error`); before mirroring it here, a
-  // momentarily-unreachable runner blocked the task for a human with "confirm
-  // the CLI is installed" advice and filed an investigation — five times in one
-  // week, for a condition a plain retry fixes. A LOCAL PTY that won't open keeps
-  // `spawn-error` (actionable): that is a real host/config problem a retry
-  // cannot repair.
+  // The REASON splits on which half failed. A durable-runner throw is a
+  // runner-hop failure (a `fetch failed` mid-restart, or a runner refusal) —
+  // no process ever existed, so it is `spawn-rejected` (non-actionable →
+  // retry), mirroring the direct-CLI runner path's deliberate split in
+  // agentLifecycle.js and the registration in COMPLETION_REASON_ANALYSES. A
+  // LOCAL PTY that won't open keeps the actionable `spawn-error`: that is a
+  // real host/config problem a retry cannot repair.
   let session;
   try {
     session = await createAgentTuiSession({
