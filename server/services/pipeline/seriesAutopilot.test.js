@@ -2054,20 +2054,30 @@ describe('autopilot conductor', () => {
       { severity: 'high', location: 'V2', problem: 'ration authority contradicts the founding charter' },
       { severity: 'medium', location: 'V3', problem: 'the eclipse lands before the calendar allows it' },
     ];
-    foundationScore = 3;
-    applyFoundationFix.mockImplementationOnce(async (_sId, dimension) => ({
-      dimension,
-      applied: false,
-      actions: 4,
-      reason: 'structure repair left 2 arc-verification blocker(s); reverted to the pre-repair plan',
-      discarded: blockers,
-    }));
+    foundationScore = 7;
+    foundationDimensionScores = { worldbuilding: 8, character: 8, structure: 3, craft: 8 };
+    applyFoundationFix.mockImplementationOnce(async (_sId, dimension, options) => {
+      options.onRunCreated('structure-reverted');
+      return {
+        dimension,
+        applied: false,
+        reverted: true,
+        actions: 4,
+        reason: 'structure repair left 2 arc-verification blocker(s); reverted to the pre-repair plan',
+        discarded: blockers,
+        rejectedRunIds: ['structure-reverted'],
+      };
+    });
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('inapplicable');
     expect(last?.discardedFindings).toEqual(blockers);
+    expect(recordModelOutcome).toHaveBeenCalledWith('structure-reverted', expect.objectContaining({
+      role: 'creative', stage: 'foundationGate', outcome: 'rejected', target: 'structure',
+    }));
+    expect(recordModelOutcome).not.toHaveBeenCalledWith('structure-reverted', expect.objectContaining({ outcome: 'invalid' }));
   });
 
   it('foundation gate: an inapplicable fix with nothing reverted reports no discarded set', async () => {

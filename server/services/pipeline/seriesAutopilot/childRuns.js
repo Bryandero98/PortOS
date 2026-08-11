@@ -819,6 +819,12 @@ export async function runFoundationGate(seriesId, record) {
       };
     }
     await recordDomainUsage('cos', { actions: Math.max(1, fix?.actions || 1) });
+    const explicitlyRejectedRunIds = new Set(Array.isArray(fix?.rejectedRunIds) ? fix.rejectedRunIds : []);
+    await Promise.all([...explicitlyRejectedRunIds].map((runId) => recordModelOutcome(runId, {
+      role: 'creative', stage: 'foundationGate', outcome: 'rejected', target: weak.dimension,
+    }).catch(() => {})));
+    const retainedRepairRunIds = (Array.isArray(fix?.acceptedRunIds) ? fix.acceptedRunIds : repairRunIds)
+      .filter((runId) => !explicitlyRejectedRunIds.has(runId));
     broadcast(seriesId, {
       type: 'foundation:fix', round, dimension: weak.dimension, applied: fix?.applied === true, reason: fix?.reason || null,
     });
@@ -828,8 +834,8 @@ export async function runFoundationGate(seriesId, record) {
     // review rather than burning the remaining rounds re-judging an unchanged
     // foundation.
     if (fix?.applied !== true) {
-      await Promise.all(repairRunIds.map((runId) => recordModelOutcome(runId, {
-        role: 'creative', stage: 'foundationGate', outcome: 'invalid', target: weak.dimension,
+      await Promise.all(retainedRepairRunIds.map((runId) => recordModelOutcome(runId, {
+        role: 'creative', stage: 'foundationGate', outcome: fix?.reverted === true ? 'rejected' : 'invalid', target: weak.dimension,
       }).catch(() => {})));
       return {
         pause: true,
@@ -846,7 +852,7 @@ export async function runFoundationGate(seriesId, record) {
       dimension: weak.dimension,
       judge: snap,
       snapshot: repairSnapshot,
-      runIds: repairRunIds,
+      runIds: retainedRepairRunIds,
     };
     changed = true;
   }

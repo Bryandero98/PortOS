@@ -1040,7 +1040,7 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledTimes(2);
     expect(arcPlanner.resolveVerifyIssues).toHaveBeenNthCalledWith(2, 'ser-1', expect.objectContaining({
       findings: [blocker], providerDefault: 'writer-provider', modelDefault: 'writer-model', effortDefault: 'max',
-      onRunCreated: writerOnRunCreated,
+      onRunCreated: expect.any(Function),
     }));
     expect(arcPlanner.verifyArc).toHaveBeenNthCalledWith(1, 'ser-1', expect.objectContaining({
       providerDefault: 'judge-provider', modelDefault: 'judge-model', effortDefault: 'xhigh',
@@ -1068,6 +1068,51 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(arcPlanner.verifyArc).toHaveBeenCalledTimes(3);
     expect(arcPlanner.restoreArcState).not.toHaveBeenCalled();
     expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 6 });
+  });
+
+  it('retains the best verified structure checkpoint when a later correction regresses', async () => {
+    const original = { seriesId: 'ser-1', arc: { logline: 'Original' }, seasons: [], episodes: [] };
+    const firstCandidate = { seriesId: 'ser-1', arc: { logline: 'Nine blockers' }, seasons: [], episodes: [] };
+    const bestCandidate = { seriesId: 'ser-1', arc: { logline: 'One blocker' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(firstCandidate)
+      .mockResolvedValueOnce(bestCandidate);
+    const findings = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'medium', location: `Issue ${i + 1}`, problem: `${prefix} ${i + 1}`,
+    }));
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: findings(9, 'initial') })
+      .mockResolvedValueOnce({ issues: findings(1, 'best') })
+      .mockResolvedValueOnce({ issues: findings(5, 'regressed') });
+    arcPlanner.resolveVerifyIssues
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-broad');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-improved');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-regressed');
+        return { applied: true };
+      });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The issue plan contradicts the spine.', fix: 'Reconcile it.' },
+      onRunCreated: vi.fn(),
+    });
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', bestCandidate);
+    expect(arcPlanner.restoreArcState).not.toHaveBeenCalledWith('ser-1', original);
+    expect(r).toMatchObject({
+      dimension: 'structure', applied: true, partial: true,
+      acceptedRunIds: ['structure-broad', 'structure-improved'],
+      rejectedRunIds: ['structure-regressed'],
+    });
+    expect(r.residual).toHaveLength(1);
+    expect(r.discarded).toHaveLength(5);
   });
 
   it('rolls a structure repair back when its bounded correction remains unverified', async () => {

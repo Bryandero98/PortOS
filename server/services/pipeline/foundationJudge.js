@@ -1663,6 +1663,7 @@ export async function applyFoundationFix(seriesId, dimension, {
       suggestion: finding.fix || '',
     }];
     const snapshot = await snapshotArcState(seriesId);
+    const structureRunIds = [];
     const resolveOptions = {
       providerDefault: providerOverride,
       modelDefault: modelOverride,
@@ -1672,7 +1673,10 @@ export async function applyFoundationFix(seriesId, dimension, {
       // Carry the same non-deletion guarantee the other two do.
       preserveDroppedSeasons,
       effortDefault: effortOverride,
-      onRunCreated,
+      onRunCreated: (runId) => {
+        structureRunIds.push(runId);
+        onRunCreated?.(runId);
+      },
       onRunSettled,
     };
     const verifyOptions = {
@@ -1682,15 +1686,32 @@ export async function applyFoundationFix(seriesId, dimension, {
       onRunCreated: judgeOnRunCreated,
       onRunSettled: judgeOnRunSettled,
     };
+    const trackedResolve = async (resolveFindings) => {
+      const before = structureRunIds.length;
+      const result = await resolveVerifyIssues(seriesId, { findings: resolveFindings, ...resolveOptions });
+      return { result, runIds: structureRunIds.slice(before) };
+    };
     const runGuardedStructureRepair = async () => {
-      const first = await resolveVerifyIssues(seriesId, { findings, ...resolveOptions });
+      const firstAttempt = await trackedResolve(findings);
+      const first = firstAttempt.result;
       if (first?.applied === false) {
         return { dimension, applied: false, reason: first?.notes || 'arc resolver applied no change' };
       }
 
       let verification = await verifyArc(seriesId, verifyOptions);
       let blockers = Array.isArray(verification?.issues) ? verification.issues : [];
-      if (blockers.length === 0) return { dimension, applied: true, actions: 2 };
+      if (blockers.length === 0) {
+        return { dimension, applied: true, actions: 2, acceptedRunIds: firstAttempt.runIds };
+      }
+
+      const initialBlockerCount = blockers.length;
+      let retainedRunIds = [...firstAttempt.runIds];
+      let rejectedRunIds = [];
+      let bestVerified = {
+        blockers,
+        snapshot: await snapshotArcState(seriesId),
+        runIds: [...retainedRunIds],
+      };
 
       // A foundation-directed structure rewrite can satisfy its broad judge
       // while accidentally violating a narrower canon/location/timing rule.
@@ -1702,24 +1723,62 @@ export async function applyFoundationFix(seriesId, dimension, {
       let actions = 2;
       for (let pass = 0; pass < MAX_STRUCTURE_CORRECTION_PASSES && blockers.length > 0; pass += 1) {
         const before = blockers.length;
-        const correction = await resolveVerifyIssues(seriesId, {
-          findings: blockers,
-          ...resolveOptions,
-        });
+        const correctionAttempt = await trackedResolve(blockers);
+        const correction = correctionAttempt.result;
         actions += 1;
         if (correction?.applied === false) break;
         verification = await verifyArc(seriesId, verifyOptions);
         actions += 1;
         const nextBlockers = Array.isArray(verification?.issues) ? verification.issues : [];
         blockers = nextBlockers;
-        if (blockers.length === 0) return { dimension, applied: true, actions };
-        if (blockers.length > before) break;
+        if (blockers.length === 0) {
+          return {
+            dimension,
+            applied: true,
+            actions,
+            acceptedRunIds: [...retainedRunIds, ...correctionAttempt.runIds],
+            rejectedRunIds,
+          };
+        }
+        if (blockers.length > before) {
+          rejectedRunIds = [...rejectedRunIds, ...correctionAttempt.runIds];
+          break;
+        }
+        retainedRunIds = [...retainedRunIds, ...correctionAttempt.runIds];
+        if (blockers.length <= bestVerified.blockers.length) {
+          bestVerified = {
+            blockers,
+            snapshot: await snapshotArcState(seriesId),
+            runIds: [...retainedRunIds],
+          };
+        }
+      }
+
+      // Do not throw away a demonstrated monotonic improvement merely because
+      // the next correction traded its final residual for a larger set. Keep
+      // the best independently verified checkpoint; the foundation judge will
+      // still decide whether it improved structure, and the normal full-arc
+      // gate remains latched dirty so it must close the residual before beats.
+      if (bestVerified.blockers.length < initialBlockerCount) {
+        await restoreArcState(seriesId, bestVerified.snapshot);
+        return {
+          dimension,
+          applied: true,
+          partial: true,
+          actions,
+          reason: `structure repair retained its best verified improvement (${initialBlockerCount} → ${bestVerified.blockers.length} blocker(s)); the full arc gate must close the residual`,
+          residual: bestVerified.blockers,
+          discarded: blockers,
+          acceptedRunIds: bestVerified.runIds,
+          rejectedRunIds,
+        };
       }
 
       await restoreArcState(seriesId, snapshot);
       return {
         dimension,
         applied: false,
+        reverted: true,
         actions,
         reason: `structure repair left ${blockers.length} arc-verification blocker(s); reverted to the pre-repair plan`,
         // The blockers that condemned the rewrite. Without them the revert is a
@@ -1727,6 +1786,7 @@ export async function applyFoundationFix(seriesId, dimension, {
         // gaps instead — a different set entirely — so the user is never shown
         // why a plausible rewrite was thrown away.
         discarded: blockers,
+        rejectedRunIds: structureRunIds,
       };
     };
     // Any provider/parse failure after the first mutation must not strand the
