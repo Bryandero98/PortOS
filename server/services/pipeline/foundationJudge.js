@@ -1202,6 +1202,10 @@ async function runFoundationRepair(series, issues, dimension, finding, character
   const maxAttempts = dimension === 'craft' ? CRAFT_REPAIR_MAX_ATTEMPTS : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const findingPayload = { gap: finding?.gap || '', fix: finding?.fix || '' };
+    // The gate may already have reverted an attempt at this dimension — say so,
+    // so the next proposal changes strategy instead of re-earning the same
+    // rollback. Craft's storage-contract retry below appends to this.
+    if (finding?.retryReason) findingPayload.retryReason = finding.retryReason;
     if (dimension === 'craft') {
       findingPayload.hardStorageContract = {
         voiceExemplars: '1-2 entries',
@@ -1211,7 +1215,10 @@ async function runFoundationRepair(series, issues, dimension, finding, character
         requirement: 'Every passage and note must end as complete prose within these limits; storage never preserves overflow.',
       };
       if (violations.length > 0) {
-        findingPayload.retryReason = `The previous proposal violated the hard storage contract: ${violations.join('; ')}. Rewrite it shorter; do not merely cut it off.`;
+        findingPayload.retryReason = [
+          findingPayload.retryReason,
+          `The previous proposal violated the hard storage contract: ${violations.join('; ')}. Rewrite it shorter; do not merely cut it off.`,
+        ].filter(Boolean).join(' ');
       }
     }
     const result = await runStagedLLM(stage, {
@@ -1514,7 +1521,10 @@ async function refineWorld(universeId, { providerId, model, effort, onRunCreated
     premise: universe.premise,
     styleNotes: universe.styleNotes,
     locked: universe.locked,
-    foundationDirective: [finding.gap, finding.fix].filter(Boolean).join('\nRequested repair: '),
+    foundationDirective: [
+      [finding.gap, finding.fix].filter(Boolean).join('\nRequested repair: '),
+      finding.retryReason ? `Previous attempt: ${finding.retryReason}` : '',
+    ].filter(Boolean).join('\n'),
     providerId,
     model,
     effort,
@@ -1673,8 +1683,18 @@ export async function snapshotFoundationState(seriesId) {
   };
 }
 
-/** Restore a foundation snapshot and verify the tracked fields match exactly. */
-export async function restoreFoundationState(seriesId, snapshot) {
+/**
+ * Restore a foundation snapshot and verify the tracked fields match exactly.
+ *
+ * `judge` is the verdict that scored the checkpoint being restored. The cached
+ * verdict on disk is keyed by a content hash, so after a rewind it describes
+ * content that no longer exists and the next `judgeFoundation` pays a full LLM
+ * call to re-derive a score this one already holds. Re-pinning it on a VERIFIED
+ * restore puts the cache back in step with the content. Optional: a caller
+ * without the pre-rewind verdict simply leaves the stale entry to self-
+ * invalidate on its hash.
+ */
+export async function restoreFoundationState(seriesId, snapshot, { judge } = {}) {
   if (!snapshot || snapshot.seriesId !== seriesId || !snapshot.arcState) {
     return { restored: false, reason: 'invalid foundation snapshot' };
   }
@@ -1690,6 +1710,10 @@ export async function restoreFoundationState(seriesId, snapshot) {
   const restoredSnapshot = await snapshotFoundationState(seriesId);
   const mismatched = mismatchedFoundationFields(snapshot, restoredSnapshot);
   const restored = mismatched.length === 0;
+  if (restored && judge?.seriesId === seriesId && judge.sourceInputsHash) {
+    const { cached, ...verdict } = judge;
+    await saveSnapshot(verdict);
+  }
   return {
     restored,
     reason: restored
@@ -1713,9 +1737,19 @@ export async function restoreFoundationState(seriesId, snapshot) {
  *
  * `finding` is the judge's `{ gap, fix }` for the targeted dimension, threaded
  * into the structure resolve as a synthesized arc finding.
+ *
+ * A retry after the caller REVERTED an earlier attempt at this same dimension
+ * describes that attempt so this one changes strategy instead of re-proposing
+ * discarded edits. It arrives on whichever channel the owning route has: the
+ * prose `finding.retryReason` for the LLM-payload routes (character/craft's
+ * finding JSON, worldbuilding's directive), and `avoidFindings` — the shared
+ * "a previous attempt produced these, do not author them again" contract of
+ * `resolveVerifyIssues` — for the structure route, so those stay OUT of the
+ * work-to-close list a `suggestion` would have put them in.
  */
 export async function applyFoundationFix(seriesId, dimension, {
   finding = {},
+  avoidFindings,
   providerOverride,
   modelOverride,
   effortOverride,
@@ -1780,6 +1814,10 @@ export async function applyFoundationFix(seriesId, dimension, {
     const resolveOptions = {
       providerDefault: providerOverride,
       modelDefault: modelOverride,
+      // What a reverted earlier attempt at this dimension produced. The resolver
+      // renders these in its own "do not author these again" block, apart from
+      // the findings it must close (mirrors the arc gate's rollback retry).
+      ...(Array.isArray(avoidFindings) && avoidFindings.length > 0 ? { avoid: avoidFindings } : {}),
       // The autopilot's unlock-for-run mode clears both `series.locked.arc`
       // (disarming the short-circuit above) and every per-season lock, so this
       // is the third arc-rewriting path that could otherwise delete a volume.

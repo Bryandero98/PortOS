@@ -277,6 +277,26 @@ export function foundationPauseReason(maxRounds, score, threshold) {
   return `${label} couldn't reach the threshold (weighted ${score} < ${threshold}) in ${maxRounds} ${plural} — `
     + `paused for review. ${fix}, or raise the ${limit} limit in Options and resume.`;
 }
+// A foundation repair whose independent re-judge showed no gain for the target
+// it was asked to fix. `missed` is the shared head of every sentence about that
+// attempt — the rewind notice, the unverified-restore pause, and the note the
+// NEXT attempt at that dimension is handed — so the three can't disagree about
+// what the numbers were.
+export function foundationRepairMissed({ dimension, targetBefore, targetAfter, weightedBefore, weightedAfter }) {
+  const missed = `Foundation ${dimension} repair did not improve its target `
+    + `(${targetBefore} → ${targetAfter}; weighted ${weightedBefore} → ${weightedAfter})`;
+  return {
+    missed,
+    rewind: `${missed}, so its edits were reverted to the pre-repair checkpoint.`,
+    unverified: (reason) => `${missed}, and checkpoint verification failed after rollback: ${reason || 'unknown restore mismatch'}.`,
+    // Handed to the retry so it changes strategy instead of re-proposing edits
+    // the gate has already thrown away. Names the rejected re-judge's own gap:
+    // that is the evidence the last attempt failed to move anything.
+    retryNote: (gap) => `A previous ${dimension} repair this run was REVERTED: it left the target score at ${targetAfter} `
+      + `(weighted ${weightedBefore} → ${weightedAfter}), so none of its edits were kept. The re-judge of that attempt still `
+      + `reported: ${gap || 'the same gap'}. Take a different approach — repeating those edits will be reverted again.`,
+  };
+}
 export function foundationDivergenceReason(score, threshold, rounds) {
   const { label, fix } = PAUSE_GATES.foundation;
   const plural = rounds === 1 ? 'round' : 'rounds';

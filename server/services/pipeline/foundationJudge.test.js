@@ -1286,6 +1286,41 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(r).toMatchObject({ dimension: 'character', applied: true, characterArcsUpdated: true });
   });
 
+  it('carries a rejected earlier attempt into the retry so it can change strategy', async () => {
+    // The gate reverts a repair whose target did not improve and then retries it
+    // (see runFoundationGate). Without the reverted attempt in the payload, the
+    // retry re-proposes the same edits and buys a second rollback.
+    const retryReason = 'A previous character repair this run was REVERTED: it left the target score at 5.';
+    const uni = { id: 'uni-1', characters: [{ id: 'chr-thin', name: 'B' }] };
+    universeBuilder.getUniverse.mockResolvedValue(uni);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(uni) || {}) }));
+    stageRunner.runStagedLLM.mockResolvedValue({ content: { characters: [] } });
+
+    await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the chain', retryReason } });
+    expect(JSON.parse(stageRunner.runStagedLLM.mock.calls.at(-1)[1].foundationFindingJson)).toMatchObject({
+      gap: 'blank lead', fix: 'build the chain', retryReason,
+    });
+
+    stageRunner.runStagedLLM.mockClear();
+    await applyFoundationFix('ser-1', 'worldbuilding', { finding: { gap: 'costless magic', fix: 'price it', retryReason } });
+    expect(universeBuilderExpand.expandWorldTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      foundationDirective: expect.stringContaining(retryReason),
+    }));
+
+    // Structure has a structured channel of its own: the reverted findings ride
+    // `avoid` (never authored again) instead of the suggestion the resolver
+    // would read as work to close.
+    const discarded = [{ severity: 'high', location: 'arc', problem: 'the charter handoff is still thin' }];
+    await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'thin handoff', fix: 'stage it', retryReason },
+      avoidFindings: discarded,
+    });
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledWith('ser-1', expect.objectContaining({
+      findings: [expect.objectContaining({ problem: 'thin handoff', suggestion: 'stage it' })],
+      avoid: discarded,
+    }));
+  });
+
   it('keeps existing transition beats structure-owned during post-arc character repair', async () => {
     const existingTransition = { kind: 'decision', atIssue: 6, label: 'refuses the unsupported shortcut' };
     const series = {

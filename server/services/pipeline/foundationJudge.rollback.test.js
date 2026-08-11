@@ -75,6 +75,7 @@ const { createUniverse, getUniverse, updateUniverse, PREMISE_MAX } = await impor
 const {
   snapshotFoundationState,
   restoreFoundationState,
+  getFoundationJudge,
   __testing,
 } = await import('./foundationJudge.js');
 
@@ -155,6 +156,35 @@ describe('restoreFoundationState — against the real universe write path', () =
     const beforeStamp = checkpoint.universe.characters.find((c) => c.name === 'Example Lead').updatedAt;
     const afterStamp = after.characters.find((c) => c.name === 'Example Lead').updatedAt;
     expect(Date.parse(afterStamp)).toBeGreaterThan(Date.parse(beforeStamp));
+  });
+
+  it('re-pins the checkpoint verdict on a verified rewind, and leaves it alone on a failed one', async () => {
+    // The cached verdict is keyed by a content hash, so after a rewind the
+    // stored one describes content that no longer exists — and the gate's next
+    // read (a resume, the UI) buys a whole judge call to learn a score the
+    // rewind already had. Only a VERIFIED restore may put it back.
+    await seedFoundation();
+    const checkpoint = await snapshotFoundationState('ser-1');
+    const judge = {
+      seriesId: 'ser-1', status: 'complete', sourceInputsHash: 'hash-before-repair',
+      weightedScore: 6.5, cached: true,
+      dimensions: { character: { score: 5, gap: 'thin lead', fix: 'build the chain' } },
+    };
+
+    const rollback = await restoreFoundationState('ser-1', checkpoint, { judge });
+    expect(rollback.restored).toBe(true);
+    const repinned = await getFoundationJudge('ser-1');
+    expect(repinned).toMatchObject({ sourceInputsHash: 'hash-before-repair', weightedScore: 6.5 });
+    // `cached` is a per-read flag, not part of the stored verdict.
+    expect(repinned).not.toHaveProperty('cached');
+
+    const corrupted = structuredClone(checkpoint);
+    corrupted.universe.premise = 'x'.repeat(PREMISE_MAX + 100);
+    const failed = await restoreFoundationState('ser-1', corrupted, {
+      judge: { ...judge, sourceInputsHash: 'hash-that-must-not-be-pinned' },
+    });
+    expect(failed.restored).toBe(false);
+    expect((await getFoundationJudge('ser-1')).sourceInputsHash).toBe('hash-before-repair');
   });
 
   it('still reports a mismatch — naming the field — when authored content does not come back', async () => {

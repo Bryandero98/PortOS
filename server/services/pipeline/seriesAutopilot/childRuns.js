@@ -27,7 +27,8 @@ import {
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
-  regressionPauseReason, sameFinding, isBlockingSetRegression, isIsolatedFixSafe,
+  foundationRepairMissed, regressionPauseReason, sameFinding, isBlockingSetRegression,
+  isIsolatedFixSafe,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
 import { recordModelOutcome } from './modelPerformance.js';
@@ -43,6 +44,18 @@ const MAX_PLANNING_GATE_HANDOFFS = 6;
 // just in the marker sanitizer, so the live SSE frame carries the same set the
 // record keeps rather than every finding a many-volume verify produced.
 const discardedSet = (blocking) => blocking.slice(0, AUTOPILOT_DISCARDED_MAX);
+
+// Everything a foundation round reads off one judge verdict. Hoisted because a
+// rejected repair rewinds to its checkpoint and the round then re-reads the
+// PRE-repair verdict — two spellings of this derivation is how they drift.
+const readFoundationVerdict = (snap, threshold) => {
+  const score = snap.weightedScore ?? 0;
+  return {
+    score,
+    gate: foundationGateStatus(snap.dimensions, score, threshold),
+    weak: foundationFixTarget(snap.dimensions, threshold),
+  };
+};
 
 // Effective corrective-pass budget for the arc-verify gate this run: a per-run
 // `maxArcResolveRetries` option wins, else the module default. Negative values
@@ -591,6 +604,14 @@ export async function runCharacterFoundation(seriesId, record) {
 // structure gap; a repaired structure can expose missing craft). Comparing all
 // of those owned repairs to one global weighted-score high-water mark made a
 // newly surfaced dimension look like divergence before its editor ran once.
+//
+// A repair whose independent re-judge does NOT show its target improving is
+// rewound to the checkpoint taken before it — and then RETRIED, not treated as
+// terminal: one rejected generative proposal says nothing about whether the
+// dimension is repairable, and stopping on it stranded runs after a single fix
+// out of a configured 12 rounds. Each retry starts from the verified checkpoint,
+// counts against maxFoundationRounds and the per-dimension stall patience, and
+// carries a note describing what was reverted so it can change strategy.
 export async function runFoundationGate(seriesId, record) {
   const maxRounds = Number.isInteger(record.options.maxFoundationRounds)
     ? record.options.maxFoundationRounds
@@ -619,6 +640,25 @@ export async function runFoundationGate(seriesId, record) {
   // score high-water mark: a genuinely improved target may expose another weak
   // layer, but an unchanged target cannot keep edits by moving the problem.
   let pendingRepair = null;
+  // What the last REJECTED (and reverted) attempt for a dimension looked like:
+  // the strategy note and discarded findings handed to its next attempt, plus
+  // the rewind notice to report if that dimension ends up exhausting its
+  // patience. Cleared as soon as an attempt for that dimension earns its keep.
+  const rejectionByDimension = new Map();
+  // A terminal pause for `dimension`, folding in its last rewind when it had
+  // one: the state being handed back is that checkpoint, and saying so is the
+  // difference between a trustworthy pause and an unexplained rewind.
+  // `rejectedKind` overrides the stop kind when the stop cause IS the rewinding.
+  const foundationPause = (dimension, pauseKind, reason, judged, rejectedKind) => {
+    const rejected = rejectionByDimension.get(dimension);
+    return {
+      pause: true,
+      pauseKind: rejected && rejectedKind ? rejectedKind : pauseKind,
+      reason: rejected ? `${reason} ${rejected.rewind}` : reason,
+      residual: residualFindings(judged.dimensions),
+      ...(rejected ? { discarded: rejected.discarded } : {}),
+    };
+  };
   let changed = false;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
@@ -631,7 +671,14 @@ export async function runFoundationGate(seriesId, record) {
     // a user edit) flips the pinned hash and re-judges automatically.
     let judgeRunId = null;
     const judgeHooks = providerOverrideOpts(record, 'judge');
-    const snap = await judgeFoundation(seriesId, {
+    // `let` because a rejected repair rewinds the foundation to its checkpoint:
+    // the restored content is exactly what the PRE-repair judge scored, so the
+    // rest of the round re-reads that verdict rather than re-judging (see the
+    // rollback branch below). Looping back to this call instead would also
+    // re-derive it — the hash cache absorbs the LLM cost — but it would spend a
+    // whole round of the run's repair budget re-learning what the gate is
+    // already holding, which is the budget the retry exists to use.
+    let snap = await judgeFoundation(seriesId, {
       providerDefault: judgeLlm.providerOverride,
       modelDefault: judgeLlm.modelOverride,
       effortDefault: judgeLlm.effortOverride,
@@ -643,9 +690,7 @@ export async function runFoundationGate(seriesId, record) {
     });
     // A cached (content-hash unchanged) verdict did no LLM work — don't bill it.
     if (!snap.cached) await recordDomainUsage('cos', { actions: 1 });
-    const score = snap.weightedScore ?? 0;
-    const gate = foundationGateStatus(snap.dimensions, score, threshold);
-    const weak = foundationFixTarget(snap.dimensions, threshold);
+    let { score, gate, weak } = readFoundationVerdict(snap, threshold);
     if (!snap.cached && judgeRunId) {
       await recordModelOutcome(judgeRunId, {
         role: 'judge', stage: 'foundationGate', outcome: 'valid',
@@ -687,36 +732,63 @@ export async function runFoundationGate(seriesId, record) {
       const earned = targetImproved
         || (targetTied && objectivelyFilled)
         || (targetTied && gapChanged && score >= beforeWeighted);
+      await Promise.all((pendingRepair.runIds || []).map((runId) => recordModelOutcome(runId, {
+        role: 'creative', stage: 'foundationGate', outcome: earned ? 'accepted' : 'rejected', target: dimension,
+        scoreBefore: beforeTargetScore, scoreAfter: afterTargetScore,
+        weightedBefore: beforeWeighted, weightedAfter: score,
+      }).catch(() => {})));
+      const rejectedJudge = pendingRepair.judge;
+      const rejectedSnapshot = pendingRepair.snapshot;
+      pendingRepair = null;
       if (!earned) {
-        await Promise.all((pendingRepair.runIds || []).map((runId) => recordModelOutcome(runId, {
-          role: 'creative', stage: 'foundationGate', outcome: 'rejected', target: dimension,
-          scoreBefore: beforeTargetScore, scoreAfter: afterTargetScore,
+        const copy = foundationRepairMissed({
+          dimension,
+          targetBefore: beforeTargetScore, targetAfter: afterTargetScore,
           weightedBefore: beforeWeighted, weightedAfter: score,
-        }).catch(() => {})));
-        const rollback = await restoreFoundationState(seriesId, pendingRepair.snapshot);
-        const reason = rollback.restored
-          ? `Foundation ${dimension} repair did not improve its target (${beforeTargetScore} → ${afterTargetScore}; weighted ${beforeWeighted} → ${score}), so its edits were reverted to the pre-repair checkpoint.`
-          : `Foundation ${dimension} repair did not improve its target (${beforeTargetScore} → ${afterTargetScore}; weighted ${beforeWeighted} → ${score}), and checkpoint verification failed after rollback: ${rollback.reason || 'unknown restore mismatch'}.`;
+        });
+        // Hand back the verdict that scored this checkpoint: the rewind puts its
+        // content back, and re-pinning its judgment keeps a resume (or the next
+        // read) from re-buying a score the gate is holding.
+        const rollback = await restoreFoundationState(seriesId, rejectedSnapshot, { judge: rejectedJudge });
+        const discarded = discardedSet(residualFindings(snap.dimensions));
         broadcast(seriesId, {
           type: 'foundation:rollback', round, dimension,
           targetBefore: beforeTargetScore, targetAfter: afterTargetScore,
           weightedBefore: beforeWeighted, weightedAfter: score,
+          // A verified rewind is also a retryable one; an unverified one stops
+          // the gate below, so this single flag says both.
           reverted: rollback.restored,
         });
-        return {
-          pause: true,
-          pauseKind: 'regression',
-          reason,
-          residual: residualFindings(pendingRepair.judge.dimensions),
-          discarded: discardedSet(residualFindings(snap.dimensions)),
-        };
+        // An unverified restore is the one unrecoverable case: the foundation is
+        // no longer known to match ANY judged state, so another repair would be
+        // built on corruption. Everything else keeps going.
+        if (!rollback.restored) {
+          return {
+            pause: true,
+            pauseKind: 'regression',
+            reason: copy.unverified(rollback.reason),
+            residual: residualFindings(rejectedJudge.dimensions),
+            discarded,
+          };
+        }
+        // The checkpoint is verified back in place, so the foundation is once
+        // again exactly what `rejectedJudge` scored: adopt that verdict for the
+        // rest of this round (no second judge call, nothing billed) and let the
+        // stall guard below count the rejection before another attempt runs.
+        rejectionByDimension.set(dimension, {
+          discarded,
+          rewind: copy.rewind,
+          note: copy.retryNote(afterDimension.gap),
+        });
+        snap = rejectedJudge;
+        ({ score, gate, weak } = readFoundationVerdict(snap, threshold));
+        console.log(`↩️ foundation ${dimension} repair reverted — series=${seriesId.slice(0, 12)} round=${round}: ${copy.missed}`);
+      } else {
+        // A kept repair clears the dimension's rejection history: the next
+        // attempt is working from different content, so a stale "this failed"
+        // note would misdirect it.
+        rejectionByDimension.delete(dimension);
       }
-      await Promise.all((pendingRepair.runIds || []).map((runId) => recordModelOutcome(runId, {
-        role: 'creative', stage: 'foundationGate', outcome: 'accepted', target: dimension,
-        scoreBefore: beforeTargetScore, scoreAfter: afterTargetScore,
-        weightedBefore: beforeWeighted, weightedAfter: score,
-      }).catch(() => {})));
-      pendingRepair = null;
     }
     if (gate.passes) {
       record.runState.foundationGated = true;
@@ -745,12 +817,10 @@ export async function runFoundationGate(seriesId, record) {
       const floorReason = gate.failingDimensions.length > 0
         ? `Foundation quality left ${gate.failingDimensions.join(', ')} below the ${gate.dimensionFloor} dimension floor after ${maxRounds} round(s). Strengthen those foundations and resume.`
         : foundationPauseReason(maxRounds, score, threshold);
-      return {
-        pause: true,
-        pauseKind: 'maxRounds',
-        reason: floorReason,
-        residual: residualFindings(snap.dimensions),
-      };
+      // The round bound is the stop cause even when the last attempt rewound —
+      // that attempt still says what state the user is holding, so it rides the
+      // reason rather than relabeling why the loop ended.
+      return foundationPause(weak?.dimension, 'maxRounds', floorReason, snap);
     }
     // Divergence guard (#1571): bail only when repeated repairs fail to improve
     // THEIR OWN target. A global weighted high-water mark is not comparable
@@ -780,12 +850,10 @@ export async function runFoundationGate(seriesId, record) {
       const floorReason = gate.failingDimensions.length > 0
         ? `Foundation quality stopped improving with ${gate.failingDimensions.join(', ')} below the ${gate.dimensionFloor} dimension floor. Review those foundations and resume.`
         : foundationDivergenceReason(score, threshold, DIVERGENCE_PATIENCE);
-      return {
-        pause: true,
-        pauseKind: 'divergence',
-        reason: floorReason,
-        residual: residualFindings(snap.dimensions),
-      };
+      // A stall whose attempts were all REVERTED is reported as a regression:
+      // the pre-#3818 gate raised that kind on the very first rewind, and the
+      // state the user is handed — the pre-repair checkpoint — is the same one.
+      return foundationPause(weak.dimension, 'divergence', floorReason, snap, 'regression');
     }
     if (record.cancelRequested) return { canceled: true };
     const beforeFix = await budgetPause();
@@ -813,9 +881,18 @@ export async function runFoundationGate(seriesId, record) {
     const repairRunIds = [];
     const creativeHooks = providerOverrideOpts(record);
     const repairJudgeHooks = providerOverrideOpts(record, 'judge');
+    // A retry after a reverted attempt gets the ORIGINAL judge gap/fix (the
+    // foundation is back at that checkpoint) plus what the rejected re-judge
+    // said, so it can change strategy instead of re-proposing the same edits.
+    const priorRejection = rejectionByDimension.get(weak.dimension);
+    const repairFinding = {
+      ...(snap.dimensions?.[weak.dimension] || {}),
+      ...(priorRejection ? { retryReason: priorRejection.note } : {}),
+    };
     try {
       fix = await applyFoundationFix(seriesId, weak.dimension, {
-        finding: snap.dimensions?.[weak.dimension] || {},
+        finding: repairFinding,
+        avoidFindings: priorRejection?.discarded,
         providerOverride: creativeLlm.providerOverride,
         modelOverride: creativeLlm.modelOverride,
         judgeProviderDefault: judgeLlm.providerOverride,
