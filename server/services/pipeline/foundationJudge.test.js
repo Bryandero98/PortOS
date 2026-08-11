@@ -1050,19 +1050,41 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 4 });
   });
 
+  it('keeps correcting a structure repair while its blocker count shrinks', async () => {
+    const many = Array.from({ length: 10 }, (_, idx) => ({
+      severity: 'medium', location: `Issue ${idx + 1}`, problem: `Blocker ${idx + 1}`,
+    }));
+    const three = many.slice(0, 3);
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: many })
+      .mockResolvedValueOnce({ issues: three })
+      .mockResolvedValueOnce({ issues: [] });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The issue plan contradicts the series spine.', fix: 'Reconcile it.' },
+    });
+
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledTimes(3);
+    expect(arcPlanner.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcPlanner.restoreArcState).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 6 });
+  });
+
   it('rolls a structure repair back when its bounded correction remains unverified', async () => {
     const snapshot = { seriesId: 'ser-1', arc: { logline: 'Before' }, seasons: [], episodes: [] };
     arcPlanner.snapshotArcState.mockResolvedValue(snapshot);
     arcPlanner.verifyArc
       .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 6', problem: 'First blocker' }] })
-      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 7', problem: 'Residual blocker' }] });
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 7', problem: 'Residual blocker' }] })
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 8', problem: 'Still blocked' }] })
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 9', problem: 'Still blocked after cap' }] });
 
     const r = await applyFoundationFix('ser-1', 'structure', {
       finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
     });
 
     expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', snapshot);
-    expect(r).toMatchObject({ dimension: 'structure', applied: false, actions: 4 });
+    expect(r).toMatchObject({ dimension: 'structure', applied: false, actions: 8 });
     expect(r.reason).toMatch(/reverted to the pre-repair plan/);
   });
 

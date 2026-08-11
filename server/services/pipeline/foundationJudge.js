@@ -70,6 +70,7 @@ const WRITER_STAGE = 'pipeline-arc-overview';
 // the weighted composite, the fix router, sanitize, and client rendering.
 // Order is display order. Weights sum to 1.0 (asserted at module load).
 export const FOUNDATION_DIMENSIONS = Object.freeze(['worldbuilding', 'character', 'structure', 'craft']);
+const MAX_STRUCTURE_CORRECTION_PASSES = 3;
 export const FOUNDATION_WEIGHTS = Object.freeze({
   worldbuilding: 0.4,
   character: 0.3,
@@ -1693,25 +1694,33 @@ export async function applyFoundationFix(seriesId, dimension, {
 
       // A foundation-directed structure rewrite can satisfy its broad judge
       // while accidentally violating a narrower canon/location/timing rule.
-      // Give the specialized arc verifier's concrete findings one bounded
-      // corrective pass before the next foundation round. This keeps those
-      // contradictions from consuming the foundation budget as if they were
-      // deeper critique, while still bounding spend and rewrite blast radius.
-      const correction = await resolveVerifyIssues(seriesId, {
-        findings: blockers,
-        ...resolveOptions,
-      });
-      if (correction?.applied !== false) {
+      // Keep correcting while the specialized verifier's blocker count shrinks.
+      // A single all-or-nothing pass threw away demonstrated 10 → 3 progress and
+      // forced the next run to rebuy all ten fixes. The bounded loop preserves
+      // the original rollback guarantee, but spends up to three focused passes
+      // when each one is moving monotonically toward a clean plan.
+      let actions = 2;
+      for (let pass = 0; pass < MAX_STRUCTURE_CORRECTION_PASSES && blockers.length > 0; pass += 1) {
+        const before = blockers.length;
+        const correction = await resolveVerifyIssues(seriesId, {
+          findings: blockers,
+          ...resolveOptions,
+        });
+        actions += 1;
+        if (correction?.applied === false) break;
         verification = await verifyArc(seriesId, verifyOptions);
-        blockers = Array.isArray(verification?.issues) ? verification.issues : [];
+        actions += 1;
+        const nextBlockers = Array.isArray(verification?.issues) ? verification.issues : [];
+        blockers = nextBlockers;
+        if (blockers.length === 0) return { dimension, applied: true, actions };
+        if (blockers.length > before) break;
       }
-      if (blockers.length === 0) return { dimension, applied: true, actions: 4 };
 
       await restoreArcState(seriesId, snapshot);
       return {
         dimension,
         applied: false,
-        actions: correction?.applied === false ? 3 : 4,
+        actions,
         reason: `structure repair left ${blockers.length} arc-verification blocker(s); reverted to the pre-repair plan`,
         // The blockers that condemned the rewrite. Without them the revert is a
         // bare count in prose, and the pause it raises reports dimension-level
