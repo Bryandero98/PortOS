@@ -40,7 +40,7 @@ You are the senior character architect for a long-form series. Build the human e
 
 - Preserve the `id`, name, physical identity, and established history of every supplied character. Existing canon is a constraint, not raw material to replace.
 - Make Ghost → Wound → Lie → Want → Need causal and specific. The Want must create external action; the Need must demand a costly contradiction of the Lie.
-- Give each target character distinct values, contradictions, motivation, speech rhythm, secrets, and relationships that exert pressure in both directions.
+- Give each target character distinct values, contradictions, motivation, speech rhythm, secrets, and relationships that exert pressure in both directions. Fully author the bible profile: explicit pronouns; apparent age or age-status; speech accent or vocal quality; personality; relevant background; likes; dislikes; mannerisms; reciprocal relationships; and practical skills. "Unknown" may be a deliberate in-world age-status, but a blank is not a design choice.
 - Treat visual identity as canon, not decoration. `physicalDescription` must be 50–100 words of concrete, image-generation-ready detail; never use the character's name inside it. Specify apparent age range, scale/build or non-human form, surface/skin, hair and eyes when applicable, distinguishing marks, and signature attire/materials. Make `visualNotes`, `silhouetteNotes`, `postureNotes`, `visualIdentity`, and `colorPalette` mutually reinforcing and visibly distinct from every peer.
 - For the core cast, provide practical recurring `props`; provide `expressions`, `handGestures`, and `wardrobes` when the character's form supports them. Do not force human anatomy or clothing onto a non-human entity—use form-appropriate stats, poses, signal states, surface changes, or carried interfaces instead.
 - Return every supplied target whose framework is incomplete or whose existing engine needs the requested editorial repair. Never silently omit a target merely because the batch is large; later batches handle the rest of the roster.
@@ -59,9 +59,16 @@ Return ONLY one valid JSON object. Omit `newCharacters` when no new role is nece
   "characters": [{
     "id": "existing character id",
     "name": "existing character name",
+    "pronouns": "explicit pronouns",
+    "age": "apparent age range, exact age, ancient, or deliberately unknown",
+    "speechAccent": "accent, vocal quality, or nonverbal signal quality",
     "personality": "specific contradictions under pressure",
     "background": "only the history relevant to present choices",
+    "likes": "specific pleasures, comforts, or affinities",
+    "dislikes": "specific aversions and irritants",
+    "mannerisms": "observable repeated behaviors",
     "relationships": "reciprocal tensions, obligations, love, leverage, and mistrust",
+    "skills": "practical capabilities and limits",
     "ghost": "specific formative past event",
     "wound": "lasting emotional consequence",
     "lie": "false belief caused by the wound",
@@ -88,9 +95,16 @@ Return ONLY one valid JSON object. Omit `newCharacters` when no new role is nece
   "newCharacters": [{
     "name": "new non-duplicate character name",
     "role": "precise story and relationship function",
+    "pronouns": "explicit pronouns",
+    "age": "apparent age range, exact age, ancient, or deliberately unknown",
+    "speechAccent": "accent, vocal quality, or nonverbal signal quality",
     "personality": "specific contradictions under pressure",
     "background": "relevant history",
+    "likes": "specific pleasures, comforts, or affinities",
+    "dislikes": "specific aversions and irritants",
+    "mannerisms": "observable repeated behaviors",
     "relationships": "ties into the existing ensemble",
+    "skills": "practical capabilities and limits",
     "ghost": "specific formative past event",
     "wound": "lasting emotional consequence",
     "lie": "false belief caused by the wound",

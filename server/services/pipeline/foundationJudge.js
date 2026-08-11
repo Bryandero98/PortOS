@@ -163,6 +163,7 @@ export function foundationInputs(series, universe, issues = []) {
       name: c.name,
       role: c.role || '',
       ...pickFrameworkFields(c),
+      ...pickProfileFields(c),
       ...pickVisualFoundationFields(c),
     })),
     arc: series?.arc || null,
@@ -189,6 +190,13 @@ export function foundationInputs(series, universe, issues = []) {
 // Lie → Want → Need chain + secrets + arc fields). Shared by the hash projection
 // and the "thinnest character" fix target so both read the SAME field set.
 const FRAMEWORK_STRING_FIELDS = Object.freeze(['ghost', 'wound', 'lie', 'want', 'need', 'coreTheme', 'motivations', 'speechPattern']);
+// A dramatic engine alone does not make a complete bible card. These fields
+// prevent a later drafter or renderer from having to invent a supporting
+// character's identity, behavior, and capabilities after the plot is settled.
+const PROFILE_STRING_FIELDS = Object.freeze([
+  'pronouns', 'age', 'speechAccent', 'personality', 'background',
+  'likes', 'dislikes', 'mannerisms', 'relationships', 'skills',
+]);
 // Identity-bearing visual axes a graphic-novel lead needs before the plot is
 // allowed to grow around them. This intentionally stops short of requiring a
 // human facial-expression or wardrobe sheet from non-human characters.
@@ -202,6 +210,10 @@ function pickFrameworkFields(c) {
   out.arcType = c?.arcType || '';
   out.secrets = Array.isArray(c?.secrets) ? c.secrets : [];
   return out;
+}
+
+function pickProfileFields(c) {
+  return Object.fromEntries(PROFILE_STRING_FIELDS.map((field) => [field, c?.[field] || '']));
 }
 
 function pickVisualFoundationFields(c) {
@@ -397,6 +409,9 @@ function renderCharacterLine(c, { core = false } = {}) {
   const framework = FRAMEWORK_STRING_FIELDS
     .map((field) => `${field}: ${concise(c?.[field])}`)
     .join(' | ');
+  const profile = PROFILE_STRING_FIELDS
+    .map((field) => `${field}: ${concise(c?.[field])}`)
+    .join(' | ');
   const secrets = (Array.isArray(c?.secrets) ? c.secrets : [])
     .map(concise)
     .slice(0, 3)
@@ -416,7 +431,7 @@ function renderCharacterLine(c, { core = false } = {}) {
     ...VISUAL_FOUNDATION_STRING_FIELDS.map((field) => `${field}: ${visualString(field)}`),
     ...VISUAL_FOUNDATION_LIST_FIELDS.map((field) => `${field}: ${visualList(field)}`),
   ].join(' | ');
-  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — ${framework} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'} | visual foundation: ${visual}`;
+  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — dramatic framework: ${framework} | profile: ${profile} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'} | visual foundation: ${visual}`;
 }
 
 function countOccurrences(text, value) {
@@ -455,6 +470,7 @@ export function rankFoundationCharacters(characters, series, issues = [], { incl
     .filter((character) => character && (includeLocked || character.locked !== true))
     .map((character, index) => {
       const blanks = FRAMEWORK_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
+        + PROFILE_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
         + (isBlankArray(character.secrets) ? 1 : 0)
         + VISUAL_FOUNDATION_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
         + VISUAL_FOUNDATION_LIST_FIELDS.filter((field) => isBlankArray(character[field])).length;
@@ -462,9 +478,11 @@ export function rankFoundationCharacters(characters, series, issues = [], { incl
       const authoredArc = authoredArcKeys.has(character.id)
         || authoredArcKeys.has(`name:${String(character.name || '').trim().toLowerCase()}`);
       const coreRole = /protagonist|lead|hero|antagonist|villain|deuteragonist|mentor/i.test(character.role || '');
-      return { character, index, mentions, authoredArc, coreRole, blanks };
+      const seriesOwned = !!series?.id && character.sourceSeriesId === series.id;
+      return { character, index, mentions, authoredArc, coreRole, seriesOwned, blanks };
     })
     .sort((a, b) => Number(b.authoredArc) - Number(a.authoredArc)
+      || Number(b.seriesOwned) - Number(a.seriesOwned)
       || Number(b.coreRole) - Number(a.coreRole)
       || b.mentions - a.mentions
       || b.blanks - a.blanks
@@ -484,7 +502,7 @@ export function rankFoundationCharacters(characters, series, issues = [], { incl
  */
 export function seriesFoundationCharacters(characters, series, issues = []) {
   const ranked = rankFoundationCharacters(characters, series, issues, { includeLocked: true });
-  const referenced = ranked.filter(({ authoredArc, mentions }) => authoredArc || mentions > 0);
+  const referenced = ranked.filter(({ authoredArc, mentions, seriesOwned }) => authoredArc || mentions > 0 || seriesOwned);
   const selected = referenced.length > 0 ? referenced : ranked.slice(0, 6);
   return selected.map(({ character }) => character);
 }
@@ -496,8 +514,8 @@ function repairableSeriesFoundationCharacters(characters, series, issues = []) {
 
 /**
  * Blank foundation fields across the cast a `character` repair is allowed to
- * write — the series roster minus locked members, over the SAME framework +
- * visual field sets the character dimension is scored on.
+ * write — the series roster minus locked members, over the SAME framework,
+ * profile, and visual field sets the character dimension is scored on.
  *
  * This is the gate's objective, LLM-free second opinion on a repair the judge
  * scored as a tie. A judge can misread the cast — a presence-marker render once
@@ -865,6 +883,7 @@ export function thinnestCharacter(characters) {
   for (const c of list) {
     if (!c || c.locked === true) continue;
     const blanks = FRAMEWORK_STRING_FIELDS.filter((f) => isBlankString(c[f])).length
+      + PROFILE_STRING_FIELDS.filter((field) => isBlankString(c[field])).length
       + (isBlankArray(c.secrets) ? 1 : 0)
       + VISUAL_FOUNDATION_STRING_FIELDS.filter((field) => isBlankString(c[field])).length
       + VISUAL_FOUNDATION_LIST_FIELDS.filter((field) => isBlankArray(c[field])).length;
@@ -876,6 +895,7 @@ export function thinnestCharacter(characters) {
 
 const REPAIRABLE_CHARACTER_FIELDS = Object.freeze([
   ...FRAMEWORK_STRING_FIELDS,
+  ...PROFILE_STRING_FIELDS,
   ...VISUAL_FOUNDATION_STRING_FIELDS,
   ...VISUAL_FOUNDATION_LIST_FIELDS,
   'arcType',
@@ -1386,6 +1406,7 @@ async function repairCharacters(series, issues, universe, finding, options) {
 
 function hasCompleteFramework(character) {
   return FRAMEWORK_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
+    && PROFILE_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
     && !isBlankArray(character?.secrets)
     && !isBlankString(character?.arcType)
     && VISUAL_FOUNDATION_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
@@ -1910,6 +1931,7 @@ export const __testing = {
   CHARACTER_FOUNDATION_TIMEOUT_MS,
   CHARACTER_FOUNDATION_BATCH_SIZE,
   FRAMEWORK_STRING_FIELDS,
+  PROFILE_STRING_FIELDS,
   mismatchedFoundationFields,
   comparableUniverseFields,
   CANON_WRITE_PATH_OWNED_FIELDS,

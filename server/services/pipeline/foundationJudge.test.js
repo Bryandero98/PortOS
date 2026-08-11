@@ -293,6 +293,12 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     };
     expect(foundationInputsHash(series, base)).not.toBe(foundationInputsHash(series, designed));
   });
+  it('changes when a series-linked character profile field changes', () => {
+    const series = { id: 'ser-1', premise: 'Lead crosses the flooded city.' };
+    const base = { characters: [{ id: 'c1', name: 'Support', sourceSeriesId: 'ser-1', pronouns: '' }] };
+    const designed = { characters: [{ ...base.characters[0], pronouns: 'they/them', skills: 'pressure-system maintenance' }] };
+    expect(foundationInputsHash(series, base)).not.toBe(foundationInputsHash(series, designed));
+  });
   it('changes when the protected author intent changes', () => {
     const base = { starterPrompt: 'A clockmaker discovers that dragons control the weather.' };
     const drifted = { starterPrompt: 'Train conductors regulate an intercity signal network.' };
@@ -394,6 +400,19 @@ describe('rankFoundationCharacters — core-cast repair targets', () => {
     expect(seriesFoundationCharacters(characters, series)).toHaveLength(9);
   });
 
+  it('keeps every character explicitly minted by this series even before the synopsis names them', () => {
+    const characters = [
+      { id: 'lead', name: 'Lead' },
+      { id: 'support', name: 'Support', sourceSeriesId: 'ser-1' },
+      { id: 'other', name: 'Other', sourceSeriesId: 'ser-2' },
+    ];
+    const series = { id: 'ser-1', characterArcs: [{ characterId: 'lead' }] };
+    const ids = seriesFoundationCharacters(characters, series).map((character) => character.id);
+
+    expect(ids).toEqual(expect.arrayContaining(['lead', 'support']));
+    expect(ids).not.toContain('other');
+  });
+
   it('uses a six-character fallback only before story references exist', () => {
     const characters = Array.from({ length: 9 }, (_, index) => ({
       id: `chr-${index + 1}`,
@@ -409,13 +428,16 @@ describe('countFoundationCharacterBlanks — objective repair evidence', () => {
   const authoredLead = {
     ...blankLead,
     ghost: 'g', wound: 'w', lie: 'l', want: 'wa', need: 'n', coreTheme: 'c', motivations: 'm', speechPattern: 's',
+    pronouns: 'they/them', age: 'thirty', speechAccent: 'low measured register',
+    personality: 'careful', background: 'trained on the docks', likes: 'tea', dislikes: 'waste',
+    mannerisms: 'counts breaths', relationships: 'protective of the crew', skills: 'pressure repair',
     secrets: ['one'],
     physicalDescription: 'p', visualNotes: 'v', silhouetteNotes: 'si', visualIdentity: 'vi',
     colorPalette: [{ name: 'Rope Tan', hex: '#B89A6A' }],
   };
 
-  it('drops to zero once every framework and visual field is authored', () => {
-    expect(countFoundationCharacterBlanks([blankLead], series)).toBe(14);
+  it('drops to zero once every framework, profile, and visual field is authored', () => {
+    expect(countFoundationCharacterBlanks([blankLead], series)).toBe(24);
     expect(countFoundationCharacterBlanks([authoredLead], series)).toBe(0);
   });
 
@@ -431,8 +453,8 @@ describe('countFoundationCharacterBlanks — objective repair evidence', () => {
         { characterId: 'chr-locked', characterName: 'Locked' },
       ],
     };
-    // Only the unlocked, story-referenced lead contributes its 14 blanks.
-    expect(countFoundationCharacterBlanks(cast, lockedSeries)).toBe(14);
+    // Only the unlocked, story-referenced lead contributes its 24 blanks.
+    expect(countFoundationCharacterBlanks(cast, lockedSeries)).toBe(24);
   });
 
   it('treats a missing cast as nothing to measure rather than throwing', () => {
@@ -863,6 +885,22 @@ describe('foundation judge context — complete planning altitude', () => {
     expect(ctx.characterRoster).toContain('Round survey instruments');
     expect(ctx.characterRoster).toContain('survey yellow');
     expect(ctx.characterRoster).not.toContain('physicalDescription: ready');
+  });
+
+  it('shows profile blanks for a series-linked supporting character', () => {
+    const ctx = __testing.buildFoundationContext({
+      series: { id: 'ser-1', name: 'Example Series', seasons: [] },
+      universe: {},
+      canon: { characters: [{
+        id: 'chr-support', name: 'Support', sourceSeriesId: 'ser-1',
+        personality: 'Methodical under pressure', pronouns: '', age: '', skills: '',
+      }] },
+      issues: [],
+      contentMax: 30_000,
+    });
+    expect(ctx.characterRoster).toContain('personality: Methodical under pressure');
+    expect(ctx.characterRoster).toContain('pronouns: —');
+    expect(ctx.characterRoster).toContain('skills: —');
   });
 
   it('judges the complete story-referenced cast and excludes unrelated universe assets', () => {

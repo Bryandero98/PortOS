@@ -361,7 +361,7 @@
     },
     "pipeline-character-foundation": {
       "name": "Pipeline — Character Foundation",
-      "description": "Character-first planning pass used before the macro arc and again for post-arc reconciliation. It completes causal Ghost/Wound/Lie/Want/Need engines, distinct voices, relationships, secrets, and provisional whole-series transitions before plot generation; afterward it preserves that foundation while permitting only necessary refinements and a small additive set of story-required characters.",
+      "description": "Character-first planning pass used before the macro arc and again for post-arc reconciliation. It fully authors every series-linked character's narrative profile and render identity, completes causal Ghost/Wound/Lie/Want/Need engines, distinct voices, relationships, secrets, and provisional whole-series transitions before plot generation; afterward it preserves that foundation while permitting only necessary refinements and a small additive set of story-required characters.",
       "model": "heavy",
       "returnsJson": true,
       "variables": ["phase", "foundationFindingJson", "seriesJson", "outline", "charactersJson"]
