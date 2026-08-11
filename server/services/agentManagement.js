@@ -32,6 +32,8 @@ import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { dispatchRecoveredTaskOutputHook } from './agentFinalization.js';
+import { fileInvestigationTask } from './investigationTaskProducer.js';
+import { buildInvestigationFingerprint } from '../lib/investigationTasks.js';
 import { PATHS, tryReadFile } from '../lib/fileUtils.js';
 import { readHostShutdownMarker, clearHostShutdownMarker, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
@@ -1316,18 +1318,21 @@ This task has been blocked after ${totalSpawns} total agent spawns. Investigate:
 3. Look for resource constraints (memory, CPU)
 4. Check for network/connection issues between services
 
-Once the issue is resolved, reset the original task to pending.`;
+Once the issue is resolved, task \`${taskId}\` is retried automatically — completing this task revives it.`;
 
-    await addTask({
+    // Filed through the shared producer so this participates in the same
+    // loop-aware approval policy, storm counter, and fingerprint dedup as every
+    // other investigation (#3714), and so `affectedTasks` closes the loop: the
+    // orphaned task comes back on its own when this one completes. Hardcoding
+    // `approvalRequired: true` here is what turned one repeatedly-orphaned task
+    // into a queue of approvals nobody asked for.
+    await fileInvestigationTask({
       description,
       priority: 'HIGH',
       context: `Auto-generated from repeated orphan failures for task ${taskId}`,
-      // Requires approval, matching every other error-driven task creator
-      // (autoFixer.js, agentErrorAnalysis.js) — repeated orphaning is an
-      // infra/process-flakiness signal, not a diagnosed code bug, so an
-      // unsupervised agent shouldn't be turned loose on the codebase from it.
-      approvalRequired: true
-    }, 'internal').catch(err => {
+      fingerprint: buildInvestigationFingerprint(task, { category: 'max-retries' }),
+      affectedTasks: [taskId]
+    }).catch(err => {
       emitLog('error', `Failed to create investigation task: ${err.message}`, { taskId, error: err.message });
     });
   }

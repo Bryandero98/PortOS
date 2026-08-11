@@ -1141,6 +1141,17 @@ describe('cos.js source — priority + capacity invariants', () => {
     const handler = COS_SRC.slice(onIdx, COS_SRC.indexOf('});', onIdx) + 3);
     expect(handler).toMatch(/data\.action\s*===\s*'requeued'/);
   });
+
+  // A finished investigation is what releases the failure-blocked task(s) it was
+  // diagnosing. Without this branch the fix lands and the work it unblocked never
+  // runs — the task sits `blocked` until a human notices or the 14-day reaper
+  // quietly auto-expires it.
+  it('tasks:changed listener hands a completed task to the investigation auto-retry', () => {
+    const onIdx = COS_SRC.indexOf("cosEvents.on('tasks:changed'");
+    const handler = COS_SRC.slice(onIdx, COS_SRC.indexOf('});', onIdx) + 3);
+    expect(handler).toMatch(/data\.task\?\.status\s*===\s*'completed'/);
+    expect(handler).toMatch(/retryTasksResolvedByInvestigation\(data\.task\)/);
+  });
 });
 
 // A failed run's retry is held non-spawnable (`in_progress` + marker) while its

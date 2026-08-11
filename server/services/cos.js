@@ -78,6 +78,7 @@ import { firstLine, PRIORITY_VALUES, getUserTasks, getCosTasks, getAllTasks, get
 export { firstLine, getUserTasks, getCosTasks, getAllTasks, getTasks, getTaskById, addTask, updateTask, reviveBlockedTask, deleteTask, reorderTasks, approveTask, challengeTask, resolveTaskChallenge, resolveTaskChallengeWithRecheck, sweepResolvedFailureTasks };
 import { ensureInstanceId } from './instances.js';
 import { isHeldByOther, buildRenewal, buildClaim, getClaimOwner } from './cosTaskClaim.js';
+import { retryTasksResolvedByInvestigation } from './investigationRetry.js';
 
 const AGENT_ARCHIVE_RETENTION_DAYS = 90;
 const RESUME_DEQUEUE_DELAY_MS = 500;
@@ -1451,6 +1452,9 @@ export async function init() {
   // - 'requeued': an in_progress task flipped back to pending — a failed run's
   //   retry released from its cleanup hold (#3373) or an orphan sweep requeue.
   //   Newly spawnable, and long after the completion dequeue ran — re-run dequeue.
+  // - a transition INTO `completed` (any action): if the finished task is an
+  //   INVESTIGATION, revive the failure-blocked task(s) it was diagnosing instead
+  //   of leaving them for a human to un-block by hand.
   cosEvents.on('tasks:changed', (data) => {
     if (!isDaemonRunning() || !data?.action) return;
     if (data.action === 'added') {
@@ -1463,6 +1467,17 @@ export async function init() {
       if (data.type === 'user' && data.task) setImmediate(() => tryImmediateSpawn(data.task));
     } else if (data.action === 'approved' || data.action === 'unblocked' || data.action === 'requeued') {
       setImmediate(() => dequeueNextTask());
+    } else if (data.task?.status === 'completed' && data.previousStatus !== 'completed') {
+      // A finished investigation releases the task(s) its failure was blocking
+      // (see investigationRetry.js). Keyed on the completion rather than on who
+      // wrote it, so it covers BOTH an investigation agent finishing its run and
+      // a human ticking the task off after fixing the cause by hand — and on the
+      // TRANSITION, not the level, so a later edit to an already-completed
+      // investigation can't spend a second auto-retry on a task that re-blocked.
+      // The service no-ops for every other completed task, and each revive emits
+      // its own `unblocked` above, which is what re-runs the dequeue.
+      setImmediate(() => retryTasksResolvedByInvestigation(data.task)
+        .catch(err => console.error(`❌ Auto-retry after investigation ${data.task?.id} failed: ${err.message}`)));
     }
   });
 

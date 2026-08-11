@@ -14,18 +14,21 @@ import {
   resolveTypeFailureSignal,
   maybeCreateInvestigationTask,
   createInvestigationTask,
-  buildInvestigationFingerprint,
   redactFailureSnippet,
   endsAwaitingUserInput,
   AWAITING_INPUT_TAIL_CHARS,
   MAX_TASK_RETRIES,
   INVESTIGATION_CIRCUIT_WINDOW_MS,
   INVESTIGATION_CIRCUIT_MAX_CREATIONS,
+  __resetInvestigationCircuit
+} from './agentErrorAnalysis.js';
+// The pure policy + fingerprint moved to the shared leaf so every failure-driven
+// producer reads one definition; the create path here still applies it.
+import {
   INVESTIGATION_LOOP_WINDOW_MS,
   INVESTIGATION_STORM_HOLD_THRESHOLD,
   resolveInvestigationApproval,
-  __resetInvestigationCircuit
-} from './agentErrorAnalysis.js';
+} from '../lib/investigationTasks.js';
 import { detectImmediateFallbackSignal } from '../lib/aiToolkit/errorDetection.js';
 import { API_ACCESS_ERROR_CATEGORIES } from './agentErrorAnalysis.js';
 import { ENVIRONMENTAL_ERROR_CATEGORIES } from './taskLearning/metrics.js';
@@ -492,20 +495,8 @@ describe('maybeCreateInvestigationTask', () => {
   });
 });
 
-describe('buildInvestigationFingerprint', () => {
-  it('keys on category, analysisType/taskType, and app — never the free-text message', () => {
-    const fp = buildInvestigationFingerprint(
-      { id: 't', taskType: 'internal', metadata: { analysisType: 'app-improve', app: 'ExampleApp' } },
-      { category: 'startup-failure', message: 'raw output line that varies per run' }
-    );
-    expect(fp).toBe('startup-failure:app-improve:ExampleApp');
-  });
-
-  it('falls back to taskType, then generic sentinels, when analysisType/app are absent', () => {
-    expect(buildInvestigationFingerprint({ id: 't', taskType: 'user', metadata: {} }, { category: 'unknown' })).toBe('unknown:user:none');
-    expect(buildInvestigationFingerprint({ id: 't' }, null)).toBe('unknown:task:none');
-  });
-});
+// `buildInvestigationFingerprint` itself is covered in
+// `lib/investigationTasks.test.js` alongside the rest of the pure leaf.
 
 describe('createInvestigationTask guards (#2615)', () => {
   const failedTask = { id: 'task-1', description: 'do the thing', taskType: 'user', metadata: {} };
@@ -676,13 +667,13 @@ describe('resolveInvestigationApproval (failure-loop policy, #3714)', () => {
 
   it('auto-approves an isolated failure — the default, so CoS diagnoses itself unattended', () => {
     expect(resolveInvestigationApproval({ fingerprint: FP, tasks: [], now: NOW }))
-      .toEqual({ approvalRequired: false, loopReason: null });
+      .toMatchObject({ approvalRequired: false, loopReason: null, approvalReason: null });
   });
 
   it('holds for a human when the same cause was already investigated inside the loop window', () => {
     const tasks = [settled(INVESTIGATION_LOOP_WINDOW_MS - 1000)];
     expect(resolveInvestigationApproval({ fingerprint: FP, tasks, now: NOW }))
-      .toEqual({ approvalRequired: true, loopReason: 'repeat-fingerprint' });
+      .toMatchObject({ approvalRequired: true, loopReason: 'repeat-fingerprint', approvalReason: 'investigation-loop:repeat-fingerprint' });
   });
 
   it('auto-approves again once the prior investigation ages out of the loop window', () => {
@@ -708,7 +699,7 @@ describe('resolveInvestigationApproval (failure-loop policy, #3714)', () => {
   it('holds for a human once the circuit window is at the storm threshold', () => {
     expect(resolveInvestigationApproval({
       fingerprint: FP, tasks: [], recentCreations: INVESTIGATION_STORM_HOLD_THRESHOLD, now: NOW
-    })).toEqual({ approvalRequired: true, loopReason: 'failure-storm' });
+    })).toMatchObject({ approvalRequired: true, loopReason: 'failure-storm', approvalReason: 'investigation-loop:failure-storm' });
   });
 
   it('leaves ordinary traffic below the storm threshold unattended', () => {
