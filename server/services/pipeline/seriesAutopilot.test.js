@@ -2045,8 +2045,10 @@ describe('autopilot conductor', () => {
     // The 2026-08-09 non-convergence, replayed: the loop hands the resolver ONE
     // blocking finding and gets 3 back, then 5 — with the original still
     // standing every round. Before this guard all of that damage was committed
-    // and the run paused on 5 findings the user never had. Now round 2's verify sees the
-    // regression, puts the pre-resolve arc back, and pauses on the original 1.
+    // and the run paused on 5 findings the user never had. Now round 2's verify
+    // sees the regression and puts the pre-resolve arc back; it spends its one
+    // corrective pass from there, and when round 3 regresses again the gate is
+    // out of retries and pauses on the original 1.
     const original = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
     const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 2}` });
     const round = (n) => ({ issues: [original, ...Array.from({ length: n - 1 }, (_, i) => extra(i))] });
@@ -2058,28 +2060,96 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    // Bailed at round 2 — the 5-finding third round never runs, so neither the
-    // verify nor another resolve is billed against the budget.
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
-    // The snapshot taken before that resolve is what gets handed back.
+    // Bailed at round 3 — the loop never runs on past the second regression, so
+    // rounds 4-6 cost nothing.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    // Only the first-attempt resolve snapshots; the corrective pass reuses the
+    // checkpoint it was just rewound to rather than pinning the reverted draft.
     expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(1);
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
     );
+    // The corrective pass is handed the CHECKPOINT's findings (what the restored
+    // plan actually has) plus the rejected attempt's own findings to steer away
+    // from — not the 3-finding set, which is no longer in the plan at all.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[1][1]).toMatchObject({
+      findings: [original],
+      avoid: round(3).issues,
+    });
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
     expect(last?.scope).toBe('verifyArcSpine');
     expect(last?.pauseKind).toBe('regression');
     expect(last?.reason).toMatch(/reverted/);
-    // Residual is what the user had BEFORE the round, not the 3 it manufactured.
+    // Residual is what the user had BEFORE the round, not the 5 it manufactured.
     expect(last?.residualFindings).toEqual([original]);
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     expect(series.autopilot?.pauseKind).toBe('regression');
     expect(series.autopilot?.residualFindings).toHaveLength(1);
+  });
+
+  it('spends one corrective pass on a reverted resolve round and converges from it (#3781)', async () => {
+    // The 2026-08-11 verifyArcSpine stall: 3 blockers in, 6 back, reverted —
+    // and the run STOPPED there. A resume re-ran the same prompt over the same
+    // restored state, so the gate could never clear itself unattended. Now the
+    // revert is followed by one more resolve from the checkpoint that names the
+    // rejected attempt's own findings as the failure mode to avoid.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(3, 'initial') }))
+      .mockImplementationOnce(async () => ({ issues: holes(6, 'regressed') }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // The damaged draft is still reverted — the retry is a second attempt from
+    // the checkpoint, never an acceptance of the worse state.
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues.mock.calls[1][1]).toMatchObject({
+      findings: holes(3, 'initial'),
+      avoid: holes(6, 'regressed'),
+    });
+    // …and the gate clears, so the run advances instead of pausing for a human.
+    const rollback = frames.find((f) => f.type === 'resolve:rollback');
+    expect(rollback).toMatchObject({ before: 3, after: 6, best: 3, retrying: true });
+    expect(frames.some((f) => f.type === 'resolve:round' && f.retry === true)).toBe(true);
+    expect(frames.some((f) => f.type === 'paused' && f.pauseKind === 'regression')).toBe(false);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
+  it('honors maxArcResolveRetries: 0 by pausing on the first regression', async () => {
+    // The pre-#3781 behavior stays reachable per run: no corrective pass, so the
+    // first reverted candidate ends the gate without spending a second resolve.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(3, 'initial') }))
+      .mockImplementationOnce(async () => ({ issues: holes(6, 'regressed') }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6, maxArcResolveRetries: 0 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual(holes(3, 'initial'));
   });
 
   it('reverts the same 1 → 3 → 5 divergence when each verify call re-words the finding', async () => {
@@ -2118,16 +2188,17 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    // Round 3 (the 5-finding verify) and its resolve are never billed.
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    // Round 2's regression is reverted and retried once; round 3 regresses
+    // again with no retries left, so rounds 4-6 are never billed.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
     );
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
-    // Paused on the ONE finding the user actually had, not the 3 it manufactured.
+    // Paused on the ONE finding the user actually had, not the 5 it manufactured.
     expect(last?.residualFindings).toEqual([restatements[0]]);
   });
 
@@ -2150,8 +2221,10 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    // The corrective pass gets the same two latent blockers back, so the gate
+    // runs out of retries and pauses on the demonstrated single-blocker state.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
@@ -2165,7 +2238,7 @@ describe('autopilot conductor', () => {
     const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
       severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
     }));
-    const rounds = [holes(4, 'initial'), holes(2, 'best'), holes(4, 'regressed'), holes(5, 'never reached')];
+    const rounds = [holes(4, 'initial'), holes(2, 'best'), holes(4, 'regressed'), holes(5, 'retry regressed')];
     arcSpies.verifyArc.mockReset();
     rounds.forEach((result) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues: result })));
     const initialSnapshot = { marker: 'initial', arc: null, seasons: [], episodes: [] };
@@ -2178,9 +2251,12 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 12 });
     await waitFor(runFinished(seriesId));
 
-    // The first increase stops the loop; the 5-blocker round is never spent.
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    // Round 3's increase rewinds to the 2-blocker checkpoint and spends the one
+    // corrective pass; round 4 regresses again, so the loop stops there.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(4);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(3);
+    // Two snapshots, three resolves: the corrective pass rewinds to the
+    // checkpoint it already holds instead of pinning the reverted draft.
     expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(2);
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
@@ -2190,12 +2266,12 @@ describe('autopilot conductor', () => {
     // Both sides of the trade are reported: the count guard is deliberately
     // blind to finding identity, so the rejected candidate's own findings ride
     // along for the human deciding whether the pause was worth it.
-    expect(last?.discardedFindings).toEqual(rounds[2]);
+    expect(last?.discardedFindings).toEqual(rounds[3]);
     // The persisted marker must agree with the broadcast frame. These are two
     // separate writes off one payload, and a field that reaches only the live
     // stream vanishes on reload — which is when the user actually reviews it.
     const series = await seriesSvc.getSeries(seriesId);
-    expect(series.autopilot?.discardedFindings).toEqual(rounds[2]);
+    expect(series.autopilot?.discardedFindings).toEqual(rounds[3]);
   });
 
   it('a blocker increase reaches the regression guard even when it lands on the round cap', async () => {

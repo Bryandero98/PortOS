@@ -42,6 +42,21 @@ export const DEFAULT_FOUNDATION_GATE_ENABLED = true;
 // `maxChildRetries` option overrides it (plumbed through runOptions).
 export const MAX_CHILD_RETRIES = 1;
 
+// Corrective-pass budget for the arc-verify gate's regression guard (#3781). A
+// resolver round that GREW the blocking count is reverted either way; this is
+// how many times the gate may then re-run the resolver from the restored best
+// state — with the rejected attempt's own findings attached as an explicit "do
+// not author these" list — before it gives up and pauses for a human. Without
+// it the very first bad candidate stops the whole run, and a resume just re-runs
+// the identical prompt from the identical state and can regress identically, so
+// the gate could never clear itself unattended (the 2026-08-11 verifyArcSpine
+// stall: 3 blockers in, 6 back, paused on round 2 of 3). 0 = revert-and-pause on
+// the first regression (the pre-#3781 behavior). A per-run `maxArcResolveRetries`
+// option overrides it, like `maxChildRetries` above; there is deliberately no
+// persisted setting for it — one extra resolve call on a path that otherwise
+// ends the run is not a spend knob worth a UI.
+export const MAX_ARC_RESOLVE_RETRIES = 1;
+
 // The one precedence rule every gate below follows for a BOOLEAN knob: an
 // explicit per-run option wins, then the persisted pipelineEditorialChecks
 // setting, then the module default. Hoisted so the file states it once — it was

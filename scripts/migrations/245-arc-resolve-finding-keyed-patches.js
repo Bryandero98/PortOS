@@ -28,7 +28,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-resolve.md': '96f73a7e90526d65ef2bb100fb1cd4bf', // post-251 (field-sparse bounded patches)
+  'pipeline-arc-resolve.md': '0787128babf3c4c50e2f2cdb60214030', // post-252 (corrective-pass avoid list)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

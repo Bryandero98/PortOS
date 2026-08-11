@@ -88,6 +88,12 @@ const autopilotStartSchema = z.object({
   // Per-run only (no persisted default); falls back to MAX_CHILD_RETRIES. Shares
   // the convergence ceiling so a direct API call can't request an absurd budget.
   maxChildRetries: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
+  // Per-run corrective-pass budget for the arc-verify regression guard (#3781):
+  // how many times a reverted resolve round may be re-attempted from the restored
+  // best state before the gate pauses for a human. 0 = revert and pause on the
+  // first regression. Per-run only (no persisted default); falls back to
+  // MAX_ARC_RESOLVE_RETRIES. Shares the convergence ceiling.
+  maxArcResolveRetries: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
   // Per-run editorial-check subset (#1575). When present, the editorial-checks
   // pass runs ONLY these check ids instead of all enabled checks — pilot one new
   // check, or skip an expensive one, without toggling the global enabled set.

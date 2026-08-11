@@ -704,12 +704,24 @@ export function matchResolvedFindings(raw, validIds) {
   return { declared: true, matched };
 }
 
-export async function buildResolveContext(series, findings, preloadedWorld) {
+/**
+ * `options.avoid` — findings that a PREVIOUS attempt at this same round
+ * authored, and that got that attempt reverted. They are not in the plan the
+ * context describes (the caller restored the pre-attempt state first), so they
+ * are rendered as a separate "do not author these" list rather than mixed into
+ * `findingsJson`: asking the resolver to close a problem the plan no longer has
+ * is how a corrective pass invents a fresh contradiction. Absent/empty on a
+ * first attempt, which leaves the prompt section out entirely.
+ */
+export async function buildResolveContext(series, findings, preloadedWorld, options = {}) {
   const ctx = await buildVerifyContext(series, preloadedWorld);
   const structure = recommendStructure(series.issueCountTarget);
+  const avoid = shapeFindings(options.avoid);
   return {
     ...ctx,
     findingsJson: JSON.stringify(stampFindingIds(findings), null, 2),
+    hasAvoid: avoid.length > 0,
+    avoidJson: JSON.stringify(avoid, null, 2),
     recommendedStructure: structure
       ? describeStructure(structure)
       : '(no target episode count set)',

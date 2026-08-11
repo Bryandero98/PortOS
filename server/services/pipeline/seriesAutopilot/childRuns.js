@@ -18,7 +18,10 @@ import {
 } from '../foundationJudge.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
-import { MAX_ARC_VERIFY_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_CHILD_RETRIES } from './config.js';
+import {
+  MAX_ARC_VERIFY_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_CHILD_RETRIES,
+  MAX_ARC_RESOLVE_RETRIES,
+} from './config.js';
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
@@ -37,6 +40,15 @@ const MAX_PLANNING_GATE_HANDOFFS = 6;
 // just in the marker sanitizer, so the live SSE frame carries the same set the
 // record keeps rather than every finding a many-volume verify produced.
 const discardedSet = (blocking) => blocking.slice(0, AUTOPILOT_DISCARDED_MAX);
+
+// Effective corrective-pass budget for the arc-verify gate this run: a per-run
+// `maxArcResolveRetries` option wins, else the module default. Negative values
+// clamp to 0 (revert and pause on the first regression). Mirrors
+// `childRetryBudget` further down.
+function arcResolveRetryBudget(record) {
+  const v = record.options.maxArcResolveRetries;
+  return Number.isInteger(v) ? Math.max(0, v) : MAX_ARC_RESOLVE_RETRIES;
+}
 
 function finishPlanningMutation(record, peerLatch) {
   record.runState[peerLatch] = false;
@@ -76,6 +88,14 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
   // the arc just before it ran — the two halves the regression guard below needs
   // to decide whether that round earned its edits.
   let lastResolve = null;
+  // How many corrective passes the regression guard may still spend (#3781).
+  // Reverting a bad candidate is not the same as being unable to try again: on a
+  // regression the gate restores the best state and re-runs the resolver from
+  // there with the rejected attempt's own findings attached as "do not author
+  // these", and only pauses once that budget is gone. Without it the first bad
+  // candidate ends the run, and resuming re-runs the identical prompt against
+  // the identical state — so the gate could never clear itself unattended.
+  let retriesLeft = arcResolveRetryBudget(record);
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
     const beforeVerify = await budgetPause();
@@ -130,16 +150,55 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // best verified state, not merely the immediately previous state; otherwise
     // a 4 → 2 → 4 → 5 run pauses on 4 and discards the demonstrated 2-blocker
     // draft. Checked before maxRounds/divergence so no worse baseline survives.
+    // Reverting is unconditional; PAUSING is not — see the corrective pass below.
     if (lastResolve && blocking.length > lastResolve.blocking.length) {
       const rollbackTarget = bestVerified || lastResolve;
       const rollback = await restoreArcState(seriesId, rollbackTarget.snapshot);
+      const discarded = discardedSet(blocking);
+      // A retry is only worth its LLM call when a round remains to VERIFY it —
+      // spending one on the final round would bill a rewrite nothing ever
+      // checks, and would fall out of the loop past every `return` below.
+      const canRetry = retriesLeft > 0 && round < maxRounds;
       broadcast(seriesId, {
         type: 'resolve:rollback', scope: 'arc', round,
         before: lastResolve.blocking.length, after: blocking.length,
         best: rollbackTarget.blocking.length,
         reverted: rollback.restored,
         episodesReverted: rollback.episodesRestored,
+        retrying: canRetry,
       });
+      // Corrective pass (#3781): the revert above put the best verified state
+      // back, so re-run the resolver against exactly the findings that state
+      // has — this time carrying the rejected attempt's own findings as an
+      // explicit "do not author these" list, which is the only new information
+      // the gate has. Pausing here instead (the pre-#3781 behavior) hands the
+      // user a run that a resume cannot advance: the same prompt over the same
+      // state can regress the same way. Budget-gated and billed like any other
+      // resolve, and bounded, so a resolver that keeps trading blockers still
+      // reaches the pause below.
+      if (canRetry) {
+        retriesLeft -= 1;
+        if (record.cancelRequested) return { canceled: true };
+        const beforeRetry = await budgetPause();
+        if (beforeRetry) return beforeRetry;
+        const retried = await resolveVerifyIssues(seriesId, {
+          findings: rollbackTarget.blocking,
+          avoid: discarded,
+          ...providerOverrideOpts(record),
+          ...seasonPreserveOpts(record),
+        });
+        if (retried?.applied !== false) changed = true;
+        // The restored state is what the retry has to beat, so the next round
+        // compares against ITS count — not the rejected candidate's, which
+        // would let the retry regress back to the discarded draft for free.
+        lastResolve = rollbackTarget;
+        await recordDomainUsage('cos', { actions: 1 });
+        broadcast(seriesId, {
+          type: 'resolve:round', scope: 'arc', round, retry: true,
+          episodesEdited: Array.isArray(retried?.episodesResolved) ? retried.episodesResolved.length : 0,
+        });
+        continue;
+      }
       return {
         pause: true,
         pauseKind: 'regression',
@@ -150,7 +209,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
           rollbackTarget.blocking.length,
         ),
         residual: rollbackTarget.blocking,
-        discarded: discardedSet(blocking),
+        discarded,
       };
     }
     // Equal-count drafts may still represent real causal progress: a resolver

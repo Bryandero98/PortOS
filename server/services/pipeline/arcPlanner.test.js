@@ -1050,6 +1050,63 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(JSON.parse(findingsJson).map((f) => f.findingId)).toEqual(['f1', 'f2']);
   });
 
+  it('leaves the avoid section out of a first-attempt resolve', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { resolves: ['f1'], logline: 'L2', summary: 'S' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'first defect', suggestion: '' }],
+    });
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    // False, not "an empty array" — the prompt section is gated on this flag, so
+    // a first attempt must render no avoid block rather than an empty one the
+    // model has to decide to ignore.
+    expect(ctx.hasAvoid).toBe(false);
+    expect(JSON.parse(ctx.avoidJson)).toEqual([]);
+  });
+
+  it('renders a corrective pass\'s avoid list separately from the findings to close', async () => {
+    // The autopilot's arc-verify gate reverts a resolve round that grew the
+    // blocking count, then re-runs the resolver from the restored state with the
+    // rejected attempt's findings as `avoid`. Those problems are NOT in the plan
+    // any more, so they must never leak into `findingsJson` — asking the
+    // resolver to close a problem the plan doesn't have is how a corrective pass
+    // authors a fresh contradiction.
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { resolves: ['f1'], logline: 'L2', summary: 'S' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'first defect', suggestion: 'fix it' }],
+      avoid: [
+        { severity: 'high', problem: 'the reverted rewrite dropped the mentor payoff', suggestion: '' },
+        { problem: 'and split volume 2 in half', location: 'V2' },
+      ],
+    });
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.hasAvoid).toBe(true);
+    const avoid = JSON.parse(ctx.avoidJson);
+    expect(avoid.map((f) => f.problem)).toEqual([
+      'the reverted rewrite dropped the mentor payoff',
+      'and split volume 2 in half',
+    ]);
+    // Normalized through the same shaper as the findings — a severity-less entry
+    // gets the default rather than riding through as undefined.
+    expect(avoid[1]).toMatchObject({ severity: 'medium', location: 'V2' });
+    // The avoid entries carry no findingId and never appear as work to close.
+    expect(ctx.avoidJson).not.toMatch(/findingId/);
+    expect(JSON.parse(ctx.findingsJson).map((f) => f.problem)).toEqual(['first defect']);
+  });
+
   it('preserves series.arc.readerMap when the resolve LLM does not author one', async () => {
     // Regression for the drift between generateArcOverview (which preserves
     // readerMap) and resolveVerifyIssues (which silently wiped it pre-fix).

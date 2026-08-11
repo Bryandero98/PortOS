@@ -80,6 +80,20 @@ The verification pass flagged these problems. Resolve **every** one of them in y
 {{findingsJson}}
 ```
 
+{{#hasAvoid}}
+## Problems a discarded earlier attempt introduced — do not author these
+
+An earlier pass over the exact findings above was **reverted**: its rewrite closed some of what it was handed but left the plan carrying more blocking problems than it started with, so every edit it made was thrown away. The plan shown above is the restored pre-attempt state.
+
+These are the problems that discarded attempt created. They are **not** in the plan right now, so there is nothing here to fix — this is the failure mode to avoid:
+
+```json
+{{avoidJson}}
+```
+
+Resolve the findings above with edits that cannot re-create any of these. Concretely: the discarded attempt over-reached, so make the smallest edit that closes each finding, touch fewer records than it did, and re-read every volume you edit against this list before returning it. If a finding could only be closed by authoring one of these problems, leave that finding open and explain the trade in `notes` — a plan with one honest open finding is better than one that swaps it for two new ones.
+{{/hasAvoid}}
+
 ## How to resolve
 
 1. **Anchor every edit in the per-episode `synopsis` entries.** Each volume's `episodes[]` array carries the planned episode lineup — those `synopsis` strings describe what actually happens in each issue. Prefer the **minimal** edit: most findings resolve by re-framing a volume's `synopsis` around what its child episodes already show. Don't invent beats no episode synopsis covers. When a finding cites an episode (e.g. `season:2 / episode:5`), first ask whether the volume synopsis can summarize what that episode shows without contradicting a neighbor. Empty/null episode synopses mean that issue hasn't been drafted yet; treat that volume as load-bearing on its own `synopsis` only.

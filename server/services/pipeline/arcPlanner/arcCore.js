@@ -401,7 +401,9 @@ export function selectFindingKeyedEdits(content, findings) {
 // actionable resolution would require deleting issues, the LLM is told to
 // flag that in the response's `notes` field rather than executing it.
 // `options.findings` empty / omitted = re-run verify first and resolve
-// everything it returns.
+// everything it returns. `options.avoid` is the optional "a previous attempt at
+// these same findings authored THESE and was reverted" list (see
+// buildResolveContext) — set only by a corrective pass.
 export async function resolveVerifyIssues(seriesId, options = {}) {
   const series = await getSeries(seriesId);
   if (!series.arc) {
@@ -433,7 +435,10 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     }
   }
 
-  const ctx = await buildResolveContext(series, findings, world);
+  // `options.avoid` carries the findings a reverted earlier attempt at these
+  // same findings authored, so a corrective pass is told what NOT to re-create
+  // instead of re-running the identical prompt and regressing identically.
+  const ctx = await buildResolveContext(series, findings, world, { avoid: options.avoid });
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-resolve',
     ctx,

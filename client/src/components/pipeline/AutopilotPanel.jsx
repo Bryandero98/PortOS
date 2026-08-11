@@ -271,8 +271,12 @@ function frameLabel(f) {
     case 'verify:round': return `${f.scope} check — ${f.blocking} blocking of ${f.findings} finding(s)${f.errored > 0 ? ` · ⚠️ ${f.errored} errored` : ''}`;
     // An auto-resolve round that left the draft worse was undone — say so live,
     // or the round's edits appear to still be in place while the run pauses.
+    // A revert is not necessarily the end of the gate: when a corrective pass is
+    // left, the run retries from the restored state, so say which one happened
+    // or the user reads every rollback as "this run is about to stop".
     case 'resolve:rollback': return `${f.scope} auto-resolve went from ${f.before} to ${f.after} blocking finding(s) — `
-      + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`;
+      + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`
+      + `${f.retrying ? ', retrying from the best state' : ''}`;
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · next target: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
