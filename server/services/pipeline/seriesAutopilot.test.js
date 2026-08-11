@@ -182,6 +182,9 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
   };
 });
 
+const recordModelOutcome = vi.fn(async () => true);
+vi.mock('./seriesAutopilot/modelPerformance.js', () => ({ recordModelOutcome }));
+
 // Pause-escalation notifications (#1615) — spy on the notification center so a
 // test can assert a pause posts a banner (and a clean run / opt-out does not).
 const addNotification = vi.fn(async () => ({ id: 'notif-1' }));
@@ -2285,6 +2288,9 @@ describe('autopilot conductor', () => {
       .mockImplementationOnce(async () => round(1))
       .mockImplementationOnce(async () => round(3))
       .mockImplementationOnce(async () => round(5));
+    arcSpies.resolveVerifyIssues
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-regression-1' }))
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-regression-2' }));
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
@@ -2307,6 +2313,12 @@ describe('autopilot conductor', () => {
       findings: [original],
       avoid: round(3).issues,
     });
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-regression-1', expect.objectContaining({
+      role: 'creative', stage: 'verifyArcSpine', outcome: 'rejected', scoreBefore: -1, scoreAfter: -3,
+    }));
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-regression-2', expect.objectContaining({
+      role: 'creative', stage: 'verifyArcSpine', outcome: 'rejected', scoreBefore: -1, scoreAfter: -5,
+    }));
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
@@ -2335,6 +2347,9 @@ describe('autopilot conductor', () => {
       .mockImplementationOnce(async () => ({ issues: holes(3, 'initial') }))
       .mockImplementationOnce(async () => ({ issues: holes(6, 'regressed') }))
       .mockImplementationOnce(async () => ({ issues: [] }));
+    arcSpies.resolveVerifyIssues
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-rejected' }))
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-accepted' }));
     const { seriesId } = await seedComplete();
     const frames = [];
     const handler = (p) => frames.push(p);
@@ -2356,6 +2371,12 @@ describe('autopilot conductor', () => {
     expect(rollback).toMatchObject({ before: 3, after: 6, best: 3, retrying: true });
     expect(frames.some((f) => f.type === 'resolve:round' && f.retry === true)).toBe(true);
     expect(frames.some((f) => f.type === 'paused' && f.pauseKind === 'regression')).toBe(false);
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-rejected', expect.objectContaining({
+      outcome: 'rejected', scoreBefore: -3, scoreAfter: -6,
+    }));
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-accepted', expect.objectContaining({
+      outcome: 'accepted', scoreBefore: -3, scoreAfter: 0,
+    }));
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.pauseKind).not.toBe('regression');
   });
@@ -2571,7 +2592,7 @@ describe('autopilot conductor', () => {
     for (let i = 0; i < 6; i += 1) {
       arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => {
         billed.push('resolve');
-        return { applied: true };
+        return { applied: true, runId: `arc-isolation-${i + 1}` };
       });
     }
 
@@ -2595,6 +2616,12 @@ describe('autopilot conductor', () => {
     expect(isolated).toHaveLength(2);
     expect(isolated[0]).toMatchObject({ scope: 'arcSpine', attempt: 1, before: 2, after: 1, kept: true });
     expect(isolated[1]).toMatchObject({ attempt: 2, before: 1, after: 2, kept: false });
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-isolation-3', expect.objectContaining({
+      outcome: 'accepted', scoreBefore: -2, scoreAfter: -1,
+    }));
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-isolation-4', expect.objectContaining({
+      outcome: 'rejected', scoreBefore: -1, scoreAfter: -2,
+    }));
     // Two whole-round rollbacks plus the one rejected isolated patch.
     expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(3);
     // Round 3's verify, then the two isolated attempts (resolve→verify each),

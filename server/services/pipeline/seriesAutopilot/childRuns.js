@@ -71,6 +71,32 @@ async function resolveArcFindings(seriesId, record, { findings, avoid, spineOnly
 // Episode synopses one resolve pass actually rewrote, for the telemetry frames.
 const editedCount = (resolved) => (Array.isArray(resolved?.episodesResolved) ? resolved.episodesResolved.length : 0);
 
+// A resolver's provider run is only a TECHNICAL success until the next
+// independent arc verification decides whether its candidate remains in the
+// plan. Keep quality scores "higher is better" across every pipeline stage by
+// representing an arc result as the negative blocker count: 3 → 2 blockers is
+// a +1 quality delta, while 3 → 4 is -1. The raw before/after blocker counts
+// remain available in the verify/rollback telemetry frames.
+const arcResolveRunIds = (resolved) => (typeof resolved?.runId === 'string' && resolved.runId ? [resolved.runId] : []);
+const arcQualityScore = (blocking) => (blocking.length === 0 ? 0 : -blocking.length);
+
+async function recordArcResolveOutcome(candidate, record, { outcome, after, target }) {
+  const runIds = Array.isArray(candidate?.runIds) ? candidate.runIds : [];
+  if (runIds.length === 0) return;
+  await Promise.all(runIds.map((runId) => recordModelOutcome(runId, {
+    role: 'creative',
+    stage: record.currentStep || 'verifyArc',
+    outcome,
+    target,
+    scoreBefore: arcQualityScore(candidate.blocking),
+    scoreAfter: arcQualityScore(after),
+  }).catch(() => {})));
+  // The same checkpoint can remain `lastResolve` for comparison after its
+  // verdict. Consume its evidence once so later seeded/re-confirmation rounds
+  // cannot count one provider run twice.
+  candidate.runIds = [];
+}
+
 function finishPlanningMutation(record, peerLatch) {
   record.runState[peerLatch] = false;
   record.runState.planningGateHandoffs = (record.runState.planningGateHandoffs || 0) + 1;
@@ -189,6 +215,15 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
       return { accepted, attempts, verified: standing, outcome: verified.outcome };
     }
     const kept = isIsolatedFixSafe(target, blocking(), verified.blocking);
+    await recordArcResolveOutcome(
+      { blocking: blocking(), runIds: arcResolveRunIds(resolved) },
+      record,
+      {
+        outcome: kept ? 'accepted' : 'rejected',
+        after: verified.blocking,
+        target: typeof target.location === 'string' ? target.location : scope,
+      },
+    );
     if (kept) {
       accepted += 1;
       standing = verified;
@@ -260,6 +295,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
       blocking: blocking.length, volumesChecked: verified.volumesChecked,
     });
     if (blocking.length === 0) {
+      await recordArcResolveOutcome(lastResolve, record, { outcome: 'accepted', after: blocking, target: scope });
       record.runState[spineOnly ? 'arcSpineVerified' : 'arcVerified'] = true;
       if (!spineOnly && changed && !finishPlanningMutation(record, 'foundationGated')) {
         return {
@@ -281,6 +317,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // before maxRounds/divergence so no worse baseline survives.
     // Reverting is unconditional; PAUSING is not — see the corrective pass below.
     if (lastResolve && isBlockingSetRegression(lastResolve.blocking, blocking)) {
+      await recordArcResolveOutcome(lastResolve, record, { outcome: 'rejected', after: blocking, target: scope });
       const rollbackTarget = bestVerified || lastResolve;
       const rollback = await restoreArcState(seriesId, rollbackTarget.snapshot);
       const discarded = discardedSet(blocking);
@@ -327,7 +364,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         // The restored state is what the retry has to beat, so the next round
         // compares against ITS count — not the rejected candidate's, which
         // would let the retry regress back to the discarded draft for free.
-        lastResolve = rollbackTarget;
+        lastResolve = { ...rollbackTarget, runIds: arcResolveRunIds(retried) };
         broadcast(seriesId, {
           type: 'resolve:round', scope, round, retry: true, episodesEdited: editedCount(retried),
         });
@@ -373,6 +410,10 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         discarded,
       };
     }
+    // The previous resolver candidate survived an independent verification and
+    // remains the live checkpoint. It is quality-accepted even when the count
+    // ties (the gate separately rejects a worse severity mix above).
+    await recordArcResolveOutcome(lastResolve, record, { outcome: 'accepted', after: blocking, target: scope });
     // Equal-count drafts may still represent real causal progress when their
     // severity mix is not worse: a resolver can close broad structural findings
     // and expose the same number of narrower handoff problems. Treat that latest
@@ -419,7 +460,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // only place they can actually close a finding.
     const resolved = await resolveArcFindings(seriesId, record, { findings: blocking, spineOnly });
     if (resolved?.applied !== false) changed = true;
-    lastResolve = { blocking, snapshot };
+    lastResolve = { blocking, snapshot, runIds: arcResolveRunIds(resolved) };
     broadcast(seriesId, {
       type: 'resolve:round', scope, round, episodesEdited: editedCount(resolved),
     });
