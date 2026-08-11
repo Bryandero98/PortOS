@@ -110,6 +110,14 @@ export async function resolveAutoInvestigationApproval(fingerprint, { now = Date
  * A held task gets the "why this is held for you" prose appended as a section, so
  * the user reading the queue does not have to infer why this one stopped for them.
  *
+ * Deliberately does NOT hard-suppress on `investigationCircuitOpen`. Its callers
+ * already bound their own fan-out (autoFixer's per-resource dedupe + circuit; the
+ * orphan path's own retry budget), and one of them — manual error recovery — is a
+ * user clicking "investigate this"; silently dropping that because unrelated
+ * failures filled the window is worse than filing it. The shared counter still
+ * drives the softer `failure-storm` response: hold it for a human rather than
+ * spend an unattended agent on a symptom.
+ *
  * @param {{ fingerprint: string, description: string, affectedTasks?: string[] }} args
  *   plus any further `addTask` fields (priority, context, diagnostics)
  * @returns {Promise<{ task: object|null, approvalRequired: boolean, loopReason: string|null }>}
