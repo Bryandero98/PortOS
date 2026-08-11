@@ -1467,14 +1467,67 @@ const pickFoundationFields = (record, fields) => Object.fromEntries(
   ]),
 );
 
-const foundationSnapshotComparable = (snapshot) => JSON.stringify({
-  universeId: snapshot?.universeId || null,
-  universe: snapshot?.universe || null,
-  series: snapshot?.series || null,
-  arc: snapshot?.arcState?.arc ?? null,
-  seasons: snapshot?.arcState?.seasons || [],
-  episodes: snapshot?.arcState?.episodes || [],
-});
+// Per-canon-entry fields the universe WRITE PATH owns, which a faithful restore
+// therefore does NOT (and must not) bring back to the checkpoint value:
+//   - `updatedAt` is re-stamped by `updateUniverse` on every canon entry whose
+//     content changed vs the live record — and undoing a repair IS a content
+//     change, so a correct revert always comes back with a fresh LWW clock (it
+//     has to, or the canon→catalog projection would never carry the revert).
+//   - the render/sheet pointers are deliberately preserved FROM the live record
+//     (`mergePreservedSheetPointers` / `preserveImageRefsById`) so a sheet or
+//     render that completed while the repair ran isn't thrown away by the undo.
+// Comparing them made every faithful character rollback report itself as a
+// failed restore, which stalled the foundation gate with a checkpoint-corruption
+// warning that was never true. Authored content is still compared byte-for-byte.
+const CANON_WRITE_PATH_OWNED_FIELDS = Object.freeze([
+  'updatedAt', 'referenceSheetImageRef', 'referenceSheets', 'imageRefs',
+]);
+
+const comparableCanonEntry = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+  const rest = { ...entry };
+  for (const field of CANON_WRITE_PATH_OWNED_FIELDS) delete rest[field];
+  return rest;
+};
+
+const comparableUniverseFields = (universe) => {
+  if (!universe || typeof universe !== 'object') return universe ?? null;
+  if (!Array.isArray(universe.characters)) return universe;
+  return { ...universe, characters: universe.characters.map(comparableCanonEntry) };
+};
+
+// `undefined` (field absent from the record) is NOT the same as `null` — the
+// restore skips absent fields, so a repair-added field the checkpoint never had
+// is a genuine leftover the verification must still catch. The sentinel keeps
+// the two distinguishable through JSON.
+const comparablePart = (value) => (value === undefined ? '<absent>' : JSON.stringify(value ?? null));
+
+/**
+ * Field-keyed projection of a foundation snapshot for the post-restore check.
+ * Keyed (rather than one blob) so a mismatch can NAME what failed to come back —
+ * a bare "did not match" pause tells an operator nothing about what to inspect.
+ */
+const foundationSnapshotParts = (snapshot) => {
+  const universe = comparableUniverseFields(snapshot?.universe);
+  const parts = { universeId: comparablePart(snapshot?.universeId || null) };
+  for (const field of FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS) {
+    parts[`universe.${field}`] = comparablePart(universe ? universe[field] : null);
+  }
+  for (const field of FOUNDATION_SERIES_SNAPSHOT_FIELDS) {
+    parts[`series.${field}`] = comparablePart(snapshot?.series ? snapshot.series[field] : null);
+  }
+  parts.arc = comparablePart(snapshot?.arcState?.arc ?? null);
+  parts.seasons = comparablePart(snapshot?.arcState?.seasons || []);
+  parts.episodes = comparablePart(snapshot?.arcState?.episodes || []);
+  return parts;
+};
+
+/** The snapshot fields that did NOT come back — [] when the restore was faithful. */
+const mismatchedFoundationFields = (checkpoint, restored) => {
+  const before = foundationSnapshotParts(checkpoint);
+  const after = foundationSnapshotParts(restored);
+  return Object.keys(before).filter((field) => before[field] !== after[field]);
+};
 
 /**
  * Capture every field an owned foundation repair may rewrite. Arc planning has
@@ -1513,10 +1566,14 @@ export async function restoreFoundationState(seriesId, snapshot) {
   ));
   const arcRestore = await restoreArcState(seriesId, snapshot.arcState);
   const restoredSnapshot = await snapshotFoundationState(seriesId);
-  const restored = foundationSnapshotComparable(restoredSnapshot) === foundationSnapshotComparable(snapshot);
+  const mismatched = mismatchedFoundationFields(snapshot, restoredSnapshot);
+  const restored = mismatched.length === 0;
   return {
     restored,
-    reason: restored ? null : 'restored foundation fields did not match the checkpoint',
+    reason: restored
+      ? null
+      : `restored foundation fields did not match the checkpoint: ${mismatched.join(', ')}`,
+    mismatchedFields: mismatched,
     episodesRestored: arcRestore.episodesRestored || 0,
   };
 }
@@ -1682,4 +1739,6 @@ export const __testing = {
   CHARACTER_FOUNDATION_TIMEOUT_MS,
   CHARACTER_FOUNDATION_BATCH_SIZE,
   FRAMEWORK_STRING_FIELDS,
+  mismatchedFoundationFields,
+  CANON_WRITE_PATH_OWNED_FIELDS,
 };
