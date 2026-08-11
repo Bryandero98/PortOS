@@ -267,6 +267,13 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
   // from a spine round misreports the failure to both the status line and the
   // stall-diagnosis prompt that replays these frames.
   const scope = spineOnly ? 'arcSpine' : 'arc';
+  const priorAvoid = Array.isArray(record.options.priorArcAvoidFindings)
+    ? record.options.priorArcAvoidFindings
+    : [];
+  // Preserve rejected-candidate evidence across Resume, then layer any newer
+  // regression from this run on top. `discardedSet` keeps the provider prompt
+  // bounded exactly like the persisted marker.
+  const avoidFindings = (current = []) => discardedSet([...priorAvoid, ...current]);
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
   // Lowest verified blocker set seen in this gate, paired with the exact arc /
@@ -372,7 +379,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         const beforeRetry = await budgetPause();
         if (beforeRetry) return beforeRetry;
         const retried = await resolveArcFindings(seriesId, record, {
-          findings: rollbackTarget.blocking, avoid: discarded, spineOnly,
+          findings: rollbackTarget.blocking, avoid: avoidFindings(discarded), spineOnly,
         });
         if (retried?.applied !== false) changed = true;
         // The restored state is what the retry has to beat, so the next round
@@ -392,7 +399,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         const isolated = await isolateArcFindings(seriesId, record, {
           scope, round, spineOnly,
           baseline: rollbackTarget.blocking,
-          avoid: discarded,
+          avoid: avoidFindings(discarded),
           attemptsLeft: isolationLeft,
         });
         isolationLeft -= isolated.attempts;
@@ -472,7 +479,11 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // episode-empty plan, so its resolver may only patch the arc + volumes
     // (#3789). The later full arc gate keeps episode corrections, which is the
     // only place they can actually close a finding.
-    const resolved = await resolveArcFindings(seriesId, record, { findings: blocking, spineOnly });
+    const resolved = await resolveArcFindings(seriesId, record, {
+      findings: blocking,
+      avoid: avoidFindings(),
+      spineOnly,
+    });
     if (resolved?.applied !== false) changed = true;
     lastResolve = { blocking, snapshot, runIds: arcResolveRunIds(resolved) };
     broadcast(seriesId, {

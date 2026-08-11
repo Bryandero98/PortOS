@@ -11,7 +11,7 @@ import { mergeSeverityWeights, resolveBlockingSet } from '../../../lib/editorial
 import { loadState } from '../../cosState.js';
 import { getDomainBudgetStatus } from '../../domainUsage.js';
 import { getSettings } from '../../settings.js';
-import { getSeries, updateSeries } from '../series.js';
+import { getSeries, updateSeries, AUTOPILOT_DISCARDED_MAX } from '../series.js';
 import { listIssues } from '../issues.js';
 import { buildEditorialCheckPlan } from '../editorial/checkRunner.js';
 import { runs } from './state.js';
@@ -66,6 +66,16 @@ export async function startSeriesAutopilot(sId, options = {}) {
   // a resume re-reads them fresh. Loading the series here is cheap; a missing
   // series (deleted mid-run) falls through to the frozen defaults.
   const seriesRecord = await getSeries(sId).catch(() => null);
+  // A regressive arc repair is restored before the run pauses, and the rejected
+  // candidate's findings are persisted as `discardedFindings`. A fresh run used
+  // to forget that evidence and could immediately regenerate the same bad trade
+  // from the same checkpoint. Carry it into the next arc gate as an internal
+  // avoid-list only when the prior pause came from an arc verification step.
+  const priorArcAvoidFindings = seriesRecord?.autopilot?.status === 'paused'
+    && ['verifyArcSpine', 'verifyArc'].includes(seriesRecord.autopilot.currentStep)
+    && Array.isArray(seriesRecord.autopilot.discardedFindings)
+    ? seriesRecord.autopilot.discardedFindings.slice(0, AUTOPILOT_DISCARDED_MAX)
+    : [];
   const autoSelectModels = resolveAutopilotAutoSelectModels(options, settings);
   const modelPerformance = autoSelectModels
     ? await getModelPerformanceReport().catch((err) => {
@@ -108,6 +118,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
       creative: creativeRouteExplicit,
       judge: judgeRouteExplicit,
     },
+    priorArcAvoidFindings,
     // Run provider/model: per-run override → the series' own `series.llm` →
     // unset (stage pin / active provider downstream). Resolved ONCE here so the
     // manual run, a scheduled run and the UI's "this run calls X / Y" copy all

@@ -2555,6 +2555,39 @@ describe('autopilot conductor', () => {
     expect(last?.residualFindings).toEqual(holes(3, 'initial'));
   });
 
+  it('carries a paused arc regression\'s discarded findings into the resumed resolver', async () => {
+    const residual = {
+      severity: 'high', problem: 'the standing custody rule is contradictory', location: 'V1',
+    };
+    const discarded = [
+      { severity: 'medium', problem: 'the rejected rewrite dropped a sacrifice beat', location: 'V1 issue 10' },
+      { severity: 'medium', problem: 'the rejected rewrite dropped a consent choice', location: 'V1 issue 9' },
+    ];
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [residual] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, {
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArcSpine',
+        pauseKind: 'regression',
+        residualFindings: [residual],
+        discardedFindings: discarded,
+      },
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ findings: [residual], avoid: discarded, spineOnly: true }),
+    );
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+  });
+
   it('reverts an equal-count arc candidate whose findings escalated in severity', async () => {
     const before = [
       { severity: 'high', problem: 'recovery clock is contradictory', location: 'V1 issues 8-9' },
