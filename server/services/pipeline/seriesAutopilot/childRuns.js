@@ -14,7 +14,7 @@ import {
 } from '../arcPlanner.js';
 import {
   judgeFoundation, applyFoundationFix, establishCharacterFoundation, foundationGateStatus, foundationFixTarget,
-  residualFindings, DEFAULT_FOUNDATION_THRESHOLD,
+  residualFindings, snapshotFoundationState, restoreFoundationState, DEFAULT_FOUNDATION_THRESHOLD,
 } from '../foundationJudge.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
@@ -344,6 +344,11 @@ export async function runFoundationGate(seriesId, record) {
   // receives at least one repair attempt; repeated no-improvement in that same
   // dimension still trips the bounded divergence guard.
   const convergenceByDimension = new Map();
+  // A repair remains provisional until the next independent judge proves that
+  // it helped the dimension it was asked to fix. This is narrower than a global
+  // score high-water mark: a genuinely improved target may expose another weak
+  // layer, but an unchanged target cannot keep edits by moving the problem.
+  let pendingRepair = null;
   let changed = false;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
@@ -371,6 +376,44 @@ export async function runFoundationGate(seriesId, record) {
       dimensionFloor: gate.dimensionFloor, failingDimensions: gate.failingDimensions,
       weakest: weak?.dimension || null,
     });
+    if (pendingRepair) {
+      const dimension = pendingRepair.dimension;
+      const beforeDimension = pendingRepair.judge.dimensions?.[dimension] || {};
+      const afterDimension = snap.dimensions?.[dimension] || {};
+      const beforeTargetScore = Number(beforeDimension.score) || 0;
+      const afterTargetScore = Number(afterDimension.score) || 0;
+      const beforeWeighted = Number(pendingRepair.judge.weightedScore) || 0;
+      const targetImproved = afterTargetScore > beforeTargetScore;
+      const targetTied = afterTargetScore === beforeTargetScore;
+      const gapChanged = !sameFinding(
+        { location: dimension, problem: beforeDimension.gap || '' },
+        { location: dimension, problem: afterDimension.gap || '' },
+      );
+      // A tie can represent a deeper newly exposed layer, but only when the
+      // aggregate did not regress. A strictly improved target is accepted even
+      // if it makes another latent dimension judgeable.
+      const earned = targetImproved || (targetTied && gapChanged && score >= beforeWeighted);
+      if (!earned) {
+        const rollback = await restoreFoundationState(seriesId, pendingRepair.snapshot);
+        const reason = rollback.restored
+          ? `Foundation ${dimension} repair did not improve its target (${beforeTargetScore} → ${afterTargetScore}; weighted ${beforeWeighted} → ${score}), so its edits were reverted to the pre-repair checkpoint.`
+          : `Foundation ${dimension} repair did not improve its target (${beforeTargetScore} → ${afterTargetScore}; weighted ${beforeWeighted} → ${score}), and checkpoint verification failed after rollback: ${rollback.reason || 'unknown restore mismatch'}.`;
+        broadcast(seriesId, {
+          type: 'foundation:rollback', round, dimension,
+          targetBefore: beforeTargetScore, targetAfter: afterTargetScore,
+          weightedBefore: beforeWeighted, weightedAfter: score,
+          reverted: rollback.restored,
+        });
+        return {
+          pause: true,
+          pauseKind: 'regression',
+          reason,
+          residual: residualFindings(pendingRepair.judge.dimensions),
+          discarded: discardedSet(residualFindings(snap.dimensions)),
+        };
+      }
+      pendingRepair = null;
+    }
     if (gate.passes) {
       record.runState.foundationGated = true;
       if (changed && !finishPlanningMutation(record, 'arcVerified')) {
@@ -444,6 +487,7 @@ export async function runFoundationGate(seriesId, record) {
     // so it gets the same treatment rather than the harshest one. The
     // promptRunner has already walked its full fallback cascade by the time
     // this throws, so there is no retry left to attempt here.
+    const repairSnapshot = await snapshotFoundationState(seriesId);
     let fix;
     try {
       fix = await applyFoundationFix(seriesId, weak.dimension, {
@@ -493,6 +537,11 @@ export async function runFoundationGate(seriesId, record) {
         discarded: Array.isArray(fix?.discarded) ? discardedSet(fix.discarded) : [],
       };
     }
+    pendingRepair = {
+      dimension: weak.dimension,
+      judge: snap,
+      snapshot: repairSnapshot,
+    };
     changed = true;
   }
   return {};

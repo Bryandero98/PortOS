@@ -1452,6 +1452,75 @@ async function refineWorld(universeId, { providerId, model, effort, onRunCreated
     : { applied: true };
 }
 
+const FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS = Object.freeze([
+  'logline', 'premise', 'styleNotes', 'influences', 'characters',
+]);
+
+const FOUNDATION_SERIES_SNAPSHOT_FIELDS = Object.freeze([
+  'styleNotes', 'styleGuide', 'characterArcs',
+]);
+
+const pickFoundationFields = (record, fields) => Object.fromEntries(
+  fields.map((field) => [
+    field,
+    record && Object.hasOwn(record, field) ? structuredClone(record[field]) : undefined,
+  ]),
+);
+
+const foundationSnapshotComparable = (snapshot) => JSON.stringify({
+  universeId: snapshot?.universeId || null,
+  universe: snapshot?.universe || null,
+  series: snapshot?.series || null,
+  arc: snapshot?.arcState?.arc ?? null,
+  seasons: snapshot?.arcState?.seasons || [],
+  episodes: snapshot?.arcState?.episodes || [],
+});
+
+/**
+ * Capture every field an owned foundation repair may rewrite. Arc planning has
+ * its own exact snapshot (including episode ideas); this adds the world,
+ * character, and craft-owned records so the conductor can reject a repair that
+ * a fresh judge proves did not earn its changes.
+ */
+export async function snapshotFoundationState(seriesId) {
+  assertValidSeriesId(seriesId);
+  const series = await getSeries(seriesId);
+  const [universe, arcState] = await Promise.all([
+    series?.universeId ? getUniverse(series.universeId).catch(() => null) : null,
+    snapshotArcState(seriesId),
+  ]);
+  return {
+    seriesId,
+    universeId: series?.universeId || null,
+    universe: universe ? pickFoundationFields(universe, FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS) : null,
+    series: pickFoundationFields(series, FOUNDATION_SERIES_SNAPSHOT_FIELDS),
+    arcState,
+  };
+}
+
+/** Restore a foundation snapshot and verify the tracked fields match exactly. */
+export async function restoreFoundationState(seriesId, snapshot) {
+  if (!snapshot || snapshot.seriesId !== seriesId || !snapshot.arcState) {
+    return { restored: false, reason: 'invalid foundation snapshot' };
+  }
+  if (snapshot.universeId && snapshot.universe) {
+    await updateUniverse(snapshot.universeId, Object.fromEntries(
+      Object.entries(structuredClone(snapshot.universe)).filter(([, value]) => value !== undefined),
+    ));
+  }
+  await updateSeries(seriesId, Object.fromEntries(
+    Object.entries(structuredClone(snapshot.series)).filter(([, value]) => value !== undefined),
+  ));
+  const arcRestore = await restoreArcState(seriesId, snapshot.arcState);
+  const restoredSnapshot = await snapshotFoundationState(seriesId);
+  const restored = foundationSnapshotComparable(restoredSnapshot) === foundationSnapshotComparable(snapshot);
+  return {
+    restored,
+    reason: restored ? null : 'restored foundation fields did not match the checkpoint',
+    episodesRestored: arcRestore.episodesRestored || 0,
+  };
+}
+
 /**
  * Apply a fix for one foundation dimension through its OWNING service (never a
  * raw write; `force:false` everywhere so locked canon is a constraint, not a

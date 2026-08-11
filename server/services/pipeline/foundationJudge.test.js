@@ -74,6 +74,8 @@ const {
   isValidFoundationShape,
   isFoundationStale,
   residualFindings,
+  snapshotFoundationState,
+  restoreFoundationState,
   applyFoundationFix,
   establishCharacterFoundation,
   thinnestCharacter,
@@ -105,6 +107,59 @@ beforeEach(() => {
   // Restore the default authored-scalar echo so a test that overrides it (blank
   // /null values) doesn't leak into later order-dependent tests.
   universeBuilderExpand.expandWorldTemplate.mockResolvedValue({ logline: 'L2', premise: 'P2', styleNotes: 'S2', influences: null });
+});
+
+describe('foundation repair checkpoint', () => {
+  it('restores and verifies world, character, craft, arc, volume, and issue-seed state', async () => {
+    let seriesState = {
+      id: 'ser-1', universeId: 'uni-1', styleNotes: 'voice before',
+      styleGuide: { tone: ['spare'] }, characterArcs: [{ characterName: 'Example Lead' }],
+    };
+    let universeState = {
+      id: 'uni-1', logline: 'world before', premise: 'rules before', styleNotes: 'style before',
+      influences: { embrace: ['Example'], avoid: [] },
+      characters: [{ id: 'chr-1', name: 'Example Lead', need: 'trust' }],
+    };
+    let arcState = {
+      seriesId: 'ser-1', arc: { summary: 'arc before' },
+      seasons: [{ id: 'sea-1', synopsis: 'volume before' }],
+      episodes: [{ id: 'iss-1', seasonId: 'sea-1', idea: { input: 'seed before', output: '', status: 'ready' } }],
+    };
+    seriesSvc.getSeries.mockImplementation(async () => structuredClone(seriesState));
+    seriesSvc.updateSeries.mockImplementationOnce(async (_id, patch) => {
+      seriesState = { ...seriesState, ...structuredClone(patch) };
+      return structuredClone(seriesState);
+    });
+    universeBuilder.getUniverse.mockImplementation(async () => structuredClone(universeState));
+    universeBuilder.updateUniverse.mockImplementationOnce(async (_id, patch) => {
+      universeState = { ...universeState, ...structuredClone(patch) };
+      return structuredClone(universeState);
+    });
+    arcPlanner.snapshotArcState.mockImplementation(async () => structuredClone(arcState));
+    arcPlanner.restoreArcState.mockImplementation(async (_id, snapshot) => {
+      arcState = structuredClone(snapshot);
+      return { restored: true, episodesRestored: 1 };
+    });
+
+    const checkpoint = await snapshotFoundationState('ser-1');
+    seriesState = { ...seriesState, styleNotes: 'voice after', characterArcs: [] };
+    universeState = { ...universeState, premise: 'rules after', characters: [] };
+    arcState = { ...arcState, arc: { summary: 'arc after' }, episodes: [] };
+
+    const restored = await restoreFoundationState('ser-1', checkpoint);
+
+    expect(restored).toMatchObject({ restored: true, episodesRestored: 1 });
+    expect(seriesState).toMatchObject({
+      styleNotes: 'voice before',
+      styleGuide: { tone: ['spare'] },
+      characterArcs: [{ characterName: 'Example Lead' }],
+    });
+    expect(universeState).toMatchObject({
+      premise: 'rules before',
+      characters: [{ id: 'chr-1', name: 'Example Lead', need: 'trust' }],
+    });
+    expect(arcState).toEqual(checkpoint.arcState);
+  });
 });
 
 describe('computeWeightedScore — weighted composite', () => {

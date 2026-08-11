@@ -168,6 +168,8 @@ const judgeFoundation = vi.fn(async () => ({
   weakest: 'worldbuilding',
 }));
 const applyFoundationFix = vi.fn(async (_sId, dimension) => ({ dimension, applied: foundationFixApplied }));
+const snapshotFoundationState = vi.fn(async (seriesId) => ({ seriesId, marker: 'foundation-checkpoint' }));
+const restoreFoundationState = vi.fn(async () => ({ restored: true, episodesRestored: 0 }));
 vi.mock('./foundationJudge.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -175,6 +177,8 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
     judgeFoundation: (...args) => judgeFoundation(...args),
     applyFoundationFix: (...args) => applyFoundationFix(...args),
     establishCharacterFoundation: (...args) => establishCharacterFoundation(...args),
+    snapshotFoundationState: (...args) => snapshotFoundationState(...args),
+    restoreFoundationState: (...args) => restoreFoundationState(...args),
   };
 });
 
@@ -1696,10 +1700,10 @@ describe('autopilot conductor', () => {
         worldbuilding: 7.4, character: 7.4, structure: 7.4, craft: 7.4,
       }))
       .mockImplementationOnce(async () => snap(6.6, {
-        worldbuilding: 7, character: 7, structure: 5, craft: 7,
+        worldbuilding: 8, character: 7, structure: 5, craft: 7,
       }))
       .mockImplementationOnce(async () => snap(6.8, {
-        worldbuilding: 7, character: 7, structure: 7, craft: 5,
+        worldbuilding: 8, character: 7, structure: 7, craft: 5,
       }))
       .mockImplementationOnce(async () => snap(8, {
         worldbuilding: 8, character: 8, structure: 8, craft: 8,
@@ -1714,7 +1718,37 @@ describe('autopilot conductor', () => {
       .toEqual(['worldbuilding', 'structure', 'craft']);
   });
 
-  it('foundation gate: still stops after the same target repeatedly fails to improve', async () => {
+  it('foundation gate: reverts a repair that leaves its target unchanged while lowering the aggregate', async () => {
+    const snapshot = (weightedScore) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: 8, gap: 'The active-node evidence rule is undefined.', fix: 'Define it.' },
+        character: { score: 7, gap: 'Aruun privacy is mislabeled as a relapse.', fix: 'Separate privacy from safety disclosure.' },
+        structure: { score: 6, gap: 'The charter handoff is thin.', fix: 'Stage the handoff.' },
+        craft: { score: 7, gap: 'The panel grammar is thin.', fix: 'Add panel rules.' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snapshot(7.2))
+      .mockImplementationOnce(async () => snapshot(7.1));
+    const checkpoint = { seriesId: 'ser-example', marker: 'before-character-repair' };
+    snapshotFoundationState.mockResolvedValueOnce(checkpoint);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/character repair did not improve its target \(7 → 7; weighted 7\.2 → 7\.1\)/);
+    expect(applyFoundationFix).toHaveBeenCalledTimes(1);
+    expect(restoreFoundationState).toHaveBeenCalledWith(seriesId, checkpoint);
+    expect(last?.residualFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ location: expect.stringContaining('character'), problem: 'Aruun privacy is mislabeled as a relapse.' }),
+    ]));
+  });
+
+  it('foundation gate: rejects the first repair when the same target fails to improve', async () => {
     const stalled = {
       seriesId: 'ser-example', status: 'complete', weightedScore: 7,
       dimensions: {
@@ -1730,16 +1764,15 @@ describe('autopilot conductor', () => {
     };
     judgeFoundation
       .mockImplementationOnce(async () => stalled)
-      .mockImplementationOnce(async () => stalled)
       .mockImplementationOnce(async () => stalled);
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
     await waitFor(runFinished(seriesId));
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
-    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'divergence' });
-    expect(judgeFoundation).toHaveBeenCalledTimes(3);
-    expect(applyFoundationFix).toHaveBeenCalledTimes(2);
+    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'regression' });
+    expect(judgeFoundation).toHaveBeenCalledTimes(2);
+    expect(applyFoundationFix).toHaveBeenCalledTimes(1);
   });
 
   it('foundation gate: gives a newly exposed gap at the same score its own repair window', async () => {
