@@ -35,6 +35,9 @@ For every BLANK field in the character JSON above, propose a value that:
 - `coreTheme` — the character's one-sentence thematic essence ("a cartographer of grief", "the city's last honest broker").
 - `speechAccent` — regional / cultural accent only ("clipped Edinburgh", "Brooklyn drawl", "off-world inflection — vowels stretch"). Keep narrow; the rhythm + lexicon goes in `speechPattern`.
 - `speechPattern` — written speech rhythm: sentence structure, cadence, vocabulary tics, recurring phrases ("rarely contracts; uses nautical metaphors; trails off into ellipses when uncertain; never swears, prefers archaic substitutes like 'damnation'"). Distinct from `voiceId` (the TTS engine pointer) — this drives how dialogue *reads* on the page, before any voice synth.
+- `physicalDescription` — 50–100 words of stable, concrete image-generation identity: apparent age, scale/build or non-human form, surface/skin, hair and eyes when applicable, distinguishing marks, signature attire, and materials. Never substitute the character's name for visible detail.
+- `personality` — specific contradictions and behavior under pressure, not a list of flattering adjectives.
+- `background` — only the history that explains present choices, obligations, and blind spots.
 - `visualNotes` — 1–2 sentences capturing the at-a-glance silhouette and palette ("layered practical streetwear in faded mustard + charcoal; chunky boots; ever-present beanie").
 - `silhouetteNotes` — bulleted-as-prose distinctive shape features ("compact upper body; layered silhouette; tapered lower half; short hair adds 5cm height").
 - `postureNotes` — habitual posture cues ("slight forward lean; weight in left foot; shoulders loose; ready-to-move; eyes constantly scanning").
@@ -60,6 +63,7 @@ For every BLANK field in the character JSON above, propose a value that:
 - `props` — 2–6 signature items the character carries or interacts with frequently. Each gets a `name`, `purpose`, `materials`, optional `notes`.
 - `expressions` — 7 named facial expressions covering the emotional range ("neutral", "curious", "worried", "surprised", "amused", "determined", "relaxed"). Each gets a 1-line `description`.
 - `handGestures` — 5 named hand gestures the character habitually uses ("relaxed hand", "pointing", "peace sign", "gripping radio", "adjusting earpiece"). Each gets a 1-line `description`.
+- `wardrobes` — 1–4 recurring outfit/state variants with `name` and image-generation-ready `description`. For non-human characters use form-appropriate presentation or interface states instead of inventing clothing.
 
 ## Output contract
 
@@ -72,6 +76,9 @@ Return ONLY valid JSON, no markdown fence, no commentary. Include ONLY the keys 
   "coreTheme": "string",
   "speechAccent": "string",
   "speechPattern": "string",
+  "physicalDescription": "string",
+  "personality": "string",
+  "background": "string",
   "visualNotes": "string",
   "silhouetteNotes": "string",
   "postureNotes": "string",
@@ -96,6 +103,7 @@ Return ONLY valid JSON, no markdown fence, no commentary. Include ONLY the keys 
   "props": [{"name": "string", "purpose": "string", "materials": "string", "notes": "string"}],
   "expressions": [{"name": "string", "description": "string"}],
   "handGestures": [{"name": "string", "description": "string"}],
+  "wardrobes": [{"name": "string", "description": "string"}],
   "rationale": "1-sentence summary of the character direction you chose"
 }
 ```

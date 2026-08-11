@@ -23,7 +23,8 @@ import { shortId } from '../lib/fileUtils.js';
 // vision-driven expand (`universeVisionExpand.js`) fills the SAME canonical set
 // of fields from one source of truth rather than a drifting second copy.
 export const STRING_FIELDS = Object.freeze([
-  'pronouns', 'age', 'coreTheme', 'speechAccent', 'speechPattern', 'visualNotes',
+  'pronouns', 'age', 'coreTheme', 'speechAccent', 'speechPattern',
+  'physicalDescription', 'personality', 'background', 'visualNotes',
   'silhouetteNotes', 'postureNotes', 'specialTraits', 'visualIdentity',
   'motivations', 'likes', 'dislikes', 'mannerisms', 'relationships', 'skills',
   // Character framework (CWQE Phase 10, #2175) — the Ghost → Wound → Lie →
@@ -33,6 +34,7 @@ export const STRING_FIELDS = Object.freeze([
 ]);
 export const LIST_FIELDS = Object.freeze([
   'stats', 'colorPalette', 'props', 'expressions', 'handGestures',
+  'wardrobes',
   // Character framework — secrets are a plain string list (#2175).
   'secrets',
 ]);
@@ -203,4 +205,3 @@ export async function expandUniverseCharacter(universeId, entryId, options = {})
   console.log(`✨ Universe character expand — universe=${shortId(universeId)} entry=${shortId(entryId)} fields=${updatedFields.length} runId=${shortId(runId)}`);
   return { universe: updated, entry: latestEntry, rationale, runId, providerId, model, updatedFields };
 }
-
