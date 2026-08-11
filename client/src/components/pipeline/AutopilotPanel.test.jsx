@@ -440,6 +440,42 @@ describe('AutopilotPanel', () => {
     expect(screen.getByRole('button', { name: /resume autopilot/i })).toBeInTheDocument();
   });
 
+  it('offers the rolled-back round\'s findings alongside the preserved set on a regression pause', async () => {
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArc',
+        pauseKind: 'regression',
+        residualFindings: [{ severity: 'high', location: 'V1', problem: 'preserved plot hole' }],
+        discardedFindings: [{ severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' }],
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    // The restored (better) set is the work queue and stays open; the rejected
+    // candidate is collapsed behind a disclosure but reachable for comparison.
+    expect(screen.getByText(/preserved plot hole/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/what the reverted round produced/i));
+    expect(screen.getByText(/mentor subplot never pays off/i)).toBeInTheDocument();
+  });
+
+  it('omits the discarded disclosure when the pause traded nothing away', async () => {
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArc',
+        pauseKind: 'maxRounds',
+        residualFindings: [{ severity: 'high', location: 'V1', problem: 'plot hole' }],
+        discardedFindings: [],
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.queryByText(/what the reverted round produced/i)).not.toBeInTheDocument();
+  });
+
   it('restores run-local visual and gap choices when a paused run resumes', async () => {
     renderPanel({
       id: 's1',

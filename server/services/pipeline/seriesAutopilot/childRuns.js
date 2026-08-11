@@ -6,7 +6,7 @@
 
 import { sleep } from '../../../lib/fileUtils.js';
 import { recordDomainUsage } from '../../domainUsage.js';
-import { getSeries } from '../series.js';
+import { getSeries, AUTOPILOT_DISCARDED_MAX } from '../series.js';
 import { listIssues, getIssue, isStageReady } from '../issues.js';
 import {
   verifyArc, verifyVolume, resolveVerifyIssues, analyzeBeatContinuity, resolveBeatContinuity,
@@ -28,6 +28,15 @@ import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, 
 import { requiredScriptStages, textReady } from './stepResolver.js';
 
 const MAX_PLANNING_GATE_HANDOFFS = 6;
+
+// A rewound round's own findings, reported alongside the (better) set that was
+// restored. The rollback guards compare blocking COUNTS and are deliberately
+// blind to finding identity, so they can fire on a round that genuinely closed
+// what it was handed and merely exposed latent defects — without both sets the
+// user sees only a number and cannot tell those cases apart. Bounded here, not
+// just in the marker sanitizer, so the live SSE frame carries the same set the
+// record keeps rather than every finding a many-volume verify produced.
+const discardedSet = (blocking) => blocking.slice(0, AUTOPILOT_DISCARDED_MAX);
 
 function finishPlanningMutation(record, peerLatch) {
   record.runState[peerLatch] = false;
@@ -141,6 +150,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
           rollbackTarget.blocking.length,
         ),
         residual: rollbackTarget.blocking,
+        discarded: discardedSet(blocking),
       };
     }
     // Equal-count drafts may still represent real causal progress: a resolver
@@ -149,18 +159,28 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // later stall never rewinds those repairs. Count growth is still rejected
     // above, so this cannot promote a demonstrably worse state.
     const isNewBest = !bestVerified || blocking.length <= bestVerified.blocking.length;
+    // Shared exit for the two bounded stops below: rewind to the checkpoint when
+    // the round they landed on is worse than it, reporting the discarded set the
+    // same way the regression guard does. Defensive rather than reachable today
+    // — that guard returns on ANY count growth, so a round that survives to here
+    // is never worse than the best and `isNewBest` always holds. It stays because
+    // it is the correct behavior if the guard order ever changes, and one shared
+    // helper is how both exits keep agreeing on what a rewind owes the user.
+    const rewind = async () => {
+      if (isNewBest || !bestVerified) return { residual: blocking, discarded: [] };
+      await restoreArcState(seriesId, bestVerified.snapshot);
+      return { residual: bestVerified.blocking, discarded: discardedSet(blocking) };
+    };
     if (round === maxRounds) {
-      if (!isNewBest && bestVerified) await restoreArcState(seriesId, bestVerified.snapshot);
-      const residual = !isNewBest && bestVerified ? bestVerified.blocking : blocking;
-      return { pause: true, pauseKind: 'maxRounds', reason: convergencePauseReason('arc', maxRounds, residual.length), residual };
+      const { residual, discarded } = await rewind();
+      return { pause: true, pauseKind: 'maxRounds', reason: convergencePauseReason('arc', maxRounds, residual.length), residual, discarded };
     }
     // Divergence guard (#1571): if the resolve passes stop reducing blocking
     // findings, bail now rather than burning the remaining rounds + budget.
     convergence = trackConvergence(convergence, blocking.length);
     if (convergence.sinceBest >= DIVERGENCE_PATIENCE) {
-      if (!isNewBest && bestVerified) await restoreArcState(seriesId, bestVerified.snapshot);
-      const residual = !isNewBest && bestVerified ? bestVerified.blocking : blocking;
-      return { pause: true, pauseKind: 'divergence', reason: divergencePauseReason('arc', residual.length, DIVERGENCE_PATIENCE), residual };
+      const { residual, discarded } = await rewind();
+      return { pause: true, pauseKind: 'divergence', reason: divergencePauseReason('arc', residual.length, DIVERGENCE_PATIENCE), residual, discarded };
     }
     if (record.cancelRequested) return { canceled: true };
     // resolveVerifyIssues bills another action — recheck the budget so a single
@@ -467,6 +487,10 @@ export async function runFoundationGate(seriesId, record) {
         pauseKind: 'inapplicable',
         reason: `Foundation gate can't auto-fix the weakest dimension (${weak.dimension}): ${fix?.reason || 'no change applied'}. Strengthen it manually, or lower the threshold, and resume.`,
         residual: residualFindings(snap.dimensions),
+        // A structure repair that verified badly and reverted reports the arc
+        // blockers it was judged on — they are not in `residual`, which carries
+        // the dimension gaps, so this is the only place they reach the user.
+        discarded: Array.isArray(fix?.discarded) ? discardedSet(fix.discarded) : [],
       };
     }
     changed = true;

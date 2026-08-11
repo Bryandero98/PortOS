@@ -1782,6 +1782,40 @@ describe('autopilot conductor', () => {
     expect(applyFoundationFix).toHaveBeenCalledTimes(1);
   });
 
+  it('foundation gate: a reverted structure repair surfaces the arc blockers it was judged on', async () => {
+    // The repair reverted itself because the arc verifier still found blockers.
+    // The pause's `residual` is the dimension-level gap list, so those blockers
+    // reach the user nowhere unless the revert reports them — leaving "left 2
+    // blocker(s)" in prose as the only trace of why a rewrite was thrown away.
+    const blockers = [
+      { severity: 'high', location: 'V2', problem: 'ration authority contradicts the founding charter' },
+      { severity: 'medium', location: 'V3', problem: 'the eclipse lands before the calendar allows it' },
+    ];
+    foundationScore = 3;
+    applyFoundationFix.mockImplementationOnce(async (_sId, dimension) => ({
+      dimension,
+      applied: false,
+      actions: 4,
+      reason: 'structure repair left 2 arc-verification blocker(s); reverted to the pre-repair plan',
+      discarded: blockers,
+    }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('inapplicable');
+    expect(last?.discardedFindings).toEqual(blockers);
+  });
+
+  it('foundation gate: an inapplicable fix with nothing reverted reports no discarded set', async () => {
+    foundationScore = 3;
+    foundationFixApplied = false;
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.discardedFindings).toEqual([]);
+  });
+
   it('foundation gate: a repair that throws pauses the run instead of erroring it away', async () => {
     foundationScore = 3;
     applyFoundationFix.mockRejectedValueOnce(new Error('TUI run timed out after 600000ms'));
@@ -2120,6 +2154,35 @@ describe('autopilot conductor', () => {
     expect(last?.pauseKind).toBe('regression');
     expect(last?.reason).toMatch(/best verified 2-finding state/);
     expect(last?.residualFindings).toEqual(rounds[1]);
+    // Both sides of the trade are reported: the count guard is deliberately
+    // blind to finding identity, so the rejected candidate's own findings ride
+    // along for the human deciding whether the pause was worth it.
+    expect(last?.discardedFindings).toEqual(rounds[2]);
+  });
+
+  it('a blocker increase reaches the regression guard even when it lands on the round cap', async () => {
+    // Guard-ordering check: the regression branch is evaluated before the
+    // maxRounds exit, so growth ON the final round still rolls back and reports
+    // the trade rather than reporting a plain "ran out of rounds" pause. This is
+    // also what makes the `!isNewBest` rewind at the bounded exits unreachable.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    const rounds = [holes(2, 'best'), holes(3, 'worse')];
+    arcSpies.verifyArc.mockReset();
+    rounds.forEach((result) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues: result })));
+    const bestSnapshot = { marker: 'best', arc: null, seasons: [], episodes: [] };
+    arcSpies.snapshotArcState.mockImplementationOnce(async () => bestSnapshot);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
+    expect(last?.residualFindings).toEqual(rounds[0]);
+    expect(last?.discardedFindings).toEqual(rounds[1]);
   });
 
   it('a default-cap arc run is unaffected by the divergence guard (maxRounds still wins)', async () => {
@@ -2134,8 +2197,10 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.pauseKind).toBe('maxRounds');
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
-    // Round 3 verified the latest equal-count draft, so keep it in place.
+    // Round 3 verified the latest equal-count draft, so keep it in place — and
+    // with nothing rewound there is no discarded candidate to report.
     expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    expect(last?.discardedFindings).toEqual([]);
   });
 
   it('a per-run override beats the persisted maxArcVerifyRounds setting', async () => {

@@ -1577,6 +1577,11 @@ export async function applyFoundationFix(seriesId, dimension, {
         applied: false,
         actions: correction?.applied === false ? 3 : 4,
         reason: `structure repair left ${blockers.length} arc-verification blocker(s); reverted to the pre-repair plan`,
+        // The blockers that condemned the rewrite. Without them the revert is a
+        // bare count in prose, and the pause it raises reports dimension-level
+        // gaps instead — a different set entirely — so the user is never shown
+        // why a plausible rewrite was thrown away.
+        discarded: blockers,
       };
     };
     // Any provider/parse failure after the first mutation must not strand the
