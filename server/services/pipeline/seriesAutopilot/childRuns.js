@@ -273,7 +273,18 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
   // Preserve rejected-candidate evidence across Resume, then layer any newer
   // regression from this run on top. `discardedSet` keeps the provider prompt
   // bounded exactly like the persisted marker.
-  const avoidFindings = (current = []) => discardedSet([...priorAvoid, ...current]);
+  const avoidFindings = (current = [], active = []) => discardedSet(
+    [
+      // A latent defect from a rejected candidate can later be found in the
+      // restored checkpoint itself. Once it is a CURRENT target, telling the
+      // resumed resolver both "fix this" and "avoid this" is contradictory;
+      // filter only the stale cross-run evidence. The current transaction's
+      // discarded set stays whole because its restatements describe the exact
+      // candidate that was just rejected and are intentional retry evidence.
+      ...priorAvoid.filter((candidate) => !active.some((target) => sameFinding(candidate, target))),
+      ...current,
+    ],
+  );
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
   // Lowest verified blocker set seen in this gate, paired with the exact arc /
@@ -379,7 +390,9 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         const beforeRetry = await budgetPause();
         if (beforeRetry) return beforeRetry;
         const retried = await resolveArcFindings(seriesId, record, {
-          findings: rollbackTarget.blocking, avoid: avoidFindings(discarded), spineOnly,
+          findings: rollbackTarget.blocking,
+          avoid: avoidFindings(discarded, rollbackTarget.blocking),
+          spineOnly,
         });
         if (retried?.applied !== false) changed = true;
         // The restored state is what the retry has to beat, so the next round
@@ -399,7 +412,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         const isolated = await isolateArcFindings(seriesId, record, {
           scope, round, spineOnly,
           baseline: rollbackTarget.blocking,
-          avoid: avoidFindings(discarded),
+          avoid: avoidFindings(discarded, rollbackTarget.blocking),
           attemptsLeft: isolationLeft,
         });
         isolationLeft -= isolated.attempts;
@@ -481,7 +494,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // only place they can actually close a finding.
     const resolved = await resolveArcFindings(seriesId, record, {
       findings: blocking,
-      avoid: avoidFindings(),
+      avoid: avoidFindings([], blocking),
       spineOnly,
     });
     if (resolved?.applied !== false) changed = true;

@@ -2588,6 +2588,37 @@ describe('autopilot conductor', () => {
     expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
   });
 
+  it('does not tell a resumed resolver to avoid a discarded finding that is now its active target', async () => {
+    const active = {
+      severity: 'medium', problem: 'the sacrifice beat is missing from the volume', location: 'V1 issue 10',
+    };
+    const unrelated = {
+      severity: 'medium', problem: 'the rejected rewrite dropped a consent choice', location: 'V1 issue 9',
+    };
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [active] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, {
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArcSpine',
+        pauseKind: 'regression',
+        residualFindings: [],
+        discardedFindings: [active, unrelated],
+      },
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ findings: [active], avoid: [unrelated], spineOnly: true }),
+    );
+  });
+
   it('reverts an equal-count arc candidate whose findings escalated in severity', async () => {
     const before = [
       { severity: 'high', problem: 'recovery clock is contradictory', location: 'V1 issues 8-9' },
