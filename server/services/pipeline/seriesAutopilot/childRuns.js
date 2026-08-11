@@ -22,7 +22,7 @@ import { MAX_ARC_VERIFY_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_FOUNDATION_ROUND
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
-  regressionPauseReason,
+  regressionPauseReason, sameFinding,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
@@ -378,10 +378,25 @@ export async function runFoundationGate(seriesId, record) {
     // THEIR OWN target. A global weighted high-water mark is not comparable
     // across different targets: improving character can make a previously
     // latent structure or craft gap judgeable and lower the aggregate score.
-    const targetConvergence = trackConvergence(
-      convergenceByDimension.get(weak.dimension) || { best: null, sinceBest: 0 },
-      10 - weak.score,
-    );
+    const priorConvergence = convergenceByDimension.get(weak.dimension)
+      || { best: null, sinceBest: 0, finding: null };
+    const currentFinding = {
+      location: weak.dimension,
+      problem: snap.dimensions?.[weak.dimension]?.gap || '',
+    };
+    let targetConvergence = trackConvergence(priorConvergence, 10 - weak.score);
+    // A harsh critic can hold a dimension at the same score after the repair
+    // closed its broad gap, then expose a genuinely different layer beneath it.
+    // That is progress even though the coarse 0–10 number tied. Give the new
+    // gap its own patience window; fuzzy-match paraphrases of the SAME gap so a
+    // judge cannot evade the bounded stall guard merely by rewording itself.
+    const changedGap = priorConvergence.finding?.problem
+      && currentFinding.problem
+      && !sameFinding(priorConvergence.finding, currentFinding);
+    if (targetConvergence.sinceBest > 0 && changedGap) {
+      targetConvergence = { best: targetConvergence.best, sinceBest: 0 };
+    }
+    targetConvergence.finding = currentFinding;
     convergenceByDimension.set(weak.dimension, targetConvergence);
     if (targetConvergence.sinceBest >= DIVERGENCE_PATIENCE) {
       const floorReason = gate.failingDimensions.length > 0

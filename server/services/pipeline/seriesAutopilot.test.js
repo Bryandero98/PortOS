@@ -1715,7 +1715,23 @@ describe('autopilot conductor', () => {
   });
 
   it('foundation gate: still stops after the same target repeatedly fails to improve', async () => {
-    foundationScore = 7;
+    const stalled = {
+      seriesId: 'ser-example', status: 'complete', weightedScore: 7,
+      dimensions: {
+        worldbuilding: {
+          score: 7,
+          gap: 'The setting lacks a concrete scarcity mechanism and authority conflict.',
+          fix: 'Define the scarcity mechanism and authority conflict.',
+        },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    };
+    judgeFoundation
+      .mockImplementationOnce(async () => stalled)
+      .mockImplementationOnce(async () => stalled)
+      .mockImplementationOnce(async () => stalled);
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
     await waitFor(runFinished(seriesId));
@@ -1724,6 +1740,32 @@ describe('autopilot conductor', () => {
     expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'divergence' });
     expect(judgeFoundation).toHaveBeenCalledTimes(3);
     expect(applyFoundationFix).toHaveBeenCalledTimes(2);
+  });
+
+  it('foundation gate: gives a newly exposed gap at the same score its own repair window', async () => {
+    const snap = (gap, score = 7) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore: score,
+      dimensions: {
+        worldbuilding: { score, gap, fix: `repair ${gap}` },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snap('The visitor has no defined body scale or metabolic support needs.'))
+      .mockImplementationOnce(async () => snap('The neighboring societies lack governance, factions, and translation methods.'))
+      .mockImplementationOnce(async () => snap('The home settlement has no concrete infrastructure failure chain or ration authority.'))
+      .mockImplementationOnce(async () => snap('clean', 10));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(applyFoundationFix).toHaveBeenCalledTimes(3);
+    expect(applyFoundationFix.mock.calls.map(([, dimension]) => dimension))
+      .toEqual(['worldbuilding', 'worldbuilding', 'worldbuilding']);
   });
 
   it('foundation gate: pauses immediately when the weakest dimension cannot be auto-fixed', async () => {
