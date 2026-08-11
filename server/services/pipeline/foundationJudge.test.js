@@ -804,6 +804,29 @@ describe('foundation judge context — complete planning altitude', () => {
     expect(ctx.characterRoster).toContain('wound: Abandoned during the Naming Tax');
   });
 
+  it('shows actual visual identity details instead of presence-only ready markers', () => {
+    const ctx = __testing.buildFoundationContext({
+      series: { name: 'Example Series', characterArcs: [{ characterId: 'chr-1' }], seasons: [] },
+      universe: {},
+      canon: { characters: [{
+        id: 'chr-1',
+        name: 'Lead',
+        physicalDescription: 'A compact young surveyor with copper curls and a patched yellow pressure coat.',
+        visualNotes: 'Every tool is repaired with visible blue ceramic staples.',
+        silhouetteNotes: 'Compact torso, wide tool belt, tapered boots.',
+        visualIdentity: 'Round survey instruments interrupt a narrow triangular silhouette.',
+        colorPalette: [{ name: 'survey yellow', hex: '#d9a21b', role: 'coat' }],
+      }] },
+      issues: [],
+      contentMax: 30_000,
+    });
+
+    expect(ctx.characterRoster).toContain('patched yellow pressure coat');
+    expect(ctx.characterRoster).toContain('Round survey instruments');
+    expect(ctx.characterRoster).toContain('survey yellow');
+    expect(ctx.characterRoster).not.toContain('physicalDescription: ready');
+  });
+
   it('judges the complete story-referenced cast and excludes unrelated universe assets', () => {
     const storyCast = Array.from({ length: 8 }, (_, index) => ({
       id: `chr-${index + 1}`,

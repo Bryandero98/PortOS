@@ -389,9 +389,11 @@ export function isFoundationStale(snap, currentHash) {
 // core signal) without dumping the whole record.
 function renderCharacterLine(c, { core = false } = {}) {
   const role = c?.role ? ` (${c.role})` : '';
-  const concise = (value) => (typeof value === 'string' && value.trim()
-    ? value.trim().replace(/\s+/g, ' ').slice(0, 100)
-    : '—');
+  const concise = (value, maxChars = 100) => {
+    if (typeof value !== 'string' || !value.trim()) return '—';
+    const compact = value.trim().replace(/\s+/g, ' ');
+    return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars - 1).trimEnd()}…`;
+  };
   const framework = FRAMEWORK_STRING_FIELDS
     .map((field) => `${field}: ${concise(c?.[field])}`)
     .join(' | ');
@@ -399,9 +401,20 @@ function renderCharacterLine(c, { core = false } = {}) {
     .map(concise)
     .slice(0, 3)
     .join('; ');
+  // The harsh judge needs the actual render identity, not a presence marker.
+  // `ready` proved actively misleading: five complete character sheets were
+  // scored as absent because the prompt hid every distinguishing detail. Keep
+  // the lines bounded, but show enough anatomy, silhouette, palette, and visual
+  // grammar to compare the cast and identify generic or contradictory designs.
+  const visualString = (field) => (isBlankString(c?.[field]) ? 'BLANK' : concise(c[field], 320));
+  const visualList = (field) => {
+    if (isBlankArray(c?.[field])) return 'BLANK';
+    const compact = JSON.stringify(c[field]).replace(/\s+/g, ' ');
+    return compact.length <= 420 ? compact : `${compact.slice(0, 419).trimEnd()}…`;
+  };
   const visual = [
-    ...VISUAL_FOUNDATION_STRING_FIELDS.map((field) => `${field}: ${isBlankString(c?.[field]) ? 'BLANK' : 'ready'}`),
-    ...VISUAL_FOUNDATION_LIST_FIELDS.map((field) => `${field}: ${isBlankArray(c?.[field]) ? 'BLANK' : 'ready'}`),
+    ...VISUAL_FOUNDATION_STRING_FIELDS.map((field) => `${field}: ${visualString(field)}`),
+    ...VISUAL_FOUNDATION_LIST_FIELDS.map((field) => `${field}: ${visualList(field)}`),
   ].join(' | ');
   return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — ${framework} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'} | visual foundation: ${visual}`;
 }
