@@ -6,7 +6,7 @@ You are the senior character architect for a long-form series. Build the human e
 
 {{phase}}
 
-- In **pre-arc character foundation**, the plot spine does not exist yet. Establish characters whose Ghost → Wound → Lie → Want → Need chains create unavoidable choices and relationship tensions. Do not pre-write an arbitrary sequence of events and retrofit people to it.
+- In **pre-arc character foundation**, the plot spine does not exist yet. Establish characters whose Ghost → Wound → Lie → Want → Need chains create unavoidable choices and relationship tensions. Also establish each core character's image-generation identity before the plot starts: body, apparent age/heritage cues where applicable, silhouette, palette, posture, props, and recurring design language. Do not pre-write an arbitrary sequence of events and retrofit people to it.
 - In **post-arc reconciliation**, preserve the established character foundation. Change an existing character only where the planned story genuinely tests or transforms them. Add a character only when the arc already requires a story function the current ensemble cannot carry. The synopsis-level plan owns event placement: preserve every existing transition beat exactly, and do not add, move, or rewrite an `atIssue` event. If the requested character change needs a scene the plan does not yet contain, deepen the Want / Need / start / end state without inventing that scene; the structure editor will stage it separately.
 
 ## Editorial finding
@@ -41,6 +41,8 @@ You are the senior character architect for a long-form series. Build the human e
 - Preserve the `id`, name, physical identity, and established history of every supplied character. Existing canon is a constraint, not raw material to replace.
 - Make Ghost → Wound → Lie → Want → Need causal and specific. The Want must create external action; the Need must demand a costly contradiction of the Lie.
 - Give each target character distinct values, contradictions, motivation, speech rhythm, secrets, and relationships that exert pressure in both directions.
+- Treat visual identity as canon, not decoration. `physicalDescription` must be 50–100 words of concrete, image-generation-ready detail; never use the character's name inside it. Specify apparent age range, scale/build or non-human form, surface/skin, hair and eyes when applicable, distinguishing marks, and signature attire/materials. Make `visualNotes`, `silhouetteNotes`, `postureNotes`, `visualIdentity`, and `colorPalette` mutually reinforcing and visibly distinct from every peer.
+- For the core cast, provide practical recurring `props`; provide `expressions`, `handGestures`, and `wardrobes` when the character's form supports them. Do not force human anatomy or clothing onto a non-human entity—use form-appropriate stats, poses, signal states, surface changes, or carried interfaces instead.
 - Return every supplied target whose framework is incomplete or whose existing engine needs the requested editorial repair. Never silently omit a target merely because the batch is large; later batches handle the rest of the roster.
 - A provisional character arc describes choices and state changes, not moods. Place transitions at concrete issue numbers within the series target when one is known.
 - During post-arc reconciliation, the supplied transition list is read-only evidence of what the plan already dramatizes. Never manufacture an early appearance, disclosure, refusal, or relationship turn to justify a character revision.
@@ -68,6 +70,18 @@ Return ONLY one valid JSON object. Omit `newCharacters` when no new role is nece
     "coreTheme": "the thematic tension this character embodies",
     "motivations": "specific competing motives",
     "speechPattern": "distinct cadence and lexical habits",
+    "physicalDescription": "50-100 words of concrete image-generation identity",
+    "visualNotes": "at-a-glance silhouette, materials, and palette",
+    "silhouetteNotes": "distinctive overall shape",
+    "postureNotes": "habitual pose and movement cues",
+    "specialTraits": "non-redundant identifying details",
+    "visualIdentity": "coherent design-language axes",
+    "colorPalette": [{"name": "swatch name", "hex": "#112233", "role": "design role"}],
+    "stats": [{"label": "Height", "value": "specific value"}],
+    "props": [{"name": "signature item", "purpose": "story use", "materials": "renderable materials", "notes": "optional"}],
+    "expressions": [{"name": "determined", "description": "visible expression cue"}],
+    "handGestures": [{"name": "shared stop", "description": "visible gesture cue"}],
+    "wardrobes": [{"name": "default fieldwear", "description": "image-generation-ready outfit", "purpose": "default"}],
     "arcType": "positive",
     "secrets": ["story-active secret"]
   }],
@@ -85,6 +99,18 @@ Return ONLY one valid JSON object. Omit `newCharacters` when no new role is nece
     "coreTheme": "thematic tension",
     "motivations": "competing motives",
     "speechPattern": "distinct cadence and lexical habits",
+    "physicalDescription": "50-100 words of concrete image-generation identity",
+    "visualNotes": "at-a-glance silhouette, materials, and palette",
+    "silhouetteNotes": "distinctive overall shape",
+    "postureNotes": "habitual pose and movement cues",
+    "specialTraits": "non-redundant identifying details",
+    "visualIdentity": "coherent design-language axes",
+    "colorPalette": [{"name": "swatch name", "hex": "#112233", "role": "design role"}],
+    "stats": [{"label": "Height", "value": "specific value"}],
+    "props": [{"name": "signature item", "purpose": "story use", "materials": "renderable materials"}],
+    "expressions": [{"name": "neutral", "description": "visible expression cue"}],
+    "handGestures": [{"name": "resting pose", "description": "visible gesture cue"}],
+    "wardrobes": [{"name": "default look", "description": "image-generation-ready outfit", "purpose": "default"}],
     "arcType": "positive",
     "secrets": ["story-active secret"]
   }],

@@ -163,6 +163,7 @@ export function foundationInputs(series, universe, issues = []) {
       name: c.name,
       role: c.role || '',
       ...pickFrameworkFields(c),
+      ...pickVisualFoundationFields(c),
     })),
     arc: series?.arc || null,
     seasons: Array.isArray(series?.seasons)
@@ -188,11 +189,25 @@ export function foundationInputs(series, universe, issues = []) {
 // Lie → Want → Need chain + secrets + arc fields). Shared by the hash projection
 // and the "thinnest character" fix target so both read the SAME field set.
 const FRAMEWORK_STRING_FIELDS = Object.freeze(['ghost', 'wound', 'lie', 'want', 'need', 'coreTheme', 'motivations', 'speechPattern']);
+// Identity-bearing visual axes a graphic-novel lead needs before the plot is
+// allowed to grow around them. This intentionally stops short of requiring a
+// human facial-expression or wardrobe sheet from non-human characters.
+const VISUAL_FOUNDATION_STRING_FIELDS = Object.freeze([
+  'physicalDescription', 'visualNotes', 'silhouetteNotes', 'visualIdentity',
+]);
+const VISUAL_FOUNDATION_LIST_FIELDS = Object.freeze(['colorPalette']);
 function pickFrameworkFields(c) {
   const out = {};
   for (const f of FRAMEWORK_STRING_FIELDS) out[f] = c?.[f] || '';
   out.arcType = c?.arcType || '';
   out.secrets = Array.isArray(c?.secrets) ? c.secrets : [];
+  return out;
+}
+
+function pickVisualFoundationFields(c) {
+  const out = {};
+  for (const field of VISUAL_FOUNDATION_STRING_FIELDS) out[field] = c?.[field] || '';
+  for (const field of VISUAL_FOUNDATION_LIST_FIELDS) out[field] = Array.isArray(c?.[field]) ? c[field] : [];
   return out;
 }
 
@@ -384,7 +399,11 @@ function renderCharacterLine(c, { core = false } = {}) {
     .map(concise)
     .slice(0, 3)
     .join('; ');
-  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — ${framework} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'}`;
+  const visual = [
+    ...VISUAL_FOUNDATION_STRING_FIELDS.map((field) => `${field}: ${isBlankString(c?.[field]) ? 'BLANK' : 'ready'}`),
+    ...VISUAL_FOUNDATION_LIST_FIELDS.map((field) => `${field}: ${isBlankArray(c?.[field]) ? 'BLANK' : 'ready'}`),
+  ].join(' | ');
+  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — ${framework} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'} | visual foundation: ${visual}`;
 }
 
 function countOccurrences(text, value) {
@@ -423,7 +442,9 @@ export function rankFoundationCharacters(characters, series, issues = [], { incl
     .filter((character) => character && (includeLocked || character.locked !== true))
     .map((character, index) => {
       const blanks = FRAMEWORK_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
-        + (isBlankArray(character.secrets) ? 1 : 0);
+        + (isBlankArray(character.secrets) ? 1 : 0)
+        + VISUAL_FOUNDATION_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
+        + VISUAL_FOUNDATION_LIST_FIELDS.filter((field) => isBlankArray(character[field])).length;
       const mentions = countOccurrences(storyText, character.name);
       const authoredArc = authoredArcKeys.has(character.id)
         || authoredArcKeys.has(`name:${String(character.name || '').trim().toLowerCase()}`);
@@ -798,7 +819,9 @@ export function thinnestCharacter(characters) {
   for (const c of list) {
     if (!c || c.locked === true) continue;
     const blanks = FRAMEWORK_STRING_FIELDS.filter((f) => isBlankString(c[f])).length
-      + (isBlankArray(c.secrets) ? 1 : 0);
+      + (isBlankArray(c.secrets) ? 1 : 0)
+      + VISUAL_FOUNDATION_STRING_FIELDS.filter((field) => isBlankString(c[field])).length
+      + VISUAL_FOUNDATION_LIST_FIELDS.filter((field) => isBlankArray(c[field])).length;
     if (blanks === 0) continue;
     if (best === null || blanks > best.blanks) best = { id: c.id, blanks };
   }
@@ -807,11 +830,20 @@ export function thinnestCharacter(characters) {
 
 const REPAIRABLE_CHARACTER_FIELDS = Object.freeze([
   ...FRAMEWORK_STRING_FIELDS,
+  ...VISUAL_FOUNDATION_STRING_FIELDS,
+  ...VISUAL_FOUNDATION_LIST_FIELDS,
   'arcType',
   'secrets',
   'personality',
   'background',
   'relationships',
+  'postureNotes',
+  'specialTraits',
+  'stats',
+  'props',
+  'expressions',
+  'handGestures',
+  'wardrobes',
 ]);
 
 const MAX_FOUNDATION_NEW_CHARACTERS = 3;
@@ -932,15 +964,17 @@ function renderRepairSeriesJson(series, maxChars = REPAIR_SERIES_MAX_CHARS) {
 // The full-ensemble roster is the unbounded half of the character payload:
 // `CHARACTER_FOUNDATION_BATCH_SIZE` bounds `targetCharacters`, but
 // `fullSeriesRoster` carries every cast member with every framework field, so it
-// grows with the series. Compact the roster to the differentiation spine before
-// dropping members — the roster exists so the batch can differentiate and keep
-// relationships straight, which a name/role/want/need line still supports.
+// grows with the series. Compact the roster to the narrative and visual
+// differentiation spine before dropping members — the roster exists so the
+// batch can differentiate relationships, motives, and render identities.
 const compactRosterCharacter = (character) => ({
   id: character?.id,
   name: character?.name,
   role: character?.role,
   want: character?.want || '',
   need: character?.need || '',
+  physicalDescription: character?.physicalDescription || '',
+  visualIdentity: character?.visualIdentity || '',
 });
 
 // `CHARACTER_FOUNDATION_BATCH_SIZE` bounds how MANY characters a batch carries,
@@ -999,14 +1033,14 @@ function renderRepairCharactersJson(payload, maxChars = REPAIR_CHARACTERS_MAX_CH
   const roster = Array.isArray(payload?.fullSeriesRoster) ? payload.fullSeriesRoster : [];
   const compactRoster = roster.map(compactRosterCharacter);
   const rosterNote = (kept) => (kept === compactRoster.length
-    ? 'Roster compacted to name/role/want/need to fit the prompt budget.'
+    ? 'Roster compacted to narrative and visual identity axes to fit the prompt budget.'
     : `Roster compacted and limited to ${kept} of ${compactRoster.length} members to fit the prompt budget.`);
   const buildTargets = (cap, spine) => {
     const shaped = spine ? targets.map(compactRosterCharacter) : targets;
     return cap ? shaped.map((character) => capCharacterFields(character, cap)) : shaped;
   };
   const targetNote = (cap, spine) => {
-    if (spine) return `Batch compacted to name/role/want/need and truncated at ${cap} characters to fit the prompt budget.`;
+    if (spine) return `Batch compacted to narrative and visual identity axes and truncated at ${cap} characters to fit the prompt budget.`;
     return cap ? `Character fields over ${cap} characters were truncated to fit the prompt budget.` : undefined;
   };
   const build = (kept, cap, spine = false) => render({
@@ -1081,6 +1115,14 @@ async function runFoundationRepair(series, issues, dimension, finding, character
     background: character.background,
     relationships: character.relationships,
     ...pickFrameworkFields(character),
+    ...pickVisualFoundationFields(character),
+    postureNotes: character.postureNotes || '',
+    specialTraits: character.specialTraits || '',
+    stats: Array.isArray(character.stats) ? character.stats : [],
+    props: Array.isArray(character.props) ? character.props : [],
+    expressions: Array.isArray(character.expressions) ? character.expressions : [],
+    handGestures: Array.isArray(character.handGestures) ? character.handGestures : [],
+    wardrobes: Array.isArray(character.wardrobes) ? character.wardrobes : [],
   });
   const charactersPayload = dimension === 'character'
     ? {
@@ -1297,7 +1339,9 @@ async function repairCharacters(series, issues, universe, finding, options) {
 function hasCompleteFramework(character) {
   return FRAMEWORK_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
     && !isBlankArray(character?.secrets)
-    && !isBlankString(character?.arcType);
+    && !isBlankString(character?.arcType)
+    && VISUAL_FOUNDATION_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
+    && VISUAL_FOUNDATION_LIST_FIELDS.every((field) => !isBlankArray(character?.[field]));
 }
 
 /**
@@ -1336,8 +1380,8 @@ export async function establishCharacterFoundation(seriesId, {
     return { applied: false, skipped: true, ran: false, reason: 'core character foundation is already complete' };
   }
   const result = await repairCharacters(series, [], universe, {
-    gap: 'The plot spine has not been generated yet, so the core cast must first have specific causal inner engines and relationship tensions.',
-    fix: 'Complete the core ensemble from the premise: Ghost to Wound to Lie to Want to Need, distinct voice and contradictions, active relationships, and a provisional whole-series change path. Add only a genuinely missing core role.',
+    gap: 'The plot spine has not been generated yet, so the core cast must first have specific causal inner engines, relationship tensions, and stable render identities.',
+    fix: 'Complete the core ensemble from the premise: Ghost to Wound to Lie to Want to Need, distinct voice and contradictions, active relationships, mutually distinct physical descriptions, silhouettes, visual identities and palettes, and a provisional whole-series change path. Add only a genuinely missing core role.',
   }, {
     providerId: providerDefault,
     model: modelDefault,

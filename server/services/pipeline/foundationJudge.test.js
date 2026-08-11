@@ -277,6 +277,21 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     const uni2 = { characters: [{ id: 'c1', name: 'Ana', wound: 'abandoned as a child' }] };
     expect(foundationInputsHash({}, uni1)).not.toBe(foundationInputsHash({}, uni2));
   });
+  it('changes when a core character visual foundation changes', () => {
+    const series = { premise: 'Lead crosses the flooded city.' };
+    const base = { characters: [{ id: 'c1', name: 'Lead', physicalDescription: '', visualIdentity: '' }] };
+    const designed = {
+      characters: [{
+        ...base.characters[0],
+        physicalDescription: 'A compact young surveyor with copper curls and a patched yellow pressure coat.',
+        visualIdentity: 'round survey instruments against a narrow triangular silhouette',
+        visualNotes: 'mustard and oxidized copper fieldwear',
+        silhouetteNotes: 'compact torso, wide tool belt, tapered boots',
+        colorPalette: [{ name: 'survey yellow', hex: '#d9a21b', role: 'coat' }],
+      }],
+    };
+    expect(foundationInputsHash(series, base)).not.toBe(foundationInputsHash(series, designed));
+  });
   it('changes when the protected author intent changes', () => {
     const base = { starterPrompt: 'A clockmaker discovers that dragons control the weather.' };
     const drifted = { starterPrompt: 'Train conductors regulate an intercity signal network.' };
@@ -568,7 +583,15 @@ describe('foundation repair prompt — bounded series seed and cast', () => {
     expect(parsed.targetCharacters[0].background).toBe('b'.repeat(200));
     // The roster degrades to the differentiation spine.
     expect(parsed.fullSeriesRoster.length).toBeGreaterThan(0);
-    expect(parsed.fullSeriesRoster[0]).toEqual({ id: 'chr-0', name: 'Cast 0', role: 'lead', want: 'w'.repeat(60), need: 'n'.repeat(60) });
+    expect(parsed.fullSeriesRoster[0]).toEqual({
+      id: 'chr-0',
+      name: 'Cast 0',
+      role: 'lead',
+      want: 'w'.repeat(60),
+      need: 'n'.repeat(60),
+      physicalDescription: '',
+      visualIdentity: '',
+    });
     expect(parsed.rosterNote).toMatch(/fit the prompt budget/);
   });
 
@@ -1295,6 +1318,11 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
         lie: 'Trust creates casualties', want: 'Act alone', need: 'Choose interdependence',
         coreTheme: 'trust', motivations: 'Protect others while hiding fear',
         speechPattern: 'clipped observations', arcType: 'positive', secrets: ['Caused the failure'],
+        physicalDescription: 'A compact young rescuer with close-cropped silver hair, a square jaw, and a patched ochre pressure coat.',
+        visualNotes: 'ochre and charcoal rescue layers with round analog gauges',
+        silhouetteNotes: 'compact torso, broad tool belt, tapered boots',
+        visualIdentity: 'rounded rescue hardware against a compact triangular silhouette',
+        colorPalette: [{ name: 'rescue ochre', hex: '#c88928', role: 'coat' }],
       }],
       characterArcs: [{
         characterId: 'chr-thin', characterName: 'Lead', want: 'Act alone', need: 'Choose interdependence',
@@ -1304,6 +1332,9 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     } });
     const r = await establishCharacterFoundation('ser-1', { providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' });
     expect(r).toMatchObject({ ran: true, applied: true });
+    expect(r.updatedFields).toEqual(expect.arrayContaining([
+      'physicalDescription', 'visualNotes', 'silhouetteNotes', 'visualIdentity', 'colorPalette',
+    ]));
     expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-character-foundation', expect.objectContaining({
       phase: 'pre-arc character foundation',
     }), expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' }));
