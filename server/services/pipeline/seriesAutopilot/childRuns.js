@@ -76,6 +76,11 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     record.runState[spineOnly ? 'arcSpineVerified' : 'arcVerified'] = true;
     return {};
   }
+  // One label for every frame this gate emits. The two gates now RESOLVE
+  // differently, not just verify differently, so a resolve frame labelled `arc`
+  // from a spine round misreports the failure to both the status line and the
+  // stall-diagnosis prompt that replays these frames.
+  const scope = spineOnly ? 'arcSpine' : 'arc';
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
   // Lowest verified blocker set seen in this gate, paired with the exact arc /
@@ -129,7 +134,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     const findings = [...arcFindings, ...volumeFindings];
     const blocking = findings.filter((finding) => record.options.blockingSets.arc.has(finding.severity));
     broadcast(seriesId, {
-      type: 'verify:round', scope: spineOnly ? 'arcSpine' : 'arc', round, findings: findings.length,
+      type: 'verify:round', scope, round, findings: findings.length,
       blocking: blocking.length, volumesChecked: spineOnly ? 0 : (series.seasons || []).length,
     });
     if (blocking.length === 0) {
@@ -160,7 +165,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
       // checks, and would fall out of the loop past every `return` below.
       const canRetry = retriesLeft > 0 && round < maxRounds;
       broadcast(seriesId, {
-        type: 'resolve:rollback', scope: 'arc', round,
+        type: 'resolve:rollback', scope, round,
         before: lastResolve.blocking.length, after: blocking.length,
         best: rollbackTarget.blocking.length,
         reverted: rollback.restored,
@@ -184,6 +189,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         const retried = await resolveVerifyIssues(seriesId, {
           findings: rollbackTarget.blocking,
           avoid: discarded,
+          spineOnly,
           ...providerOverrideOpts(record),
           ...seasonPreserveOpts(record),
         });
@@ -194,7 +200,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         lastResolve = rollbackTarget;
         await recordDomainUsage('cos', { actions: 1 });
         broadcast(seriesId, {
-          type: 'resolve:round', scope: 'arc', round, retry: true,
+          type: 'resolve:round', scope, round, retry: true,
           episodesEdited: Array.isArray(retried?.episodesResolved) ? retried.episodesResolved.length : 0,
         });
         continue;
@@ -252,8 +258,13 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // equal counts can reflect different, narrower findings after real repairs.
     const snapshot = await snapshotArcState(seriesId);
     if (isNewBest) bestVerified = { blocking, snapshot };
+    // Resolve at the altitude this gate verified at: the spine round judged an
+    // episode-empty plan, so its resolver may only patch the arc + volumes
+    // (#3789). The later full arc gate keeps episode corrections, which is the
+    // only place they can actually close a finding.
     const resolved = await resolveVerifyIssues(seriesId, {
       findings: blocking,
+      spineOnly,
       ...providerOverrideOpts(record),
       ...seasonPreserveOpts(record),
     });
@@ -261,7 +272,7 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     lastResolve = { blocking, snapshot };
     await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
-      type: 'resolve:round', scope: 'arc', round,
+      type: 'resolve:round', scope, round,
       episodesEdited: Array.isArray(resolved?.episodesResolved) ? resolved.episodesResolved.length : 0,
     });
   }

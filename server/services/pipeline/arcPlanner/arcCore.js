@@ -363,7 +363,15 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
  * `resolves: ["f2", …]` naming at least one input finding — an edit that names
  * none can't be closing anything, so applying it is all blast radius and no
  * benefit. Returns `{ legacy, arc, arcDropped, seasons, seasonsDropped,
- * episodes, episodesDropped }`.
+ * episodes, episodesDropped, episodesOutOfScope }`.
+ *
+ * `spineOnly` drops every episode edit regardless of what it names (#3789): a
+ * spine round is judged against an episode-empty plan, so an episode rewrite
+ * cannot close the finding it declares — it only mutates records the gate never
+ * read. Counted separately from `episodesDropped` because the two are different
+ * diagnoses (wrong scope vs. named no finding), and enforced here rather than
+ * trusting the prompt alone so a customized/stale installed template can't
+ * re-open the blast radius.
  *
  * `legacy` is the escape hatch for an install whose `pipeline-arc-resolve.md`
  * was customized before #3724 and therefore never got the migration: when NOT
@@ -374,7 +382,7 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
  * old full-list rewrite) and logged. A response that keys SOME of its edits is
  * on the new contract, so its unkeyed entries are genuine drops.
  */
-export function selectFindingKeyedEdits(content, findings) {
+export function selectFindingKeyedEdits(content, findings, { spineOnly = false } = {}) {
   const validIds = findingIdSet(findings);
   const isEdit = (e) => !!e && typeof e === 'object';
   const arcEdit = isEdit(content?.arc) ? content.arc : null;
@@ -384,7 +392,7 @@ export function selectFindingKeyedEdits(content, findings) {
     .some((e) => e && matchResolvedFindings(e, validIds).declared);
   const targeted = (raw) => legacy || matchResolvedFindings(raw, validIds).matched.length > 0;
   const seasons = seasonsRaw.filter(targeted);
-  const episodes = episodesRaw.filter(targeted);
+  const episodes = spineOnly ? [] : episodesRaw.filter(targeted);
   return {
     legacy,
     arc: arcEdit && targeted(arcEdit) ? arcEdit : null,
@@ -392,19 +400,29 @@ export function selectFindingKeyedEdits(content, findings) {
     seasons,
     seasonsDropped: seasonsRaw.length - seasons.length,
     episodes,
-    episodesDropped: episodesRaw.length - episodes.length,
+    episodesDropped: spineOnly ? 0 : episodesRaw.length - episodes.length,
+    episodesOutOfScope: spineOnly ? episodesRaw.length : 0,
   };
 }
 
-// Per-episode (issue) records are NOT touched — those are user-owned scripts
-// and shouldn't get clobbered by a structural fix. If a finding's only
-// actionable resolution would require deleting issues, the LLM is told to
-// flag that in the response's `notes` field rather than executing it.
+// Episode (issue) records are never CREATED or DELETED here, and their drafted
+// scripts are never clobbered — a full-arc round may rewrite an episode's
+// planning synopsis (see `applyEpisodeResolutions`), and nothing else. If a
+// finding's only actionable resolution would require deleting issues, the LLM
+// is told to flag that in the response's `notes` field rather than executing it.
 // `options.findings` empty / omitted = re-run verify first and resolve
 // everything it returns. `options.avoid` is the optional "a previous attempt at
 // these same findings authored THESE and was reverted" list (see
 // buildResolveContext) — set only by a corrective pass.
+// `options.spineOnly` mirrors verifyArc's pre-episode arc-spine mode: the
+// resolver sees the same episode-empty plan and may only patch the arc +
+// volumes (#3789). It is a PAIRING constraint, not an independent knob — it
+// must match the verify that produced `options.findings`, or the resolver
+// answers at an altitude the gate never judged. Episode-synopsis corrections
+// stay available for the later full arc gate, which runs after episodes exist
+// and actually judges them.
 export async function resolveVerifyIssues(seriesId, options = {}) {
+  const spineOnly = options.spineOnly === true;
   const series = await getSeries(seriesId);
   if (!series.arc) {
     throw new ServerError(
@@ -428,6 +446,9 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
 
   let findings = shapeFindings(options.findings);
   if (!findings.length) {
+    // The spread is load-bearing: it carries `spineOnly` into the refresh, which
+    // is the one path where the verify and the resolve it feeds are the same
+    // call and so must not drift apart in altitude.
     const fresh = await verifyArc(seriesId, { ...options, preloadedWorld: world });
     findings = fresh.issues || [];
     if (!findings.length) {
@@ -438,7 +459,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // `options.avoid` carries the findings a reverted earlier attempt at these
   // same findings authored, so a corrective pass is told what NOT to re-create
   // instead of re-running the identical prompt and regressing identically.
-  const ctx = await buildResolveContext(series, findings, world, { avoid: options.avoid });
+  const ctx = await buildResolveContext(series, findings, world, { avoid: options.avoid, spineOnly });
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-resolve',
     ctx,
@@ -459,7 +480,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // untargeted rewrite is pure blast radius: it can't close anything, and every
   // volume it touches is a chance to author the contradiction the next verify
   // files as a brand-new blocker.
-  const edits = selectFindingKeyedEdits(content, findings);
+  const edits = selectFindingKeyedEdits(content, findings, { spineOnly });
   // Only worth saying when there is actually something to apply unkeyed — a
   // response that proposed NO edits reads as legacy too, and warning about a
   // stale prompt there would be a lie.
@@ -471,6 +492,9 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   }
   if (edits.seasonsDropped || edits.episodesDropped) {
     console.log(`⚠️ arc-resolve: dropped ${edits.seasonsDropped} volume + ${edits.episodesDropped} episode edit(s) naming no input finding`);
+  }
+  if (edits.episodesOutOfScope) {
+    console.log(`⚠️ arc-resolve: discarded ${edits.episodesOutOfScope} episode edit(s) — the arc-spine gate resolves at arc/volume scope only`);
   }
 
   const arc = sanitizeArc({

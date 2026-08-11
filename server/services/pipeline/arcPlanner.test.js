@@ -1196,6 +1196,67 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(updated.stages.idea.input).toBe('corrected — the Atrium is NOT convened here');
   });
 
+  // The pre-episode arc-spine gate verifies an episode-EMPTY plan (#3789). A
+  // resolver handed the full lineup answered spine findings with episode
+  // rewrites the gate never read: they could not close what was flagged, and
+  // the round got reverted for doubling the blocker count. Both halves of the
+  // loop have to see the same plan.
+  it('renders the resolve prompt with empty episode arrays in spineOnly mode', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const season = await seasonsSvc.createSeason(s.id, { title: 'Vol 1', episodeCountTarget: 1 });
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, seasonId: season.id, title: 'Ep' });
+    await issuesSvc.updateStage(issue.id, 'idea', { input: 'seeded episode synopsis', status: 'empty' });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { logline: 'L2', summary: 'S', themes: [], protagonistArc: '' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      spineOnly: true,
+      findings: [{ severity: 'high', problem: 'spine problem', suggestion: 'fix the arc' }],
+    });
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.arcSpineOnly).toBe(true);
+    expect(JSON.parse(ctx.seasonsTreeJson)[0].episodes).toEqual([]);
+    expect(ctx.seasonsTreeJson).not.toContain('seeded episode synopsis');
+  });
+
+  it('discards episode edits in spineOnly mode and leaves the planned synopses untouched', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const season = await seasonsSvc.createSeason(s.id, { title: 'Vol 1', episodeCountTarget: 1 });
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, seasonId: season.id, title: 'Ep' });
+    await issuesSvc.updateStage(issue.id, 'idea', { input: 'original episode synopsis', status: 'empty' });
+    const fresh = await issuesSvc.getIssue(issue.id);
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { resolves: ['f1'], logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
+        seasons: [],
+        // A stale/customized installed prompt can still return these — the
+        // server drops them rather than trusting the template alone.
+        episodes: [{ resolves: ['f1'], seasonNumber: season.number, episodeNumber: fresh.number, synopsis: 'out-of-scope rewrite' }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      spineOnly: true,
+      findings: [{ severity: 'high', problem: 'spine problem', suggestion: 'fix the arc' }],
+    });
+
+    // The arc/volume half of the patch still lands — this scopes the round, it
+    // does not disable it.
+    expect(out.series.arc.logline).toBe('L2');
+    expect(out.episodesResolved).toEqual([]);
+    const untouched = await issuesSvc.getIssue(issue.id);
+    expect(untouched.stages.idea.input).toBe('original episode synopsis');
+  });
+
   it('clears stale beats when correcting an episode that was already expanded', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
@@ -1329,6 +1390,31 @@ describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
     // siblings in the SAME response are then genuine drops, not legacy.
     expect(select({ seasons: [{ resolves: ['f1'] }, { id: 's2' }] }))
       .toMatchObject({ legacy: false, seasonsDropped: 1 });
+  });
+
+  // #3789 — a spine round's findings were produced against an episode-empty
+  // plan, so every episode edit is out of scope no matter which finding it
+  // names. Counted apart from `episodesDropped` (a different diagnosis) and
+  // applied even to a legacy unkeyed response, which is the one an install with
+  // a pre-#3789 prompt will send.
+  it('drops every episode edit in spineOnly mode, keyed or not', () => {
+    const spine = (content) => planner.selectFindingKeyedEdits(content, findings, { spineOnly: true });
+    const keyed = spine({
+      arc: { resolves: ['f1'], logline: 'x' },
+      seasons: [{ resolves: ['f1'] }],
+      episodes: [{ resolves: ['f1'] }, { resolves: ['f2'] }],
+    });
+    expect(keyed.arc?.logline).toBe('x');
+    expect(keyed.seasons).toHaveLength(1);
+    expect(keyed.episodes).toEqual([]);
+    expect(keyed.episodesOutOfScope).toBe(2);
+    expect(keyed.episodesDropped).toBe(0);
+    expect(spine({ episodes: [{ synopsis: 'y' }] }))
+      .toMatchObject({ legacy: true, episodes: [], episodesOutOfScope: 1 });
+    // Full-arc rounds are untouched — episode corrections are how an
+    // episode-scoped finding converges there.
+    expect(select({ episodes: [{ resolves: ['f1'] }] }))
+      .toMatchObject({ episodesOutOfScope: 0 });
   });
 
   it('tolerates a missing/garbage response', () => {

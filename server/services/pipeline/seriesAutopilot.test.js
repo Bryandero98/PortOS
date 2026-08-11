@@ -1598,6 +1598,30 @@ describe('autopilot conductor', () => {
     });
   });
 
+  // The resolver has to plan at the altitude the verifier judged at (#3789).
+  it('scopes the arc-spine gate\'s resolver to spineOnly', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'plot hole', location: 'V1' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.scope).toBe('verifyArcSpine');
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues.mock.calls[0][1]).toMatchObject({ spineOnly: true });
+  });
+
+  it('leaves the full arc gate\'s resolver able to correct episodes', async () => {
+    // Spine passes on round 1 (no arc findings), so the pause below comes from
+    // the post-episode full gate — where episode corrections are the only way
+    // an episode-scoped finding can converge.
+    volumeVerifyFindings = [{ severity: 'high', problem: 'the midpoint promise never pays off', location: 'issue 3' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.scope).toBe('verifyArc');
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues.mock.calls[0][1]).toMatchObject({ spineOnly: false });
+  });
+
   // Foundation-quality gate (#2176).
   it('foundation gate: a clean foundation (default mock ≥ threshold) passes through to completion', async () => {
     foundationScore = 10;
