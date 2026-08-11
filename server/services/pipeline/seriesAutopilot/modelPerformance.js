@@ -171,6 +171,7 @@ export async function recordModelOutcome(runId, patch = {}) {
   const scoreAfter = finiteOrNull(patch.scoreAfter);
   await patchRunMetadata(runId, {
     autopilotSystem: 'series',
+    ...(patch.effort ? { effort: patch.effort } : {}),
     ...(patch.role ? { pipelineRole: patch.role } : {}),
     ...(patch.stage ? { pipelineStage: patch.stage } : {}),
     ...(patch.outcome ? { qualityOutcome: patch.outcome } : {}),

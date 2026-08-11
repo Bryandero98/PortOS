@@ -185,6 +185,7 @@ const modelOutcomeSchema = z.object({
   role: z.enum(['creative', 'judge']),
   stage: z.string().trim().min(1).max(80),
   outcome: z.enum(['accepted', 'rejected', 'valid', 'invalid']),
+  effort: z.enum(EFFORT_LEVELS).optional(),
   target: z.string().trim().max(120).optional(),
   scoreBefore: z.number().finite().optional(),
   scoreAfter: z.number().finite().optional(),

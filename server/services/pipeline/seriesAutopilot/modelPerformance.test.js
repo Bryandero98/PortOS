@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { MIN_QUALITY_SAMPLES, summarizeModelPerformance } from './modelPerformance.js';
+import { describe, expect, it, vi } from 'vitest';
+
+const { patchRunMetadata } = vi.hoisted(() => ({ patchRunMetadata: vi.fn() }));
+
+vi.mock('../../runner.js', () => ({
+  getRun: vi.fn(async () => ({ id: 'run-1' })),
+  listRuns: vi.fn(),
+  patchRunMetadata,
+}));
+
+import { MIN_QUALITY_SAMPLES, recordModelOutcome, summarizeModelPerformance } from './modelPerformance.js';
 
 const provider = (id, models, enabled = true) => ({ id, name: id, models, enabled });
 const run = (over = {}) => ({
@@ -17,6 +26,13 @@ const run = (over = {}) => ({
 });
 
 describe('Series Autopilot model performance', () => {
+  it('backfills effort onto historical run evidence', async () => {
+    await recordModelOutcome('run-1', {
+      role: 'creative', stage: 'foundationGate', outcome: 'rejected', effort: 'max',
+    });
+    expect(patchRunMetadata).toHaveBeenCalledWith('run-1', expect.objectContaining({ effort: 'max' }));
+  });
+
   it('keeps technical completion separate from quality rejection', () => {
     const { metrics } = summarizeModelPerformance([
       run({ qualityOutcome: 'rejected', qualityScoreDelta: -0.2 }),
