@@ -1661,7 +1661,7 @@ describe('spawnTuiAgent runtime', () => {
   // the CLI's own log shows the session authenticated fine and generating
   // normally once it settles. Killing on sight cost every agy CoS run from
   // 2026-08-07 on (5/5, each dead 3–5s in). So the signal now arms a
-  // SELF_CLEARING_SIGNAL_GRACE_MS window instead of finalizing immediately.
+  // grace window (the signal's own `graceMs`) instead of finalizing immediately.
   const ELIGIBILITY_BANNER =
     "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly.";
 
