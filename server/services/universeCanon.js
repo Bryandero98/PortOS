@@ -240,6 +240,56 @@ const hasDescription = (kind, entry) => {
 };
 
 /**
+ * Promote an existing image prompt into the canonical description field when
+ * that field is blank. Older Universe Builder expansion/promotion paths wrote
+ * rich `prompt` text but left `physicalDescription`/`description` empty, which
+ * made the same entry renderable from one screen and "not ready" from another.
+ *
+ * This is deliberately deterministic and fill-blanks-only: no provider call,
+ * no invented details, no kind changes, and no mutation of locked entries.
+ */
+export async function backfillCanonDescriptionsFromPrompts(universeId) {
+  const report = {
+    filled: 0,
+    byKind: Object.fromEntries(BIBLE_KINDS.map((kind) => [kind, 0])),
+    alreadyDescribed: 0,
+    missingPrompt: 0,
+    skippedLocked: 0,
+  };
+  const updated = await updateUniverse(universeId, (universe) => {
+    const patch = {};
+    for (const kind of BIBLE_KINDS) {
+      const field = BIBLE_FIELD[kind];
+      const list = Array.isArray(universe[field]) ? universe[field] : [];
+      let touched = false;
+      const next = list.map((entry) => {
+        if (hasDescription(kind, entry)) {
+          report.alreadyDescribed += 1;
+          return entry;
+        }
+        if (entry.locked === true) {
+          report.skippedLocked += 1;
+          return entry;
+        }
+        const prompt = typeof entry.prompt === 'string' ? entry.prompt.trim() : '';
+        if (!prompt) {
+          report.missingPrompt += 1;
+          return entry;
+        }
+        touched = true;
+        report.filled += 1;
+        report.byKind[kind] += 1;
+        return { ...entry, [DESC_FIELD[kind]]: prompt.slice(0, DESC_LIMIT[kind]) };
+      });
+      if (touched) patch[field] = next;
+    }
+    return Object.keys(patch).length ? patch : null;
+  });
+  console.log(`📝 Universe canon prompt backfill — universe=${shortId(universeId)} filled=${report.filled} character=${report.byKind.character} place=${report.byKind.place} object=${report.byKind.object} locked=${report.skippedLocked}`);
+  return { universe: updated, report };
+}
+
+/**
  * Backfill descriptions for canon nouns that have none, using ONLY what the
  * prose establishes. Unlike `extractCanonFromProse` (which is allowed to invent
  * + flag renderable axes the prose omits, so it never leaves a blank), this

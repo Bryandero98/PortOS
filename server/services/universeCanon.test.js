@@ -536,6 +536,52 @@ describe('universeCanon — describeCanonFromProse (strictly prose-grounded)', (
   });
 });
 
+describe('universeCanon — backfillCanonDescriptionsFromPrompts', () => {
+  it('copies existing prompts into blank per-kind description fields without an LLM call', async () => {
+    const created = await svc.createUniverse({ name: 'U', starterPrompt: 'x', stylePrompt: 'y' });
+    const seeded = await svc.updateUniverse(created.id, {
+      characters: [{ name: 'Courier', prompt: 'patched yellow pressure coat', physicalDescription: '', locked: false }],
+      places: [{ name: 'The Vault', prompt: 'a dim concrete room', description: '', locked: false }],
+      objects: [{ name: 'Compass', prompt: 'brass compass with a cracked face', description: '', locked: false }],
+    });
+
+    const result = await canonSvc.backfillCanonDescriptionsFromPrompts(seeded.id);
+
+    expect(result.report).toMatchObject({
+      filled: 3,
+      byKind: { character: 1, place: 1, object: 1 },
+      alreadyDescribed: 0,
+      missingPrompt: 0,
+      skippedLocked: 0,
+    });
+    expect(result.universe.characters[0].physicalDescription).toContain('yellow pressure coat');
+    expect(result.universe.places[0].description).toBe('a dim concrete room');
+    expect(result.universe.objects[0].description).toContain('brass compass');
+    expect(runStagedLLMMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves authored descriptions and skips locked or promptless blanks', async () => {
+    const created = await svc.createUniverse({ name: 'U', starterPrompt: 'x', stylePrompt: 'y' });
+    const seeded = await svc.updateUniverse(created.id, {
+      characters: [{ name: 'Done', prompt: 'replacement', physicalDescription: 'authored look', locked: false }],
+      places: [{ name: 'Locked', prompt: 'available prompt', description: '', locked: true }],
+      objects: [{ name: 'Unknown', prompt: '', description: '', locked: false }],
+    });
+
+    const result = await canonSvc.backfillCanonDescriptionsFromPrompts(seeded.id);
+
+    expect(result.report).toMatchObject({
+      filled: 0,
+      alreadyDescribed: 1,
+      missingPrompt: 1,
+      skippedLocked: 1,
+    });
+    expect(result.universe.characters[0].physicalDescription).toBe('authored look');
+    expect(result.universe.places[0].description).toBe('');
+    expect(result.universe.objects[0].description).toBe('');
+  });
+});
+
 describe('universeCanon — summarizeDescribeGaps', () => {
   it('maps the report into a persistable marker', () => {
     const m = canonSvc.summarizeDescribeGaps({
