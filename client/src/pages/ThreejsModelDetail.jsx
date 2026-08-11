@@ -459,7 +459,7 @@ export default function ThreejsModelDetail() {
         <div className="relative min-h-[520px]">
           <ThreejsModelPreview spec={record.spec} className="h-full min-h-[520px] w-full" />
           {generating && (
-            <div className="absolute inset-x-0 top-0 flex items-center justify-center gap-2 bg-black/65 px-3 py-2 text-xs text-white backdrop-blur-sm">
+            <div className="port-media-overlay absolute inset-x-0 top-0 flex items-center justify-center gap-2 border-b border-port-border px-3 py-2 text-xs">
               <LoaderCircle className="h-4 w-4 animate-spin text-port-accent" />
               Inspecting the reference and building procedural geometry…
             </div>

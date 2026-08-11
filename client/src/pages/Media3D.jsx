@@ -339,7 +339,7 @@ export default function Media3D() {
             </span>
           )}
           {selectedImage && (
-            <span className="absolute inset-x-2 bottom-2 rounded bg-black/90 px-2 py-1 text-center text-xs font-medium text-white">
+            <span className="port-media-overlay-strong absolute inset-x-2 bottom-2 rounded px-2 py-1 text-center text-xs font-medium">
               Change image
             </span>
           )}
@@ -441,7 +441,7 @@ export default function Media3D() {
                       />
                     )}
                     {record.status === 'ready' && (
-                      <span className="absolute right-1.5 top-1.5 rounded bg-black/80 p-1 text-port-success">
+                      <span className="port-media-overlay-strong absolute right-1.5 top-1.5 rounded p-1 text-port-success">
                         <Boxes className="h-3.5 w-3.5" />
                       </span>
                     )}
