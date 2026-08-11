@@ -539,8 +539,10 @@ describe('resolveNextStep (pure)', () => {
     expect(plan.every((p) => Number.isFinite(p.estActions))).toBe(true);
     const byKind = Object.fromEntries(plan.map((p) => [p.kind, p]));
     // verifyArc: each round checks the whole arc + one volume, then resolves
-    // between rounds → 3*(1+1)+2 = 8 actions.
-    expect(byKind.verifyArc.estActions).toBe(8);
+    // between rounds → 3*(1+1)+2 = 8 — plus the per-finding isolation pass the
+    // gate can escalate to inside a round (#3780): an attempt costs a resolve +
+    // an arc verify + one volume verify = 3, so the 8-call budget buys 2 → +6.
+    expect(byKind.verifyArc.estActions).toBe(14);
     // textStages: one child action per not-yet-text-ready issue (2 here).
     expect(byKind.textStages.estActions).toBe(2);
     // Pure-gate steps that bill nothing against the cap are zero-cost.
@@ -554,10 +556,15 @@ describe('resolveNextStep (pure)', () => {
       .find((p) => p.kind === kind)?.estActions;
     // 0 rounds → the loop is skipped → 0 actions.
     expect(actionsFor({ maxArcVerifyRounds: 0 }, 'verifyArc')).toBe(0);
-    // 1 round → whole-arc + one-volume verify, no resolve → 2 actions.
+    // 1 round → whole-arc + one-volume verify, no resolve → 2 actions. Isolation
+    // needs a second round to verify what it kept, so it projects nothing here.
     expect(actionsFor({ maxArcVerifyRounds: 1 }, 'verifyArc')).toBe(2);
-    // 4 rounds → 4 arc verifies + 4 volume verifies + 3 resolves → 11 actions.
-    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(11);
+    // 4 rounds → 4 arc verifies + 4 volume verifies + 3 resolves → 11, plus the
+    // isolation pass's 2 attempts × 3 calls (#3780) → 17.
+    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(17);
+    // …and a run that declined it gets the round-based estimate back.
+    expect(actionsFor({ maxArcVerifyRounds: 4, maxArcIsolationAttempts: 0 }, 'verifyArc')).toBe(11);
+    expect(actionsFor({ maxArcVerifyRounds: 4, maxArcResolveRetries: 0 }, 'verifyArc')).toBe(11);
     // Editorial review follows the same convergence shape.
     expect(actionsFor({ maxEditorialRounds: 2 }, 'editorialReview')).toBe(3);
   });
@@ -1398,6 +1405,65 @@ describe('trackConvergence (pure divergence/oscillation guard — #1571)', () =>
     // 5→4→5→4: after round 2 sets best=4, no later round beats it, so sinceBest
     // climbs past patience even though every other round "decreases" vs the prior.
     expect(fold([5, 4, 5, 4]).sinceBest).toBeGreaterThanOrEqual(DIVERGENCE_PATIENCE);
+  });
+});
+
+describe('isIsolatedFixSafe (pure per-finding patch acceptance, #3780)', () => {
+  const { isIsolatedFixSafe } = autopilot;
+  const f = (problem, location = 'V1', severity = 'high') => ({ severity, location, problem });
+  const target = f('volume 1 and volume 2 both stage the first eclipse');
+  const other = f('mentor subplot never pays off', 'V3');
+
+  it('keeps a patch that closed its target and left the rest alone', () => {
+    expect(isIsolatedFixSafe(target, [target, other], [other])).toBe(true);
+  });
+
+  it('keeps an even trade — the target gone, one equally-severe finding in its place', () => {
+    // Same shape the round loop's checkpoint already accepts: a tie can be real
+    // causal progress, and the divergence guard catches a gate that only trades.
+    expect(isIsolatedFixSafe(target, [target, other], [other, f('finale hook is unresolved', 'V4')])).toBe(true);
+  });
+
+  it('rejects a patch that only RE-WORDED its target', () => {
+    // The verifier restates a standing defect freely; treating fresh prose as
+    // closure would bank a patch that fixed nothing and keep its collateral.
+    expect(isIsolatedFixSafe(target, [target, other], [
+      f('the first eclipse is staged twice — once in each opening volume', 'Volume 2 opening'),
+    ])).toBe(false);
+  });
+
+  it('rejects a patch that grew the blocking set', () => {
+    expect(isIsolatedFixSafe(target, [target, other], [
+      other, f('finale hook is unresolved', 'V4'), f('timeline of the siege runs backwards', 'V6'),
+    ])).toBe(false);
+  });
+
+  it('rejects a same-size swap that made the set MORE severe', () => {
+    // Count alone can't see this one: a `medium` traded for a `high` is a worse
+    // draft at the same size. Judged by the SAME `isBlockingSetRegression` the
+    // whole-round rollback guard uses, so a trade the round tier would revert is
+    // never banked by the isolation tier instead.
+    const mediumTarget = f('volume 1 and volume 2 both stage the first eclipse', 'V1', 'medium');
+    expect(isIsolatedFixSafe(
+      mediumTarget,
+      [mediumTarget, f('pacing sags mid-volume', 'V2', 'medium')],
+      [f('pacing sags mid-volume', 'V2', 'medium'), f('protagonist goal vanishes', 'V5', 'high')],
+    )).toBe(false);
+  });
+
+  it('keeps a same-size swap that made the set LESS severe', () => {
+    // The mirror of the case above — trading a `high` down to a `medium` at an
+    // unchanged count is progress, not a regression.
+    expect(isIsolatedFixSafe(
+      target,
+      [target, other],
+      [other, f('pacing sags mid-volume', 'V2', 'medium')],
+    )).toBe(true);
+  });
+
+  it('tolerates missing/garbage inputs', () => {
+    expect(isIsolatedFixSafe(target, undefined, undefined)).toBe(true);
+    expect(isIsolatedFixSafe(target, null, [target])).toBe(false);
   });
 });
 
@@ -2329,6 +2395,11 @@ describe('autopilot conductor', () => {
     const rounds = [holes(4, 'initial'), holes(2, 'best'), holes(4, 'regressed'), holes(5, 'retry regressed')];
     arcSpies.verifyArc.mockReset();
     rounds.forEach((result) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues: result })));
+    // Both isolation attempts come back worse than the 2-blocker checkpoint too,
+    // so nothing is retained and the gate still pauses on the checkpoint (#3780).
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(4, 'isolated 1') }))
+      .mockImplementationOnce(async () => ({ issues: holes(4, 'isolated 2') }));
     const initialSnapshot = { marker: 'initial', arc: null, seasons: [], episodes: [] };
     const bestSnapshot = { marker: 'best', arc: null, seasons: [], episodes: [] };
     arcSpies.snapshotArcState
@@ -2340,12 +2411,13 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
 
     // Round 3's increase rewinds to the 2-blocker checkpoint and spends the one
-    // corrective pass; round 4 regresses again, so the loop stops there.
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(4);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(3);
-    // Two snapshots, three resolves: the corrective pass rewinds to the
-    // checkpoint it already holds instead of pinning the reverted draft.
-    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(2);
+    // corrective pass; round 4 regresses again, so the gate splits the residual
+    // and tries its two findings one at a time — both are rejected, so it stops.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(6);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(5);
+    // Each isolated attempt snapshots so it can be undone on its own; the
+    // corrective pass still rewinds to the checkpoint it already holds.
+    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(4);
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
@@ -2360,6 +2432,126 @@ describe('autopilot conductor', () => {
     // stream vanishes on reload — which is when the user actually reviews it.
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.discardedFindings).toEqual(rounds[3]);
+  });
+
+  it('keeps an independently safe fix by isolating the residual one finding at a time (#3780)', async () => {
+    // The 2026-08-11 verifyArcSpine stall: the gate reached a verified best of 2
+    // blockers, then a normal resolve came back with 5 and the corrective retry
+    // with 3. Both were rewrites of the WHOLE residual, so both were reverted
+    // whole — and the run paused on 2 after 5 of 12 permitted rounds without
+    // retaining a single fix. Now the spent corrective budget escalates to
+    // per-finding isolation: each finding is resolved alone and kept only if it
+    // closes itself without growing the set.
+    const eclipse = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const mentor = { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' };
+    const finale = { severity: 'high', problem: 'finale hook contradicts prologue promise', location: 'V4' };
+    const motive = { severity: 'high', problem: 'antagonist motive changes without cause', location: 'V5' };
+    const siege = { severity: 'high', problem: 'timeline of the siege runs backwards', location: 'V6' };
+    // Ordered log of what the gate actually billed, so the assertions below can
+    // see that the round after the isolation pass skips its verify.
+    const billed = [];
+    arcSpies.verifyArc.mockReset();
+    [
+      [eclipse, mentor],                          // round 1 — the checkpoint
+      [eclipse, mentor, finale],                  // round 2 — regressed, reverted + retried
+      [eclipse, mentor, finale, motive],          // round 3 — regressed again, retries spent
+      [mentor],                                   // isolate #1 (eclipse) — closed it, kept
+      [mentor, siege],                            // isolate #2 (mentor) — still standing, reverted
+      // Round 4 bills NO verify: nothing edited the plan between isolate #2's
+      // revert and it, so the round reuses isolate #1's verification.
+      [mentor],                                   // round 5 — after round 4's resolve
+      [],                                         // round 6 — clean
+    ].forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => {
+      billed.push('verify');
+      return { issues };
+    }));
+    for (let i = 0; i < 6; i += 1) {
+      arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => {
+        billed.push('resolve');
+        return { applied: true };
+      });
+    }
+
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // Each isolated attempt resolves exactly one finding, and carries the
+    // rejected whole-set candidate's findings as the failure mode to avoid.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[2][1]).toMatchObject({
+      findings: [eclipse],
+      avoid: [eclipse, mentor, finale, motive],
+    });
+    expect(arcSpies.resolveVerifyIssues.mock.calls[3][1]).toMatchObject({ findings: [mentor] });
+    // The rejected attempt is reverted on its own — the kept one is not.
+    const isolated = frames.filter((f) => f.type === 'resolve:isolate');
+    expect(isolated).toHaveLength(2);
+    expect(isolated[0]).toMatchObject({ scope: 'arcSpine', attempt: 1, before: 2, after: 1, kept: true });
+    expect(isolated[1]).toMatchObject({ attempt: 2, before: 1, after: 2, kept: false });
+    // Two whole-round rollbacks plus the one rejected isolated patch.
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(3);
+    // Round 3's verify, then the two isolated attempts (resolve→verify each),
+    // then round 4's resolve with NO verify in front of it: nothing edited the
+    // plan between isolate #2's revert and that round, so it re-uses the
+    // verification isolate #1 already billed rather than buying the same answer
+    // for another arc + per-volume call.
+    expect(billed.slice(4, 11)).toEqual([
+      'verify', 'resolve', 'verify', 'resolve', 'verify', 'resolve', 'verify',
+    ]);
+    // The rollback frame promises the retry the isolation pass is about to make,
+    // so the user isn't told the gate is done when it has another move left.
+    expect(frames.filter((f) => f.type === 'resolve:rollback').at(-1)).toMatchObject({ best: 2, retrying: true });
+    // …and the gate clears from the isolated state instead of pausing on 2.
+    expect(frames.some((f) => f.type === 'paused' && f.pauseKind === 'regression')).toBe(false);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
+  it('does not isolate a single-finding residual (that is the corrective pass again)', async () => {
+    // Isolating a one-finding residual re-issues the exact call the corrective
+    // pass just made — same finding, same avoid list — so the gate pauses rather
+    // than billing a resolve + a verify for it.
+    const hole = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 2}` });
+    arcSpies.verifyArc.mockReset();
+    [1, 3, 5].forEach((n) => arcSpies.verifyArc.mockImplementationOnce(async () => ({
+      issues: [hole, ...Array.from({ length: n - 1 }, (_, i) => extra(i))],
+    })));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Three verifies, two resolves — the initial pass and the corrective retry.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.pauseKind).toBe('regression');
+  });
+
+  it('honors maxArcResolveRetries: 0 as a full opt-out of isolation too', async () => {
+    // The knob means "no corrective spend on a reverted round" — a run that set
+    // it must not get the (larger) per-finding fan-out instead.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(2, 'initial') }))
+      .mockImplementationOnce(async () => ({ issues: holes(4, 'regressed') }));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6, maxArcResolveRetries: 0 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual(holes(2, 'initial'));
   });
 
   it('a blocker increase reaches the regression guard even when it lands on the round cap', async () => {

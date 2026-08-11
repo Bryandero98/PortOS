@@ -10,6 +10,7 @@ import { resolveReadinessGate } from '../editorialScore.js';
 import {
   MAX_ARC_VERIFY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_EDITORIAL_ROUNDS,
   resolveAutopilotCheckPauseThreshold, resolveAutopilotRevision, wantsTeaser, wantsVisual,
+  arcIsolationActions,
 } from './config.js';
 import { roundsNote, convergenceLoopActions, VISUAL_DRAFT_ENABLED } from './convergence.js';
 import { orderedIssues, byNumber, issueHasBeats, textReady, wantsComic, visualReady } from './stepResolver.js';
@@ -98,11 +99,17 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
     }
   }
   const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
+  // A gate that can reach its regression guard can also reach the per-finding
+  // isolation pass (#3780), which bills a resolve + a full verification per
+  // attempt INSIDE a round — spend the round-based estimates above don't model.
+  // Needs two rounds to be reachable at all (a rollback, then a round to verify
+  // what isolation kept), so a 1-round gate projects none.
+  const isolationActions = (volumes) => (arcRounds > 1 ? arcIsolationActions(options, volumes) : 0);
   plan.push({
     kind: 'verifyArcSpine',
     count: 1,
     note: `${roundsNote(arcRounds)}; protected intent + macro arc before issue generation`,
-    estActions: convergenceLoopActions(arcRounds),
+    estActions: convergenceLoopActions(arcRounds) + isolationActions(0),
   });
   const emptySeasons = seasons.filter((s) => !ordered.some((i) => i.seasonId === s.id));
   if (emptySeasons.length) plan.push({ kind: 'generateEpisodes', count: emptySeasons.length, estActions: emptySeasons.length });
@@ -115,7 +122,7 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   }
   const verificationActions = arcRounds === 0
     ? 0
-    : arcRounds * (1 + seasons.length) + Math.max(0, arcRounds - 1);
+    : arcRounds * (1 + seasons.length) + Math.max(0, arcRounds - 1) + isolationActions(seasons.length);
   plan.push({
     kind: 'verifyArc',
     count: 1,

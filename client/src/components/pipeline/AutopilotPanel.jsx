@@ -277,6 +277,11 @@ function frameLabel(f) {
     case 'resolve:rollback': return `${f.scope} auto-resolve went from ${f.before} to ${f.after} blocking finding(s) — `
       + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`
       + `${f.retrying ? ', retrying from the best state' : ''}`;
+    // Per-finding isolation: each attempt is its own kept-or-reverted decision,
+    // so name the finding it was spent on — a bare "attempt 2 reverted" reads as
+    // the whole gate rolling back again rather than one candidate being dropped.
+    case 'resolve:isolate': return `${f.scope} isolated fix ${f.attempt}${f.target ? ` (${f.target})` : ''} — `
+      + `${f.before} → ${f.after} blocking finding(s), ${f.kept ? 'kept' : 'reverted'}`;
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · next target: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;

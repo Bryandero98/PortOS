@@ -20,12 +20,12 @@ import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
 import {
   MAX_ARC_VERIFY_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_CHILD_RETRIES,
-  MAX_ARC_RESOLVE_RETRIES,
+  MAX_ARC_RESOLVE_RETRIES, resolveArcIsolationAttempts,
 } from './config.js';
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
-  regressionPauseReason, sameFinding, isBlockingSetRegression,
+  regressionPauseReason, sameFinding, isBlockingSetRegression, isIsolatedFixSafe,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
@@ -50,6 +50,25 @@ function arcResolveRetryBudget(record) {
   return Number.isInteger(v) ? Math.max(0, v) : MAX_ARC_RESOLVE_RETRIES;
 }
 
+// The gate's one way to bill a resolve pass: same options, same usage
+// accounting, at all three call sites (the round's resolve, the corrective
+// retry, and each isolated single-finding attempt). Open-coding it a third time
+// is how `spineOnly` (#3789) came to need patching into every copy.
+async function resolveArcFindings(seriesId, record, { findings, avoid, spineOnly }) {
+  const resolved = await resolveVerifyIssues(seriesId, {
+    findings,
+    avoid,
+    spineOnly,
+    ...providerOverrideOpts(record),
+    ...seasonPreserveOpts(record),
+  });
+  await recordDomainUsage('cos', { actions: 1 });
+  return resolved;
+}
+
+// Episode synopses one resolve pass actually rewrote, for the telemetry frames.
+const editedCount = (resolved) => (Array.isArray(resolved?.episodesResolved) ? resolved.episodesResolved.length : 0);
+
 function finishPlanningMutation(record, peerLatch) {
   record.runState[peerLatch] = false;
   record.runState.planningGateHandoffs = (record.runState.planningGateHandoffs || 0) + 1;
@@ -65,6 +84,122 @@ async function waitForChild(isActive, record) {
     if (record.cancelRequested) return;
     await sleep(CHILD_POLL_MS);
   }
+}
+
+/**
+ * One full pass of the arc gate's verifier at the altitude the gate runs at: the
+ * arc spine alone in `spineOnly` mode, else the arc plus every volume synopsis.
+ * Returns `{ findings, blocking, volumesChecked }`, or `{ outcome }` carrying the
+ * run-ending result (a cancel or a budget pause) it hit partway through.
+ *
+ * Extracted so the per-finding isolation pass re-verifies EXACTLY the way the
+ * round loop does. A second hand-rolled verify would be free to drift to a
+ * different altitude, and an isolated patch accepted on a verification this gate
+ * never runs is a patch nothing actually judged.
+ */
+async function verifyArcBlocking(seriesId, record, { spineOnly }) {
+  const beforeVerify = await budgetPause();
+  if (beforeVerify) return { outcome: beforeVerify };
+  const { issues: arcFindings } = await verifyArc(seriesId, {
+    ...providerOverrideOpts(record, 'judge'),
+    spineOnly,
+  });
+  await recordDomainUsage('cos', { actions: 1 });
+  // The spine round judges an episode-empty plan and checks no volumes, so it
+  // has no use for the series record — don't read it just to iterate nothing.
+  const seasons = spineOnly ? [] : ((await getSeries(seriesId)).seasons || []);
+  const volumeFindings = [];
+  for (const season of seasons) {
+    if (record.cancelRequested) return { outcome: { canceled: true } };
+    const beforeVolumeVerify = await budgetPause();
+    if (beforeVolumeVerify) return { outcome: beforeVolumeVerify };
+    const { issues } = await verifyVolume(seriesId, season.id, {
+      ...providerOverrideOpts(record, 'judge'),
+      // This gate's resolver rewrites the synopsis-level arc/volumes, not
+      // issue beats. Existing beat sheets get their own continuity gate later.
+      synopsisOnly: true,
+    });
+    await recordDomainUsage('cos', { actions: 1 });
+    for (const finding of issues) {
+      volumeFindings.push({
+        ...finding,
+        volumeId: season.id,
+        location: `volume ${season.number ?? '?'}${finding.location ? ` — ${finding.location}` : ''}`,
+      });
+    }
+  }
+  const findings = [...arcFindings, ...volumeFindings];
+  return {
+    findings,
+    blocking: findings.filter((finding) => record.options.blockingSets.arc.has(finding.severity)),
+    volumesChecked: seasons.length,
+  };
+}
+
+/**
+ * Resolve a residual one finding at a time, transactionally (#3780).
+ *
+ * The round loop rewrites the whole residual in one call and keeps or reverts
+ * that candidate as a unit, so a rewrite that closed two findings cleanly and
+ * broke a third leaves the gate holding nothing. This pass runs from the state
+ * the caller has just restored (the best verified one) and, per finding:
+ * snapshot → resolve THAT finding alone → re-verify the same way the gate does →
+ * keep the patch only if `isIsolatedFixSafe`, else put the snapshot straight
+ * back. So each accepted patch is one that demonstrably closed its own target
+ * without growing or worsening the set, and a poisoned finding costs only its
+ * own attempt instead of its neighbours' repairs.
+ *
+ * Bounded by `attemptsLeft` and budget-gated per attempt like every other
+ * resolve. Returns `{ accepted, attempts, verified }` — `verified` being the
+ * full verification of the state now standing in the store, which the caller
+ * hands to its next round instead of re-billing the identical call — plus
+ * `outcome` when the run ended mid-pass.
+ */
+async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, baseline, avoid, attemptsLeft }) {
+  // The last verification that DESCRIBES THE STORE: it advances only on an
+  // accepted patch, because a rejected one is rolled straight back to the state
+  // its predecessor verified. So later targets are judged against what the
+  // earlier ones left behind, and the caller can trust this as its next round's
+  // verification. Null until the first patch is kept — the caller already holds
+  // the baseline's verification in that case.
+  let standing = null;
+  let accepted = 0;
+  let attempts = 0;
+  const blocking = () => standing?.blocking ?? baseline;
+  for (const target of baseline) {
+    if (attempts >= attemptsLeft) break;
+    // An earlier accepted patch may have taken this one with it — paying a
+    // resolve + a verify to re-close a finding that is already gone is pure spend.
+    if (!blocking().some((finding) => sameFinding(target, finding))) continue;
+    if (record.cancelRequested) return { accepted, attempts, verified: standing, outcome: { canceled: true } };
+    const beforeResolve = await budgetPause();
+    if (beforeResolve) return { accepted, attempts, verified: standing, outcome: beforeResolve };
+    attempts += 1;
+    const before = blocking().length;
+    const snapshot = await snapshotArcState(seriesId);
+    const resolved = await resolveArcFindings(seriesId, record, { findings: [target], avoid, spineOnly });
+    const verified = await verifyArcBlocking(seriesId, record, { spineOnly });
+    if (verified.outcome) {
+      // The run is ending mid-attempt, so this patch can never be judged. Put
+      // the snapshot back rather than leaving an unverified rewrite in a plan
+      // the user is about to be handed.
+      await restoreArcState(seriesId, snapshot);
+      return { accepted, attempts, verified: standing, outcome: verified.outcome };
+    }
+    const kept = isIsolatedFixSafe(target, blocking(), verified.blocking);
+    if (kept) {
+      accepted += 1;
+      standing = verified;
+    } else {
+      await restoreArcState(seriesId, snapshot);
+    }
+    broadcast(seriesId, {
+      type: 'resolve:isolate', scope, round, attempt: attempts,
+      target: typeof target.location === 'string' ? target.location : '',
+      before, after: verified.blocking.length, kept, episodesEdited: editedCount(resolved),
+    });
+  }
+  return { accepted, attempts, verified: standing };
 }
 
 export async function runArcVerify(seriesId, record, { spineOnly = false } = {}) {
@@ -101,41 +236,26 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
   // candidate ends the run, and resuming re-runs the identical prompt against
   // the identical state — so the gate could never clear itself unattended.
   let retriesLeft = arcResolveRetryBudget(record);
+  // Single-finding attempts the isolation pass may still spend (#3780). Counted
+  // across the whole gate, not per rollback, so a resolver that keeps trading
+  // blockers can't turn every regression into another fan-out of provider calls.
+  // Resolved on first use, when the round's own verification has said what a
+  // verification costs on this series.
+  let isolationLeft = null;
+  // A verification already run against the state now in the store — the last one
+  // the isolation pass billed. The next round is a re-confirmation of exactly
+  // that state (nothing edits it in between), so re-running the gate's verifier
+  // would buy the same answer for another 1 + volumes provider calls.
+  let seededVerify = null;
   for (let round = 1; round <= maxRounds; round += 1) {
     if (record.cancelRequested) return { canceled: true };
-    const beforeVerify = await budgetPause();
-    if (beforeVerify) return beforeVerify;
-    const { issues: arcFindings } = await verifyArc(seriesId, {
-      ...providerOverrideOpts(record, 'judge'),
-      spineOnly,
-    });
-    await recordDomainUsage('cos', { actions: 1 });
-    const series = await getSeries(seriesId);
-    const volumeFindings = [];
-    for (const season of spineOnly ? [] : (series.seasons || [])) {
-      if (record.cancelRequested) return { canceled: true };
-      const beforeVolumeVerify = await budgetPause();
-      if (beforeVolumeVerify) return beforeVolumeVerify;
-      const { issues } = await verifyVolume(seriesId, season.id, {
-        ...providerOverrideOpts(record, 'judge'),
-        // This gate's resolver rewrites the synopsis-level arc/volumes, not
-        // issue beats. Existing beat sheets get their own continuity gate later.
-        synopsisOnly: true,
-      });
-      await recordDomainUsage('cos', { actions: 1 });
-      for (const finding of issues) {
-        volumeFindings.push({
-          ...finding,
-          volumeId: season.id,
-          location: `volume ${season.number ?? '?'}${finding.location ? ` — ${finding.location}` : ''}`,
-        });
-      }
-    }
-    const findings = [...arcFindings, ...volumeFindings];
-    const blocking = findings.filter((finding) => record.options.blockingSets.arc.has(finding.severity));
+    const verified = seededVerify || await verifyArcBlocking(seriesId, record, { spineOnly });
+    seededVerify = null;
+    if (verified.outcome) return verified.outcome;
+    const { findings, blocking } = verified;
     broadcast(seriesId, {
       type: 'verify:round', scope, round, findings: findings.length,
-      blocking: blocking.length, volumesChecked: spineOnly ? 0 : (series.seasons || []).length,
+      blocking: blocking.length, volumesChecked: verified.volumesChecked,
     });
     if (blocking.length === 0) {
       record.runState[spineOnly ? 'arcSpineVerified' : 'arcVerified'] = true;
@@ -162,17 +282,27 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
       const rollbackTarget = bestVerified || lastResolve;
       const rollback = await restoreArcState(seriesId, rollbackTarget.snapshot);
       const discarded = discardedSet(blocking);
-      // A retry is only worth its LLM call when a round remains to VERIFY it —
-      // spending one on the final round would bill a rewrite nothing ever
-      // checks, and would fall out of the loop past every `return` below.
-      const canRetry = retriesLeft > 0 && round < maxRounds;
+      // Neither second chance is worth its LLM call without a round left to
+      // VERIFY what it wrote: spending one on the final round would bill a
+      // rewrite nothing ever checks, and would fall out of the loop past every
+      // `return` below.
+      const roundLeftToVerify = round < maxRounds;
+      const canRetry = retriesLeft > 0 && roundLeftToVerify;
+      if (isolationLeft === null) {
+        isolationLeft = resolveArcIsolationAttempts(record.options, verified.volumesChecked);
+      }
+      // Escalation after the whole-set corrective passes are spent: split the
+      // residual and try its findings one at a time (#3780). Only worth its spend
+      // on a residual that can actually be taken apart — isolating a lone finding
+      // re-issues the exact call the corrective pass just made.
+      const canIsolate = isolationLeft > 0 && roundLeftToVerify && rollbackTarget.blocking.length > 1;
       broadcast(seriesId, {
         type: 'resolve:rollback', scope, round,
         before: lastResolve.blocking.length, after: blocking.length,
         best: rollbackTarget.blocking.length,
         reverted: rollback.restored,
         episodesReverted: rollback.episodesRestored,
-        retrying: canRetry,
+        retrying: canRetry || canIsolate,
       });
       // Corrective pass (#3781): the revert above put the best verified state
       // back, so re-run the resolver against exactly the findings that state
@@ -188,24 +318,44 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         if (record.cancelRequested) return { canceled: true };
         const beforeRetry = await budgetPause();
         if (beforeRetry) return beforeRetry;
-        const retried = await resolveVerifyIssues(seriesId, {
-          findings: rollbackTarget.blocking,
-          avoid: discarded,
-          spineOnly,
-          ...providerOverrideOpts(record),
-          ...seasonPreserveOpts(record),
+        const retried = await resolveArcFindings(seriesId, record, {
+          findings: rollbackTarget.blocking, avoid: discarded, spineOnly,
         });
         if (retried?.applied !== false) changed = true;
         // The restored state is what the retry has to beat, so the next round
         // compares against ITS count — not the rejected candidate's, which
         // would let the retry regress back to the discarded draft for free.
         lastResolve = rollbackTarget;
-        await recordDomainUsage('cos', { actions: 1 });
         broadcast(seriesId, {
-          type: 'resolve:round', scope, round, retry: true,
-          episodesEdited: Array.isArray(retried?.episodesResolved) ? retried.episodesResolved.length : 0,
+          type: 'resolve:round', scope, round, retry: true, episodesEdited: editedCount(retried),
         });
         continue;
+      }
+      // Per-finding isolation (#3780): the whole-set passes have now failed
+      // twice on this residual, but "the set can't be rewritten safely" is not
+      // "no finding in it can be fixed". Falls through to the pause below when
+      // nothing was retained.
+      if (canIsolate) {
+        const isolated = await isolateArcFindings(seriesId, record, {
+          scope, round, spineOnly,
+          baseline: rollbackTarget.blocking,
+          avoid: discarded,
+          attemptsLeft: isolationLeft,
+        });
+        isolationLeft -= isolated.attempts;
+        if (isolated.outcome) return isolated.outcome;
+        if (isolated.accepted > 0) {
+          changed = true;
+          // Every retained patch was verified on its own, and acceptance forbids
+          // a bigger or more severe set — so the composite state is at least as
+          // good as the checkpoint and becomes the new one. Its verification is
+          // handed to the next round, which is where the gate is allowed to
+          // clear: nothing advances on the per-finding checks alone.
+          bestVerified = { blocking: isolated.verified.blocking, snapshot: await snapshotArcState(seriesId) };
+          lastResolve = bestVerified;
+          seededVerify = isolated.verified;
+          continue;
+        }
       }
       return {
         pause: true,
@@ -265,25 +415,23 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // episode-empty plan, so its resolver may only patch the arc + volumes
     // (#3789). The later full arc gate keeps episode corrections, which is the
     // only place they can actually close a finding.
-    const resolved = await resolveVerifyIssues(seriesId, {
-      findings: blocking,
-      spineOnly,
-      ...providerOverrideOpts(record),
-      ...seasonPreserveOpts(record),
-    });
+    const resolved = await resolveArcFindings(seriesId, record, { findings: blocking, spineOnly });
     if (resolved?.applied !== false) changed = true;
     lastResolve = { blocking, snapshot };
-    await recordDomainUsage('cos', { actions: 1 });
     broadcast(seriesId, {
-      type: 'resolve:round', scope, round,
-      episodesEdited: Array.isArray(resolved?.episodesResolved) ? resolved.episodesResolved.length : 0,
+      type: 'resolve:round', scope, round, episodesEdited: editedCount(resolved),
     });
   }
   return {};
 }
 
 // Whole-manuscript beat-continuity convergence loop (#1510). Mirrors
-// runArcVerify one altitude down: verify the whole-book beat corpus, and on
+// runArcVerify's SHAPE one altitude down, not its guards: it has no checkpoint,
+// no rollback of a regressive round (#3781) and no per-finding isolation
+// (#3780), because none of those are reachable without a beat snapshot/restore
+// pair — the arc gate's rest on `snapshotArcState`/`restoreArcState`, and beats
+// have no equivalent. That, not oversight, is the asymmetry: verify the
+// whole-book beat corpus, and on
 // blocking findings resolve them by rewriting the offending issues' beats in
 // place (resolveBeatContinuity → applyBeatResolutions, no beat-sheet
 // regeneration), then re-verify. Bounded; pauses with the residual on

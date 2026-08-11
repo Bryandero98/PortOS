@@ -223,6 +223,36 @@ export function isBlockingSetRegression(before, after) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Per-finding ISOLATION acceptance (#3780) — one altitude tighter again. The
+// guards above judge a WHOLE resolve round; this judges one single-finding patch
+// (see `isolateArcFindings` in childRuns.js for what the pass is FOR).
+// ---------------------------------------------------------------------------
+
+/**
+ * May an isolated single-finding patch be KEPT? True only when it did the job it
+ * was billed for and cost nothing elsewhere: `target` is gone from the re-verify,
+ * and what it left behind is not a regression on the set it started from. Pure.
+ *
+ * "Not a regression" is `isBlockingSetRegression` — deliberately the SAME
+ * operational definition of worse the whole-round rollback guard uses, so which
+ * trades survive doesn't depend on which tier happened to judge them. Ties are
+ * therefore allowed at an unchanged severity mix: a patch that closed its target
+ * and exposed one equally-severe finding next door is the same "different,
+ * narrower findings" trade the round loop's checkpoint already accepts, and the
+ * divergence guard still catches a gate that only ever trades.
+ *
+ * Closure is decided by `sameFinding`, not by prose equality, for the same
+ * reason the regression guard is: the verifier restates a standing defect in
+ * fresh words at a re-labelled location every call, and reading that as "closed"
+ * would accept a patch that changed nothing but the wording.
+ */
+export function isIsolatedFixSafe(target, before, after) {
+  const current = Array.isArray(after) ? after : [];
+  if (current.some((c) => sameFinding(target, c))) return false;
+  return !isBlockingSetRegression(before, current);
+}
+
 // Pause reason for a gate whose auto-resolve round was reverted — distinct from
 // both "ran out of rounds" and "stopped converging": the state the user is being
 // handed is the one from BEFORE the round, and saying so is the difference
