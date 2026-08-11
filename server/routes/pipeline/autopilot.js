@@ -94,6 +94,15 @@ const autopilotStartSchema = z.object({
   // first regression. Per-run only (no persisted default); falls back to
   // MAX_ARC_RESOLVE_RETRIES. Shares the convergence ceiling.
   maxArcResolveRetries: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
+  // Per-run cap on the arc-verify gate's per-finding isolation attempts (#3780):
+  // once the corrective passes above are spent, how many residual findings the
+  // gate may try ONE AT A TIME from the restored best state, keeping each patch
+  // only if it closes its own target without worsening the set. 0 = no isolation
+  // (revert and pause as before). Per-run only; when omitted the gate derives its
+  // own budget from MAX_ARC_ISOLATION_CALLS and what a verification costs on this
+  // series, and `maxArcResolveRetries: 0` opts out of isolation with it. Shares
+  // the convergence ceiling so a direct API call can't request an absurd budget.
+  maxArcIsolationAttempts: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
   // Per-run editorial-check subset (#1575). When present, the editorial-checks
   // pass runs ONLY these check ids instead of all enabled checks — pilot one new
   // check, or skip an expensive one, without toggling the global enabled set.

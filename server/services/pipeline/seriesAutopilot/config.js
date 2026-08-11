@@ -57,6 +57,39 @@ export const MAX_CHILD_RETRIES = 1;
 // ends the run is not a spend knob worth a UI.
 export const MAX_ARC_RESOLVE_RETRIES = 1;
 
+// Per-finding ISOLATION budget for the arc-verify gate (#3780), counted in
+// PROVIDER CALLS across the whole gate. Once the corrective passes above are
+// spent, the gate stops rewriting the residual as one unit and tries its
+// findings one at a time from the best verified state, keeping only the patches
+// that close their target without growing the blocking set — so a residual that
+// contains one independently safe fix and one poisoned one no longer loses both.
+// Counted in calls rather than attempts because an attempt bills a resolve plus
+// a full verification, and the full-arc gate's verification costs one call per
+// volume: 8 calls buys the spine gate 4 attempts and a 6-volume arc 1, instead
+// of letting a wide series pay 5× for the same number. `maxArcIsolationAttempts`
+// overrides it per run (in attempts), and `maxArcResolveRetries: 0` opts out of
+// isolation with it — a run that declined corrective spend declines this too.
+export const MAX_ARC_ISOLATION_CALLS = 8;
+
+// Effective isolation budget for one arc-verify gate, in ATTEMPTS: an explicit
+// per-run `maxArcIsolationAttempts` wins; else a run that declined corrective
+// resolve spend (`maxArcResolveRetries: 0`) declines this too; else the call
+// budget above divided by what one attempt costs on this series — a resolve plus
+// a full verification, which is one call for the arc and one per volume checked.
+// Shared with the dry-run plan so the projected worst case and the spend the gate
+// can actually reach are computed from one formula.
+export function resolveArcIsolationAttempts(options = {}, volumesChecked = 0) {
+  const explicit = options?.maxArcIsolationAttempts;
+  if (Number.isInteger(explicit)) return Math.max(0, explicit);
+  const retries = options?.maxArcResolveRetries;
+  if (Number.isInteger(retries) && retries <= 0) return 0;
+  return Math.max(1, Math.floor(MAX_ARC_ISOLATION_CALLS / (2 + volumesChecked)));
+}
+
+// Worst-case actions one gate's isolation pass can bill, for the dry-run plan.
+export const arcIsolationActions = (options, volumesChecked = 0) =>
+  resolveArcIsolationAttempts(options, volumesChecked) * (2 + volumesChecked);
+
 // The one precedence rule every gate below follows for a BOOLEAN knob: an
 // explicit per-run option wins, then the persisted pipelineEditorialChecks
 // setting, then the module default. Hoisted so the file states it once — it was
