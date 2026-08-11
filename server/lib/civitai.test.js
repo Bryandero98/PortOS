@@ -15,6 +15,7 @@ import {
   pickVersion,
   searchCivitaiLoras,
   slugifyForFilename,
+  stillPreviewUrl,
 } from './civitai.js';
 
 describe('parseCivitaiUrl', () => {
@@ -168,6 +169,28 @@ describe('pickPreviewImage', () => {
     expect(pickPreviewImage({ images: [] })).toBe(null);
     expect(pickPreviewImage({})).toBe(null);
   });
+  // Civitai's `images[]` is a media list — a video entry rendered in the card's
+  // <img> is a permanently broken thumbnail, so it must never win the pick
+  // even when it is the least explicit entry.
+  it('skips video entries flagged by type, even at the lowest nsfwLevel', () => {
+    const v = { images: [
+      { url: 'clip.mp4', nsfwLevel: 1, type: 'video' },
+      { url: 'still.jpg', nsfwLevel: 4, type: 'image' },
+    ] };
+    expect(pickPreviewImage(v).url).toBe('still.jpg');
+  });
+  it('skips video entries by extension when type is absent (legacy sidecars)', () => {
+    const v = { images: [
+      { url: 'https://image.civitai.com/h/u/original=true/1.mp4', nsfwLevel: 1 },
+      { url: 'https://image.civitai.com/h/u/original=true/2.webm', nsfwLevel: 1 },
+      { url: 'still.png', nsfwLevel: 8 },
+    ] };
+    expect(pickPreviewImage(v).url).toBe('still.png');
+  });
+  it('returns null when every entry is a video, so the card shows a placeholder', () => {
+    const v = { images: [{ url: 'a.mp4', nsfwLevel: 1 }, { url: 'b.webm', nsfwLevel: 2 }] };
+    expect(pickPreviewImage(v)).toBe(null);
+  });
 });
 
 describe('buildAuthHeaders / applyDownloadToken', () => {
@@ -227,6 +250,24 @@ describe('detectEarlyAccess', () => {
       endsAt: null,
       hoursRemaining: null,
     });
+  });
+});
+
+describe('stillPreviewUrl', () => {
+  it('drops a video URL so the card falls back to its placeholder', () => {
+    expect(stillPreviewUrl('https://image.civitai.com/h/u/original=true/1.mp4')).toBe(null);
+    expect(stillPreviewUrl('https://image.civitai.com/h/u/original=true/1.webm?x=1')).toBe(null);
+    expect(stillPreviewUrl('https://image.civitai.com/h/u/original=true/1.mp4#t=2')).toBe(null);
+  });
+  it('passes still images and empty values through unchanged', () => {
+    const url = 'https://image.civitai.com/h/u/width=512/1.jpeg';
+    expect(stillPreviewUrl(url)).toBe(url);
+    expect(stillPreviewUrl(null)).toBe(null);
+    expect(stillPreviewUrl(undefined)).toBe(undefined);
+  });
+  it('does not mistake an image whose name merely contains a video word', () => {
+    const url = 'https://image.civitai.com/h/u/width=512/mp4-style-preview.jpeg';
+    expect(stillPreviewUrl(url)).toBe(url);
   });
 });
 

@@ -40,6 +40,7 @@ import {
   pickPrimaryFile,
   pickVersion,
   slugifyForFilename,
+  stillPreviewUrl,
 } from '../lib/civitai.js';
 import {
   buildHfAuthHeaders,
@@ -162,7 +163,9 @@ export const listLoras = async () => {
         recommendedScale: Number.isFinite(sidecar?.recommendedScale) ? sidecar.recommendedScale : 1.0,
         // Normalize on read so already-installed LoRAs (sidecars written
         // before the URL-normalize fix) also benefit without a reinstall.
-        previewImageUrl: normalizeCivitaiImageUrl(sidecar?.previewImageUrl) || null,
+        // stillPreviewUrl drops a video URL for the same reason: Civitai's
+        // media list mixes clips in, and the card renders this in an <img>.
+        previewImageUrl: normalizeCivitaiImageUrl(stillPreviewUrl(sidecar?.previewImageUrl)) || null,
         description: sidecar?.description || '',
         // Trained-LoRA surfacing (sidecars written by services/loraTraining):
         // 'trained' source + the character identity block let the library UI

@@ -785,6 +785,25 @@ function VoiceCandidateCard({ candidate, filedAs, onFileExemplar, onFileAntiExem
   );
 }
 
+// Per-field caps for the character-arc editor — mirror CHARACTER_ARC_LIMITS in
+// server/lib/seriesCharacterArc.js, which the PATCH route enforces with Zod.
+//
+// These are not cosmetic. `updateSeries` replaces `characterArcs` wholesale, so
+// the Save button sends the entire arc list on every save; one over-long field
+// fails Zod and the server rejects the WHOLE series PATCH — name, logline,
+// premise, style guide and all — not just the offending arc. Without a
+// `maxLength` the field that bricks every subsequent save is invisible in the
+// UI, so cap at the input instead of discovering it in a rejected save.
+const ARC_LIMITS = {
+  CHARACTER_NAME_MAX: 200,
+  WANT_MAX: 1000,
+  NEED_MAX: 1000,
+  START_STATE_MAX: 1000,
+  END_STATE_MAX: 1000,
+  TRANSITION_LABEL_MAX: 200,
+  ISSUE_MAX: 9999,
+};
+
 // The change-beat kinds the arc.transitions editorial check recognizes — mirror
 // TRANSITION_KINDS in server/lib/seriesCharacterArc.js.
 const TRANSITION_KIND_OPTIONS = [
@@ -902,6 +921,7 @@ function CharacterArcsSection({ series, patchSeries }) {
                   value={arc.characterName || ''}
                   onChange={(e) => setArc(i, { characterName: e.target.value })}
                   placeholder="Character name"
+                  maxLength={ARC_LIMITS.CHARACTER_NAME_MAX}
                   className={`${inputCls} font-medium`}
                 />
                 <button
@@ -914,10 +934,10 @@ function CharacterArcsSection({ series, patchSeries }) {
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <input aria-label="Want" value={arc.want || ''} onChange={(e) => setArc(i, { want: e.target.value })} placeholder="Wants (external goal)" className={inputCls} />
-                <input aria-label="Need" value={arc.need || ''} onChange={(e) => setArc(i, { need: e.target.value })} placeholder="Needs (internal lesson)" className={inputCls} />
-                <input aria-label="Start state" value={arc.startState || ''} onChange={(e) => setArc(i, { startState: e.target.value })} placeholder="Starts as…" className={inputCls} />
-                <input aria-label="End state" value={arc.endState || ''} onChange={(e) => setArc(i, { endState: e.target.value })} placeholder="Ends as…" className={inputCls} />
+                <input aria-label="Want" value={arc.want || ''} onChange={(e) => setArc(i, { want: e.target.value })} placeholder="Wants (external goal)" maxLength={ARC_LIMITS.WANT_MAX} className={inputCls} />
+                <input aria-label="Need" value={arc.need || ''} onChange={(e) => setArc(i, { need: e.target.value })} placeholder="Needs (internal lesson)" maxLength={ARC_LIMITS.NEED_MAX} className={inputCls} />
+                <input aria-label="Start state" value={arc.startState || ''} onChange={(e) => setArc(i, { startState: e.target.value })} placeholder="Starts as…" maxLength={ARC_LIMITS.START_STATE_MAX} className={inputCls} />
+                <input aria-label="End state" value={arc.endState || ''} onChange={(e) => setArc(i, { endState: e.target.value })} placeholder="Ends as…" maxLength={ARC_LIMITS.END_STATE_MAX} className={inputCls} />
               </div>
 
               <div className="mt-2">
@@ -947,16 +967,26 @@ function CharacterArcsSection({ series, patchSeries }) {
                         value={t.label || ''}
                         onChange={(e) => setTransition(i, j, { label: e.target.value })}
                         placeholder="What changes"
+                        maxLength={ARC_LIMITS.TRANSITION_LABEL_MAX}
                         className="flex-1 px-2 py-1 bg-port-bg border border-port-border rounded text-white text-xs"
                       />
                       <input
                         aria-label="At issue"
                         type="number"
                         min={0}
+                        max={ARC_LIMITS.ISSUE_MAX}
                         value={Number.isFinite(t.atIssue) ? t.atIssue : ''}
                         onChange={(e) => {
                           const n = parseInt(e.target.value, 10);
-                          setTransition(i, j, { atIssue: Number.isFinite(n) ? n : null });
+                          // Clamp rather than lean on the `max` attribute — on a
+                          // number input `max` only fails constraint validation
+                          // on form submit, it does NOT stop typing or pasting a
+                          // larger value. This section has no <form>, so an
+                          // unclamped 99999 would sail through to the PATCH and
+                          // fail the ISSUE_MAX Zod cap, taking the whole series
+                          // save down with it.
+                          const clamped = Math.min(Math.max(n, 0), ARC_LIMITS.ISSUE_MAX);
+                          setTransition(i, j, { atIssue: Number.isFinite(n) ? clamped : null });
                         }}
                         placeholder="#"
                         className="w-14 px-1.5 py-1 bg-port-bg border border-port-border rounded text-white text-xs"
