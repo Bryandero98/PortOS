@@ -53,7 +53,7 @@ export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-verify.md':      '83347e7d923580a3062033ab39b3c14b', // post-250 arc spine checkpoint
   'pipeline-volume-verify.md':   '49458d36700cb94e34806d536ffe2940', // post-019
   'pipeline-season-episodes.md': 'a88e8e78a949b7aaf500d03314e2ea0b', // post-172 (structure rules)
-  'pipeline-arc-resolve.md':     '8bb134554c122d1583c479ab3010e53d', // post-245 (finding-keyed sparse patches)
+  'pipeline-arc-resolve.md':     '96f73a7e90526d65ef2bb100fb1cd4bf', // post-251 (field-sparse bounded patches)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
