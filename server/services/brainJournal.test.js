@@ -81,7 +81,7 @@ vi.mock('./brainStorage.js', () => ({
 }));
 
 import * as journal from './brainJournal.js';
-import { brainEvents, getAll } from './brainStorage.js';
+import { brainEvents, getAll, getById } from './brainStorage.js';
 import * as obsidian from './obsidian.js';
 
 // Pull the payload of the last emit of `name`, or undefined if it never fired.
@@ -257,6 +257,22 @@ describe('brainJournal', () => {
       await journal.appendJournal('2026-04-17', 'spoken', { source: 'voice' });
       const forced = await journal.setJournalContent('2026-04-17', 'overwrite all');
       expect(forced.content).toBe('overwrite all');
+    });
+
+    it('accepts a rewrite when the on-disk entry has no updatedAt to compare', async () => {
+      // Legacy / hand-edited stores may lack a clock. Rejecting forever would
+      // trap the day; accept the write when there is nothing to precondition on.
+      getById.mockResolvedValueOnce({
+        id: '2026-04-17',
+        date: '2026-04-17',
+        content: 'legacy body',
+        segments: [{ text: 'legacy body', at: '2026-04-17T10:00:00.000Z', source: 'edit' }],
+        // deliberately no updatedAt
+      });
+      const next = await journal.setJournalContent('2026-04-17', 'recovered', {
+        ifMatchUpdatedAt: '2026-04-17T12:00:00.000Z',
+      });
+      expect(next.content).toBe('recovered');
     });
   });
 

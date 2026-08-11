@@ -68,9 +68,10 @@ export const appendJournalSegment = (content, text) => {
 
 // Re-apply any voice segments the server holds that the local body is missing
 // — the recovery path after a STALE_JOURNAL 409 (an append landed while a PUT
-// was in flight). Non-voice concurrent edits are left to the server entry's
-// content only when local is empty; otherwise local typing wins and voice is
-// folded back in.
+// was in flight). Only `source === 'voice'` segments are folded in: concurrent
+// typed/edit segments are already reflected in server content, and replaying
+// them would duplicate free-form edits. When local is empty we fall back to
+// the server body wholesale so a blank client still adopts remote state.
 export const mergeMissingVoiceSegments = (localContent, serverEntry) => {
   let next = localContent || '';
   const segs = Array.isArray(serverEntry?.segments) ? serverEntry.segments : [];
@@ -82,6 +83,12 @@ export const mergeMissingVoiceSegments = (localContent, serverEntry) => {
   if (!next && serverEntry?.content) return serverEntry.content;
   return next;
 };
+
+// Max PUT attempts per save (1 initial + retries). Each STALE_JOURNAL folds in
+// voice segments the concurrent write added and advances the ifMatch clock.
+// Cap is small: voice bursts are short, and the next autosave tick retries
+// whatever is still dirty if we exhaust the budget mid-burst.
+const STALE_JOURNAL_MAX_ATTEMPTS = 3;
 
 export default function DailyLogTab() {
   const [date, setDate] = useState(localToday());
@@ -259,7 +266,15 @@ export default function DailyLogTab() {
         setContent((prevContent) => {
           const next = appendJournalSegment(prevContent, appendedText);
           const el = editorRef.current;
-          if (el && document.activeElement === el && next !== prevContent) {
+          // Only restore caret when the control is focused and reports a real
+          // selection (detached/non-textarea nodes leave selectionStart undefined).
+          if (
+            el
+            && document.activeElement === el
+            && next !== prevContent
+            && typeof el.selectionStart === 'number'
+            && typeof el.selectionEnd === 'number'
+          ) {
             const start = el.selectionStart;
             const end = el.selectionEnd;
             queueMicrotask(() => {
@@ -356,11 +371,15 @@ export default function DailyLogTab() {
     // against an already-unhealthy server.
     firstDirtyAtRef.current = null;
     setSaving(true);
-    let res = await putDailyLog(targetDate, body, ifMatch);
-    // One bounded retry: merge any voice segments the concurrent write added,
-    // advance the ifMatch clock, and re-PUT. A second conflict (another append
-    // mid-retry) falls through as failure — the next autosave tick retries.
-    if (res?.stale) {
+    // Bounded stale-retry loop: each 409 folds in voice segments the concurrent
+    // write added, advances the ifMatch clock, and re-PUTs. Exhausting the
+    // budget falls through as failure — content stays dirty so the next
+    // autosave tick (or explicit Save) retries with a fresh clock.
+    let res = null;
+    for (let attempt = 0; attempt < STALE_JOURNAL_MAX_ATTEMPTS; attempt += 1) {
+      res = await putDailyLog(targetDate, body, ifMatch);
+      if (!res?.stale) break;
+      if (attempt === STALE_JOURNAL_MAX_ATTEMPTS - 1) break;
       const serverEntry = res.entry;
       body = mergeMissingVoiceSegments(body, serverEntry);
       ifMatch = serverEntry.updatedAt || null;
@@ -373,7 +392,6 @@ export default function DailyLogTab() {
           ? body
           : mergeMissingVoiceSegments(prev, serverEntry)));
       }
-      res = await putDailyLog(targetDate, body, ifMatch);
     }
     savingRef.current = false;
     if (!mountedRef.current) return;

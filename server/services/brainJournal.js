@@ -274,7 +274,11 @@ export async function setJournalContent(date, content, { ifMatchUpdatedAt } = {}
     const existing = await getEntry(date);
     // Precondition: a full rewrite based on a known updatedAt must not clobber
     // a concurrent append (voice dictation is the common case — the client
-    // autosave and the append share the same day key).
+    // autosave and the append share the same day key). When the on-disk entry
+    // has no `updatedAt` (pre-stamp legacy / hand-edited store), there is no
+    // clock to compare — accept the write rather than rejecting forever.
+    // brainStorage.upsertWithId always stamps updatedAt on new writes, so this
+    // path is an edge case, not the steady state.
     if (
       typeof ifMatchUpdatedAt === 'string'
       && ifMatchUpdatedAt.length > 0

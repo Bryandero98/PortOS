@@ -428,6 +428,75 @@ describe('DailyLogTab autosave', () => {
     expect(editor().value).toBe('typed while speaking\n\nspoken mid-flight');
   });
 
+  it('retries multiple STALE_JOURNAL 409s until a PUT lands', async () => {
+    const stale1 = {
+      date: TODAY,
+      content: 'existing\n\nspoken-a',
+      segments: [
+        { text: 'existing', at: `${TODAY}T12:00:00Z`, source: 'edit' },
+        { text: 'spoken-a', at: `${TODAY}T12:02:00Z`, source: 'voice' },
+      ],
+      segmentCount: 2,
+      updatedAt: `${TODAY}T12:02:00Z`,
+      obsidianPath: null,
+    };
+    const stale2 = {
+      date: TODAY,
+      content: 'existing\n\nspoken-a\n\nspoken-b',
+      segments: [
+        ...stale1.segments,
+        { text: 'spoken-b', at: `${TODAY}T12:03:00Z`, source: 'voice' },
+      ],
+      segmentCount: 3,
+      updatedAt: `${TODAY}T12:03:00Z`,
+      obsidianPath: null,
+    };
+    let calls = 0;
+    api.updateDailyLog.mockImplementation(async (date, content, _opts) => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new Error('Daily log was modified since you last loaded it');
+        err.code = 'STALE_JOURNAL';
+        err.status = 409;
+        err.context = { entry: stale1 };
+        throw err;
+      }
+      if (calls === 2) {
+        const err = new Error('Daily log was modified since you last loaded it');
+        err.code = 'STALE_JOURNAL';
+        err.status = 409;
+        err.context = { entry: stale2 };
+        throw err;
+      }
+      return {
+        date,
+        entry: { ...entryFor(date, content), updatedAt: `${date}T12:04:00Z` },
+      };
+    });
+    await renderTab();
+    fireEvent.change(editor(), { target: { value: 'typed while speaking' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+
+    expect(api.updateDailyLog).toHaveBeenCalledTimes(3);
+    expect(api.updateDailyLog.mock.calls[0]).toEqual([
+      TODAY,
+      'typed while speaking',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:00:00Z` },
+    ]);
+    expect(api.updateDailyLog.mock.calls[1]).toEqual([
+      TODAY,
+      'typed while speaking\n\nspoken-a',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:02:00Z` },
+    ]);
+    expect(api.updateDailyLog.mock.calls[2]).toEqual([
+      TODAY,
+      'typed while speaking\n\nspoken-a\n\nspoken-b',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:03:00Z` },
+    ]);
+    expect(editor().value).toBe('typed while speaking\n\nspoken-a\n\nspoken-b');
+    expect(screen.queryByText(/Save failed/i)).not.toBeInTheDocument();
+  });
+
   it('shows save status in the toolbar', async () => {
     await renderTab();
     expect(screen.getByText(/· Saved/)).toBeInTheDocument();
