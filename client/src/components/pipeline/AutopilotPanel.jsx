@@ -241,6 +241,7 @@ const STEP_LABELS = {
   generateArc: 'Generating arc',
   repairArcStructure: 'Repairing volume structure',
   generateEpisodes: 'Generating episodes',
+  verifyArcSpine: 'Checking arc spine',
   verifyArc: 'Verifying arc',
   foundationGate: 'Judging foundation',
   beatSheet: 'Generating beat sheets',

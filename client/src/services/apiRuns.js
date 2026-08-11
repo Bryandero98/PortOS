@@ -8,8 +8,11 @@ export const createRun = (data) => request('/runs', {
   body: JSON.stringify(data)
 });
 export const getRun = (id) => request(`/runs/${id}`);
-export const getRunOutput = (id) => request(`/runs/${id}/output`);
-export const getRunPrompt = (id) => request(`/runs/${id}/prompt`);
+// These endpoints deliberately return text/plain. A model response can itself
+// be valid JSON; forcing the shared request helper's default JSON parser turns
+// it into an object that React cannot render inside <pre>.
+export const getRunOutput = (id) => request(`/runs/${id}/output`, { responseType: 'text' });
+export const getRunPrompt = (id) => request(`/runs/${id}/prompt`, { responseType: 'text' });
 export const stopRun = (id) => request(`/runs/${id}/stop`, { method: 'POST' });
 export const deleteRun = (id) => request(`/runs/${id}`, { method: 'DELETE' });
 export const deleteFailedRuns = () => request('/runs?filter=failed', { method: 'DELETE' });

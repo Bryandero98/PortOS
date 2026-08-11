@@ -11,6 +11,7 @@ import { addNotification, removeByMetadata, NOTIFICATION_TYPES, PRIORITY_LEVELS 
 import { getSeries, updateSeries } from '../series.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
+import { stopRun } from '../../runner.js';
 import { runs, autopilotEvents, noteSignal } from './state.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,14 @@ export function cancelSeriesAutopilot(seriesId) {
   const child = run.activeChild;
   if (child?.kind === 'beats') volumeBeatsRunner.cancelVolumeBeatsRun(child.id);
   else if (child?.kind === 'text') autoRunner.cancelAutoRun(child.id);
+  // Direct staged-LLM steps (arc, episode plan, foundation judge/repair) do
+  // not have a delegated child coordinator. Stop their concrete run too; the
+  // prompt runner reports fallback run ids through the same lifecycle hook.
+  if (run.activeLlmRunId) {
+    stopRun(run.activeLlmRunId).catch((err) => {
+      console.log(`⚠️ autopilot: active LLM stop failed for ${seriesId.slice(0, 12)}: ${err.message}`);
+    });
+  }
   return true;
 }
 
@@ -235,6 +244,15 @@ export const providerOverrideOpts = (record, role = 'creative') => {
     providerDefault: llm.providerOverride,
     modelDefault: llm.modelOverride,
     effortDefault: llm.effortOverride,
+    onRunCreated: (runId) => {
+      record.activeLlmRunId = runId;
+      // Close the race where Stop lands after createRun but before provider
+      // execution registers its child process.
+      if (record.cancelRequested) stopRun(runId).catch(() => {});
+    },
+    onRunSettled: (runId) => {
+      if (record.activeLlmRunId === runId) record.activeLlmRunId = null;
+    },
   };
 };
 export const providerIdOpts = (record, role = 'creative') => {

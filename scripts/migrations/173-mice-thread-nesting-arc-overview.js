@@ -31,7 +31,7 @@ export const ACCEPTED_OLD_MD5 = {
 
 // Post-change shipped hash (MICE thread-nesting instruction added).
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-overview.md': '648e11352cd1565aee490de1f662bef0', // post-249 protected author intent
+  'pipeline-arc-overview.md': '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

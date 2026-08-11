@@ -97,6 +97,13 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
       });
     }
   }
+  const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
+  plan.push({
+    kind: 'verifyArcSpine',
+    count: 1,
+    note: `${roundsNote(arcRounds)}; protected intent + macro arc before issue generation`,
+    estActions: convergenceLoopActions(arcRounds),
+  });
   const emptySeasons = seasons.filter((s) => !ordered.some((i) => i.seasonId === s.id));
   if (emptySeasons.length) plan.push({ kind: 'generateEpisodes', count: emptySeasons.length, estActions: emptySeasons.length });
   // Foundation runs first at synopsis altitude. Arc/volume repairs and
@@ -106,7 +113,6 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   if (options?.foundationGate !== false && foundationRounds !== 0) {
     plan.push({ kind: 'foundationGate', count: 1, note: `${roundsNote(foundationRounds)}; re-checks after arc repairs`, estActions: convergenceLoopActions(foundationRounds) });
   }
-  const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
   const verificationActions = arcRounds === 0
     ? 0
     : arcRounds * (1 + seasons.length) + Math.max(0, arcRounds - 1);

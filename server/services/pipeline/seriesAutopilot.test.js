@@ -620,17 +620,17 @@ describe('resolveNextStep (pure)', () => {
   });
 
   it('asks to generate episodes for a season with no issues', () => {
-    const step = resolveNextStep(comic, []);
+    const step = resolveNextStep(comic, [], { arcSpineVerified: true });
     expect(step).toMatchObject({ kind: 'generateEpisodes', seasonId: 'se1' });
   });
 
-  it('establishes the foundation before arc verification or drafting', () => {
+  it('checks the arc spine before foundation evaluation or drafting', () => {
     const step = resolveNextStep(comic, [issue()]);
-    expect(step.kind).toBe('foundationGate');
+    expect(step.kind).toBe('verifyArcSpine');
   });
 
   it('runs arc verification after the foundation gate, before beats (#2176)', () => {
-    const step = resolveNextStep(comic, [issue()], { foundationGated: true });
+    const step = resolveNextStep(comic, [issue()], { arcSpineVerified: true, foundationGated: true });
     expect(step.kind).toBe('verifyArc');
   });
 
@@ -1067,7 +1067,7 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
 
   const freshRunState = () => ({
     locksUnlocked: false,
-    characterFoundationEstablished: false, arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
+    characterFoundationEstablished: false, arcAttempted: false, arcSpineVerified: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
     editorialReviewed: false, reverseOutlineRefreshed: false,
     editorialChecksReviewed: false, editorialHealthReady: false, canonVerified: false,
     episodesAttempted: new Set(), beatsAttempted: new Set(), textAttempted: new Set(),
@@ -1097,6 +1097,9 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
         throw new Error(`drift guard: fixture reached "${step.kind}" — parity guard requires fully-populated fixtures (arc present + every season seeded with issues)`);
       case 'verifyArc':
         runState.arcVerified = true;
+        break;
+      case 'verifyArcSpine':
+        runState.arcSpineVerified = true;
         break;
       case 'foundationGate':
         runState.foundationGated = true;
@@ -1566,7 +1569,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
     // bounded: verifyArc called exactly maxRounds times, resolve called rounds-1.
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
@@ -1603,7 +1606,7 @@ describe('autopilot conductor', () => {
     expect(applyFoundationFix).not.toHaveBeenCalled();
   });
 
-  it('re-judges the foundation after arc verification repairs the synopsis plan', async () => {
+  it('repairs the arc spine before the foundation judge sees the synopsis plan', async () => {
     arcSpies.verifyArc
       .mockImplementationOnce(async () => ({ issues: [{ severity: 'high', problem: 'missing setup', location: 'V1' }] }))
       .mockImplementationOnce(async () => ({ issues: [] }));
@@ -1612,7 +1615,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
-    expect(judgeFoundation).toHaveBeenCalledTimes(2);
+    expect(judgeFoundation).toHaveBeenCalledTimes(1);
   });
 
   it('foundation gate: iterates on the weakest dimension then pauses (maxRounds) when it never clears', async () => {
@@ -1773,7 +1776,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
   });
 
   it('arc gate: a per-series arc:[high] override lets a medium finding pass', async () => {
@@ -1913,7 +1916,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
     expect(last?.pauseKind).toBe('divergence');
     expect(last?.reason).toMatch(/stopped converging/);
     // Bailed at round 3 — NOT all 6 rounds (the whole point: budget saved).
@@ -1955,7 +1958,7 @@ describe('autopilot conductor', () => {
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
     expect(last?.pauseKind).toBe('regression');
     expect(last?.reason).toMatch(/reverted/);
     // Residual is what the user had BEFORE the round, not the 3 it manufactured.
@@ -2191,6 +2194,29 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.scope).toBe('generateEpisodes');
     expect(arcSpies.generateSeasonEpisodes).toHaveBeenCalledTimes(1); // not looping
+  });
+
+  it('pauses without duplicating work when issue placeholders cannot be safely reused', async () => {
+    const series = await seriesSvc.createSeries({ name: 'S', logline: 'L', premise: 'P', targetFormat: 'comic' });
+    await seriesSvc.updateSeries(series.id, { arc: { logline: 'A', summary: 'S' } });
+    await seasonsSvc.createSeason(series.id, { number: 1, title: 'V1' });
+    arcSpies.generateSeasonEpisodes.mockResolvedValueOnce({ episodes: [{ number: 1, title: 'I1' }] });
+    const error = Object.assign(new Error('Reconcile the existing issue placeholder set before resuming.'), {
+      code: 'PIPELINE_ARC_VALIDATION',
+    });
+    arcSpies.commitEpisodesToIssues.mockRejectedValueOnce(error);
+
+    await autopilot.startSeriesAutopilot(series.id, { includeVisual: false });
+    await waitFor(runFinished(series.id));
+
+    const last = autopilot.__testing.runs.get(series.id)?.lastPayload;
+    expect(last).toMatchObject({
+      type: 'paused',
+      scope: 'generateEpisodes',
+      pauseKind: 'inapplicable',
+      reason: 'Reconcile the existing issue placeholder set before resuming.',
+    });
+    expect(arcSpies.commitEpisodesToIssues).toHaveBeenCalledTimes(1);
   });
 
   it('pauses (no infinite loop) when arc generation yields no volumes', async () => {
@@ -2740,7 +2766,7 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, maxArcVerifyRounds: 1 });
     await waitFor(runFinished(seriesId));
     expect(addTask).toHaveBeenCalled();
-    expect(addTask.mock.calls[0][0].description).toMatch(/verifyArc-stalled/);
+    expect(addTask.mock.calls[0][0].description).toMatch(/verifyArcSpine-stalled/);
   });
 
   // `metadata.app` is workspace routing, not a feature tag: it must name a

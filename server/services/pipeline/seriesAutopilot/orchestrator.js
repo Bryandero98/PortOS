@@ -130,6 +130,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
       // cast has causal wants/needs/relationships to drive it.
       characterFoundationEstablished: false,
       arcAttempted: false,
+      arcSpineVerified: false,
       arcVerified: false,
       // #2176 — foundation-quality gate satisfied this run (threshold cleared,
       // or the gate disabled/0-round). Boolean like arcVerified so the resolver
@@ -178,6 +179,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
       observerFindings: [],
     },
     activeChild: null,
+    activeLlmRunId: null,
   };
   runs.set(sId, record);
 
@@ -342,7 +344,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         // runEditorial short-circuit with no LLM spend, so "0 skips the gate" must
         // hold even when the budget is exhausted (otherwise the run pauses on
         // budget instead of skipping).
-        const zeroRoundSkip = (step.kind === 'verifyArc' && runOptions.maxArcVerifyRounds === 0)
+        const zeroRoundSkip = ((step.kind === 'verifyArc' || step.kind === 'verifyArcSpine') && runOptions.maxArcVerifyRounds === 0)
           || (step.kind === 'beatContinuity' && runOptions.maxBeatContinuityRounds === 0)
           || (step.kind === 'editorialReview' && runOptions.maxEditorialRounds === 0)
           || (step.kind === 'foundationGate' && (runOptions.maxFoundationRounds === 0 || runOptions.foundationGate === false));

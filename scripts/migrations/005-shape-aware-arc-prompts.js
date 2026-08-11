@@ -49,8 +49,8 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-overview.md':    '648e11352cd1565aee490de1f662bef0', // post-249 protected author intent
-  'pipeline-arc-verify.md':      '36aa70cdfc25d7549573a4d556e7702c', // post-019
+  'pipeline-arc-overview.md':    '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
+  'pipeline-arc-verify.md':      '83347e7d923580a3062033ab39b3c14b', // post-250 arc spine checkpoint
   'pipeline-volume-verify.md':   '49458d36700cb94e34806d536ffe2940', // post-019
   'pipeline-season-episodes.md': 'a88e8e78a949b7aaf500d03314e2ea0b', // post-172 (structure rules)
   'pipeline-arc-resolve.md':     '8bb134554c122d1583c479ab3010e53d', // post-245 (finding-keyed sparse patches)

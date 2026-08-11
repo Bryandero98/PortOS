@@ -575,6 +575,8 @@ async function executeStagePrompt({ stage, label, prompt, options }) {
     // provider's ladder and omits the flag entirely for a provider with no
     // effort control, so no capability check is needed here.
     effort: resolveEffortHint(stage, options),
+    onRunCreated: options.onRunCreated,
+    onRunSettled: options.onRunSettled,
   });
   const { text } = runResult2;
   let finalRunId = runId;

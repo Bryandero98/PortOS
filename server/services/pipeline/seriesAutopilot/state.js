@@ -11,7 +11,8 @@ import { EventEmitter } from 'events';
 import { diagnosisOptedIn } from './diagnosisCore.js';
 
 // runs: Map<seriesId, { runId, clients[], lastPayload, startPayload, cancelRequested,
-//   finished, cleanupTimer, startedAt, mode, options, runState, activeChild }>
+//   finished, cleanupTimer, startedAt, mode, options, runState, activeChild,
+//   activeLlmRunId }>
 // `startPayload` is the run's `start` frame, retained so a client attaching
 // mid-run can still read it (SSE replay only carries `lastPayload`).
 export const runs = new Map();

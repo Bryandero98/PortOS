@@ -679,6 +679,8 @@ export async function judgeFoundation(seriesId, {
   providerDefault,
   modelDefault,
   effortDefault,
+  onRunCreated,
+  onRunSettled,
   force = false,
 } = {}) {
   assertValidSeriesId(seriesId);
@@ -732,6 +734,8 @@ export async function judgeFoundation(seriesId, {
     providerOverride: judgeProvider.id,
     modelOverride: judgeModel,
     effortDefault: effort || effortDefault,
+    onRunCreated,
+    onRunSettled,
     source: STAGE,
   });
 
@@ -1106,6 +1110,8 @@ async function runFoundationRepair(series, issues, dimension, finding, character
       providerDefault: options.providerId,
       modelDefault: options.model,
       effortDefault: options.effort,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       source: stage,
       ...(stage === CHARACTER_FOUNDATION_STAGE ? { timeoutOverride: CHARACTER_FOUNDATION_TIMEOUT_MS } : {}),
     });
@@ -1298,6 +1304,8 @@ export async function establishCharacterFoundation(seriesId, {
   providerDefault,
   modelDefault,
   effortDefault,
+  onRunCreated,
+  onRunSettled,
 } = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
@@ -1328,6 +1336,8 @@ export async function establishCharacterFoundation(seriesId, {
     providerId: providerDefault,
     model: modelDefault,
     effort: effortDefault,
+    onRunCreated,
+    onRunSettled,
     phase: 'pre-arc character foundation',
   });
   return { ...result, ran: true };
@@ -1374,7 +1384,7 @@ async function repairCraft(series, issues, finding, options) {
 // no-clobber) — then persist through updateUniverse (serialized write queue).
 // Mirrors storyBuilder.js's `universeAesthetic` step. Returns false when there's
 // no universe to refine.
-async function refineWorld(universeId, { providerId, model, effort, finding = {} }) {
+async function refineWorld(universeId, { providerId, model, effort, onRunCreated, onRunSettled, finding = {} }) {
   if (!universeId) return { applied: false, reason: 'no linked universe' };
   const universe = await getUniverse(universeId).catch(() => null);
   if (!universe) return { applied: false, reason: 'universe not found' };
@@ -1389,6 +1399,8 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
     providerId,
     model,
     effort,
+    onRunCreated,
+    onRunSettled,
     narrativeOnly: true,
   });
   // Persist through the write-queue mutator against the FRESHEST record, and
@@ -1449,12 +1461,27 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
  * `finding` is the judge's `{ gap, fix }` for the targeted dimension, threaded
  * into the structure resolve as a synthesized arc finding.
  */
-export async function applyFoundationFix(seriesId, dimension, { finding = {}, providerOverride, modelOverride, effortOverride, preserveDroppedSeasons = false } = {}) {
+export async function applyFoundationFix(seriesId, dimension, {
+  finding = {},
+  providerOverride,
+  modelOverride,
+  effortOverride,
+  preserveDroppedSeasons = false,
+  onRunCreated,
+  onRunSettled,
+} = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
   const issues = await listIssues({ seriesId });
   const universeId = series?.universeId || null;
-  const provider = { providerId: providerOverride, model: modelOverride, effort: effortOverride, finding };
+  const provider = {
+    providerId: providerOverride,
+    model: modelOverride,
+    effort: effortOverride,
+    finding,
+    onRunCreated,
+    onRunSettled,
+  };
 
   if (dimension === 'worldbuilding') {
     const r = await refineWorld(universeId, provider);
@@ -1500,6 +1527,8 @@ export async function applyFoundationFix(seriesId, dimension, { finding = {}, pr
       // Carry the same non-deletion guarantee the other two do.
       preserveDroppedSeasons,
       effortDefault: effortOverride,
+      onRunCreated,
+      onRunSettled,
     });
     return { dimension, applied: r?.applied !== false };
   }

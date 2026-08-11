@@ -46,13 +46,13 @@ async function waitForChild(isActive, record) {
   }
 }
 
-export async function runArcVerify(seriesId, record) {
+export async function runArcVerify(seriesId, record, { spineOnly = false } = {}) {
   const maxRounds = Number.isInteger(record.options.maxArcVerifyRounds)
     ? record.options.maxArcVerifyRounds
     : MAX_ARC_VERIFY_ROUNDS;
   // maxRounds === 0 means "skip verification entirely" — accept the arc as-is.
   if (maxRounds === 0) {
-    record.runState.arcVerified = true;
+    record.runState[spineOnly ? 'arcSpineVerified' : 'arcVerified'] = true;
     return {};
   }
   let convergence = { best: null, sinceBest: 0 };
@@ -65,11 +65,14 @@ export async function runArcVerify(seriesId, record) {
     if (record.cancelRequested) return { canceled: true };
     const beforeVerify = await budgetPause();
     if (beforeVerify) return beforeVerify;
-    const { issues: arcFindings } = await verifyArc(seriesId, providerOverrideOpts(record, 'judge'));
+    const { issues: arcFindings } = await verifyArc(seriesId, {
+      ...providerOverrideOpts(record, 'judge'),
+      spineOnly,
+    });
     await recordDomainUsage('cos', { actions: 1 });
     const series = await getSeries(seriesId);
     const volumeFindings = [];
-    for (const season of series.seasons || []) {
+    for (const season of spineOnly ? [] : (series.seasons || [])) {
       if (record.cancelRequested) return { canceled: true };
       const beforeVolumeVerify = await budgetPause();
       if (beforeVolumeVerify) return beforeVolumeVerify;
@@ -91,12 +94,12 @@ export async function runArcVerify(seriesId, record) {
     const findings = [...arcFindings, ...volumeFindings];
     const blocking = findings.filter((finding) => record.options.blockingSets.arc.has(finding.severity));
     broadcast(seriesId, {
-      type: 'verify:round', scope: 'arc', round, findings: findings.length,
-      blocking: blocking.length, volumesChecked: (series.seasons || []).length,
+      type: 'verify:round', scope: spineOnly ? 'arcSpine' : 'arc', round, findings: findings.length,
+      blocking: blocking.length, volumesChecked: spineOnly ? 0 : (series.seasons || []).length,
     });
     if (blocking.length === 0) {
-      record.runState.arcVerified = true;
-      if (changed && !finishPlanningMutation(record, 'foundationGated')) {
+      record.runState[spineOnly ? 'arcSpineVerified' : 'arcVerified'] = true;
+      if (!spineOnly && changed && !finishPlanningMutation(record, 'foundationGated')) {
         return {
           pause: true,
           pauseKind: 'planningOscillation',
@@ -311,6 +314,8 @@ export async function runFoundationGate(seriesId, record) {
       providerDefault: judgeLlm.providerOverride,
       modelDefault: judgeLlm.modelOverride,
       effortDefault: judgeLlm.effortOverride,
+      onRunCreated: providerOverrideOpts(record, 'judge').onRunCreated,
+      onRunSettled: providerOverrideOpts(record, 'judge').onRunSettled,
     });
     // A cached (content-hash unchanged) verdict did no LLM work — don't bill it.
     if (!snap.cached) await recordDomainUsage('cos', { actions: 1 });
@@ -388,6 +393,8 @@ export async function runFoundationGate(seriesId, record) {
         modelOverride: creativeLlm.modelOverride,
         ...seasonPreserveOpts(record),
         effortOverride: creativeLlm.effortOverride,
+        onRunCreated: providerOverrideOpts(record).onRunCreated,
+        onRunSettled: providerOverrideOpts(record).onRunSettled,
       });
     } catch (err) {
       const detail = (err?.message || String(err)).slice(0, 300);

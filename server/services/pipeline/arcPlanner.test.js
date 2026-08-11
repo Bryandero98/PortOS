@@ -193,7 +193,10 @@ describe('arcPlanner — generateArcOverview', () => {
         { kind: 'reference_sheet', label: 'Rival agencies branding', prompt: 'comparison sheet' },
       ],
     });
-    const s = await setupSeries({ universeId: world.id });
+    const s = await setupSeries({
+      universeId: world.id,
+      premise: 'Mira Holt must recover The Tongue before the foundry city goes silent.',
+    });
 
     stageRunnerSpy = vi.fn(async () => ({
       content: {
@@ -218,6 +221,44 @@ describe('arcPlanner — generateArcOverview', () => {
     expect(ctx.worldCompositesText).toContain('Rival agencies branding');
     expect(ctx.worldInfluencesEmbrace).toContain('Moebius');
     expect(ctx.worldInfluencesAvoid).toContain('gritty');
+  });
+
+  it('excludes abandoned-draft canon that the protected premise and active cast never reference', async () => {
+    const world = await worldSvc.createUniverse({
+      name: 'Example World',
+      starterPrompt: 'Asha Reed follows a signal through the Glass Harbor.',
+      characters: [
+        { id: 'char-active', name: 'Asha Reed', role: 'lead', relationships: 'Trusts Fen.' },
+        { id: 'char-support', name: 'Fen', role: 'scout' },
+        { id: 'char-stale', name: 'Director Voss', role: 'antagonist' },
+      ],
+      places: [
+        { id: 'place-active', name: 'Glass Harbor', description: 'a flooded observatory' },
+        { id: 'place-stale', name: 'Central Ministry', description: 'an old-draft headquarters' },
+      ],
+      objects: [
+        { id: 'obj-stale', name: 'Compliance Seal', description: 'an old-draft badge' },
+      ],
+    });
+    const s = await setupSeries({
+      universeId: world.id,
+      premise: 'Asha Reed and Fen trace the Glass Harbor signal.',
+      characterArcs: [{ characterId: 'char-active', characterName: 'Asha Reed', startState: 'alone', endState: 'trusting' }],
+    });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { logline: 'L', summary: 'S', themes: [], protagonistArc: 'A', seasonOutlines: [] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    await planner.generateArcOverview(s.id);
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.worldCanonText).toContain('Asha Reed');
+    expect(ctx.worldCanonText).toContain('Fen');
+    expect(ctx.worldCanonText).toContain('Glass Harbor');
+    expect(ctx.worldCanonText).not.toContain('Director Voss');
+    expect(ctx.worldCanonText).not.toContain('Central Ministry');
+    expect(ctx.worldCanonText).not.toContain('Compliance Seal');
   });
 
   it('renders an "(no linked world)" placeholder when the series has no universeId', async () => {
@@ -424,6 +465,41 @@ describe('arcPlanner — commitEpisodesToIssues', () => {
     spy.mockRestore();
     expect(created).toHaveLength(1);
     expect(callCount).toBe(0);
+  });
+
+  it('reuses an exact set of empty ungrouped placeholders when Autopilot requests it', async () => {
+    const s = await setupSeries();
+    const first = await issuesSvc.createIssue({ seriesId: s.id, title: 'Placeholder A' });
+    const second = await issuesSvc.createIssue({
+      seriesId: s.id,
+      title: 'Placeholder B',
+      stages: { comicPages: { status: 'ready', pages: [{ pageNumber: 1, panels: [] }] } },
+    });
+    const episodes = [
+      { number: 1, title: 'Opening', arcRole: 'pilot', logline: 'L1', synopsis: 'S1', lengthProfile: 'standard' },
+      { number: 2, title: 'Turn', arcRole: 'complication', logline: 'L2', synopsis: 'S2', lengthProfile: 'short' },
+    ];
+
+    const reused = await planner.commitEpisodesToIssues(s.id, 'sea-example', episodes, { reuseUngrouped: true });
+
+    expect(reused.map((issue) => issue.id)).toEqual([first.id, second.id]);
+    expect(reused.map((issue) => issue.title)).toEqual(['Opening', 'Turn']);
+    expect(reused.every((issue) => issue.seasonId === 'sea-example')).toBe(true);
+    expect(reused[1].stages.comicPages.pages).toHaveLength(1);
+    expect(await issuesSvc.listIssues({ seriesId: s.id })).toHaveLength(2);
+  });
+
+  it('refuses to duplicate or partially reuse placeholders when their count differs from the episode plan', async () => {
+    const s = await setupSeries();
+    const placeholder = await issuesSvc.createIssue({ seriesId: s.id, title: 'Placeholder' });
+    const episodes = [
+      { number: 1, title: 'One', logline: 'L1', synopsis: 'S1' },
+      { number: 2, title: 'Two', logline: 'L2', synopsis: 'S2' },
+    ];
+
+    await expect(planner.commitEpisodesToIssues(s.id, null, episodes, { reuseUngrouped: true }))
+      .rejects.toMatchObject({ code: planner.ERR_VALIDATION });
+    expect((await issuesSvc.listIssues({ seriesId: s.id })).map((issue) => issue.id)).toEqual([placeholder.id]);
   });
 });
 

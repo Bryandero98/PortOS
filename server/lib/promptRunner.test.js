@@ -130,6 +130,24 @@ describe('promptRunner — happy paths', () => {
     expect(runner.executeCliRun).not.toHaveBeenCalled();
   });
 
+  it('reports the concrete run lifecycle so a parent workflow can stop it', async () => {
+    const events = [];
+    runner.executeApiRun.mockImplementation(async ({ runId, onComplete }) => {
+      events.push(`execute:${runId}`);
+      onComplete({ success: true });
+    });
+
+    await runPromptThroughProvider({
+      provider: apiProvider(),
+      prompt: 'p',
+      source: 'test',
+      onRunCreated: (runId) => events.push(`created:${runId}`),
+      onRunSettled: (runId) => events.push(`settled:${runId}`),
+    });
+
+    expect(events).toEqual(['created:run-xyz', 'execute:run-xyz', 'settled:run-xyz']);
+  });
+
   it('forwards screenshots to executeApiRun for a vision/multimodal call', async () => {
     runner.executeApiRun.mockImplementation(async ({ onComplete }) => onComplete({ success: true }));
 

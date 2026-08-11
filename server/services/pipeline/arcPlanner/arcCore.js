@@ -36,6 +36,8 @@ export async function generateArcOverview(seriesId, options = {}) {
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
       effortDefault: options.effortDefault,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       returnsJson: true,
       source: 'pipeline-arc-overview',
     },
@@ -105,6 +107,8 @@ export async function generateReaderMap(seriesId, options = {}) {
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
       effortDefault: options.effortDefault,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       returnsJson: true,
       source: 'story-builder-reader-map',
     },
@@ -254,7 +258,7 @@ export async function verifyArc(seriesId, options = {}) {
       { status: 400, code: 'PIPELINE_NO_ARC' },
     );
   }
-  const ctx = await buildVerifyContext(series, options.preloadedWorld);
+  const ctx = await buildVerifyContext(series, options.preloadedWorld, { spineOnly: options.spineOnly === true });
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-verify',
     ctx,
@@ -264,6 +268,8 @@ export async function verifyArc(seriesId, options = {}) {
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
       effortDefault: options.effortDefault,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       returnsJson: true,
       source: 'pipeline-arc-verify',
     },
@@ -339,6 +345,8 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
       effortDefault: options.effortDefault,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       returnsJson: true,
       source: 'pipeline-volume-verify',
     },
@@ -435,6 +443,8 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
       effortDefault: options.effortDefault,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       returnsJson: true,
       source: 'pipeline-arc-resolve',
     },

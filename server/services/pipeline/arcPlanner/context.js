@@ -15,7 +15,7 @@ import { renderCharacterArcsForPrompt } from '../../../lib/seriesCharacterArc.js
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
 import { DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
 import { getUniverse } from '../../universeBuilder.js';
-import { getSeriesCanon } from '../seriesCanon.js';
+import { getSeriesPlanningCanon, scopeCanonForSeries } from '../seriesCanon.js';
 import { renderCanonForPrompt, renderCategoriesForPrompt, renderCompositesForPrompt, renderEntitiesSummary } from '../../../lib/universePromptRenderers.js';
 
 export const ERR_VALIDATION = 'PIPELINE_ARC_VALIDATION';
@@ -109,10 +109,12 @@ export function appendCharacterFirstArcGuidance(shapeGuidance, characterFoundati
 // The world is the canonical source for factions, characters, environments,
 // etc. — without this, the arc planner would only see the series' own
 // characters/places/objects which are usually empty pre-prose.
-export async function loadWorldContext(universeId) {
-  if (!universeId) return null;
-  const world = await getUniverse(universeId).catch(() => null);
+export async function loadWorldContext(series) {
+  if (!series?.universeId) return null;
+  const world = await getUniverse(series.universeId).catch(() => null);
   if (!world) return null;
+  const planningCanon = scopeCanonForSeries(world, series);
+  const scopedWorld = { ...world, ...planningCanon };
 
   const embrace = Array.isArray(world.influences?.embrace) ? world.influences.embrace : [];
   const avoid = Array.isArray(world.influences?.avoid) ? world.influences.avoid : [];
@@ -135,13 +137,13 @@ export async function loadWorldContext(universeId) {
     // Universe canon — named characters/places/objects the arc references by
     // name. Separate from categories because the LLM should treat these as
     // first-class entities, not exploratory variations.
-    worldCanonText: renderCanonForPrompt(world) || '(none)',
-    worldCharacterFoundationText: renderCharacterFoundationForArc(world.characters),
+    worldCanonText: renderCanonForPrompt(scopedWorld) || '(none — no named entities are tied to this series yet)',
+    worldCharacterFoundationText: renderCharacterFoundationForArc(planningCanon.characters),
     // Compact one-line-per-kind synopsis of canon — intended for text stages
     // (prose/teleplay/comic-script) where the full canon dump would dominate
     // the prompt. Arc-level prompts also receive it so a template author can
     // pick whichever level of detail fits the section being grounded.
-    worldEntitiesSummary: renderEntitiesSummary(world) || '(none)',
+    worldEntitiesSummary: renderEntitiesSummary(scopedWorld) || '(none — no named entities are tied to this series yet)',
   };
 }
 
@@ -169,7 +171,7 @@ export const EMPTY_WORLD_CONTEXT = {
 // that chain (verify → resolve) don't reload the same world twice.
 export async function resolveWorldContext(series, preloaded) {
   if (preloaded) return preloaded;
-  return (await loadWorldContext(series.universeId)) || EMPTY_WORLD_CONTEXT;
+  return (await loadWorldContext(series)) || EMPTY_WORLD_CONTEXT;
 }
 
 // Canonical issue sort: arcPosition first (issues seeded by the season-
@@ -371,7 +373,7 @@ export async function buildArcOverviewContext(series, preloadedWorld) {
   const structure = recommendStructure(series.issueCountTarget);
   const [world, canon] = await Promise.all([
     resolveWorldContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
   const arc = series.arc || {};
   // Two-mode prompt: when arc.shape is set the prompt's `{{#pickedShapeId}}`
@@ -504,14 +506,14 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
   return tree;
 }
 
-export async function buildVerifyContext(series, preloadedWorld) {
+export async function buildVerifyContext(series, preloadedWorld, { spineOnly = false } = {}) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const [issues, base, canon] = await Promise.all([
     listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
-  const tree = groupIssuesBySeasonTree(seasons, issues, {
+  const tree = groupIssuesBySeasonTree(seasons, spineOnly ? [] : issues, {
     // `synopsis` key (not `beats`) so it matches the prompt's existing
     // language; sourced from idea.input which carries the LLM's logline+synopsis.
     renderLeaf: (iss) => ({
@@ -534,6 +536,7 @@ export async function buildVerifyContext(series, preloadedWorld) {
   });
   return {
     ...base,
+    arcSpineOnly: spineOnly,
     seasonsTreeJson: JSON.stringify(tree, null, 2),
     existingCharactersJson: JSON.stringify(canon.characters, null, 2),
     existingPlacesJson: JSON.stringify(canon.places, null, 2),
@@ -738,7 +741,7 @@ async function buildBeatTree(series, preloadedWorld) {
   const [issues, base, canon] = await Promise.all([
     listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
   const tree = groupIssuesBySeasonTree(seasons, issues, {
     renderLeaf: renderVolumeIssue,

@@ -189,6 +189,15 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
     return { kind: 'repairArcStructure', reason: 'duplicate volume numbers must be normalized before issue generation' };
   }
 
+  // STEP 1.9 — verify the expensive macro spine before manufacturing episode
+  // plans from it. This gate deliberately ignores issue placeholders and checks
+  // protected intent, active cast, volume structure, and the whole-series arc.
+  // `arcVerified:true` from an in-flight pre-upgrade run already proves the
+  // stronger post-episode gate, so it implies the spine checkpoint too.
+  if (!runState.arcSpineVerified && !runState.arcVerified) {
+    return { kind: 'verifyArcSpine', reason: 'arc spine must pass before issue generation' };
+  }
+
   // STEP 2 — a season with zero issues (in season order). Skip volumes already
   // attempted this run so an empty episode generation can't re-loop (the
   // dispatch pauses when it produces no issues).
