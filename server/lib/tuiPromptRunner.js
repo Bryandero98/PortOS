@@ -508,7 +508,10 @@ ${prompt}`;
             console.log(`⏳ TUI run ${runId} holding for a self-clearing provider signal (${Math.round(fallbackSignal.graceMs / 1000)}s): ${fallbackSignal.message}`);
             selfClearingTimer = setTimeout(() => {
               selfClearingTimer = null;
-              const expired = selfClearingGate.takeExpired(Date.now());
+              // No clock argument: this timer IS this window's deadline, and it
+              // is one-shot — a deadline re-check that came up a millisecond
+              // short would strand the gate armed with nothing left to retry it.
+              const expired = selfClearingGate.takeExpired();
               if (finalized || !expired) return;
               finishWithFallbackSignal(expired).catch((err) => {
                 console.error(`❌ TUI run ${runId} deferred fallback-signal handling failed: ${err?.message || err}`);

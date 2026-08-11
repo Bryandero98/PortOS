@@ -299,6 +299,22 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(tracker.active).toBe(true);
   });
 
+  // A real TUI repaint is hundreds of bytes and the chrome lands wherever the
+  // frame puts it. Trimming to the carry cap BEFORE matching (rather than after)
+  // discards everything but the last 64 chars, so the tracker misses a provider
+  // that HAD recovered and the run gets failed over for nothing.
+  it('createGenerationActivityTracker matches chrome early in a large chunk', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe(`Generating...${'x'.repeat(500)}`);
+    expect(tracker.active).toBe(true);
+  });
+
+  it('createGenerationActivityTracker matches chrome mid-way through a large chunk', () => {
+    const tracker = createGenerationActivityTracker();
+    tracker.observe(`${'a'.repeat(300)}esc to cancel${'b'.repeat(300)}`);
+    expect(tracker.active).toBe(true);
+  });
+
   describe('createSelfClearingSignalGate', () => {
     const BANNER = { message: 'eligibility', graceMs: 60000 };
 
@@ -353,6 +369,25 @@ describe('tuiHandshake — paste timing constants', () => {
       // Only the banner screen repaints from here — still stuck.
       gate.observe('> ? for shortcuts');
       expect(gate.takeExpired(61001)).toBe(BANNER);
+    });
+
+    // A consumer whose own one-shot setTimeout fired for exactly this window
+    // omits the clock. A deadline re-check that came up a millisecond short
+    // (ms-resolution clock vs. timer rounding) would strand the gate armed with
+    // nothing left to retry it — idle-completion suppressed and no fail-over.
+    it('force-expires when called with no clock, even a hair before the deadline', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm(BANNER, 1000);
+      expect(gate.takeExpired(60999)).toBeNull(); // polling form: still waiting
+      expect(gate.takeExpired()).toBe(BANNER);    // timer form: fires regardless
+      expect(gate.armed).toBe(false);
+    });
+
+    it('force-expiry still returns null once the provider recovered', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm(BANNER, 1000);
+      gate.observe('Generating...');
+      expect(gate.takeExpired()).toBeNull();
     });
 
     it('honors a per-signal grace window rather than one global constant', () => {

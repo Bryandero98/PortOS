@@ -466,10 +466,14 @@ export function createWorkActivityTracker() {
 export const GENERATION_ACTIVITY_PATTERN =
   new RegExp(`esc to cancel|Generating\\s*[.·•…]|${WORK_COUNTER_PATTERN.source}`, 'i');
 
-// Rolling tail kept across chunks so in-flight chrome split by a PTY chunk
-// boundary (`esc to ` + `cancel`) still matches. The sibling trackers below each
-// learned this the hard way — see createReviewLoopTracker's docblock.
-const GENERATION_ACTIVITY_TAIL_CAP = 64;
+// Carry-over kept across chunks so in-flight chrome split by a PTY chunk boundary
+// (`esc to ` + `cancel`) still matches. The sibling trackers below each learned
+// this the hard way — see createReviewLoopTracker's docblock.
+//
+// Only needs to span the longest pattern alternative, because `observe` tests the
+// FULL `carry + chunk` window and trims only afterwards (see below) — the cap
+// bounds retained state, it never bounds what gets matched.
+const GENERATION_ACTIVITY_CARRY_CAP = 64;
 
 /**
  * Stateful latch for "the TUI is actively generating a response". Feed it each
@@ -494,8 +498,14 @@ export function createGenerationActivityTracker() {
     observe(strippedText) {
       if (active) return true;
       if (typeof strippedText !== 'string' || !strippedText) return false;
-      tail = (tail + strippedText).slice(-GENERATION_ACTIVITY_TAIL_CAP);
-      if (GENERATION_ACTIVITY_PATTERN.test(tail)) active = true;
+      // Test the WHOLE window, then trim. Trimming first (the sibling trackers'
+      // shape) throws away everything but the last CAP characters of the chunk,
+      // so chrome anywhere earlier in a typical multi-hundred-byte PTY repaint
+      // is never matched at all — the tracker would miss a provider that HAD
+      // recovered and the run would be failed over to a fallback for nothing.
+      const window = tail + strippedText;
+      if (GENERATION_ACTIVITY_PATTERN.test(window)) active = true;
+      tail = window.slice(-GENERATION_ACTIVITY_CARRY_CAP);
       return active;
     },
     get active() { return active; },
@@ -561,8 +571,18 @@ export function createSelfClearingSignalGate() {
       recovered = true;
       return true;
     },
+    // Returns the analysis to fail over with, or null while still waiting (or
+    // after a recovery). `nowMs` is OPTIONAL: a poller passes the clock and gets
+    // a deadline comparison, while a consumer whose own `setTimeout` fired for
+    // exactly this window omits it and force-expires. That distinction matters —
+    // a timer scheduled for `graceMs` can fire a hair before `Date.now()` reaches
+    // `deadlineAt` (ms-resolution clock vs. timer rounding), and since the timer
+    // is one-shot with nothing to reschedule it, a null there would strand the
+    // gate armed: idle-completion suppressed and no fail-over, until the run's
+    // hard timeout. Force-expiry has no such edge.
     takeExpired(nowMs) {
-      if (!armed || nowMs < armed.deadlineAt) return null;
+      if (!armed) return null;
+      if (nowMs !== undefined && nowMs < armed.deadlineAt) return null;
       const { analysis } = armed;
       armed = null;
       activity = null;
