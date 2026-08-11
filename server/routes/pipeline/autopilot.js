@@ -12,6 +12,9 @@
  *                                          immediately; the active step/LLM call
  *                                          finishes before the terminal `canceled`
  *                                          frame (cooperative, between-step cancel).
+ *   POST /series/:id/autopilot/pause    → { pauseRequested }
+ *                                          Finishes the active step/transaction
+ *                                          without stopping its provider run.
  *   GET  /series/:id/autopilot/status   → { autopilot, active, start }
  *                                          (resume / paused UI; `start` is the
  *                                          in-flight run's start frame, which
@@ -233,6 +236,11 @@ router.get('/series/:id/autopilot/progress', (req, res) => {
 router.post('/series/:id/autopilot/cancel', asyncHandler(async (req, res) => {
   const canceled = autopilot.cancelSeriesAutopilot(req.params.id);
   res.json({ canceled });
+}));
+
+router.post('/series/:id/autopilot/pause', asyncHandler(async (req, res) => {
+  const pauseRequested = autopilot.pauseSeriesAutopilot(req.params.id);
+  res.json({ pauseRequested });
 }));
 
 router.get('/series/:id/autopilot/status', asyncHandler(async (req, res) => {

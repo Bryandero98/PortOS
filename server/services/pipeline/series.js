@@ -216,12 +216,13 @@ const sanitizeAutopilotResumeOptions = (raw) => {
 // to each other without settling), `budget` (the daily spend cap was reached
 // mid-run), `providerFailed` (an LLM repair call failed outright — a provider
 // timeout, a dead CLI, a rate limit — after the prompt runner's own fallback
-// cascade was exhausted). This list must carry EVERY kind the autopilot emits:
+// cascade was exhausted), `manual` (the user asked for a graceful pause after
+// the active step/transaction). This list must carry EVERY kind the autopilot emits:
 // sanitizeAutopilot drops an unlisted one to null, which silently strips the
 // badge the UI would otherwise show.
 export const AUTOPILOT_PAUSE_KINDS = Object.freeze([
   'maxRounds', 'divergence', 'regression', 'childFailed', 'checkFindings',
-  'inapplicable', 'planningOscillation', 'budget', 'providerFailed',
+  'inapplicable', 'planningOscillation', 'budget', 'providerFailed', 'manual',
 ]);
 
 // Bound a marker-borne finding list to the wire shape the UI renders.

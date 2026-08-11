@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router';
 vi.mock('../../services/api', () => ({
   startPipelineAutopilot: vi.fn(),
   cancelPipelineAutopilot: vi.fn(),
+  pausePipelineAutopilot: vi.fn(),
   getPipelineAutopilotStatus: vi.fn(),
   getPipelineAutopilotModelMetrics: vi.fn(),
   pipelineAutopilotSseUrl: (id) => `/api/pipeline/series/${id}/autopilot/progress`,
@@ -730,6 +731,16 @@ describe('AutopilotPanel', () => {
     // The original Stop affordance is gone while cancelling.
     expect(screen.queryByRole('button', { name: /^stop$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/finishing the active step/i)).toBeInTheDocument();
+  });
+
+  it('shows a non-destructive Pausing… state for a graceful pause request', async () => {
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { status: 'running', runId: 'r1' }, active: true });
+    sseLatest = { type: 'pause:acknowledged', runId: 'r1' };
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: /pausing/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /stop now/i })).toBeEnabled();
+    expect(screen.getByText(/pausing safely.*finishing the active step/i)).toBeInTheDocument();
   });
 
   // Pipeline self-improvement — the opt-in that lets a run diagnose PortOS's own

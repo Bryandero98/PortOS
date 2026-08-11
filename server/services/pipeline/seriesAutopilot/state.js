@@ -10,7 +10,7 @@ import { EventEmitter } from 'events';
 // warns about.
 import { diagnosisOptedIn } from './diagnosisCore.js';
 
-// runs: Map<seriesId, { runId, clients[], lastPayload, startPayload, cancelRequested,
+// runs: Map<seriesId, { runId, clients[], lastPayload, startPayload, cancelRequested, pauseRequested,
 //   finished, cleanupTimer, startedAt, mode, options, runState, activeChild,
 //   activeLlmRunId }>
 // `startPayload` is the run's `start` frame, retained so a client attaching

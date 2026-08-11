@@ -65,6 +65,22 @@ export function cancelSeriesAutopilot(seriesId) {
   return true;
 }
 
+// Graceful control for quality-first runs: finish the current top-level step
+// (and any provisional repair + independent verification transaction inside
+// it), then persist a resumable pause. Unlike Cancel this deliberately does not
+// stop the active provider run or delegated child.
+export function pauseSeriesAutopilot(seriesId) {
+  const run = runs.get(seriesId);
+  if (!run || run.finished) return false;
+  run.pauseRequested = true;
+  broadcastSse(run, {
+    type: 'pause:acknowledged',
+    runId: run.runId,
+    requestedAt: new Date().toISOString(),
+  });
+  return true;
+}
+
 export function broadcast(seriesId, payload) {
   const run = runs.get(seriesId);
   if (!run) return;

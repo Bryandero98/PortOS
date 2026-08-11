@@ -10,6 +10,7 @@ import usePersistedOptions, { readBoolean, readInteger, readNumber } from '../..
 import {
   startPipelineAutopilot,
   cancelPipelineAutopilot,
+  pausePipelineAutopilot,
   getPipelineAutopilotStatus,
   getPipelineAutopilotModelMetrics,
   pipelineAutopilotSseUrl,
@@ -351,6 +352,7 @@ function frameLabel(f) {
       : `Orchestrator dispatched a pipeline fix (${f.area})${f.title ? `: ${f.title}` : ''}`;
     // #1617 — immediate cancel ack; the active step finishes before `canceled`.
     case 'cancel:acknowledged': return 'Cancelling — finishing the active step…';
+    case 'pause:acknowledged': return 'Pausing safely — finishing the active step…';
     case 'paused': return `Paused — ${f.reason}`;
     case 'complete': return f.dryRun ? 'Plan ready' : 'Complete';
     case 'canceled': return 'Canceled';
@@ -836,6 +838,10 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     await cancelPipelineAutopilot(seriesId).catch(() => null);
   }, [seriesId]);
 
+  const pause = useCallback(async () => {
+    await pausePipelineAutopilot(seriesId).catch(() => null);
+  }, [seriesId]);
+
   const checkCanon = useCallback(async () => {
     setCanonLoading(true);
     const report = await getPipelineSeriesCanonReadiness(seriesId, { silent: true })
@@ -852,6 +858,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // disabled "Cancelling…" state so the user gets feedback (and can't re-fire
   // cancel) while the active step finishes and the terminal frame arrives.
   const canceling = active && latest?.type === 'cancel:acknowledged';
+  const pausing = active && latest?.type === 'pause:acknowledged';
   const runLabel = ap?.status === 'paused' ? 'Resume autopilot'
     : ap?.status === 'done' ? 'Run autopilot again'
       : 'Run autopilot';
@@ -885,14 +892,26 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              onClick={cancel}
-              disabled={canceling}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs text-port-warning hover:text-white border border-port-warning/40 bg-port-bg hover:bg-port-warning/10 disabled:opacity-50 disabled:hover:text-port-warning disabled:cursor-default"
-            >
-              {canceling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />} {canceling ? 'Cancelling…' : 'Stop'}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={pause}
+                disabled={pausing || canceling}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs text-port-accent hover:text-white border border-port-accent/40 bg-port-bg hover:bg-port-accent/10 disabled:opacity-50 disabled:cursor-default"
+                title="Finish the active step, then pause without stopping its AI run"
+              >
+                {pausing ? <Loader2 size={12} className="animate-spin" /> : <PauseCircle size={12} />} {pausing ? 'Pausing…' : 'Pause safely'}
+              </button>
+              <button
+                type="button"
+                onClick={cancel}
+                disabled={canceling}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs text-port-warning hover:text-white border border-port-warning/40 bg-port-bg hover:bg-port-warning/10 disabled:opacity-50 disabled:hover:text-port-warning disabled:cursor-default"
+                title="Stop the active AI run immediately"
+              >
+                {canceling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />} {canceling ? 'Cancelling…' : 'Stop now'}
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -3152,6 +3152,23 @@ describe('autopilot conductor', () => {
     expect(writes.some((w) => w.includes('"type":"cancel:acknowledged"'))).toBe(true);
   });
 
+  it('gracefully pauses without stopping the active provider run', async () => {
+    const { seriesId } = await seedComplete();
+    const { runId } = await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    const requested = autopilot.pauseSeriesAutopilot(seriesId);
+    expect(requested).toBe(true);
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload).toMatchObject({
+      type: 'pause:acknowledged',
+      runId,
+    });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({ type: 'paused', pauseKind: 'manual' });
+    expect(last?.reason).toMatch(/paused by user after the active step completed/i);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot).toMatchObject({ status: 'paused', pauseKind: 'manual' });
+  });
+
   it('drafts cover + interior pages when includeVisual is set', async () => {
     const { seriesId, issueId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { includeVisual: true });

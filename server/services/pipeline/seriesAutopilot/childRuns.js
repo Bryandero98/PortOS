@@ -716,6 +716,17 @@ export async function runFoundationGate(seriesId, record) {
       }
       return {};
     }
+    // A graceful pause requested while the judge was working lands only after
+    // any pending repair has been accepted or rolled back above. That preserves
+    // the foundation transaction boundary while preventing another repair call.
+    if (record.pauseRequested) {
+      return {
+        pause: true,
+        pauseKind: 'manual',
+        reason: 'paused by user after the active foundation judgment completed',
+        residual: residualFindings(snap.dimensions),
+      };
+    }
     if (round === maxRounds || !weak) {
       const floorReason = gate.failingDimensions.length > 0
         ? `Foundation quality left ${gate.failingDimensions.join(', ')} below the ${gate.dimensionFloor} dimension floor after ${maxRounds} round(s). Strengthen those foundations and resume.`

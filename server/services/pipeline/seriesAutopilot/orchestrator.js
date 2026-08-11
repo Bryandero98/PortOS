@@ -134,6 +134,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
     clients: [],
     lastPayload: null,
     cancelRequested: false,
+    pauseRequested: false,
     finished: false,
     cleanupTimer: null,
     startedAt: new Date().toISOString(),
@@ -322,7 +323,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         broadcast(sId, { type: 'note', message: 'Draft visual rendering is not enabled in this build — running to text-ready + editorial review.' });
       }
 
-      while (!record.cancelRequested) {
+      while (!record.cancelRequested && !record.pauseRequested) {
         const series = await getSeries(sId);
         const issues = await listIssues({ seriesId: sId });
         const step = resolveNextStep(series, issues, record.runState, runOptions);
@@ -446,6 +447,20 @@ export async function startSeriesAutopilot(sId, options = {}) {
         }
         broadcast(sId, { type: 'step:complete', kind: step.kind, seasonId: step.seasonId, issueId: step.issueId, ordinal });
         observeStep(step);
+      }
+
+      if (record.pauseRequested && !record.cancelRequested) {
+        const reason = 'paused by user after the active step completed';
+        await observerIdle();
+        await persistMarker(sId, {
+          status: 'paused', runId, currentStep: null, lastError: reason, pauseKind: 'manual',
+        });
+        broadcast(sId, {
+          type: 'paused', runId, reason, pauseKind: 'manual',
+          completedAt: new Date().toISOString(),
+        });
+        console.log(`⏸️  autopilot paused (manual) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
+        return;
       }
 
       // Cancelled. No post-mortem (nothing to explain), but an in-flight

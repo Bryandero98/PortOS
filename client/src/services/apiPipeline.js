@@ -985,6 +985,11 @@ export const cancelPipelineAutopilot = (seriesId) =>
     method: 'POST',
   });
 
+export const pausePipelineAutopilot = (seriesId) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/pause`, {
+    method: 'POST',
+  });
+
 // { autopilot: { status, runId, currentStep, residualFindings, ... } | null, active }
 export const getPipelineAutopilotStatus = (seriesId, options = {}) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/status`, options);

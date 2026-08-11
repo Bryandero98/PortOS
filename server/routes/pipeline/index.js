@@ -24,6 +24,7 @@
  *   POST   /series/:id/autopilot/start          → { runId, alreadyRunning, mode, sseUrl }
  *   GET    /series/:id/autopilot/progress       → SSE (text/event-stream)
  *   POST   /series/:id/autopilot/cancel         → { canceled }
+ *   POST   /series/:id/autopilot/pause          → { pauseRequested }
  *   GET    /series/:id/autopilot/status         → { autopilot, active }
  *   GET    /issues/:id/canon-readiness          → { referenced, none, thin, ready }
  *   GET    /series/:id/canon-readiness          → { ready, issues, blockingIssues, undescribed }
