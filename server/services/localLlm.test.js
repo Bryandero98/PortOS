@@ -479,7 +479,11 @@ describe('localLlm', () => {
     it('detects a vision-capable Ollama model whose id lacks a vl/vision token via /api/show capabilities', async () => {
       mocks.ollama.getInstalledModels.mockResolvedValueOnce([
         { id: 'qwen3.6:35b', name: 'qwen3.6:35b', family: 'qwen35moe' },
-        { id: 'gemma4:31b', name: 'gemma4:31b', family: 'gemma4' },
+        // Text-only, and its id carries no vision marker — so it has to be
+        // resolved through /api/show rather than the id heuristic. (Gemma 4 no
+        // longer works as this fixture: every published build is multimodal, so
+        // the id heuristic short-circuits before /api/show is consulted.)
+        { id: 'granite4.1:8b', name: 'granite4.1:8b', family: 'granite' },
       ]);
       mocks.ollama.getModelCapabilities.mockImplementation(async (id) =>
         id === 'qwen3.6:35b' ? ['completion', 'vision', 'tools'] : ['completion']);
@@ -488,8 +492,8 @@ describe('localLlm', () => {
       expect(models).toEqual([
         { providerId: 'ollama', backend: 'ollama', id: 'qwen3.6:35b', name: 'qwen3.6:35b', vision: true },
       ]);
-      // The text-only gemma was excluded even though /api/show was consulted.
-      expect(mocks.ollama.getModelCapabilities).toHaveBeenCalledWith('gemma4:31b');
+      // The text-only granite was excluded even though /api/show was consulted.
+      expect(mocks.ollama.getModelCapabilities).toHaveBeenCalledWith('granite4.1:8b');
     });
 
     it('skips the /api/show round-trip when the id already matches the vision heuristic', async () => {

@@ -17,6 +17,19 @@ describe('localModelHeuristics', () => {
         'glm-4:9b',
         'granite3-dense:8b',
         'gpt-oss:20b',
+        // Families added with the 2026-08 catalog refresh.
+        'granite4.1:8b',
+        'gemma4:12b',
+        'lmstudio-community/gemma-4-31B-it-GGUF',
+        'functiongemma:270m',
+        'ministral-3:8b',
+        'lfm2.5:8b',
+        'lfm2.5-thinking:1.2b',
+        'ornith:35b',
+        'muse-glimmer:30b',
+        'north-mini-code-1.0',
+        'olmo-3.1:32b-instruct',
+        'nemotron-3-nano:4b',
       ]) {
         expect(isToolUseModel(id), id).toBe(true);
       }
@@ -26,9 +39,13 @@ describe('localModelHeuristics', () => {
       for (const id of [
         'llama3:8b',          // Llama 3.0 — tool use landed in 3.1
         'gemma2:9b',
+        'gemma3:4b',          // Gemma 3 — tool use landed in Gemma 4
         'phi3:mini',
         'orca-mini',
         'nomic-embed-text',
+        // Contains the literal `gemma`, but is an embedder — the anchored gemma
+        // rule must not promote it into a tool-capable model.
+        'embeddinggemma:300m',
       ]) {
         expect(isToolUseModel(id), id).toBe(false);
       }
@@ -62,6 +79,10 @@ describe('localModelHeuristics', () => {
         'snowflake-arctic-embed:latest',
         'text-embedding-3-small',
         'gte-large',
+        // Glues the `embedding` marker straight onto the family, so the anchored
+        // marker alone misses it — it must never be offered for generation.
+        'embeddinggemma:300m',
+        'lmstudio-community/embeddinggemma-300m-qat-GGUF',
       ]) {
         expect(isEmbeddingModel(id), id).toBe(true);
       }
@@ -109,6 +130,9 @@ describe('localModelHeuristics', () => {
         'internvl2:8b',
         'glm-4v:9b',
         'paligemma',
+        'gemma4:31b',
+        'qwen3-vl:8b',
+        'minicpm-v4.6:1b',
       ]) {
         expect(isVisionModel(id), id).toBe(true);
       }
@@ -121,6 +145,9 @@ describe('localModelHeuristics', () => {
         'gpt-oss:20b',
         'mistral-small:latest',
         'nomic-embed-text:latest',
+        // `embeddinggemma-300m` contains the literal `gemma-3`; the family rule
+        // is anchored so an embedder isn't offered as a caption model.
+        'lmstudio-community/embeddinggemma-300m-qat-GGUF',
       ]) {
         expect(isVisionModel(id), id).toBe(false);
       }
@@ -190,6 +217,18 @@ describe('localModelHeuristics', () => {
         { id: 'gemma2:9b', params: '9B' },
       ]);
       expect(rec?.id).toBe('gemma2:9b');
+    });
+
+    it('skips vision-specialist and OCR models but keeps general models that read images', () => {
+      // Qwen3-VL / GLM-4.6V / *-ocr exist to describe pictures — never the best
+      // pick for prose. Gemma 4 reads images too but is a general instruct model.
+      const rec = recommendEditorialModel([
+        { id: 'qwen3-vl:30b', params: '30B' },
+        { id: 'glm-4.6v-flash', params: '30B' },
+        { id: 'deepseek-ocr:3b', params: '3B' },
+        { id: 'gemma4:31b', params: '31B' },
+      ]);
+      expect(rec?.id).toBe('gemma4:31b');
     });
 
     it('accepts plain string ids', () => {

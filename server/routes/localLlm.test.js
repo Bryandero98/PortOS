@@ -63,13 +63,13 @@ describe('local LLM playground routes', () => {
     // but getCatalog's normalizer can't parse `@quant` — so the overlay must get the
     // RAW ids, or an already-installed model wrongly shows Install. (Enrichment is
     // mocked to a no-op, simulating HF being unreachable.)
-    listModels.mockResolvedValue([{ id: 'lmstudio-community/Llama-3.2-3B-Instruct-GGUF', quantization: 'Q4_K_M' }]);
+    listModels.mockResolvedValue([{ id: 'lmstudio-community/gemma-4-12B-it-GGUF', quantization: 'Q4_K_M' }]);
 
     const res = await request(makeApp()).get('/api/local-llm/catalog?backend=lmstudio&variants=1');
 
     expect(res.status).toBe(200);
     expect(enrichCatalogWithVariants).toHaveBeenCalled();
-    const entry = res.body.models.find((m) => m.id === 'lmstudio-community/Llama-3.2-3B-Instruct-GGUF');
+    const entry = res.body.models.find((m) => m.id === 'lmstudio-community/gemma-4-12B-it-GGUF');
     expect(entry).toBeTruthy();
     expect(entry.installed).toBe(true);
   });

@@ -633,25 +633,27 @@ describe('localToolUseHint', () => {
   });
 
   it('flags a local non-tool model (Gemma narrates instead of acting)', () => {
-    expect(localToolUseHint('gemma4:e4b', ollama)).toEqual({ toolCapable: false });
+    // Gemma 3, not 4 — tool support landed in Gemma 4, so `gemma4:*` is a
+    // tool-capable id and can't stand in for "narrates instead of acting".
+    expect(localToolUseHint('gemma3:4b', ollama)).toEqual({ toolCapable: false });
     expect(localToolUseHint('gemma2:9b', ollama)).toEqual({ toolCapable: false });
   });
 
   it('returns null for cloud providers (their ids do not encode family)', () => {
     const cloud = { name: 'OpenAI', endpoint: 'https://api.openai.com/v1' };
     expect(localToolUseHint('gpt-4o', cloud)).toBeNull();
-    expect(localToolUseHint('gemma4:e4b', undefined)).toBeNull();
+    expect(localToolUseHint('gemma3:4b', undefined)).toBeNull();
   });
 
   it('flags a renamed Ollama-backed CLI/TUI wrapper (no "ollama" name/endpoint)', () => {
     // The incident's provider class: a claude-ollama-tui wrapper the user renamed,
     // so localBackendForProvider misses it — but it still carries ollamaBacked.
     const wrapper = { id: 'my-local-agent', name: 'My Local Agent', ollamaBacked: true };
-    expect(localToolUseHint('gemma4:e4b', wrapper)).toEqual({ toolCapable: false });
+    expect(localToolUseHint('gemma3:4b', wrapper)).toEqual({ toolCapable: false });
     expect(localToolUseHint('qwen3.6:35b', wrapper)).toEqual({ toolCapable: true });
     // Also via ANTHROPIC_BASE_URL pointing at the Ollama daemon.
     const viaBase = { name: 'Renamed', envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434/v1' } };
-    expect(localToolUseHint('gemma4:e4b', viaBase)).toEqual({ toolCapable: false });
+    expect(localToolUseHint('gemma3:4b', viaBase)).toEqual({ toolCapable: false });
   });
 
   it('returns null for a blank id', () => {
@@ -666,7 +668,7 @@ describe('withToolUseOptionLabel', () => {
     expect(withToolUseOptionLabel('qwen3.6:35b', 'qwen3.6:35b', ollama)).toBe('qwen3.6:35b · 🔧 tool use');
     // Non-match is worded as unverified, not a false-certain negative — the id
     // regex is a positive allowlist, so a miss only means "not recognized".
-    expect(withToolUseOptionLabel('gemma4:e4b', 'gemma4:e4b', ollama)).toBe('gemma4:e4b · ⚠ no known tool use');
+    expect(withToolUseOptionLabel('gemma3:4b', 'gemma3:4b', ollama)).toBe('gemma3:4b · ⚠ no known tool use');
   });
 
   it('leaves cloud provider labels unchanged', () => {
@@ -885,10 +887,11 @@ describe('visionLocalModelFilter', () => {
   });
 
   it('accepts a server-reported vision id the stale id regex does not know', () => {
-    // The id regex knows `gemma-3` but not `gemma4` — without the authoritative
-    // map, a user whose only VLMs are gemma4/qwen3.6 gets an empty picker.
-    expect(visionLocalModelFilter('gemma4:e4b', ollama)).toBe(false);
-    expect(visionLocalModelFilter('gemma4:e4b', ollama, { ollama: new Set(['gemma4:e4b']) })).toBe(true);
+    // Multimodal models whose id carries no `vl`/`vision` marker (Muse Glimmer,
+    // Ministral 3) are invisible to the regex — without the authoritative map a
+    // user whose only VLMs are those gets an empty picker.
+    expect(visionLocalModelFilter('muse-glimmer:30b', ollama)).toBe(false);
+    expect(visionLocalModelFilter('muse-glimmer:30b', ollama, { ollama: new Set(['muse-glimmer:30b']) })).toBe(true);
     expect(visionLocalModelFilter('qwen3.6:35b', ollama, { ollama: new Set(['qwen3.6:35b']) })).toBe(true);
   });
 
@@ -896,9 +899,9 @@ describe('visionLocalModelFilter', () => {
     // Fetched-but-empty (no local VLM reported) still keeps regex matches, and a
     // map that omits a model the regex knows must not hide it.
     expect(visionLocalModelFilter('llava:latest', ollama, { ollama: new Set() })).toBe(true);
-    expect(visionLocalModelFilter('llava:latest', ollama, { ollama: new Set(['gemma4:e4b']) })).toBe(true);
+    expect(visionLocalModelFilter('llava:latest', ollama, { ollama: new Set(['muse-glimmer:30b']) })).toBe(true);
     // ...and it still can't smuggle a text-only model past the filter.
-    expect(visionLocalModelFilter('qwen2.5-coder:32b', ollama, { ollama: new Set(['gemma4:e4b']) })).toBe(false);
+    expect(visionLocalModelFilter('qwen2.5-coder:32b', ollama, { ollama: new Set(['muse-glimmer:30b']) })).toBe(false);
   });
 
   it('scopes capabilities to the enumerated provider — an id is not a capability', () => {
@@ -915,9 +918,9 @@ describe('visionLocalModelFilter', () => {
     // the local /vision-models result says nothing about that host — so a local
     // VLM's id must not make a same-named remote model "vision".
     const remote = { id: 'ollama-udev', name: 'Ollama (udev)', endpoint: 'http://udev:11434' };
-    const localOnly = { ollama: new Set(['gemma4:e4b']) };
-    expect(visionLocalModelFilter('gemma4:e4b', ollama, localOnly)).toBe(true);
-    expect(visionLocalModelFilter('gemma4:e4b', remote, localOnly)).toBe(false);
+    const localOnly = { ollama: new Set(['muse-glimmer:30b']) };
+    expect(visionLocalModelFilter('muse-glimmer:30b', ollama, localOnly)).toBe(true);
+    expect(visionLocalModelFilter('muse-glimmer:30b', remote, localOnly)).toBe(false);
   });
 
   it('leaves cloud providers untouched regardless of the authoritative map', () => {
@@ -945,8 +948,8 @@ describe('AI Assignments option helpers', () => {
       name: 'Ollama',
       type: 'api',
       enabled: true,
-      defaultModel: 'gemma4:26b',
-      models: ['qwen2.5vl:latest', 'llava:latest', 'gemma4:26b', 'llama3.2:latest', 'nomic-embed-text'],
+      defaultModel: 'granite4.1:8b',
+      models: ['qwen2.5vl:latest', 'llava:latest', 'granite4.1:8b', 'llama3.2:latest', 'nomic-embed-text'],
     },
     {
       id: 'openai',
@@ -1008,7 +1011,7 @@ describe('AI Assignments option helpers', () => {
     expect(assignmentDefaultModel({ modelFilter: 'vision' }, providers, 'openai'))
       .toBe('gpt-4o');
     // Non-vision rows still seed the provider default.
-    expect(assignmentDefaultModel({}, providers, 'ollama')).toBe('gemma4:26b');
+    expect(assignmentDefaultModel({}, providers, 'ollama')).toBe('granite4.1:8b');
     expect(assignmentDefaultModel({}, providers, '')).toBe('');
   });
 });

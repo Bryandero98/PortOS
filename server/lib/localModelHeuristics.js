@@ -16,8 +16,11 @@
 
 // Embedding-only models — never valid for chat/generation. The bge/nomic/e5/gte
 // markers are anchored so they don't match mid-word inside an unrelated id.
+// `embeddinggemma` glues the marker to the family with no separator, so the
+// anchored `embedding` alternative misses it — match that name explicitly or it
+// reads as a chat-capable Gemma and gets picked for generation.
 const EMBEDDING_RE =
-  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding/i;
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma/i;
 
 /**
  * @param {string} id model id (e.g. "nomic-embed-text:latest")
@@ -52,7 +55,10 @@ const VISION_RE = new RegExp([
   // (Ollama tags it `qwen2.5vl`, not `qwen2.5-vl`), so the bounded `vl` rule
   // above misses them — match the qwen…vl form explicitly.
   'qwen[\\d.]*-?vl',
-  'llava', 'bakllava', 'moondream', 'minicpm-?v', 'pixtral', 'gemma-?3',
+  // Gemma 3 and 4 are multimodal. Anchor the family so `embeddinggemma-300m`
+  // (which contains the literal `gemma-3`) isn't read as a vision model.
+  '(?:^|[-_/:])gemma-?[34]',
+  'llava', 'bakllava', 'moondream', 'minicpm-?v', 'pixtral',
   'smolvlm', 'internvl', 'cogvlm', 'glm-?4v', 'phi-?3\\.5?-vision',
   'phi-?4-multimodal', 'got-ocr', 'idefics', 'fuyu', 'paligemma',
   'kosmos', 'nanollava',
@@ -115,9 +121,11 @@ export function isVisionModel(model) {
 // `tools` capability that is authoritative when present — this id regex is the
 // fallback for bare model-id strings (e.g. LM Studio, or a stored provider
 // `models` list). Matches the families with dependable function-calling support
-// (Qwen 2.5/3, Llama 3.1+, Mistral/Mixtral, Cohere Command, Hermes, GLM-4,
-// Granite 3, gpt-oss, Nemotron, function-calling-specialized models). Llama 3.0
-// is deliberately NOT matched (tool use landed in 3.1).
+// (Qwen 2.5/3+, Llama 3.1+, Mistral/Mixtral/Ministral, Cohere Command + North,
+// Hermes, GLM-4, Granite 3/4, Gemma 4, gpt-oss, Nemotron, Olmo 3, LFM2, Ornith,
+// Muse Glimmer, function-calling-specialized models). Llama 3.0 is deliberately
+// NOT matched (tool use landed in 3.1); neither is Gemma 3 (tools landed in
+// Gemma 4), so the gemma rule is anchored to the family AND the version.
 //
 // MIRRORED in client/src/utils/providers.js (isToolUseModel) and inlined in
 // server/lib/aiToolkit/providers.js (TOOL_USE_RE) — keep all three in lockstep.
@@ -125,14 +133,17 @@ const TOOL_USE_RE = new RegExp([
   'qwen',
   'llama-?3\\.[1-9]', 'llama-?4',
   'mistral', 'mixtral', 'ministral', 'codestral', 'devstral', 'magistral',
-  'command-?r', 'command-?a',
-  'firefunction', 'functionary', 'watt-tool', 'hermes',
+  'command-?r', 'command-?a', 'north-mini-code',
+  'firefunction', 'functionary', 'watt-tool', 'hermes', 'functiongemma',
   'glm-?4',
-  'granite-?3',
+  'granite-?[34]',
+  '(?:^|[-_/:])gemma-?4',
   'gpt-oss',
   'nemotron',
+  'olmo-?3',
+  'lfm2', 'ornith', 'muse-glimmer', 'nex-n2',
   'smollm2',
-  'deepseek-v3', 'deepseek-r1',
+  'deepseek-v3', 'deepseek-r1', 'deepseek-v4',
 ].join('|'), 'i');
 
 /**
@@ -165,21 +176,31 @@ export function isToolUseModel(model) {
 // notes and a `PANNEL` typo bleeding into a manuscript fix). Order is
 // "most-preferred first"; `command-r-plus` must precede `command-r`/`command`
 // so the longest substring match wins.
+// Retired-but-installable families stay listed — this ranks whatever the user
+// actually has on disk, not what the suggested-install catalog currently ships.
 const EDITORIAL_FAMILY_RANK = [
   'qwen',                                    // Qwen — top-tier instruction-following + clean structured output
+  'muse-glimmer',                            // Meta's current open model — Llama's successor lineage
   'llama',                                   // Llama 3.x instruct
-  'gemma',                                   // Gemma 2/3 instruct
-  'mixtral', 'mistral',                      // Mistral family
+  'gemma',                                   // Gemma 2/3/4 instruct
+  'glm',                                     // GLM-4.x — strong prose, tight instruction-following
+  'mixtral', 'ministral', 'mistral',         // Mistral family
+  'granite',                                 // IBM Granite — constrained, clean structured output
+  'olmo',                                    // AI2 Olmo — fully-open instruct
   'command-r-plus', 'command-r', 'command',  // Cohere Command — capable but chatty/RAG-tuned
+  'nemotron',                                // NVIDIA — agentic/reasoning-tuned, chattier for prose
   'deepseek',                                // capable, leans code/math
   'phi',                                     // smaller but capable
   'gpt-oss',                                 // open-weights GPT
 ];
 
 // Models we never recommend for editorial prose: embeddings, code-specialized,
-// vision/multimodal, and media-generation weights that may be installed.
+// vision-ONLY/multimodal, and media-generation weights that may be installed.
+// Only vision-*specialist* markers belong here — general models that happen to
+// read images (Gemma 4, Qwen3.5, Ministral 3) are excellent editors, so the
+// `-VL` / `…V` / OCR suffixes are matched rather than a whole family.
 const NON_EDITORIAL_RE =
-  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5)(?:[-_/:]|$)|text-embedding|coder|code-|starcoder|codellama|codegemma|(?:^|[-_/:])vision(?:[-_/:]|$)|llava|moondream|minicpm-v|whisper|(?:^|[-_/:])tts(?:[-_/:]|$)|stable-?diffusion|sdxl|flux/i;
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5)(?:[-_/:]|$)|text-embedding|embeddinggemma|coder|code-|starcoder|codellama|codegemma|(?:^|[-_/:])vision(?:[-_/:]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|glm-?[\d.]+v(?:[-_/:.]|$)|(?:^|[-_/:])ocr(?:[-_/:.]|$)|llava|moondream|minicpm-v|whisper|(?:^|[-_/:])tts(?:[-_/:]|$)|stable-?diffusion|sdxl|flux/i;
 
 /** Parse a parameter count in billions from a model's `params`/id (e.g. "35B"). */
 function parseParamsB(model) {
