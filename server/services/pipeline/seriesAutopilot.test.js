@@ -1922,10 +1922,10 @@ describe('autopilot conductor', () => {
     // Bailed at round 3 — NOT all 6 rounds (the whole point: budget saved).
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
-    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
-      seriesId,
-      await arcSpies.snapshotArcState.mock.results[0].value,
-    );
+    // A tied blocker count can still contain newer, narrower findings. Round 3
+    // verified the latest draft, so keep it in place rather than rewinding to
+    // either earlier three-finding snapshot.
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     // Persisted through sanitizeAutopilot so the resume banner survives a reload.
@@ -2092,10 +2092,8 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.pauseKind).toBe('maxRounds');
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
-    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
-      seriesId,
-      await arcSpies.snapshotArcState.mock.results[0].value,
-    );
+    // Round 3 verified the latest equal-count draft, so keep it in place.
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
   });
 
   it('a per-run override beats the persisted maxArcVerifyRounds setting', async () => {

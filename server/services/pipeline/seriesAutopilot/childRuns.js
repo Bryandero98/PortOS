@@ -143,7 +143,12 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         residual: rollbackTarget.blocking,
       };
     }
-    const isNewBest = !bestVerified || blocking.length < bestVerified.blocking.length;
+    // Equal-count drafts may still represent real causal progress: a resolver
+    // can close broad structural findings and expose the same number of narrower
+    // handoff problems. Treat the latest verified tie as the checkpoint so a
+    // later stall never rewinds those repairs. Count growth is still rejected
+    // above, so this cannot promote a demonstrably worse state.
+    const isNewBest = !bestVerified || blocking.length <= bestVerified.blocking.length;
     if (round === maxRounds) {
       if (!isNewBest && bestVerified) await restoreArcState(seriesId, bestVerified.snapshot);
       const residual = !isNewBest && bestVerified ? bestVerified.blocking : blocking;
@@ -163,8 +168,9 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     const beforeResolve = await budgetPause();
     if (beforeResolve) return beforeResolve;
     // Snapshot before the rewrite lands (two record reads, no LLM spend) so the
-    // regression guard at the top of the next round can undo it. A strictly
-    // lower blocker count also promotes this snapshot to the gate-wide best.
+    // regression guard at the top of the next round can undo it. A lower or
+    // equal blocker count promotes the latest verified draft to the checkpoint;
+    // equal counts can reflect different, narrower findings after real repairs.
     const snapshot = await snapshotArcState(seriesId);
     if (isNewBest) bestVerified = { blocking, snapshot };
     const resolved = await resolveVerifyIssues(seriesId, {
