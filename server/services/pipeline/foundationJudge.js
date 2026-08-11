@@ -51,7 +51,12 @@ import { expandWorldTemplate, narrativeRepairTargets } from '../universeBuilderE
 import { getSeries, updateSeries } from './series.js';
 import { listIssues } from './issues.js';
 import { getSeriesCanon } from './seriesCanon.js';
-import { resolveVerifyIssues } from './arcPlanner.js';
+import {
+  resolveVerifyIssues,
+  restoreArcState,
+  snapshotArcState,
+  verifyArc,
+} from './arcPlanner.js';
 
 const STAGE = 'pipeline-judge-foundation';
 const REPAIR_STAGE = 'pipeline-foundation-repair';
@@ -1466,6 +1471,9 @@ export async function applyFoundationFix(seriesId, dimension, {
   providerOverride,
   modelOverride,
   effortOverride,
+  judgeProviderDefault,
+  judgeModelDefault,
+  judgeEffortDefault,
   preserveDroppedSeasons = false,
   onRunCreated,
   onRunSettled,
@@ -1517,8 +1525,8 @@ export async function applyFoundationFix(seriesId, dimension, {
       problem: finding.gap || 'arc structure is below the foundation-quality bar',
       suggestion: finding.fix || '',
     }];
-    const r = await resolveVerifyIssues(seriesId, {
-      findings,
+    const snapshot = await snapshotArcState(seriesId);
+    const resolveOptions = {
       providerDefault: providerOverride,
       modelDefault: modelOverride,
       // The autopilot's unlock-for-run mode clears both `series.locked.arc`
@@ -1529,8 +1537,55 @@ export async function applyFoundationFix(seriesId, dimension, {
       effortDefault: effortOverride,
       onRunCreated,
       onRunSettled,
+    };
+    const verifyOptions = {
+      providerDefault: judgeProviderDefault,
+      modelDefault: judgeModelDefault,
+      effortDefault: judgeEffortDefault,
+      onRunCreated,
+      onRunSettled,
+    };
+    const runGuardedStructureRepair = async () => {
+      const first = await resolveVerifyIssues(seriesId, { findings, ...resolveOptions });
+      if (first?.applied === false) {
+        return { dimension, applied: false, reason: first?.notes || 'arc resolver applied no change' };
+      }
+
+      let verification = await verifyArc(seriesId, verifyOptions);
+      let blockers = Array.isArray(verification?.issues) ? verification.issues : [];
+      if (blockers.length === 0) return { dimension, applied: true, actions: 2 };
+
+      // A foundation-directed structure rewrite can satisfy its broad judge
+      // while accidentally violating a narrower canon/location/timing rule.
+      // Give the specialized arc verifier's concrete findings one bounded
+      // corrective pass before the next foundation round. This keeps those
+      // contradictions from consuming the foundation budget as if they were
+      // deeper critique, while still bounding spend and rewrite blast radius.
+      const correction = await resolveVerifyIssues(seriesId, {
+        findings: blockers,
+        ...resolveOptions,
+      });
+      if (correction?.applied !== false) {
+        verification = await verifyArc(seriesId, verifyOptions);
+        blockers = Array.isArray(verification?.issues) ? verification.issues : [];
+      }
+      if (blockers.length === 0) return { dimension, applied: true, actions: 4 };
+
+      await restoreArcState(seriesId, snapshot);
+      return {
+        dimension,
+        applied: false,
+        actions: correction?.applied === false ? 3 : 4,
+        reason: `structure repair left ${blockers.length} arc-verification blocker(s); reverted to the pre-repair plan`,
+      };
+    };
+    // Any provider/parse failure after the first mutation must not strand the
+    // series in the unverified intermediate draft. Restore, then preserve the
+    // original error so the conductor pauses with the real provider diagnosis.
+    return runGuardedStructureRepair().catch(async (err) => {
+      await restoreArcState(seriesId, snapshot);
+      throw err;
     });
-    return { dimension, applied: r?.applied !== false };
   }
 
   return { dimension, applied: false, reason: `unknown dimension: ${dimension}` };

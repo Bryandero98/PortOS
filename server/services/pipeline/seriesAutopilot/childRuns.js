@@ -430,6 +430,9 @@ export async function runFoundationGate(seriesId, record) {
         finding: snap.dimensions?.[weak.dimension] || {},
         providerOverride: creativeLlm.providerOverride,
         modelOverride: creativeLlm.modelOverride,
+        judgeProviderDefault: judgeLlm.providerOverride,
+        judgeModelDefault: judgeLlm.modelOverride,
+        judgeEffortDefault: judgeLlm.effortOverride,
         ...seasonPreserveOpts(record),
         effortOverride: creativeLlm.effortOverride,
         onRunCreated: providerOverrideOpts(record).onRunCreated,
@@ -449,7 +452,7 @@ export async function runFoundationGate(seriesId, record) {
         residual: residualFindings(snap.dimensions),
       };
     }
-    await recordDomainUsage('cos', { actions: 1 });
+    await recordDomainUsage('cos', { actions: Math.max(1, fix?.actions || 1) });
     broadcast(seriesId, {
       type: 'foundation:fix', round, dimension: weak.dimension, applied: fix?.applied === true, reason: fix?.reason || null,
     });

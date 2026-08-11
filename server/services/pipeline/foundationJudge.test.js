@@ -51,6 +51,9 @@ vi.mock('./seriesCanon.js', async (importActual) => ({
 vi.mock('./arcPlanner.js', async (importActual) => ({
   ...(await importActual()),
   resolveVerifyIssues: vi.fn(async () => ({ applied: true })),
+  restoreArcState: vi.fn(async () => ({ restored: true })),
+  snapshotArcState: vi.fn(async () => ({ seriesId: 'ser-1', arc: {}, seasons: [], episodes: [] })),
+  verifyArc: vi.fn(async () => ({ issues: [] })),
 }));
 
 const fileUtils = await import('../../lib/fileUtils.js');
@@ -95,6 +98,10 @@ beforeEach(() => {
   seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', logline: 'L', premise: 'P', universeId: 'uni-1' });
   universeBuilder.getUniverse.mockResolvedValue(null);
   issuesSvc.listIssues.mockResolvedValue([]);
+  arcPlanner.resolveVerifyIssues.mockResolvedValue({ applied: true });
+  arcPlanner.restoreArcState.mockResolvedValue({ restored: true });
+  arcPlanner.snapshotArcState.mockResolvedValue({ seriesId: 'ser-1', arc: {}, seasons: [], episodes: [] });
+  arcPlanner.verifyArc.mockResolvedValue({ issues: [] });
   // Restore the default authored-scalar echo so a test that overrides it (blank
   // /null values) doesn't leak into later order-dependent tests.
   universeBuilderExpand.expandWorldTemplate.mockResolvedValue({ logline: 'L2', premise: 'P2', styleNotes: 'S2', influences: null });
@@ -947,7 +954,67 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledWith('ser-1', expect.objectContaining({
       findings: expect.arrayContaining([expect.objectContaining({ location: 'arc', problem: 'thin midpoint' })]),
     }));
-    expect(r).toMatchObject({ dimension: 'structure', applied: true });
+    expect(arcPlanner.snapshotArcState).toHaveBeenCalledWith('ser-1');
+    expect(arcPlanner.verifyArc).toHaveBeenCalledWith('ser-1', expect.any(Object));
+    expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 2 });
+  });
+
+  it('gives a structure repair one bounded arc-verifier correction pass', async () => {
+    const blocker = {
+      severity: 'high', location: 'Issue 6', problem: 'The crossing skips its destination consent.',
+      suggestion: 'Require the far operator to authorize the opening.',
+    };
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: [blocker] })
+      .mockResolvedValueOnce({ issues: [] });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
+      providerOverride: 'writer-provider',
+      modelOverride: 'writer-model',
+      effortOverride: 'max',
+      judgeProviderDefault: 'judge-provider',
+      judgeModelDefault: 'judge-model',
+      judgeEffortDefault: 'xhigh',
+    });
+
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenNthCalledWith(2, 'ser-1', expect.objectContaining({
+      findings: [blocker], providerDefault: 'writer-provider', modelDefault: 'writer-model', effortDefault: 'max',
+    }));
+    expect(arcPlanner.verifyArc).toHaveBeenNthCalledWith(1, 'ser-1', expect.objectContaining({
+      providerDefault: 'judge-provider', modelDefault: 'judge-model', effortDefault: 'xhigh',
+    }));
+    expect(arcPlanner.restoreArcState).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 4 });
+  });
+
+  it('rolls a structure repair back when its bounded correction remains unverified', async () => {
+    const snapshot = { seriesId: 'ser-1', arc: { logline: 'Before' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState.mockResolvedValue(snapshot);
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 6', problem: 'First blocker' }] })
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 7', problem: 'Residual blocker' }] });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
+    });
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', snapshot);
+    expect(r).toMatchObject({ dimension: 'structure', applied: false, actions: 4 });
+    expect(r.reason).toMatch(/reverted to the pre-repair plan/);
+  });
+
+  it('rolls a mutated structure repair back when verification errors', async () => {
+    const snapshot = { seriesId: 'ser-1', arc: { logline: 'Before' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState.mockResolvedValue(snapshot);
+    arcPlanner.verifyArc.mockRejectedValueOnce(new Error('judge provider unavailable'));
+
+    await expect(applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
+    })).rejects.toThrow('judge provider unavailable');
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', snapshot);
   });
 
   it('routes character → judge-directed core-cast and character-arc repair', async () => {

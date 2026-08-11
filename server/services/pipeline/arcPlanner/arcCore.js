@@ -682,11 +682,11 @@ export async function snapshotArcState(seriesId) {
  * damage because a lock flipped mid-run would strand the user with the damage.
  * A locked `idea` stage IS skipped — the resolve pass never touched it.
  *
- * Only the autopilot's convergence loop calls this: it is the one caller that
- * re-verifies after every resolve, so it is the only one that can tell a
- * regressive round from a good one without paying for an extra verify. The
- * manual `/arc/resolve` route and the foundation gate's structure fix run the
- * same resolver with no rollback, deliberately.
+ * Callers must re-verify after every resolve so they can distinguish a
+ * regressive round from a good one. The arc convergence loop uses this to keep
+ * its best verified checkpoint; foundation structure repair uses it to restore
+ * the pre-repair plan when its bounded verify/correct pass is still blocked.
+ * The manual `/arc/resolve` route remains an explicit unguarded user edit.
  */
 export async function restoreArcState(seriesId, snapshot) {
   if (!snapshot || snapshot.seriesId !== seriesId || !Array.isArray(snapshot.episodes)) {
