@@ -127,14 +127,21 @@ router.post('/daily-log/:date/draft', asyncHandler(async (req, res) => {
 
 /**
  * PUT /api/brain/daily-log/:date — full content replace
+ *
+ * Optional `ifMatchUpdatedAt` (ISO string from the client's last-known entry)
+ * is an optimistic concurrency token: when present, a concurrent voice append
+ * or peer write that advanced `updatedAt` returns 409 STALE_JOURNAL with the
+ * current entry in `context.entry` so the client can merge and retry instead
+ * of silently dropping the concurrent work.
  */
 router.put('/daily-log/:date', asyncHandler(async (req, res) => {
   const date = await resolveJournalDate(req.params.date);
-  const { content } = req.body || {};
+  const { content, ifMatchUpdatedAt } = req.body || {};
   if (typeof content !== 'string') {
     throw new ServerError('content is required', { status: 400, code: 'BAD_REQUEST' });
   }
-  const entry = await journal.setJournalContent(date, content);
+  const match = typeof ifMatchUpdatedAt === 'string' ? ifMatchUpdatedAt : null;
+  const entry = await journal.setJournalContent(date, content, { ifMatchUpdatedAt: match });
   res.json({ date, entry });
 }));
 

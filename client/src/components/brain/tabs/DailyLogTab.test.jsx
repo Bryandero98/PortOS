@@ -82,7 +82,10 @@ beforeEach(() => {
     const date = d === 'today' ? TODAY : d;
     return { date, entry: store[date] || null };
   });
-  api.updateDailyLog.mockImplementation(async (date, content) => ({ date, entry: entryFor(date, content) }));
+  api.updateDailyLog.mockImplementation(async (date, content) => ({
+    date,
+    entry: { ...entryFor(date, content), updatedAt: `${date}T12:30:00Z` },
+  }));
   api.listDailyLogs.mockResolvedValue({ records: [] });
   api.getDailyLogSettings.mockResolvedValue({});
   api.getActivityDigestSettings.mockResolvedValue({});
@@ -105,16 +108,16 @@ const backgroundTab = async () => {
   });
 };
 
-// Put the editor into the parked state: unsaved typed edits, then a dictated
-// segment lands server-side. Delivered in its own act() so React commits the
-// state before any timer advances — as the real socket event does.
-const typeThenReceiveVoiceSegment = async (typed) => {
+// Unsaved typed edits, then a dictated segment lands server-side. Delivered
+// in its own act() so React commits state before any timer advances — as the
+// real socket event does. The segment is merged into the textarea (no park).
+const typeThenReceiveVoiceSegment = async (typed, spoken = 'spoken words') => {
   fireEvent.change(editor(), { target: { value: typed } });
   await act(async () => {
     voice.handlers['voice:dailyLog:appended']({
       date: TODAY,
-      text: 'spoken words',
-      segment: { text: 'spoken words', at: `${TODAY}T12:01:00Z`, source: 'voice' },
+      text: spoken,
+      segment: { text: spoken, at: `${TODAY}T12:01:00Z`, source: 'voice' },
       segmentCount: 2,
       updatedAt: `${TODAY}T12:01:00Z`,
     });
@@ -132,7 +135,10 @@ describe('DailyLogTab autosave', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(api.updateDailyLog).toHaveBeenCalledTimes(1);
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'a new thought', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'a new thought', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:00:00Z`,
+    });
   });
 
   it('coalesces a burst of keystrokes into one save', async () => {
@@ -145,7 +151,10 @@ describe('DailyLogTab autosave', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
     expect(api.updateDailyLog).toHaveBeenCalledTimes(1);
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'abcd', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'abcd', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:00:00Z`,
+    });
   });
 
   it('still saves during an uninterrupted typing run (max-wait ceiling)', async () => {
@@ -166,7 +175,10 @@ describe('DailyLogTab autosave', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
     expect(api.updateDailyLog).toHaveBeenCalledTimes(1);
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'typed then left', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'typed then left', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:00:00Z`,
+    });
   });
 
   it('saves when the tab is backgrounded', async () => {
@@ -174,7 +186,10 @@ describe('DailyLogTab autosave', () => {
     fireEvent.change(editor(), { target: { value: 'backgrounded' } });
     await backgroundTab();
 
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'backgrounded', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'backgrounded', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:00:00Z`,
+    });
   });
 
   it('flushes on unmount so an edit inside the debounce window is not lost', async () => {
@@ -184,7 +199,10 @@ describe('DailyLogTab autosave', () => {
     // Well inside the debounce window — the timer's own cleanup would drop it.
     await act(async () => { unmount(); await vi.advanceTimersByTimeAsync(0); });
 
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'typed then navigated away', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'typed then navigated away', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:00:00Z`,
+    });
   });
 
   it('does not save when nothing changed', async () => {
@@ -269,13 +287,19 @@ describe('DailyLogTab autosave', () => {
   it('keeps keystrokes typed while a save is in flight', async () => {
     let release;
     api.updateDailyLog.mockImplementation((date, content) => new Promise((resolve) => {
-      release = () => resolve({ date, entry: entryFor(date, content) });
+      release = () => resolve({
+        date,
+        entry: { ...entryFor(date, content), updatedAt: `${date}T12:30:00Z` },
+      });
     }));
     await renderTab();
 
     fireEvent.change(editor(), { target: { value: 'first' } });
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'first', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'first', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:00:00Z`,
+    });
 
     // Type while the PUT is still open, then let it resolve.
     fireEvent.change(editor(), { target: { value: 'first second' } });
@@ -286,7 +310,10 @@ describe('DailyLogTab autosave', () => {
 
     // ...and the newer text still reaches the server on the next tick.
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
-    expect(api.updateDailyLog).toHaveBeenLastCalledWith(TODAY, 'first second', { silent: true });
+    expect(api.updateDailyLog).toHaveBeenLastCalledWith(TODAY, 'first second', {
+      silent: true,
+      ifMatchUpdatedAt: `${TODAY}T12:30:00Z`,
+    });
   });
 
   it('never writes one day\'s text into another after a date change', async () => {
@@ -312,78 +339,93 @@ describe('DailyLogTab autosave', () => {
     expect(editor().value).toBe('old day');
   });
 
-  it('parks autosave when a dictated segment lands mid-edit', async () => {
+  it('merges a dictated segment into dirty text and keeps autosaving', async () => {
     await renderTab();
-    await typeThenReceiveVoiceSegment('my unsaved edit');
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    await typeThenReceiveVoiceSegment('my unsaved edit', 'spoken words');
 
-    expect(api.updateDailyLog).not.toHaveBeenCalled();
-    expect(screen.getByText(/Autosave paused/i)).toBeInTheDocument();
+    // Textarea keeps typed text AND the new segment — no park, no toast gate.
+    expect(editor().value).toBe('my unsaved edit\n\nspoken words');
+    expect(screen.queryByText(/Autosave paused/i)).not.toBeInTheDocument();
 
-    // The explicit Save button is the user choosing their edits — it still works.
-    fireEvent.click(screen.getByLabelText('Save'));
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'my unsaved edit', { silent: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(api.updateDailyLog).toHaveBeenCalledWith(
+      TODAY,
+      'my unsaved edit\n\nspoken words',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:01:00Z` },
+    );
   });
 
-  // The park has to hold for every automatic trigger, not just the timer —
-  // blur and backgrounding reach the same PUT that would drop the segment.
-  it('parks the blur flush too', async () => {
+  it('blur flush after a mid-edit voice segment still saves the merge', async () => {
     await renderTab();
-    await typeThenReceiveVoiceSegment('my unsaved edit');
+    await typeThenReceiveVoiceSegment('my unsaved edit', 'spoken words');
 
     fireEvent.blur(editor());
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(api.updateDailyLog).not.toHaveBeenCalled();
+    expect(api.updateDailyLog).toHaveBeenCalledWith(
+      TODAY,
+      'my unsaved edit\n\nspoken words',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:01:00Z` },
+    );
   });
 
-  it('parks the background flush too', async () => {
+  it('background flush after a mid-edit voice segment still saves the merge', async () => {
     await renderTab();
-    await typeThenReceiveVoiceSegment('my unsaved edit');
+    await typeThenReceiveVoiceSegment('my unsaved edit', 'spoken words');
 
     await backgroundTab();
-    expect(api.updateDailyLog).not.toHaveBeenCalled();
+    expect(api.updateDailyLog).toHaveBeenCalledWith(
+      TODAY,
+      'my unsaved edit\n\nspoken words',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:01:00Z` },
+    );
   });
 
-  it('lifts the park once the entry is re-adopted from the server', async () => {
-    api.appendDailyLog.mockResolvedValue({ entry: entryFor(TODAY, 'server text') });
-    await renderTab();
-    await typeThenReceiveVoiceSegment('my unsaved edit');
-    expect(screen.getByText(/Autosave paused/i)).toBeInTheDocument();
-
-    // A quick-append adopts the server entry wholesale, resolving the divergence.
-    fireEvent.change(screen.getByPlaceholderText(/Quick append/i), { target: { value: 'note' } });
-    fireEvent.click(screen.getByText('Append'));
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-
-    // Otherwise the toolbar would tell the user to click a disabled Save button.
-    expect(screen.queryByText(/Autosave paused/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/· Saved/)).toBeInTheDocument();
-
-    // ...and the park is genuinely lifted, not merely hidden by `dirty` being
-    // false: the next edit must autosave rather than stay parked forever.
-    api.updateDailyLog.mockClear();
-    fireEvent.change(editor(), { target: { value: 'server text plus more' } });
-    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'server text plus more', { silent: true });
-  });
-
-  it('resumes autosaving after the voice conflict is resolved', async () => {
-    await renderTab();
-    fireEvent.change(editor(), { target: { value: 'edit one' } });
-    await act(async () => {
-      voice.handlers['voice:dailyLog:appended']({ date: TODAY, text: 'spoken', segmentCount: 2 });
+  it('retries a STALE_JOURNAL 409 by folding in the concurrent voice segment', async () => {
+    const staleEntry = {
+      date: TODAY,
+      content: 'existing\n\nspoken mid-flight',
+      segments: [
+        { text: 'existing', at: `${TODAY}T12:00:00Z`, source: 'edit' },
+        { text: 'spoken mid-flight', at: `${TODAY}T12:02:00Z`, source: 'voice' },
+      ],
+      segmentCount: 2,
+      updatedAt: `${TODAY}T12:02:00Z`,
+      obsidianPath: null,
+    };
+    let calls = 0;
+    api.updateDailyLog.mockImplementation(async (date, content, opts) => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new Error('Daily log was modified since you last loaded it');
+        err.code = 'STALE_JOURNAL';
+        err.status = 409;
+        err.context = { entry: staleEntry };
+        throw err;
+      }
+      return {
+        date,
+        entry: { ...entryFor(date, content), updatedAt: `${date}T12:03:00Z` },
+      };
     });
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-    expect(api.updateDailyLog).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByLabelText('Save'));
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    api.updateDailyLog.mockClear();
-
-    fireEvent.change(editor(), { target: { value: 'edit two' } });
+    await renderTab();
+    fireEvent.change(editor(), { target: { value: 'typed while speaking' } });
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
-    expect(api.updateDailyLog).toHaveBeenCalledWith(TODAY, 'edit two', { silent: true });
+
+    // First attempt used the pre-append clock; retry merges the voice text
+    // and re-PUTs against the server's new updatedAt.
+    expect(api.updateDailyLog).toHaveBeenCalledTimes(2);
+    expect(api.updateDailyLog.mock.calls[0]).toEqual([
+      TODAY,
+      'typed while speaking',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:00:00Z` },
+    ]);
+    expect(api.updateDailyLog.mock.calls[1]).toEqual([
+      TODAY,
+      'typed while speaking\n\nspoken mid-flight',
+      { silent: true, ifMatchUpdatedAt: `${TODAY}T12:02:00Z` },
+    ]);
+    // Textarea reflects the merged recovery (no further typing in this test).
+    expect(editor().value).toBe('typed while speaking\n\nspoken mid-flight');
   });
 
   it('shows save status in the toolbar', async () => {

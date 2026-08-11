@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
+import { ServerError } from '../lib/errorHandler.js';
 import brainRoutes from './brain.js';
 
 // Mock the brain service
@@ -1301,6 +1302,42 @@ describe('Brain Routes', () => {
         .send({ content: 'replaced' });
       expect(res.status).toBe(200);
       expect(res.body.entry.content).toBe('replaced');
+      expect(journal.setJournalContent).toHaveBeenCalledWith('2026-04-17', 'replaced', {
+        ifMatchUpdatedAt: null,
+      });
+    });
+
+    it('forwards ifMatchUpdatedAt to the service', async () => {
+      journal.setJournalContent.mockResolvedValue({ id: 'j1', date: '2026-04-17', content: 'x', segments: [] });
+      const res = await request(app)
+        .put('/api/brain/daily-log/2026-04-17')
+        .send({ content: 'x', ifMatchUpdatedAt: '2026-04-17T12:00:00.000Z' });
+      expect(res.status).toBe(200);
+      expect(journal.setJournalContent).toHaveBeenCalledWith('2026-04-17', 'x', {
+        ifMatchUpdatedAt: '2026-04-17T12:00:00.000Z',
+      });
+    });
+
+    it('surfaces STALE_JOURNAL as 409 with the current entry in context', async () => {
+      const current = {
+        id: 'j1',
+        date: '2026-04-17',
+        content: 'existing\n\nspoken',
+        updatedAt: '2026-04-17T12:01:00.000Z',
+        segments: [{ text: 'spoken', source: 'voice' }],
+      };
+      const err = new ServerError('Daily log was modified since you last loaded it', {
+        status: 409,
+        code: 'STALE_JOURNAL',
+        context: { entry: current },
+      });
+      journal.setJournalContent.mockRejectedValue(err);
+      const res = await request(app)
+        .put('/api/brain/daily-log/2026-04-17')
+        .send({ content: 'typed', ifMatchUpdatedAt: '2026-04-17T12:00:00.000Z' });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('STALE_JOURNAL');
+      expect(res.body.context.entry.content).toContain('spoken');
     });
   });
 

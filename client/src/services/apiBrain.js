@@ -299,10 +299,20 @@ export const appendDailyLog = (date, text, source = 'text', options = {}) => req
   `/brain/daily-log/${encodeURIComponent(date)}/append`,
   { method: 'POST', body: JSON.stringify({ text, source }), ...options }
 );
-export const updateDailyLog = (date, content, options = {}) => request(
-  `/brain/daily-log/${encodeURIComponent(date)}`,
-  { method: 'PUT', body: JSON.stringify({ content }), ...options }
-);
+export const updateDailyLog = (date, content, options = {}) => {
+  // `ifMatchUpdatedAt` is an optimistic concurrency token (the entry's
+  // updatedAt the client last observed). It rides in the JSON body; the rest
+  // of `options` (silent, headers, …) are request() fetch options.
+  const { ifMatchUpdatedAt, ...requestOptions } = options;
+  const body = { content };
+  if (ifMatchUpdatedAt !== undefined && ifMatchUpdatedAt !== null) {
+    body.ifMatchUpdatedAt = ifMatchUpdatedAt;
+  }
+  return request(
+    `/brain/daily-log/${encodeURIComponent(date)}`,
+    { method: 'PUT', body: JSON.stringify(body), ...requestOptions }
+  );
+};
 export const deleteDailyLog = (date, options = {}) => request(
   `/brain/daily-log/${encodeURIComponent(date)}`,
   { method: 'DELETE', ...options }
