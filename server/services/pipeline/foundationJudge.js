@@ -132,6 +132,11 @@ export function foundationInputs(series, universe, issues = []) {
   return {
     world: universe
       ? {
+        // The starter prompt is the author's protected originating intent, not
+        // just another generated bible paragraph. A change here must invalidate
+        // a cached verdict, and the judge must compare every derived field to it
+        // so a polished-but-off-premise foundation cannot fast-pass forever.
+        starterPrompt: universe.starterPrompt || '',
         logline: universe.logline || '',
         premise: universe.premise || '',
         styleNotes: universe.styleNotes || '',
@@ -579,6 +584,7 @@ function renderWorldFoundation(universe, { maxChars = Infinity } = {}) {
     ? `Embrace: ${(universe.influences.embrace || []).join(', ') || '—'}; Avoid: ${(universe.influences.avoid || []).join(', ') || '—'}`
     : '(none)';
   const spine = [
+    `Protected author intent (starter idea): ${universe.starterPrompt || '(none)'}`,
     `Universe logline: ${universe.logline || '(none)'}`,
     `Universe premise: ${universe.premise || '(none)'}`,
     `Universe style: ${universe.styleNotes || '(none)'}`,
@@ -832,10 +838,10 @@ const REPAIR_SERIES_MAX_CHARS = 12_000;
 const REPAIR_CHARACTERS_MAX_CHARS = 12_000;
 
 // The character-foundation stage reasons over the whole ensemble at once, so it
-// is the slowest repair stage by a wide margin. The runner's 300s default is
-// what actually killed the 72KB run; TUI providers already default to 10
-// minutes (`providers.js`), and this gives a CLI provider the same headroom.
-const CHARACTER_FOUNDATION_TIMEOUT_MS = 600_000;
+// is the slowest repair stage by a wide margin. Ten minutes proved short enough
+// to kill productive high-effort work. Keep a finite safety ceiling for a truly
+// hung provider, but give a quality-first ensemble pass enough room to finish.
+const CHARACTER_FOUNDATION_TIMEOUT_MS = 7_200_000;
 
 const CRAFT_REPAIR_MAX_ATTEMPTS = 2;
 

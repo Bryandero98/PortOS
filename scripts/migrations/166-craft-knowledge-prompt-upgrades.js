@@ -54,7 +54,7 @@ export const ACCEPTED_OLD_MD5 = {
 export const NEW_SHIPPED_MD5 = {
   'pipeline-prose.md': '4cb3ef48309f3673570cf80e4d544b54',
   'writers-room-continue.md': '458dc5ff4732befc1fb90890bdc885c2', // post-181 (voice exemplars)
-  'pipeline-arc-overview.md': '74d6c26548660d85fc345b2099c63b6c', // post-173 (MICE thread nesting)
+  'pipeline-arc-overview.md': '648e11352cd1565aee490de1f662bef0', // post-249 protected author intent
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

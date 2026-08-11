@@ -30,7 +30,7 @@ const EXPECTED_STAGE_OLD = {
   'pipeline-comic-script.md': ['133d200d069c2e8173b7c129eea58f53', '1e0af305c27d0c80c4b482d2ebcb4a0d', '40e5fdc1a1e68a7419b7dad936366c1a', '7c05ecde539f04c9fa91e87543057204', 'a4303016c34b65e4b0e641fe71252de3', 'beab031951859ca13579cdb9c4dbe769', 'dea7d497d1cb38e7574f236f4ff8e644', 'e530fc76b89cedaef848ad7ec99c934c', 'e9ee70bf18888492edada6633cd9928a'],
   'pipeline-teleplay.md': ['1280ef6b1ad68fa44070ca7478ec2a5f', '2568e14beaa574d43f8018a5def51d04', '376f779f4687b598f1c92ca4e770fd5a', '3f6fecc25573ed054b47db392250034a', 'afa4215330bf856429d70d7e2f856605'],
   'pipeline-season-episodes.md': ['6e349ad26bed8a0ccb042571f03f03eb', 'c4928e2a5f833358116b29d2d669888d', '50c68a29c3ebc275db3095d06bd87100'],
-  'pipeline-arc-overview.md': ['6a3ecab43d1f46b7ef9aab6c69ea0326', 'd34d72b8e49ba303d38607845dd87f1c', '0a1f6ffa6908522e3690c5e9e53a6ee0', '612f8b04950e2ff26dd350dd76a062fe'],
+  'pipeline-arc-overview.md': ['6a3ecab43d1f46b7ef9aab6c69ea0326', 'd34d72b8e49ba303d38607845dd87f1c', '0a1f6ffa6908522e3690c5e9e53a6ee0', '612f8b04950e2ff26dd350dd76a062fe', '74d6c26548660d85fc345b2099c63b6c'],
   'pipeline-arc-verify.md': ['52e31abc93e3105176236fcaa5d1575a', 'ff56d8387162017e08d5d0491060ddd6'],
   'pipeline-volume-verify.md': ['03f3c874cb80e1c98abcf03168fa7a92', 'c6ea28e972ad6e229bafb2d602b4dda3'],
   'pipeline-arc-resolve.md': ['5b340885c6e8f8afc63424d6b5bc7eb7', '87bc5c01f1a8a97b681727a38b05edc6', '8e348f3d1894382889f9f0ee7d5c6792', 'a8677bbe1eb38f871fb152a5b0fec7c6', 'cc27b4da1d1a13c35e35d1c2d6183815'],
@@ -51,7 +51,7 @@ const EXPECTED_STAGE_OLD = {
   'cd-plan.md': ['3ce871196a8fd04781b71b6780e89c86', '0768d6809645c2c1fe73cacae9740fe9'],
   'pipeline-series-generate.md': ['bc72731124a2bd6304362f4402c6305d'],
   'pipeline-character-foundation.md': ['f1c0b75a8161c0bc7f26752d148a5c1c', 'cda34127b40754ddbcc8544e3d82572b'],
-  'pipeline-judge-foundation.md': ['74c0244e641dcf7a73e9c83123ebdee9'],
+  'pipeline-judge-foundation.md': ['74c0244e641dcf7a73e9c83123ebdee9', '4c0bd349ff4d329048c9f4ac068745d4'],
 };
 const EXPECTED_STAGE_NEW = {
   'pipeline-idea-expansion.md': 'd6fa86a435f978336661dcabca67258f',
@@ -60,7 +60,7 @@ const EXPECTED_STAGE_NEW = {
   'pipeline-comic-script.md': '49af30c05f008b20f6998a0f113f7d87',
   'pipeline-teleplay.md': '2ea9974ac3803658b2314db1f5818b77',
   'pipeline-season-episodes.md': 'a88e8e78a949b7aaf500d03314e2ea0b',
-  'pipeline-arc-overview.md': '74d6c26548660d85fc345b2099c63b6c',
+  'pipeline-arc-overview.md': '648e11352cd1565aee490de1f662bef0',
   'pipeline-arc-verify.md': '36aa70cdfc25d7549573a4d556e7702c',
   'pipeline-volume-verify.md': '49458d36700cb94e34806d536ffe2940',
   'pipeline-arc-resolve.md': '8bb134554c122d1583c479ab3010e53d',
@@ -81,7 +81,7 @@ const EXPECTED_STAGE_NEW = {
   'cd-plan.md': 'ef0d96f6ebde43af6c4579969d31cfb7',
   'pipeline-series-generate.md': '21352c21ed6d4edb7a4b7c32704eff55',
   'pipeline-character-foundation.md': 'd6c449c06de73a0868141c899b26e52c',
-  'pipeline-judge-foundation.md': '4c0bd349ff4d329048c9f4ac068745d4',
+  'pipeline-judge-foundation.md': 'edf7850d0c724c63761bc9fb667227d9',
 };
 const EXPECTED_PARTIAL_OLD = {
   'bible-deference.md': ['218f0e85643609ed85a12b1ccc7b5a8d'],

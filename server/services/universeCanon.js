@@ -654,8 +654,9 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
  * series are never touched, and are reported back as `foreignKept` so the
  * caller can say what it deliberately left alone.
  *
- * `clearWorldLocks` additionally empties the universe's OWN `locked` map (the
- * world-field locks: logline / premise / styleNotes / influence lists). It
+ * `clearWorldLocks` additionally clears the universe's OWN `locked` map (the
+ * world-field locks: logline / premise / styleNotes / influence lists), except
+ * for keys named in `preserveWorldLockKeys`. It
  * rides this call rather than a second `updateUniverse` because both land on
  * the same record — a separate write would re-read and re-sanitize the whole
  * universe and emit a second peer-sync `recordUpdated` for one user action.
@@ -668,7 +669,11 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
  * Returns `{ universe, changed, foreignKept }` (`changed` counts canon entries;
  * the caller already knows how many world locks it asked to clear).
  */
-export async function setCanonLocksForSeries(universeId, seriesId, locked, { soleSeries = false, clearWorldLocks = false } = {}) {
+export async function setCanonLocksForSeries(universeId, seriesId, locked, {
+  soleSeries = false,
+  clearWorldLocks = false,
+  preserveWorldLockKeys = [],
+} = {}) {
   const scope = { seriesId, soleSeries };
   let changed = 0;
   let foreignKept = 0;
@@ -692,7 +697,12 @@ export async function setCanonLocksForSeries(universeId, seriesId, locked, { sol
       });
       if (keyTouched) patch[key] = nextList;
     }
-    if (clearWorldLocks && Object.values(cur.locked || {}).some((v) => v === true)) patch.locked = {};
+    if (clearWorldLocks && Object.values(cur.locked || {}).some((v) => v === true)) {
+      const preserved = new Set(Array.isArray(preserveWorldLockKeys) ? preserveWorldLockKeys : []);
+      patch.locked = Object.fromEntries(
+        Object.entries(cur.locked || {}).filter(([key, value]) => value === true && preserved.has(key)),
+      );
+    }
     return Object.keys(patch).length > 0 ? patch : null;
   });
   return { universe, changed, foreignKept };
@@ -848,4 +858,3 @@ export async function purgeReferenceSheetFromAllUniverses(filename) {
   }
   return { cleared };
 }
-

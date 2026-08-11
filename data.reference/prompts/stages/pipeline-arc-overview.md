@@ -37,7 +37,33 @@ No shape pre-picked. Choose the single Vonnegut shape that best matches the prem
 {{#hasLinkedWorld}}
 ## Linked World — canonical entities
 
-The series is grounded in this World Builder world: **{{worldName}}**. When you write season loglines / synopses and the protagonist arc, ground them in these entities by name (not generic placeholders). If a world canon entry below names a character, place, or object that fits the season's beats, prefer it over inventing a new one.
+The series is grounded in this World Builder world: **{{worldName}}**. The
+starter idea is the user's protected originating intent; generated world fields
+and canon elaborate it but may not replace its ontology, protagonists, or core
+story engine. If a generated field conflicts with the starter idea, follow the
+starter idea and repair the derived plan around it.
+
+- **Protected author intent (starter idea):** {{worldStarter}}
+- **World logline:** {{worldLogline}}
+- **World premise:**
+
+```
+{{worldPremise}}
+```
+
+- **World style notes:**
+
+```
+{{worldStyleNotes}}
+```
+
+- **Influences to embrace:** {{worldInfluencesEmbrace}}
+- **Influences to avoid:** {{worldInfluencesAvoid}}
+
+When you write season loglines / synopses and the protagonist arc, ground them
+in the canonical entities below by name (not generic placeholders). If a world
+canon entry names a character, place, or object that fits the season's beats,
+prefer it over inventing a new one.
 
 ### World canon — named characters, places, objects
 

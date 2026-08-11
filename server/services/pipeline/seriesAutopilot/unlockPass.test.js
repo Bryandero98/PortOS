@@ -284,6 +284,17 @@ describe('unlockPass — end-to-end over the real series/issue services', () => 
     expect(universe.locked).toEqual({});
   });
 
+  it('keeps the protected starter idea locked while clearing derived world fields', async () => {
+    const mine = await buildSeries({ universeId: 'uni-solo' });
+    universe = {
+      id: 'uni-solo', characters: [], places: [], objects: [],
+      locked: { starterPrompt: true, logline: true, premise: true },
+    };
+    const counts = await unlockSeriesForAutopilot(mine.id);
+    expect(counts).toMatchObject({ worldFields: 2, worldFieldsKept: 1 });
+    expect(universe.locked).toEqual({ starterPrompt: true });
+  });
+
   // Canon locks and world-field locks live on the SAME record, so they must go
   // out as one patch — a second updateUniverse would re-read/re-sanitize the
   // whole universe and emit a second peer-sync recordUpdated for one action.

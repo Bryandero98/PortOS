@@ -215,6 +215,11 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     const uni2 = { characters: [{ id: 'c1', name: 'Ana', wound: 'abandoned as a child' }] };
     expect(foundationInputsHash({}, uni1)).not.toBe(foundationInputsHash({}, uni2));
   });
+  it('changes when the protected author intent changes', () => {
+    const base = { starterPrompt: 'A clockmaker discovers that dragons control the weather.' };
+    const drifted = { starterPrompt: 'Train conductors regulate an intercity signal network.' };
+    expect(foundationInputsHash({}, base)).not.toBe(foundationInputsHash({}, drifted));
+  });
   it('ignores unrelated universe-only characters once the series cast is identifiable', () => {
     const series = { premise: 'Lead crosses the flooded city.' };
     const base = {
@@ -683,14 +688,14 @@ describe('foundation repair prompt — bounded outline', () => {
       }
     });
 
-    it('requests a 10-minute timeout so a CLI provider is not killed by the 300s default', async () => {
+    it('requests a two-hour timeout so productive high-effort ensemble work is not killed early', async () => {
       await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the causal chain' } });
 
-      expect(__testing.CHARACTER_FOUNDATION_TIMEOUT_MS).toBe(600_000);
+      expect(__testing.CHARACTER_FOUNDATION_TIMEOUT_MS).toBe(7_200_000);
       expect(stageRunner.runStagedLLM).toHaveBeenCalledWith(
         'pipeline-character-foundation',
         expect.anything(),
-        expect.objectContaining({ timeoutOverride: 600_000 }),
+        expect.objectContaining({ timeoutOverride: 7_200_000 }),
       );
     });
   });
@@ -787,6 +792,15 @@ describe('renderWorldFoundation — budget spends the noun inventory, not the ru
     expect(budgeted).toContain(rulesTail);
     // …and the entity inventory is what paid for it.
     expect(budgeted).not.toContain('Place 59');
+  });
+
+  it('renders the protected author intent ahead of the derived world bible', () => {
+    const out = __testing.renderWorldFoundation({
+      starterPrompt: 'A baker discovers that the moon is a sleeping whale.',
+      premise: 'The current generated premise.',
+    });
+    expect(out).toContain('Protected author intent (starter idea): A baker discovers that the moon is a sleeping whale.');
+    expect(out.indexOf('Protected author intent')).toBeLessThan(out.indexOf('Universe premise'));
   });
 
   it('omits the canon line outright rather than rendering a useless stub', () => {
