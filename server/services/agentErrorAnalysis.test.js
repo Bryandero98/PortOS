@@ -121,6 +121,24 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(analysis.actionable).toBe(true);
   });
 
+  it("classifies the Claude CLI's own \"issue with the selected model\" rejection as model-not-found", () => {
+    // Regression: this is the CLI's startup rejection of `--model <id>`, printed
+    // before any API call — so no `API Error: 4NN` token, and it matched none of
+    // the model patterns. It fell into `unknown` ("did not match known
+    // patterns"), which autoFixer maps to Tier 4 (escalate): the task burned all
+    // three retries and spawned an investigation instead of getting the Tier 1
+    // config/env model correction it deserved.
+    const output = withLead("There's an issue with the selected model (gemini-3.6-flash). It may not exist or you may not have access to it. Run --model to pick a different model.");
+    const analysis = analyzeAgentFailure(output, { id: 't' }, 'gemini-3.6-flash');
+    expect(analysis.category).toBe('model-not-found');
+    expect(analysis.actionable).toBe(true);
+    // Distinctive CLI banner text, not something a task's own output prints.
+    expect(analysis.origin).toBe('provider');
+    // The rejected id is extracted from the message, not just echoed from config.
+    expect(analysis.affectedModel).toBe('gemini-3.6-flash');
+    expect(analysis.message).toContain('gemini-3.6-flash');
+  });
+
   it('classifies a 401/authentication error as actionable auth-error', () => {
     const analysis = analyzeAgentFailure(withLead('API Error: 401 Unauthorized — authentication failed'), { id: 't' }, 'x');
     expect(analysis.category).toBe('auth-error');

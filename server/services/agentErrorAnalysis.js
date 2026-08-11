@@ -133,6 +133,30 @@ export const ERROR_PATTERNS = [
     })
   },
   {
+    // The Claude Code CLI's own startup rejection of `--model <id>`, printed
+    // before any API call is made — so it never carries an `API Error: 4NN`
+    // token and matched none of the model patterns above. Untriaged it landed in
+    // the `unknown` bucket ("Error did not match known patterns"), which is Tier
+    // 4 (escalate) in autoFixer's map: the task burned all three retries against
+    // an id that can never work and then spawned an investigation task, instead
+    // of getting the Tier 1 config/env correction a model rejection deserves.
+    // Structured enough to promote to `origin: 'provider'` — the full sentence
+    // with the parenthesised id and the `--model` hint is CLI banner text, not
+    // something a task's own output prints in passing.
+    pattern: /There's an issue with the selected model \(([^)]+)\)/i,
+    category: 'model-not-found',
+    actionable: true,
+    origin: 'provider',
+    structuredMarker: /There's an issue with the selected model \([^)]+\)[\s\S]{0,120}?(?:may not exist|--model)/i,
+    escalation: 'Set a model id this provider actually serves for the task (or clear its model override so the CLI uses its own default), then approve the retry.',
+    extract: (match, output, task, model) => ({
+      message: `Model "${match[1]}" rejected by the CLI - it may not exist or the account lacks access`,
+      suggestedFix: `The CLI does not accept "${match[1]}". Check that the task's model override matches the provider it is running on, or clear the override so the CLI falls back to its own default.`,
+      affectedModel: match[1],
+      configuredModel: model
+    })
+  },
+  {
     pattern: /API Error: 401|authentication|unauthorized/i,
     category: 'auth-error',
     actionable: true,
