@@ -8,7 +8,9 @@ vi.mock('../../runner.js', () => ({
   patchRunMetadata,
 }));
 
-import { MIN_QUALITY_SAMPLES, recordModelOutcome, summarizeModelPerformance } from './modelPerformance.js';
+import {
+  MIN_QUALITY_RATE, MIN_QUALITY_SAMPLES, recordModelOutcome, summarizeModelPerformance,
+} from './modelPerformance.js';
 
 const provider = (id, models, enabled = true) => ({ id, name: id, models, enabled });
 const run = (over = {}) => ({
@@ -72,6 +74,16 @@ describe('Series Autopilot model performance', () => {
     expect(enough.recommendations.foundationGate.creative).toMatchObject({
       providerOverride: 'cloud', modelOverride: 'large', effortOverride: 'high', samples: 2,
     });
+  });
+
+  it('does not recommend a sufficiently sampled but unreliable route', () => {
+    expect(MIN_QUALITY_RATE).toBe(0.6);
+    const report = summarizeModelPerformance([
+      run({ qualityOutcome: 'accepted' }),
+      run({ qualityOutcome: 'rejected', startTime: '2026-01-02T00:00:00.000Z' }),
+    ], [provider('cloud', ['large'])]);
+    expect(report.metrics[0]).toMatchObject({ qualityEvaluated: 2, qualityRate: 0.5 });
+    expect(report.recommendations).toEqual({});
   });
 
   it('ranks accepted local evidence above repeatedly rejected cloud work', () => {

@@ -928,7 +928,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           </label>
           {opt.autoSelectModels ? (
             <p className="text-[11px] text-gray-500">
-              Uses separate technical and quality outcomes by step, role, provider, model and effort. Historical outcomes can backfill effort when older run records lack it. A route needs at least {modelMetrics?.minimumQualitySamples ?? 2} quality-reviewed samples; explicit choices above and exact Prompts-stage pins still win. Current history: {modelMetrics?.evidenceRuns ?? 0} attributed run{modelMetrics?.evidenceRuns === 1 ? '' : 's'}, {modelMetrics?.metrics?.reduce((sum, metric) => sum + (metric.qualityEvaluated || 0), 0) ?? 0} quality-reviewed.
+              Uses separate technical and quality outcomes by step, role, provider, model and effort. Historical outcomes can backfill effort when older run records lack it. A route needs at least {modelMetrics?.minimumQualitySamples ?? 2} quality-reviewed samples and a positive reliability threshold; explicit choices above and exact Prompts-stage pins still win. Current history: {modelMetrics?.evidenceRuns ?? 0} attributed run{modelMetrics?.evidenceRuns === 1 ? '' : 's'}, {modelMetrics?.metrics?.reduce((sum, metric) => sum + (metric.qualityEvaluated || 0), 0) ?? 0} quality-reviewed.
             </p>
           ) : null}
           <label className="flex items-center gap-2 text-xs text-gray-300">

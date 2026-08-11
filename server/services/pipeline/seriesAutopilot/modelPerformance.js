@@ -12,6 +12,7 @@ import { getRun, listRuns, patchRunMetadata } from '../../runner.js';
 
 const MAX_RUNS = 5_000;
 export const MIN_QUALITY_SAMPLES = 2;
+export const MIN_QUALITY_RATE = 0.6;
 const POSITIVE_OUTCOMES = new Set(['accepted']);
 const NEGATIVE_OUTCOMES = new Set(['rejected']);
 
@@ -134,7 +135,11 @@ export function summarizeModelPerformance(runs = [], providers = []) {
 
   const recommendations = {};
   for (const metric of metrics) {
-    if (!metric.eligible || metric.qualityEvaluated < MIN_QUALITY_SAMPLES) continue;
+    if (
+      !metric.eligible
+      || metric.qualityEvaluated < MIN_QUALITY_SAMPLES
+      || metric.qualityRate < MIN_QUALITY_RATE
+    ) continue;
     recommendations[metric.pipelineStage] ||= {};
     if (recommendations[metric.pipelineStage][metric.pipelineRole]) continue;
     recommendations[metric.pipelineStage][metric.pipelineRole] = {
@@ -162,6 +167,7 @@ export async function getModelPerformanceReport() {
     ...report,
     evidenceRuns: report.metrics.reduce((sum, metric) => sum + metric.attempts, 0),
     minimumQualitySamples: MIN_QUALITY_SAMPLES,
+    minimumQualityRate: MIN_QUALITY_RATE,
   };
 }
 
