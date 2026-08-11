@@ -19,6 +19,7 @@ import { sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
 import { sanitizeStyleGuide } from '../../lib/styleGuide.js';
 import { sanitizeProseExportSettings } from '../../lib/proseExportSettings.js';
 import { sanitizeSeverityWeights, sanitizeBlockingSeverities } from '../../lib/editorial/severityConfig.js';
+import { CHECK_SEVERITIES } from '../../lib/editorial/checkRegistry.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import { persistedRenderPinFields } from '../../lib/renderTargets.js';
@@ -121,7 +122,14 @@ export const ARC_LOCKABLE_FIELDS = Object.freeze([
 export const AUTOPILOT_STATUSES = Object.freeze(['idle', 'running', 'paused', 'done', 'error']);
 export const AUTOPILOT_STEP_MAX = 80;
 export const AUTOPILOT_ERROR_MAX = 1000;
-const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
+// The residual set is the user's work queue, so it holds the whole backlog.
+const AUTOPILOT_RESIDUAL_MAX = 50;
+// The discarded set is diagnostic context for a single decision, so it is capped
+// tighter. This one is exported because the arc loop slices its own emission to
+// this same constant — otherwise the live SSE frame would carry findings the
+// record then silently drops, and the two would disagree about what was thrown
+// away. The residual cap needs no such export: nothing emits residual pre-bounded.
+export const AUTOPILOT_DISCARDED_MAX = 20;
 
 const sanitizeAutopilotLlmRoute = (raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -179,29 +187,36 @@ export const AUTOPILOT_PAUSE_KINDS = Object.freeze([
   'inapplicable', 'planningOscillation', 'budget', 'providerFailed',
 ]);
 
+// Bound a marker-borne finding list to the wire shape the UI renders.
+const sanitizeAutopilotFindings = (raw, limit) => (Array.isArray(raw)
+  ? raw
+    .map((f) => {
+      if (!f || typeof f !== 'object') return null;
+      const problem = trimTo(f.problem, 2000);
+      if (!problem) return null;
+      return {
+        ...(CHECK_SEVERITIES.includes(f.severity) ? { severity: f.severity } : {}),
+        location: trimTo(f.location, 200),
+        problem,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, limit)
+  : []);
+
 export const sanitizeAutopilot = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
   const status = AUTOPILOT_STATUSES.includes(raw.status) ? raw.status : 'idle';
-  const residualFindings = Array.isArray(raw.residualFindings)
-    ? raw.residualFindings
-      .map((f) => {
-        if (!f || typeof f !== 'object') return null;
-        const problem = trimTo(f.problem, 2000);
-        if (!problem) return null;
-        return {
-          ...(AUTOPILOT_FINDING_SEVERITIES.includes(f.severity) ? { severity: f.severity } : {}),
-          location: trimTo(f.location, 200),
-          problem,
-        };
-      })
-      .filter(Boolean)
-      .slice(0, 50)
-    : [];
+  const residualFindings = sanitizeAutopilotFindings(raw.residualFindings, AUTOPILOT_RESIDUAL_MAX);
   return {
     status,
     runId: trimTo(raw.runId, 64) || null,
     currentStep: trimTo(raw.currentStep, AUTOPILOT_STEP_MAX) || null,
     residualFindings,
+    // The findings a rewound round produced, kept next to the (better) set that
+    // was restored so the trade is reviewable. Empty on any pause that threw
+    // nothing away. Same transient-marker posture as pauseKind: no schema gate.
+    discardedFindings: sanitizeAutopilotFindings(raw.discardedFindings, AUTOPILOT_DISCARDED_MAX),
     lastError: trimTo(raw.lastError, AUTOPILOT_ERROR_MAX) || null,
     // No `pipelineSeries` schema-gate bump for this (or any) autopilot field: the
     // marker is transient, regenerated-every-run status, NOT durable creative

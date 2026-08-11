@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import {
   Rocket, Loader2, X, Sliders, ShieldCheck, AlertCircle, CheckCircle2,
-  PauseCircle, Play, ScanSearch, ChevronRight,
+  PauseCircle, Play, ScanSearch, ChevronRight, ChevronDown,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { usePipelineProgress } from '../../hooks/usePipelineProgress';
@@ -1156,6 +1156,19 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             </div>
           ) : null}
           <Findings items={ap.residualFindings} />
+          {/* Collapsed: the restored set above is the actual work queue, while
+              these are what the rewound round produced — context for judging
+              whether the rollback was the right call, not tasks to act on. */}
+          {ap.discardedFindings?.length ? (
+            <details className="mt-2 group">
+              <summary className="cursor-pointer list-none flex items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300">
+                <ChevronRight size={11} className="group-open:hidden" />
+                <ChevronDown size={11} className="hidden group-open:inline" />
+                Discarded — what the reverted round produced ({ap.discardedFindings.length})
+              </summary>
+              <Findings items={ap.discardedFindings} />
+            </details>
+          ) : null}
         </div>
         );
       })() : null}

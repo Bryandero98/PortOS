@@ -380,8 +380,20 @@ export async function startSeriesAutopilot(sId, options = {}) {
           // rides it (a client tears its stream down on `paused`). No-ops unless
           // the run opted into self-improvement.
           const pm = await postMortem('paused', `${step.kind}: ${result.reason}`);
-          await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, residualFindings: result.residual || [], lastError: result.reason, pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, ...pm });
-          broadcast(sId, { type: 'paused', runId, scope: step.kind, reason: result.reason, residualFindings: result.residual || [], pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, ...pm, completedAt: new Date().toISOString() });
+          // The marker and the frame report the same pause, so the shared terms
+          // live in one object — they only disagree on how they name the step
+          // and the reason. Keeping them in two literals is how a pause field
+          // ends up persisted but never broadcast (or the reverse).
+          const pausePayload = {
+            runId,
+            residualFindings: result.residual || [],
+            discardedFindings: result.discarded || [],
+            pauseKind: result.pauseKind || null,
+            healthBreakdown: result.healthBreakdown || null,
+            ...pm,
+          };
+          await persistMarker(sId, { status: 'paused', currentStep: step.kind, lastError: result.reason, ...pausePayload });
+          broadcast(sId, { type: 'paused', scope: step.kind, reason: result.reason, ...pausePayload, completedAt: new Date().toISOString() });
           await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
           // Only file the generic stalled task when the step didn't already file
           // a more specific gap (canon-undescribed, visual-no-pages, …) — else

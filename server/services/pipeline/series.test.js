@@ -879,6 +879,34 @@ describe('pipeline series service', () => {
     });
   });
 
+  describe('sanitizeAutopilot discardedFindings', () => {
+    it('bounds the rolled-back candidate set the same way as residualFindings', () => {
+      const a = svc.sanitizeAutopilot({
+        status: 'paused',
+        pauseKind: 'regression',
+        discardedFindings: [
+          { severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' },
+          { severity: 'bogus', location: 'V4', problem: 'finale hook unresolved' }, // severity dropped, finding kept
+          { severity: 'high', location: 'V5' }, // no problem → dropped entirely
+        ],
+      });
+      expect(a.discardedFindings).toEqual([
+        { severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' },
+        { location: 'V4', problem: 'finale hook unresolved' },
+      ]);
+    });
+
+    it('caps the set so a runaway verifier round cannot bloat the marker', () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ severity: 'high', location: `V${i}`, problem: `hole ${i}` }));
+      expect(svc.sanitizeAutopilot({ status: 'paused', discardedFindings: many }).discardedFindings).toHaveLength(20);
+    });
+
+    it('is empty for a marker that carries none (non-regression pauses, older peers)', () => {
+      expect(svc.sanitizeAutopilot({ status: 'paused' }).discardedFindings).toEqual([]);
+      expect(svc.sanitizeAutopilot({ status: 'paused', discardedFindings: 'nope' }).discardedFindings).toEqual([]);
+    });
+  });
+
   describe('sanitizeAutopilot resumeOptions', () => {
     it('preserves only the paused run toggles that the UI can safely restore', () => {
       expect(svc.sanitizeAutopilot({
