@@ -22,6 +22,8 @@ import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, isAgentPausedTask, resolvePausedTaskResume, retirePausedAgent } from '../lib/taskPauseHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
+import { isInvestigationTask } from '../lib/investigationTasks.js';
+import { PAUSED_BLOCKED_CATEGORIES, USER_DECISION_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
 import { CLAIM_METADATA_KEYS } from './cosTaskClaim.js';
@@ -29,7 +31,6 @@ import { mergeTaskLists } from './cosTaskMerge.js';
 import { canChallenge, getChallengeCount, buildChallengePatch, buildChallengeResolutionPatch, classifyRecheckOutcome, MAX_CHALLENGES_PER_TASK } from './cosChallenge.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { runLocalCodeReview, getCodeReviewDefaults } from './codeReview.js';
-import { isTruthyMeta } from './agentState.js';
 
 // First non-empty line of a string. Used by addTask dedup: stored descriptions
 // are flattened to a single line by generateTasksMarkdown, so the comparison
@@ -46,16 +47,12 @@ export const PRIORITY_VALUES = {
 const CLAIM_KEY_SET = new Set(CLAIM_METADATA_KEYS);
 
 
-// Blocked categories that mean "paused until something outside the task
-// changes", not "this task is finished with". A pause keeps the resume pointer
-// (see updateTask) and is never auto-expired by the failure reaper (see
-// NON_REAPABLE_BLOCKED_CATEGORIES, which includes these) — the task is expected
-// to run again once the cooldown lapses or the user fixes the config.
-export const PAUSED_BLOCKED_CATEGORIES = new Set([
-  'orphan-cooldown',   // timed cooldown; unblockExpiredOrphanCooldowns revives it
-  'app-unresolved',    // the task's app has no usable Repository Path
-  'workspace-invalid'  // the resolved workspace isn't a usable directory
-]);
+// The `blockedCategory` vocabulary lives in `lib/taskBlockCategories.js` — the
+// pause logic, the failure reaper below, and the investigation auto-retry all
+// have to answer "may I move this task?" from that one value, and each keeping
+// its own literal set is how they drifted. Re-exported at the address callers
+// already use.
+export { PAUSED_BLOCKED_CATEGORIES };
 
 // A task is terminal once it is completed or blocked — the same set cosTaskMerge's
 // release-on-transition uses. Consumed by the LI cross-peer verdict consume (#2779) to
@@ -731,7 +728,13 @@ async function writeTaskUpdate(taskId, updates, taskType, { now }) {
   const action = updatedTask.status === 'pending' && previousStatus === 'blocked'
     ? 'unblocked'
     : (updatedTask.status === 'pending' && previousStatus === 'in_progress' ? 'requeued' : 'updated');
-  cosEvents.emit('tasks:changed', { type: taskType, action, task: updatedTask });
+  // `previousStatus` rides along so consumers can key on the TRANSITION rather
+  // than re-deriving one from the level. `updateTask` on an already-terminal task
+  // re-emits `updated` with the same status — an edit to a completed task's
+  // description is enough — so a consumer that reacts to "reached completed"
+  // (the investigation auto-retry; the voice completion line) needs the edge, not
+  // `status === 'completed'`, which is true on every later write too.
+  cosEvents.emit('tasks:changed', { type: taskType, action, task: updatedTask, previousStatus });
   return updatedTask;
   });
 }
@@ -885,30 +888,11 @@ export const DEFAULT_FAILURE_TASK_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // 14 d
 // out an unbounded burst of writes/`tasks:changed` events after a large storm.
 export const DEFAULT_REAP_LIMIT = 50;
 
-// Blocked categories that encode USER INTENT or an OPEN user decision, not a
-// stale failure artifact — the reaper leaves these alone. Everything else with a
-// `blockedCategory` is a failure-path block and therefore reapable.
-const NON_REAPABLE_BLOCKED_CATEGORIES = new Set([
-  'user-terminated',        // user explicitly stopped the agent
-  AGENT_PAUSED_CATEGORY,    // user paused; resumable on demand
-  'challenge-escalation', // parked awaiting the user's arbitration
-  // The workspace blocks are an OPEN user decision, not a stale failure: the task
-  // is waiting for the app's Repository Path to be fixed, and auto-completing it
-  // at 14 days would silently retire work nobody decided to drop. (The third
-  // pause category, `orphan-cooldown`, stays reapable — it revives itself in
-  // ~30 minutes, so one still sitting there after 14 days IS stale.)
-  'app-unresolved',
-  'workspace-invalid'
-]);
-
-// Durable marker + legacy-headline fallback for an investigation task. Kept
-// local (not imported from agentErrorAnalysis.js) to avoid a cosTaskStore ↔
-// cos.js ↔ agentErrorAnalysis import cycle; the headline prefix is the one
-// signal present on BOTH new and pre-#2615 investigation tasks.
-const INVESTIGATION_HEADLINE_PREFIX = '[Auto] Investigate agent failure';
-const isInvestigationTaskLocal = (task) =>
-  isTruthyMeta(task?.metadata?.isInvestigation) ||
-  (typeof task?.description === 'string' && task.description.trimStart().startsWith(INVESTIGATION_HEADLINE_PREFIX));
+// Blocks that encode USER INTENT or an OPEN user decision are the reaper's
+// exemption (`USER_DECISION_BLOCKED_CATEGORIES`, lib/taskBlockCategories.js).
+// Everything else with a `blockedCategory` is a failure-path block and therefore
+// reapable — including `orphan-cooldown`, which revives itself in ~30 minutes, so
+// one still sitting there after 14 days IS stale.
 
 /**
  * Age (ms) of a failure-blocked task, read from the most specific timestamp it
@@ -919,7 +903,7 @@ const isInvestigationTaskLocal = (task) =>
 export function blockedFailureAgeMs(task, now = Date.now()) {
   if (task?.status !== 'blocked') return null;
   const category = task.metadata?.blockedCategory;
-  if (!category || NON_REAPABLE_BLOCKED_CATEGORIES.has(category)) return null;
+  if (!category || USER_DECISION_BLOCKED_CATEGORIES.has(category)) return null;
   const stampedAt = task.metadata?.blockedAt
     || task.metadata?.lastFailureAt
     || task.metadata?.updatedAt;
@@ -945,7 +929,7 @@ export function isReapableBlockedFailure(task, { now = Date.now(), maxAgeMs = DE
  * @param {Map}    tasksById  id → task across BOTH queues
  */
 export function isReapableInvestigation(task, tasksById) {
-  if (!isInvestigationTaskLocal(task)) return false;
+  if (!isInvestigationTask(task)) return false;
   if (task.status === 'completed') return false; // already terminal
   const affected = Array.isArray(task.metadata?.affectedTasks) ? task.metadata.affectedTasks : [];
   if (affected.length === 0) return false;

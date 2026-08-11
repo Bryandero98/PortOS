@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // cos.js drags in a giant dependency graph (PM2, fs, sockets…) — mock it
-// so autoFixer's defer/cancel behavior can be tested in isolation. Both
-// exports the SUT touches are stubbed: `addTask` records what would be
-// queued, `isRunning` toggles the running/not-running branches.
+// so autoFixer's defer/cancel behavior can be tested in isolation. `addTask`
+// records what would be queued, `isRunning` toggles the running/not-running
+// branches, and `getAllTasks` feeds the shared investigation-approval policy
+// (reached via agentErrorAnalysis) an empty backlog — no prior investigation and
+// no storm, i.e. the ordinary unattended case.
 vi.mock('./cos.js', () => ({
   addTask: vi.fn().mockResolvedValue({ id: 'task-1' }),
   isRunning: vi.fn().mockReturnValue(true),
+  updateTask: vi.fn().mockResolvedValue(true),
+  getAllTasks: vi.fn().mockResolvedValue({ user: { tasks: [] }, cos: { tasks: [] } }),
 }));
 
 const cos = await import('./cos.js');
@@ -298,14 +302,15 @@ describe('autoFixer — generic critical-error auto-fix path', () => {
     _resetAutoFixerForTests();
   });
 
-  it('requires approval — a bare crash is too thin a signal for an unsupervised agent to patch code', async () => {
+  it('files the fix task unattended — an isolated crash is what CoS diagnoses for itself', async () => {
     emitCriticalError({ message: 'Cannot read properties of undefined', stack: 'Error: boom\n    at foo (file.js:1:1)' });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(cos.addTask).toHaveBeenCalledTimes(1);
     expect(cos.addTask.mock.calls[0][0]).toMatchObject({
       description: 'Fix critical error: Cannot read properties of undefined',
-      approvalRequired: true,
+      approvalRequired: false,
+      approvalReason: null,
     });
   });
 
@@ -314,7 +319,47 @@ describe('autoFixer — generic critical-error auto-fix path', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(cos.addTask).toHaveBeenCalledTimes(1);
-    expect(cos.addTask.mock.calls[0][0]).toMatchObject({ approvalRequired: true });
+    expect(cos.addTask.mock.calls[0][0]).toMatchObject({ approvalRequired: false });
+  });
+
+  it('stamps the fingerprint the loop policy reads, so a repeat of the same cause is recognizable', async () => {
+    emitCriticalError({ code: 'SOME_ERROR', message: 'first time', severity: 'error' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cos.addTask.mock.calls[0][0]).toMatchObject({
+      isInvestigation: true,
+      investigationFingerprint: 'unknown:critical-error:SOME_ERROR',
+    });
+  });
+
+  it('holds the fix task for a human when the same cause was already investigated today', async () => {
+    // A prior investigation carrying the fingerprint the production path above
+    // actually writes, settled an hour ago — the fix did not hold, so another
+    // unattended agent would just repeat it.
+    cos.getAllTasks.mockResolvedValueOnce({
+      user: { tasks: [] },
+      cos: {
+        tasks: [{
+          id: 'sys-prior',
+          status: 'completed',
+          metadata: {
+            isInvestigation: true,
+            investigationFingerprint: 'unknown:critical-error:SOME_ERROR',
+            updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          }
+        }]
+      }
+    });
+
+    emitCriticalError({ code: 'SOME_ERROR', message: 'the same failure, again', severity: 'error' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cos.addTask).toHaveBeenCalledTimes(1);
+    expect(cos.addTask.mock.calls[0][0]).toMatchObject({
+      approvalRequired: true,
+      approvalReason: 'investigation-loop:repeat-fingerprint',
+    });
+    expect(cos.addTask.mock.calls[0][0].description).toContain('Why this is held for you');
   });
 
   it('does not fire for a non-critical error that is not marked auto-fixable', async () => {

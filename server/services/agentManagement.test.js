@@ -110,7 +110,7 @@ import { getAgents, updateAgent, getAgentRecord, completeAgent as markAgentCompl
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
 import { advanceAfterSceneSettled } from './creativeDirector/completionHook.js';
-import { updateTask, addTask, getTaskById, reviveBlockedTask } from './cos.js';
+import { updateTask, addTask, getTaskById, getAllTasks, reviveBlockedTask } from './cos.js';
 import { pauseAgentViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
@@ -272,7 +272,7 @@ describe('handleOrphanedTask — duplicate-investigation guard', () => {
     expect(addTask).not.toHaveBeenCalled();
   });
 
-  it('requires approval on the investigation task once orphan retries are exhausted', async () => {
+  it('files the investigation unattended and links it back to the orphaned task for auto-retry', async () => {
     // orphanRetryCount: 2 -> retryCount 3 hits MAX_ORPHAN_RETRIES, tripping the
     // "else" branch that blocks the task and spawns an investigation task.
     const exhaustedTask = {
@@ -283,14 +283,54 @@ describe('handleOrphanedTask — duplicate-investigation guard', () => {
       metadata: { orphanRetryCount: 2, totalSpawnCount: 2 }
     };
     const getTaskById = vi.fn().mockResolvedValue(exhaustedTask);
+    getAllTasks.mockResolvedValue({ user: { tasks: [] }, cos: { tasks: [] } });
 
     await handleOrphanedTask('task-foo', 'agent-orphaned', getTaskById);
 
     expect(addTask).toHaveBeenCalledTimes(1);
     expect(addTask.mock.calls[0][0]).toMatchObject({
       description: expect.stringContaining('[Auto-Fix] Investigate repeated agent orphaning'),
-      approvalRequired: true,
+      approvalRequired: false,
+      // The link the auto-retry reads: completing this investigation revives
+      // `task-foo` instead of leaving it blocked for a human.
+      isInvestigation: true,
+      affectedTasks: ['task-foo'],
+      // And the key the loop policy reads — without it stamped here, a repeat of
+      // this same cause could never be recognized as a loop.
+      investigationFingerprint: 'max-retries:user:none',
     });
+  });
+
+  it('holds the orphan investigation for a human when the same cause was already investigated today', async () => {
+    const exhaustedTask = {
+      id: 'task-foo',
+      status: 'in_progress',
+      taskType: 'user',
+      description: 'Original work',
+      metadata: { orphanRetryCount: 2, totalSpawnCount: 2 }
+    };
+    getAllTasks.mockResolvedValue({
+      user: { tasks: [] },
+      cos: {
+        tasks: [{
+          id: 'sys-prior',
+          status: 'completed',
+          metadata: {
+            isInvestigation: true,
+            investigationFingerprint: 'max-retries:user:none',
+            updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          }
+        }]
+      }
+    });
+
+    await handleOrphanedTask('task-foo', 'agent-orphaned', vi.fn().mockResolvedValue(exhaustedTask));
+
+    expect(addTask.mock.calls[0][0]).toMatchObject({
+      approvalRequired: true,
+      approvalReason: 'investigation-loop:repeat-fingerprint',
+    });
+    expect(addTask.mock.calls[0][0].description).toContain('Why this is held for you');
   });
 });
 
