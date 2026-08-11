@@ -2361,22 +2361,43 @@ describe('spawnTuiAgent runtime', () => {
   // spawnTuiAgent to a caller that only logs — leaving the agent record stuck in
   // `initializing` until the zombie reaper finalized it a minute later with a
   // generic message, so the real cause never reached the user.
+  //
+  // The reason splits on the runner hop — see spawnTuiAgent's catch. Note a
+  // refused/mid-restart runner surfaces from undici as a bare
+  // TypeError('fetch failed').
   describe('spawn failure', () => {
-    it('finalizes with the spawn error instead of throwing', async () => {
-      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
-        new Error('Command not allowed: grok. Permitted commands: claude, codex')
-      );
+    it.each([
+      ['a runner refusal', new Error('Command not allowed: grok. Permitted commands: claude, codex'), 'Command not allowed: grok'],
+      ['an unreachable runner', new TypeError('fetch failed'), 'fetch failed'],
+    ])('finalizes %s as spawn-rejected instead of throwing', async (_label, rejection, expectedFragment) => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(rejection);
 
       // Resolves, does not reject.
       await expect(runSpawn({ useDurableRunner: true })).resolves.toBeNull();
-      await flushMicrotasks();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'spawn-rejected',
+          error: expect.stringContaining(expectedFragment),
+        })
+      );
+    });
+
+    it('keeps the actionable spawn-error when the local PTY path throws', async () => {
+      vi.mocked(shellService.createShellSession).mockImplementationOnce(() => {
+        throw new Error('posix_spawnp failed');
+      });
+
+      await expect(runSpawn({ useDurableRunner: false })).resolves.toBeNull();
 
       expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'agent-1',
           success: false,
           completionReason: 'spawn-error',
-          error: expect.stringContaining('Command not allowed: grok'),
+          error: 'Failed to start TUI session: posix_spawnp failed',
         })
       );
     });

@@ -929,6 +929,14 @@ export async function spawnTuiAgent({
   // process terminated unexpectedly". Finalize it here instead, carrying the
   // spawn error into the record. Runs outside the Express request lifecycle, so
   // there is no middleware to bubble to.
+  //
+  // The REASON splits on which half failed. A durable-runner throw is a
+  // runner-hop failure (a `fetch failed` mid-restart, or a runner refusal) —
+  // no process ever existed, so it is `spawn-rejected` (non-actionable →
+  // retry), mirroring the direct-CLI runner path's deliberate split in
+  // agentLifecycle.js and the registration in COMPLETION_REASON_ANALYSES. A
+  // LOCAL PTY that won't open keeps the actionable `spawn-error`: that is a
+  // real host/config problem a retry cannot repair.
   let session;
   try {
     session = await createAgentTuiSession({
@@ -952,7 +960,7 @@ export async function spawnTuiAgent({
       success: false,
       exitCode: 1,
       error: `Failed to start TUI session: ${message}`,
-      reason: 'spawn-error',
+      reason: useDurableRunner ? 'spawn-rejected' : 'spawn-error',
     });
     return null;
   }
