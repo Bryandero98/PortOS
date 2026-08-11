@@ -881,9 +881,11 @@ const REPAIR_CHARACTERS_MAX_CHARS = 12_000;
 
 // The character-foundation stage reasons over the whole ensemble at once, so it
 // is the slowest repair stage by a wide margin. Ten minutes proved short enough
-// to kill productive high-effort work. Keep a finite safety ceiling for a truly
-// hung provider, but give a quality-first ensemble pass enough room to finish.
-const CHARACTER_FOUNDATION_TIMEOUT_MS = 7_200_000;
+// to kill productive high-effort work, and a fixed two-hour ceiling still cuts
+// off a healthy provider solely because the ensemble is large. Match the
+// quality-first ceiling used by the pipeline's other long-form editorial calls;
+// provider cancellation remains available for a truly hung run.
+const CHARACTER_FOUNDATION_TIMEOUT_MS = 43_200_000;
 
 const CRAFT_REPAIR_MAX_ATTEMPTS = 2;
 

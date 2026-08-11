@@ -773,14 +773,14 @@ describe('foundation repair prompt — bounded outline', () => {
       }
     });
 
-    it('requests a two-hour timeout so productive high-effort ensemble work is not killed early', async () => {
+    it('requests a twelve-hour timeout so productive high-effort ensemble work is not killed early', async () => {
       await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the causal chain' } });
 
-      expect(__testing.CHARACTER_FOUNDATION_TIMEOUT_MS).toBe(7_200_000);
+      expect(__testing.CHARACTER_FOUNDATION_TIMEOUT_MS).toBe(43_200_000);
       expect(stageRunner.runStagedLLM).toHaveBeenCalledWith(
         'pipeline-character-foundation',
         expect.anything(),
-        expect.objectContaining({ timeoutOverride: 7_200_000 }),
+        expect.objectContaining({ timeoutOverride: 43_200_000 }),
       );
     });
   });
