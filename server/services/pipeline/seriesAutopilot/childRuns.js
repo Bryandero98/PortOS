@@ -25,7 +25,7 @@ import {
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
-  regressionPauseReason, sameFinding,
+  regressionPauseReason, sameFinding, isBlockingSetRegression,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
@@ -154,9 +154,11 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // finding it was handed and exposed different latent defects. Restore the
     // best verified state, not merely the immediately previous state; otherwise
     // a 4 → 2 → 4 → 5 run pauses on 4 and discards the demonstrated 2-blocker
-    // draft. Checked before maxRounds/divergence so no worse baseline survives.
+    // draft. At an equal count, a worse severity mix is also a regression: two
+    // mediums becoming one medium plus one high is not a safe tie. Checked
+    // before maxRounds/divergence so no worse baseline survives.
     // Reverting is unconditional; PAUSING is not — see the corrective pass below.
-    if (lastResolve && blocking.length > lastResolve.blocking.length) {
+    if (lastResolve && isBlockingSetRegression(lastResolve.blocking, blocking)) {
       const rollbackTarget = bestVerified || lastResolve;
       const rollback = await restoreArcState(seriesId, rollbackTarget.snapshot);
       const discarded = discardedSet(blocking);
@@ -213,16 +215,17 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
           lastResolve.blocking.length,
           blocking.length,
           rollbackTarget.blocking.length,
+          blocking.length === lastResolve.blocking.length,
         ),
         residual: rollbackTarget.blocking,
         discarded,
       };
     }
-    // Equal-count drafts may still represent real causal progress: a resolver
-    // can close broad structural findings and expose the same number of narrower
-    // handoff problems. Treat the latest verified tie as the checkpoint so a
-    // later stall never rewinds those repairs. Count growth is still rejected
-    // above, so this cannot promote a demonstrably worse state.
+    // Equal-count drafts may still represent real causal progress when their
+    // severity mix is not worse: a resolver can close broad structural findings
+    // and expose the same number of narrower handoff problems. Treat that latest
+    // verified tie as the checkpoint so a later stall never rewinds those
+    // repairs. Count growth and severity escalation are rejected above.
     const isNewBest = !bestVerified || blocking.length <= bestVerified.blocking.length;
     // Shared exit for the two bounded stops below: rewind to the checkpoint when
     // the round they landed on is worse than it, reporting the discarded set the

@@ -1498,6 +1498,42 @@ describe('isResolveRegression (pure resolve-round damage check)', () => {
   });
 });
 
+describe('isBlockingSetRegression (arc rollback ordering)', () => {
+  const { isBlockingSetRegression } = autopilot;
+  const f = (severity, problem) => ({ severity, problem, location: 'V1' });
+
+  it('rejects an equal-count candidate whose severity mix got worse', () => {
+    expect(isBlockingSetRegression(
+      [f('high', 'recovery chronology'), f('medium', 'stale milestone')],
+      [f('high', 'new canon violation'), f('high', 'stale milestone')],
+    )).toBe(true);
+  });
+
+  it('keeps an equal-count candidate whose severity mix improved or held', () => {
+    const before = [f('high', 'canon violation'), f('medium', 'stale milestone')];
+    expect(isBlockingSetRegression(before, [
+      f('medium', 'narrower handoff'), f('medium', 'stale milestone'),
+    ])).toBe(false);
+    expect(isBlockingSetRegression(before, before)).toBe(false);
+  });
+
+  it('preserves blocker count as the primary ordering signal', () => {
+    expect(isBlockingSetRegression(
+      [f('high', 'one blocker')],
+      [f('medium', 'first blocker'), f('medium', 'second blocker')],
+    )).toBe(true);
+    expect(isBlockingSetRegression(
+      [f('medium', 'first blocker'), f('medium', 'second blocker')],
+      [f('high', 'one blocker')],
+    )).toBe(false);
+  });
+
+  it('tolerates missing inputs', () => {
+    expect(isBlockingSetRegression(undefined, undefined)).toBe(false);
+    expect(isBlockingSetRegression(undefined, [f('high', 'new blocker')])).toBe(true);
+  });
+});
+
 describe('autopilot conductor', () => {
   it('rejects start when the cos domain is off (no run created)', async () => {
     cosMode = 'off';
@@ -2174,6 +2210,34 @@ describe('autopilot conductor', () => {
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
     expect(last?.residualFindings).toEqual(holes(3, 'initial'));
+  });
+
+  it('reverts an equal-count arc candidate whose findings escalated in severity', async () => {
+    const before = [
+      { severity: 'high', problem: 'recovery clock is contradictory', location: 'V1 issues 8-9' },
+      { severity: 'medium', problem: 'character milestone uses stale timing', location: 'V1 character arc' },
+    ];
+    const after = [
+      { severity: 'high', problem: 'human machinery can open the living gate without consent', location: 'V1 issue 11' },
+      { severity: 'high', problem: 'character milestone uses stale timing', location: 'V1 character arc' },
+    ];
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: before }))
+      .mockImplementationOnce(async () => ({ issues: after }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {
+      maxArcVerifyRounds: 6,
+      maxArcResolveRetries: 0,
+    });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/same count but a worse severity mix/);
+    expect(last?.residualFindings).toEqual(before);
+    expect(last?.discardedFindings).toEqual(after);
   });
 
   it('reverts the same 1 → 3 → 5 divergence when each verify call re-words the finding', async () => {

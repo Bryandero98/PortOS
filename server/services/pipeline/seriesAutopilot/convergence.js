@@ -205,14 +205,35 @@ export function isResolveRegression(before, after) {
   return targeted.some((t) => current.some((c) => sameFinding(t, c)));
 }
 
+// The arc rollback guard's operational ordering. Total blockers remain the
+// primary signal: accepting a larger set is what caused the original runaway
+// repair loop. When the totals tie, severity is the tiebreaker so a resolver
+// cannot trade a medium finding for a high one and call the unchanged count
+// safe. Unknown severities do not need a bucket here — with equal totals, any
+// movement into high/medium/low is already reflected by the known buckets.
+export function isBlockingSetRegression(before, after) {
+  const prior = Array.isArray(before) ? before : [];
+  const current = Array.isArray(after) ? after : [];
+  if (current.length !== prior.length) return current.length > prior.length;
+  const count = (findings, severity) => findings.filter((finding) => finding?.severity === severity).length;
+  for (const severity of ['high', 'medium', 'low']) {
+    const delta = count(current, severity) - count(prior, severity);
+    if (delta !== 0) return delta > 0;
+  }
+  return false;
+}
+
 // Pause reason for a gate whose auto-resolve round was reverted — distinct from
 // both "ran out of rounds" and "stopped converging": the state the user is being
 // handed is the one from BEFORE the round, and saying so is the difference
 // between a trustworthy pause and an unexplained rewind.
-export function regressionPauseReason(gate, beforeCount, afterCount, bestCount = beforeCount) {
+export function regressionPauseReason(gate, beforeCount, afterCount, bestCount = beforeCount, severityEscalated = false) {
   const { label, fix } = PAUSE_GATES[gate];
+  const outcome = severityEscalated
+    ? `came back with the same count but a worse severity mix (${afterCount} total)`
+    : `came back with ${afterCount}`;
   return `${label} auto-resolve made the draft worse — the round it ran on ${beforeCount} blocking finding(s) `
-    + `came back with ${afterCount}, so its edits were reverted regardless of how the verifier reworded the findings. `
+    + `${outcome}, so its edits were reverted regardless of how the verifier reworded the findings. `
     + `Paused for review with the best verified ${bestCount}-finding state from this gate. ${fix}, then resume.`;
 }
 
