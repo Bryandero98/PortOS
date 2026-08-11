@@ -53,10 +53,13 @@ vi.mock('fs/promises', () => ({
 
 const { spawn } = await import('child_process');
 const { writeFile, readFile } = await import('fs/promises');
-const { atomicWrite } = await import('../lib/fileUtils.js');
+const { atomicWrite, tryReadFile } = await import('../lib/fileUtils.js');
 const runner = await import('./runner.js');
 const { analyzeError, ERROR_CATEGORIES } = await import('../lib/aiToolkit/errorDetection.js');
-const { setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedModel, emitRunStarted, finalizeRunRecord } = runner;
+const {
+  setAIToolkit, executeCliRun, buildCliArgs, hasModelFlag, extractBakedModel,
+  emitRunStarted, finalizeRunRecord, patchRunMetadata,
+} = runner;
 
 // Minimal toolkit stub that satisfies executeCliRun's expectations. Mirrors the
 // real toolkit runner's declared external-run registry (registerExternalRun /
@@ -161,6 +164,31 @@ describe('finalizeRunRecord — authoritative timeout classification', () => {
     });
     expect(errorDetection.analyzeError).not.toHaveBeenCalled();
     expect(onRunFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe('patchRunMetadata — serialized merges', () => {
+  it('preserves fields from concurrent attribution patches to the same run', async () => {
+    let stored = JSON.stringify({ id: 'run-attribution' });
+    tryReadFile.mockImplementation(async () => stored);
+    atomicWrite.mockImplementation(async (_path, data) => {
+      await Promise.resolve();
+      stored = JSON.stringify(data);
+    });
+
+    await Promise.all([
+      patchRunMetadata('run-attribution', { pipelineStage: 'verifyArc' }),
+      patchRunMetadata('run-attribution', { effort: 'high' }),
+    ]);
+
+    expect(JSON.parse(stored)).toMatchObject({
+      id: 'run-attribution', pipelineStage: 'verifyArc', effort: 'high',
+    });
+    tryReadFile.mockResolvedValue(null);
+    atomicWrite.mockImplementation(async (filePath, data) => {
+      const payload = (typeof data === 'string' || Buffer.isBuffer(data)) ? data : JSON.stringify(data, null, 2);
+      return writeFile(filePath, payload);
+    });
   });
 });
 
