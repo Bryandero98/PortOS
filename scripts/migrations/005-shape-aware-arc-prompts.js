@@ -53,7 +53,7 @@ export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-verify.md':      '83347e7d923580a3062033ab39b3c14b', // post-250 arc spine checkpoint
   'pipeline-volume-verify.md':   '49458d36700cb94e34806d536ffe2940', // post-019
   'pipeline-season-episodes.md': 'a88e8e78a949b7aaf500d03314e2ea0b', // post-172 (structure rules)
-  'pipeline-arc-resolve.md':     '0611db539437083621e19bb88b005e8d', // post-253 (spine-scoped rounds)
+  'pipeline-arc-resolve.md':     '31eca76b68f40de1b93734fe9bc9f4bb', // post-254 (sparse character-arc repairs)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

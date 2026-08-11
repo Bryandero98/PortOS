@@ -969,6 +969,55 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.series.seasons[1].synopsis).toBe('v2 rewritten');
   });
 
+  it('applies sparse character-arc and transition patches without replacing IDs or sibling arcs', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'L' },
+      characterArcs: [
+        {
+          characterId: 'chr-lead', characterName: 'Lead', want: 'escape', need: 'trust',
+          startState: 'guarded', endState: 'open', status: 'verified',
+          transitions: [
+            { id: 'trn-choice', kind: 'decision', atIssue: 5, label: 'withholds consent', note: 'old note' },
+            { id: 'trn-sacrifice', kind: 'sacrifice', atIssue: 11, label: 'spends the reserve', note: '' },
+          ],
+        },
+        {
+          characterId: 'chr-sibling', characterName: 'Sibling', want: 'belong', need: 'choose',
+          startState: 'adrift', endState: 'committed', transitions: [],
+        },
+      ],
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        characterArcs: [{
+          resolves: ['f1'],
+          characterId: 'chr-lead',
+          transitions: [{ id: 'trn-sacrifice', atIssue: 12, label: 'freely authorizes the final opening' }],
+        }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'The sacrifice is assigned to issue 11.', suggestion: 'Move it to 12.' }],
+      spineOnly: true,
+    });
+
+    expect(out.series.characterArcs).toHaveLength(2);
+    const [lead, sibling] = out.series.characterArcs;
+    expect(lead).toMatchObject({ characterId: 'chr-lead', want: 'escape', need: 'trust', status: 'verified' });
+    expect(lead.transitions).toEqual([
+      expect.objectContaining({ id: 'trn-choice', atIssue: 5, label: 'withholds consent', note: 'old note' }),
+      expect.objectContaining({ id: 'trn-sacrifice', atIssue: 12, label: 'freely authorizes the final opening', kind: 'sacrifice' }),
+    ]);
+    expect(sibling).toMatchObject({ characterId: 'chr-sibling', startState: 'adrift', endState: 'committed' });
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(JSON.parse(ctx.characterArcsJson)[0].transitions[1].id).toBe('trn-sacrifice');
+  });
+
   it('drops arc / volume / episode edits that name no input finding', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'original summary' } });
@@ -1358,12 +1407,15 @@ describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
   it('keeps edits naming an input finding and drops the rest', () => {
     const out = select({
       arc: { resolves: ['f2'], logline: 'x' },
+      characterArcs: [{ resolves: ['f2'], characterId: 'chr-a' }, { resolves: ['f8'], characterId: 'chr-b' }],
       seasons: [{ resolves: ['f1'] }, { resolves: ['f7'] }, { resolves: [] }],
       episodes: [{ resolves: ['f1'] }, {}],
     });
     expect(out.legacy).toBe(false);
     expect(out.arc?.logline).toBe('x');
     expect(out.arcDropped).toBe(false);
+    expect(out.characterArcs).toHaveLength(1);
+    expect(out.characterArcsDropped).toBe(1);
     expect(out.seasons).toHaveLength(1);
     expect(out.seasonsDropped).toBe(2);
     expect(out.episodes).toHaveLength(1);
@@ -1418,7 +1470,7 @@ describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
   });
 
   it('tolerates a missing/garbage response', () => {
-    expect(select(null)).toMatchObject({ legacy: true, arc: null, seasons: [], episodes: [] });
+    expect(select(null)).toMatchObject({ legacy: true, arc: null, characterArcs: [], seasons: [], episodes: [] });
     expect(select({ arc: 'not an object', seasons: 'nope', episodes: [null, 3] }))
       .toMatchObject({ arc: null, seasons: [], episodes: [] });
   });
@@ -1435,7 +1487,14 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
   // and an episode under each carrying a planning synopsis.
   async function seedArc() {
     const s = await setupSeries();
-    await seriesSvc.updateSeries(s.id, { arc: { logline: 'original logline', summary: 'original summary' } });
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'original logline', summary: 'original summary' },
+      characterArcs: [{
+        characterId: 'chr-lead', characterName: 'Lead', want: 'escape', need: 'trust',
+        startState: 'guarded', endState: 'open',
+        transitions: [{ id: 'trn-sacrifice', kind: 'sacrifice', atIssue: 12, label: 'chooses the crew' }],
+      }],
+    });
     const v1 = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'v1 synopsis', episodeCountTarget: 2 });
     const v2 = await seasonsSvc.createSeason(s.id, { title: 'Volume 2', synopsis: 'v2 synopsis', episodeCountTarget: 2 });
     const e1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Ep 1' });
@@ -1456,6 +1515,11 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
     const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
     await seriesSvc.updateSeries(s.id, {
       arc: { logline: 'rewritten logline', summary: 'rewritten summary' },
+      characterArcs: [{
+        characterId: 'chr-lead', characterName: 'Lead', want: 'escape', need: 'control',
+        startState: 'guarded', endState: 'alone',
+        transitions: [{ id: 'trn-sacrifice', kind: 'sacrifice', atIssue: 11, label: 'wrong milestone' }],
+      }],
       seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
     });
     await issuesSvc.updateIssue(e2.id, { seasonId: minted.id });
@@ -1466,6 +1530,8 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
 
     const series = await seriesSvc.getSeries(s.id);
     expect(series.arc.logline).toBe('original logline');
+    expect(series.characterArcs[0]).toMatchObject({ need: 'trust', endState: 'open' });
+    expect(series.characterArcs[0].transitions[0]).toMatchObject({ id: 'trn-sacrifice', atIssue: 12, label: 'chooses the crew' });
     expect(series.seasons.map((x) => x.id)).toEqual([v1.id, v2.id]);
     expect(series.seasons[0].synopsis).toBe('v1 synopsis');
     // The minted volume is gone, so the episode it took has to come back with
@@ -1496,8 +1562,15 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
   it('snapshots by value — a later write cannot mutate what was captured', async () => {
     const { s } = await seedArc();
     const snapshot = await planner.snapshotArcState(s.id);
-    await seriesSvc.updateSeries(s.id, { arc: { logline: 'mutated', summary: 'mutated' } });
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'mutated', summary: 'mutated' },
+      characterArcs: [{
+        characterId: 'chr-lead', characterName: 'Lead', want: 'mutated', need: 'mutated',
+        startState: 'mutated', endState: 'mutated', transitions: [],
+      }],
+    });
     expect(snapshot.arc.logline).toBe('original logline');
+    expect(snapshot.characterArcs[0].want).toBe('escape');
   });
 });
 

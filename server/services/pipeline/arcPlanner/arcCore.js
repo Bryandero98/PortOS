@@ -15,6 +15,7 @@ import { listIssues, listIssuesForSeries, recomputeIssueNumbersForSeries, update
 import { emitRecordUpdated, withReexportSuppressed } from '../../sharing/recordEvents.js';
 import { getSeason } from '../seasons.js';
 import { READER_MAP_BEAT_KINDS, buildSeason, cleanThemes, renderArcShapeGuidance, renderArcShapePositionSummary, sanitizeArc, sanitizeReaderMap, sanitizeSeason, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { sanitizeCharacterArcList } from '../../../lib/seriesCharacterArc.js';
 import { runPromptRefineRaw, trimChanges } from '../refineHelpers.js';
 import { ERR_VALIDATION, SHAPE_GUIDANCE_NONE, appendTickingClock, buildArcBaseContext, buildArcOverviewContext, buildNeighborVolumes, buildReaderMapContext, buildResolveContext, buildVerifyContext, compareIssuesByPosition, findingIdSet, makeErr, matchIssueForEpisodeEdit, matchResolvedFindings, renderVolumeIssue, resolveWorldContext, seasonIdByNumberOf, shapeEpisodeResolutions, shapeFindings, shapeSeasonOutlines, shapeVerifyIssues } from './context.js';
 
@@ -359,11 +360,12 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
  * Split one auto-resolve response into the edits that actually name a finding
  * the round was handed, and the ones to drop (#3724). Pure.
  *
- * Every entry in `arc` / `seasons[]` / `episodes[]` has to carry
+ * Every entry in `arc` / `characterArcs[]` / `seasons[]` / `episodes[]` has to carry
  * `resolves: ["f2", …]` naming at least one input finding — an edit that names
  * none can't be closing anything, so applying it is all blast radius and no
- * benefit. Returns `{ legacy, arc, arcDropped, seasons, seasonsDropped,
- * episodes, episodesDropped, episodesOutOfScope }`.
+ * benefit. Returns `{ legacy, arc, arcDropped, characterArcs,
+ * characterArcsDropped, seasons, seasonsDropped, episodes, episodesDropped,
+ * episodesOutOfScope }`.
  *
  * `spineOnly` drops every episode edit regardless of what it names (#3789): a
  * spine round is judged against an episode-empty plan, so an episode rewrite
@@ -386,17 +388,21 @@ export function selectFindingKeyedEdits(content, findings, { spineOnly = false }
   const validIds = findingIdSet(findings);
   const isEdit = (e) => !!e && typeof e === 'object';
   const arcEdit = isEdit(content?.arc) ? content.arc : null;
+  const characterArcsRaw = (Array.isArray(content?.characterArcs) ? content.characterArcs : []).filter(isEdit);
   const seasonsRaw = (Array.isArray(content?.seasons) ? content.seasons : []).filter(isEdit);
   const episodesRaw = (Array.isArray(content?.episodes) ? content.episodes : []).filter(isEdit);
-  const legacy = ![arcEdit, ...seasonsRaw, ...episodesRaw]
+  const legacy = ![arcEdit, ...characterArcsRaw, ...seasonsRaw, ...episodesRaw]
     .some((e) => e && matchResolvedFindings(e, validIds).declared);
   const targeted = (raw) => legacy || matchResolvedFindings(raw, validIds).matched.length > 0;
+  const characterArcs = characterArcsRaw.filter(targeted);
   const seasons = seasonsRaw.filter(targeted);
   const episodes = spineOnly ? [] : episodesRaw.filter(targeted);
   return {
     legacy,
     arc: arcEdit && targeted(arcEdit) ? arcEdit : null,
     arcDropped: !!arcEdit && !targeted(arcEdit),
+    characterArcs,
+    characterArcsDropped: characterArcsRaw.length - characterArcs.length,
     seasons,
     seasonsDropped: seasonsRaw.length - seasons.length,
     episodes,
@@ -405,9 +411,61 @@ export function selectFindingKeyedEdits(content, findings, { spineOnly = false }
   };
 }
 
-// Episode (issue) records are never CREATED or DELETED here, and their drafted
-// scripts are never clobbered — a full-arc round may rewrite an episode's
-// planning synopsis (see `applyEpisodeResolutions`), and nothing else. If a
+const characterArcKey = (arc) => {
+  const characterId = typeof arc?.characterId === 'string' ? arc.characterId.trim() : '';
+  if (characterId) return `id:${characterId}`;
+  const characterName = typeof arc?.characterName === 'string' ? arc.characterName.trim().toLowerCase() : '';
+  return characterName ? `name:${characterName}` : '';
+};
+
+const CHARACTER_ARC_PATCH_FIELDS = Object.freeze([
+  'want', 'need', 'startState', 'endState', 'status',
+]);
+const TRANSITION_PATCH_FIELDS = Object.freeze([
+  'kind', 'label', 'atIssue', 'atSceneAnchor', 'note',
+]);
+
+/**
+ * Apply finding-keyed per-character arc edits as sparse patches. Existing
+ * character and transition identifiers are required and preserved: an arc
+ * verifier finding must never mint a new cast arc or replace every transition
+ * merely because the model corrected one milestone.
+ */
+export function mergeCharacterArcPatches(existingArcs, patches) {
+  const current = sanitizeCharacterArcList(existingArcs);
+  if (!Array.isArray(patches) || patches.length === 0) return current;
+  const patchByKey = new Map(patches.map((patch) => [characterArcKey(patch), patch]).filter(([key]) => key));
+  const merged = current.map((arc) => {
+    const patch = patchByKey.get(characterArcKey(arc));
+    if (!patch) return arc;
+    const next = { ...arc };
+    for (const field of CHARACTER_ARC_PATCH_FIELDS) {
+      if (field in patch) next[field] = patch[field];
+    }
+    if (Array.isArray(patch.transitions)) {
+      const transitionPatches = new Map(patch.transitions
+        .filter((transition) => transition && typeof transition === 'object' && typeof transition.id === 'string')
+        .map((transition) => [transition.id, transition]));
+      next.transitions = arc.transitions.flatMap((transition) => {
+        const transitionPatch = transitionPatches.get(transition.id);
+        if (!transitionPatch) return [transition];
+        if (transitionPatch.delete === true) return [];
+        const updated = { ...transition };
+        for (const field of TRANSITION_PATCH_FIELDS) {
+          if (field in transitionPatch) updated[field] = transitionPatch[field];
+        }
+        return [updated];
+      });
+    }
+    return next;
+  });
+  return sanitizeCharacterArcList(merged);
+}
+
+// Character arcs are patched in place by existing IDs; episode (issue) records
+// are never CREATED or DELETED here, and their drafted scripts are never
+// clobbered — a full-arc round may rewrite an episode's planning synopsis (see
+// `applyEpisodeResolutions`), and nothing else. If a
 // finding's only actionable resolution would require deleting issues, the LLM
 // is told to flag that in the response's `notes` field rather than executing it.
 // `options.findings` empty / omitted = re-run verify first and resolve
@@ -415,8 +473,8 @@ export function selectFindingKeyedEdits(content, findings, { spineOnly = false }
 // these same findings authored THESE and was reverted" list (see
 // buildResolveContext) — set only by a corrective pass.
 // `options.spineOnly` mirrors verifyArc's pre-episode arc-spine mode: the
-// resolver sees the same episode-empty plan and may only patch the arc +
-// volumes (#3789). It is a PAIRING constraint, not an independent knob — it
+// resolver sees the same episode-empty plan and may only patch the series arc,
+// per-character arcs, and volumes (#3789). It is a PAIRING constraint, not an independent knob — it
 // must match the verify that produced `options.findings`, or the resolver
 // answers at an altitude the gate never judged. Episode-synopsis corrections
 // stay available for the later full arc gate, which runs after episodes exist
@@ -484,14 +542,14 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // Only worth saying when there is actually something to apply unkeyed — a
   // response that proposed NO edits reads as legacy too, and warning about a
   // stale prompt there would be a lie.
-  if (edits.legacy && (edits.arc || edits.seasons.length || edits.episodes.length)) {
+  if (edits.legacy && (edits.arc || edits.characterArcs.length || edits.seasons.length || edits.episodes.length)) {
     console.log(`⚠️ arc-resolve: response carries no resolves[] — applying it unkeyed (installed pipeline-arc-resolve.md predates #3724)`);
   }
   if (edits.arcDropped) {
     console.log(`⚠️ arc-resolve: dropped the arc-level edit — it named no input finding`);
   }
-  if (edits.seasonsDropped || edits.episodesDropped) {
-    console.log(`⚠️ arc-resolve: dropped ${edits.seasonsDropped} volume + ${edits.episodesDropped} episode edit(s) naming no input finding`);
+  if (edits.characterArcsDropped || edits.seasonsDropped || edits.episodesDropped) {
+    console.log(`⚠️ arc-resolve: dropped ${edits.characterArcsDropped} character arc + ${edits.seasonsDropped} volume + ${edits.episodesDropped} episode edit(s) naming no input finding`);
   }
   if (edits.episodesOutOfScope) {
     console.log(`⚠️ arc-resolve: discarded ${edits.episodesOutOfScope} episode edit(s) — the arc-spine gate resolves at arc/volume scope only`);
@@ -580,6 +638,12 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     { preserveDroppedSeasons: options.preserveDroppedSeasons === true },
   );
 
+  const characterArcs = mergeCharacterArcPatches(updated.characterArcs, edits.characterArcs);
+  const characterArcsChanged = JSON.stringify(characterArcs) !== JSON.stringify(updated.characterArcs || []);
+  const resolvedSeries = characterArcsChanged
+    ? await updateSeries(seriesId, { characterArcs })
+    : updated;
+
   // Apply any episode-level synopsis corrections the resolver returned. This is
   // the heal capability that lets episode-scoped findings converge: when a
   // contradiction originates inside one episode's planning synopsis (e.g. it
@@ -588,13 +652,13 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // here (after the arc+season commit) against the freshest issue set.
   const episodesResolved = await applyEpisodeResolutions(
     seriesId,
-    updated,
+    resolvedSeries,
     shapeEpisodeResolutions(edits.episodes),
   );
 
   const notes = typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '';
   return {
-    series: updated,
+    series: resolvedSeries,
     applied: true,
     notes,
     findings,
@@ -674,11 +738,11 @@ const ideaSnapshotOf = (stage) => ({
 const listEpisodesForSnapshot = (seriesId) => listIssuesForSeries(seriesId, { withHistory: false });
 
 /**
- * Capture everything ONE auto-resolve round can rewrite — the arc, the volume
- * records, and each episode's planning synopsis (plus which volume it sits
- * under) — so a round that leaves verification WORSE can be reverted instead of
- * committed. Read-only; the caller holds the snapshot for the duration of the
- * round (see `runArcVerify`'s regression guard).
+ * Capture everything ONE auto-resolve round can rewrite — the series arc,
+ * per-character arcs, volume records, and each episode's planning synopsis
+ * (plus which volume it sits under) — so a round that leaves verification WORSE
+ * can be reverted instead of committed. Read-only; the caller holds the snapshot
+ * for the duration of the round (see `runArcVerify`'s regression guard).
  *
  * Deep-cloned: `getSeries` hands back the store record un-cloned, and a snapshot
  * that aliases the record it is meant to restore is no snapshot at all.
@@ -688,6 +752,7 @@ export async function snapshotArcState(seriesId) {
   return {
     seriesId,
     arc: structuredClone(series.arc ?? null),
+    characterArcs: structuredClone(series.characterArcs || []),
     seasons: structuredClone(series.seasons || []),
     episodes: issues.map((iss) => ({
       id: iss.id,
@@ -699,8 +764,9 @@ export async function snapshotArcState(seriesId) {
 
 /**
  * Put a `snapshotArcState` capture back, restoring only what actually differs:
- * the arc + volume list, any episode whose volume the round re-pointed, and any
- * episode synopsis the round rewrote. Returns what it touched.
+ * the series arc, per-character arcs, volume list, any episode whose volume the
+ * round re-pointed, and any episode synopsis the round rewrote. Returns what it
+ * touched.
  *
  * Deliberately NOT routed through `commitSeasonsWithRemap`: that path merges,
  * preserves and re-mints, which is right for applying a rewrite and wrong for
@@ -746,7 +812,11 @@ export async function restoreArcState(seriesId, snapshot) {
   // between writes can't leave an issue pointing at a volume that isn't in
   // `series.seasons[]`.
   await withReexportSuppressed('series', seriesId, async () => {
-    await updateSeries(seriesId, { arc: snapshot.arc, seasons: snapshot.seasons });
+    await updateSeries(seriesId, {
+      arc: snapshot.arc,
+      seasons: snapshot.seasons,
+      ...(Array.isArray(snapshot.characterArcs) ? { characterArcs: snapshot.characterArcs } : {}),
+    });
     for (const snap of reassign) {
       await updateIssue(snap.id, { seasonId: snap.seasonId }, { skipRenumber: true });
     }

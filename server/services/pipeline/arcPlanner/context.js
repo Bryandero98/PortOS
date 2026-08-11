@@ -727,6 +727,7 @@ export async function buildResolveContext(series, findings, preloadedWorld, opti
   const avoid = shapeFindings(options.avoid);
   return {
     ...ctx,
+    characterArcsJson: JSON.stringify(series.characterArcs || [], null, 2),
     findingsJson: JSON.stringify(stampFindingIds(findings), null, 2),
     hasAvoid: avoid.length > 0,
     avoidJson: JSON.stringify(avoid, null, 2),

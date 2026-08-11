@@ -30,7 +30,7 @@ describe('migration 253 — arc-resolve spine-scoped rounds', () => {
     // The section has to say the episode arrays are empty BY DESIGN — a
     // resolver that reads them as missing data invents an episode lineup.
     expect(prompt).toMatch(/intentionally empty/);
-    expect(prompt).toMatch(/arc and the volumes only/);
+    expect(prompt).toMatch(/arc, per-character arcs, and volumes only/);
     expect(prompt).toMatch(/Do \*\*not\*\* return an\s+`episodes\[\]` array/);
     // Rule 8 (episode corrections) still ships for the full gate.
     expect(prompt).toMatch(/Correct an episode synopsis when the contradiction/);
