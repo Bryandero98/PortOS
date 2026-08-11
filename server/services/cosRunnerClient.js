@@ -88,10 +88,18 @@ const createTuiProxy = (sessionId, pid, state) => {
 export function initCosRunnerConnection() {
   if (socket) return;
 
+  // Reconnect FOREVER. The runner is a separate PM2 app the user can stop from
+  // the Apps page (or that PM2 can hold down through a long restart), and it is
+  // the only transport for `agent:output` / `agent:completed`. A finite attempt
+  // budget — this was 10 attempts at 1s, so ~10 seconds — permanently gave up on
+  // a runner that came back a minute later, leaving this server connected to
+  // nothing while `useRunner` still routed every spawn at it. The capped backoff
+  // keeps a long outage cheap (one probe every 10s) instead of a 1s hot loop.
   socket = io(COS_RUNNER_URL, {
     reconnection: true,
-    reconnectionAttempts: 10,
-    reconnectionDelay: 1000
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000
   });
 
   const dispatch = (event, data) => {
@@ -197,20 +205,51 @@ export function onCosRunnerEvent(event, handler) {
 }
 
 /**
- * Check if CoS Runner is available
+ * The one `GET /health` every liveness question in this module goes through.
+ * Resolves the raw response (or null if the runner never answered) — callers
+ * decide whether they want the boolean or the parsed body.
+ */
+const probeRunnerHealth = (timeoutMs) =>
+  fetchWithTimeout(`${COS_RUNNER_URL}/health`, {}, timeoutMs)
+    .then(response => (response?.ok ? response : null), () => null);
+
+/**
+ * Check if CoS Runner is available.
+ *
+ * The BOOT-time mode decision (`setUseRunner`), taken before any socket exists,
+ * which is why it probes rather than reading `socket.connected` the way
+ * `isRunnerReachable` does. The generous timeout is deliberate: during a rolling
+ * PM2 start the runner can be slow to answer, and a premature `false` here
+ * demotes the whole process to direct mode for its lifetime.
  */
 export async function isRunnerAvailable() {
-  const response = await fetchWithTimeout(`${COS_RUNNER_URL}/health`, {}, 10000).catch(() => null);
-  if (!response || !response.ok) return false;
-  return true;
+  return (await probeRunnerHealth(10000)) !== null;
+}
+
+/**
+ * Is the runner reachable right now?
+ *
+ * Answered for free from the socket this module already owns: in runner mode it
+ * is connected whenever the runner is up, and socket.io flips the flag the
+ * moment the runner goes away — no HTTP round-trip on the path that asks this
+ * most (a dequeue during an outage). The probe is only the cold path, for a
+ * caller asking before `initCosRunnerConnection()` has ever run.
+ *
+ * Caveat worth knowing: after a hard SIGKILL the flag can read `true` until
+ * socket.io's ping window closes. A graceful `pm2 stop` — the case this exists
+ * for — disconnects immediately.
+ */
+export async function isRunnerReachable() {
+  if (socket) return socket.connected;
+  return (await probeRunnerHealth(2000)) !== null;
 }
 
 /**
  * Get runner health status
  */
 export async function getRunnerHealth() {
-  const response = await fetchWithTimeout(`${COS_RUNNER_URL}/health`, {}, 10000).catch(() => null);
-  if (!response || !response.ok) {
+  const response = await probeRunnerHealth(10000);
+  if (!response) {
     return { available: false, error: 'Runner not available' };
   }
   const data = await readRunnerJson(response);
