@@ -2361,8 +2361,14 @@ describe('spawnTuiAgent runtime', () => {
   // spawnTuiAgent to a caller that only logs — leaving the agent record stuck in
   // `initializing` until the zombie reaper finalized it a minute later with a
   // generic message, so the real cause never reached the user.
+  //
+  // A runner-hop failure finalizes as `spawn-rejected` (non-actionable → the
+  // task retries), mirroring the direct-CLI runner path in agentLifecycle.js.
+  // Only a LOCAL PTY failure keeps the actionable `spawn-error` (test 5 above):
+  // before the split, a runner mid-restart blocked the task for a human with
+  // "confirm the CLI is installed" advice and filed an investigation task.
   describe('spawn failure', () => {
-    it('finalizes with the spawn error instead of throwing', async () => {
+    it('finalizes a runner refusal as spawn-rejected instead of throwing', async () => {
       vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
         new Error('Command not allowed: grok. Permitted commands: claude, codex')
       );
@@ -2375,8 +2381,50 @@ describe('spawnTuiAgent runtime', () => {
         expect.objectContaining({
           agentId: 'agent-1',
           success: false,
-          completionReason: 'spawn-error',
+          completionReason: 'spawn-rejected',
           error: expect.stringContaining('Command not allowed: grok'),
+        })
+      );
+    });
+
+    it('finalizes an unreachable runner (fetch failed) as spawn-rejected, not the actionable spawn-error', async () => {
+      // Node's undici surfaces a refused/mid-restart runner as a bare
+      // TypeError('fetch failed') — the week-one top failure class this split
+      // exists for.
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        new TypeError('fetch failed')
+      );
+
+      await expect(runSpawn({ useDurableRunner: true })).resolves.toBeNull();
+      await flushMicrotasks();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'spawn-rejected',
+          error: 'Failed to start TUI session: fetch failed',
+        })
+      );
+    });
+
+    // The other half of the split: a LOCAL PTY that won't open is a real
+    // host/config problem a retry cannot repair, so it keeps the actionable
+    // reason that blocks the task for a human.
+    it('keeps the actionable spawn-error when the local PTY path throws', async () => {
+      vi.mocked(shellService.createShellSession).mockImplementationOnce(() => {
+        throw new Error('posix_spawnp failed');
+      });
+
+      await expect(runSpawn({ useDurableRunner: false })).resolves.toBeNull();
+      await flushMicrotasks();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'spawn-error',
+          error: 'Failed to start TUI session: posix_spawnp failed',
         })
       );
     });
