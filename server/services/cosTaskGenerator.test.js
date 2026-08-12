@@ -1138,68 +1138,61 @@ describe('ignoreTaskId reaches BOTH completion-continuation generators (#3179)',
  * coordinators ran between 05:19 and 08:47 against the same two branches.
  */
 describe('resolveReconcileDrainGate', () => {
-  // Minimal stand-in for the injected taskSchedule module, with a mutable record.
-  const fakeSchedule = ({ signature = null, dispatches = 0, cap = 5 } = {}) => {
-    const calls = { parked: [], resets: 0, bumps: 0, cleared: 0, signatures: [] };
-    return {
-      calls,
-      PERPETUAL_DRAIN_DISPATCH_CAP: cap,
-      getPerpetualSignature: async () => signature,
-      getPerpetualDispatchCount: async () => dispatches,
-      parkPerpetual: async (_t, _a, opts) => { calls.parked.push(opts); },
-      resetPerpetualDispatchCount: async () => { calls.resets += 1; },
-      bumpPerpetualDispatchCount: async () => { calls.bumps += 1; },
-      clearPerpetualPark: async () => { calls.cleared += 1; },
-      setPerpetualSignature: async (_t, _a, sig) => { calls.signatures.push(sig); }
-    };
-  };
+  // Stand-in for the injected taskSchedule module.
+  const fakeSchedule = ({ signature = null, dispatchCount = 0, cap = 5 } = {}) => ({
+    PERPETUAL_DRAIN_DISPATCH_CAP: cap,
+    getPerpetualDrainState: vi.fn(async () => ({ signature, dispatchCount })),
+    parkPerpetual: vi.fn(async () => {}),
+    recordPerpetualDispatch: vi.fn(async () => dispatchCount + 1)
+  });
+  const app = { id: 'app-1', name: 'App One' };
   const ctx = (over = {}) => ({
     signature: 'a:NEEDS_PR:none', actionableCount: 1,
-    label: '🔀 branch-reconcile', unit: 'branch(es)', appName: 'App One', ...over
+    label: '🔀 branch-reconcile', unit: 'branch(es)', ...over
   });
 
   it('dispatches when the set advanced and the budget is unspent', async () => {
-    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none|b:IN_REVIEW:5', dispatches: 2 });
-    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', 'app-1', ctx())).toEqual({ dispatch: true });
-    expect(ts.calls.parked).toEqual([]);
-    expect(ts.calls.signatures).toEqual(['a:NEEDS_PR:none']);
-    expect(ts.calls.bumps).toBe(1);
-    expect(ts.calls.cleared).toBe(1);
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none|b:IN_REVIEW:5', dispatchCount: 2 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx())).toBe(true);
+    expect(ts.parkPerpetual).not.toHaveBeenCalled();
+    // One write carries all three facts (park cleared, signature recorded, dispatch spent).
+    expect(ts.recordPerpetualDispatch).toHaveBeenCalledWith('branch-reconcile', 'app-1', 'a:NEEDS_PR:none');
   });
 
-  it('parks no-progress on an unchanged set, clearing signature + counter', async () => {
-    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatches: 1 });
-    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', 'app-1', ctx())).toEqual({ dispatch: false });
-    expect(ts.calls.parked).toEqual([{ reason: 'no-progress', actionableCount: 1, signature: null }]);
-    expect(ts.calls.resets).toBe(1);
-    expect(ts.calls.bumps).toBe(0);
+  it('parks no-progress on an unchanged set, clearing signature + counter in the park write', async () => {
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatchCount: 1 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx())).toBe(false);
+    expect(ts.parkPerpetual).toHaveBeenCalledWith('branch-reconcile', 'app-1', {
+      reason: 'no-progress', actionableCount: 1, signature: null, dispatchCount: 0
+    });
+    expect(ts.recordPerpetualDispatch).not.toHaveBeenCalled();
   });
 
   // The brake the no-progress guard cannot supply: every cycle looks like honest
   // progress, so only a hard budget ends it.
   it('parks drain-cap once the consecutive-dispatch budget is spent, even on real progress', async () => {
-    const ts = fakeSchedule({ signature: 'stale-sig', dispatches: 5 });
-    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', 'app-1', ctx({ actionableCount: 3 }))).toEqual({ dispatch: false });
-    expect(ts.calls.parked).toEqual([{ reason: 'drain-cap', actionableCount: 3, signature: null }]);
-    expect(ts.calls.resets).toBe(1);
-    expect(ts.calls.bumps).toBe(0);
-    // Nothing was recorded as dispatched, so the next recheck re-drives from scratch.
-    expect(ts.calls.signatures).toEqual([]);
+    const ts = fakeSchedule({ signature: 'stale-sig', dispatchCount: 5 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx({ actionableCount: 3 }))).toBe(false);
+    expect(ts.parkPerpetual).toHaveBeenCalledWith('branch-reconcile', 'app-1', {
+      reason: 'drain-cap', actionableCount: 3, signature: null, dispatchCount: 0
+    });
+    // Nothing recorded as dispatched, so the next recheck re-drives from scratch.
+    expect(ts.recordPerpetualDispatch).not.toHaveBeenCalled();
   });
 
   it('spends exactly CAP dispatches before capping', async () => {
     const outcomes = [];
-    for (let dispatches = 0; dispatches <= 5; dispatches += 1) {
-      const ts = fakeSchedule({ signature: `sig-${dispatches}`, dispatches, cap: 5 });
-      outcomes.push((await resolveReconcileDrainGate(ts, 'branch-reconcile', 'app-1', ctx())).dispatch);
+    for (let dispatchCount = 0; dispatchCount <= 5; dispatchCount += 1) {
+      const ts = fakeSchedule({ signature: `sig-${dispatchCount}`, dispatchCount, cap: 5 });
+      outcomes.push(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx()));
     }
     expect(outcomes).toEqual([true, true, true, true, true, false]);
   });
 
   it('checks no-progress BEFORE the cap, so a stuck set parks with the accurate reason', async () => {
-    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatches: 9 });
-    await resolveReconcileDrainGate(ts, 'branch-reconcile', 'app-1', ctx());
-    expect(ts.calls.parked[0].reason).toBe('no-progress');
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatchCount: 9 });
+    await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx());
+    expect(ts.parkPerpetual.mock.calls[0][2].reason).toBe('no-progress');
   });
 });
 
@@ -1215,17 +1208,24 @@ describe('automated drain refills do not clear their own convergence brakes', ()
     expect(COS_SRC).toMatch(/triggerOnDemandTask\(plan\.taskType, plan\.appId, \{\s*emit: false, origin: taskScheduleMod\.ON_DEMAND_ORIGINS\.REFILL\s*\}\)/);
   });
 
+  // The origin check lives in taskSchedule.applyOnDemandRunResets (behaviorally
+  // tested there), so what matters HERE is that no engine reaches around it: an
+  // engine calling the reset primitives directly is the exact regression, since
+  // that is the shape the loop had.
   for (const [engine, src] of [['cos.dequeueNextTask', () => COS_SRC], ['cosTaskGenerator.spawnPriority0OnDemand', () => GEN_SRC]]) {
-    it(`${engine} gates both resets on a user-initiated request`, () => {
+    it(`${engine} resets on-demand state only through applyOnDemandRunResets`, () => {
       const text = src();
-      expect(text).toMatch(/const userInitiated = !task[Ss]chedule(Mod)?\.isRefillRequest\(request\)/);
-      // Every reset call in the engine must be behind the flag — an ungated one is
-      // the exact regression (a refill wiping the signature it must inherit).
+      expect(text).toMatch(/const userInitiated = await task[Ss]chedule(Mod)?\.applyOnDemandRunResets\(request, targetApp\?\.id \?\? null\)/);
       for (const fn of ['resetPerpetualForManualRun', 'clearTaskTypeFailurePark']) {
-        const calls = text.split('\n').filter((l) => l.includes(`.${fn}(request.taskType`));
-        expect(calls.length, `${fn} call sites in ${engine}`).toBeGreaterThan(0);
-        for (const line of calls) expect(line, `${fn} must be gated on userInitiated`).toMatch(/if \(userInitiated\)/);
+        const direct = text.split('\n').filter((l) => l.includes(`.${fn}(request.taskType`));
+        expect(direct, `${engine} must not call ${fn} directly — go through applyOnDemandRunResets`).toEqual([]);
       }
+    });
+
+    // A refill that toasts "nothing to do" turns a healthy overnight drain into a
+    // pile of notifications nobody asked for.
+    it(`${engine} only reports an empty result for a user-initiated request`, () => {
+      expect(src()).toMatch(/\}\s*else if \(!task && userInitiated\) \{/);
     });
   }
 });

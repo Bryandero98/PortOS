@@ -58,7 +58,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
-  isAbandonedAgentWorktree, resolveLiveWorktreeReason, gatherDivergence,
+  isAbandonedAgentWorktree, resolveLiveOwnerReason, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
   branchPriorityRank, prioritizeBranches,
   upstreamBranchName, parseRemoteHeads, partitionRemoteOrphans, reapOrphanedRemotes
@@ -108,7 +108,7 @@ describe('classifyBranch', () => {
   // an agent onto it both races the live session and re-advances the drain's
   // progress signature every cycle (the overnight re-dispatch loop).
   it('clean worktree of a LIVE owner → WIP, even with an open PR', () => {
-    const live = { isMerged: false, hasUpstream: true, worktreeDirty: false, liveWorktreeReason: 'worktree-active-agent' };
+    const live = { isMerged: false, hasUpstream: true, worktreeDirty: false, liveOwnerReason: 'worktree-active-agent' };
     expect(classifyBranch({ ...live, openPr: { mergeable: 'MERGEABLE' } })).toBe('WIP');
     expect(classifyBranch({ ...live, openPr: { mergeable: 'CONFLICTING' } })).toBe('WIP');
     expect(classifyBranch({ ...live, openPr: null })).toBe('WIP');
@@ -116,13 +116,13 @@ describe('classifyBranch', () => {
   it('a live worktree does NOT hide a merged branch from cleanup (MERGED still wins)', () => {
     expect(classifyBranch({
       isMerged: true, hasUpstream: true, worktreeDirty: false,
-      liveWorktreeReason: 'worktree-active-agent', openPr: null
+      liveOwnerReason: 'worktree-active-agent', openPr: null
     })).toBe('MERGED');
   });
   it('an ABANDONED agent worktree is still driven (its owner is not live)', () => {
     expect(classifyBranch({
       isMerged: false, hasUpstream: true, worktreeDirty: true, abandonedAgentWorktree: true,
-      liveWorktreeReason: null, openPr: null
+      liveOwnerReason: null, openPr: null
     })).toBe('ABANDONED_WIP');
   });
   it('local-only (no upstream), no PR → WIP', () => {
@@ -354,19 +354,19 @@ describe('isAbandonedAgentWorktree', () => {
   });
 });
 
-describe('resolveLiveWorktreeReason', () => {
+describe('resolveLiveOwnerReason', () => {
   const live = new Set(['agent-aaaaaaaa']);
 
   it('reports the same reasons the teardown gate refuses on', () => {
-    expect(resolveLiveWorktreeReason({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe('worktree-active-agent');
-    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe('worktree-locked');
-    expect(resolveLiveWorktreeReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBe('worktree-human-claim');
+    expect(resolveLiveOwnerReason({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe('worktree-active-agent');
+    expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe('worktree-locked');
+    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBe('worktree-human-claim');
   });
 
   it('is null for a free worktree, a dead agent, and no worktree at all', () => {
-    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: live })).toBeNull();
-    expect(resolveLiveWorktreeReason({ path: '/wt/next-issue-42', activeAgentIds: live })).toBeNull();
-    expect(resolveLiveWorktreeReason({ path: null, activeAgentIds: live })).toBeNull();
+    expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: live })).toBeNull();
+    expect(resolveLiveOwnerReason({ path: '/wt/next-issue-42', activeAgentIds: live })).toBeNull();
+    expect(resolveLiveOwnerReason({ path: null, activeAgentIds: live })).toBeNull();
   });
 
   // The one case worktreeProtectionReason can't answer: it is only ever called with
@@ -374,12 +374,29 @@ describe('resolveLiveWorktreeReason', () => {
   // DISPATCH decision that default is backwards — presume live, like
   // isAbandonedAgentWorktree does.
   it('presumes an agent worktree is live when liveness is UNKNOWN', () => {
-    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb' })).toBe('worktree-agent-liveness-unknown');
-    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: ['agent-cccccccc'] })).toBe('worktree-agent-liveness-unknown');
+    expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb' })).toBe('worktree-agent-liveness-unknown');
+    expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: ['agent-cccccccc'] })).toBe('worktree-agent-liveness-unknown');
     // …but an authoritative empty Set really does mean nothing is running.
-    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: new Set() })).toBeNull();
+    expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: new Set() })).toBeNull();
     // and a non-agent worktree is nobody's live session either way.
-    expect(resolveLiveWorktreeReason({ path: '/wt/next-issue-42' })).toBeNull();
+    expect(resolveLiveOwnerReason({ path: '/wt/next-issue-42' })).toBeNull();
+  });
+
+  // Ownership lives in the branch NAME (`cos/<taskId>/<agentId>`), so it outlives the
+  // worktree. /do:pr's Phase-7 cleanup removes the worktree while the agent is still
+  // running — without this the branch reads as un-owned, classifies IN_REVIEW, and
+  // the coordinator is dispatched onto a branch its own agent is still pushing to.
+  it('holds a branch whose OWNING agent is live even after its worktree is gone', () => {
+    expect(resolveLiveOwnerReason({ branch: 'cos/task-abc/agent-aaaaaaaa', path: null, activeAgentIds: live }))
+      .toBe('branch-active-agent');
+    // A finished agent's branch is free again.
+    expect(resolveLiveOwnerReason({ branch: 'cos/task-abc/agent-bbbbbbbb', path: null, activeAgentIds: live })).toBeNull();
+    // Non-agent branch names are never owner keys, even by coincidence of suffix.
+    expect(resolveLiveOwnerReason({ branch: 'feature/agent-aaaaaaaa-ui', path: null, activeAgentIds: live })).toBeNull();
+    expect(resolveLiveOwnerReason({ branch: 'main', path: null, activeAgentIds: live })).toBeNull();
+    // Liveness must be authoritative to claim a branch is owned — a non-Set can't
+    // answer, and the branch alone (unlike an agent-* worktree) is not evidence.
+    expect(resolveLiveOwnerReason({ branch: 'cos/task-abc/agent-aaaaaaaa', path: null })).toBeNull();
   });
 });
 
@@ -648,13 +665,31 @@ describe('reconcile', () => {
 
     const res = await reconcile('/repo', { activeAgentIds: new Set(['agent-live1234']) });
     expect(res.inFlight).toEqual([]);
-    expect(res.heldLive.map((b) => [b.branch, b.liveWorktreeReason]))
-      .toEqual([['cos/task-y/agent-live1234', 'worktree-active-agent']]);
+    expect(res.wip.map((b) => [b.branch, b.liveOwnerReason]))
+      .toEqual([['cos/task-y/agent-live1234', 'branch-active-agent']]);
     // …and the SAME repo with that agent gone is actionable again, so the hold is
     // the liveness answer and not an unconditional "cos branches are off-limits".
     const after = await reconcile('/repo', { activeAgentIds: new Set() });
     expect(after.inFlight.map((i) => i.state)).toEqual(['IN_REVIEW']);
-    expect(after.heldLive).toEqual([]);
+    expect(after.wip).toEqual([]);
+  });
+
+  // The narrower window the worktree-only check missed: /do:pr Phase-7 removes the
+  // agent's worktree while the agent is still running and still pushing.
+  it('holds a live agent\'s branch when its worktree is ALREADY GONE', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'cos/task-z/agent-live5678', isDefault: false, current: false, tracking: 'origin/cos/task-z/agent-live5678', merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([]); // worktree already cleaned up
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGh.mockResolvedValue(JSON.stringify([
+      { number: 4002, headRefName: 'cos/task-z/agent-live5678', mergeable: 'MERGEABLE', isDraft: false, url: 'u' }
+    ]));
+    execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set(['agent-live5678']) });
+    expect(res.inFlight).toEqual([]);
+    expect(res.wip.map((b) => b.liveOwnerReason)).toEqual(['branch-active-agent']);
   });
 
   // Regression for the "3 orphan cos branches, no active agents, reconcile says

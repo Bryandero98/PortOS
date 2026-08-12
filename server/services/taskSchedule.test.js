@@ -123,13 +123,11 @@ import {
   clearPerpetualPark,
   resetPerpetualForManualRun,
   getPerpetualParkInfo,
-  getPerpetualSignature,
-  getPerpetualDispatchCount,
-  bumpPerpetualDispatchCount,
-  resetPerpetualDispatchCount,
+  getPerpetualDrainState,
+  recordPerpetualDispatch,
+  applyOnDemandRunResets,
   isRefillRequest,
   ON_DEMAND_ORIGINS,
-  setPerpetualSignature,
   recordTaskTypeFailure,
   recordTaskTypeSuccess,
   clearTaskTypeFailurePark,
@@ -1374,6 +1372,42 @@ describe('taskSchedule', () => {
       expect(refill.origin).toBe(ON_DEMAND_ORIGINS.REFILL)
     })
 
+    // The policy that used to be open-coded in each spawn engine — which is how the
+    // loop got in. One home, so the three queue consumers can't drift on it.
+    describe('applyOnDemandRunResets', () => {
+      const parked = (extra = {}) => ({
+        tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
+        executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: {
+          'app-1': {
+            lastRun: null, count: 0,
+            parkedUntil: new Date(Date.now() + 3600000).toISOString(), parkReason: 'no-progress',
+            lastActionableSignature: 'a:NEEDS_PR:none', perpetualDispatchCount: 3,
+            ...extra
+          }
+        } } }
+      })
+
+      it('clears the drain state for a human "Run" and reports it as user-initiated', async () => {
+        mockSchedule(parked())
+        expect(await applyOnDemandRunResets({ taskType: 'branch-reconcile', origin: ON_DEMAND_ORIGINS.USER }, 'app-1')).toBe(true)
+        const rec = JSON.parse(writeFile.mock.calls.at(-1)[1]).executions['task:branch-reconcile'].perApp['app-1']
+        expect(rec.parkedUntil).toBeUndefined()
+        expect(rec.lastActionableSignature).toBeUndefined()
+        expect(rec.perpetualDispatchCount).toBeUndefined()
+      })
+
+      it('clears NOTHING for an automated drain refill — the brakes must survive the hop', async () => {
+        mockSchedule(parked())
+        expect(await applyOnDemandRunResets({ taskType: 'branch-reconcile', origin: ON_DEMAND_ORIGINS.REFILL }, 'app-1')).toBe(false)
+        expect(writeFile).not.toHaveBeenCalled()
+      })
+
+      it('treats a pre-origin request as user-initiated (safe default for a human-filled queue)', async () => {
+        mockSchedule(parked())
+        expect(await applyOnDemandRunResets({ taskType: 'branch-reconcile' }, 'app-1')).toBe(true)
+      })
+    })
+
     it('isRefillRequest only matches an explicit refill origin', () => {
       expect(isRefillRequest({ origin: ON_DEMAND_ORIGINS.REFILL })).toBe(true)
       expect(isRefillRequest({ origin: ON_DEMAND_ORIGINS.USER })).toBe(false)
@@ -1643,30 +1677,65 @@ describe('taskSchedule', () => {
         expect(rec.perpetualDispatchCount).toBeUndefined()
       })
 
-      it('bumpPerpetualDispatchCount counts consecutive dispatches and reset zeroes it', async () => {
-        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
-        expect(await bumpPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(1)
-
+      it('getPerpetualDrainState reads both brakes in one pass (and defaults them)', async () => {
         mockSchedule({
           tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
-          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, perpetualDispatchCount: 1 } } } }
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, lastActionableSignature: 'sig-1', perpetualDispatchCount: 3 }
+          } } }
         })
-        expect(await bumpPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(2)
-        expect(await getPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(2)
-
-        mockSchedule({
-          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
-          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, perpetualDispatchCount: 3 } } } }
-        })
-        expect(await resetPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(true)
-        const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
-        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].perpetualDispatchCount).toBeUndefined()
+        expect(await getPerpetualDrainState('branch-reconcile', 'app-1')).toEqual({ signature: 'sig-1', dispatchCount: 3 })
+        // An app with no record yet is "fresh drain", not undefined.
+        expect(await getPerpetualDrainState('branch-reconcile', 'app-9')).toEqual({ signature: null, dispatchCount: 0 })
       })
 
-      it('getPerpetualDispatchCount is 0 for an unknown task/app and reset is a no-op there', async () => {
-        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
-        expect(await getPerpetualDispatchCount('branch-reconcile', 'app-9')).toBe(0)
-        expect(await resetPerpetualDispatchCount('branch-reconcile', 'app-9')).toBe(false)
+      it('recordPerpetualDispatch drops the park, records the signature, and spends one dispatch in ONE write', async () => {
+        const future = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: future, parkReason: 'no-progress', perpetualDispatchCount: 2 }
+          } } }
+        })
+        expect(await recordPerpetualDispatch('branch-reconcile', 'app-1', 'sig-2')).toBe(3)
+        const rec = JSON.parse(writeFile.mock.calls.at(-1)[1]).executions['task:branch-reconcile'].perApp['app-1']
+        expect(rec.parkedUntil).toBeUndefined()
+        expect(rec.parkReason).toBeUndefined()
+        expect(rec.lastActionableSignature).toBe('sig-2')
+        expect(rec.perpetualDispatchCount).toBe(3)
+        // The three facts land TOGETHER: no persisted state exists in which the new
+        // signature is recorded without the park cleared and the dispatch counted.
+        // (loadSchedule may itself write once for prompt self-heal, so this asserts
+        // the invariant rather than a raw write count.)
+        const partial = writeFile.mock.calls
+          .map((c) => JSON.parse(c[1]).executions['task:branch-reconcile']?.perApp?.['app-1'])
+          .filter((r) => r?.lastActionableSignature === 'sig-2')
+          .filter((r) => r.parkedUntil !== undefined || r.perpetualDispatchCount !== 3)
+        expect(partial).toEqual([])
+      })
+
+      // The park has to land the zeroed budget itself: a second await is a step a
+      // future park path can forget, and a stale count caps the NEXT drain early.
+      it('parkPerpetual clears the dispatch budget when handed dispatchCount: 0', async () => {
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, perpetualDispatchCount: 4 } } } }
+        })
+        await parkPerpetual('branch-reconcile', 'app-1', { reason: 'drain-cap', actionableCount: 2, signature: null, dispatchCount: 0 })
+        const rec = JSON.parse(writeFile.mock.calls.at(-1)[1]).executions['task:branch-reconcile'].perApp['app-1']
+        expect(rec.perpetualDispatchCount).toBeUndefined()
+        expect(rec.lastActionableSignature).toBeUndefined()
+        expect(rec.parkReason).toBe('drain-cap')
+      })
+
+      it('parkPerpetual leaves the dispatch budget alone when the option is omitted', async () => {
+        mockSchedule({
+          tasks: { 'claim-issue': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } },
+          executions: { 'task:claim-issue': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, perpetualDispatchCount: 4 } } } }
+        })
+        await parkPerpetual('claim-issue', 'app-1', { reason: 'no-actionable-issues', actionableCount: 0 })
+        const rec = JSON.parse(writeFile.mock.calls.at(-1)[1]).executions['task:claim-issue'].perApp['app-1']
+        expect(rec.perpetualDispatchCount).toBe(4)
       })
 
       it('resetPerpetualForManualRun is a no-op (false) when nothing is cached', async () => {
@@ -1677,35 +1746,11 @@ describe('taskSchedule', () => {
         expect(await resetPerpetualForManualRun('claim-issue', 'app-1')).toBe(false)
       })
 
-      it('parkPerpetual stores an actionable signature and getPerpetualSignature reads it back', async () => {
+      it('parkPerpetual stores the actionable signature it parked on', async () => {
         mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } } })
         await parkPerpetual('branch-reconcile', 'app-1', { reason: 'no-progress', actionableCount: 2, signature: 'a:NEEDS_PR:none|b:IN_REVIEW:5' })
         const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
         expect(saved.executions['task:branch-reconcile'].perApp['app-1'].lastActionableSignature).toBe('a:NEEDS_PR:none|b:IN_REVIEW:5')
-      })
-
-      it('getPerpetualSignature returns the stored signature (and null when absent)', async () => {
-        mockSchedule({
-          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
-          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, lastActionableSignature: 'sig-1' } } } }
-        })
-        expect(await getPerpetualSignature('branch-reconcile', 'app-1')).toBe('sig-1')
-        expect(await getPerpetualSignature('branch-reconcile', 'app-2')).toBeNull()
-      })
-
-      it('setPerpetualSignature writes it, and null clears it', async () => {
-        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
-        await setPerpetualSignature('branch-reconcile', 'app-1', 'sig-2')
-        let saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
-        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].lastActionableSignature).toBe('sig-2')
-
-        mockSchedule({
-          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
-          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, lastActionableSignature: 'sig-2' } } } }
-        })
-        await setPerpetualSignature('branch-reconcile', 'app-1', null)
-        saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
-        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].lastActionableSignature).toBeUndefined()
       })
 
       it('parkPerpetual with signature:null clears a prior signature (idle park)', async () => {

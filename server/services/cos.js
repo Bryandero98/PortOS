@@ -881,26 +881,15 @@ async function spawnDequeuePriority0OnDemand(ctx) {
 
     await taskScheduleMod.clearOnDemandRequest(request.id);
 
-    // A HUMAN "Run" clears the drain's brakes; an automated refill re-issue must
-    // not (see ON_DEMAND_ORIGINS). Requests written before `origin` existed have
-    // none and read as user-initiated, which is the safe default for a queue that
-    // is almost always human-filled.
-    const userInitiated = !taskScheduleMod.isRefillRequest(request);
+    // A HUMAN "Run" re-checks live state (park + convergence signature + dispatch
+    // budget all cleared); an automated refill re-issue inherits them, or the drain
+    // has no brakes left. The origin check lives inside applyOnDemandRunResets so
+    // this engine and its two siblings can't drift on it.
+    const userInitiated = await taskScheduleMod.applyOnDemandRunResets(request, targetApp?.id ?? null);
+    const lane = userInitiated ? '' : ' (drain refill)';
 
     if (targetApp) {
-      emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}${userInitiated ? '' : ' (drain refill)'}`, { requestId: request.id, appId: targetApp.id });
-      // A user-initiated "Run" must re-check live state, never honor a stale
-      // park or convergence signature — resetting both up front guarantees the
-      // detector/reconcile below runs fresh and dispatches on live state (and,
-      // if still idle, re-stamps a park reflecting THIS check).
-      if (userInitiated) await taskScheduleMod.resetPerpetualForManualRun(request.taskType, targetApp.id);
-      // A manual "Run" also unparks a failure-parked type (#2616) — clear this
-      // app's consecutive-failure ledger. (Mirrors the sibling
-      // spawnPriority0OnDemand engine in cosTaskGenerator.js; either engine may
-      // drain a given on-demand request, so both must unpark.) A refill is not an
-      // "I've addressed it" signal from anybody, so it leaves the ledger alone —
-      // otherwise a drain that fails every run resets its own failure park forever.
-      if (userInitiated) await taskScheduleMod.clearTaskTypeFailurePark(request.taskType, targetApp.id);
+      emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}${lane}`, { requestId: request.id, appId: targetApp.id });
       // Advance the cooldown eagerly (deduped per app per cycle), but defer
       // binding the active agent until a task is produced — a null result
       // here must not strand `activeAgentId` (issue #978).
@@ -914,12 +903,7 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
       }
     } else {
-      emitLog('info', `Processing on-demand improvement: ${request.taskType}${userInitiated ? '' : ' (drain refill)'}`, { requestId: request.id });
-      // Same fresh-check guarantee as the app-scoped branch above — and the same
-      // refill exemption.
-      if (userInitiated) await taskScheduleMod.resetPerpetualForManualRun(request.taskType);
-      // Manual re-run unparks a failure-parked type (global scope) — #2616.
-      if (userInitiated) await taskScheduleMod.clearTaskTypeFailurePark(request.taskType);
+      emitLog('info', `Processing on-demand improvement: ${request.taskType}${lane}`, { requestId: request.id });
       await taskScheduleMod.recordExecution(`task:${request.taskType}`);
       await withStateLock(async () => {
         const s = await loadState();
@@ -956,12 +940,16 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         capacity.trackSpawn(revived);
         emitLog('info', `🔁 On-demand ${request.taskType} revived blocked task ${persisted.id}`, { taskId: persisted.id });
       }
-    } else if (!task) {
+    } else if (!task && userInitiated) {
       // Explicit user "Run" produced no task — surface WHY (parked / transient /
       // idle) so the trigger isn't a silent no-op. Shared with the sibling
       // spawnPriority0OnDemand engine so a request drained by either path gets
       // the same feedback. Because we reset the park BEFORE the fresh detection
       // above, the outcome classification reflects THIS check.
+      //
+      // `userInitiated` only: a drain refill ends by converging (that's the point),
+      // and nobody is waiting on it, so toasting "nothing to do" for every automated
+      // hop would turn a healthy overnight drain into a pile of notifications.
       await emitOnDemandEmpty({ taskScheduleMod, request, targetApp, taskConfig: taskSchedule.tasks[request.taskType] });
     }
   }

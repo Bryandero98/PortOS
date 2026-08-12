@@ -1026,8 +1026,17 @@ const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCo
  * Park a perpetual task: its work-detector reported nothing actionable, so stop
  * draining and wait until `parkedUntil` before re-probing. Stamps the park
  * fields on the (per-app or global) execution record.
+ *
+ * `signature` and `dispatchCount` are the drain's two convergence brakes, both
+ * settable HERE rather than by a follow-up call, because every terminal park has
+ * to land them in the same write it lands the park. A second await after this one
+ * is a step a future park path can forget — and a stale non-zero dispatch count
+ * makes the NEXT fresh drain cap out early, which looks exactly like the task
+ * silently doing nothing. Note `dispatchCount` is deliberately NOT in
+ * `PARK_FIELDS`: `clearPerpetualPark` runs mid-drain, and zeroing the counter
+ * there would reset the budget before every dispatch, so the cap could never fire.
  */
-export async function parkPerpetual(taskType, appId = null, { reason = null, actionableCount = 0, counts = null, signature } = {}) {
+export async function parkPerpetual(taskType, appId = null, { reason = null, actionableCount = 0, counts = null, signature, dispatchCount } = {}) {
   const schedule = await loadSchedule();
   const interval = schedule.tasks[taskType] || {};
   const parkedUntil = await computePerpetualRecheckAt(interval);
@@ -1062,6 +1071,12 @@ export async function parkPerpetual(taskType, appId = null, { reason = null, act
       record.signatureRepeatCount = 1;
     }
   }
+  // Same option shape for the consecutive-dispatch budget: `0` (or null) clears it
+  // because this park ended the drain window; `undefined` leaves it alone.
+  if (dispatchCount !== undefined) {
+    if (!dispatchCount) delete record.perpetualDispatchCount;
+    else record.perpetualDispatchCount = dispatchCount;
+  }
   await saveSchedule(schedule);
   emitLog('info', `Perpetual ${taskType} parked until ${parkedUntil} (${reason || 'idle'})`, { taskType, appId, parkedUntil }, '📅 TaskSchedule');
   cosEvents.emit('schedule:perpetual-parked', { taskType, appId, parkedUntil, reason, actionableCount, counts });
@@ -1088,25 +1103,39 @@ export async function getPerpetualParkInfo(taskType, appId = null) {
   };
 }
 
-/** Read the last actionable signature recorded for a perpetual drain (or null). */
-export async function getPerpetualSignature(taskType, appId = null) {
+/**
+ * A perpetual drain's convergence state, read in ONE pass: the actionable
+ * signature its last dispatch was handed, and how many times it has dispatched
+ * since it last went idle. Read together because they are decided together — two
+ * separate getters also left a read-skew window between the two fields.
+ * @returns {Promise<{ signature:string|null, dispatchCount:number }>}
+ */
+export async function getPerpetualDrainState(taskType, appId = null) {
   const schedule = await loadSchedule();
   const record = resolveExecutionRecord(schedule, taskType, appId);
-  return record?.lastActionableSignature ?? null;
+  return {
+    signature: record?.lastActionableSignature ?? null,
+    dispatchCount: record?.perpetualDispatchCount || 0
+  };
 }
 
 /**
- * Record the actionable signature a perpetual drain is dispatching against, so a
- * later cycle that finds the same signature can recognize "no progress" and park
- * instead of re-dispatching an identical run. `null` clears it.
+ * Record that a perpetual drain is dispatching against `signature`: resume the
+ * drain (drop any park), remember the signature so a later cycle can recognize
+ * "same set ⇒ no progress", and spend one dispatch from the cap's budget — all in
+ * a single read-modify-write, so the three facts can never land apart.
+ * @returns {Promise<number>} the new consecutive-dispatch count
  */
-export async function setPerpetualSignature(taskType, appId = null, signature) {
+export async function recordPerpetualDispatch(taskType, appId = null, signature) {
   const schedule = await loadSchedule();
   const record = ensureExecutionRecord(schedule, taskType, appId);
+  for (const field of PARK_FIELDS) delete record[field];
   if (signature == null) delete record.lastActionableSignature;
   else record.lastActionableSignature = signature;
+  const count = (record.perpetualDispatchCount || 0) + 1;
+  record.perpetualDispatchCount = count;
   await saveSchedule(schedule);
-  return record;
+  return count;
 }
 
 /**
@@ -1124,43 +1153,14 @@ export async function setPerpetualSignature(taskType, appId = null, signature) {
  * never a dropped item — the branches are still there and the next recheck sees
  * them. Five is enough for a legitimately long drain (open PR → CI → merge →
  * cleanup) to finish a couple of branches per window.
+ *
+ * The count is very nearly "consecutive dispatches": every terminal park and every
+ * manual re-run zero it. The one gap is a FAILED run — it neither refills nor
+ * parks, so its spent dispatches carry into the next scheduled window and that
+ * window caps early. It self-heals within one window (the next park zeroes it), and
+ * erring toward capping early is the safe direction for a runaway guard.
  */
 export const PERPETUAL_DRAIN_DISPATCH_CAP = 5;
-
-/**
- * How many times this perpetual drain has dispatched since it last went idle.
- * Consecutive by construction: every terminal park (`resetPerpetualDispatchCount`)
- * and every manual re-run zeroes it.
- */
-export async function getPerpetualDispatchCount(taskType, appId = null) {
-  const schedule = await loadSchedule();
-  const record = resolveExecutionRecord(schedule, taskType, appId);
-  return record?.perpetualDispatchCount || 0;
-}
-
-/** Count one dispatch of a perpetual drain; returns the new count. */
-export async function bumpPerpetualDispatchCount(taskType, appId = null) {
-  const schedule = await loadSchedule();
-  const record = ensureExecutionRecord(schedule, taskType, appId);
-  const count = (record.perpetualDispatchCount || 0) + 1;
-  record.perpetualDispatchCount = count;
-  await saveSchedule(schedule);
-  return count;
-}
-
-/**
- * Zero a perpetual drain's consecutive-dispatch counter — the drain reached a
- * terminal state (nothing actionable, no progress, or the cap itself), so the next
- * dispatch starts a fresh window. No-op (and no write) when already zero.
- */
-export async function resetPerpetualDispatchCount(taskType, appId = null) {
-  const schedule = await loadSchedule();
-  const record = resolveExecutionRecord(schedule, taskType, appId);
-  if (!record || !record.perpetualDispatchCount) return false;
-  delete record.perpetualDispatchCount;
-  await saveSchedule(schedule);
-  return true;
-}
 
 /**
  * Clear a perpetual task's park so the drain resumes (its work-detector found
@@ -1203,6 +1203,37 @@ export async function resetPerpetualForManualRun(taskType, appId = null) {
   }
   if (changed) await saveSchedule(schedule);
   return changed;
+}
+
+/**
+ * Apply the "a human pressed Run" state resets for one on-demand request — and
+ * apply NOTHING when the request is an automated drain refill.
+ *
+ * This is the single home of that policy. It used to be open-coded in each spawn
+ * engine that drains the on-demand queue, which is how the loop this guards against
+ * got in: the engines could not tell a human "Run Now" from the perpetual drain
+ * re-issuing itself through the same queue, so they cleared the drain's park,
+ * convergence signature, and dispatch budget on every automated hop. There are
+ * THREE consumers of that queue (cos.dequeueNextTask, cosTaskGenerator's
+ * spawnPriority0OnDemand, and the idle-review path), so "remember to check origin
+ * at each call site" is not a durable invariant — calling this instead is.
+ *
+ * @param {{taskType:string, origin?:string}} request - the queued on-demand record
+ * @param {string|null} [appId] - the app scope, or null for a global task
+ * @returns {Promise<boolean>} true when the request was user-initiated (resets
+ *   applied) — callers use it to decide whether user-facing feedback is warranted
+ */
+export async function applyOnDemandRunResets(request, appId = null) {
+  if (isRefillRequest(request)) return false;
+  // A user-initiated "Run" must re-check live state, never honor a stale park or
+  // convergence verdict.
+  await resetPerpetualForManualRun(request.taskType, appId);
+  // It also unparks a failure-parked type (#2616): a human explicitly re-running is
+  // an "I've addressed it" signal. A refill carries no such signal from anybody —
+  // gating this too keeps a drain that fails every run from clearing its own
+  // failure park forever.
+  await clearTaskTypeFailurePark(request.taskType, appId);
+  return true;
 }
 
 // ============================================================
