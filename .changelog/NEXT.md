@@ -1,5 +1,6 @@
 ## Fixed
 
+- Voice dictation into the Shell terminal no longer garbles what you said. Apple dictation streams progressively refined guesses and rewrites what it already typed ("determin" → "determine" → "determines"); the terminal forwarded every insertion but none of the matching deletions, so a dictated sentence arrived at the prompt as an accumulating pile-up ("ddedeterdetermindeterminedetermines if any code…"). Dictation edits are now translated into the deletions and insertions a terminal understands, so the prompt shows the sentence you dictated.
 - Tapping the notifications bell on a phone now opens a panel that stays on screen. It was anchored to the bell — which sits mid-screen in the sidebar — so the panel ran off the right edge, clipping notification titles and putting every per-item dismiss button and the mark-all/clear-all controls out of reach with nothing to scroll to them.
 - The notification panel's "+N more notifications" line is now a "Show N more" button, so the notifications past the first ten can be read and dismissed instead of being permanently unreachable.
 - Notification dismiss and "Mark read" buttons are now full-size, always-visible tap targets on touch devices — they were sized to their bare icon, and the dismiss button was only revealed on hover, which a phone has no way to do.

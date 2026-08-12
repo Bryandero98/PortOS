@@ -8,6 +8,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useSocket } from './useSocket';
 import { useThemeContext } from '../components/ThemeContext';
 import { buildTerminalTheme, parseCssColorToHex } from '../lib/terminalTheme';
+import { attachDictationBridge } from '../lib/terminalDictation';
 import { readFileAsBase64 } from '../utils/fileUpload';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
@@ -313,15 +314,31 @@ export function useShellSession({ isFullscreen } = {}) {
   useEffect(() => {
     if (!termInstanceRef.current || !socket) return;
 
-    const disposable = termInstanceRef.current.onData((data) => {
-      // Drop keystrokes during a pending start/attach so they don't land in the previous
-      // session — the terminal has already been cleared and "Attaching…" is showing.
+    // Drop keystrokes during a pending start/attach so they don't land in the previous
+    // session — the terminal has already been cleared and "Attaching…" is showing.
+    const send = (data) => {
       if (sessionIdRef.current && !pendingAttachRef.current.target) {
         socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
       }
+    };
+
+    const disposable = termInstanceRef.current.onData(send);
+
+    // Voice dictation (iOS mic key, macOS Fn Fn) streams progressively refined
+    // guesses and rewrites what it already typed. xterm forwards each insertion
+    // and ignores the matching deletions, so the PTY accumulates the garble
+    // ("determin" + "determine" + "determines"…). The bridge intercepts the
+    // hidden textarea and forwards a diff (DELs + additions) instead.
+    const detachDictation = attachDictationBridge({
+      container: terminalRef.current,
+      textarea: termInstanceRef.current.textarea,
+      sendData: send,
     });
 
-    return () => disposable.dispose();
+    return () => {
+      disposable.dispose();
+      detachDictation();
+    };
   }, [socket]);
 
   const clearActiveSession = useCallback(() => {
