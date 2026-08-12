@@ -182,6 +182,14 @@ export function sameFinding(a, b) {
     && score >= (corroborated ? FINDING_MATCH_MIN_OVERLAP_SAME_LOCATION : FINDING_MATCH_MIN_OVERLAP);
 }
 
+// "Is this problem somewhere in that list?" — the membership question every
+// caller of `sameFinding` above is actually asking, spelled once. Argument order
+// is fixed here (list, then finding) because the sites that open-coded it each
+// picked their own, which is harmless only while the matcher stays symmetric.
+export const containsFinding = (list, finding) => (
+  Array.isArray(list) && list.some((candidate) => sameFinding(candidate, finding))
+);
+
 /**
  * True when the round that produced `after` REGRESSED: it left more blocking
  * findings than the `before` set it was asked to close, AND at least one of
@@ -202,7 +210,7 @@ export function isResolveRegression(before, after) {
   const targeted = Array.isArray(before) ? before : [];
   const current = Array.isArray(after) ? after : [];
   if (current.length <= targeted.length) return false;
-  return targeted.some((t) => current.some((c) => sameFinding(t, c)));
+  return targeted.some((t) => containsFinding(current, t));
 }
 
 // The arc rollback guard's operational ordering. Total blockers remain the
@@ -249,7 +257,7 @@ export function isBlockingSetRegression(before, after) {
  */
 export function isIsolatedFixSafe(target, before, after) {
   const current = Array.isArray(after) ? after : [];
-  if (current.some((c) => sameFinding(target, c))) return false;
+  if (containsFinding(current, target)) return false;
   return !isBlockingSetRegression(before, current);
 }
 

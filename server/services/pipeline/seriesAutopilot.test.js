@@ -2560,6 +2560,44 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.pauseKind).not.toBe('regression');
   });
 
+  it('carries a rejected candidate\'s findings past its corrective retry into the next ordinary resolve', async () => {
+    // The 2026-08-12 verifyArcSpine stall, replayed: 2 blockers → 1, a rewrite
+    // back to 5 (reverted), the corrective retry back to 1, then straight back
+    // to 2 with no retries left. The rejected set has to survive for the rest of
+    // the gate, not just for the retry that immediately follows the rollback —
+    // see `runDiscarded` in runArcVerify.
+    const standing = { severity: 'high', problem: 'the succession vow is never paid off', location: 'V1' };
+    const closed = { severity: 'high', problem: 'the choir loses its founding member offscreen', location: 'V2' };
+    const collateral = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 3}` });
+    const rejected = [standing, ...Array.from({ length: 4 }, (_, i) => collateral(i))];
+    arcSpies.verifyArc.mockReset();
+    [
+      [standing, closed], // round 1 — resolve #1
+      [standing],         // round 2 — real progress; resolve #2
+      rejected,           // round 3 — regressed to 5, reverted, corrective retry (#3)
+      [standing],         // round 4 — retry landed back on the checkpoint; resolve #4
+      [],                 // round 5 — clean
+    ].forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues })));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // The corrective retry keeps its own rollback's evidence whole, as before.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[2][1]).toMatchObject({
+      findings: [standing],
+      avoid: rejected,
+    });
+    // …and so does the ORDINARY resolve that follows it, minus the one entry the
+    // restored state still has as an active target — the resolver must never be
+    // told to both fix and avoid the same finding.
+    const ordinary = arcSpies.resolveVerifyIssues.mock.calls[3][1];
+    expect(ordinary).toMatchObject({ findings: [standing] });
+    expect(ordinary.avoid).toEqual(rejected.filter((f) => f !== standing));
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
   it('honors maxArcResolveRetries: 0 by pausing on the first regression', async () => {
     // The pre-#3781 behavior stays reachable per run: no corrective pass, so the
     // first reverted candidate ends the gate without spending a second resolve.

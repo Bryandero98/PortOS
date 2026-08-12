@@ -27,7 +27,7 @@ import {
 import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
-  foundationRepairMissed, regressionPauseReason, sameFinding, isBlockingSetRegression,
+  foundationRepairMissed, regressionPauseReason, sameFinding, containsFinding, isBlockingSetRegression,
   isIsolatedFixSafe,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
@@ -212,7 +212,7 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
     if (attempts >= attemptsLeft) break;
     // An earlier accepted patch may have taken this one with it — paying a
     // resolve + a verify to re-close a finding that is already gone is pure spend.
-    if (!blocking().some((finding) => sameFinding(target, finding))) continue;
+    if (!containsFinding(blocking(), target)) continue;
     if (record.cancelRequested) return { accepted, attempts, verified: standing, outcome: { canceled: true } };
     const beforeResolve = await budgetPause();
     if (beforeResolve) return { accepted, attempts, verified: standing, outcome: beforeResolve };
@@ -270,21 +270,38 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
   const priorAvoid = Array.isArray(record.options.priorArcAvoidFindings)
     ? record.options.priorArcAvoidFindings
     : [];
-  // Preserve rejected-candidate evidence across Resume, then layer any newer
-  // regression from this run on top. `discardedSet` keeps the provider prompt
-  // bounded exactly like the persisted marker.
-  const avoidFindings = (current = [], active = []) => discardedSet(
-    [
+  // Every blocker set THIS gate has already discarded, newest first. A
+  // rollback's evidence used to reach only the corrective retry that immediately
+  // followed it: the next ordinary resolve rebuilt its avoid list from scratch,
+  // so once a retry landed on a non-worse but still-blocked state the resolver
+  // was free to re-author the exact rewrite the gate had just reverted — the
+  // observed 2 → 1 → 5 (revert) → 1 → 2 (revert, out of retries) stall.
+  const runDiscarded = [];
+  // Builds the avoid list for ONE resolve call and banks that call's own newest
+  // evidence into the history above, so this is where a rejected candidate stops
+  // being the retry's private knowledge. Preserves cross-Resume evidence and this
+  // run's earlier rollbacks underneath. `discardedSet` keeps the provider prompt
+  // bounded exactly like the persisted marker — `current` leads so the newest
+  // evidence is never the part that gets cut at that bound.
+  const avoidFindings = (current = [], active = []) => {
+    const avoid = discardedSet([
+      // The caller's own discarded set stays whole because its restatements
+      // describe the exact candidate that was just rejected and are intentional
+      // retry evidence.
+      ...current,
       // A latent defect from a rejected candidate can later be found in the
       // restored checkpoint itself. Once it is a CURRENT target, telling the
-      // resumed resolver both "fix this" and "avoid this" is contradictory;
-      // filter only the stale cross-run evidence. The current transaction's
-      // discarded set stays whole because its restatements describe the exact
-      // candidate that was just rejected and are intentional retry evidence.
-      ...priorAvoid.filter((candidate) => !active.some((target) => sameFinding(candidate, target))),
-      ...current,
-    ],
-  );
+      // resolver both "fix this" and "avoid this" is contradictory, so the
+      // carried-over evidence is filtered against what this call is fixing —
+      // and against `current`, which routinely restates an earlier rollback's
+      // findings the history above already holds.
+      ...[...runDiscarded, ...priorAvoid].filter((candidate) => (
+        !containsFinding(active, candidate) && !containsFinding(current, candidate)
+      )),
+    ]);
+    runDiscarded.unshift(...current.filter((finding) => !containsFinding(runDiscarded, finding)));
+    return avoid;
+  };
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
   // Lowest verified blocker set seen in this gate, paired with the exact arc /
