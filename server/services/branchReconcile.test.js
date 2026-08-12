@@ -648,7 +648,7 @@ describe('reconcile', () => {
   // The overnight re-dispatch loop's other half: a RUNNING agent's branch, clean
   // and with an open PR, classified IN_REVIEW and was handed to the coordinator —
   // which then raced the live session's pushes, each of which re-advanced the
-  // drain's progress signature. It belongs in heldLive, not inFlight.
+  // drain's progress signature. It belongs in wip (with a liveOwnerReason), not inFlight.
   it('holds a LIVE agent\'s branch out of the in-flight set even with an open PR', async () => {
     git.getBranches.mockResolvedValue([
       { name: 'cos/task-y/agent-live1234', isDefault: false, current: false, tracking: 'origin/cos/task-y/agent-live1234', merged: false }

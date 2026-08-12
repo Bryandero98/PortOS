@@ -109,7 +109,7 @@ const PR_LIST_LIMIT = 200;
  *   CONFLICTED — open PR with merge conflicts        → agent resolves
  *   IN_REVIEW  — open PR, otherwise                  → agent drives to merge
  *   NEEDS_PR   — pushed, not merged, no PR, clean     → agent verifies + opens PR
- *   WIP        — local-only, dirty, or LIVE-owned      → skip + report (never touch)
+ *   WIP        — local-only, dirty, or LIVE-owned     → skip + report (never touch)
  *
  * @param {{ hasUpstream:boolean, isMerged:boolean, worktreeDirty:boolean, abandonedAgentWorktree?:boolean, liveOwnerReason?:string|null, openPr:({mergeable?:string}|null), prStateUnavailable?:boolean }} input
  *   `prStateUnavailable` means the forge could not be READ this cycle — distinct
