@@ -78,6 +78,12 @@ describe('attachDictationBridge', () => {
     textarea.dispatchEvent(new InputEvent('input', { inputType, data, bubbles: true }));
   };
 
+  // Key events the latch reads. 84 is 'T' — a capital, the case this bridge exists
+  // for, so the tests that don't care about the specific key take it by default.
+  const fireKey = (type, keyCode = 84) => {
+    textarea.dispatchEvent(new KeyboardEvent(type, { keyCode, bubbles: true }));
+  };
+
   // Stands in for xterm's own textarea listener, which appends the raw insertion.
   const attachXtermStub = () => {
     const spy = vi.fn();
@@ -193,7 +199,7 @@ describe('attachDictationBridge', () => {
     textarea.value = 'abc';
     fireInput('insertText');
     // Enter: xterm sends CR and clears the textarea.
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 13, bubbles: true }));
+    fireKey('keydown', 13);
     textarea.value = '';
     vi.runAllTimers();
     // Next dictation starts from a clean mirror — no phantom DELs for 'abc'.
@@ -206,8 +212,8 @@ describe('attachDictationBridge', () => {
     // Capitals and space are the keys xterm forwards from `keypress` without
     // cancelling it, so the character lands in the textarea and fires `input`
     // AFTER the PTY already has it. Diffing that insertion doubled every one.
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 84, bubbles: true }));
-    textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
+    fireKey('keydown');
+    fireKey('keypress');
     textarea.value = 'T';
     fireInput('insertText');
     expect(sent).toEqual([]);
@@ -222,8 +228,8 @@ describe('attachDictationBridge', () => {
     // The insertion a keypress produces can fail to arrive. Dictation then follows
     // with no key events at all, so only keyup can clear the latch in time —
     // waiting for the next keydown would swallow the phrase into the floor.
-    textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
-    textarea.dispatchEvent(new KeyboardEvent('keyup', { keyCode: 84, bubbles: true }));
+    fireKey('keypress');
+    fireKey('keyup');
     textarea.value = 'ab';
     fireInput('insertText');
     expect(sent).toEqual(['ab']);
@@ -231,7 +237,7 @@ describe('attachDictationBridge', () => {
 
   it('disarms the latch when focus leaves mid-keystroke', () => {
     // Blur can land between the keypress and the keyup that would have cleared it.
-    textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
+    fireKey('keypress');
     textarea.dispatchEvent(new FocusEvent('blur'));
     vi.runAllTimers();
     textarea.value = 'ab';
@@ -240,7 +246,7 @@ describe('attachDictationBridge', () => {
   });
 
   it('does not resync on the composition keycode soft keyboards report', () => {
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 229, bubbles: true }));
+    fireKey('keydown', 229);
     textarea.value = 'ab';
     fireInput('insertText');
     vi.runAllTimers();
@@ -267,7 +273,7 @@ describe('attachDictationBridge', () => {
     textarea.value = 'their';
     fireInput('insertText');
     // Field is non-empty now, so this keystroke really does arm a resync.
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 32, bubbles: true }));
+    fireKey('keydown', 32);
     textarea.value = 'there';
     fireInput('insertReplacementText');
     vi.runAllTimers();
@@ -280,7 +286,7 @@ describe('attachDictationBridge', () => {
 
   it('arms no timer while typing leaves nothing to reconcile', () => {
     const timer = vi.spyOn(globalThis, 'setTimeout');
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 65, bubbles: true }));
+    fireKey('keydown', 65);
     expect(timer).not.toHaveBeenCalled();
     timer.mockRestore();
   });

@@ -25,6 +25,9 @@
 // through xterm and may clear the textarea out from under us.
 //
 // ── The keypress seam ──────────────────────────────────────────────────────────
+// Mirrored from @xterm/xterm 6.0.0 — `CoreBrowserTerminal#_keyPress` and
+// `#_inputEvent`. Re-read those two before trusting this section against a newer
+// xterm; the real-Terminal tests fail loudly if either mechanism moves.
 // Not every physical keystroke is settled on `keydown`. xterm cancels that event
 // for most printable keys (so the character never reaches the textarea and no
 // input event fires), but it deliberately defers A-Z and keys its keyboard map
@@ -37,6 +40,11 @@
 // and space is doubled". So an insertion with a live keypress behind it is now
 // xterm's: it counts as a resync point, not ours to forward, and the event goes
 // through untouched.
+//
+// We mirror `_keyPressHandled` and only that flag. xterm's `_inputEvent` also gates
+// on `_keyDownSeen` and clears an `_unprocessedDeadKey`; the omissions are
+// deliberate, because our own resync points already cover both — the keydown resync
+// for the first, the `compositionend` resync for the second.
 //
 // ── Boundaries ─────────────────────────────────────────────────────────────────
 // Corrections are streamed live, which assumes the far end treats 0x7f as "erase
@@ -176,12 +184,12 @@ export const attachDictationBridge = (terminal, sendData) => {
 
   const handleInput = (ev) => {
     if (ev.target !== textarea) return;
-    // The character reached the PTY through xterm's keypress path already. Take the
-    // insertion into the floor so a later correction can't rewind through it, and
-    // leave the event alone — xterm's `_keyPressHandled` guard no-ops it there.
-    // Consumed ahead of every other branch so the latch is strictly one-shot.
+    // The character reached the PTY through xterm's keypress path already (see "The
+    // keypress seam"). Take the insertion into the floor so a later correction can't
+    // rewind through it, and leave the event alone. Consumed ahead of the guards
+    // below so the latch is strictly one-shot.
     if (keyPressSeen) {
-      keyPressSeen = false;
+      disarmKeyPress();
       resyncNow();
       return;
     }
