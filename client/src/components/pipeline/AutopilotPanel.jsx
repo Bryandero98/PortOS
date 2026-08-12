@@ -308,8 +308,13 @@ function frameLabel(f) {
     // Per-finding isolation: each attempt is its own kept-or-reverted decision,
     // so name the finding it was spent on — a bare "attempt 2 reverted" reads as
     // the whole gate rolling back again rather than one candidate being dropped.
+    // A candidate too broad to BE an isolated repair is dropped before it is
+    // applied, so it never edited the plan and its blocker counts never moved —
+    // reporting that as "reverted" would describe an undo that never happened.
     case 'resolve:isolate': return `${f.scope} isolated fix ${f.attempt}${f.target ? ` (${f.target})` : ''} — `
-      + `${f.before} → ${f.after} blocking finding(s), ${f.kept ? 'kept' : 'reverted'}`;
+      + (f.reason
+        ? `discarded before it was applied: ${f.reason}`
+        : `${f.before} → ${f.after} blocking finding(s), ${f.kept ? 'kept' : 'reverted'}`);
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · next target: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;

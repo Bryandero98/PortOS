@@ -72,11 +72,12 @@ function arcResolveRetryBudget(record) {
 // accounting, at all three call sites (the round's resolve, the corrective
 // retry, and each isolated single-finding attempt). Open-coding it a third time
 // is how `spineOnly` (#3789) came to need patching into every copy.
-async function resolveArcFindings(seriesId, record, { findings, avoid, spineOnly }) {
+async function resolveArcFindings(seriesId, record, { findings, avoid, spineOnly, isolated = false }) {
   const resolved = await resolveVerifyIssues(seriesId, {
     findings,
     avoid,
     spineOnly,
+    isolated,
     ...providerOverrideOpts(record),
     ...seasonPreserveOpts(record),
   });
@@ -200,6 +201,12 @@ async function verifyArcBlocking(seriesId, record, { spineOnly }) {
  * without growing or worsening the set, and a poisoned finding costs only its
  * own attempt instead of its neighbours' repairs.
  *
+ * Each resolve runs in the resolver's `isolated` mode, because isolating the
+ * FINDING was never enough to isolate the EDIT — see `isolatedCandidateRejection`
+ * in arcPlanner/arcCore.js. A candidate it discards comes back unapplied, which
+ * this loop reads as an attempt needing neither a rollback (nothing was written)
+ * nor a verification round (the blocking set cannot have moved).
+ *
  * Bounded by `attemptsLeft` and budget-gated per attempt like every other
  * resolve. Returns `{ accepted, attempts, verified }` — `verified` being the
  * full verification of the state now standing in the store, which the caller
@@ -222,6 +229,12 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
   let standing = null;
   let accepted = 0;
   let attempts = 0;
+  // The store's state as of the last attempt that could have changed it, held
+  // across attempts: a rejected candidate either never reached the store or was
+  // restored to exactly this, so re-reading the series + every episode to
+  // capture an identical snapshot is pure I/O. Dropped after an accepted patch,
+  // which is the only thing that moves the store on.
+  let snapshot = null;
   const blocking = () => standing?.blocking ?? baseline;
   for (const target of baseline) {
     if (attempts >= attemptsLeft) break;
@@ -233,14 +246,44 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
     if (beforeResolve) return { accepted, attempts, verified: standing, outcome: beforeResolve };
     attempts += 1;
     const before = blocking().length;
-    const snapshot = await snapshotArcState(seriesId);
+    // The finding this attempt is spent on, as the telemetry names it: the
+    // frame reports it verbatim (blank when the verifier gave no location), the
+    // model-outcome record falls back to the gate's scope so a per-target
+    // performance history is never keyed on an empty string.
+    const targetLabel = typeof target.location === 'string' ? target.location : null;
+    if (!snapshot) snapshot = await snapshotArcState(seriesId);
     // Recomputed per target: earlier attempts in this same pass have banked
     // their rejections by now. Everything still standing is an active repair
     // target for this pass, so the whole set — not just `target` — is what the
     // avoid list is filtered against; the resolver is never told to both fix
     // and avoid the same finding.
     const avoid = bank.avoid([], blocking());
-    const resolved = await resolveArcFindings(seriesId, record, { findings: [target], avoid, spineOnly });
+    const resolved = await resolveArcFindings(seriesId, record, {
+      findings: [target], avoid, spineOnly, isolated: true,
+    });
+    // The resolver applied nothing — for an isolated attempt that means the
+    // candidate was too broad to BE one (see `isolatedCandidateRejection`) and
+    // was discarded before it touched the store. Nothing was written, so there
+    // is nothing to restore and — more to the point — nothing to verify:
+    // billing a full verification round here would buy back the blocking set
+    // this attempt already holds. Nothing to bank as discarded evidence either:
+    // no rewrite was ever verified, so there are no authored problems to warn
+    // the next attempt about.
+    if (resolved?.applied === false) {
+      await recordArcResolveOutcome(
+        { blocking: blocking(), runIds: arcResolveRunIds(resolved) },
+        record,
+        { outcome: 'rejected', after: blocking(), target: targetLabel ?? scope },
+      );
+      broadcast(seriesId, {
+        type: 'resolve:isolate', scope, round, attempt: attempts,
+        target: targetLabel ?? '',
+        before, after: before, kept: false, episodesEdited: 0,
+        reason: resolved.reason || 'the resolver applied nothing',
+        rejectedExactEdits: resolved.rejectedExactEdits || 0,
+      });
+      continue;
+    }
     const verified = await verifyArcBlocking(seriesId, record, { spineOnly });
     if (verified.outcome) {
       // The run is ending mid-attempt, so this patch can never be judged. Put
@@ -256,12 +299,15 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
       {
         outcome: kept ? 'accepted' : 'rejected',
         after: verified.blocking,
-        target: typeof target.location === 'string' ? target.location : scope,
+        target: targetLabel ?? scope,
       },
     );
     if (kept) {
       accepted += 1;
       standing = verified;
+      // The store has moved past the held snapshot — the next attempt has to
+      // capture the state this patch left behind, not the one before it.
+      snapshot = null;
     } else {
       await restoreArcState(seriesId, snapshot);
       // The verified consequence of a rewrite the gate just threw away — the
@@ -272,7 +318,7 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
     }
     broadcast(seriesId, {
       type: 'resolve:isolate', scope, round, attempt: attempts,
-      target: typeof target.location === 'string' ? target.location : '',
+      target: targetLabel ?? '',
       before, after: verified.blocking.length, kept, episodesEdited: editedCount(resolved),
     });
   }

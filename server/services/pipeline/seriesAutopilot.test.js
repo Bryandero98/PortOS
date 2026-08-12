@@ -3047,9 +3047,12 @@ describe('autopilot conductor', () => {
     // and tries its two findings one at a time — both are rejected, so it stops.
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(6);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(5);
-    // Each isolated attempt snapshots so it can be undone on its own; the
-    // corrective pass still rewinds to the checkpoint it already holds.
-    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(4);
+    // The isolation pass snapshots ONCE and holds it: a rejected attempt is
+    // restored to exactly that state, so re-reading the series + every episode
+    // to capture an identical snapshot would be pure I/O. Only an accepted patch
+    // (none here) moves the store on and forces a fresh one. The corrective pass
+    // still rewinds to the checkpoint it already holds.
+    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(3);
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
@@ -3186,6 +3189,52 @@ describe('autopilot conductor', () => {
     expect(arcSpies.resolveVerifyIssues.mock.calls[3][1]).toMatchObject({
       findings: [mentor], avoid: [siege, motive, finale],
     });
+  });
+
+  it('spends no verification on an isolated candidate the resolver discarded before persistence', async () => {
+    // Isolating the FINDING never isolated the EDIT: a single-finding response's
+    // entries all name that finding, so the resolver could still rewrite the arc
+    // and every volume — which is how each "isolated" attempt on 2026-08-12 grew
+    // the blocker set from 2 to 4 and then to 7. The resolver now rejects an
+    // over-broad candidate before writing anything, and this gate must read that
+    // as a spent attempt with nothing to undo and nothing new to verify.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    [holes(2, 'best'), holes(4, 'regressed'), holes(4, 'regressed again')]
+      .forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues })));
+    arcSpies.resolveVerifyIssues.mockReset();
+    arcSpies.resolveVerifyIssues.mockImplementation(async (_seriesId, opts) => (opts?.isolated
+      ? { applied: false, reason: 'it edits 3 records (the arc, volume 1, volume 2) — an isolated repair may change only one', runId: 'arc-isolated-reject' }
+      : { applied: true, runId: 'arc-whole-set' }));
+
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6, maxArcIsolationAttempts: 2 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // Both isolated attempts ran in the constrained mode and were discarded
+    // before persistence, so the gate bought no verification for either — three
+    // verifies total, one per whole-set round.
+    const isolatedCalls = arcSpies.resolveVerifyIssues.mock.calls.filter(([, o]) => o?.isolated);
+    expect(isolatedCalls).toHaveLength(2);
+    expect(isolatedCalls[0][1].findings).toHaveLength(1);
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    // Two whole-round rollbacks only — a candidate that never landed has nothing
+    // to restore.
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(2);
+    const isolated = frames.filter((f) => f.type === 'resolve:isolate');
+    expect(isolated).toHaveLength(2);
+    expect(isolated[0]).toMatchObject({ kept: false, before: 2, after: 2, episodesEdited: 0 });
+    expect(isolated[0].reason).toMatch(/edits 3 records/);
+    // Nothing was retained, so the gate still pauses on the best verified state.
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual(holes(2, 'best'));
   });
 
   it('does not isolate a single-finding residual (that is the corrective pass again)', async () => {
