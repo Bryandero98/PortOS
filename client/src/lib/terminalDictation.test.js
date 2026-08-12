@@ -218,16 +218,25 @@ describe('attachDictationBridge', () => {
     expect(sent).toEqual(['here']);
   });
 
-  it('still owns an insertion with no keypress behind it', () => {
-    // Dictation and soft keyboards insert without a keypress — the stale flag from
-    // an earlier capital must not disown them.
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 84, bubbles: true }));
+  it('does not let a keypress that inserted nothing disown the next phrase', () => {
+    // The insertion a keypress produces can fail to arrive. Dictation then follows
+    // with no key events at all, so only keyup can clear the latch in time —
+    // waiting for the next keydown would swallow the phrase into the floor.
     textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
-    textarea.value = 'T';
+    textarea.dispatchEvent(new KeyboardEvent('keyup', { keyCode: 84, bubbles: true }));
+    textarea.value = 'ab';
     fireInput('insertText');
-    textarea.value = 'Today';
+    expect(sent).toEqual(['ab']);
+  });
+
+  it('disarms the latch when focus leaves mid-keystroke', () => {
+    // Blur can land between the keypress and the keyup that would have cleared it.
+    textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
+    textarea.dispatchEvent(new FocusEvent('blur'));
+    vi.runAllTimers();
+    textarea.value = 'ab';
     fireInput('insertText');
-    expect(sent).toEqual(['oday']);
+    expect(sent).toEqual(['ab']);
   });
 
   it('does not resync on the composition keycode soft keyboards report', () => {
@@ -331,31 +340,37 @@ describe('attachDictationBridge against a real xterm Terminal', () => {
     expect(sent.join('')).toBe('ddedeterdetermindeterminedetermines');
   });
 
-  // A capital letter, keystroke-for-keystroke as Chrome delivers it: xterm ignores
-  // the keydown (its A-Z hack defers to keypress), forwards the character from
-  // keypress WITHOUT cancelling it, and the browser then inserts it into the
-  // textarea and fires `input`. Two senders, one character.
-  const typeCapital = (ch) => {
+  // A keystroke xterm defers to keypress, exactly as Chrome delivers it: xterm
+  // ignores the keydown, forwards the character from keypress WITHOUT cancelling
+  // it, and the browser then inserts it into the textarea and fires `input`. Two
+  // senders, one character.
+  const typeThroughKeypress = (ch) => {
     const code = ch.charCodeAt(0);
     const { textarea } = terminal;
     textarea.dispatchEvent(new KeyboardEvent('keydown', { key: ch, keyCode: code, bubbles: true }));
     textarea.dispatchEvent(new KeyboardEvent('keypress', { key: ch, keyCode: code, charCode: code, bubbles: true }));
     textarea.value += ch;
     textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ch, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keyup', { key: ch, keyCode: code, bubbles: true }));
   };
 
-  it('does not double a capital that xterm sent from keypress', () => {
+  it('does not double a character xterm sent from keypress', () => {
     const sent = [];
     terminal.onData((d) => sent.push(d));
-    typeCapital('T');
-    // Proves xterm really is the sender on this path — if an upgrade moves it to
-    // keydown-with-cancel, this fails and the bridge's keypress seam can go.
-    expect(sent).toEqual(['T']);
+    // Capitals land here through xterm's A-Z hack, space because its keyCode falls
+    // below the printable range xterm's keyboard map claims — two mechanisms, and
+    // the changelog claims both. Proves xterm really is the sender on this path: if
+    // an upgrade moves either to keydown-with-cancel, this fails and the bridge's
+    // keypress seam can go.
+    typeThroughKeypress('T');
+    typeThroughKeypress(' ');
+    expect(sent).toEqual(['T', ' ']);
 
     const dispose = attachDictationBridge(terminal, (d) => { sent.push(d); });
-    typeCapital('X');
+    typeThroughKeypress('X');
+    typeThroughKeypress(' ');
     dispose();
-    expect(sent).toEqual(['T', 'X']);
+    expect(sent).toEqual(['T', ' ', 'X', ' ']);
   });
 
   it('sends the dictated phrase once, not the accumulated garble', () => {
