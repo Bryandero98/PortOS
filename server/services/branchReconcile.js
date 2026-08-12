@@ -25,6 +25,7 @@ import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubRepoSpec, githubApiHost } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 import { PROTECTED_BRANCHES } from '../lib/gitArgs.js';
+import { readVerdictLedger, partitionSuperseded, recordVerdictInstruction } from './supersededLedger.js';
 
 // Never reconciled — the canonical long-lived-branch set (`main`/`master`/`dev`/
 // `develop`/`release`/`gh-pages`) shared with the git branch-cleanup guards in
@@ -367,7 +368,7 @@ async function worktreeAgeMs(worktreePath) {
  *   distinguishes a live agent's worktree from an abandoned one (see
  *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
  * @returns {Promise<object[]>} one entry per candidate branch:
- *   { branch, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, dirtyPaths,
+ *   { branch, tip, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, dirtyPaths,
  *     behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
  */
 export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null }) {
@@ -407,8 +408,14 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
     // the harder cases via isBranchMergedInto (covers squash + rebase). Short
     // -circuit when the cheap check already proved it merged.
     const isMerged = b.merged || await isBranchMergedInto(repoPath, b.name, defaultBranch);
+    // Tip SHA is the primary cache key for a recorded SUPERSEDED verdict (see
+    // supersededLedger.js) — a branch that moved must be re-analyzed. `null` on
+    // failure so an unreadable tip can never match a recorded one.
+    const tipOut = await execGit(['rev-parse', b.name], repoPath, { ignoreExitCode: true }).catch(() => null);
+    const tip = (tipOut?.stdout || '').trim() || null;
     inputs.push({
       branch: b.name,
+      tip,
       hasUpstream: Boolean(b.tracking),
       isMerged,
       hasWorktree: Boolean(worktreePath),
@@ -529,16 +536,59 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, activeA
   // Priority-ordered so the coordinator agent works recognized work branches
   // (claim/cos/next/feature/fix/…) before anything unrecognized. The order flows
   // straight through filterActionable (a stable filter) into the prompt block.
-  const inFlight = prioritizeBranches(
+  const allInFlight = prioritizeBranches(
     classified.filter((c) => ['ABANDONED_WIP', 'CONFLICTED', 'IN_REVIEW', 'NEEDS_PR'].includes(c.state))
   );
+  // A branch already judged SUPERSEDED is left untouched by design and is never
+  // `isMerged` (its work landed under other names), so nothing reaps it and it
+  // stays in-flight forever — re-analyzed at full cost on every recheck. Drop it
+  // out of the actionable set on a cached verdict that still verifies (#3842).
+  const { actionable: inFlight, superseded } = await applySupersededLedger(repoPath, allInFlight, defaultBranch);
   const wip = classified.filter((c) => c.state === 'WIP');
 
   const { cleaned, skipped } = cleanup
     ? await cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds })
     : { cleaned: [], skipped: merged.map((m) => ({ branch: m.branch, reason: 'cleanup-disabled' })) };
 
-  return { defaultBranch, cleaned, inFlight, wip, skipped, prStateUnavailable };
+  return { defaultBranch, cleaned, inFlight, superseded, wip, skipped, prStateUnavailable };
+}
+
+/**
+ * Resolve each cached SUPERSEDED verdict against the repo as it stands now and
+ * split the in-flight set accordingly. A verdict survives only while its
+ * `replacedBy` commits are still reachable from the default branch — a revert of
+ * what superseded the branch makes the branch wanted again, and that is the one
+ * change the pure freshness check can't see on its own.
+ *
+ * Fails OPEN in every direction: an unreadable ledger, an unresolvable SHA, or a
+ * git error all yield "not cached", which restores full analysis rather than
+ * silently hiding a branch that needs work.
+ *
+ * @param {string} repoPath
+ * @param {object[]} inFlight
+ * @param {string} defaultBranch
+ * @returns {Promise<{ actionable: object[], superseded: object[] }>}
+ */
+async function applySupersededLedger(repoPath, inFlight, defaultBranch) {
+  const entries = await readVerdictLedger().catch(() => []);
+  if (!entries.length || !inFlight.length) return { actionable: inFlight, superseded: [] };
+
+  // Only the SHAs belonging to entries that could still match are probed, so a
+  // large stale ledger costs nothing.
+  const relevant = new Set(inFlight.map((b) => b.branch));
+  const shas = [...new Set(
+    entries.filter((e) => e.repoPath === repoPath && relevant.has(e.branch)).flatMap((e) => e.replacedBy || [])
+  )];
+  const reachable = new Set();
+  for (const sha of shas) {
+    const ok = await execGit(['merge-base', '--is-ancestor', sha, defaultBranch], repoPath, { ignoreExitCode: true })
+      .then((r) => r?.exitCode === 0)
+      .catch(() => false);
+    if (ok) reachable.add(sha);
+  }
+  return partitionSuperseded(
+    inFlight, entries, (e) => (e.replacedBy || []).every((s) => reachable.has(s)), { repoPath }
+  );
 }
 
 // ============================================================
@@ -608,6 +658,7 @@ const supersessionGate = ({ collisionPaths = [], behind } = {}) => {
     `The default branch has ALSO changed these files since this branch diverged: ${shown.map((p) => `\`${p}\``).join(', ')}${more}.`,
     'For each, read the default branch\'s current version and compare it to what this branch does there. You are looking for one thing: has the default branch already solved this branch\'s problem, by any means? A differently-named function, a policy object where this branch has a boolean, a scheduled tick where this branch has a watcher — all count. It does not need to look like this branch\'s approach to have replaced it.',
     'If it HAS been solved there, this branch is SUPERSEDED: stop, do not commit, rebase, resolve, or merge anything, and report it as superseded naming the file(s) and what on the default branch replaced it. Merging it would undo work already shipped. Say so plainly rather than resolving the conflict — a conflict you can resolve is exactly how a regression gets in looking deliberate.',
+    recordVerdictInstruction(),
     'Only once you have confirmed the work is still needed, continue.'
   ].join(' ');
 };

@@ -45,9 +45,15 @@ vi.mock('../lib/gitRemote.js', () => ({
     hasOrigin: true, isGithub: true, host: 'github.com', fullName: 'atomantic/PortOS'
   }))
 }));
+// `tryReadFile`/`atomicWrite` are reached through supersededLedger.js (the
+// SUPERSEDED verdict cache); the default `tryReadFile` returns null = no ledger,
+// which is the fail-open "analyze everything" path the pre-#3842 suite assumes.
+const tryReadFileMock = vi.fn(async () => null);
 vi.mock('../lib/fileUtils.js', () => ({
-  PATHS: { root: '/repo' },
-  safeJSONParse: (raw, fallback) => { try { return JSON.parse(raw); } catch { return fallback; } }
+  PATHS: { root: '/repo', cos: '/repo/data/cos' },
+  safeJSONParse: (raw, fallback) => { try { return JSON.parse(raw); } catch { return fallback; } },
+  tryReadFile: (...args) => tryReadFileMock(...args),
+  atomicWrite: vi.fn(async () => {})
 }));
 
 import {
@@ -74,6 +80,7 @@ beforeEach(() => {
   git.deleteBranch.mockResolvedValue({ branch: 'x', results: { local: 'deleted' } });
   wt.forceRemoveWorktreeDir.mockResolvedValue(undefined);
   execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
+  tryReadFileMock.mockResolvedValue(null);
 });
 
 describe('classifyBranch', () => {
@@ -605,6 +612,121 @@ describe('reconcile', () => {
     expect(res.inFlight).toEqual([]);
     expect(res.skipped.map((s) => s.reason)).toEqual(['worktree-active-agent']);
     expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+  });
+});
+
+// #3842 — a SUPERSEDED branch is left untouched by design and is never `isMerged`
+// (its work landed on the default branch under other names), so nothing reaps it
+// and every recheck paid a full coordinator run to re-derive the same verdict.
+// Two branches in this install were analyzed sixteen times that way.
+describe('reconcile — cached SUPERSEDED verdicts (#3842)', () => {
+  const BRANCH = 'cos/task-x/agent-deadbeef';
+  const WORKTREE = '/repo/data/cos/worktrees/agent-deadbeef';
+  const DIRTY = ' M server/services/thing.js\n';
+
+  // The abandoned-worktree shape: branch fully behind main, uncommitted work in a
+  // dead agent's worktree, one collision path with the default branch.
+  const setupAbandoned = ({ tip = 'aaaaaaa', replacedByReachable = true } = {}) => {
+    git.getBranches.mockResolvedValue([
+      { name: BRANCH, isDefault: false, current: false, tracking: 'origin/main', merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([{ path: WORKTREE, branch: `refs/heads/${BRANCH}` }]);
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGit.mockImplementation(async (args) => {
+      const [cmd] = args;
+      if (cmd === 'rev-parse') return { stdout: `${tip}\n`, exitCode: 0 };
+      if (cmd === 'merge-base' && args[1] === '--is-ancestor') {
+        return { stdout: '', exitCode: replacedByReachable ? 0 : 1 };
+      }
+      if (cmd === 'merge-base') return { stdout: 'base000\n', exitCode: 0 };
+      // `diff --name-only` on BOTH sides yields the same path → one collision.
+      if (cmd === 'diff') return { stdout: 'server/services/thing.js\n', exitCode: 0 };
+      if (cmd === 'rev-list') return { stdout: '301\t0\n', exitCode: 0 };
+      // `status --porcelain` in the worktree.
+      return { stdout: DIRTY, exitCode: 0 };
+    });
+  };
+
+  const ledger = (over = {}) => JSON.stringify({
+    version: 1,
+    entries: [{
+      branch: BRANCH,
+      repoPath: '/repo',
+      verdict: 'SUPERSEDED',
+      tip: 'aaaaaaa',
+      dirtyPaths: ['server/services/thing.js'],
+      collisionPaths: ['server/services/thing.js'],
+      replacedBy: ['ffffff1'],
+      replacedByNote: 'thing.js now exports doTheThing()',
+      ...over
+    }]
+  });
+
+  it('drops a branch with a fresh cached verdict out of the actionable set', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight).toEqual([]);
+    expect(res.superseded.map((s) => s.branch)).toEqual([BRANCH]);
+    // Left completely alone — the whole point is that merging it would regress main.
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('re-analyzes when the branch tip moved', async () => {
+    setupAbandoned({ tip: 'bbbbbbb' });
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('re-analyzes when the uncommitted change set moved', async () => {
+    // An ABANDONED_WIP branch's entire deliverable is its dirty tree, so a tip SHA
+    // alone would not notice a human editing the worktree.
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({ dirtyPaths: ['server/services/other.js'] }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('re-analyzes when the collision set changed', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({ collisionPaths: [] }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+  });
+
+  it('re-analyzes when what superseded the branch was reverted off the default branch', async () => {
+    setupAbandoned({ replacedByReachable: false });
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('fails open on a malformed ledger rather than hiding the branch', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue('{ not json');
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+  });
+
+  // One ledger serves every managed app; `feature/x` in two apps is two branches.
+  it('ignores a verdict recorded against a different app\'s repo', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({ repoPath: '/some/other-app' }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
   });
 });
 
