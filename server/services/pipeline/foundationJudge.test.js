@@ -1237,6 +1237,54 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(r.discarded).toHaveLength(5);
   });
 
+  it('prefers more lower-severity residuals over fewer high-severity blockers', async () => {
+    const original = { seriesId: 'ser-1', arc: { logline: 'Original' }, seasons: [], episodes: [] };
+    const highCheckpoint = { seriesId: 'ser-1', arc: { logline: 'Two high blockers remain' }, seasons: [], episodes: [] };
+    const lowerCheckpoint = { seriesId: 'ser-1', arc: { logline: 'Only medium and low residuals' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(highCheckpoint)
+      .mockResolvedValueOnce(lowerCheckpoint);
+    const findings = (severities, prefix) => severities.map((severity, i) => ({
+      severity, location: `Issue ${i + 1}`, problem: `${prefix} ${i + 1}`,
+    }));
+    const highResiduals = findings(['high', 'high', 'medium', 'medium'], 'high checkpoint');
+    const lowerResiduals = findings(['medium', 'medium', 'medium', 'medium', 'medium', 'low'], 'lower checkpoint');
+    const worseResiduals = findings(['medium', 'medium', 'medium', 'medium', 'medium', 'medium', 'low'], 'worse checkpoint');
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: highResiduals })
+      .mockResolvedValueOnce({ issues: lowerResiduals })
+      .mockResolvedValueOnce({ issues: worseResiduals });
+    arcPlanner.resolveVerifyIssues
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-broad');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-lower-severity');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-more-mediums');
+        return { applied: true };
+      });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The issue plan contradicts the spine.', fix: 'Reconcile it.' },
+      onRunCreated: vi.fn(),
+    });
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', lowerCheckpoint);
+    expect(r).toMatchObject({
+      dimension: 'structure', applied: true, partial: true,
+      acceptedRunIds: ['structure-broad', 'structure-lower-severity'],
+      rejectedRunIds: ['structure-more-mediums'],
+    });
+    expect(r.residual).toEqual(lowerResiduals);
+    expect(r.discarded).toEqual(worseResiduals);
+    expect(r.reason).toContain('0 high, 5 medium, 1 low');
+  });
+
   it('rolls a structure repair back when its bounded correction remains unverified', async () => {
     const snapshot = { seriesId: 'ser-1', arc: { logline: 'Before' }, seasons: [], episodes: [] };
     arcPlanner.snapshotArcState.mockResolvedValue(snapshot);

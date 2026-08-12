@@ -101,6 +101,37 @@ const JUDGE_OUTPUT_RESERVE_TOKENS = 2_000;
 
 const nowIso = () => new Date().toISOString();
 
+const ARC_BLOCKER_SEVERITIES = Object.freeze(['high', 'medium', 'low']);
+
+function arcBlockerProfile(findings) {
+  const list = Array.isArray(findings) ? findings : [];
+  const profile = Object.fromEntries(ARC_BLOCKER_SEVERITIES.map((severity) => [severity, 0]));
+  for (const finding of list) {
+    const severity = ARC_BLOCKER_SEVERITIES.includes(finding?.severity) ? finding.severity : 'medium';
+    profile[severity] += 1;
+  }
+  return { ...profile, total: list.length };
+}
+
+// Negative means `left` is the safer checkpoint. A smaller high-severity count
+// outranks raw total: six polish findings are preferable to four findings that
+// still include a broken authorization or climax. Medium, low, then total break
+// ties. This is deliberately lexicographic rather than a weighted sum so no
+// number of low findings can conceal one unresolved high blocker.
+function compareArcBlockers(left, right) {
+  const a = arcBlockerProfile(left);
+  const b = arcBlockerProfile(right);
+  for (const key of [...ARC_BLOCKER_SEVERITIES, 'total']) {
+    if (a[key] !== b[key]) return a[key] - b[key];
+  }
+  return 0;
+}
+
+function formatArcBlockerProfile(findings) {
+  const profile = arcBlockerProfile(findings);
+  return `${profile.total} blocker(s): ${profile.high} high, ${profile.medium} medium, ${profile.low} low`;
+}
+
 // Defense-in-depth: refuse path-traversal-shaped ids before interpolating into
 // the on-disk snapshot path (series ids are `ser-<uuid>`).
 function assertValidSeriesId(id) {
@@ -1855,7 +1886,7 @@ export async function applyFoundationFix(seriesId, dimension, {
         return { dimension, applied: true, actions: 2, acceptedRunIds: firstAttempt.runIds };
       }
 
-      const initialBlockerCount = blockers.length;
+      const initialBlockers = blockers;
       let retainedRunIds = [...firstAttempt.runIds];
       let rejectedRunIds = [];
       let bestVerified = {
@@ -1866,14 +1897,14 @@ export async function applyFoundationFix(seriesId, dimension, {
 
       // A foundation-directed structure rewrite can satisfy its broad judge
       // while accidentally violating a narrower canon/location/timing rule.
-      // Keep correcting while the specialized verifier's blocker count shrinks.
+      // Keep correcting while the specialized verifier's severity profile improves.
       // A single all-or-nothing pass threw away demonstrated 10 → 3 progress and
       // forced the next run to rebuy all ten fixes. The bounded loop preserves
       // the original rollback guarantee, but spends up to three focused passes
       // when each one is moving monotonically toward a clean plan.
       let actions = 2;
       for (let pass = 0; pass < MAX_STRUCTURE_CORRECTION_PASSES && blockers.length > 0; pass += 1) {
-        const before = blockers.length;
+        const before = blockers;
         const correctionAttempt = await trackedResolve(blockers);
         const correction = correctionAttempt.result;
         actions += 1;
@@ -1891,12 +1922,12 @@ export async function applyFoundationFix(seriesId, dimension, {
             rejectedRunIds,
           };
         }
-        if (blockers.length > before) {
+        if (compareArcBlockers(blockers, before) > 0) {
           rejectedRunIds = [...rejectedRunIds, ...correctionAttempt.runIds];
           break;
         }
         retainedRunIds = [...retainedRunIds, ...correctionAttempt.runIds];
-        if (blockers.length <= bestVerified.blockers.length) {
+        if (compareArcBlockers(blockers, bestVerified.blockers) <= 0) {
           bestVerified = {
             blockers,
             snapshot: await snapshotArcState(seriesId),
@@ -1910,14 +1941,14 @@ export async function applyFoundationFix(seriesId, dimension, {
       // the best independently verified checkpoint; the foundation judge will
       // still decide whether it improved structure, and the normal full-arc
       // gate remains latched dirty so it must close the residual before beats.
-      if (bestVerified.blockers.length < initialBlockerCount) {
+      if (compareArcBlockers(bestVerified.blockers, initialBlockers) < 0) {
         await restoreArcState(seriesId, bestVerified.snapshot);
         return {
           dimension,
           applied: true,
           partial: true,
           actions,
-          reason: `structure repair retained its best verified improvement (${initialBlockerCount} → ${bestVerified.blockers.length} blocker(s)); the full arc gate must close the residual`,
+          reason: `structure repair retained its best verified improvement (${formatArcBlockerProfile(initialBlockers)} → ${formatArcBlockerProfile(bestVerified.blockers)}); the full arc gate must close the residual`,
           residual: bestVerified.blockers,
           discarded: blockers,
           acceptedRunIds: bestVerified.runIds,
