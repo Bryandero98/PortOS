@@ -3,8 +3,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { getAllProviders } from './providers.js';
 import { getClaudeCodeUsage, systemTimeZone } from './claudeCodeUsage.js';
-import { commandBasename, isClaudeCommand } from '../lib/providerModels.js';
-import { isGrokCommand } from '../lib/grok.js';
+import { commandBasename } from '../lib/providerModels.js';
+import { PROVIDER_FAMILIES } from '../lib/providerFamilies.js';
 import { scrapeTuiUsage } from '../lib/tuiUsageScrape.js';
 import { createStaleWhileRevalidate, PENDING, WAIT } from '../lib/staleWhileRevalidate.js';
 import { parseHumanReset } from '../lib/quotaReset.js';
@@ -566,37 +566,20 @@ async function fetchClaudeQuota({ wait = WAIT.CACHED } = {}) {
 // --- Family registry --------------------------------------------------------
 
 /**
- * A provider config belongs to at most one family. CLI/TUI commands are
- * matched by binary basename; the Grok/Kimi-style API providers by id or
- * endpoint. Ollama-backed CLI wrappers are local/free and have no
- * subscription quota, so they map to no family.
+ * The quota reader for each family, keyed by the family id that
+ * `lib/providerFamilies.js` defines. Identity (which provider is on which plan)
+ * lives in that pure lib so cost attribution and route validation can ask
+ * without importing this module's PTY-scraping graph; only the readers — which
+ * genuinely spawn subprocesses — live here.
  */
-const FAMILIES = [
-  {
-    id: 'claude',
-    label: 'Claude Code',
-    matches: (p) => (p.type === 'cli' || p.type === 'tui') && isClaudeCommand(p.command),
-    fetch: fetchClaudeQuota
-  },
-  {
-    id: 'codex',
-    label: 'Codex',
-    matches: (p) => commandBasename(p.command) === 'codex',
-    fetch: () => fetchCodexQuota()
-  },
-  {
-    id: 'agy',
-    label: 'Antigravity',
-    matches: (p) => commandBasename(p.command) === 'agy' || /antigravity/i.test(p.id || ''),
-    fetch: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit(?:\s+Remaining)?|Five Hour Limit(?:\s+Remaining)?|Models & Quota/i })
-  },
-  {
-    id: 'grok',
-    label: 'Grok',
-    matches: (p) => isGrokCommand(p.command) || /grok/i.test(p.id || ''),
-    fetch: makeTuiUsageFetcher({ id: 'grok', binary: 'grok', slashCommand: '/usage show', label: 'Grok', parse: parseGrokUsage, name: 'Grok Build CLI', readyMarker: /(Weekly|Monthly) limit:/i })
-  }
-];
+const FAMILY_FETCHERS = {
+  claude: fetchClaudeQuota,
+  codex: () => fetchCodexQuota(),
+  agy: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit(?:\s+Remaining)?|Five Hour Limit(?:\s+Remaining)?|Models & Quota/i }),
+  grok: makeTuiUsageFetcher({ id: 'grok', binary: 'grok', slashCommand: '/usage show', label: 'Grok', parse: parseGrokUsage, name: 'Grok Build CLI', readyMarker: /(Weekly|Monthly) limit:/i })
+};
+
+const FAMILIES = PROVIDER_FAMILIES.map((family) => ({ ...family, fetch: FAMILY_FETCHERS[family.id] }));
 
 /**
  * Distinct quota families among the enabled providers, in registry order.

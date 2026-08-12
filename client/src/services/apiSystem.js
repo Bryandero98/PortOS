@@ -115,6 +115,12 @@ export const getUsage = (params = {}) => {
 export const getUsageRaw = () => request('/usage/raw');
 export const resetUsage = () => request('/usage', { method: 'DELETE' });
 export const getUsageBackfillStatus = (options = {}) => request('/usage/backfill', options);
+// Monthly plan prices per provider family, used to compare subscription spend
+// against the report's estimated API cost. `costs` is a partial patch: an
+// omitted family keeps its stored price, `null` clears it. Reads come back with
+// the report (`getUsage().subscriptionSavings`), so there is no getter here.
+export const updateSubscriptionCosts = (costs, options = {}) =>
+  request('/usage/subscriptions', { method: 'PUT', body: JSON.stringify({ costs }), ...options });
 export const startUsageBackfill = (options = {}) => request('/usage/backfill', { method: 'POST', ...options });
 
 

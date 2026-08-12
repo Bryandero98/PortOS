@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { ServerError } from './errorHandler.js';
 import { partialWithoutDefaults, emptyToUndefined, emptyToNull, optionalBooleanMap } from './zodCompat.js';
 import { WORK_TRACKERS } from './workTracker.js';
+import { PROVIDER_FAMILY_IDS } from './providerFamilies.js';
+import { MAX_MONTHLY_COST } from './subscriptionSavings.js';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
@@ -821,6 +823,31 @@ export const usageMessagesSchema = z.object({
   tokenCount: z.number().int().nonnegative().optional().default(0),
   inputTokenCount: z.number().int().nonnegative().optional().default(0)
 });
+
+/**
+ * What the user pays monthly for each provider family's quota plan, keyed by
+ * family id. Used by BOTH write paths — `PUT /api/usage/subscriptions` (wrapped
+ * below) and the `subscriptionCosts` slice of `PUT /api/settings` — so a price
+ * can't be written past validation through the generic settings endpoint.
+ *
+ * Keys are the real family ids, not a loose id pattern: this gates a PERSISTED
+ * write, and an arbitrary key would accumulate in settings.json with no editor
+ * row that could ever clear it. `null` is accepted and meaningful — it CLEARS a
+ * plan's price (the user cancelled it), which an omitted key must not do, since
+ * the editor submits only the rows it knows about. Prices are plain USD dollars
+ * (cents allowed), capped at `MAX_MONTHLY_COST` so a mistyped extra digit can't
+ * swamp every savings figure on the page.
+ */
+// `partialRecord`, not `record`: with an enum key schema Zod 4's `record` is
+// EXHAUSTIVE — it would demand a price for every family on every save, which is
+// the opposite of the patch semantics the editor relies on.
+export const subscriptionCostsMapSchema = z.partialRecord(
+  z.enum(PROVIDER_FAMILY_IDS),
+  z.number().min(0).max(MAX_MONTHLY_COST).nullable()
+);
+
+/** Body for PUT /api/usage/subscriptions. */
+export const subscriptionCostsSchema = z.object({ costs: subscriptionCostsMapSchema });
 
 
 // =============================================================================

@@ -188,6 +188,25 @@ export function formatPercent(value, { decimals = 1, fallback = '—' } = {}) {
 }
 
 /**
+ * Format a USD amount for display: `$12.34`.
+ *
+ * `signed` keeps the minus sign OUTSIDE the dollar sign (`-$5.00`), so a
+ * negative saving reads as a loss rather than as a strange currency string.
+ * `trimWhole` drops the `.00` on a round figure — for a price the user typed
+ * ($200/mo), not for a computed total, where aligned cents are the point.
+ *
+ * @param {number} value - Dollar amount (nullish renders as $0.00)
+ * @param {{ signed?: boolean, trimWhole?: boolean }} [options]
+ * @returns {string} e.g. "$12.34", "-$5.00", "$200"
+ */
+export function formatUsd(value, { signed = false, trimWhole = false } = {}) {
+  const n = Number(value) || 0;
+  const magnitude = signed ? Math.abs(n) : n;
+  const body = trimWhole && Number.isInteger(magnitude) ? String(magnitude) : magnitude.toFixed(2);
+  return `${signed && n < 0 ? '-' : ''}$${body}`;
+}
+
+/**
  * Format bytes as a human-readable string
  * @param {number} bytes - Size in bytes
  * @param {number} decimals - Number of decimal places

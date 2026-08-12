@@ -256,6 +256,8 @@ export * from './migrationMarker.js';
 export * from './modelPricing.js';
 export * from './navManifest.js';
 export * from './usageRange.js';
+export * from './subscriptionSavings.js';
+export * from './providerFamilies.js';
 export * from './personaTraitBlend.js';
 export * from './pipelineIssueOrder.js';
 export * from './postAdaptive.js';
