@@ -77,7 +77,14 @@ to expand before episode generation begins.
 
 ## What to look for
 
-Walk the volumes in order. Score each volume + each episode against the arc. Specifically check:
+This is an **exhaustive inventory, not a sample**. Walk the whole arc and every
+volume in order, finish every check below, and reconcile every repeated fact
+before drafting the response. Finding one defect must not stop the audit. Return
+every distinct, evidence-backed high/medium issue in this response; consolidate
+duplicates that share one root cause, but do not hold valid findings for a later
+pass. A clean result means the entire supplied plan was checked.
+
+Score each volume + each episode against the arc. Specifically check:
 
 1. **Protected-intent drift.** Does the plan replace the originating protagonists, ontology, or core story engine with an incompatible cast, villain, institution, or conflict? Does it demote a living nonhuman principal into a tool when the premise gives it an independent need?
 2. **Character causality and contradictions.** Do the active principals' wants, needs, choices, and relationships cause the major turns? Did a major character end volume N in a state that contradicts volume N+1's opening, or die and later speak without explanation?
@@ -87,6 +94,13 @@ Walk the volumes in order. Score each volume + each episode against the arc. Spe
 6. **Arc-role imbalance.** Once episodes exist, a volume with 8 episodes and zero `pilot` / `finale` `arcRole` entries (or duplicate pilots/finales).
 7. **Theme drift.** A theme is named in `arc.themes` but does not appear in any volume synopsis or episode logline.
 8. **Story-shape adherence.** If a Vonnegut shape was selected, verify the volume-level fortune trajectory traces that curve. The whole-series finale must land at the shape's terminal level.
+9. **Cross-record fact reconciliation.** Compare the full-arc summary,
+   protagonist arc, and volume/episode synopses for:
+   - travel geography and whether ordinary movement is actually local after each extraordinary crossing;
+   - authorization scope, passenger/cargo manifests, custody, consent, and recall rights;
+   - resource quantities, deadlines, extensions, and who approves them;
+   - the issue/episode where each irreversible character choice happens, so a milestone is neither spent early nor repeated;
+   - issue/episode load, so independent climaxes have room for setup, resistance, choice, and consequence.
 
 ## Output contract
 
