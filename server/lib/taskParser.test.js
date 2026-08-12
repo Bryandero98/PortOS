@@ -379,6 +379,65 @@ describe('Task Parser', () => {
       expect(parsed[0].metadata.reviewers).toEqual(['codex', 'claude']);
     });
 
+    it('should drop nullish metadata instead of persisting the word "null"', () => {
+      // Producers build metadata with explicit `?? null` placeholders
+      // (spawnReviewLoopFollowUp's `app`, `reviewLoopPRNumber`, …). Writing
+      // `app: null` made every reader see the TRUTHY string 'null', which
+      // blocked the follow-up with `app-unresolved` and orphaned its PR.
+      const tasks = [
+        {
+          id: 'sys-rl-001', status: 'pending', priority: 'MEDIUM', priorityValue: 2, description: 'Follow-up',
+          metadata: { app: null, reviewLoopReviewerEfforts: undefined, existingBranch: 'cos/task-001/agent-abc' }
+        }
+      ];
+
+      const markdown = generateTasksMarkdown(tasks);
+      expect(markdown).not.toMatch(/- app:/);
+      expect(markdown).not.toMatch(/- reviewLoopReviewerEfforts:/);
+      expect(markdown).toMatch(/- existingBranch: cos\/task-001\/agent-abc/);
+
+      const parsed = parseTasksMarkdown(markdown);
+      expect(parsed[0].metadata.app).toBeUndefined();
+      expect(parsed[0].metadata.existingBranch).toBe('cos/task-001/agent-abc');
+    });
+
+    it('should read a legacy bare "null" metadata value back as null, not the string', () => {
+      // Self-heals task files a pre-fix install already wrote. Without this the
+      // corrupt `app: null` survives every save/load cycle forever.
+      const parsed = parseTasksMarkdown([
+        '# Tasks',
+        '',
+        '## Pending',
+        '- [ ] #sys-rl-001 | MEDIUM | AUTO | Follow-up',
+        '  - app: null',
+        '  - reviewLoopCodexModel: undefined',
+        '  - reviewLoopPRBranch: cos/task-001/agent-abc',
+        ''
+      ].join('\n'));
+
+      expect(parsed[0].metadata.app).toBeNull();
+      expect(parsed[0].metadata.reviewLoopCodexModel).toBeUndefined();
+      expect(parsed[0].metadata.reviewLoopPRBranch).toBe('cos/task-001/agent-abc');
+    });
+
+    it('should round-trip a metadata value that is genuinely the string "null"', () => {
+      // The read-side coercion above must not eat a real value — a legitimate
+      // "null" is written through the JSON sentinel so it stays a string.
+      const tasks = [
+        {
+          id: 'task-001', status: 'pending', priority: 'MEDIUM', priorityValue: 2, description: 'Test',
+          metadata: { app: 'null', context: 'undefined' }
+        }
+      ];
+
+      const markdown = generateTasksMarkdown(tasks);
+      expect(markdown).toMatch(/- app: __json__:"null"/);
+
+      const parsed = parseTasksMarkdown(markdown);
+      expect(parsed[0].metadata.app).toBe('null');
+      expect(parsed[0].metadata.context).toBe('undefined');
+    });
+
     it('should sort tasks by priority within sections', () => {
       const tasks = [
         { id: 'task-001', status: 'pending', priority: 'LOW', priorityValue: 1, description: 'Low', metadata: {} },

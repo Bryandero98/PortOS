@@ -10,6 +10,10 @@
 - The notification panel's "+N more notifications" line is now a "Show N more" button, so the notifications past the first ten can be read and dismissed instead of being permanently unreachable.
 - Notification dismiss and "Mark read" buttons are now full-size, always-visible tap targets on touch devices — they were sized to their bare icon, and the dismiss button was only revealed on hover, which a phone has no way to do.
 - The notification panel now closes on Escape, and long notification descriptions wrap to two lines instead of being cut off mid-word.
+- Agent tasks run by a provider without slash commands (grok, OpenCode, codex, antigravity) now actually get their pull request merged. PortOS drives the whole push/PR/merge lifecycle for those providers via a follow-up task — and that task was written to the task file with `app: null`, which read back as an app named "null" and blocked the follow-up before it started. The PR, its branch, and its worktree were then left behind with nothing in the system that would ever land them.
+- Merge follow-ups already stranded that way are revived on upgrade, so the pull requests they left open finally land. Their blocking reason was exempt from both the failed-task reaper and the automatic retry, so they would otherwise have sat blocked forever.
+- Task metadata that has no value is no longer written to the task file at all. Any unset field previously became the literal word "null", which every reader then saw as a real value — the same class of bug as the blocked merge follow-up above. Task files an older version already wrote are repaired on read.
+- Blocking a task that exists to merge a pull request now raises a notification naming that PR, so it can be landed by hand instead of going unnoticed. This covers every way a task can get blocked, not just the one fixed above.
 
 ## Changed
 

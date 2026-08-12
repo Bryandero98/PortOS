@@ -61,8 +61,10 @@ export function retryHoldMetadata(agentId, now = Date.now()) {
 /**
  * The metadata patch that RELEASES the hold. `undefined` (not `null`) because
  * `updateTask` deletes undefined keys from the merged metadata, whereas a null
- * survives the merge and is serialized into TASKS.md as the literal string
- * `"null"` — which would read back as a live marker.
+ * survives the merge and stays on the in-memory task for the rest of the tick.
+ * (The markdown store no longer persists either one — generateTasksMarkdown
+ * drops nullish values rather than writing the literal word `null` — but the
+ * `!== 'null'` guards below stay for task files an older install already wrote.)
  */
 export function clearedRetryHoldMetadata() {
   return {
