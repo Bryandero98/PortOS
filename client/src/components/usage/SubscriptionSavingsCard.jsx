@@ -8,6 +8,8 @@ import { useAsyncAction } from '../../hooks/useAsyncAction';
 
 const savingsTone = (savings) => (savings >= 0 ? 'text-port-success' : 'text-port-error');
 
+const NO_FAMILIES = [];
+
 // The three derived figures per plan, defined ONCE so the mobile cards and the
 // desktop table can't drift into showing different things (they already had:
 // mobile was missing the totals row entirely).
@@ -116,9 +118,12 @@ function CellValue({ cell }) {
  */
 export default function SubscriptionSavingsCard({ savings, onSaved }) {
   const [drafts, setDrafts] = useState({});
-  const families = savings?.families;
+  // A stable empty array, not a fresh `|| []` per render: it is both the guard
+  // for a payload that carries no `families` (an older peer's report) and the
+  // memo dependency below, which would otherwise recompute on every render.
+  const families = savings?.families ?? NO_FAMILIES;
 
-  const patch = useMemo(() => buildCostPatch(drafts, families || []), [drafts, families]);
+  const patch = useMemo(() => buildCostPatch(drafts, families), [drafts, families]);
   const dirty = Object.keys(patch).length > 0;
 
   const [save, saving] = useAsyncAction(async () => {
