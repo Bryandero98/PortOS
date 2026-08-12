@@ -46,7 +46,7 @@ import {
   createTerminalRequestTimeoutDetector,
 } from './aiToolkit/errorDetection.js';
 import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun, consumeRunStopRequested, resolveRunCwd } from '../services/runner.js';
-import { registerExternalSession, unregisterExternalSession, isExternalSessionAttached } from '../services/shell.js';
+import { registerExternalSession, unregisterExternalSession, isExternalSessionAttached, pasteToSession } from '../services/shell.js';
 import { isHostShuttingDown } from './hostShutdown.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
@@ -55,6 +55,7 @@ import {
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
+  SELF_CLEARING_RESUBMIT_POLL_MS,
   PASTE_DEADLINE_MS,
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
@@ -327,7 +328,16 @@ ${prompt}`;
   // needs its OWN timer: `idleWatchTimer` is created lazily on the first
   // post-prompt chunk and may not exist yet when the banner paints.
   let selfClearingTimer = null;
+  // Re-sends the prompt on a cadence while that window is open (the banner is a
+  // REJECTION, not a spinner — see resubmitAfterSignal).
+  let selfClearingResubmitTimer = null;
   const selfClearingGate = createSelfClearingSignalGate();
+  // The deadline and its retry poll are armed together and always die together —
+  // on recovery, at expiry, and on any finish.
+  const stopSelfClearingTimers = () => {
+    if (selfClearingTimer) { clearTimeout(selfClearingTimer); selfClearingTimer = null; }
+    if (selfClearingResubmitTimer) { clearInterval(selfClearingResubmitTimer); selfClearingResubmitTimer = null; }
+  };
 
   const cleanupTimers = () => {
     // Stop the post-paste accumulator from growing on any chunk that lands
@@ -339,7 +349,7 @@ ${prompt}`;
     if (idleWatchTimer) { clearInterval(idleWatchTimer); idleWatchTimer = null; }
     if (responseFileWatchTimer) { clearInterval(responseFileWatchTimer); responseFileWatchTimer = null; }
     if (hardTimeoutTimer) { clearTimeout(hardTimeoutTimer); hardTimeoutTimer = null; }
-    if (selfClearingTimer) { clearTimeout(selfClearingTimer); selfClearingTimer = null; }
+    stopSelfClearingTimers();
   };
 
   return new Promise((resolve) => {
@@ -469,6 +479,10 @@ ${prompt}`;
     };
 
     ptyProcess.onData((data) => {
+      // One clock reading for the whole chunk — the grace-window bookkeeping
+      // below and the idle/response timestamps at the end all want the same
+      // instant, and this runs on every PTY chunk of every run.
+      const now = Date.now();
       const text = data.toString();
       rawBuffer += text;
       if (rawBuffer.length > RAW_BUFFER_HEADROOM) rawBuffer = rawBuffer.slice(-RAW_BUFFER_CAP);
@@ -489,8 +503,10 @@ ${prompt}`;
         // While a grace window is open, every chunk is evidence about whether the
         // provider came back; the gate closes itself the moment it is, which also
         // lifts the idle suppression below instead of holding it to the deadline.
-        if (selfClearingGate.observe(stripped)) {
-          if (selfClearingTimer) { clearTimeout(selfClearingTimer); selfClearingTimer = null; }
+        // The clock is load-bearing — it lets the gate discount the echo of a
+        // prompt IT just re-pasted (see SELF_CLEARING_RESUBMIT_ECHO_MS).
+        if (selfClearingGate.observe(stripped, now)) {
+          stopSelfClearingTimers();
           console.log(`✅ TUI run ${runId} provider signal cleared — generating again`);
         }
 
@@ -504,10 +520,16 @@ ${prompt}`;
         // gate closed. A graceful signal can only ever arm a window (or be
         // ignored, when one is already open or the provider already recovered).
         if (fallbackSignal?.graceMs > 0) {
-          if (selfClearingGate.arm(fallbackSignal, Date.now())) {
+          if (selfClearingGate.arm(fallbackSignal, now)) {
             console.log(`⏳ TUI run ${runId} holding for a self-clearing provider signal (${Math.round(fallbackSignal.graceMs / 1000)}s): ${fallbackSignal.message}`);
+            // The wait is ACTIVE — see resubmitAfterSignal. This only ASKS on a
+            // sub-multiple of the cadence; the gate decides when an attempt is
+            // actually due (SELF_CLEARING_RESUBMIT_POLL_MS). Stopped on recovery
+            // above, at expiry below, and by cleanupTimers on any finish.
+            selfClearingResubmitTimer = setInterval(resubmitAfterSignal, SELF_CLEARING_RESUBMIT_POLL_MS);
             selfClearingTimer = setTimeout(() => {
               selfClearingTimer = null;
+              stopSelfClearingTimers();
               // No clock argument: this timer IS this window's deadline, and it
               // is one-shot — a deadline re-check that came up a millisecond
               // short would strand the gate armed with nothing left to retry it.
@@ -529,7 +551,6 @@ ${prompt}`;
         }
       }
 
-      const now = Date.now();
       lastOutputAt = now;
       if (firstOutputAt === null) firstOutputAt = now;
       if (promptSentAt && firstResponseAt === null && now > promptSentAt) {
@@ -684,6 +705,37 @@ ${prompt}`;
           );
         }
       }, PASTE_MARKER_POLL_MS);
+    };
+
+    /**
+     * Re-deliver the prompt while a self-clearing provider signal's window is
+     * open. Mirrors `resubmitAfterSignal` on the long-running agent path — see
+     * that copy (and SELF_CLEARING_RESUBMIT_INTERVAL_MS) for why a passive wait
+     * cannot clear agy's eligibility banner: it is the REJECTION of the
+     * submission, so the prompt is gone, the composer is empty, and nothing will
+     * generate until something re-asks.
+     */
+    const resubmitAfterSignal = () => {
+      // A banner during startup has nothing to re-send — the ready watch below
+      // still owns first delivery.
+      if (finalized || !promptSentAt) return;
+      const attempt = selfClearingGate.takeResubmit(Date.now());
+      if (!attempt) return;
+      // Overwriting a live handle would leak the previous attempt's Enter
+      // interval past cleanupTimers. `pasteToSession` returns false once the PTY
+      // has been unregistered, which is also the "don't bother" answer here —
+      // the deadline timer still owns the fail-over.
+      if (submitEnterTimer) clearInterval(submitEnterTimer);
+      const submitted = pasteToSession(runId, wrappedPrompt, {
+        label: `[tuiRun ${runId}] provider-handshake resubmit`,
+      });
+      submitEnterTimer = submitted || null;
+      // Only claim the re-submission that actually went out — `false` here means
+      // the PTY is already gone, and a log line saying otherwise would send a
+      // post-mortem looking for a paste the provider never received.
+      if (submitted) {
+        console.log(`🔁 TUI run ${runId} re-submitted its prompt while the provider handshake is open (attempt ${attempt})`);
+      }
     };
 
     // Ready watch — paste only once the TUI banner finishes repainting AND
