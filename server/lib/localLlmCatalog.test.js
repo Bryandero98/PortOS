@@ -17,12 +17,12 @@ describe('localLlmCatalog', () => {
   describe('getCatalog', () => {
     it('projects entries onto the backend-specific install id', () => {
       const ollama = getCatalog('ollama');
-      const llama = ollama.find((m) => m.key === 'llama3.2');
-      expect(llama.id).toBe('llama3.2');
-      expect(llama.category).toBe('chat');
+      const gemma = ollama.find((m) => m.key === 'gemma4-12b');
+      expect(gemma.id).toBe('gemma4:12b');
+      expect(gemma.category).toBe('chat');
       const lms = getCatalog('lmstudio');
-      const llamaLms = lms.find((m) => m.key === 'llama3.2');
-      expect(llamaLms.id).toBe('lmstudio-community/Llama-3.2-3B-Instruct-GGUF');
+      const gemmaLms = lms.find((m) => m.key === 'gemma4-12b');
+      expect(gemmaLms.id).toBe('lmstudio-community/gemma-4-12B-it-GGUF');
     });
 
     it('only includes entries that ship a build for the backend', () => {
@@ -35,14 +35,14 @@ describe('localLlmCatalog', () => {
     });
 
     it('marks installed models (tag-insensitive for Ollama)', () => {
-      const list = getCatalog('ollama', ['llama3.2:latest']);
-      expect(list.find((m) => m.id === 'llama3.2').installed).toBe(true);
-      expect(list.find((m) => m.id === 'mistral').installed).toBe(false);
+      const list = getCatalog('ollama', ['glm-4.7-flash:latest']);
+      expect(list.find((m) => m.id === 'glm-4.7-flash').installed).toBe(true);
+      expect(list.find((m) => m.id === 'gemma4:12b').installed).toBe(false);
     });
 
     it('matches LM Studio installed ids despite the -GGUF suffix / publisher prefix', () => {
-      const list = getCatalog('lmstudio', ['lmstudio-community/Llama-3.2-3B-Instruct-GGUF']);
-      expect(list.find((m) => m.key === 'llama3.2').installed).toBe(true);
+      const list = getCatalog('lmstudio', ['lmstudio-community/gemma-4-12B-it-GGUF']);
+      expect(list.find((m) => m.key === 'gemma4-12b').installed).toBe(true);
     });
 
     it('returns [] for an unknown backend', () => {
@@ -71,12 +71,17 @@ describe('localLlmCatalog', () => {
 
     it('surfaces a documented context window as contextLength, null otherwise', () => {
       const ollama = getCatalog('ollama');
-      // mistral-large's description documents a 128K window.
-      expect(ollama.find((m) => m.key === 'mistral-large').contextLength).toBe(131072);
-      // qwen3-30b-a3b documents a native 256K window.
-      expect(ollama.find((m) => m.key === 'qwen3-30b-a3b').contextLength).toBe(262144);
-      // Entries with no documented window expose null (never undefined).
-      expect(ollama.find((m) => m.key === 'llama3.2').contextLength).toBeNull();
+      // granite4.1-8b documents a 128K window.
+      expect(ollama.find((m) => m.key === 'granite4.1-8b').contextLength).toBe(131072);
+      // qwen3.6-27b documents a native 256K window.
+      expect(ollama.find((m) => m.key === 'qwen3.6-27b').contextLength).toBe(262144);
+      // Entries whose real window isn't a documented round number expose null
+      // (never undefined) rather than an invented one.
+      expect(ollama.find((m) => m.key === 'glm-4.7-flash').contextLength).toBeNull();
+    });
+
+    it('never lists an Ollama `:cloud` tag — those manifests carry no local weights', () => {
+      expect(LOCAL_LLM_CATALOG.every((e) => !/(?:^|:)cloud$/.test(e.ollama || ''))).toBe(true);
     });
   });
 
@@ -86,7 +91,7 @@ describe('localLlmCatalog', () => {
     });
     it('filters by name, family, and description', () => {
       expect(searchCatalog('ollama', 'coding').some((m) => m.key === 'qwen3.6-35b-a3b')).toBe(true);
-      expect(searchCatalog('ollama', 'vision').some((m) => m.key === 'llava')).toBe(true);
+      expect(searchCatalog('ollama', 'vision').some((m) => m.key === 'qwen3-vl-8b')).toBe(true);
       expect(searchCatalog('ollama', 'embedding').some((m) => m.key === 'nomic-embed-text-v2-moe')).toBe(true);
       expect(searchCatalog('ollama', 'zzzznotamodel')).toEqual([]);
     });
@@ -94,10 +99,22 @@ describe('localLlmCatalog', () => {
 
   describe('mapModelToBackend', () => {
     it('maps a known model exactly across backends', () => {
+      expect(mapModelToBackend('ollama', 'gemma4:12b', 'lmstudio'))
+        .toEqual({ targetId: 'lmstudio-community/gemma-4-12B-it-GGUF', exact: true });
+      expect(mapModelToBackend('lmstudio', 'lmstudio-community/gemma-4-12B-it-GGUF', 'ollama'))
+        .toEqual({ targetId: 'gemma4:12b', exact: true });
+    });
+
+    it('still maps models retired from the suggested-install catalog', () => {
+      // Retiring an entry from LOCAL_LLM_CATALOG must not downgrade an existing
+      // install's migrate to a guessed stem — RETIRED_MODEL_MAPPINGS keeps it exact.
+      expect(getCatalog('ollama').some((m) => m.key === 'llama3.2')).toBe(false);
       expect(mapModelToBackend('ollama', 'llama3.2:latest', 'lmstudio'))
         .toEqual({ targetId: 'lmstudio-community/Llama-3.2-3B-Instruct-GGUF', exact: true });
       expect(mapModelToBackend('lmstudio', 'lmstudio-community/Llama-3.2-3B-Instruct-GGUF', 'ollama'))
         .toEqual({ targetId: 'llama3.2', exact: true });
+      expect(mapModelToBackend('ollama', 'qwen2.5vl:32b', 'lmstudio'))
+        .toEqual({ targetId: 'lmstudio-community/Qwen2.5-VL-32B-Instruct-GGUF', exact: true });
     });
 
     it('best-effort derives an Ollama name for an unknown LM Studio model', () => {

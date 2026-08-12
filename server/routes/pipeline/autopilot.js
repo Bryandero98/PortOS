@@ -12,6 +12,9 @@
  *                                          immediately; the active step/LLM call
  *                                          finishes before the terminal `canceled`
  *                                          frame (cooperative, between-step cancel).
+ *   POST /series/:id/autopilot/pause    → { pauseRequested }
+ *                                          Finishes the active step/transaction
+ *                                          without stopping its provider run.
  *   GET  /series/:id/autopilot/status   → { autopilot, active, start }
  *                                          (resume / paused UI; `start` is the
  *                                          in-flight run's start frame, which
@@ -25,6 +28,10 @@ import { validateRequest, MAX_CONVERGENCE_ROUNDS } from '../../lib/validation.js
 import { EFFORT_LEVELS } from '../../lib/providerModels.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as autopilot from '../../services/pipeline/seriesAutopilot.js';
+import {
+  getModelPerformanceReport,
+  recordModelOutcome,
+} from '../../services/pipeline/seriesAutopilot/modelPerformance.js';
 import { READINESS_GATES } from '../../services/pipeline/editorialScore.js';
 import { mapServiceError, providerOverrideShape } from './shared.js';
 
@@ -40,6 +47,14 @@ const autopilotLlmRouteSchema = z.object({
   effortOverride: effortOverrideSchema,
 }).strict();
 
+const autopilotStageLlmSchema = z.partialRecord(
+  z.enum(seriesSvc.AUTOPILOT_LLM_STAGE_KINDS),
+  z.object({
+    creative: autopilotLlmRouteSchema.optional(),
+    judge: autopilotLlmRouteSchema.optional(),
+  }).strict(),
+);
+
 const autopilotStartSchema = z.object({
   ...providerOverrideShape,
   // Per-run reasoning effort (#3641). Soft, like the provider/model override: it
@@ -54,6 +69,10 @@ const autopilotStartSchema = z.object({
   // from Prompts still win. This is deliberately per-run so experimenting with a
   // lighter writer (for example Luna/max) does not globally repoint every series.
   judgeLlm: autopilotLlmRouteSchema.optional(),
+  // Optional per-step routes for experiments and evidence-backed specialization.
+  // A stage route wins over learned and run-wide routes for that role, while an
+  // exact Prompts-stage pin remains authoritative inside stageRunner.
+  stageLlm: autopilotStageLlmSchema.optional(),
   // Draft cover + all interior pages once a story is ready. Accepted now;
   // honored when VISUAL_DRAFT_ENABLED ships (Phase 2). Defaults true per the
   // product decision (whole-series, full draft visuals).
@@ -88,6 +107,21 @@ const autopilotStartSchema = z.object({
   // Per-run only (no persisted default); falls back to MAX_CHILD_RETRIES. Shares
   // the convergence ceiling so a direct API call can't request an absurd budget.
   maxChildRetries: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
+  // Per-run corrective-pass budget for the arc-verify regression guard (#3781):
+  // how many times a reverted resolve round may be re-attempted from the restored
+  // best state before the gate pauses for a human. 0 = revert and pause on the
+  // first regression. Per-run only (no persisted default); falls back to
+  // MAX_ARC_RESOLVE_RETRIES. Shares the convergence ceiling.
+  maxArcResolveRetries: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
+  // Per-run cap on the arc-verify gate's per-finding isolation attempts (#3780):
+  // once the corrective passes above are spent, how many residual findings the
+  // gate may try ONE AT A TIME from the restored best state, keeping each patch
+  // only if it closes its own target without worsening the set. 0 = no isolation
+  // (revert and pause as before). Per-run only; when omitted the gate derives its
+  // own budget from MAX_ARC_ISOLATION_CALLS and what a verification costs on this
+  // series, and `maxArcResolveRetries: 0` opts out of isolation with it. Shares
+  // the convergence ceiling so a direct API call can't request an absurd budget.
+  maxArcIsolationAttempts: z.number().int().min(0).max(MAX_CONVERGENCE_ROUNDS).optional(),
   // Per-run editorial-check subset (#1575). When present, the editorial-checks
   // pass runs ONLY these check ids instead of all enabled checks — pilot one new
   // check, or skip an expensive one, without toggling the global enabled set.
@@ -155,7 +189,24 @@ const autopilotStartSchema = z.object({
   // Supersedes the selfImprove terminal diagnosis when both are on. Falls back
   // to the persisted pipelineEditorialChecks.observer setting, then off.
   observer: z.boolean().optional(),
+  // Learn from technical + editorial outcomes and use the best sufficiently
+  // sampled eligible provider/model/effort for each step and role. Explicit
+  // run choices and exact stage pins still win.
+  autoSelectModels: z.boolean().optional(),
 });
+
+const modelOutcomeSchema = z.object({
+  runId: z.string().uuid(),
+  role: z.enum(['creative', 'judge']),
+  stage: z.string().trim().min(1).max(80),
+  outcome: z.enum(['accepted', 'rejected', 'valid', 'invalid']),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+  target: z.string().trim().max(120).optional(),
+  scoreBefore: z.number().finite().optional(),
+  scoreAfter: z.number().finite().optional(),
+  weightedBefore: z.number().finite().optional(),
+  weightedAfter: z.number().finite().optional(),
+}).strict();
 
 router.post('/series/:id/autopilot/start', asyncHandler(async (req, res) => {
   // 404 before we kick off if the series doesn't exist.
@@ -187,16 +238,39 @@ router.post('/series/:id/autopilot/cancel', asyncHandler(async (req, res) => {
   res.json({ canceled });
 }));
 
+router.post('/series/:id/autopilot/pause', asyncHandler(async (req, res) => {
+  const pauseRequested = autopilot.pauseSeriesAutopilot(req.params.id);
+  res.json({ pauseRequested });
+}));
+
 router.get('/series/:id/autopilot/status', asyncHandler(async (req, res) => {
   const series = await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
   res.json({
     autopilot: series.autopilot || null,
     active: autopilot.isAutopilotActive(req.params.id),
+    pauseRequested: autopilot.isAutopilotPauseRequested(req.params.id),
     // The in-flight run's `start` frame (mode, target, resolved provider/model),
     // so a client attaching mid-run can describe a run it never saw begin — SSE
     // replays only the last frame. null when no run is active.
     start: autopilot.activeRunStart(req.params.id),
   });
+}));
+
+router.get('/series/:id/autopilot/model-metrics', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  res.json(await getModelPerformanceReport());
+}));
+
+// Operator correction/backfill tool: a technically successful run can still be
+// rejected by a later quality gate. Recording that distinction is the core of
+// the selector's evidence, and this endpoint lets an operator annotate historic
+// runs or correct a misclassified outcome without editing run files by hand.
+router.post('/series/:id/autopilot/model-outcomes', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const body = validateRequest(modelOutcomeSchema, req.body ?? {});
+  const recorded = await recordModelOutcome(body.runId, body);
+  if (!recorded) throw new ServerError('AI run not found', { status: 404, code: 'RUN_NOT_FOUND' });
+  res.json({ success: true, runId: body.runId });
 }));
 
 export default router;

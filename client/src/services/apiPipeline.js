@@ -985,9 +985,24 @@ export const cancelPipelineAutopilot = (seriesId) =>
     method: 'POST',
   });
 
+export const pausePipelineAutopilot = (seriesId) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/pause`, {
+    method: 'POST',
+  });
+
 // { autopilot: { status, runId, currentStep, residualFindings, ... } | null, active }
 export const getPipelineAutopilotStatus = (seriesId, options = {}) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/status`, options);
+
+export const getPipelineAutopilotModelMetrics = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/model-metrics`, options);
+
+export const recordPipelineAutopilotModelOutcome = (seriesId, outcome, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/model-outcomes`, {
+    method: 'POST',
+    body: JSON.stringify(outcome),
+    ...options,
+  });
 
 export const pipelineAutopilotSseUrl = (seriesId) =>
   `/api/pipeline/series/${encodeURIComponent(seriesId)}/autopilot/progress`;

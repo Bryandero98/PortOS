@@ -5,7 +5,9 @@
  * Integrates with error handler and CoS task system
  */
 
-import { addTask, isRunning } from './cos.js';
+import { isRunning } from './cos.js';
+import { fileInvestigationTask, __resetInvestigationCircuit } from './investigationTaskProducer.js';
+import { investigationFingerprint } from '../lib/investigationTasks.js';
 import { errorEvents } from '../lib/errorHandler.js';
 import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 
@@ -439,6 +441,11 @@ export function _resetAutoFixerForTests() {
   failureTimestamps.clear();
   escalatedKeys.clear();
   pendingAutoFixTasks.length = 0;
+  // This module's task-creation path now goes through the SHARED investigation
+  // circuit (investigationTaskProducer.js), so a reset that stopped at the local
+  // maps would leave earlier cases' creations counted against later ones — every
+  // test past the storm threshold would then assert against a held task.
+  __resetInvestigationCircuit();
 }
 
 /**
@@ -537,12 +544,28 @@ async function createAIProviderInvestigationTask(error) {
     // resolve to a repo path, so every provider investigation was filed and
     // then rejected. Absent `app` resolves to that same PortOS root, and
     // matches the other two task producers in this file.
-    approvalRequired: true // Require user approval before investigating
   };
 
-  // If CoS is running, create the task immediately
+  // If CoS is running, create the task immediately. The approval verdict is
+  // resolved INSIDE this branch: on the other path the task is only queued for
+  // later pickup, so a verdict computed now would be read against a backlog that
+  // is stale by the time it is filed — and the read (both task files) buys
+  // nothing.
   if (isRunning()) {
-    const task = await addTask(taskData, 'internal');
+    // Unattended by default, matching every other investigation producer (#3714):
+    // a provider failure is exactly the diagnosis CoS exists to do for itself, and
+    // gating it behind an approval only meant the queue filled with approvals while
+    // the provider stayed broken. The loop guards are unchanged and still upstream
+    // of here — `isDuplicateError` collapses a repeat inside the dedupe window and
+    // `tripCircuit` suppresses the task entirely past CIRCUIT_MAX_FAILURES.
+    const { task } = await fileInvestigationTask({
+      ...taskData,
+      fingerprint: investigationFingerprint({
+        category: diagnostics.category,
+        kind: 'provider-failure',
+        scope: ctx.provider
+      })
+    });
     console.log(`✅ AI provider investigation task created: ${task.id} [tier ${diagnostics.tier}: ${diagnostics.fixStrategy}]`);
     return task;
   }
@@ -677,8 +700,8 @@ function buildAIProviderErrorContext(error, diagnostics) {
  */
 async function createAutoFixTask(error) {
   // Structured diagnostics (issue #2328): a bare crash usually has no recognized
-  // category, so it classifies to Tier 4 (escalate) — which is exactly right for
-  // an unsupervised fix task that still requires human approval below.
+  // category, so it classifies to Tier 4 (escalate) — an investigation rather
+  // than a deterministic correction.
   const diagnostics = buildFixDiagnostics({
     triggerEvent: error.code,
     target: error.code,
@@ -691,18 +714,22 @@ async function createAutoFixTask(error) {
   // Build context for the agent
   const context = buildErrorContext(error);
 
-  // Create task in CoS system tasks. Requires approval, matching every other
-  // error-driven task creator in this file — a crash alone isn't enough
-  // signal to let an agent edit code unsupervised.
-  const taskData = {
+  // Unattended by default, matching every other error-driven task creator in this
+  // file. `shouldAutoFix` has already applied the dedupe + circuit breaker before
+  // we get here, so this only fires for a genuinely new critical error, and the
+  // shared policy still holds it for a human when the same cause is looping or
+  // failures are cascading.
+  const { task } = await fileInvestigationTask({
     description: `Fix critical error: ${error.message}`,
     priority: 'HIGH',
     context,
     diagnostics,
-    approvalRequired: true
-  };
-
-  const task = await addTask(taskData, 'internal');
+    fingerprint: investigationFingerprint({
+      category: diagnostics.category,
+      kind: 'critical-error',
+      scope: error.code
+    })
+  });
   console.log(`✅ Auto-fix task created: ${task.id}`);
 
   return task;
@@ -758,14 +785,17 @@ function buildErrorContext(error) {
 export async function handleErrorRecovery(errorCode, context) {
   console.log(`🔧 Manual error recovery requested: ${errorCode}`);
 
-  const taskData = {
+  // No standing approval gate: the user clicking "investigate this error" IS the
+  // approval, and asking them to approve their own request a second time is the
+  // friction this whole path exists to remove. The shared loop policy can still
+  // hold it — if they ask again about a cause we investigated hours ago, another
+  // unattended agent would just repeat that run.
+  const { task } = await fileInvestigationTask({
     description: `Investigate and fix error: ${errorCode}`,
     priority: 'MEDIUM',
     context: context || `User requested investigation of error code: ${errorCode}`,
-    approvalRequired: true // Manual recovery requires approval
-  };
-
-  const task = await addTask(taskData, 'internal');
+    fingerprint: investigationFingerprint({ kind: 'manual-recovery', scope: errorCode })
+  });
   console.log(`✅ Recovery task created: ${task.id}`);
 
   return task;

@@ -145,10 +145,19 @@ vi.mock('./scriptVerify.js', () => ({ verifyComicScript }));
 
 let canonReady = true;
 let canonUndescribed = [];
+let canonBlockingIssues = [];
 const checkSeriesCanonReadiness = vi.fn(async (seriesId) => ({
-  seriesId, ready: canonReady, issues: [], blockingIssues: [], undescribed: canonUndescribed,
+  seriesId, ready: canonReady, issues: [], blockingIssues: canonBlockingIssues, undescribed: canonUndescribed,
 }));
 vi.mock('./canonReadiness.js', () => ({ checkSeriesCanonReadiness }));
+
+const describeCanonFromProse = vi.fn(async () => {
+  canonReady = true;
+  canonUndescribed = [];
+  canonBlockingIssues = [];
+  return { report: { filled: 1, none: [], skippedLocked: [] }, runId: 'run-canon-repair' };
+});
+vi.mock('../universeCanon.js', () => ({ describeCanonFromProse }));
 
 // Foundation-quality gate (#2176). Drive the judged weighted score + the fix
 // router per test. Default: a clean foundation (10) so the gate passes on the
@@ -168,6 +177,12 @@ const judgeFoundation = vi.fn(async () => ({
   weakest: 'worldbuilding',
 }));
 const applyFoundationFix = vi.fn(async (_sId, dimension) => ({ dimension, applied: foundationFixApplied }));
+const snapshotFoundationState = vi.fn(async (seriesId) => ({ seriesId, marker: 'foundation-checkpoint' }));
+const restoreFoundationState = vi.fn(async () => ({ restored: true, episodesRestored: 0 }));
+// Objective blank-field count behind the character arm's tie-breaker. Default:
+// an unchanged cast (the checkpoint read and the post-repair read agree), so a
+// tie stays a tie unless a test says the repair actually filled fields.
+const readFoundationCharacterBlanks = vi.fn(async () => 0);
 vi.mock('./foundationJudge.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -175,8 +190,14 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
     judgeFoundation: (...args) => judgeFoundation(...args),
     applyFoundationFix: (...args) => applyFoundationFix(...args),
     establishCharacterFoundation: (...args) => establishCharacterFoundation(...args),
+    snapshotFoundationState: (...args) => snapshotFoundationState(...args),
+    restoreFoundationState: (...args) => restoreFoundationState(...args),
+    readFoundationCharacterBlanks: (...args) => readFoundationCharacterBlanks(...args),
   };
 });
+
+const recordModelOutcome = vi.fn(async () => true);
+vi.mock('./seriesAutopilot/modelPerformance.js', () => ({ recordModelOutcome }));
 
 // Pause-escalation notifications (#1615) — spy on the notification center so a
 // test can assert a pause posts a banner (and a clean run / opt-out does not).
@@ -233,6 +254,7 @@ beforeEach(() => {
   scriptVerifyFindings = [];
   canonReady = true;
   canonUndescribed = [];
+  canonBlockingIssues = [];
   foundationScore = 10;
   foundationDimensionScores = null;
   foundationFixApplied = true;
@@ -252,6 +274,13 @@ beforeEach(() => {
   // Reset settings to empty so a test that set persisted convergence rounds
   // doesn't leak its default into the next test.
   getSettings.mockImplementation(async () => ({}));
+  // `clearAllMocks` above keeps implementations, and the foundation-gate tests
+  // set persistent ones. `mockReset` restores the implementation each was
+  // constructed with, so a stalled-foundation test can't leak into the next.
+  judgeFoundation.mockReset();
+  applyFoundationFix.mockReset();
+  snapshotFoundationState.mockReset();
+  restoreFoundationState.mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -312,6 +341,69 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
     };
     expect(autopilot.__testing.roleLlm(split, 'judge')).toEqual({
       providerOverride: 'claude-code-tui', modelOverride: undefined, effortOverride: 'high',
+    });
+  });
+
+  it('uses learned stage/role routing only when that role has no explicit run choice', () => {
+    const learned = {
+      currentStep: 'foundationGate',
+      options: {
+        autoSelectModels: true,
+        providerOverride: 'series-default',
+        modelOverride: 'series-model',
+        modelRoutesExplicit: { creative: false, judge: true },
+        modelRecommendations: {
+          foundationGate: {
+            creative: { providerOverride: 'ollama', modelOverride: 'local-14b' },
+            judge: { providerOverride: 'codex', modelOverride: 'judge-model' },
+          },
+        },
+        judgeLlm: { providerOverride: 'manual-judge', modelOverride: 'manual-model' },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(learned, 'creative')).toEqual({
+      providerOverride: 'ollama', modelOverride: 'local-14b', effortOverride: undefined,
+    });
+    expect(autopilot.__testing.roleLlm(learned, 'judge')).toEqual({
+      providerOverride: 'manual-judge', modelOverride: 'manual-model', effortOverride: undefined,
+    });
+  });
+
+  it('routes one stage and role to an explicit specialist without changing other steps', () => {
+    const routed = {
+      currentStep: 'foundationGate',
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        judgeLlm: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+        stageLlm: {
+          foundationGate: {
+            creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+          },
+        },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(routed, 'creative')).toEqual({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+    });
+    expect(autopilot.__testing.roleLlm(routed, 'judge')).toEqual({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+    });
+    routed.currentStep = 'generateEpisodes';
+    expect(autopilot.__testing.roleLlm(routed, 'creative')).toEqual({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+    });
+  });
+
+  it('does not carry a role model across a stage-level provider change', () => {
+    const routed = {
+      currentStep: 'foundationGate',
+      options: {
+        providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-luna', effortOverride: 'max',
+        stageLlm: { foundationGate: { creative: { providerOverride: 'ollama' } } },
+      },
+    };
+    expect(autopilot.__testing.roleLlm(routed, 'creative')).toEqual({
+      providerOverride: 'ollama', modelOverride: undefined, effortOverride: 'max',
     });
   });
 });
@@ -535,8 +627,10 @@ describe('resolveNextStep (pure)', () => {
     expect(plan.every((p) => Number.isFinite(p.estActions))).toBe(true);
     const byKind = Object.fromEntries(plan.map((p) => [p.kind, p]));
     // verifyArc: each round checks the whole arc + one volume, then resolves
-    // between rounds → 3*(1+1)+2 = 8 actions.
-    expect(byKind.verifyArc.estActions).toBe(8);
+    // between rounds → 3*(1+1)+2 = 8 — plus the per-finding isolation pass the
+    // gate can escalate to inside a round (#3780): an attempt costs a resolve +
+    // an arc verify + one volume verify = 3, so the 8-call budget buys 2 → +6.
+    expect(byKind.verifyArc.estActions).toBe(14);
     // textStages: one child action per not-yet-text-ready issue (2 here).
     expect(byKind.textStages.estActions).toBe(2);
     // Pure-gate steps that bill nothing against the cap are zero-cost.
@@ -550,10 +644,15 @@ describe('resolveNextStep (pure)', () => {
       .find((p) => p.kind === kind)?.estActions;
     // 0 rounds → the loop is skipped → 0 actions.
     expect(actionsFor({ maxArcVerifyRounds: 0 }, 'verifyArc')).toBe(0);
-    // 1 round → whole-arc + one-volume verify, no resolve → 2 actions.
+    // 1 round → whole-arc + one-volume verify, no resolve → 2 actions. Isolation
+    // needs a second round to verify what it kept, so it projects nothing here.
     expect(actionsFor({ maxArcVerifyRounds: 1 }, 'verifyArc')).toBe(2);
-    // 4 rounds → 4 arc verifies + 4 volume verifies + 3 resolves → 11 actions.
-    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(11);
+    // 4 rounds → 4 arc verifies + 4 volume verifies + 3 resolves → 11, plus the
+    // isolation pass's 2 attempts × 3 calls (#3780) → 17.
+    expect(actionsFor({ maxArcVerifyRounds: 4 }, 'verifyArc')).toBe(17);
+    // …and a run that declined it gets the round-based estimate back.
+    expect(actionsFor({ maxArcVerifyRounds: 4, maxArcIsolationAttempts: 0 }, 'verifyArc')).toBe(11);
+    expect(actionsFor({ maxArcVerifyRounds: 4, maxArcResolveRetries: 0 }, 'verifyArc')).toBe(11);
     // Editorial review follows the same convergence shape.
     expect(actionsFor({ maxEditorialRounds: 2 }, 'editorialReview')).toBe(3);
   });
@@ -620,17 +719,17 @@ describe('resolveNextStep (pure)', () => {
   });
 
   it('asks to generate episodes for a season with no issues', () => {
-    const step = resolveNextStep(comic, []);
+    const step = resolveNextStep(comic, [], { arcSpineVerified: true });
     expect(step).toMatchObject({ kind: 'generateEpisodes', seasonId: 'se1' });
   });
 
-  it('establishes the foundation before arc verification or drafting', () => {
+  it('checks the arc spine before foundation evaluation or drafting', () => {
     const step = resolveNextStep(comic, [issue()]);
-    expect(step.kind).toBe('foundationGate');
+    expect(step.kind).toBe('verifyArcSpine');
   });
 
   it('runs arc verification after the foundation gate, before beats (#2176)', () => {
-    const step = resolveNextStep(comic, [issue()], { foundationGated: true });
+    const step = resolveNextStep(comic, [issue()], { arcSpineVerified: true, foundationGated: true });
     expect(step.kind).toBe('verifyArc');
   });
 
@@ -855,6 +954,17 @@ describe('resolveAutopilotUnlockForRun (config gate)', () => {
   });
 });
 
+describe('resolveAutopilotAutoSelectModels (config gate)', () => {
+  it('defaults off, supports a saved default, and lets a run override it', () => {
+    expect(autopilot.resolveAutopilotAutoSelectModels({}, null)).toBe(false);
+    expect(autopilot.resolveAutopilotAutoSelectModels({}, { pipelineEditorialChecks: { autoSelectModels: true } })).toBe(true);
+    expect(autopilot.resolveAutopilotAutoSelectModels(
+      { autoSelectModels: false },
+      { pipelineEditorialChecks: { autoSelectModels: true } },
+    )).toBe(false);
+  });
+});
+
 describe('resolveNextStep — unlock pre-pass ordering', () => {
   // A locked arc makes generateArc/resolveVerifyIssues throw and a locked stage
   // makes text generation skip, so the unlock MUST precede every generation step
@@ -1067,7 +1177,7 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
 
   const freshRunState = () => ({
     locksUnlocked: false,
-    characterFoundationEstablished: false, arcAttempted: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
+    characterFoundationEstablished: false, arcAttempted: false, arcSpineVerified: false, arcVerified: false, foundationGated: false, beatContinuityChecked: false,
     editorialReviewed: false, reverseOutlineRefreshed: false,
     editorialChecksReviewed: false, editorialHealthReady: false, canonVerified: false,
     episodesAttempted: new Set(), beatsAttempted: new Set(), textAttempted: new Set(),
@@ -1097,6 +1207,9 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
         throw new Error(`drift guard: fixture reached "${step.kind}" — parity guard requires fully-populated fixtures (arc present + every season seeded with issues)`);
       case 'verifyArc':
         runState.arcVerified = true;
+        break;
+      case 'verifyArcSpine':
+        runState.arcSpineVerified = true;
         break;
       case 'foundationGate':
         runState.foundationGated = true;
@@ -1394,6 +1507,65 @@ describe('trackConvergence (pure divergence/oscillation guard — #1571)', () =>
   });
 });
 
+describe('isIsolatedFixSafe (pure per-finding patch acceptance, #3780)', () => {
+  const { isIsolatedFixSafe } = autopilot;
+  const f = (problem, location = 'V1', severity = 'high') => ({ severity, location, problem });
+  const target = f('volume 1 and volume 2 both stage the first eclipse');
+  const other = f('mentor subplot never pays off', 'V3');
+
+  it('keeps a patch that closed its target and left the rest alone', () => {
+    expect(isIsolatedFixSafe(target, [target, other], [other])).toBe(true);
+  });
+
+  it('keeps an even trade — the target gone, one equally-severe finding in its place', () => {
+    // Same shape the round loop's checkpoint already accepts: a tie can be real
+    // causal progress, and the divergence guard catches a gate that only trades.
+    expect(isIsolatedFixSafe(target, [target, other], [other, f('finale hook is unresolved', 'V4')])).toBe(true);
+  });
+
+  it('rejects a patch that only RE-WORDED its target', () => {
+    // The verifier restates a standing defect freely; treating fresh prose as
+    // closure would bank a patch that fixed nothing and keep its collateral.
+    expect(isIsolatedFixSafe(target, [target, other], [
+      f('the first eclipse is staged twice — once in each opening volume', 'Volume 2 opening'),
+    ])).toBe(false);
+  });
+
+  it('rejects a patch that grew the blocking set', () => {
+    expect(isIsolatedFixSafe(target, [target, other], [
+      other, f('finale hook is unresolved', 'V4'), f('timeline of the siege runs backwards', 'V6'),
+    ])).toBe(false);
+  });
+
+  it('rejects a same-size swap that made the set MORE severe', () => {
+    // Count alone can't see this one: a `medium` traded for a `high` is a worse
+    // draft at the same size. Judged by the SAME `isBlockingSetRegression` the
+    // whole-round rollback guard uses, so a trade the round tier would revert is
+    // never banked by the isolation tier instead.
+    const mediumTarget = f('volume 1 and volume 2 both stage the first eclipse', 'V1', 'medium');
+    expect(isIsolatedFixSafe(
+      mediumTarget,
+      [mediumTarget, f('pacing sags mid-volume', 'V2', 'medium')],
+      [f('pacing sags mid-volume', 'V2', 'medium'), f('protagonist goal vanishes', 'V5', 'high')],
+    )).toBe(false);
+  });
+
+  it('keeps a same-size swap that made the set LESS severe', () => {
+    // The mirror of the case above — trading a `high` down to a `medium` at an
+    // unchanged count is progress, not a regression.
+    expect(isIsolatedFixSafe(
+      target,
+      [target, other],
+      [other, f('pacing sags mid-volume', 'V2', 'medium')],
+    )).toBe(true);
+  });
+
+  it('tolerates missing/garbage inputs', () => {
+    expect(isIsolatedFixSafe(target, undefined, undefined)).toBe(true);
+    expect(isIsolatedFixSafe(target, null, [target])).toBe(false);
+  });
+});
+
 describe('isResolveRegression (pure resolve-round damage check)', () => {
   const { isResolveRegression, sameFinding, findingTextOverlap } = autopilot;
   const f = (problem, location = 'V1', severity = 'high') => ({ severity, location, problem });
@@ -1491,6 +1663,68 @@ describe('isResolveRegression (pure resolve-round damage check)', () => {
   });
 });
 
+describe('isTargetedPatchRegression (bounded exact-text damage check)', () => {
+  const { isTargetedPatchRegression } = autopilot;
+  const f = (problem, location = 'V1', severity = 'medium') => ({ severity, location, problem });
+
+  it('keeps a sparse patch that closed its target when an exhaustive judge exposes unrelated latent blockers', () => {
+    expect(isTargetedPatchRegression(
+      [f('the recovery order expires before the mandatory rest completes')],
+      [
+        f('the destination tow has no established local route', 'V3', 'high'),
+        f('the inherited seal kit has no supplier setup', 'V2'),
+      ],
+    )).toBe(false);
+  });
+
+  it('rejects a sparse patch when its target survives alongside new blockers or returns more severe', () => {
+    const target = f('the recovery order expires before the mandatory rest completes');
+    expect(isTargetedPatchRegression([target], [
+      target,
+      f('the inherited seal kit has no supplier setup', 'V2'),
+    ])).toBe(true);
+    expect(isTargetedPatchRegression([target], [
+      f('mandatory recovery outlasts the resource order', 'V1', 'high'),
+    ])).toBe(true);
+  });
+});
+
+describe('isBlockingSetRegression (arc rollback ordering)', () => {
+  const { isBlockingSetRegression } = autopilot;
+  const f = (severity, problem) => ({ severity, problem, location: 'V1' });
+
+  it('rejects an equal-count candidate whose severity mix got worse', () => {
+    expect(isBlockingSetRegression(
+      [f('high', 'recovery chronology'), f('medium', 'stale milestone')],
+      [f('high', 'new canon violation'), f('high', 'stale milestone')],
+    )).toBe(true);
+  });
+
+  it('keeps an equal-count candidate whose severity mix improved or held', () => {
+    const before = [f('high', 'canon violation'), f('medium', 'stale milestone')];
+    expect(isBlockingSetRegression(before, [
+      f('medium', 'narrower handoff'), f('medium', 'stale milestone'),
+    ])).toBe(false);
+    expect(isBlockingSetRegression(before, before)).toBe(false);
+  });
+
+  it('preserves blocker count as the primary ordering signal', () => {
+    expect(isBlockingSetRegression(
+      [f('high', 'one blocker')],
+      [f('medium', 'first blocker'), f('medium', 'second blocker')],
+    )).toBe(true);
+    expect(isBlockingSetRegression(
+      [f('medium', 'first blocker'), f('medium', 'second blocker')],
+      [f('high', 'one blocker')],
+    )).toBe(false);
+  });
+
+  it('tolerates missing inputs', () => {
+    expect(isBlockingSetRegression(undefined, undefined)).toBe(false);
+    expect(isBlockingSetRegression(undefined, [f('high', 'new blocker')])).toBe(true);
+  });
+});
+
 describe('autopilot conductor', () => {
   it('rejects start when the cos domain is off (no run created)', async () => {
     cosMode = 'off';
@@ -1566,7 +1800,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
     // bounded: verifyArc called exactly maxRounds times, resolve called rounds-1.
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
@@ -1591,6 +1825,30 @@ describe('autopilot conductor', () => {
     });
   });
 
+  // The resolver has to plan at the altitude the verifier judged at (#3789).
+  it('scopes the arc-spine gate\'s resolver to spineOnly', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'plot hole', location: 'V1' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.scope).toBe('verifyArcSpine');
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues.mock.calls[0][1]).toMatchObject({ spineOnly: true });
+  });
+
+  it('leaves the full arc gate\'s resolver able to correct episodes', async () => {
+    // Spine passes on round 1 (no arc findings), so the pause below comes from
+    // the post-episode full gate — where episode corrections are the only way
+    // an episode-scoped finding can converge.
+    volumeVerifyFindings = [{ severity: 'high', problem: 'the midpoint promise never pays off', location: 'issue 3' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.scope).toBe('verifyArc');
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues.mock.calls[0][1]).toMatchObject({ spineOnly: false });
+  });
+
   // Foundation-quality gate (#2176).
   it('foundation gate: a clean foundation (default mock ≥ threshold) passes through to completion', async () => {
     foundationScore = 10;
@@ -1603,7 +1861,7 @@ describe('autopilot conductor', () => {
     expect(applyFoundationFix).not.toHaveBeenCalled();
   });
 
-  it('re-judges the foundation after arc verification repairs the synopsis plan', async () => {
+  it('repairs the arc spine before the foundation judge sees the synopsis plan', async () => {
     arcSpies.verifyArc
       .mockImplementationOnce(async () => ({ issues: [{ severity: 'high', problem: 'missing setup', location: 'V1' }] }))
       .mockImplementationOnce(async () => ({ issues: [] }));
@@ -1612,7 +1870,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
-    expect(judgeFoundation).toHaveBeenCalledTimes(2);
+    expect(judgeFoundation).toHaveBeenCalledTimes(1);
   });
 
   it('foundation gate: iterates on the weakest dimension then pauses (maxRounds) when it never clears', async () => {
@@ -1665,6 +1923,33 @@ describe('autopilot conductor', () => {
     });
   });
 
+  it('foundation gate: applies and persists a stage-specific creative route', async () => {
+    foundationScore = 3;
+    foundationFixApplied = true;
+    const { seriesId } = await seedComplete();
+    const stageLlm = {
+      foundationGate: {
+        creative: {
+          providerOverride: 'codex-tui',
+          modelOverride: 'gpt-5.6-sol',
+          effortOverride: 'xhigh',
+        },
+      },
+    };
+    await autopilot.startSeriesAutopilot(seriesId, {
+      providerOverride: 'codex-tui',
+      modelOverride: 'gpt-5.6-luna',
+      effortOverride: 'max',
+      stageLlm,
+      maxFoundationRounds: 2,
+    });
+    await waitFor(runFinished(seriesId));
+    expect(applyFoundationFix).toHaveBeenCalledWith(seriesId, expect.any(String), expect.objectContaining({
+      providerOverride: 'codex-tui', modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh',
+    }));
+    expect((await seriesSvc.getSeries(seriesId)).autopilot?.resumeOptions).toMatchObject({ stageLlm });
+  });
+
   it('foundation gate: repairs a below-floor character dimension even when the weighted score passes', async () => {
     foundationScore = 8.5;
     foundationDimensionScores = { worldbuilding: 10, character: 5, structure: 10, craft: 10 };
@@ -1693,10 +1978,10 @@ describe('autopilot conductor', () => {
         worldbuilding: 7.4, character: 7.4, structure: 7.4, craft: 7.4,
       }))
       .mockImplementationOnce(async () => snap(6.6, {
-        worldbuilding: 7, character: 7, structure: 5, craft: 7,
+        worldbuilding: 8, character: 7, structure: 5, craft: 7,
       }))
       .mockImplementationOnce(async () => snap(6.8, {
-        worldbuilding: 7, character: 7, structure: 7, craft: 5,
+        worldbuilding: 8, character: 7, structure: 7, craft: 5,
       }))
       .mockImplementationOnce(async () => snap(8, {
         worldbuilding: 8, character: 8, structure: 8, craft: 8,
@@ -1711,16 +1996,313 @@ describe('autopilot conductor', () => {
       .toEqual(['worldbuilding', 'structure', 'craft']);
   });
 
-  it('foundation gate: still stops after the same target repeatedly fails to improve', async () => {
-    foundationScore = 7;
+  it('foundation gate: reverts a repair that leaves its target unchanged, then retries it from the checkpoint', async () => {
+    const snapshot = (weightedScore) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: 8, gap: 'The active-node evidence rule is undefined.', fix: 'Define it.' },
+        character: { score: 7, gap: 'Aruun privacy is mislabeled as a relapse.', fix: 'Separate privacy from safety disclosure.' },
+        structure: { score: 6, gap: 'The charter handoff is thin.', fix: 'Stage the handoff.' },
+        craft: { score: 7, gap: 'The panel grammar is thin.', fix: 'Add panel rules.' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snapshot(7.2))
+      .mockImplementationOnce(async () => snapshot(7.1));
+    const checkpoint = { seriesId: 'ser-example', marker: 'before-character-repair' };
+    snapshotFoundationState.mockResolvedValueOnce(checkpoint);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
+    await waitFor(runFinished(seriesId));
+
+    // The rejected edits are rolled back to the checkpoint that was taken before
+    // them — but one bad proposal does not end a 4-round budget, so the same
+    // dimension is repaired again, and the retry is told what was reverted.
+    // The pre-repair verdict rides along so the restored content keeps its
+    // matching cached judgment instead of forcing a re-judge on resume.
+    expect(restoreFoundationState).toHaveBeenCalledWith(
+      seriesId,
+      checkpoint,
+      { judge: expect.objectContaining({ weightedScore: 7.2 }) },
+    );
+    const characterRepairs = applyFoundationFix.mock.calls.filter(([, dimension]) => dimension === 'character');
+    expect(characterRepairs.length).toBeGreaterThan(1);
+    expect(characterRepairs[0][2].finding.gap).toBe('Aruun privacy is mislabeled as a relapse.');
+    expect(characterRepairs[0][2].finding.retryReason).toBeUndefined();
+    expect(characterRepairs[1][2].finding).toMatchObject({
+      // The ORIGINAL gap — the foundation is back at the pre-repair checkpoint.
+      gap: 'Aruun privacy is mislabeled as a relapse.',
+      retryReason: expect.stringMatching(/REVERTED/),
+    });
+    // The rewound judgment is reused instead of paying for an identical re-judge.
+    expect(judgeFoundation).toHaveBeenCalledTimes(3);
+  });
+
+  it('foundation gate: keeps a tied character repair that objectively filled blank cast fields', async () => {
+    // The 2026-08-11 stall: the character repair authored every blank visual
+    // field on the core cast, the judge held character at 5 (its prompt showed
+    // each authored field as a presence marker, not the design), and unrelated
+    // worldbuilding noise dropped the aggregate — so a complete character pass
+    // was reverted. Filled fields on disk now outrank the tied score.
+    const snapshot = (weightedScore, worldbuilding) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: worldbuilding, gap: 'External societies read as negotiation venues.', fix: 'Add daily practices.' },
+        character: { score: 5, gap: 'Every core character has blank visual fields.', fix: 'Author the visual foundation.' },
+        structure: { score: 5, gap: 'The climax occurs in two places.', fix: 'Reconcile issue 11 and 12.' },
+        craft: { score: 8, gap: 'The exemplars are all one culture.', fix: 'Add an external-culture exemplar.' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snapshot(6.5, 8))
+      .mockImplementationOnce(async () => snapshot(6.1, 7))
+      .mockImplementationOnce(async () => ({
+        seriesId: 'ser-example', status: 'complete', weightedScore: 8,
+        dimensions: {
+          worldbuilding: { score: 8, gap: 'g', fix: 'f' },
+          character: { score: 8, gap: 'g', fix: 'f' },
+          structure: { score: 8, gap: 'g', fix: 'f' },
+          craft: { score: 8, gap: 'g', fix: 'f' },
+        },
+      }));
+    // 25 blank fields across the repairable cast before the repair, none after.
+    readFoundationCharacterBlanks.mockResolvedValueOnce(25).mockResolvedValueOnce(0);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+
+    expect(restoreFoundationState).not.toHaveBeenCalled();
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(applyFoundationFix.mock.calls.map(([, dimension]) => dimension)).toEqual(['character', 'character']);
+  });
+
+  it('foundation gate: pauses only after repeated rejected repairs exhaust the same target', async () => {
+    const stalled = {
+      seriesId: 'ser-example', status: 'complete', weightedScore: 7,
+      dimensions: {
+        worldbuilding: {
+          score: 7,
+          gap: 'The setting lacks a concrete scarcity mechanism and authority conflict.',
+          fix: 'Define the scarcity mechanism and authority conflict.',
+        },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    };
+    judgeFoundation.mockImplementation(async () => stalled);
+    let checkpointSeq = 0;
+    snapshotFoundationState.mockImplementation(async (sId) => {
+      checkpointSeq += 1;
+      return { seriesId: sId, marker: `checkpoint-${checkpointSeq}` };
+    });
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
     await waitFor(runFinished(seriesId));
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
-    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'divergence' });
-    expect(judgeFoundation).toHaveBeenCalledTimes(3);
-    expect(applyFoundationFix).toHaveBeenCalledTimes(2);
+    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'regression' });
+    // Every rejected attempt was rolled back — to the checkpoint taken just
+    // before IT, so no retry ever builds on a rejected edit — and the pause says so.
+    expect(applyFoundationFix.mock.calls.length).toBeGreaterThan(1);
+    expect(restoreFoundationState.mock.calls.map(([, cp]) => cp.marker))
+      .toEqual(applyFoundationFix.mock.calls.map((_call, index) => `checkpoint-${index + 1}`));
+    expect(last?.reason).toMatch(/reverted to the pre-repair checkpoint/);
+    for (const [, , options] of applyFoundationFix.mock.calls) {
+      expect(options.finding.gap).toBe(stalled.dimensions.worldbuilding.gap);
+    }
+    // The residual describes the RESTORED foundation the user is handed back.
+    expect(last?.residualFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        location: expect.stringContaining('worldbuilding'),
+        problem: stalled.dimensions.worldbuilding.gap,
+      }),
+    ]));
+  });
+
+  it('foundation gate: stops immediately when a rejected repair cannot be rolled back', async () => {
+    const stalled = {
+      seriesId: 'ser-example', status: 'complete', weightedScore: 7,
+      dimensions: {
+        worldbuilding: { score: 7, gap: 'The scarcity mechanism is undefined.', fix: 'Define it.' },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    };
+    judgeFoundation.mockImplementation(async () => stalled);
+    restoreFoundationState.mockResolvedValueOnce({ restored: false, reason: 'universe.premise' });
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({ type: 'paused', scope: 'foundationGate', pauseKind: 'regression' });
+    expect(last?.reason).toMatch(/checkpoint verification failed after rollback: universe\.premise/);
+    // An unverified checkpoint is the one case that must NOT be retried.
+    expect(applyFoundationFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('foundation gate: accepts a retry that improves its target after an earlier attempt was reverted', async () => {
+    const snapshot = (weightedScore, worldbuilding) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: worldbuilding, gap: 'The scarcity mechanism is undefined.', fix: 'Define it.' },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    });
+    judgeFoundation
+      // Round 1: worldbuilding is the weak target.
+      .mockImplementationOnce(async () => snapshot(7, 5))
+      // Round 2: the repair moved nothing and cost aggregate score → reverted.
+      .mockImplementationOnce(async () => snapshot(6.6, 5))
+      // Round 3 re-judges the SECOND attempt (the rewound round reuses the
+      // round-1 verdict), which earned its keep and clears the gate.
+      .mockImplementationOnce(async () => snapshot(9, 9));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(restoreFoundationState).toHaveBeenCalledTimes(1);
+    expect(applyFoundationFix.mock.calls.filter(([, d]) => d === 'worldbuilding')).toHaveLength(2);
+  });
+
+  it('foundation gate: a third attempt carries BOTH earlier rejections for its dimension (#3835)', async () => {
+    // The evidence-loss #3829/#3832 closed for the arc gate: the foundation gate
+    // kept only the LAST rejection per dimension, so a dimension that rejected
+    // two different repairs handed the next one evidence of only the second and
+    // the editor was free to re-author the first.
+    const snap = (weightedScore, characterScore, characterGap) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: 9, gap: 'The ration authority is unnamed.', fix: 'Name it.' },
+        character: { score: characterScore, gap: characterGap, fix: `repair ${characterGap}` },
+        structure: { score: 9, gap: 'The charter handoff is thin.', fix: 'Stage the handoff.' },
+        craft: { score: 9, gap: 'The panel grammar is thin.', fix: 'Add panel rules.' },
+      },
+    });
+    const standing = 'The visitor has no defined body scale or metabolic support needs.';
+    const firstRejected = 'The mentor subplot vanishes entirely after the second issue.';
+    const surfaced = 'Every core cast member shares one identical grief reflex.';
+    const secondRejected = 'The finale resolves offstage inside a single unread letter.';
+    judgeFoundation
+      // R1: character is the weak target → repair #1.
+      .mockImplementationOnce(async () => snap(6, 5, standing))
+      // R2: repair #1 left character WORSE → reverted, rejection banked → repair #2.
+      .mockImplementationOnce(async () => snap(5.5, 4, firstRejected))
+      // R3: repair #2 earned its keep (5 → 6) → repair #3 from the new state.
+      .mockImplementationOnce(async () => snap(6.5, 6, surfaced))
+      // R4: repair #3 regressed → reverted, second rejection banked → repair #4.
+      .mockImplementationOnce(async () => snap(6, 5, secondRejected))
+      // R5: repair #4 cleared the gate.
+      .mockImplementationOnce(async () => snap(9, 9, 'clean'));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    const characterRepairs = applyFoundationFix.mock.calls.filter(([, d]) => d === 'character');
+    expect(characterRepairs).toHaveLength(4);
+    const avoided = characterRepairs[3][2].avoidFindings.map((f) => f.problem);
+    // BOTH rejected candidates, not just the most recent one — and the accepted
+    // repair in between did not wipe the first: a candidate the gate rejected is
+    // still a candidate it rejected.
+    expect(avoided).toEqual(expect.arrayContaining([secondRejected, firstRejected]));
+    // The gap this call is being ASKED to close is filtered out — telling the
+    // editor both "fix this" and "never author this" is contradictory.
+    expect(avoided).not.toContain(surfaced);
+  });
+
+  it('foundation gate: stamps its per-dimension rollback history on the pause marker (#3835)', async () => {
+    const stalled = {
+      seriesId: 'ser-example', status: 'complete', weightedScore: 6,
+      dimensions: {
+        worldbuilding: { score: 9, gap: 'The ration authority is unnamed.', fix: 'Name it.' },
+        character: { score: 5, gap: 'The mentor subplot vanishes entirely after the second issue.', fix: 'Restore it.' },
+        structure: { score: 9, gap: 'The charter handoff is thin.', fix: 'Stage the handoff.' },
+        craft: { score: 9, gap: 'The panel grammar is thin.', fix: 'Add panel rules.' },
+      },
+    };
+    judgeFoundation.mockImplementation(async () => stalled);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('paused');
+    // Keyed by dimension so a resumed gate hands each editor back its OWN
+    // history — a rejected character rewrite is no reason for the structure
+    // editor to avoid anything.
+    const { foundationDiscardedFindings } = (await seriesSvc.getSeries(seriesId)).autopilot;
+    expect(Object.keys(foundationDiscardedFindings)).toEqual(['character']);
+    expect(foundationDiscardedFindings.character).toEqual(expect.arrayContaining([
+      expect.objectContaining({ problem: stalled.dimensions.character.gap }),
+    ]));
+  });
+
+  it('foundation gate: seeds a resumed run with the dimension history the pause carried (#3835)', async () => {
+    const carried = [{ severity: 'high', location: 'character (weight 25%, scored 4)', problem: 'The mentor subplot vanishes entirely after the second issue.' }];
+    const snap = (weightedScore, characterScore) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore,
+      dimensions: {
+        worldbuilding: { score: 9, gap: 'The ration authority is unnamed.', fix: 'Name it.' },
+        character: { score: characterScore, gap: 'The visitor has no defined body scale or metabolic support needs.', fix: 'Author it.' },
+        structure: { score: 9, gap: 'The charter handoff is thin.', fix: 'Stage the handoff.' },
+        craft: { score: 9, gap: 'The panel grammar is thin.', fix: 'Add panel rules.' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snap(6, 5))
+      .mockImplementationOnce(async () => snap(9, 9));
+
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, {
+      autopilot: {
+        status: 'paused', currentStep: 'foundationGate',
+        foundationDiscardedFindings: { character: carried },
+      },
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    // A resume starts a fresh gate with an empty bank, so without the carry the
+    // very repair the paused run reverted is free to come straight back.
+    const [, , options] = applyFoundationFix.mock.calls.find(([, d]) => d === 'character');
+    expect(options.avoidFindings.map((f) => f.problem)).toEqual([carried[0].problem]);
+  });
+
+  it('foundation gate: gives a newly exposed gap at the same score its own repair window', async () => {
+    const snap = (gap, score = 7) => ({
+      seriesId: 'ser-example', status: 'complete', weightedScore: score,
+      dimensions: {
+        worldbuilding: { score, gap, fix: `repair ${gap}` },
+        character: { score: 10, gap: 'clean', fix: 'none' },
+        structure: { score: 10, gap: 'clean', fix: 'none' },
+        craft: { score: 10, gap: 'clean', fix: 'none' },
+      },
+    });
+    judgeFoundation
+      .mockImplementationOnce(async () => snap('The visitor has no defined body scale or metabolic support needs.'))
+      .mockImplementationOnce(async () => snap('The neighboring societies lack governance, factions, and translation methods.'))
+      .mockImplementationOnce(async () => snap('The home settlement has no concrete infrastructure failure chain or ration authority.'))
+      .mockImplementationOnce(async () => snap('clean', 10));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 4 });
+    await waitFor(runFinished(seriesId));
+
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(applyFoundationFix).toHaveBeenCalledTimes(3);
+    expect(applyFoundationFix.mock.calls.map(([, dimension]) => dimension))
+      .toEqual(['worldbuilding', 'worldbuilding', 'worldbuilding']);
   });
 
   it('foundation gate: pauses immediately when the weakest dimension cannot be auto-fixed', async () => {
@@ -1735,6 +2317,50 @@ describe('autopilot conductor', () => {
     // one judge, one (failed) fix attempt, then pause — no burning the rest.
     expect(judgeFoundation).toHaveBeenCalledTimes(1);
     expect(applyFoundationFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('foundation gate: a reverted structure repair surfaces the arc blockers it was judged on', async () => {
+    // The repair reverted itself because the arc verifier still found blockers.
+    // The pause's `residual` is the dimension-level gap list, so those blockers
+    // reach the user nowhere unless the revert reports them — leaving "left 2
+    // blocker(s)" in prose as the only trace of why a rewrite was thrown away.
+    const blockers = [
+      { severity: 'high', location: 'V2', problem: 'ration authority contradicts the founding charter' },
+      { severity: 'medium', location: 'V3', problem: 'the eclipse lands before the calendar allows it' },
+    ];
+    foundationScore = 7;
+    foundationDimensionScores = { worldbuilding: 8, character: 8, structure: 3, craft: 8 };
+    applyFoundationFix.mockImplementationOnce(async (_sId, dimension, options) => {
+      options.onRunCreated('structure-reverted');
+      return {
+        dimension,
+        applied: false,
+        reverted: true,
+        actions: 4,
+        reason: 'structure repair left 2 arc-verification blocker(s); reverted to the pre-repair plan',
+        discarded: blockers,
+        rejectedRunIds: ['structure-reverted'],
+      };
+    });
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('inapplicable');
+    expect(last?.discardedFindings).toEqual(blockers);
+    expect(recordModelOutcome).toHaveBeenCalledWith('structure-reverted', expect.objectContaining({
+      role: 'creative', stage: 'foundationGate', outcome: 'rejected', target: 'structure',
+    }));
+    expect(recordModelOutcome).not.toHaveBeenCalledWith('structure-reverted', expect.objectContaining({ outcome: 'invalid' }));
+  });
+
+  it('foundation gate: an inapplicable fix with nothing reverted reports no discarded set', async () => {
+    foundationScore = 3;
+    foundationFixApplied = false;
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxFoundationRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.discardedFindings).toEqual([]);
   });
 
   it('foundation gate: a repair that throws pauses the run instead of erroring it away', async () => {
@@ -1773,7 +2399,7 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
   });
 
   it('arc gate: a per-series arc:[high] override lets a medium finding pass', async () => {
@@ -1849,7 +2475,9 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
-    expect(series.autopilot?.resumeOptions).toEqual({ includeVisual: false, fileGaps: true });
+    expect(series.autopilot?.resumeOptions).toEqual({
+      includeVisual: false, fileGaps: true, autoSelectModels: false,
+    });
   });
 
   it('does not notify on a clean complete (#1615)', async () => {
@@ -1913,24 +2541,102 @@ describe('autopilot conductor', () => {
     await waitFor(runFinished(seriesId));
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
     expect(last?.pauseKind).toBe('divergence');
     expect(last?.reason).toMatch(/stopped converging/);
     // Bailed at round 3 — NOT all 6 rounds (the whole point: budget saved).
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    // A tied blocker count can still contain newer, narrower findings. Round 3
+    // verified the latest draft, so keep it in place rather than rewinding to
+    // either earlier three-finding snapshot.
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     // Persisted through sanitizeAutopilot so the resume banner survives a reload.
     expect(series.autopilot?.pauseKind).toBe('divergence');
   });
 
+  it('does not pay for another judge when an exact arc repair applied nothing', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'plot hole', location: 'V1' }];
+    const noOp = {
+      applied: false,
+      rejectedExactEdits: 1,
+      runId: 'no-op-resolve',
+    };
+    arcSpies.resolveVerifyIssues
+      .mockResolvedValueOnce(noOp)
+      .mockResolvedValueOnce(noOp);
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 3 });
+    await waitFor(runFinished(seriesId));
+
+    // The unchanged verifier result seeds the next round. The gate may retry a
+    // shorter patch, but it never bills another judge for an identical store.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(recordModelOutcome).toHaveBeenCalledWith('no-op-resolve', expect.objectContaining({
+      outcome: 'rejected', scoreBefore: -1, scoreAfter: -1,
+    }));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.pauseKind).toBe('maxRounds');
+  });
+
+  it('keeps a bounded exact patch when a later judge exposes unrelated latent blockers', async () => {
+    const target = { severity: 'medium', problem: 'the recovery order expires before the mandatory rest completes', location: 'V1' };
+    const latent = [
+      { severity: 'high', problem: 'the destination tow has no established local route', location: 'V3' },
+      { severity: 'medium', problem: 'the inherited seal kit has no supplier setup', location: 'V2' },
+    ];
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [target] }))
+      .mockImplementationOnce(async () => ({ issues: latent }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    arcSpies.resolveVerifyIssues
+      .mockResolvedValueOnce({ applied: true, patchMode: 'exact-text-v1', runId: 'exact-target' })
+      .mockResolvedValueOnce({ applied: true, patchMode: 'exact-text-v1', runId: 'exact-latent' });
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    expect(arcSpies.resolveVerifyIssues.mock.calls[1][1].findings).toEqual(latent);
+    expect(recordModelOutcome).toHaveBeenCalledWith('exact-target', expect.objectContaining({
+      outcome: 'accepted', scoreBefore: -1, scoreAfter: 0,
+    }));
+  });
+
+  it('does not rewind exact target closure at the round cap when the later judge is more exhaustive', async () => {
+    const target = { severity: 'medium', problem: 'the recovery order expires before the mandatory rest completes', location: 'V1' };
+    const latent = [
+      { severity: 'high', problem: 'the destination tow has no established local route', location: 'V3' },
+      { severity: 'medium', problem: 'the inherited seal kit has no supplier setup', location: 'V2' },
+    ];
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [target] }))
+      .mockImplementationOnce(async () => ({ issues: latent }));
+    arcSpies.resolveVerifyIssues
+      .mockResolvedValueOnce({ applied: true, patchMode: 'exact-text-v1', runId: 'exact-before-cap' });
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({
+      type: 'paused', pauseKind: 'maxRounds', residualFindings: latent,
+    });
+  });
+
   it('reverts an arc-resolve round that introduced blocking findings and pauses on the pre-round residual', async () => {
     // The 2026-08-09 non-convergence, replayed: the loop hands the resolver ONE
     // blocking finding and gets 3 back, then 5 — with the original still
     // standing every round. Before this guard all of that damage was committed
-    // and the run paused on 5 findings the user never had. Now round 2's verify sees the
-    // regression, puts the pre-resolve arc back, and pauses on the original 1.
+    // and the run paused on 5 findings the user never had. Now round 2's verify
+    // sees the regression and puts the pre-resolve arc back; it spends its one
+    // corrective pass from there, and when round 3 regresses again the gate is
+    // out of retries and pauses on the original 1.
     const original = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
     const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 2}` });
     const round = (n) => ({ issues: [original, ...Array.from({ length: n - 1 }, (_, i) => extra(i))] });
@@ -1938,32 +2644,301 @@ describe('autopilot conductor', () => {
       .mockImplementationOnce(async () => round(1))
       .mockImplementationOnce(async () => round(3))
       .mockImplementationOnce(async () => round(5));
+    arcSpies.resolveVerifyIssues
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-regression-1' }))
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-regression-2' }));
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    // Bailed at round 2 — the 5-finding third round never runs, so neither the
-    // verify nor another resolve is billed against the budget.
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
-    // The snapshot taken before that resolve is what gets handed back.
+    // Bailed at round 3 — the loop never runs on past the second regression, so
+    // rounds 4-6 cost nothing.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    // Only the first-attempt resolve snapshots; the corrective pass reuses the
+    // checkpoint it was just rewound to rather than pinning the reverted draft.
     expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(1);
+    // The resolver reported no episode writes, so the rollback is authorized to
+    // restore none — the arc and volumes come back, every synopsis stays put.
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
+      { episodeEdits: [] },
     );
+    // The corrective pass is handed the CHECKPOINT's findings (what the restored
+    // plan actually has) plus the rejected attempt's own findings to steer away
+    // from — not the 3-finding set, which is no longer in the plan at all.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[1][1]).toMatchObject({
+      findings: [original],
+      avoid: round(3).issues,
+    });
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-regression-1', expect.objectContaining({
+      role: 'creative', stage: 'verifyArcSpine', outcome: 'rejected', scoreBefore: -1, scoreAfter: -3,
+    }));
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-regression-2', expect.objectContaining({
+      role: 'creative', stage: 'verifyArcSpine', outcome: 'rejected', scoreBefore: -1, scoreAfter: -5,
+    }));
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
-    expect(last?.scope).toBe('verifyArc');
+    expect(last?.scope).toBe('verifyArcSpine');
     expect(last?.pauseKind).toBe('regression');
     expect(last?.reason).toMatch(/reverted/);
-    // Residual is what the user had BEFORE the round, not the 3 it manufactured.
+    // Residual is what the user had BEFORE the round, not the 5 it manufactured.
     expect(last?.residualFindings).toEqual([original]);
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     expect(series.autopilot?.pauseKind).toBe('regression');
     expect(series.autopilot?.residualFindings).toHaveLength(1);
+  });
+
+  it('spends one corrective pass on a reverted resolve round and converges from it (#3781)', async () => {
+    // The 2026-08-11 verifyArcSpine stall: 3 blockers in, 6 back, reverted —
+    // and the run STOPPED there. A resume re-ran the same prompt over the same
+    // restored state, so the gate could never clear itself unattended. Now the
+    // revert is followed by one more resolve from the checkpoint that names the
+    // rejected attempt's own findings as the failure mode to avoid.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(3, 'initial') }))
+      .mockImplementationOnce(async () => ({ issues: holes(6, 'regressed') }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    arcSpies.resolveVerifyIssues
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-rejected' }))
+      .mockImplementationOnce(async () => ({ applied: true, runId: 'arc-accepted' }));
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 3 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // The damaged draft is still reverted — the retry is a second attempt from
+    // the checkpoint, never an acceptance of the worse state.
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues.mock.calls[1][1]).toMatchObject({
+      findings: holes(3, 'initial'),
+      avoid: holes(6, 'regressed'),
+    });
+    // …and the gate clears, so the run advances instead of pausing for a human.
+    const rollback = frames.find((f) => f.type === 'resolve:rollback');
+    expect(rollback).toMatchObject({ before: 3, after: 6, best: 3, retrying: true });
+    expect(frames.some((f) => f.type === 'resolve:round' && f.retry === true)).toBe(true);
+    expect(frames.some((f) => f.type === 'paused' && f.pauseKind === 'regression')).toBe(false);
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-rejected', expect.objectContaining({
+      outcome: 'rejected', scoreBefore: -3, scoreAfter: -6,
+    }));
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-accepted', expect.objectContaining({
+      outcome: 'accepted', scoreBefore: -3, scoreAfter: 0,
+    }));
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
+  it('carries a rejected candidate\'s findings past its corrective retry into the next ordinary resolve', async () => {
+    // The 2026-08-12 verifyArcSpine stall, replayed: 2 blockers → 1, a rewrite
+    // back to 5 (reverted), the corrective retry back to 1, then straight back
+    // to 2 with no retries left. The rejected set has to survive for the rest of
+    // the gate, not just for the retry that immediately follows the rollback —
+    // see `runDiscarded` in runArcVerify.
+    const standing = { severity: 'high', problem: 'the succession vow is never paid off', location: 'V1' };
+    const closed = { severity: 'high', problem: 'the choir loses its founding member offscreen', location: 'V2' };
+    const collateral = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 3}` });
+    const rejected = [standing, ...Array.from({ length: 4 }, (_, i) => collateral(i))];
+    arcSpies.verifyArc.mockReset();
+    [
+      [standing, closed], // round 1 — resolve #1
+      [standing],         // round 2 — real progress; resolve #2
+      rejected,           // round 3 — regressed to 5, reverted, corrective retry (#3)
+      [standing],         // round 4 — retry landed back on the checkpoint; resolve #4
+      [],                 // round 5 — clean
+    ].forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues })));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // The corrective retry keeps its own rollback's evidence whole, as before.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[2][1]).toMatchObject({
+      findings: [standing],
+      avoid: rejected,
+    });
+    // …and so does the ORDINARY resolve that follows it, minus the one entry the
+    // restored state still has as an active target — the resolver must never be
+    // told to both fix and avoid the same finding.
+    const ordinary = arcSpies.resolveVerifyIssues.mock.calls[3][1];
+    expect(ordinary).toMatchObject({ findings: [standing] });
+    expect(ordinary.avoid).toEqual(rejected.filter((f) => f !== standing));
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
+  it('hands a resumed resolver every rewrite the paused gate reverted, not just the last one', async () => {
+    // Two DIFFERENT rewrites reverted before the pause. The marker's
+    // `discardedFindings` is scoped to the round that was reverted last (the
+    // panel renders it under that copy), so a resume that read only that field
+    // let the resolver re-author the first rejected rewrite for free. The gate's
+    // whole history rides `runDiscardedFindings` instead (#3829).
+    const standing = { severity: 'high', problem: 'the succession vow is never paid off', location: 'V1' };
+    const first = [
+      { severity: 'high', problem: 'the coronation is moved off-page into a letter', location: 'V2' },
+      { severity: 'high', problem: 'the regent loses her veto with no scene to spend it', location: 'V3' },
+    ];
+    const second = [
+      { severity: 'high', problem: 'the siege ends in a timeskip nobody witnesses', location: 'V4' },
+      { severity: 'high', problem: 'the heir swears a second, contradictory oath', location: 'V5' },
+    ];
+    arcSpies.verifyArc.mockReset();
+    [
+      [standing],             // round 1 — the checkpoint; resolve #1
+      [standing, ...first],   // round 2 — regressed, reverted, corrective retry (#2)
+      [standing, ...second],  // round 3 — regressed again, retries spent → pause
+    ].forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues })));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    const paused = await seriesSvc.getSeries(seriesId);
+    expect(paused.autopilot?.pauseKind).toBe('regression');
+    // The panel's field keeps meaning "what the reverted round produced"…
+    expect(paused.autopilot?.discardedFindings).toEqual([standing, ...second]);
+    // …while the resume evidence carries both rewrites, newest first.
+    expect(paused.autopilot?.runDiscardedFindings).toEqual([...second, standing, ...first]);
+
+    // Resume: the gate clears, and its first resolve is told to avoid BOTH
+    // rejected rewrites — minus `standing`, which it is being asked to fix.
+    arcSpies.resolveVerifyIssues.mockClear();
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [standing] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues.mock.calls[0][1]).toMatchObject({
+      findings: [standing],
+      avoid: [...second, ...first],
+      spineOnly: true,
+    });
+  });
+
+  it('honors maxArcResolveRetries: 0 by pausing on the first regression', async () => {
+    // The pre-#3781 behavior stays reachable per run: no corrective pass, so the
+    // first reverted candidate ends the gate without spending a second resolve.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(3, 'initial') }))
+      .mockImplementationOnce(async () => ({ issues: holes(6, 'regressed') }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6, maxArcResolveRetries: 0 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual(holes(3, 'initial'));
+  });
+
+  it('carries a paused arc regression\'s discarded findings into the resumed resolver', async () => {
+    const residual = {
+      severity: 'high', problem: 'the standing custody rule is contradictory', location: 'V1',
+    };
+    const discarded = [
+      { severity: 'medium', problem: 'the rejected rewrite dropped a sacrifice beat', location: 'V1 issue 10' },
+      { severity: 'medium', problem: 'the rejected rewrite dropped a consent choice', location: 'V1 issue 9' },
+    ];
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [residual] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, {
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArcSpine',
+        pauseKind: 'regression',
+        residualFindings: [residual],
+        discardedFindings: discarded,
+      },
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ findings: [residual], avoid: discarded, spineOnly: true }),
+    );
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+  });
+
+  it('does not tell a resumed resolver to avoid a discarded finding that is now its active target', async () => {
+    const active = {
+      severity: 'medium', problem: 'the sacrifice beat is missing from the volume', location: 'V1 issue 10',
+    };
+    const unrelated = {
+      severity: 'medium', problem: 'the rejected rewrite dropped a consent choice', location: 'V1 issue 9',
+    };
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [active] }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+
+    const { seriesId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, {
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArcSpine',
+        pauseKind: 'regression',
+        residualFindings: [],
+        discardedFindings: [active, unrelated],
+      },
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ findings: [active], avoid: [unrelated], spineOnly: true }),
+    );
+  });
+
+  it('reverts an equal-count arc candidate whose findings escalated in severity', async () => {
+    const before = [
+      { severity: 'high', problem: 'recovery clock is contradictory', location: 'V1 issues 8-9' },
+      { severity: 'medium', problem: 'character milestone uses stale timing', location: 'V1 character arc' },
+    ];
+    const after = [
+      { severity: 'high', problem: 'human machinery can open the living gate without consent', location: 'V1 issue 11' },
+      { severity: 'high', problem: 'character milestone uses stale timing', location: 'V1 character arc' },
+    ];
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: before }))
+      .mockImplementationOnce(async () => ({ issues: after }));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {
+      maxArcVerifyRounds: 6,
+      maxArcResolveRetries: 0,
+    });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/same count but a worse severity mix/);
+    expect(last?.residualFindings).toEqual(before);
+    expect(last?.discardedFindings).toEqual(after);
   });
 
   it('reverts the same 1 → 3 → 5 divergence when each verify call re-words the finding', async () => {
@@ -1994,37 +2969,43 @@ describe('autopilot conductor', () => {
       .mockImplementationOnce(async () => round(5, 2));
     // The round reports real work (the observed `resolve:round episodesEdited=1`)
     // — it edited episodes and STILL came back worse, which is the whole point.
+    // The reported `idea` is the mutation manifest the rollback is restricted to.
     arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => ({
       applied: true,
-      episodesResolved: [{ issueId: 'i1', number: 1 }],
+      episodesResolved: [{ issueId: 'i1', number: 1, idea: { input: 'rewritten', output: '', status: 'empty' } }],
     }));
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    // Round 3 (the 5-finding verify) and its resolve are never billed.
-    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
-    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    // Round 2's regression is reverted and retried once; round 3 regresses
+    // again with no retries left, so rounds 4-6 are never billed.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    // Rolled back with the round's own episode write attached, so the restore
+    // puts that synopsis back and leaves every other episode alone.
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
+      { episodeEdits: [{ issueId: 'i1', idea: { input: 'rewritten', output: '', status: 'empty' } }] },
     );
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
-    // Paused on the ONE finding the user actually had, not the 3 it manufactured.
+    // Paused on the ONE finding the user actually had, not the 5 it manufactured.
     expect(last?.residualFindings).toEqual([restatements[0]]);
   });
 
-  it('keeps a round that closed what it targeted, even when new findings surface', async () => {
-    // Guard against the over-strict rollback: this round DID clear the finding
-    // it was handed, and the two that follow were latent underneath. Reverting
-    // it would throw away real progress, so the loop keeps the edits and falls
-    // through to the existing divergence guard when it stops improving.
+  it('rolls back blocker-count growth even when the resolver closed its targeted finding', async () => {
+    // Finding identity is not a safe acceptance gate: a rewrite can close the
+    // one finding it was handed while exposing two different blockers and still
+    // leave the draft operationally worse. Preserve the demonstrated lower-count
+    // state and let a human decide whether the latent trade is worthwhile.
     const first = { severity: 'high', problem: 'first eclipse staged twice', location: 'V1' };
     const latent = [
       { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' },
       { severity: 'high', problem: 'finale hook is unresolved', location: 'V4' },
     ];
+    arcSpies.verifyArc.mockReset();
     arcSpies.verifyArc
       .mockImplementationOnce(async () => ({ issues: [first] }))
       .mockImplementationOnce(async () => ({ issues: latent }))
@@ -2033,10 +3014,303 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
     await waitFor(runFinished(seriesId));
 
-    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    // The corrective pass gets the same two latent blockers back, so the gate
+    // runs out of retries and pauses on the demonstrated single-blocker state.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
+      seriesId,
+      await arcSpies.snapshotArcState.mock.results[0].value,
+      { episodeEdits: [] },
+    );
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
-    expect(last?.pauseKind).toBe('divergence');
-    expect(last?.residualFindings).toEqual(latent);
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual([first]);
+  });
+
+  it('restores the best verified snapshot in a 4 → 2 → 4 regression', async () => {
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    const rounds = [holes(4, 'initial'), holes(2, 'best'), holes(4, 'regressed'), holes(5, 'retry regressed')];
+    arcSpies.verifyArc.mockReset();
+    rounds.forEach((result) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues: result })));
+    // Both isolation attempts come back worse than the 2-blocker checkpoint too,
+    // so nothing is retained and the gate still pauses on the checkpoint (#3780).
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(4, 'isolated 1') }))
+      .mockImplementationOnce(async () => ({ issues: holes(4, 'isolated 2') }));
+    const initialSnapshot = { marker: 'initial', arc: null, seasons: [], episodes: [] };
+    const bestSnapshot = { marker: 'best', arc: null, seasons: [], episodes: [] };
+    arcSpies.snapshotArcState
+      .mockImplementationOnce(async () => initialSnapshot)
+      .mockImplementationOnce(async () => bestSnapshot);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 12 });
+    await waitFor(runFinished(seriesId));
+
+    // Round 3's increase rewinds to the 2-blocker checkpoint and spends the one
+    // corrective pass; round 4 regresses again, so the gate splits the residual
+    // and tries its two findings one at a time — both are rejected, so it stops.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(6);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(5);
+    // The isolation pass snapshots ONCE and holds it: a rejected attempt is
+    // restored to exactly that state, so re-reading the series + every episode
+    // to capture an identical snapshot would be pure I/O. Only an accepted patch
+    // (none here) moves the store on and forces a fresh one. The corrective pass
+    // still rewinds to the checkpoint it already holds.
+    expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(3);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot, { episodeEdits: [] });
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.reason).toMatch(/best verified 2-finding state/);
+    expect(last?.residualFindings).toEqual(rounds[1]);
+    // Both sides of the trade are reported: the count guard is deliberately
+    // blind to finding identity, so the rejected candidate's own findings ride
+    // along for the human deciding whether the pause was worth it.
+    expect(last?.discardedFindings).toEqual(rounds[3]);
+    // The persisted marker must agree with the broadcast frame. These are two
+    // separate writes off one payload, and a field that reaches only the live
+    // stream vanishes on reload — which is when the user actually reviews it.
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.discardedFindings).toEqual(rounds[3]);
+  });
+
+  it('keeps an independently safe fix by isolating the residual one finding at a time (#3780)', async () => {
+    // The 2026-08-11 verifyArcSpine stall: the gate reached a verified best of 2
+    // blockers, then a normal resolve came back with 5 and the corrective retry
+    // with 3. Both were rewrites of the WHOLE residual, so both were reverted
+    // whole — and the run paused on 2 after 5 of 12 permitted rounds without
+    // retaining a single fix. Now the spent corrective budget escalates to
+    // per-finding isolation: each finding is resolved alone and kept only if it
+    // closes itself without growing the set.
+    const eclipse = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const mentor = { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' };
+    const finale = { severity: 'high', problem: 'finale hook contradicts prologue promise', location: 'V4' };
+    const motive = { severity: 'high', problem: 'antagonist motive changes without cause', location: 'V5' };
+    const siege = { severity: 'high', problem: 'timeline of the siege runs backwards', location: 'V6' };
+    // Ordered log of what the gate actually billed, so the assertions below can
+    // see that the round after the isolation pass skips its verify.
+    const billed = [];
+    arcSpies.verifyArc.mockReset();
+    [
+      [eclipse, mentor],                          // round 1 — the checkpoint
+      [eclipse, mentor, finale],                  // round 2 — regressed, reverted + retried
+      [eclipse, mentor, finale, motive],          // round 3 — regressed again, retries spent
+      [mentor],                                   // isolate #1 (eclipse) — closed it, kept
+      [mentor, siege],                            // isolate #2 (mentor) — still standing, reverted
+      // Round 4 bills NO verify: nothing edited the plan between isolate #2's
+      // revert and it, so the round reuses isolate #1's verification.
+      [mentor],                                   // round 5 — after round 4's resolve
+      [],                                         // round 6 — clean
+    ].forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => {
+      billed.push('verify');
+      return { issues };
+    }));
+    for (let i = 0; i < 6; i += 1) {
+      arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => {
+        billed.push('resolve');
+        return { applied: true, runId: `arc-isolation-${i + 1}` };
+      });
+    }
+
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // Each isolated attempt resolves exactly one finding, and carries the
+    // rejected whole-set candidates' findings as the failure mode to avoid —
+    // minus the two the restored checkpoint still has as active repair targets
+    // for this pass (#3829). Telling the resolver to avoid `eclipse` while
+    // handing it `eclipse` to fix is the contradiction the accumulator filters.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[2][1]).toMatchObject({
+      findings: [eclipse],
+      // Newest evidence first, so it is never the part trimmed at the bound.
+      avoid: [motive, finale],
+    });
+    expect(arcSpies.resolveVerifyIssues.mock.calls[3][1]).toMatchObject({ findings: [mentor] });
+    // The rejected attempt is reverted on its own — the kept one is not.
+    const isolated = frames.filter((f) => f.type === 'resolve:isolate');
+    expect(isolated).toHaveLength(2);
+    expect(isolated[0]).toMatchObject({ scope: 'arcSpine', attempt: 1, before: 2, after: 1, kept: true });
+    expect(isolated[1]).toMatchObject({ attempt: 2, before: 1, after: 2, kept: false });
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-isolation-3', expect.objectContaining({
+      outcome: 'accepted', scoreBefore: -2, scoreAfter: -1,
+    }));
+    expect(recordModelOutcome).toHaveBeenCalledWith('arc-isolation-4', expect.objectContaining({
+      outcome: 'rejected', scoreBefore: -1, scoreAfter: -2,
+    }));
+    // Two whole-round rollbacks plus the one rejected isolated patch.
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(3);
+    // Round 3's verify, then the two isolated attempts (resolve→verify each),
+    // then round 4's resolve with NO verify in front of it: nothing edited the
+    // plan between isolate #2's revert and that round, so it re-uses the
+    // verification isolate #1 already billed rather than buying the same answer
+    // for another arc + per-volume call.
+    expect(billed.slice(4, 11)).toEqual([
+      'verify', 'resolve', 'verify', 'resolve', 'verify', 'resolve', 'verify',
+    ]);
+    // The rollback frame promises the retry the isolation pass is about to make,
+    // so the user isn't told the gate is done when it has another move left.
+    expect(frames.filter((f) => f.type === 'resolve:rollback').at(-1)).toMatchObject({ best: 2, retrying: true });
+    // …and the gate clears from the isolated state instead of pausing on 2.
+    expect(frames.some((f) => f.type === 'paused' && f.pauseKind === 'regression')).toBe(false);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
+  it('banks an isolated patch\'s rejection so the next target in the same pass avoids it (#3829)', async () => {
+    // The isolation pass used to compute `avoid` once for the whole pass and
+    // throw its own rejections away, so a rewrite rejected on target 1 was free
+    // to be re-proposed on target 2 — the gate paid a resolve + a verify to
+    // learn something nothing downstream ever heard.
+    const eclipse = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const mentor = { severity: 'high', problem: 'mentor subplot never pays off', location: 'V3' };
+    const finale = { severity: 'high', problem: 'finale hook contradicts prologue promise', location: 'V4' };
+    const motive = { severity: 'high', problem: 'antagonist motive changes without cause', location: 'V5' };
+    const siege = { severity: 'high', problem: 'timeline of the siege runs backwards', location: 'V6' };
+    arcSpies.verifyArc.mockReset();
+    [
+      [eclipse, mentor],                         // round 1 — the checkpoint
+      [eclipse, mentor, finale],                 // round 2 — regressed, reverted + retried
+      [eclipse, mentor, finale, motive],         // round 3 — regressed again, retries spent
+      [eclipse, mentor, siege],                  // isolate #1 (eclipse) — grew the set, reverted
+      [eclipse],                                 // isolate #2 (mentor) — closed it, kept
+      [],                                        // round 5 — clean
+    ].forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues })));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Isolate #1 carries only what the two whole-set rollbacks discarded.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[2][1]).toMatchObject({
+      findings: [eclipse], avoid: [motive, finale],
+    });
+    // Isolate #2 carries its predecessor's verified failure on top of those, and
+    // still never sees a finding it is being asked to fix.
+    expect(arcSpies.resolveVerifyIssues.mock.calls[3][1]).toMatchObject({
+      findings: [mentor], avoid: [siege, motive, finale],
+    });
+  });
+
+  it('spends no verification on an isolated candidate the resolver discarded before persistence', async () => {
+    // Isolating the FINDING never isolated the EDIT: a single-finding response's
+    // entries all name that finding, so the resolver could still rewrite the arc
+    // and every volume — which is how each "isolated" attempt on 2026-08-12 grew
+    // the blocker set from 2 to 4 and then to 7. The resolver now rejects an
+    // over-broad candidate before writing anything, and this gate must read that
+    // as a spent attempt with nothing to undo and nothing new to verify.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    [holes(2, 'best'), holes(4, 'regressed'), holes(4, 'regressed again')]
+      .forEach((issues) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues })));
+    arcSpies.resolveVerifyIssues.mockReset();
+    arcSpies.resolveVerifyIssues.mockImplementation(async (_seriesId, opts) => (opts?.isolated
+      ? { applied: false, reason: 'it edits 3 records (the arc, volume 1, volume 2) — an isolated repair may change only one', runId: 'arc-isolated-reject' }
+      : { applied: true, runId: 'arc-whole-set' }));
+
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6, maxArcIsolationAttempts: 2 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // Both isolated attempts ran in the constrained mode and were discarded
+    // before persistence, so the gate bought no verification for either — three
+    // verifies total, one per whole-set round.
+    const isolatedCalls = arcSpies.resolveVerifyIssues.mock.calls.filter(([, o]) => o?.isolated);
+    expect(isolatedCalls).toHaveLength(2);
+    expect(isolatedCalls[0][1].findings).toHaveLength(1);
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    // Two whole-round rollbacks only — a candidate that never landed has nothing
+    // to restore.
+    expect(arcSpies.restoreArcState).toHaveBeenCalledTimes(2);
+    const isolated = frames.filter((f) => f.type === 'resolve:isolate');
+    expect(isolated).toHaveLength(2);
+    expect(isolated[0]).toMatchObject({ kept: false, before: 2, after: 2, episodesEdited: 0 });
+    expect(isolated[0].reason).toMatch(/edits 3 records/);
+    // Nothing was retained, so the gate still pauses on the best verified state.
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual(holes(2, 'best'));
+  });
+
+  it('does not isolate a single-finding residual (that is the corrective pass again)', async () => {
+    // Isolating a one-finding residual re-issues the exact call the corrective
+    // pass just made — same finding, same avoid list — so the gate pauses rather
+    // than billing a resolve + a verify for it.
+    const hole = { severity: 'high', problem: 'volume 1 and volume 2 both stage the first eclipse', location: 'V1' };
+    const extra = (i) => ({ severity: 'high', problem: `collateral break ${i}`, location: `V${i + 2}` });
+    arcSpies.verifyArc.mockReset();
+    [1, 3, 5].forEach((n) => arcSpies.verifyArc.mockImplementationOnce(async () => ({
+      issues: [hole, ...Array.from({ length: n - 1 }, (_, i) => extra(i))],
+    })));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+
+    // Three verifies, two resolves — the initial pass and the corrective retry.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.pauseKind).toBe('regression');
+  });
+
+  it('honors maxArcResolveRetries: 0 as a full opt-out of isolation too', async () => {
+    // The knob means "no corrective spend on a reverted round" — a run that set
+    // it must not get the (larger) per-finding fan-out instead.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: holes(2, 'initial') }))
+      .mockImplementationOnce(async () => ({ issues: holes(4, 'regressed') }));
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6, maxArcResolveRetries: 0 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(last?.residualFindings).toEqual(holes(2, 'initial'));
+  });
+
+  it('a blocker increase reaches the regression guard even when it lands on the round cap', async () => {
+    // Guard-ordering check: the regression branch is evaluated before the
+    // maxRounds exit, so growth ON the final round still rolls back and reports
+    // the trade rather than reporting a plain "ran out of rounds" pause. This is
+    // also what makes the `!isNewBest` rewind at the bounded exits unreachable.
+    const holes = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `${prefix} ${i}`, location: `V${i + 1}`,
+    }));
+    const rounds = [holes(2, 'best'), holes(3, 'worse')];
+    arcSpies.verifyArc.mockReset();
+    rounds.forEach((result) => arcSpies.verifyArc.mockImplementationOnce(async () => ({ issues: result })));
+    const bestSnapshot = { marker: 'best', arc: null, seasons: [], episodes: [] };
+    arcSpies.snapshotArcState.mockImplementationOnce(async () => bestSnapshot);
+
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('regression');
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot, { episodeEdits: [] });
+    expect(last?.residualFindings).toEqual(rounds[0]);
+    expect(last?.discardedFindings).toEqual(rounds[1]);
   });
 
   it('a default-cap arc run is unaffected by the divergence guard (maxRounds still wins)', async () => {
@@ -2051,6 +3325,10 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.pauseKind).toBe('maxRounds');
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
+    // Round 3 verified the latest equal-count draft, so keep it in place — and
+    // with nothing rewound there is no discarded candidate to report.
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    expect(last?.discardedFindings).toEqual([]);
   });
 
   it('a per-run override beats the persisted maxArcVerifyRounds setting', async () => {
@@ -2191,6 +3469,29 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.scope).toBe('generateEpisodes');
     expect(arcSpies.generateSeasonEpisodes).toHaveBeenCalledTimes(1); // not looping
+  });
+
+  it('pauses without duplicating work when issue placeholders cannot be safely reused', async () => {
+    const series = await seriesSvc.createSeries({ name: 'S', logline: 'L', premise: 'P', targetFormat: 'comic' });
+    await seriesSvc.updateSeries(series.id, { arc: { logline: 'A', summary: 'S' } });
+    await seasonsSvc.createSeason(series.id, { number: 1, title: 'V1' });
+    arcSpies.generateSeasonEpisodes.mockResolvedValueOnce({ episodes: [{ number: 1, title: 'I1' }] });
+    const error = Object.assign(new Error('Reconcile the existing issue placeholder set before resuming.'), {
+      code: 'PIPELINE_ARC_VALIDATION',
+    });
+    arcSpies.commitEpisodesToIssues.mockRejectedValueOnce(error);
+
+    await autopilot.startSeriesAutopilot(series.id, { includeVisual: false });
+    await waitFor(runFinished(series.id));
+
+    const last = autopilot.__testing.runs.get(series.id)?.lastPayload;
+    expect(last).toMatchObject({
+      type: 'paused',
+      scope: 'generateEpisodes',
+      pauseKind: 'inapplicable',
+      reason: 'Reconcile the existing issue placeholder set before resuming.',
+    });
+    expect(arcSpies.commitEpisodesToIssues).toHaveBeenCalledTimes(1);
   });
 
   it('pauses (no infinite loop) when arc generation yields no volumes', async () => {
@@ -2445,6 +3746,50 @@ describe('autopilot conductor', () => {
     expect(writes.some((w) => w.includes('"type":"cancel:acknowledged"'))).toBe(true);
   });
 
+  it('gracefully pauses without stopping the active provider run', async () => {
+    const { seriesId } = await seedComplete();
+    const { runId } = await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    const requested = autopilot.pauseSeriesAutopilot(seriesId);
+    expect(requested).toBe(true);
+    expect(autopilot.isAutopilotPauseRequested(seriesId)).toBe(true);
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload).toMatchObject({
+      type: 'pause:acknowledged',
+      runId,
+    });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.isAutopilotPauseRequested(seriesId)).toBe(false);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({ type: 'paused', pauseKind: 'manual' });
+    expect(last?.reason).toMatch(/paused by user after the active step completed/i);
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot).toMatchObject({ status: 'paused', pauseKind: 'manual' });
+  });
+
+  it('gracefully pauses an arc convergence loop after its active judge without dispatching a repair', async () => {
+    let finishJudge;
+    const judge = new Promise((resolve) => { finishJudge = resolve; });
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc.mockImplementationOnce(async () => judge);
+    const blocker = { severity: 'medium', problem: 'A causal handoff is missing.', location: 'volume:1' };
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 5 });
+    await waitFor(() => arcSpies.verifyArc.mock.calls.length === 1);
+
+    expect(autopilot.pauseSeriesAutopilot(seriesId)).toBe(true);
+    finishJudge({ issues: [blocker] });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues).not.toHaveBeenCalled();
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({
+      type: 'paused',
+      pauseKind: 'manual',
+      residualFindings: [blocker],
+    });
+    expect(last?.reason).toMatch(/active arc judgment completed/i);
+  });
+
   it('drafts cover + interior pages when includeVisual is set', async () => {
     const { seriesId, issueId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { includeVisual: true });
@@ -2474,6 +3819,26 @@ describe('autopilot conductor', () => {
     expect(visualSpies.enqueueComicCover).not.toHaveBeenCalled();
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
+  });
+
+  it('backfills drawn canon from prose before pausing visual production', async () => {
+    const { seriesId, issueId } = await seedComplete();
+    await seriesSvc.updateSeries(seriesId, { universeId: 'uni-1' });
+    await issuesSvc.updateStage(issueId, 'prose', ready('Kai wears a patched saffron pressure coat with a cracked brass respirator.'));
+    const noun = { id: 'c1', name: 'Kai', kind: 'character', locked: false };
+    canonReady = false;
+    canonUndescribed = [noun];
+    canonBlockingIssues = [{ issueId, number: 1, title: 'I1', none: [noun] }];
+
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: true });
+    await waitFor(runFinished(seriesId));
+
+    expect(describeCanonFromProse).toHaveBeenCalledWith('uni-1', expect.objectContaining({
+      corpus: expect.stringContaining('saffron pressure coat'),
+      targets: [{ id: 'c1', kind: 'character' }],
+    }));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    expect(visualSpies.enqueueComicCover).toHaveBeenCalled();
   });
 
   it('files only the specific gap (not also the generic stalled) when canon pauses', async () => {
@@ -2740,7 +4105,7 @@ describe('autopilot conductor', () => {
     await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, maxArcVerifyRounds: 1 });
     await waitFor(runFinished(seriesId));
     expect(addTask).toHaveBeenCalled();
-    expect(addTask.mock.calls[0][0].description).toMatch(/verifyArc-stalled/);
+    expect(addTask.mock.calls[0][0].description).toMatch(/verifyArcSpine-stalled/);
   });
 
   // `metadata.app` is workspace routing, not a feature tag: it must name a
@@ -2756,6 +4121,70 @@ describe('autopilot conductor', () => {
     for (const [taskData] of addTask.mock.calls) {
       expect(taskData.app).toBeUndefined();
     }
+  });
+
+  // fileGap emits its own `gap:filed` frame and SSE replay keeps only the last
+  // payload — so a gap filed after the terminal frame leaves a client that
+  // attaches post-run replaying `gap:filed` and never learning the run ended.
+  it('keeps the terminal frame last when a pause also files a gap task', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'unresolved plot hole' }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, maxArcVerifyRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    expect(addTask).toHaveBeenCalled();
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('paused');
+  });
+
+  // An intentional stop reaches the conductor as a rejection, not as a step
+  // result it can inspect: this run's Cancel calls stopRun on the active LLM
+  // run, /runs Stop kills the same pty, and a restart tree-kills it — all three
+  // surface as RUN_CANCELED out of the prompt runner. Landing that in the error
+  // terminal marked the series `error`, spent a post-mortem diagnosing the
+  // operator, and filed a `run-error` CoS task for a human pressing Stop.
+  const canceledRejection = () => Object.assign(new Error('TUI canceled (signal 15)'), {
+    code: 'RUN_CANCELED',
+    canceled: true,
+  });
+  const filedGapKinds = () => addTask.mock.calls.map(([task]) => task.description);
+
+  it('ends as canceled — not error — when a step\'s LLM call is stopped mid-flight', async () => {
+    arcSpies.verifyArc.mockRejectedValueOnce(canceledRejection());
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('canceled');
+    const series = await seriesSvc.getSeries(seriesId);
+    // `paused`, so Resume picks the run back up from the next missing step.
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.lastError).toMatch(/canceled/i);
+    expect(filedGapKinds().some((d) => /run-error/.test(d))).toBe(false);
+  });
+
+  it('still reports a genuine step failure as error and files the run-error gap', async () => {
+    arcSpies.verifyArc.mockRejectedValueOnce(new Error('provider returned nothing'));
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('error');
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('error');
+    expect(filedGapKinds().some((d) => /run-error/.test(d))).toBe(true);
+  });
+
+  // The foundation gate catches its own repair failures and pauses on
+  // `providerFailed` ("switch the repair provider/model first") — advice that
+  // makes no sense for a repair the user themselves stopped.
+  it('treats a stopped foundation repair as canceled, not a provider failure', async () => {
+    foundationScore = 5;
+    applyFoundationFix.mockRejectedValueOnce(canceledRejection());
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('canceled');
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    expect(series.autopilot?.pauseKind).toBeNull();
+    expect(filedGapKinds().some((d) => /stalled|run-error/.test(d))).toBe(false);
   });
 
   it('recoverStuckAutopilots demotes a running marker to paused', async () => {

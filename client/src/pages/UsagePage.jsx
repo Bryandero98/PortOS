@@ -194,6 +194,36 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
   );
 }
 
+// Desktop layout: one entry per grid cell, in display order, listing the
+// families that cell holds. Claude and Antigravity each meter several windows
+// and earn a cell to themselves; Codex and Grok report far less (typically a
+// lone weekly window), so they share one cell stacked vertically instead of
+// each padding out a half-empty full-height card.
+//
+// This is a fixed visual preference, deliberately NOT derived from how many
+// meters a card happens to be carrying: a card's height changes between its
+// pending, error, and loaded states, so a height-derived pairing would
+// re-shuffle the whole grid every time a scrape landed.
+const CELL_GROUPS = [['claude'], ['agy'], ['codex', 'grok']];
+const GROUPED_FAMILIES = new Set(CELL_GROUPS.flat());
+
+// Arrange the server's provider cards into grid cells: `{ key, cards[] }`, where
+// a cell holding more than one card stacks them. A family absent from
+// CELL_GROUPS (Image Gen, or one added later) still gets its own cell in server
+// order — this is a display preference, never a filter.
+export function arrangeQuotaCells(quotas) {
+  const byFamily = new Map(quotas.map((q) => [q.family, q]));
+  const toCell = (cards) => ({ key: cards.map((q) => q.family).join('+'), cards });
+
+  const grouped = CELL_GROUPS
+    .map((families) => families.map((f) => byFamily.get(f)).filter(Boolean))
+    .filter((cards) => cards.length > 0)
+    .map(toCell);
+  const rest = quotas.filter((q) => !GROUPED_FAMILIES.has(q.family)).map((q) => toCell([q]));
+
+  return [...grouped, ...rest];
+}
+
 // Subscription usage for every enabled provider family (claude, codex, agy,
 // grok). Self-contained fetch/loading/error state so it always renders above
 // the PortOS-internal metrics.
@@ -276,15 +306,22 @@ function ProviderQuotaSection() {
       )}
 
       {quotas && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          {quotas.map((quota) => (
-            <ProviderQuotaCard
-              key={quota.family}
-              quota={quota}
-              onRefresh={refreshFamily}
-              refreshing={refreshingFamilies.has(quota.family)}
-              disabled={loading}
-            />
+        // `items-start` keeps every card at its natural height: a one-meter
+        // Codex/Grok card must not be stretched to the height of the tallest
+        // card in its row, which is what left the old grid mostly whitespace.
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4 items-start">
+          {arrangeQuotaCells(quotas).map((cell) => (
+            <div key={cell.key} className="space-y-3 sm:space-y-4">
+              {cell.cards.map((quota) => (
+                <ProviderQuotaCard
+                  key={quota.family}
+                  quota={quota}
+                  onRefresh={refreshFamily}
+                  refreshing={refreshingFamilies.has(quota.family)}
+                  disabled={loading}
+                />
+              ))}
+            </div>
           ))}
           {quotas.length === 0 && (
             <div className="text-gray-500 text-sm">No enabled providers report subscription usage.</div>

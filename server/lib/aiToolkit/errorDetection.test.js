@@ -9,6 +9,7 @@ import {
   detectTerminalModelError,
   detectTerminalRequestTimeout,
   extractWaitTime,
+  isRunCanceledError,
   ERROR_CATEGORIES
 } from './errorDetection.js';
 
@@ -236,6 +237,21 @@ describe('Error Detection', () => {
         category: ERROR_CATEGORIES.AUTH_ERROR,
         requiresFallback: true
       });
+    });
+
+    // The banner is the FRONT of agy's eligibility handshake, not its verdict —
+    // a consumer holding a live session must wait it out rather than kill on
+    // sight (see the signal's canonical comment for the 5/5 run-loss incident).
+    it('gives the eligibility banner a grace window instead of an immediate kill', () => {
+      expect(detectImmediateFallbackSignal(
+        "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+      )).toMatchObject({ graceMs: 60000 });
+    });
+
+    // `actionable` and `graceMs` are independent axes: a usage limit is equally
+    // self-resolving, but it resets in hours — no live session can wait it out.
+    it('leaves other signals at graceMs 0 so they still fail immediately', () => {
+      expect(detectImmediateFallbackSignal('Now using extra usage\n')).toMatchObject({ graceMs: 0 });
     });
 
     it('detects the Claude extra-usage status line', () => {
@@ -502,6 +518,23 @@ describe('Error Detection', () => {
       });
       expect(result.hasError).toBe(true);
       expect(result.waitTime).toBeTruthy();
+    });
+  });
+
+  describe('isRunCanceledError', () => {
+    it('recognizes both markers the runners stamp on a canceled terminal', () => {
+      // promptRunner stamps the code; the runner metadata carries the flag.
+      expect(isRunCanceledError(Object.assign(new Error('TUI canceled (signal 15)'), { code: 'RUN_CANCELED' }))).toBe(true);
+      expect(isRunCanceledError(Object.assign(new Error('CLI canceled (signal SIGTERM)'), { canceled: true }))).toBe(true);
+    });
+
+    it('does not claim an ordinary provider failure — which would suppress a real diagnosis', () => {
+      expect(isRunCanceledError(new Error('TUI exited with code 1: model unavailable'))).toBe(false);
+      // A run that merely mentions cancellation in its text is still a failure.
+      expect(isRunCanceledError(new Error('the user canceled their subscription'))).toBe(false);
+      expect(isRunCanceledError({ canceled: false, code: 'RUN_FAILED' })).toBe(false);
+      expect(isRunCanceledError(null)).toBe(false);
+      expect(isRunCanceledError(undefined)).toBe(false);
     });
   });
 });

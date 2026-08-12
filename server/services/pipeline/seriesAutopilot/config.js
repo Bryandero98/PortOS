@@ -42,6 +42,54 @@ export const DEFAULT_FOUNDATION_GATE_ENABLED = true;
 // `maxChildRetries` option overrides it (plumbed through runOptions).
 export const MAX_CHILD_RETRIES = 1;
 
+// Corrective-pass budget for the arc-verify gate's regression guard (#3781). A
+// resolver round that GREW the blocking count is reverted either way; this is
+// how many times the gate may then re-run the resolver from the restored best
+// state — with the rejected attempt's own findings attached as an explicit "do
+// not author these" list — before it gives up and pauses for a human. Without
+// it the very first bad candidate stops the whole run, and a resume just re-runs
+// the identical prompt from the identical state and can regress identically, so
+// the gate could never clear itself unattended (the 2026-08-11 verifyArcSpine
+// stall: 3 blockers in, 6 back, paused on round 2 of 3). 0 = revert-and-pause on
+// the first regression (the pre-#3781 behavior). A per-run `maxArcResolveRetries`
+// option overrides it, like `maxChildRetries` above; there is deliberately no
+// persisted setting for it — one extra resolve call on a path that otherwise
+// ends the run is not a spend knob worth a UI.
+export const MAX_ARC_RESOLVE_RETRIES = 1;
+
+// Per-finding ISOLATION budget for the arc-verify gate (#3780), counted in
+// PROVIDER CALLS across the whole gate. Once the corrective passes above are
+// spent, the gate stops rewriting the residual as one unit and tries its
+// findings one at a time from the best verified state, keeping only the patches
+// that close their target without growing the blocking set — so a residual that
+// contains one independently safe fix and one poisoned one no longer loses both.
+// Counted in calls rather than attempts because an attempt bills a resolve plus
+// a full verification, and the full-arc gate's verification costs one call per
+// volume: 8 calls buys the spine gate 4 attempts and a 6-volume arc 1, instead
+// of letting a wide series pay 5× for the same number. `maxArcIsolationAttempts`
+// overrides it per run (in attempts), and `maxArcResolveRetries: 0` opts out of
+// isolation with it — a run that declined corrective spend declines this too.
+export const MAX_ARC_ISOLATION_CALLS = 8;
+
+// Effective isolation budget for one arc-verify gate, in ATTEMPTS: an explicit
+// per-run `maxArcIsolationAttempts` wins; else a run that declined corrective
+// resolve spend (`maxArcResolveRetries: 0`) declines this too; else the call
+// budget above divided by what one attempt costs on this series — a resolve plus
+// a full verification, which is one call for the arc and one per volume checked.
+// Shared with the dry-run plan so the projected worst case and the spend the gate
+// can actually reach are computed from one formula.
+export function resolveArcIsolationAttempts(options = {}, volumesChecked = 0) {
+  const explicit = options?.maxArcIsolationAttempts;
+  if (Number.isInteger(explicit)) return Math.max(0, explicit);
+  const retries = options?.maxArcResolveRetries;
+  if (Number.isInteger(retries) && retries <= 0) return 0;
+  return Math.max(1, Math.floor(MAX_ARC_ISOLATION_CALLS / (2 + volumesChecked)));
+}
+
+// Worst-case actions one gate's isolation pass can bill, for the dry-run plan.
+export const arcIsolationActions = (options, volumesChecked = 0) =>
+  resolveArcIsolationAttempts(options, volumesChecked) * (2 + volumesChecked);
+
 // The one precedence rule every gate below follows for a BOOLEAN knob: an
 // explicit per-run option wins, then the persisted pipelineEditorialChecks
 // setting, then the module default. Hoisted so the file states it once — it was
@@ -243,6 +291,16 @@ export const DEFAULT_OBSERVER = false;
 export function resolveAutopilotObserver(options = {}, settings = null) {
   const pec = settings?.pipelineEditorialChecks || {};
   return pickBool(options?.observer, pec?.observer, DEFAULT_OBSERVER);
+}
+
+// Evidence-based provider/model/effort routing. Off by default until the user
+// opts in: run history is still collected while off, but an existing series or
+// stage choice must not silently change merely because enough samples accrued.
+// When enabled, explicit per-run choices and exact stage pins remain stronger.
+export const DEFAULT_AUTO_SELECT_MODELS = false;
+export function resolveAutopilotAutoSelectModels(options = {}, settings = null) {
+  const pec = settings?.pipelineEditorialChecks || {};
+  return pickBool(options?.autoSelectModels, pec?.autoSelectModels, DEFAULT_AUTO_SELECT_MODELS);
 }
 
 // Which provider/model do this run's LLM calls use? An explicit per-run

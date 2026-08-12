@@ -25,6 +25,7 @@
 import { join } from 'path';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
+import { ServerError } from '../lib/errorHandler.js';
 import { replaceMarkedSection } from '../lib/markedSection.js';
 import * as brainStorage from './brainStorage.js';
 import { brainEvents, now } from './brainStorage.js';
@@ -254,10 +255,42 @@ function scheduleObsidianSync(entry) {
   pendingObsidianSyncs.set(date, next);
 }
 
-export async function setJournalContent(date, content) {
+/**
+ * Full-content rewrite for a day.
+ *
+ * @param {string} date ISO YYYY-MM-DD
+ * @param {string} content Replacement body
+ * @param {{ ifMatchUpdatedAt?: string|null }} [opts]
+ *   When `ifMatchUpdatedAt` is a non-empty string, the write is rejected with
+ *   `STALE_JOURNAL` (409) if the on-disk entry's `updatedAt` differs — i.e. a
+ *   concurrent voice append, another tab, or a peer moved the LWW clock since
+ *   the client last observed it. The error's `context.entry` is the current
+ *   record so the client can merge and retry. Absent/empty ifMatch is a
+ *   force-write (legacy callers, explicit "save my edits" without a base).
+ */
+export async function setJournalContent(date, content, { ifMatchUpdatedAt } = {}) {
   if (!isIsoDate(date)) throw new Error(`invalid date: ${date}`);
   const entry = await storeMutex(async () => {
     const existing = await getEntry(date);
+    // Precondition: a full rewrite based on a known updatedAt must not clobber
+    // a concurrent append (voice dictation is the common case — the client
+    // autosave and the append share the same day key). When the on-disk entry
+    // has no `updatedAt` (pre-stamp legacy / hand-edited store), there is no
+    // clock to compare — accept the write rather than rejecting forever.
+    // brainStorage.upsertWithId always stamps updatedAt on new writes, so this
+    // path is an edge case, not the steady state.
+    if (
+      typeof ifMatchUpdatedAt === 'string'
+      && ifMatchUpdatedAt.length > 0
+      && existing?.updatedAt
+      && existing.updatedAt !== ifMatchUpdatedAt
+    ) {
+      throw new ServerError('Daily log was modified since you last loaded it', {
+        status: 409,
+        code: 'STALE_JOURNAL',
+        context: { entry: existing },
+      });
+    }
     const clean = content || '';
     const next = {
       ...(existing || newEntry(date)),

@@ -10,6 +10,7 @@ import { resolveReadinessGate } from '../editorialScore.js';
 import {
   MAX_ARC_VERIFY_ROUNDS, MAX_FOUNDATION_ROUNDS, MAX_BEAT_CONTINUITY_ROUNDS, MAX_EDITORIAL_ROUNDS,
   resolveAutopilotCheckPauseThreshold, resolveAutopilotRevision, wantsTeaser, wantsVisual,
+  arcIsolationActions,
 } from './config.js';
 import { roundsNote, convergenceLoopActions, VISUAL_DRAFT_ENABLED } from './convergence.js';
 import { orderedIssues, byNumber, issueHasBeats, textReady, wantsComic, visualReady } from './stepResolver.js';
@@ -97,6 +98,19 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
       });
     }
   }
+  const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
+  // A gate that can reach its regression guard can also reach the per-finding
+  // isolation pass (#3780), which bills a resolve + a full verification per
+  // attempt INSIDE a round — spend the round-based estimates above don't model.
+  // Needs two rounds to be reachable at all (a rollback, then a round to verify
+  // what isolation kept), so a 1-round gate projects none.
+  const isolationActions = (volumes) => (arcRounds > 1 ? arcIsolationActions(options, volumes) : 0);
+  plan.push({
+    kind: 'verifyArcSpine',
+    count: 1,
+    note: `${roundsNote(arcRounds)}; protected intent + macro arc before issue generation`,
+    estActions: convergenceLoopActions(arcRounds) + isolationActions(0),
+  });
   const emptySeasons = seasons.filter((s) => !ordered.some((i) => i.seasonId === s.id));
   if (emptySeasons.length) plan.push({ kind: 'generateEpisodes', count: emptySeasons.length, estActions: emptySeasons.length });
   // Foundation runs first at synopsis altitude. Arc/volume repairs and
@@ -106,10 +120,9 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
   if (options?.foundationGate !== false && foundationRounds !== 0) {
     plan.push({ kind: 'foundationGate', count: 1, note: `${roundsNote(foundationRounds)}; re-checks after arc repairs`, estActions: convergenceLoopActions(foundationRounds) });
   }
-  const arcRounds = Number.isInteger(options?.maxArcVerifyRounds) ? options.maxArcVerifyRounds : MAX_ARC_VERIFY_ROUNDS;
   const verificationActions = arcRounds === 0
     ? 0
-    : arcRounds * (1 + seasons.length) + Math.max(0, arcRounds - 1);
+    : arcRounds * (1 + seasons.length) + Math.max(0, arcRounds - 1) + isolationActions(seasons.length);
   plan.push({
     kind: 'verifyArc',
     count: 1,
@@ -192,8 +205,11 @@ export function buildDryRunPlan(series, issues, options, costContext = {}) {
     });
   }
   if (VISUAL_DRAFT_ENABLED && wantsVisual(options) && wantsComic(series, options)) {
-    // canonVerify runs an LLM pass but bills no cos action (token-only) — 0 budget.
-    plan.push({ kind: 'canonVerify', count: 1, note: 'descriptive integrity of drawn nouns (no budget cost)', estActions: 0 });
+    // The deterministic check is free. When it finds a blank drawn noun it may
+    // conditionally call the strict prose-grounded backfill before pausing; the
+    // snapshot cannot know that future script reference set, so keep the base
+    // estimate at zero and name the conditional spend explicitly.
+    plan.push({ kind: 'canonVerify', count: 1, note: 'descriptive integrity of drawn nouns (may spend one LLM call per affected issue to backfill strictly from prose)', estActions: 0 });
     const visualNeeded = ordered.filter((i) => !visualReady(i)).length;
     // Each draft render bills one cos action: cover + back per issue, plus one per
     // interior page. The interior-page count isn't known until the script parses,

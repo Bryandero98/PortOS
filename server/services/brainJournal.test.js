@@ -40,7 +40,12 @@ vi.mock('./obsidian.js', () => ({
 // real while staying isolated from disk. Mirrors brainStorage semantics:
 // getById/getAll strip tombstones and re-attach the map key as `id`;
 // upsertWithId stores the record verbatim and stamps createdAt/updatedAt.
-const { journalRecords } = vi.hoisted(() => ({ journalRecords: new Map() }));
+// `updatedAt` advances per write (monotonic fake clock) so ifMatch concurrency
+// tests can observe a real LWW move between append and rewrite.
+const { journalRecords, clock } = vi.hoisted(() => ({
+  journalRecords: new Map(),
+  clock: { n: 0 },
+}));
 vi.mock('./brainStorage.js', () => ({
   brainEvents: { emit: vi.fn() },
   now: () => '2026-04-17T12:00:00.000Z',
@@ -54,23 +59,29 @@ vi.mock('./brainStorage.js', () => ({
       .map(([id, rec]) => ({ id, ...rec }))),
   upsertWithId: vi.fn(async (_type, id, record) => {
     const existing = journalRecords.get(id);
+    clock.n += 1;
+    const stamp = `2026-04-17T12:00:${String(clock.n).padStart(2, '0')}.000Z`;
     const stored = {
       ...record,
-      createdAt: existing?.createdAt ?? '2026-04-17T12:00:00.000Z',
-      updatedAt: '2026-04-17T12:00:00.000Z',
+      createdAt: existing?.createdAt ?? stamp,
+      updatedAt: stamp,
     };
     journalRecords.set(id, stored);
     return { id, ...stored };
   }),
   remove: vi.fn(async (_type, id) => {
     if (!journalRecords.has(id)) return false;
-    journalRecords.set(id, { _deleted: true, updatedAt: '2026-04-17T12:00:00.000Z' });
+    clock.n += 1;
+    journalRecords.set(id, {
+      _deleted: true,
+      updatedAt: `2026-04-17T12:00:${String(clock.n).padStart(2, '0')}.000Z`,
+    });
     return true;
   }),
 }));
 
 import * as journal from './brainJournal.js';
-import { brainEvents, getAll } from './brainStorage.js';
+import { brainEvents, getAll, getById } from './brainStorage.js';
 import * as obsidian from './obsidian.js';
 
 // Pull the payload of the last emit of `name`, or undefined if it never fired.
@@ -88,6 +99,7 @@ describe('brainJournal', () => {
     rmSync(TEMP_ROOT, { recursive: true, force: true });
     mkdirSync(TEMP_ROOT, { recursive: true });
     journalRecords.clear();
+    clock.n = 0;
     journal._clearObsidianLocationsCacheForTest();
     vi.clearAllMocks();
   });
@@ -208,6 +220,59 @@ describe('brainJournal', () => {
       expect(lastEmit('journals:upserted')).toMatchObject({
         entry: { content: 'brand new' },
       });
+    });
+
+    it('rejects a stale ifMatchUpdatedAt with STALE_JOURNAL and the current entry', async () => {
+      const first = await journal.setJournalContent('2026-04-17', 'typed');
+      await journal.appendJournal('2026-04-17', 'spoken', { source: 'voice' });
+      await expect(
+        journal.setJournalContent('2026-04-17', 'typed plus more', {
+          ifMatchUpdatedAt: first.updatedAt,
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: 'STALE_JOURNAL',
+        context: {
+          entry: expect.objectContaining({
+            content: expect.stringContaining('spoken'),
+          }),
+        },
+      });
+      // On-disk content must be untouched by the rejected rewrite.
+      const current = await journal.getJournal('2026-04-17');
+      expect(current.content).toContain('spoken');
+      expect(current.content).not.toContain('typed plus more');
+    });
+
+    it('accepts a rewrite when ifMatchUpdatedAt matches the current clock', async () => {
+      const first = await journal.setJournalContent('2026-04-17', 'base');
+      const next = await journal.setJournalContent('2026-04-17', 'revised', {
+        ifMatchUpdatedAt: first.updatedAt,
+      });
+      expect(next.content).toBe('revised');
+    });
+
+    it('force-writes when ifMatchUpdatedAt is omitted (legacy callers)', async () => {
+      await journal.setJournalContent('2026-04-17', 'base');
+      await journal.appendJournal('2026-04-17', 'spoken', { source: 'voice' });
+      const forced = await journal.setJournalContent('2026-04-17', 'overwrite all');
+      expect(forced.content).toBe('overwrite all');
+    });
+
+    it('accepts a rewrite when the on-disk entry has no updatedAt to compare', async () => {
+      // Legacy / hand-edited stores may lack a clock. Rejecting forever would
+      // trap the day; accept the write when there is nothing to precondition on.
+      getById.mockResolvedValueOnce({
+        id: '2026-04-17',
+        date: '2026-04-17',
+        content: 'legacy body',
+        segments: [{ text: 'legacy body', at: '2026-04-17T10:00:00.000Z', source: 'edit' }],
+        // deliberately no updatedAt
+      });
+      const next = await journal.setJournalContent('2026-04-17', 'recovered', {
+        ifMatchUpdatedAt: '2026-04-17T12:00:00.000Z',
+      });
+      expect(next.content).toBe('recovered');
     });
   });
 

@@ -1492,11 +1492,30 @@ describe('storyBible — trimToClause (boundary-aware prose cap)', () => {
     expect(trimToClause(42, 50)).toBe('');
   });
 
-  it('clips at a sentence boundary when one falls in the last ~40% of the budget', () => {
+  it('clips at a sentence boundary when it preserves a meaningful share of the budget', () => {
     const text = 'First full sentence about the arc here. And then a second clause runs on well past the budget.';
     const out = trimToClause(text, 50);
     expect(out).toBe('First full sentence about the arc here.');
     expect(out.length).toBeLessThanOrEqual(50);
+  });
+
+  it('prefers the only complete sentence at 53% over a near-cap fragment', () => {
+    const complete = `${'word '.repeat(52)}done.`; // 265 chars
+    const tail = ` ${'continuation '.repeat(30)}`;
+    const out = trimToClause(complete + tail, 500);
+    expect(out).toBe(complete);
+    expect(out.endsWith('.')).toBe(true);
+  });
+
+  it('does not treat abbreviations or decimals as sentence endings', () => {
+    const text = `Dr. Example measured 3.5 units before the actual stop. ${'tail '.repeat(20)}`;
+    const out = trimToClause(text, 70);
+    expect(out).toBe('Dr. Example measured 3.5 units before the actual stop.');
+  });
+
+  it('keeps closing quotes and brackets attached to the sentence', () => {
+    const text = `The operator said, "Stop now." ${'tail '.repeat(20)}`;
+    expect(trimToClause(text, 50)).toBe('The operator said, "Stop now."');
   });
 
   it('never clips mid-word — falls back to a whole-word boundary on a run-on', () => {

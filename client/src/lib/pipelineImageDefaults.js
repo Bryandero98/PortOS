@@ -50,20 +50,31 @@ export function readPipelineImageSettings(settings) {
   };
 }
 
+// "Unset" for the numeric knobs is the empty string. `Number('')` (and
+// `Number(null)`) is 0, not NaN, so a plain coercion turns an unset knob into a
+// HARD ZERO the server honors: `seed: 0` pins a fixed seed, making repeat
+// renders of one prompt identical. Blank must reach the `Number.isFinite` gates
+// below as NaN so they drop it.
+const numericOrNaN = (v) => (String(v ?? '').trim() === '' ? NaN : Number(v));
+
 // Strip empty strings + coerce numerics so the request body only carries
 // fields the server should act on. Empty strings would otherwise serialize
 // to "" and trip the zod number coercion.
 export function pipelineImageCfgToRenderOpts(cfg) {
   const opts = { mode: cfg.mode };
   if (cfg.mode === IMAGE_GEN_MODE.LOCAL && cfg.modelId) opts.modelId = cfg.modelId;
+  // A record render pin can name the cloud CLI's model too (`applyRecordRenderPin`
+  // routes it here); the dispatcher folds `cloudModel` into the provider's own
+  // model for that one job. Local reads `modelId` above instead.
+  if (isCloudCliMode(cfg.mode) && cfg.cloudModel) opts.cloudModel = cfg.cloudModel;
   if (Number.isFinite(cfg.width)) opts.width = cfg.width;
   if (Number.isFinite(cfg.height)) opts.height = cfg.height;
   if (!isCloudCliMode(cfg.mode)) {
-    const steps = Number(cfg.steps);
+    const steps = numericOrNaN(cfg.steps);
     if (Number.isFinite(steps) && steps > 0) opts.steps = steps;
-    const guidance = Number(cfg.guidance);
+    const guidance = numericOrNaN(cfg.guidance);
     if (Number.isFinite(guidance) && guidance >= 0) opts.guidance = guidance;
-    const seed = Number(cfg.seed);
+    const seed = numericOrNaN(cfg.seed);
     if (Number.isFinite(seed) && seed >= 0) opts.seed = seed;
   }
   const neg = (cfg.negativePrompt || '').trim();

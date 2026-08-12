@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router';
-import { Trash2, RotateCcw, MessageSquarePlus, ScrollText } from 'lucide-react';
+import { Trash2, RotateCcw, MessageSquarePlus, ScrollText, Square } from 'lucide-react';
 import * as api from '../services/api';
 import { formatTime, formatRuntime, formatBytes, formatDateTime } from '../utils/formatters';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -25,6 +25,7 @@ export function RunsHistoryPage() {
   const [expandedDetails, setExpandedDetails] = useState({});
   const [sourceFilter, setSourceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [stoppingIds, setStoppingIds] = useState(() => new Set());
   // The failed run whose system logs are open in the log modal, or null.
   const [logModalRun, setLogModalRun] = useState(null);
 
@@ -59,6 +60,28 @@ export function RunsHistoryPage() {
     if (!deleted && deleted !== undefined) return;
     setRuns(prev => prev.filter(run => run.id !== id));
     if (expandedId === id) setExpandedId(null);
+  };
+
+  const handleStop = async (id, e) => {
+    e.stopPropagation();
+    setStoppingIds((prev) => new Set(prev).add(id));
+    const stopped = await api.stopRun(id).then(() => true).catch(() => false);
+    if (!stopped) {
+      setStoppingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      return;
+    }
+    // Completion metadata lands asynchronously after the child process exits;
+    // refresh once so the row transitions from Running to its terminal state.
+    await loadRuns();
+    setStoppingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   const toggleExpand = async (id) => {
@@ -305,6 +328,18 @@ export function RunsHistoryPage() {
                           data-testid={`resume-run-${run.id}`}
                         >
                           <RotateCcw size={14} />
+                        </button>
+                      )}
+                      {run.success === null && (
+                        <button
+                          onClick={(e) => handleStop(run.id, e)}
+                          disabled={stoppingIds.has(run.id)}
+                          className="p-1 text-gray-500 hover:text-port-error transition-colors disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 sm:focus-visible:opacity-100"
+                          title={stoppingIds.has(run.id) ? 'Stopping run' : 'Stop run'}
+                          aria-label={stoppingIds.has(run.id) ? 'Stopping run' : 'Stop run'}
+                          data-testid={`stop-run-${run.id}`}
+                        >
+                          <Square size={14} fill="currentColor" />
                         </button>
                       )}
                       <button

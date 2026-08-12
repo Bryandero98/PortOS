@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import {
   Rocket, Loader2, X, Sliders, ShieldCheck, AlertCircle, CheckCircle2,
-  PauseCircle, Play, ScanSearch, ChevronRight,
+  PauseCircle, Play, ScanSearch, ChevronRight, ChevronDown,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { usePipelineProgress } from '../../hooks/usePipelineProgress';
@@ -10,7 +10,9 @@ import usePersistedOptions, { readBoolean, readInteger, readNumber } from '../..
 import {
   startPipelineAutopilot,
   cancelPipelineAutopilot,
+  pausePipelineAutopilot,
   getPipelineAutopilotStatus,
+  getPipelineAutopilotModelMetrics,
   pipelineAutopilotSseUrl,
   getPipelineSeriesCanonReadiness,
   getPipelineSeries,
@@ -60,6 +62,27 @@ const DEFAULT_SELF_IMPROVE = false;
 // fix tasks (worktree + PR + review loop + merge, no human gate) as pipeline
 // defects surface. Supersedes the selfImprove terminal diagnosis when both on.
 const DEFAULT_OBSERVER = false;
+// Evidence is collected regardless; routing stays opt-in so a series cannot
+// silently switch models merely because a sample threshold was reached.
+const DEFAULT_AUTO_SELECT_MODELS = false;
+const AUTOPILOT_LLM_STAGES = [
+  ['characterFoundation', 'Character foundation'],
+  ['generateArc', 'Generate arc'],
+  ['repairArcStructure', 'Repair arc structure'],
+  ['verifyArcSpine', 'Verify arc spine'],
+  ['generateEpisodes', 'Generate episodes'],
+  ['foundationGate', 'Foundation quality gate'],
+  ['verifyArc', 'Verify arc'],
+  ['beatSheet', 'Beat sheets'],
+  ['beatContinuity', 'Beat continuity'],
+  ['textStages', 'Draft text stages'],
+  ['scriptVerify', 'Verify scripts'],
+  ['editorialReview', 'Editorial review'],
+  ['reverseOutline', 'Reverse outline'],
+  ['editorialChecks', 'Editorial checks'],
+  ['revisionCycle', 'Revision cycle'],
+  ['produceTeaser', 'Produce teaser'],
+];
 // Threshold input: a [0,10] number (0.5 steps allowed — NOT integer-rounded like
 // the round clamps), blank/invalid → the default.
 const clampFoundationThreshold = (n, fallback) => {
@@ -191,6 +214,11 @@ const OPTION_SPECS = {
     read: readBoolean,
     persistOnEdit: true,
   },
+  autoSelectModels: {
+    defaultValue: DEFAULT_AUTO_SELECT_MODELS,
+    read: readBoolean,
+    persistOnEdit: true,
+  },
 };
 
 // A single numeric field for the Options popover (round bounds + the pause
@@ -241,6 +269,7 @@ const STEP_LABELS = {
   generateArc: 'Generating arc',
   repairArcStructure: 'Repairing volume structure',
   generateEpisodes: 'Generating episodes',
+  verifyArcSpine: 'Checking arc spine',
   verifyArc: 'Verifying arc',
   foundationGate: 'Judging foundation',
   beatSheet: 'Generating beat sheets',
@@ -270,11 +299,31 @@ function frameLabel(f) {
     case 'verify:round': return `${f.scope} check — ${f.blocking} blocking of ${f.findings} finding(s)${f.errored > 0 ? ` · ⚠️ ${f.errored} errored` : ''}`;
     // An auto-resolve round that left the draft worse was undone — say so live,
     // or the round's edits appear to still be in place while the run pauses.
+    // A revert is not necessarily the end of the gate: when a corrective pass is
+    // left, the run retries from the restored state, so say which one happened
+    // or the user reads every rollback as "this run is about to stop".
     case 'resolve:rollback': return `${f.scope} auto-resolve went from ${f.before} to ${f.after} blocking finding(s) — `
-      + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`;
+      + `${f.reverted ? 'reverted that round' : 'could not revert that round'}`
+      + `${f.retrying ? ', retrying from the best state' : ''}`;
+    // Per-finding isolation: each attempt is its own kept-or-reverted decision,
+    // so name the finding it was spent on — a bare "attempt 2 reverted" reads as
+    // the whole gate rolling back again rather than one candidate being dropped.
+    // A candidate too broad to BE an isolated repair is dropped before it is
+    // applied, so it never edited the plan and its blocker counts never moved —
+    // reporting that as "reverted" would describe an undo that never happened.
+    case 'resolve:isolate': return `${f.scope} isolated fix ${f.attempt}${f.target ? ` (${f.target})` : ''} — `
+      + (f.reason
+        ? `discarded before it was applied: ${f.reason}`
+        : `${f.before} → ${f.after} blocking finding(s), ${f.kept ? 'kept' : 'reverted'}`);
     // #2176 — foundation-gate telemetry.
     case 'foundation:round': return `Foundation round ${f.round} — weighted ${f.weightedScore}/${f.threshold}${f.weakest ? ` · next target: ${f.weakest}` : ''}`;
     case 'foundation:fix': return `${f.phase === 'pre-arc' ? 'Pre-arc foundation' : 'Foundation fix'} — ${f.dimension}${f.applied ? ' applied' : ` skipped${f.reason ? ` (${f.reason})` : ''}`}`;
+    // A repair whose re-judge showed no gain is rewound. Like resolve:rollback,
+    // say whether the gate is retrying from the restored checkpoint — otherwise
+    // every revert reads as "this run is about to stop".
+    case 'foundation:rollback': return `Foundation ${f.dimension} repair did not improve its target `
+      + `(${f.targetBefore} → ${f.targetAfter}) — ${f.reverted ? 'reverted that repair' : 'could not revert that repair'}`
+      + `${f.retrying ? ', retrying from the checkpoint' : ''}`;
     // #1578 — per-check telemetry forwarded from the editorial-checks runner.
     case 'check:start': return `Editorial check: ${f.label || f.checkId}…`;
     case 'check:complete': {
@@ -303,6 +352,7 @@ function frameLabel(f) {
       return `Unlocked ${parts.join(', ')}${kept.length ? ` · kept ${kept.join(' + ')} locked` : ''}`;
     }
     case 'render:queued': return `Queued draft render: ${f.target}`;
+    case 'canon:repair': return `Canon repair: ${f.filled || 0} described from prose${f.unsupported ? ` · ${f.unsupported} unsupported` : ''}`;
     case 'gap:filed': return `Filed CoS task (${f.gapKind})`;
     // Pipeline self-improvement post-mortem. Only the START frame is live — the
     // verdict rides the terminal frame (a client tears its stream down there).
@@ -314,6 +364,7 @@ function frameLabel(f) {
       : `Orchestrator dispatched a pipeline fix (${f.area})${f.title ? `: ${f.title}` : ''}`;
     // #1617 — immediate cancel ack; the active step finishes before `canceled`.
     case 'cancel:acknowledged': return 'Cancelling — finishing the active step…';
+    case 'pause:acknowledged': return 'Pausing safely — finishing the active step…';
     case 'paused': return `Paused — ${f.reason}`;
     case 'complete': return f.dryRun ? 'Plan ready' : 'Complete';
     case 'canceled': return 'Canceled';
@@ -410,6 +461,7 @@ function Findings({ items }) {
 export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate }) {
   const seriesId = series?.id;
   const [active, setActive] = useState(false);
+  const [pausePending, setPausePending] = useState(false);
   const [starting, setStarting] = useState(false);
   const [mode, setMode] = useState(null);
   const [plan, setPlan] = useState(null);
@@ -482,8 +534,16 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   const [judgeProviderOverride, setJudgeProviderOverride] = useState('');
   const [judgeModelOverride, setJudgeModelOverride] = useState('');
   const [judgeEffortOverride, setJudgeEffortOverride] = useState('');
+  // Optional routes scoped to one Autopilot step + role. This is the UI side of
+  // the model-performance loop: a user can pin a proven specialist (or run an
+  // experiment) without repointing every creative or judge call in the run.
+  const [stageLlm, setStageLlm] = useState({});
+  const [editStageLlm, setEditStageLlm] = useState(false);
+  const [selectedStageLlm, setSelectedStageLlm] = useState('foundationGate');
+  const [selectedStageRole, setSelectedStageRole] = useState('creative');
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
+  const [modelMetrics, setModelMetrics] = useState(null);
   // Provider/model/effort the ACTIVE run reported on its start frame — what the
   // live progress line names, so a run started elsewhere (or by the scheduler)
   // still says which provider (and how hard it thinks) it is spending on.
@@ -502,6 +562,8 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     setJudgeProviderOverride(resume?.judgeLlm?.providerOverride || '');
     setJudgeModelOverride(resume?.judgeLlm?.modelOverride || '');
     setJudgeEffortOverride(resume?.judgeLlm?.effortOverride || '');
+    setStageLlm(resume?.stageLlm || {});
+    setEditStageLlm(!!resume?.stageLlm && Object.keys(resume.stageLlm).length > 0);
   }, [
     seriesId,
     series?.autopilot?.status,
@@ -511,6 +573,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     series?.autopilot?.resumeOptions?.judgeLlm?.providerOverride,
     series?.autopilot?.resumeOptions?.judgeLlm?.modelOverride,
     series?.autopilot?.resumeOptions?.judgeLlm?.effortOverride,
+    series?.autopilot?.resumeOptions?.stageLlm,
   ]);
 
   useEffect(() => {
@@ -524,6 +587,14 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
       .catch(() => null); // picker degrades to the "series default" option only
     return () => { canceled = true; };
   }, []);
+
+  useEffect(() => {
+    let canceled = false;
+    getPipelineAutopilotModelMetrics(seriesId, { silent: true })
+      .then((data) => { if (!canceled) setModelMetrics(data); })
+      .catch(() => null);
+    return () => { canceled = true; };
+  }, [seriesId]);
 
   // Disarm the unlock consent whenever the panel switches series. This
   // component is reused across `seriesId` changes rather than remounted, so
@@ -578,6 +649,42 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     judgeProvider,
     judgeModel,
   );
+  const selectedStageRoute = stageLlm?.[selectedStageLlm]?.[selectedStageRole] || {};
+  const stageBaseProviderId = selectedStageRole === 'judge' ? judgeProviderId : effProviderId;
+  const stageBaseModel = selectedStageRole === 'judge' ? judgeModel : effModel;
+  const stageBaseEffort = selectedStageRole === 'judge'
+    ? (judgeEffortOverride || effortOverride)
+    : effortOverride;
+  const stageProviderId = selectedStageRoute.providerOverride || stageBaseProviderId;
+  const stageModel = selectedStageRoute.modelOverride
+    || ((!selectedStageRoute.providerOverride || selectedStageRoute.providerOverride === stageBaseProviderId)
+      ? stageBaseModel
+      : '');
+  const stageProvider = providers.find((p) => p.id === stageProviderId);
+  const stageModels = useMemo(
+    () => assignmentModelOptions(null, providers, stageProviderId),
+    [providers, stageProviderId],
+  );
+  const stageEffort = resolveCliEffort(
+    selectedStageRoute.effortOverride || stageBaseEffort,
+    stageProvider,
+    stageModel,
+  );
+  const updateSelectedStageRoute = useCallback((patch) => {
+    setStageLlm((current) => {
+      const currentRoute = current?.[selectedStageLlm]?.[selectedStageRole] || {};
+      const nextRoute = Object.fromEntries(
+        Object.entries({ ...currentRoute, ...patch }).filter(([, value]) => !!value),
+      );
+      const nextStage = { ...(current?.[selectedStageLlm] || {}) };
+      if (Object.keys(nextRoute).length > 0) nextStage[selectedStageRole] = nextRoute;
+      else delete nextStage[selectedStageRole];
+      const next = { ...current };
+      if (Object.keys(nextStage).length > 0) next[selectedStageLlm] = nextStage;
+      else delete next[selectedStageLlm];
+      return next;
+    });
+  }, [selectedStageLlm, selectedStageRole]);
 
   // Load the persisted option defaults so the Options controls reflect the
   // install's settings. The autopilot reads the same settings server-side, so we
@@ -638,6 +745,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
         // SSE replays only the last frame, so the run's `start` frame comes back
         // on the status payload instead — same shape, same reader.
         if (s.start) applyStartFrame(s.start);
+        setPausePending(s.pauseRequested === true);
         setActive(true);
       })
       .catch(() => null);
@@ -662,6 +770,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     // Ignore a terminal frame left over from a previous run (stale `latest`).
     if (activeRunIdRef.current && latest.runId && latest.runId !== activeRunIdRef.current) return;
     setActive(false);
+    setPausePending(false);
     getPipelineSeries(seriesId, { silent: true }).then((s) => { if (s) onSeriesUpdateRef.current?.(s); }).catch(() => null);
     listPipelineIssues(seriesId, { silent: true }).then((is) => onIssuesUpdateRef.current?.(Array.isArray(is) ? is : [])).catch(() => null);
     if (latest.type === 'complete') {
@@ -718,6 +827,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           ...(judgeEffortOverride ? { effortOverride: judgeEffortOverride } : {}),
         },
       } : {}),
+      ...(Object.keys(stageLlm).length > 0 ? { stageLlm } : {}),
     };
     const res = await startPipelineAutopilot(seriesId, { includeVisual, fileGaps, ...roundOverrides, ...gateOverride, ...unlockOverride, ...llmOverride }, { silent: true })
       .catch((err) => { toast.error(err.message || 'Could not start autopilot'); return null; });
@@ -737,10 +847,16 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
     setActive(true);
     // `options` is the single dep for every persisted option — the registry reads
     // live values through refs, so no option can be forgotten here.
-  }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, separateJudgeLlm, judgeProviderOverride, judgeModelOverride, judgeEffortOverride, options, persistRounds]);
+  }, [seriesId, includeVisual, fileGaps, unlockForRun, readinessGate, providerOverride, modelOverride, effortOverride, separateJudgeLlm, judgeProviderOverride, judgeModelOverride, judgeEffortOverride, stageLlm, options, persistRounds]);
 
   const cancel = useCallback(async () => {
+    setPausePending(false);
     await cancelPipelineAutopilot(seriesId).catch(() => null);
+  }, [seriesId]);
+
+  const pause = useCallback(async () => {
+    const result = await pausePipelineAutopilot(seriesId).catch(() => null);
+    setPausePending(result?.pauseRequested === true);
   }, [seriesId]);
 
   const checkCanon = useCallback(async () => {
@@ -759,6 +875,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
   // disabled "Cancelling…" state so the user gets feedback (and can't re-fire
   // cancel) while the active step finishes and the terminal frame arrives.
   const canceling = active && latest?.type === 'cancel:acknowledged';
+  const pausing = active && (pausePending || latest?.type === 'pause:acknowledged');
   const runLabel = ap?.status === 'paused' ? 'Resume autopilot'
     : ap?.status === 'done' ? 'Run autopilot again'
       : 'Run autopilot';
@@ -792,14 +909,26 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              onClick={cancel}
-              disabled={canceling}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs text-port-warning hover:text-white border border-port-warning/40 bg-port-bg hover:bg-port-warning/10 disabled:opacity-50 disabled:hover:text-port-warning disabled:cursor-default"
-            >
-              {canceling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />} {canceling ? 'Cancelling…' : 'Stop'}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={pause}
+                disabled={pausing || canceling}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs text-port-accent hover:text-white border border-port-accent/40 bg-port-bg hover:bg-port-accent/10 disabled:opacity-50 disabled:cursor-default"
+                title="Finish the active step, then pause without stopping its AI run"
+              >
+                {pausing ? <Loader2 size={12} className="animate-spin" /> : <PauseCircle size={12} />} {pausing ? 'Pausing…' : 'Pause safely'}
+              </button>
+              <button
+                type="button"
+                onClick={cancel}
+                disabled={canceling}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs text-port-warning hover:text-white border border-port-warning/40 bg-port-bg hover:bg-port-warning/10 disabled:opacity-50 disabled:hover:text-port-warning disabled:cursor-default"
+                title="Stop the active AI run immediately"
+              >
+                {canceling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />} {canceling ? 'Cancelling…' : 'Stop now'}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -893,7 +1022,101 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                 </p>
               </div>
             ) : null}
+            <div className="border-t border-port-border/70 pt-2 mt-1 flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={editStageLlm}
+                  onChange={(e) => {
+                    setEditStageLlm(e.target.checked);
+                    if (!e.target.checked) setStageLlm({});
+                  }}
+                />
+                Override a specific stage and role
+              </label>
+              {editStageLlm ? (
+                <>
+                  <p className="text-[11px] text-gray-400">
+                    Stage route overrides win over run-wide and learned routes for the selected role. They are restored when a run pauses.
+                  </p>
+                  <div className="flex flex-wrap gap-2 max-w-2xl">
+                <div>
+                  <label htmlFor="autopilot-stage-llm" className="block text-[11px] text-gray-400 mb-1">Stage override</label>
+                  <select
+                    id="autopilot-stage-llm"
+                    value={selectedStageLlm}
+                    onChange={(e) => setSelectedStageLlm(e.target.value)}
+                    className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-xs text-gray-200"
+                  >
+                    {AUTOPILOT_LLM_STAGES.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="autopilot-stage-role" className="block text-[11px] text-gray-400 mb-1">Role</label>
+                  <select
+                    id="autopilot-stage-role"
+                    value={selectedStageRole}
+                    onChange={(e) => setSelectedStageRole(e.target.value)}
+                    className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-xs text-gray-200"
+                  >
+                    <option value="creative">Creative / repair</option>
+                    <option value="judge">Judge / verify</option>
+                  </select>
+                </div>
+              </div>
+              <div className="max-w-md">
+                <ProviderModelSelector
+                  providers={providers}
+                  selectedProviderId={selectedStageRoute.providerOverride || ''}
+                  effectiveProviderId={stageProviderId}
+                  selectedModel={selectedStageRoute.modelOverride || ''}
+                  availableModels={stageModels}
+                  onProviderChange={(id) => updateSelectedStageRoute({
+                    providerOverride: id,
+                    modelOverride: '',
+                    effortOverride: '',
+                  })}
+                  onModelChange={(model) => updateSelectedStageRoute({ modelOverride: model })}
+                  effort={selectedStageRoute.effortOverride || ''}
+                  onEffortChange={(effort) => updateSelectedStageRoute({ effortOverride: effort })}
+                  label="Override this stage and role"
+                  compact
+                  alwaysShowModel
+                  emptyProviderOption={`Role default (${providerDisplayName(providers, stageBaseProviderId, '—')})`}
+                  emptyModelOption={stageBaseModel ? `Role default (${stageBaseModel})` : 'Role default model'}
+                />
+                {Object.keys(selectedStageRoute).length > 0 ? (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-[11px] text-port-accent">
+                      Active: {providerModelLabel(providers, stageProviderId, stageModel)}{stageEffort ? ` / ${stageEffort}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedStageRoute({
+                        providerOverride: '', modelOverride: '', effortOverride: '',
+                      })}
+                      className="text-[11px] text-gray-500 hover:text-white"
+                    >
+                      Clear override
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+                </>
+              ) : null}
+            </div>
           </div>
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <input type="checkbox" checked={opt.autoSelectModels} onChange={(e) => options.edit('autoSelectModels', e.target.checked)} />
+            Let autopilot choose models from stage-specific results
+          </label>
+          {opt.autoSelectModels ? (
+            <p className="text-[11px] text-gray-500">
+              Uses separate technical and quality outcomes by step, role, provider, model and effort. Historical outcomes can backfill effort when older run records lack it. A route needs at least {modelMetrics?.minimumQualitySamples ?? 2} quality-reviewed samples and a positive reliability threshold; explicit choices above and exact Prompts-stage pins still win. Current history: {modelMetrics?.evidenceRuns ?? 0} attributed run{modelMetrics?.evidenceRuns === 1 ? '' : 's'}, {modelMetrics?.metrics?.reduce((sum, metric) => sum + (metric.qualityEvaluated || 0), 0) ?? 0} quality-reviewed.
+            </p>
+          ) : null}
           <label className="flex items-center gap-2 text-xs text-gray-300">
             <input type="checkbox" checked={includeVisual} onChange={(e) => setIncludeVisual(e.target.checked)} />
             Draft cover + all interior pages (comic targets)
@@ -1155,6 +1378,19 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
             </div>
           ) : null}
           <Findings items={ap.residualFindings} />
+          {/* Collapsed: the restored set above is the actual work queue, while
+              these are what the rewound round produced — context for judging
+              whether the rollback was the right call, not tasks to act on. */}
+          {ap.discardedFindings?.length ? (
+            <details className="mt-2 group">
+              <summary className="cursor-pointer list-none flex items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300">
+                <ChevronRight size={11} className="group-open:hidden" />
+                <ChevronDown size={11} className="hidden group-open:inline" />
+                Discarded — what the reverted round produced ({ap.discardedFindings.length})
+              </summary>
+              <Findings items={ap.discardedFindings} />
+            </details>
+          ) : null}
         </div>
         );
       })() : null}

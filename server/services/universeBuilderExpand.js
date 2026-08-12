@@ -488,6 +488,8 @@ const normalizeCanonArray = (raw, kind) => {
  * @param {string} [options.providerId]   — optional override; falls back to active.
  * @param {string} [options.model]        — optional override; falls back to provider default.
  * @param {string} [options.effort]       — optional reasoning-effort override for capable providers.
+ * @param {(runId:string)=>void} [options.onRunCreated] — parent-workflow lifecycle hook.
+ * @param {(runId:string)=>void} [options.onRunSettled] — parent-workflow lifecycle hook.
  * @param {boolean} [options.narrativeOnly] — limit output to the story-bible fields a foundation repair persists.
  */
 export async function expandWorldTemplate({
@@ -506,6 +508,8 @@ export async function expandWorldTemplate({
   providerId,
   model,
   effort,
+  onRunCreated,
+  onRunSettled,
   narrativeOnly = false,
 } = {}) {
   if (!starterPrompt || !starterPrompt.trim()) {
@@ -580,6 +584,8 @@ export async function expandWorldTemplate({
       provider,
       model: selectedModel,
       effort,
+      onRunCreated,
+      onRunSettled,
       prompt,
       source: narrativeOnly ? "universe-builder-narrative-repair" : "universe-builder-expansion",
     });

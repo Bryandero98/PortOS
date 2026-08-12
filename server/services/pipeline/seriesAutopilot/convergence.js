@@ -182,6 +182,14 @@ export function sameFinding(a, b) {
     && score >= (corroborated ? FINDING_MATCH_MIN_OVERLAP_SAME_LOCATION : FINDING_MATCH_MIN_OVERLAP);
 }
 
+// "Is this problem somewhere in that list?" — the membership question every
+// caller of `sameFinding` above is actually asking, spelled once. Argument order
+// is fixed here (list, then finding) because the sites that open-coded it each
+// picked their own, which is harmless only while the matcher stays symmetric.
+export const containsFinding = (list, finding) => (
+  Array.isArray(list) && list.some((candidate) => sameFinding(candidate, finding))
+);
+
 /**
  * True when the round that produced `after` REGRESSED: it left more blocking
  * findings than the `before` set it was asked to close, AND at least one of
@@ -202,18 +210,88 @@ export function isResolveRegression(before, after) {
   const targeted = Array.isArray(before) ? before : [];
   const current = Array.isArray(after) ? after : [];
   if (current.length <= targeted.length) return false;
-  return targeted.some((t) => current.some((c) => sameFinding(t, c)));
+  return targeted.some((t) => containsFinding(current, t));
+}
+
+const FINDING_SEVERITY_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
+
+/**
+ * Regression test for a bounded, finding-keyed exact-text patch. Unlike a
+ * legacy whole-field rewrite, a sparse patch that closes its target may safely
+ * expose unrelated latent findings elsewhere in the already-authored plan.
+ * Revert only when a targeted finding survives while the set grows, or when
+ * that same finding returns at a higher severity.
+ */
+export function isTargetedPatchRegression(before, after) {
+  const targeted = Array.isArray(before) ? before : [];
+  const current = Array.isArray(after) ? after : [];
+  if (isResolveRegression(targeted, current)) return true;
+  return targeted.some((prior) => current.some((candidate) => (
+    sameFinding(prior, candidate)
+    && (FINDING_SEVERITY_RANK[candidate?.severity] || 0) > (FINDING_SEVERITY_RANK[prior?.severity] || 0)
+  )));
+}
+
+// The arc rollback guard's operational ordering. Total blockers remain the
+// primary signal: accepting a larger set is what caused the original runaway
+// repair loop. When the totals tie, severity is the tiebreaker so a resolver
+// cannot trade a medium finding for a high one and call the unchanged count
+// safe. Unknown severities do not need a bucket here — with equal totals, any
+// movement into high/medium/low is already reflected by the known buckets.
+export function isBlockingSetRegression(before, after) {
+  const prior = Array.isArray(before) ? before : [];
+  const current = Array.isArray(after) ? after : [];
+  if (current.length !== prior.length) return current.length > prior.length;
+  const count = (findings, severity) => findings.filter((finding) => finding?.severity === severity).length;
+  for (const severity of ['high', 'medium', 'low']) {
+    const delta = count(current, severity) - count(prior, severity);
+    if (delta !== 0) return delta > 0;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-finding ISOLATION acceptance (#3780) — one altitude tighter again. The
+// guards above judge a WHOLE resolve round; this judges one single-finding patch
+// (see `isolateArcFindings` in childRuns.js for what the pass is FOR).
+// ---------------------------------------------------------------------------
+
+/**
+ * May an isolated single-finding patch be KEPT? True only when it did the job it
+ * was billed for and cost nothing elsewhere: `target` is gone from the re-verify,
+ * and what it left behind is not a regression on the set it started from. Pure.
+ *
+ * "Not a regression" is `isBlockingSetRegression` — deliberately the SAME
+ * operational definition of worse the whole-round rollback guard uses, so which
+ * trades survive doesn't depend on which tier happened to judge them. Ties are
+ * therefore allowed at an unchanged severity mix: a patch that closed its target
+ * and exposed one equally-severe finding next door is the same "different,
+ * narrower findings" trade the round loop's checkpoint already accepts, and the
+ * divergence guard still catches a gate that only ever trades.
+ *
+ * Closure is decided by `sameFinding`, not by prose equality, for the same
+ * reason the regression guard is: the verifier restates a standing defect in
+ * fresh words at a re-labelled location every call, and reading that as "closed"
+ * would accept a patch that changed nothing but the wording.
+ */
+export function isIsolatedFixSafe(target, before, after) {
+  const current = Array.isArray(after) ? after : [];
+  if (containsFinding(current, target)) return false;
+  return !isBlockingSetRegression(before, current);
 }
 
 // Pause reason for a gate whose auto-resolve round was reverted — distinct from
 // both "ran out of rounds" and "stopped converging": the state the user is being
 // handed is the one from BEFORE the round, and saying so is the difference
 // between a trustworthy pause and an unexplained rewind.
-export function regressionPauseReason(gate, beforeCount, afterCount) {
+export function regressionPauseReason(gate, beforeCount, afterCount, bestCount = beforeCount, severityEscalated = false) {
   const { label, fix } = PAUSE_GATES[gate];
+  const outcome = severityEscalated
+    ? `came back with the same count but a worse severity mix (${afterCount} total)`
+    : `came back with ${afterCount}`;
   return `${label} auto-resolve made the draft worse — the round it ran on ${beforeCount} blocking finding(s) `
-    + `came back with ${afterCount} and still hadn't closed what it was given, so its edits were reverted. `
-    + `Paused for review with the original ${beforeCount} finding(s). ${fix}, then resume.`;
+    + `${outcome}, so its edits were reverted regardless of how the verifier reworded the findings. `
+    + `Paused for review with the best verified ${bestCount}-finding state from this gate. ${fix}, then resume.`;
 }
 
 // Foundation gate pause reasons (#2176) — the gate converges on a WEIGHTED
@@ -225,6 +303,26 @@ export function foundationPauseReason(maxRounds, score, threshold) {
   const plural = maxRounds === 1 ? 'round' : 'rounds';
   return `${label} couldn't reach the threshold (weighted ${score} < ${threshold}) in ${maxRounds} ${plural} — `
     + `paused for review. ${fix}, or raise the ${limit} limit in Options and resume.`;
+}
+// A foundation repair whose independent re-judge showed no gain for the target
+// it was asked to fix. `missed` is the shared head of every sentence about that
+// attempt — the rewind notice, the unverified-restore pause, and the note the
+// NEXT attempt at that dimension is handed — so the three can't disagree about
+// what the numbers were.
+export function foundationRepairMissed({ dimension, targetBefore, targetAfter, weightedBefore, weightedAfter }) {
+  const missed = `Foundation ${dimension} repair did not improve its target `
+    + `(${targetBefore} → ${targetAfter}; weighted ${weightedBefore} → ${weightedAfter})`;
+  return {
+    missed,
+    rewind: `${missed}, so its edits were reverted to the pre-repair checkpoint.`,
+    unverified: (reason) => `${missed}, and checkpoint verification failed after rollback: ${reason || 'unknown restore mismatch'}.`,
+    // Handed to the retry so it changes strategy instead of re-proposing edits
+    // the gate has already thrown away. Names the rejected re-judge's own gap:
+    // that is the evidence the last attempt failed to move anything.
+    retryNote: (gap) => `A previous ${dimension} repair this run was REVERTED: it left the target score at ${targetAfter} `
+      + `(weighted ${weightedBefore} → ${weightedAfter}), so none of its edits were kept. The re-judge of that attempt still `
+      + `reported: ${gap || 'the same gap'}. Take a different approach — repeating those edits will be reverted again.`,
+  };
 }
 export function foundationDivergenceReason(score, threshold, rounds) {
   const { label, fix } = PAUSE_GATES.foundation;

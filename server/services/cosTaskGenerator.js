@@ -2209,6 +2209,7 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
 async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule) {
   if (taskType !== 'branch-reconcile') return { skip: false, block: '' };
   const { reconcile, filterActionable, formatInFlightForPrompt, actionableSignature } = await import('./branchReconcile.js');
+  const { formatSupersededForPrompt } = await import('./supersededLedger.js');
   const { getActiveAgentIds } = await import('./agentState.js');
   // Action toggles were merged (global → per-app override) + value-constrained
   // by sanitizeTaskMetadata into `metadata`; each is ON unless explicitly false.
@@ -2248,6 +2249,15 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   if (result.cleaned.length) {
     emitLog('info', `🔀 branch-reconcile ${app.name}: cleaned ${result.cleaned.length} merged branch(es)`, { appId: app.id, analysisType: taskType });
   }
+  // Branches whose SUPERSEDED verdict is already cached and still verifies were
+  // dropped from `inFlight` by the reconciler (#3842). They are real branches a
+  // human still has to reap, so name them rather than letting them vanish into a
+  // quiet park — the invisibility is the same failure mode as a lingering worktree
+  // reported as "cleaned 0".
+  const supersededCount = result.superseded?.length || 0;
+  const supersededSuffix = supersededCount
+    ? `, ${supersededCount} branch(es) already verified superseded and awaiting human reap`
+    : '';
   const actionable = filterActionable(result.inFlight, actions);
   if (actionable.length === 0) {
     // Definitive idle: nothing in-flight to drive. Park on the recheck cadence
@@ -2267,7 +2277,7 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     const gatedSuffix = gatedOff
       ? `, ${gatedOff} in-flight branch(es) skipped by disabled action toggles (${[...new Set(result.inFlight.map((b) => b.state))].join(', ')})`
       : '';
-    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing actionable (cleaned ${result.cleaned.length}${heldSuffix}${gatedSuffix})`, { appId: app.id });
+    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing actionable (cleaned ${result.cleaned.length}${heldSuffix}${gatedSuffix}${supersededSuffix})`, { appId: app.id });
     return { skip: true };
   }
   // Convergence guard — kills the back-to-back re-dispatch loop WITHOUT stalling
@@ -2285,8 +2295,12 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   await taskSchedule.clearPerpetualPark(taskType, app.id);
   await taskSchedule.setPerpetualSignature(taskType, app.id, signature);
   metadata.perpetual = true;
-  const block = formatInFlightForPrompt(actionable, { defaultBranch: result.defaultBranch, actions });
-  emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)`, { appId: app.id, analysisType: taskType });
+  const supersededBlock = formatSupersededForPrompt(result.superseded || []);
+  const block = [
+    formatInFlightForPrompt(actionable, { defaultBranch: result.defaultBranch, actions }),
+    supersededBlock
+  ].filter(Boolean).join('\n');
+  emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)${supersededSuffix}`, { appId: app.id, analysisType: taskType });
   return { skip: false, block };
 }
 
@@ -2309,7 +2323,10 @@ async function resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule)
   const jira = (wt?.resolved === 'jira' && app.jira?.enabled && app.jira?.instanceId && app.jira?.projectKey)
     ? { instanceId: app.jira.instanceId, projectKey: app.jira.projectKey }
     : null;
-  const result = await reconcile(app.repoPath, { jira }).catch((err) => {
+  // Pass the app itself, not just `jira`: the forge scan needs its `workTracker`
+  // pin to reach a self-hosted github/gitlab whose hostname matches neither
+  // auto-detection pattern (issue #3767).
+  const result = await reconcile(app.repoPath, { jira, app }).catch((err) => {
     emitLog('warn', `issue-reconcile pre-step failed for ${app.name}: ${err.message}`, { appId: app.id });
     return null;
   });

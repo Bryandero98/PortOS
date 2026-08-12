@@ -36,6 +36,7 @@ export { buildCliArgs };
 // `runnerConfig` (dataDir + hooks) is captured here because only the runner
 // needs it.
 let runnerConfig = { dataDir: './data', hooks: {} };
+const metadataPatchTails = new Map();
 
 export function setAIToolkit(toolkit, config = {}) {
   setAIToolkitInstance(toolkit);
@@ -203,13 +204,20 @@ export function emitRunStarted({ runId, provider, model }) {
  */
 export async function patchRunMetadata(runId, patch) {
   if (!patch || typeof patch !== 'object') return;
-  const metadataPath = join(getRunsPath(), runId, 'metadata.json');
-  const metadataStr = await tryReadFile(metadataPath);
-  if (!metadataStr) return;
-  let metadata;
-  try { metadata = JSON.parse(metadataStr); } catch { return; }
-  Object.assign(metadata, patch);
-  await atomicWrite(metadataPath, metadata).catch(() => {});
+  const previous = metadataPatchTails.get(runId) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    const metadataPath = join(getRunsPath(), runId, 'metadata.json');
+    const metadataStr = await tryReadFile(metadataPath);
+    if (!metadataStr) return;
+    let metadata;
+    try { metadata = JSON.parse(metadataStr); } catch { return; }
+    Object.assign(metadata, patch);
+    await atomicWrite(metadataPath, metadata).catch(() => {});
+  });
+  metadataPatchTails.set(runId, operation);
+  await operation.finally(() => {
+    if (metadataPatchTails.get(runId) === operation) metadataPatchTails.delete(runId);
+  });
 }
 
 /**

@@ -240,6 +240,56 @@ const hasDescription = (kind, entry) => {
 };
 
 /**
+ * Promote an existing image prompt into the canonical description field when
+ * that field is blank. Older Universe Builder expansion/promotion paths wrote
+ * rich `prompt` text but left `physicalDescription`/`description` empty, which
+ * made the same entry renderable from one screen and "not ready" from another.
+ *
+ * This is deliberately deterministic and fill-blanks-only: no provider call,
+ * no invented details, no kind changes, and no mutation of locked entries.
+ */
+export async function backfillCanonDescriptionsFromPrompts(universeId) {
+  const report = {
+    filled: 0,
+    byKind: Object.fromEntries(BIBLE_KINDS.map((kind) => [kind, 0])),
+    alreadyDescribed: 0,
+    missingPrompt: 0,
+    skippedLocked: 0,
+  };
+  const updated = await updateUniverse(universeId, (universe) => {
+    const patch = {};
+    for (const kind of BIBLE_KINDS) {
+      const field = BIBLE_FIELD[kind];
+      const list = Array.isArray(universe[field]) ? universe[field] : [];
+      let touched = false;
+      const next = list.map((entry) => {
+        if (hasDescription(kind, entry)) {
+          report.alreadyDescribed += 1;
+          return entry;
+        }
+        if (entry.locked === true) {
+          report.skippedLocked += 1;
+          return entry;
+        }
+        const prompt = typeof entry.prompt === 'string' ? entry.prompt.trim() : '';
+        if (!prompt) {
+          report.missingPrompt += 1;
+          return entry;
+        }
+        touched = true;
+        report.filled += 1;
+        report.byKind[kind] += 1;
+        return { ...entry, [DESC_FIELD[kind]]: prompt.slice(0, DESC_LIMIT[kind]) };
+      });
+      if (touched) patch[field] = next;
+    }
+    return Object.keys(patch).length ? patch : null;
+  });
+  console.log(`📝 Universe canon prompt backfill — universe=${shortId(universeId)} filled=${report.filled} character=${report.byKind.character} place=${report.byKind.place} object=${report.byKind.object} locked=${report.skippedLocked}`);
+  return { universe: updated, report };
+}
+
+/**
  * Backfill descriptions for canon nouns that have none, using ONLY what the
  * prose establishes. Unlike `extractCanonFromProse` (which is allowed to invent
  * + flag renderable axes the prose omits, so it never leaves a blank), this
@@ -257,7 +307,12 @@ const hasDescription = (kind, entry) => {
  * written, and only into entries that are STILL empty + unlocked at write time.
  */
 export async function describeCanonFromProse(universeId, opts = {}) {
-  const { corpus, targets, providerOverride, modelOverride } = opts;
+  const {
+    corpus, targets,
+    providerOverride, modelOverride,
+    providerDefault, modelDefault, effortDefault,
+    onRunCreated, onRunSettled,
+  } = opts;
   if (typeof corpus !== 'string' || !corpus.trim()) {
     throw new ServerError('describeCanonFromProse: corpus is required', {
       status: 400, code: 'UNIVERSE_CANON_NO_CORPUS',
@@ -301,6 +356,11 @@ export async function describeCanonFromProse(universeId, opts = {}) {
   }, {
     providerOverride,
     modelOverride,
+    providerDefault,
+    modelDefault,
+    effortDefault,
+    onRunCreated,
+    onRunSettled,
     returnsJson: true,
     source: 'universe-canon-describe-from-prose',
   });
@@ -359,10 +419,10 @@ export async function describeCanonFromProse(universeId, opts = {}) {
       return Object.keys(patch).length ? patch : null;
     });
     console.log(`📝 Universe canon describe-from-prose — universe=${shortId(universeId)} filled=${report.filled} none=${report.none.length} thin=${report.thin.length} runId=${shortId(result.runId)}`);
-    return { universe: updated || universe, report };
+    return { universe: updated || universe, report, runId: result.runId };
   }
   console.log(`📝 Universe canon describe-from-prose — universe=${shortId(universeId)} filled=0 none=${report.none.length} thin=${report.thin.length} runId=${shortId(result.runId)}`);
-  return { universe, report };
+  return { universe, report, runId: result.runId };
 }
 
 /**
@@ -654,8 +714,9 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
  * series are never touched, and are reported back as `foreignKept` so the
  * caller can say what it deliberately left alone.
  *
- * `clearWorldLocks` additionally empties the universe's OWN `locked` map (the
- * world-field locks: logline / premise / styleNotes / influence lists). It
+ * `clearWorldLocks` additionally clears the universe's OWN `locked` map (the
+ * world-field locks: logline / premise / styleNotes / influence lists), except
+ * for keys named in `preserveWorldLockKeys`. It
  * rides this call rather than a second `updateUniverse` because both land on
  * the same record — a separate write would re-read and re-sanitize the whole
  * universe and emit a second peer-sync `recordUpdated` for one user action.
@@ -668,7 +729,11 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
  * Returns `{ universe, changed, foreignKept }` (`changed` counts canon entries;
  * the caller already knows how many world locks it asked to clear).
  */
-export async function setCanonLocksForSeries(universeId, seriesId, locked, { soleSeries = false, clearWorldLocks = false } = {}) {
+export async function setCanonLocksForSeries(universeId, seriesId, locked, {
+  soleSeries = false,
+  clearWorldLocks = false,
+  preserveWorldLockKeys = [],
+} = {}) {
   const scope = { seriesId, soleSeries };
   let changed = 0;
   let foreignKept = 0;
@@ -692,7 +757,12 @@ export async function setCanonLocksForSeries(universeId, seriesId, locked, { sol
       });
       if (keyTouched) patch[key] = nextList;
     }
-    if (clearWorldLocks && Object.values(cur.locked || {}).some((v) => v === true)) patch.locked = {};
+    if (clearWorldLocks && Object.values(cur.locked || {}).some((v) => v === true)) {
+      const preserved = new Set(Array.isArray(preserveWorldLockKeys) ? preserveWorldLockKeys : []);
+      patch.locked = Object.fromEntries(
+        Object.entries(cur.locked || {}).filter(([key, value]) => value === true && preserved.has(key)),
+      );
+    }
     return Object.keys(patch).length > 0 ? patch : null;
   });
   return { universe, changed, foreignKept };
@@ -848,4 +918,3 @@ export async function purgeReferenceSheetFromAllUniverses(filename) {
   }
   return { cleared };
 }
-

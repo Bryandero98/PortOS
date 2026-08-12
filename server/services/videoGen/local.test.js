@@ -133,6 +133,10 @@ vi.mock('../../lib/ffmpeg.js', async () => ({
   // The real builder is pure and covered by ffmpeg.test.js; keep it real here
   // so the chain tests assert on the argv that actually reaches ffmpeg.
   buildTrimConcatArgs: (await vi.importActual('../../lib/ffmpeg.js')).buildTrimConcatArgs,
+  // Report the setparams filter as available so the chain tests assert on the
+  // fully-tagged argv (the degraded, container-flags-only shape is covered in
+  // ffmpeg.test.js).
+  bt709TagFilter: vi.fn(async () => (await vi.importActual('../../lib/ffmpeg.js')).BT709_TAG_FILTER),
 }));
 
 // hfChildEnv() carries the resolved token over the inherited child env; mocking here
@@ -164,6 +168,30 @@ vi.mock('../../lib/hfCache.js', () => ({
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
   statSync: vi.fn(() => ({ size: 1000 })),
+}));
+
+// Whether the installed MiniMax H3 checkout can apply LoRAs to its quantized
+// DiT. Really a spawned python probe; stubbed here so the render-path tests
+// drive both verdicts without the shared child_process mock (which resolves
+// every spawn successfully) silently reporting "capable".
+// `cached` is the SYNC read (false on a cold cache even for a capable install);
+// `capable` is the settled probe verdict. They are separate so a test can pin
+// the cold-cache case, where the two legitimately disagree.
+const h3LoraState = vi.hoisted(() => ({ capable: false, cached: null }));
+vi.mock('./runtimes.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  byovRuntimeLoraCapable: vi.fn((runtime) => runtime === 'minimax_h3'
+    && (h3LoraState.cached ?? h3LoraState.capable)),
+  resolveByovRuntimeLoraCapable: vi.fn(async (runtime) => runtime === 'minimax_h3' && h3LoraState.capable),
+}));
+
+// LoRA key-layout gate (resolveVideoLoras). `null` = undetermined, which is
+// the permissive default so the pre-existing LoRA-threading tests below still
+// reach the spawn path; the gate's own tests set a layout explicitly.
+const loraLayoutState = vi.hoisted(() => ({ layout: null }));
+vi.mock('../loras.js', () => ({
+  assertSafeLoraFilename: vi.fn(),
+  getLoraKeyLayout: vi.fn(async () => loraLayoutState.layout),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -455,7 +483,11 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     for (const i of [1, 2]) {
       expect(graph).toMatch(new RegExp(`\\[${i}:v\\][^;]*trim=start_frame=${EXPECTED_PREFIX_START}`));
     }
-    expect(graph).toContain('concat=n=3:v=1:a=0[outv]');
+    // All three legs join in one concat, whose output is then BT.709-tagged so
+    // the stitched timeline doesn't decode washed-out (#3800).
+    expect(graph).toContain('concat=n=3:v=1:a=0[cv]');
+    expect(graph).toContain('[cv]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709[outv]');
+    expect(concat).toContain('-color_primaries');
     // And the stitched record reports the timeline that exists, not the sum of
     // what each chunk was rendered at.
     expect(stitched?.numFrames).toBe(STITCHED_FRAMES_3_CHUNKS);
@@ -2139,6 +2171,94 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
   });
 });
 
+// H3's DiT is quantized, so LoRAs ride along only if the installed runner
+// applies them at render time from quantization metadata. That is a property of
+// the pinned checkout, so the verdict comes from a probe — and the render path
+// must honor it in both directions rather than blanket-rejecting the runtime.
+describe('MiniMax H3 user LoRAs', () => {
+  const h3Render = (jobId) => generateVideo({
+    jobId,
+    modelId: 'minimax_h3_8bit',
+    prompt: 'a fox watches the rain',
+    width: 512, height: 320, numFrames: 141, fps: 24, mode: 'text',
+    loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
+  });
+
+  afterEach(() => { h3LoraState.capable = false; h3LoraState.cached = null; });
+
+  // The model is decorated from the sync cache read, so on a capable install the
+  // FIRST LoRA render after boot sees `runtimeLoraCapable: false`. buildArgs must
+  // decide from the settled probe, not that stale snapshot, or the render is
+  // refused and only succeeds on a retry.
+  it('renders on a cold capability cache once the probe settles capable', async () => {
+    h3LoraState.capable = true;
+    h3LoraState.cached = false;   // sync read hasn't caught up yet
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await expect(h3Render('h3-lora-cold-cache')).resolves.toBeDefined();
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(args).toContain('--lora');
+  });
+
+  it('rejects LoRAs with an H3-specific reason when the runner has no applicator', async () => {
+    h3LoraState.capable = false;
+    await expect(h3Render('h3-lora-blocked')).rejects.toMatchObject({
+      code: 'MINIMAX_H3_LORA_UNSUPPORTED',
+      status: 400,
+    });
+  });
+
+  it('forwards each LoRA as a paired --lora/--lora-scale once the runner proves capable', async () => {
+    h3LoraState.capable = true;
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-lora-ok',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24, mode: 'text',
+      loras: [{ filename: 'fox.safetensors', scale: 0.8 }, { filename: 'rain.safetensors', scale: 0.5 }],
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(args.flatMap((arg, i) => (
+      arg === '--lora' ? [[args[i + 1], args[i + 2] === '--lora-scale' ? args[i + 3] : 'UNPAIRED']] : []
+    ))).toEqual([
+      [expect.stringContaining('fox.safetensors'), '0.8'],
+      [expect.stringContaining('rain.safetensors'), '0.5'],
+    ]);
+  });
+
+  it('emits no LoRA argv on a plain H3 render', async () => {
+    h3LoraState.capable = true;
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-no-lora',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      width: 512, height: 320, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(args).not.toContain('--lora');
+    expect(args).not.toContain('--lora-scale');
+  });
+});
+
 describe('runtime fingerprint (/status)', () => {
   it('hostRuntimeFingerprint reports chip/os/platform/arch/node', async () => {
     const { hostRuntimeFingerprint } = await import('./local.js');
@@ -3012,5 +3132,131 @@ describe('generateVideo — durable re-render inputs (#3696)', () => {
     });
     expect(started.mode).toBe('text');
     expect(started.conditioning).toEqual(['audio']);
+  });
+});
+
+describe('generateVideo — history-calibrated ETA (#3801)', () => {
+  const startedFor = async (history, params = {}) => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockImplementation(async () => history);
+    let started = null;
+    const onStarted = (e) => { started = e; };
+    videoGenEvents.on('started', onStarted);
+    await generateVideo({
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a quiet street at dusk',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      ...params,
+    });
+    videoGenEvents.off('started', onStarted);
+    return started;
+  };
+
+  const timedRecord = (renderMs, over = {}) => ({
+    modelId: 'ltx2_unified',
+    width: 512,
+    height: 512,
+    numFrames: 25,
+    steps: 30,
+    renderMs,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    ...over,
+  });
+
+  it('reports an explicit null ETA on a fresh install with no measured renders', async () => {
+    const started = await startedFor([], { jobId: 'eta-no-history' });
+    // null, not 0 and not omitted — the client must be able to tell "unknown"
+    // apart from "about to finish".
+    expect(started.etaMs).toBeNull();
+    expect('etaBasis' in started).toBe(false);
+  });
+
+  it('estimates from a same-shape measured render and labels the basis', async () => {
+    const history = [timedRecord(1_200_000), timedRecord(1_200_000, { createdAt: '2026-07-30T00:00:00.000Z' })];
+    const started = await startedFor(history, { jobId: 'eta-measured' });
+    expect(started.etaMs).toBe(1_200_000);
+    expect(started.etaBasis).toBe('measured');
+    expect(started.etaSampleCount).toBe(2);
+  });
+
+  it('ignores measurements from a different model', async () => {
+    const history = [timedRecord(1_200_000, { modelId: 'some_other_model' })];
+    expect((await startedFor(history, { jobId: 'eta-other-model' })).etaMs).toBeNull();
+  });
+
+  it('scales a differently-shaped measurement by pixels × frames × steps', async () => {
+    const history = [timedRecord(600_000, { numFrames: 50 })];
+    const started = await startedFor(history, { jobId: 'eta-scaled' });
+    // Half the frames → half the work → half the time.
+    expect(started.etaMs).toBe(300_000);
+    expect(started.etaBasis).toBe('proportional');
+  });
+});
+
+describe('resolveVideoLoras — safetensors key-layout gate', () => {
+  let resolveVideoLoras;
+  beforeEach(async () => {
+    vi.resetModules();
+    loraLayoutState.layout = null;
+    ({ resolveVideoLoras } = await import('./local.js'));
+  });
+  afterEach(async () => {
+    loraLayoutState.layout = null;
+    // Restore the shared mock here rather than inline, so a failing assertion
+    // in a per-filename test can't leak its implementation into the next one.
+    const { getLoraKeyLayout } = await import('../loras.js');
+    vi.mocked(getLoraKeyLayout).mockImplementation(async () => loraLayoutState.layout);
+  });
+
+  it('resolves bare and ComfyUI layouts (the two the loader can fuse)', async () => {
+    for (const layout of ['bare', 'comfyui']) {
+      loraLayoutState.layout = layout;
+      expect(await resolveVideoLoras([{ filename: 'style.safetensors', scale: 0.7 }])).toEqual([
+        { path: join(MOCK_PATHS.loras, 'style.safetensors'), strength: 0.7, filename: 'style.safetensors' },
+      ]);
+    }
+  });
+
+  it('rejects a kohya-layout LoRA with an actionable 400 naming the layout', async () => {
+    loraLayoutState.layout = 'kohya';
+    await expect(resolveVideoLoras([{ filename: 'style.safetensors', scale: 1.0 }]))
+      .rejects.toMatchObject({ status: 400, code: 'LORA_LAYOUT_UNSUPPORTED' });
+    await expect(resolveVideoLoras([{ filename: 'style.safetensors' }]))
+      .rejects.toThrow(/kohya/i);
+  });
+
+  it('rejects diffusers/PEFT and non-LoRA files too', async () => {
+    loraLayoutState.layout = 'diffusers';
+    await expect(resolveVideoLoras([{ filename: 'style.safetensors' }])).rejects.toThrow(/diffusers/i);
+    loraLayoutState.layout = 'not_a_lora';
+    await expect(resolveVideoLoras([{ filename: 'ckpt.safetensors' }])).rejects.toThrow(/no LoRA tensors/i);
+  });
+
+  it('rejects the whole render when ANY selected LoRA is un-fusable', async () => {
+    const layouts = { 'ok.safetensors': 'comfyui', 'bad.safetensors': 'kohya' };
+    const { getLoraKeyLayout } = await import('../loras.js');
+    vi.mocked(getLoraKeyLayout).mockImplementation(async (f) => layouts[f] ?? null);
+    await expect(resolveVideoLoras([
+      { filename: 'ok.safetensors' }, { filename: 'bad.safetensors' },
+    ])).rejects.toThrow(/bad\.safetensors/);
+  });
+
+  it('passes an undetermined layout through rather than blocking the render', async () => {
+    loraLayoutState.layout = null;
+    const resolved = await resolveVideoLoras([{ filename: 'mystery.safetensors' }]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].strength).toBe(1.0);
+  });
+
+  it('returns [] for no LoRAs without consulting the layout', async () => {
+    const { getLoraKeyLayout } = await import('../loras.js');
+    vi.mocked(getLoraKeyLayout).mockClear();
+    expect(await resolveVideoLoras([])).toEqual([]);
+    expect(await resolveVideoLoras(undefined)).toEqual([]);
+    expect(getLoraKeyLayout).not.toHaveBeenCalled();
   });
 });

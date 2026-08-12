@@ -193,7 +193,10 @@ describe('arcPlanner — generateArcOverview', () => {
         { kind: 'reference_sheet', label: 'Rival agencies branding', prompt: 'comparison sheet' },
       ],
     });
-    const s = await setupSeries({ universeId: world.id });
+    const s = await setupSeries({
+      universeId: world.id,
+      premise: 'Mira Holt must recover The Tongue before the foundry city goes silent.',
+    });
 
     stageRunnerSpy = vi.fn(async () => ({
       content: {
@@ -218,6 +221,44 @@ describe('arcPlanner — generateArcOverview', () => {
     expect(ctx.worldCompositesText).toContain('Rival agencies branding');
     expect(ctx.worldInfluencesEmbrace).toContain('Moebius');
     expect(ctx.worldInfluencesAvoid).toContain('gritty');
+  });
+
+  it('excludes abandoned-draft canon that the protected premise and active cast never reference', async () => {
+    const world = await worldSvc.createUniverse({
+      name: 'Example World',
+      starterPrompt: 'Asha Reed follows a signal through the Glass Harbor.',
+      characters: [
+        { id: 'char-active', name: 'Asha Reed', role: 'lead', relationships: 'Trusts Fen.' },
+        { id: 'char-support', name: 'Fen', role: 'scout' },
+        { id: 'char-stale', name: 'Director Voss', role: 'antagonist' },
+      ],
+      places: [
+        { id: 'place-active', name: 'Glass Harbor', description: 'a flooded observatory' },
+        { id: 'place-stale', name: 'Central Ministry', description: 'an old-draft headquarters' },
+      ],
+      objects: [
+        { id: 'obj-stale', name: 'Compliance Seal', description: 'an old-draft badge' },
+      ],
+    });
+    const s = await setupSeries({
+      universeId: world.id,
+      premise: 'Asha Reed and Fen trace the Glass Harbor signal.',
+      characterArcs: [{ characterId: 'char-active', characterName: 'Asha Reed', startState: 'alone', endState: 'trusting' }],
+    });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { logline: 'L', summary: 'S', themes: [], protagonistArc: 'A', seasonOutlines: [] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    await planner.generateArcOverview(s.id);
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.worldCanonText).toContain('Asha Reed');
+    expect(ctx.worldCanonText).toContain('Fen');
+    expect(ctx.worldCanonText).toContain('Glass Harbor');
+    expect(ctx.worldCanonText).not.toContain('Director Voss');
+    expect(ctx.worldCanonText).not.toContain('Central Ministry');
+    expect(ctx.worldCanonText).not.toContain('Compliance Seal');
   });
 
   it('renders an "(no linked world)" placeholder when the series has no universeId', async () => {
@@ -425,6 +466,56 @@ describe('arcPlanner — commitEpisodesToIssues', () => {
     expect(created).toHaveLength(1);
     expect(callCount).toBe(0);
   });
+
+  it('reuses an exact set of empty ungrouped placeholders when Autopilot requests it', async () => {
+    const s = await setupSeries();
+    const first = await issuesSvc.createIssue({
+      seriesId: s.id,
+      title: 'Placeholder A',
+      stages: {
+        idea: {
+          status: 'empty',
+          input: '',
+          output: '',
+          lastRunId: 'run-rejected',
+          runHistory: [{ runId: 'run-archived', createdAt: '2026-01-01T00:00:00.000Z', input: 'Old plan', output: '' }],
+        },
+      },
+    });
+    const second = await issuesSvc.createIssue({
+      seriesId: s.id,
+      title: 'Placeholder B',
+      stages: { comicPages: { status: 'ready', pages: [{ pageNumber: 1, panels: [] }] } },
+    });
+    const episodes = [
+      { number: 1, title: 'Opening', arcRole: 'pilot', logline: 'L1', synopsis: 'S1', lengthProfile: 'standard' },
+      { number: 2, title: 'Turn', arcRole: 'complication', logline: 'L2', synopsis: 'S2', lengthProfile: 'short' },
+    ];
+
+    const reused = await planner.commitEpisodesToIssues(s.id, 'sea-example', episodes, { reuseUngrouped: true });
+
+    expect(reused.map((issue) => issue.id)).toEqual([first.id, second.id]);
+    expect(reused.map((issue) => issue.title)).toEqual(['Opening', 'Turn']);
+    expect(reused.every((issue) => issue.seasonId === 'sea-example')).toBe(true);
+    expect(reused[0].stages.idea.lastRunId).toBeNull();
+    expect(reused[0].stages.idea.runHistory).toHaveLength(1);
+    expect(reused[0].stages.idea.runHistory[0].runId).toBe('run-archived');
+    expect(reused[1].stages.comicPages.pages).toHaveLength(1);
+    expect(await issuesSvc.listIssues({ seriesId: s.id })).toHaveLength(2);
+  });
+
+  it('refuses to duplicate or partially reuse placeholders when their count differs from the episode plan', async () => {
+    const s = await setupSeries();
+    const placeholder = await issuesSvc.createIssue({ seriesId: s.id, title: 'Placeholder' });
+    const episodes = [
+      { number: 1, title: 'One', logline: 'L1', synopsis: 'S1' },
+      { number: 2, title: 'Two', logline: 'L2', synopsis: 'S2' },
+    ];
+
+    await expect(planner.commitEpisodesToIssues(s.id, null, episodes, { reuseUngrouped: true }))
+      .rejects.toMatchObject({ code: planner.ERR_VALIDATION });
+    expect((await issuesSvc.listIssues({ seriesId: s.id })).map((issue) => issue.id)).toEqual([placeholder.id]);
+  });
 });
 
 describe('arcPlanner — verifyArc', () => {
@@ -465,6 +556,28 @@ describe('arcPlanner — verifyArc', () => {
     expect(out.issues).toEqual([
       { severity: 'medium', location: 'season:1', problem: 'one beat', suggestion: 'add another' },
     ]);
+  });
+
+  // The verify prompt's arc-role imbalance check (#6) can only see what this
+  // leaf renders. While `arcRole` was missing from it, a volume with a correct
+  // pilot and finale still reported "zero pilot/finale" on every pass — and
+  // because the foundation gate's structure arm reverts whenever verifyArc
+  // leaves any blocker, that permanent false positive stalled the gate.
+  it('renders each episode arcRole so the arc-role imbalance check can see it', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'S' } });
+    const sea = await seasonsSvc.createSeason(s.id, { title: 'V1' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 1', seasonId: sea.id, arcPosition: 1, arcRole: 'pilot' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 2', seasonId: sea.id, arcPosition: 2 });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 3', seasonId: sea.id, arcPosition: 3, arcRole: 'finale' });
+
+    stageRunnerSpy = vi.fn(async () => ({ content: { issues: [] }, runId: 'r1', providerId: 'p', model: 'm' }));
+    await planner.verifyArc(s.id);
+
+    const tree = JSON.parse(stageRunnerSpy.mock.calls[0][1].seasonsTreeJson);
+    // null (not absent) for the middle episode — "no role" has to be legible as
+    // a value, or the check can't tell an unset role from a dropped field.
+    expect(tree[0].episodes.map((e) => e.arcRole)).toEqual(['pilot', null, 'finale']);
   });
 
   it('drops malformed verify issues + defaults severity to medium', async () => {
@@ -727,6 +840,129 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     });
   });
 
+  it('applies exact long-text edits without accepting a wholesale synopsis rewrite', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: {
+        logline: 'old logline',
+        summary: 'Opening stays. The route opens before consent. Finale stays.',
+        protagonistArc: 'They begin afraid. They end accountable.',
+      },
+    });
+    const existingSeason = await seasonsSvc.createSeason(s.id, {
+      title: 'Season 1',
+      synopsis: 'Issue one stays. Ledger D opens before the vote. Issue three stays.',
+      endingHook: 'The old charter remains active.',
+      episodeCountTarget: 3,
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        arc: {
+          resolves: ['f1'],
+          summary: 'WHOLESALE ARC REWRITE MUST BE IGNORED',
+          summaryEdits: [{
+            find: 'The route opens before consent.',
+            replace: 'The route opens only after affected delegates consent.',
+          }],
+        },
+        seasons: [{
+          resolves: ['f1'],
+          id: existingSeason.id,
+          synopsis: 'WHOLESALE VOLUME REWRITE MUST BE IGNORED',
+          synopsisEdits: [{
+            find: 'Ledger D opens before the vote.',
+            replace: 'Ledger D remains dark until the vote passes.',
+          }],
+          endingHookEdits: [{
+            find: 'The old charter remains active.',
+            replace: 'The old charter lapses when the crossing begins.',
+          }],
+        }],
+        notes: '',
+      },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'The crossing precedes consent.', suggestion: 'Move consent first.' }],
+    });
+
+    expect(out.series.arc.summary).toBe(
+      'Opening stays. The route opens only after affected delegates consent. Finale stays.',
+    );
+    expect(out.series.arc.protagonistArc).toBe('They begin afraid. They end accountable.');
+    expect(out.series.seasons[0].synopsis).toBe(
+      'Issue one stays. Ledger D remains dark until the vote passes. Issue three stays.',
+    );
+    expect(out.series.seasons[0].endingHook).toBe(
+      'The old charter lapses when the crossing begins.',
+    );
+    const budgets = JSON.parse(stageRunnerSpy.mock.calls[0][1].textBudgetsJson);
+    expect(budgets.seasons[0].endingHook).toEqual({
+      current: 'The old charter remains active.'.length,
+      max: 1000,
+      remaining: 1000 - 'The old charter remains active.'.length,
+    });
+  });
+
+  it('rejects ambiguous, whole-field, and over-limit exact text edits', () => {
+    expect(planner.applyExactTextEdits(
+      'repeat here; repeat here',
+      [{ find: 'repeat here', replace: 'changed' }],
+      100,
+    )).toEqual({ value: 'repeat here; repeat here', applied: 0, rejected: 1 });
+
+    expect(planner.applyExactTextEdits(
+      'the complete field',
+      [{ find: 'the complete field', replace: 'wholesale replacement' }],
+      8000,
+    )).toEqual({ value: 'the complete field', applied: 0, rejected: 1 });
+
+    expect(planner.applyExactTextEdits(
+      'short anchor',
+      [{ find: 'anchor', replace: 'a replacement that exceeds the cap' }],
+      20,
+    )).toEqual({ value: 'short anchor', applied: 0, rejected: 1 });
+  });
+
+  it('reports an over-limit exact-only response as not applied', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const originalHook = `${'x'.repeat(980)} target`;
+    const season = await seasonsSvc.createSeason(s.id, {
+      number: 1,
+      title: 'Vol 1',
+      synopsis: 'The volume remains unchanged.',
+      endingHook: originalHook,
+      episodeCountTarget: 1,
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{
+          resolves: ['f1'],
+          id: season.id,
+          endingHookEdits: [{
+            find: 'target',
+            replace: 'a much longer replacement that cannot fit inside the field cap',
+          }],
+        }],
+      },
+      runId: 'r-over-limit', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'medium', problem: 'Fix the hook.', suggestion: 'Use the right legal state.' }],
+    });
+
+    expect(out.applied).toBe(false);
+    expect(out.rejectedExactEdits).toBe(1);
+    expect(out.series.seasons[0].endingHook).toBe(originalHook);
+  });
+
   it('re-runs verify when no findings are supplied and short-circuits on a clean arc', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
@@ -878,6 +1114,55 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.series.seasons[1].synopsis).toBe('v2 rewritten');
   });
 
+  it('applies sparse character-arc and transition patches without replacing IDs or sibling arcs', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'L' },
+      characterArcs: [
+        {
+          characterId: 'chr-lead', characterName: 'Lead', want: 'escape', need: 'trust',
+          startState: 'guarded', endState: 'open', status: 'verified',
+          transitions: [
+            { id: 'trn-choice', kind: 'decision', atIssue: 5, label: 'withholds consent', note: 'old note' },
+            { id: 'trn-sacrifice', kind: 'sacrifice', atIssue: 11, label: 'spends the reserve', note: '' },
+          ],
+        },
+        {
+          characterId: 'chr-sibling', characterName: 'Sibling', want: 'belong', need: 'choose',
+          startState: 'adrift', endState: 'committed', transitions: [],
+        },
+      ],
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        characterArcs: [{
+          resolves: ['f1'],
+          characterId: 'chr-lead',
+          transitions: [{ id: 'trn-sacrifice', atIssue: 12, label: 'freely authorizes the final opening' }],
+        }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'The sacrifice is assigned to issue 11.', suggestion: 'Move it to 12.' }],
+      spineOnly: true,
+    });
+
+    expect(out.series.characterArcs).toHaveLength(2);
+    const [lead, sibling] = out.series.characterArcs;
+    expect(lead).toMatchObject({ characterId: 'chr-lead', want: 'escape', need: 'trust', status: 'verified' });
+    expect(lead.transitions).toEqual([
+      expect.objectContaining({ id: 'trn-choice', atIssue: 5, label: 'withholds consent', note: 'old note' }),
+      expect.objectContaining({ id: 'trn-sacrifice', atIssue: 12, label: 'freely authorizes the final opening', kind: 'sacrifice' }),
+    ]);
+    expect(sibling).toMatchObject({ characterId: 'chr-sibling', startState: 'adrift', endState: 'committed' });
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(JSON.parse(ctx.characterArcsJson)[0].transitions[1].id).toBe('trn-sacrifice');
+  });
+
   it('drops arc / volume / episode edits that name no input finding', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'original summary' } });
@@ -957,6 +1242,63 @@ describe('arcPlanner — resolveVerifyIssues', () => {
 
     const { findingsJson } = stageRunnerSpy.mock.calls[0][1];
     expect(JSON.parse(findingsJson).map((f) => f.findingId)).toEqual(['f1', 'f2']);
+  });
+
+  it('leaves the avoid section out of a first-attempt resolve', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { resolves: ['f1'], logline: 'L2', summary: 'S' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'first defect', suggestion: '' }],
+    });
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    // False, not "an empty array" — the prompt section is gated on this flag, so
+    // a first attempt must render no avoid block rather than an empty one the
+    // model has to decide to ignore.
+    expect(ctx.hasAvoid).toBe(false);
+    expect(JSON.parse(ctx.avoidJson)).toEqual([]);
+  });
+
+  it('renders a corrective pass\'s avoid list separately from the findings to close', async () => {
+    // The autopilot's arc-verify gate reverts a resolve round that grew the
+    // blocking count, then re-runs the resolver from the restored state with the
+    // rejected attempt's findings as `avoid`. Those problems are NOT in the plan
+    // any more, so they must never leak into `findingsJson` — asking the
+    // resolver to close a problem the plan doesn't have is how a corrective pass
+    // authors a fresh contradiction.
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { resolves: ['f1'], logline: 'L2', summary: 'S' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'first defect', suggestion: 'fix it' }],
+      avoid: [
+        { severity: 'high', problem: 'the reverted rewrite dropped the mentor payoff', suggestion: '' },
+        { problem: 'and split volume 2 in half', location: 'V2' },
+      ],
+    });
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.hasAvoid).toBe(true);
+    const avoid = JSON.parse(ctx.avoidJson);
+    expect(avoid.map((f) => f.problem)).toEqual([
+      'the reverted rewrite dropped the mentor payoff',
+      'and split volume 2 in half',
+    ]);
+    // Normalized through the same shaper as the findings — a severity-less entry
+    // gets the default rather than riding through as undefined.
+    expect(avoid[1]).toMatchObject({ severity: 'medium', location: 'V2' });
+    // The avoid entries carry no findingId and never appear as work to close.
+    expect(ctx.avoidJson).not.toMatch(/findingId/);
+    expect(JSON.parse(ctx.findingsJson).map((f) => f.problem)).toEqual(['first defect']);
   });
 
   it('preserves series.arc.readerMap when the resolve LLM does not author one', async () => {
@@ -1046,6 +1388,72 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.episodesResolved[0]).toMatchObject({ issueId: issue.id, number: fresh.number, clearedBeats: false });
     const updated = await issuesSvc.getIssue(issue.id);
     expect(updated.stages.idea.input).toBe('corrected — the Atrium is NOT convened here');
+    // The entry doubles as the rollback's mutation manifest: it reports the
+    // value this call actually left standing.
+    expect(planner.resolvedEpisodeEdits(out)).toEqual([
+      { issueId: issue.id, idea: { input: updated.stages.idea.input, output: '', status: updated.stages.idea.status } },
+    ]);
+  });
+
+  // The pre-episode arc-spine gate verifies an episode-EMPTY plan (#3789). A
+  // resolver handed the full lineup answered spine findings with episode
+  // rewrites the gate never read: they could not close what was flagged, and
+  // the round got reverted for doubling the blocker count. Both halves of the
+  // loop have to see the same plan.
+  it('renders the resolve prompt with empty episode arrays in spineOnly mode', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const season = await seasonsSvc.createSeason(s.id, { title: 'Vol 1', episodeCountTarget: 1 });
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, seasonId: season.id, title: 'Ep' });
+    await issuesSvc.updateStage(issue.id, 'idea', { input: 'seeded episode synopsis', status: 'empty' });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { arc: { logline: 'L2', summary: 'S', themes: [], protagonistArc: '' }, seasons: [], notes: '' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, {
+      spineOnly: true,
+      findings: [{ severity: 'high', problem: 'spine problem', suggestion: 'fix the arc' }],
+    });
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.arcSpineOnly).toBe(true);
+    expect(JSON.parse(ctx.seasonsTreeJson)[0].episodes).toEqual([]);
+    expect(ctx.seasonsTreeJson).not.toContain('seeded episode synopsis');
+  });
+
+  it('discards episode edits in spineOnly mode and leaves the planned synopses untouched', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const season = await seasonsSvc.createSeason(s.id, { title: 'Vol 1', episodeCountTarget: 1 });
+    const issue = await issuesSvc.createIssue({ seriesId: s.id, seasonId: season.id, title: 'Ep' });
+    await issuesSvc.updateStage(issue.id, 'idea', { input: 'original episode synopsis', status: 'empty' });
+    const fresh = await issuesSvc.getIssue(issue.id);
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { resolves: ['f1'], logline: 'L2', summary: 'S', themes: [], protagonistArc: '' },
+        seasons: [],
+        // A stale/customized installed prompt can still return these — the
+        // server drops them rather than trusting the template alone.
+        episodes: [{ resolves: ['f1'], seasonNumber: season.number, episodeNumber: fresh.number, synopsis: 'out-of-scope rewrite' }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      spineOnly: true,
+      findings: [{ severity: 'high', problem: 'spine problem', suggestion: 'fix the arc' }],
+    });
+
+    // The arc/volume half of the patch still lands — this scopes the round, it
+    // does not disable it.
+    expect(out.series.arc.logline).toBe('L2');
+    expect(out.episodesResolved).toEqual([]);
+    const untouched = await issuesSvc.getIssue(issue.id);
+    expect(untouched.stages.idea.input).toBe('original episode synopsis');
   });
 
   it('clears stale beats when correcting an episode that was already expanded', async () => {
@@ -1142,6 +1550,291 @@ describe('arcPlanner — resolveVerifyIssues', () => {
   });
 });
 
+// The arc gate's per-finding fallback (#3780) sends ONE finding, but that alone
+// never bounded the EDIT: every entry in a single-finding response trivially
+// names that finding, so `selectFindingKeyedEdits` passed whole-arc rewrites and
+// each "isolated" attempt regressed the blocker set exactly like the whole-set
+// pass it escalated from. `isolated` mode requires the response to BE one causal
+// patch and discards it before persistence otherwise.
+describe('arcPlanner — resolveVerifyIssues (isolated single-finding repairs)', () => {
+  const finding = [{ severity: 'high', location: 'volume 1', problem: 'volume 1 promises a payoff it never lands', suggestion: 'name the payoff' }];
+
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  async function setupTwoVolumeSeries() {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'L', summary: 'The choir wakes. The city answers.', themes: ['legacy'], protagonistArc: 'From surveyor to founder.' },
+    });
+    const v1 = await seasonsSvc.createSeason(s.id, { title: 'Vol 1', episodeCountTarget: 8, synopsis: 'The foundry falls silent. Nobody says why.' });
+    const v2 = await seasonsSvc.createSeason(s.id, { title: 'Vol 2', episodeCountTarget: 8, synopsis: 'The diaspora scatters. A signal follows them.' });
+    return { s, v1, v2 };
+  }
+
+  it('discards an isolated candidate that edits more than one record, persisting nothing', async () => {
+    const { s, v1, v2 } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        arc: { resolves: ['f1'], summaryEdits: [{ find: 'The city answers.', replace: 'The city answers in kind.' }] },
+        seasons: [
+          { resolves: ['f1'], id: v1.id, number: v1.number, title: 'Vol 1', synopsisEdits: [{ find: 'Nobody says why.', replace: 'Nobody says why until the ledger surfaces.' }] },
+          { resolves: ['f1'], id: v2.id, number: v2.number, title: 'Vol 2', synopsisEdits: [{ find: 'A signal follows them.', replace: 'A signal follows them home.' }] },
+        ],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, { findings: finding, isolated: true });
+
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/edits 3 records/);
+    // Nothing reached the store — the gate has no rewrite to roll back and no
+    // reason to spend a verification round discovering that.
+    const after = await seriesSvc.getSeries(s.id);
+    expect(after.arc.summary).toBe('The choir wakes. The city answers.');
+    expect(after.seasons.map((v) => v.synopsis)).toEqual([
+      'The foundry falls silent. Nobody says why.',
+      'The diaspora scatters. A signal follows them.',
+    ]);
+  });
+
+  it('discards an isolated candidate that changes two fields on one record', async () => {
+    const { s, v1 } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{
+          resolves: ['f1'],
+          id: v1.id,
+          number: v1.number,
+          title: 'Vol 1',
+          logline: 'a brand new logline',
+          synopsisEdits: [{ find: 'Nobody says why.', replace: 'Nobody says why until the ledger surfaces.' }],
+        }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, { findings: finding, isolated: true });
+
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/changes 2 fields on volume 1/);
+    const after = await seriesSvc.getSeries(s.id);
+    expect(after.seasons[0].synopsis).toBe('The foundry falls silent. Nobody says why.');
+    expect(after.seasons[0].logline).toBe('');
+  });
+
+  it('discards an isolated candidate that would add a volume', async () => {
+    const { s } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{ resolves: ['f1'], number: 3, title: 'Vol 3', synopsis: 'The payoff gets its own volume.' }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, { findings: finding, isolated: true });
+
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/add a new volume/);
+    expect((await seriesSvc.getSeries(s.id)).seasons).toHaveLength(2);
+  });
+
+  it('keeps a one-patch candidate, ignoring echoed identity fields that change nothing', async () => {
+    const { s, v1 } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{
+          // id / number / title / episodeCountTarget are echoed exactly as
+          // stored — the prompt asks for them, so "present" must not read as
+          // "changed" or every real one-patch response would be discarded.
+          resolves: ['f1'],
+          id: v1.id,
+          number: v1.number,
+          title: 'Vol 1',
+          episodeCountTarget: 8,
+          synopsisEdits: [{ find: 'Nobody says why.', replace: 'Nobody says why until the ledger surfaces.' }],
+        }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, { findings: finding, isolated: true });
+
+    expect(out.applied).toBe(true);
+    expect(out.reason).toBeUndefined();
+    const after = await seriesSvc.getSeries(s.id);
+    expect(after.seasons[0].synopsis).toBe('The foundry falls silent. Nobody says why until the ledger surfaces.');
+    expect(after.seasons[1].synopsis).toBe('The diaspora scatters. A signal follows them.');
+  });
+
+  it('discards a candidate that only echoes stored values back', async () => {
+    const { s, v1 } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{ resolves: ['f1'], id: v1.id, number: v1.number, title: 'Vol 1', episodeCountTarget: 8 }],
+        notes: 'nothing to change here',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, { findings: finding, isolated: true });
+
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/changed nothing/);
+    expect(out.notes).toBe('nothing to change here');
+  });
+
+  it('tells the prompt it is an isolated repair, and does not on a whole-set pass', async () => {
+    const { s, v1 } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{ resolves: ['f1'], id: v1.id, synopsisEdits: [{ find: 'Nobody says why.', replace: 'Nobody says why yet.' }] }],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    await planner.resolveVerifyIssues(s.id, { findings: finding, isolated: true });
+    expect(stageRunnerSpy.mock.calls[0][1].isolatedRepair).toBe(true);
+
+    await planner.resolveVerifyIssues(s.id, { findings: finding });
+    expect(stageRunnerSpy.mock.calls[1][1].isolatedRepair).toBe(false);
+  });
+
+  // The constrained mode is the bounded FALLBACK only: coordinated cross-record
+  // repairs stay available to the whole-set and corrective passes, which is
+  // where a genuine multi-record continuity finding gets fixed.
+  it('leaves the whole-set pass free to edit several records', async () => {
+    const { s, v1, v2 } = await setupTwoVolumeSeries();
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        arc: { resolves: ['f1'], summaryEdits: [{ find: 'The city answers.', replace: 'The city answers in kind.' }] },
+        seasons: [
+          { resolves: ['f1'], id: v1.id, synopsisEdits: [{ find: 'Nobody says why.', replace: 'Nobody says why until the ledger surfaces.' }] },
+          { resolves: ['f1'], id: v2.id, synopsisEdits: [{ find: 'A signal follows them.', replace: 'A signal follows them home.' }] },
+        ],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, { findings: finding });
+
+    expect(out.applied).toBe(true);
+    const after = await seriesSvc.getSeries(s.id);
+    expect(after.arc.summary).toBe('The choir wakes. The city answers in kind.');
+    expect(after.seasons[0].synopsis).toContain('until the ledger surfaces');
+    expect(after.seasons[1].synopsis).toContain('follows them home');
+  });
+});
+
+describe('isolatedCandidateRejection (pure one-patch bound)', () => {
+  const series = {
+    arc: { logline: 'L', summary: 'One. Two.', themes: ['a'], protagonistArc: 'P' },
+    seasons: [{ id: 'sea-1', number: 1, title: 'Vol 1', synopsis: 'Alpha. Beta.', endingHook: 'hook', episodeCountTarget: 8, themes: [] }],
+    characterArcs: [{
+      characterId: 'chr-11111111-1111-4111-8111-111111111111',
+      characterName: 'Wren',
+      want: 'the ledger',
+      need: 'to be believed',
+      startState: 'alone',
+      endState: 'trusted',
+            transitions: [{ id: 'trn-1', kind: 'decision', label: 'burns the ledger', atIssue: 4, atSceneAnchor: '', note: '' }],
+    }],
+  };
+  // Only the four edit lists — the checker reads the selected edits, never the
+  // drop counters `selectFindingKeyedEdits` reports alongside them.
+  const noEdits = { arc: null, characterArcs: [], seasons: [], episodes: [] };
+  const rejection = (edits, exactTextMode = true) => planner.isolatedCandidateRejection(
+    { ...noEdits, ...edits },
+    { exactTextMode, series },
+  );
+
+  it('accepts one exact-text replacement on one volume', () => {
+    expect(rejection({ seasons: [{ id: 'sea-1', synopsisEdits: [{ find: 'Beta.', replace: 'Beta rewritten.' }] }] })).toBeNull();
+  });
+
+  it('accepts one short scalar change', () => {
+    expect(rejection({ seasons: [{ id: 'sea-1', episodeCountTarget: 9 }] })).toBeNull();
+  });
+
+  it('accepts one existing character-transition patch, however many of its fields move', () => {
+    expect(rejection({
+      characterArcs: [{
+        characterId: 'chr-11111111-1111-4111-8111-111111111111',
+        transitions: [{ id: 'trn-1', label: 'spares the ledger', atIssue: 5 }],
+      }],
+    })).toBeNull();
+  });
+
+  it('rejects two replacements even inside one field', () => {
+    expect(rejection({
+      seasons: [{ id: 'sea-1', synopsisEdits: [{ find: 'Alpha.', replace: 'Alpha!' }, { find: 'Beta.', replace: 'Beta!' }] }],
+    })).toMatch(/changes 2 fields/);
+  });
+
+  it('does not count the long-prose spelling the applier ignores', () => {
+    // Under exact-text mode a directly-returned `synopsis` is never persisted,
+    // so counting it would reject a candidate over an edit that was a no-op.
+    expect(rejection({
+      seasons: [{ id: 'sea-1', synopsis: 'wholesale rewrite', synopsisEdits: [{ find: 'Beta.', replace: 'Beta rewritten.' }] }],
+    })).toBeNull();
+    // Outside exact-text mode the same field IS the change.
+    expect(rejection({ seasons: [{ id: 'sea-1', synopsis: 'wholesale rewrite' }] }, false)).toBeNull();
+  });
+
+  it('counts what the exact-text applier would land, not what was asked for', () => {
+    // A replacement whose anchor isn't in the stored text is skipped by
+    // applyExactTextEdits, so it changes nothing — counting it would discard a
+    // candidate whose persisted effect was exactly one change.
+    expect(rejection({
+      seasons: [{
+        id: 'sea-1',
+        synopsisEdits: [
+          { find: 'Beta.', replace: 'Beta rewritten.' },
+          { find: 'text that is not in the synopsis', replace: 'never lands' },
+        ],
+      }],
+    })).toBeNull();
+    // …and a candidate whose every replacement is unanchored lands nothing at all.
+    expect(rejection({
+      seasons: [{ id: 'sea-1', synopsisEdits: [{ find: 'not present either', replace: 'x' }] }],
+    })).toMatch(/changed nothing/);
+  });
+
+  it('does not count edits the appliers would discard anyway', () => {
+    expect(rejection({
+      characterArcs: [
+        { characterName: 'Nobody', want: 'invented' }, // unmatched arc — never minted
+        {
+          characterId: 'chr-11111111-1111-4111-8111-111111111111',
+          transitions: [
+            { label: 'no id, dropped by the merge' },
+            { id: 'trn-missing', label: 'unmatched id, dropped by the merge' },
+            { id: 'trn-1', label: 'burns the ledger' }, // identical to stored
+          ],
+          want: 'the ledger archive',
+        },
+      ],
+    })).toBeNull();
+  });
+});
+
 describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
   const findings = [{ problem: 'a' }, { problem: 'b' }];
   const select = (content) => planner.selectFindingKeyedEdits(content, findings);
@@ -1149,12 +1842,15 @@ describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
   it('keeps edits naming an input finding and drops the rest', () => {
     const out = select({
       arc: { resolves: ['f2'], logline: 'x' },
+      characterArcs: [{ resolves: ['f2'], characterId: 'chr-a' }, { resolves: ['f8'], characterId: 'chr-b' }],
       seasons: [{ resolves: ['f1'] }, { resolves: ['f7'] }, { resolves: [] }],
       episodes: [{ resolves: ['f1'] }, {}],
     });
     expect(out.legacy).toBe(false);
     expect(out.arc?.logline).toBe('x');
     expect(out.arcDropped).toBe(false);
+    expect(out.characterArcs).toHaveLength(1);
+    expect(out.characterArcsDropped).toBe(1);
     expect(out.seasons).toHaveLength(1);
     expect(out.seasonsDropped).toBe(2);
     expect(out.episodes).toHaveLength(1);
@@ -1183,8 +1879,33 @@ describe('selectFindingKeyedEdits (pure resolve-edit filter, #3724)', () => {
       .toMatchObject({ legacy: false, seasonsDropped: 1 });
   });
 
+  // #3789 — a spine round's findings were produced against an episode-empty
+  // plan, so every episode edit is out of scope no matter which finding it
+  // names. Counted apart from `episodesDropped` (a different diagnosis) and
+  // applied even to a legacy unkeyed response, which is the one an install with
+  // a pre-#3789 prompt will send.
+  it('drops every episode edit in spineOnly mode, keyed or not', () => {
+    const spine = (content) => planner.selectFindingKeyedEdits(content, findings, { spineOnly: true });
+    const keyed = spine({
+      arc: { resolves: ['f1'], logline: 'x' },
+      seasons: [{ resolves: ['f1'] }],
+      episodes: [{ resolves: ['f1'] }, { resolves: ['f2'] }],
+    });
+    expect(keyed.arc?.logline).toBe('x');
+    expect(keyed.seasons).toHaveLength(1);
+    expect(keyed.episodes).toEqual([]);
+    expect(keyed.episodesOutOfScope).toBe(2);
+    expect(keyed.episodesDropped).toBe(0);
+    expect(spine({ episodes: [{ synopsis: 'y' }] }))
+      .toMatchObject({ legacy: true, episodes: [], episodesOutOfScope: 1 });
+    // Full-arc rounds are untouched — episode corrections are how an
+    // episode-scoped finding converges there.
+    expect(select({ episodes: [{ resolves: ['f1'] }] }))
+      .toMatchObject({ episodesOutOfScope: 0 });
+  });
+
   it('tolerates a missing/garbage response', () => {
-    expect(select(null)).toMatchObject({ legacy: true, arc: null, seasons: [], episodes: [] });
+    expect(select(null)).toMatchObject({ legacy: true, arc: null, characterArcs: [], seasons: [], episodes: [] });
     expect(select({ arc: 'not an object', seasons: 'nope', episodes: [null, 3] }))
       .toMatchObject({ arc: null, seasons: [], episodes: [] });
   });
@@ -1201,7 +1922,14 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
   // and an episode under each carrying a planning synopsis.
   async function seedArc() {
     const s = await setupSeries();
-    await seriesSvc.updateSeries(s.id, { arc: { logline: 'original logline', summary: 'original summary' } });
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'original logline', summary: 'original summary' },
+      characterArcs: [{
+        characterId: 'chr-lead', characterName: 'Lead', want: 'escape', need: 'trust',
+        startState: 'guarded', endState: 'open',
+        transitions: [{ id: 'trn-sacrifice', kind: 'sacrifice', atIssue: 12, label: 'chooses the crew' }],
+      }],
+    });
     const v1 = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'v1 synopsis', episodeCountTarget: 2 });
     const v2 = await seasonsSvc.createSeason(s.id, { title: 'Volume 2', synopsis: 'v2 synopsis', episodeCountTarget: 2 });
     const e1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Ep 1' });
@@ -1222,6 +1950,11 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
     const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
     await seriesSvc.updateSeries(s.id, {
       arc: { logline: 'rewritten logline', summary: 'rewritten summary' },
+      characterArcs: [{
+        characterId: 'chr-lead', characterName: 'Lead', want: 'escape', need: 'control',
+        startState: 'guarded', endState: 'alone',
+        transitions: [{ id: 'trn-sacrifice', kind: 'sacrifice', atIssue: 11, label: 'wrong milestone' }],
+      }],
       seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
     });
     await issuesSvc.updateIssue(e2.id, { seasonId: minted.id });
@@ -1232,12 +1965,82 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
 
     const series = await seriesSvc.getSeries(s.id);
     expect(series.arc.logline).toBe('original logline');
+    expect(series.characterArcs[0]).toMatchObject({ need: 'trust', endState: 'open' });
+    expect(series.characterArcs[0].transitions[0]).toMatchObject({ id: 'trn-sacrifice', atIssue: 12, label: 'chooses the crew' });
     expect(series.seasons.map((x) => x.id)).toEqual([v1.id, v2.id]);
     expect(series.seasons[0].synopsis).toBe('v1 synopsis');
     // The minted volume is gone, so the episode it took has to come back with
     // it — otherwise the rollback strands it in the ungrouped bucket.
     expect((await issuesSvc.getIssue(e2.id)).seasonId).toBe(v2.id);
     expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('e1 planning synopsis');
+  });
+
+  // The rollback used to treat ANY difference from the snapshot as the round's
+  // own work — see `createArcMutationLedger` for the run that exposed it.
+  describe('restores only the episodes the resolve round is on record as writing', () => {
+    // The damage every case below shares: a rewritten arc, a minted volume that
+    // took an episode off its own, and a synopsis rewrite on e1.
+    // Bound once so the manifest provably reports the value that was written.
+    const WROTE = { input: 'resolver rewrote e1', output: '', status: 'empty' };
+
+    async function regressiveRound({ s, v1, v2, e1 }) {
+      const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
+      await seriesSvc.updateSeries(s.id, {
+        arc: { logline: 'rewritten logline', summary: 'rewritten summary' },
+        seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
+      });
+      await issuesSvc.updateIssue(e1.id, { seasonId: minted.id });
+      await issuesSvc.updateStage(e1.id, 'idea', { ...WROTE });
+      return { e1Edit: { issueId: e1.id, idea: { ...WROTE } } };
+    }
+
+    it('reverts its own episode write and the volume it drove, and keeps an unrelated one', async () => {
+      const seed = await seedArc();
+      const { s, v2, e1, e2 } = seed;
+      const snapshot = await planner.snapshotArcState(s.id);
+      const { e1Edit } = await regressiveRound(seed);
+      // Lands between the snapshot and the rollback, from outside this round.
+      await issuesSvc.updateStage(e2.id, 'idea', { input: 'edited elsewhere mid-verify' });
+
+      const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [e1Edit] });
+      expect(result).toMatchObject({ restored: true, episodesRestored: 1, reassignedIssueCount: 1 });
+
+      const series = await seriesSvc.getSeries(s.id);
+      expect(series.arc.logline).toBe('original logline');
+      expect(series.seasons[0].synopsis).toBe('v1 synopsis');
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('e1 planning synopsis');
+      // The minted volume is gone, so its episode still has to come back with it.
+      expect((await issuesSvc.getIssue(e1.id)).seasonId).toBe(seed.v1.id);
+      expect((await issuesSvc.getIssue(e2.id)).stages.idea.input).toBe('edited elsewhere mid-verify');
+      expect((await issuesSvc.getIssue(e2.id)).seasonId).toBe(v2.id);
+    });
+
+    it('leaves an episode it wrote alone once a later write lands on top of it', async () => {
+      const seed = await seedArc();
+      const { s, e1 } = seed;
+      const snapshot = await planner.snapshotArcState(s.id);
+      const { e1Edit } = await regressiveRound(seed);
+      await issuesSvc.updateStage(e1.id, 'idea', { input: 'a human kept editing after the resolver' });
+
+      const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [e1Edit] });
+      expect(result).toMatchObject({ restored: true, episodesRestored: 0 });
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('a human kept editing after the resolver');
+      // The arc-level revert still happens — only the episode is off limits.
+      expect((await seriesSvc.getSeries(s.id)).arc.logline).toBe('original logline');
+    });
+
+    it('restores no synopsis at all for an arc-spine round (empty manifest)', async () => {
+      const seed = await seedArc();
+      const { s, e1 } = seed;
+      const snapshot = await planner.snapshotArcState(s.id);
+      await regressiveRound(seed);
+
+      const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [] });
+      expect(result).toMatchObject({ restored: true, episodesRestored: 0, reassignedIssueCount: 1 });
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe(WROTE.input);
+      expect((await seriesSvc.getSeries(s.id)).seasons.map((x) => x.id)).toEqual([seed.v1.id, seed.v2.id]);
+      expect((await issuesSvc.getIssue(e1.id)).seasonId).toBe(seed.v1.id);
+    });
   });
 
   it('leaves a locked idea stage alone (the resolve pass never touched it)', async () => {
@@ -1262,8 +2065,15 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
   it('snapshots by value — a later write cannot mutate what was captured', async () => {
     const { s } = await seedArc();
     const snapshot = await planner.snapshotArcState(s.id);
-    await seriesSvc.updateSeries(s.id, { arc: { logline: 'mutated', summary: 'mutated' } });
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'mutated', summary: 'mutated' },
+      characterArcs: [{
+        characterId: 'chr-lead', characterName: 'Lead', want: 'mutated', need: 'mutated',
+        startState: 'mutated', endState: 'mutated', transitions: [],
+      }],
+    });
     expect(snapshot.arc.logline).toBe('original logline');
+    expect(snapshot.characterArcs[0].want).toBe('escape');
   });
 });
 
@@ -1291,6 +2101,25 @@ describe('arcPlanner — shapeEpisodeResolutions', () => {
   it('caps at RESOLVE_EPISODE_MAX entries', () => {
     const many = Array.from({ length: 60 }, (_, i) => ({ episodeNumber: i + 1, synopsis: `s${i}` }));
     expect(planner.shapeEpisodeResolutions(many)).toHaveLength(50);
+  });
+});
+
+describe('arcPlanner — resolvedEpisodeEdits (rollback mutation manifest)', () => {
+  it('carries only the writes that landed, with the value they left', () => {
+    expect(planner.resolvedEpisodeEdits({
+      episodesResolved: [
+        { issueId: 'iss-1', number: 1, idea: { input: 'rewritten', output: '', status: 'empty' } },
+        { issueId: 'iss-2', number: 2, skipped: 'locked' },
+        { issueId: 'iss-3', number: 3, skipped: 'write-failed' },
+        { seasonNumber: 2, episodeNumber: 9, skipped: 'no-match' },
+      ],
+    })).toEqual([{ issueId: 'iss-1', idea: { input: 'rewritten', output: '', status: 'empty' } }]);
+  });
+
+  it('is empty for a round that reported nothing — including an arc-spine one', () => {
+    expect(planner.resolvedEpisodeEdits({ applied: true, episodesResolved: [] })).toEqual([]);
+    expect(planner.resolvedEpisodeEdits({ applied: false })).toEqual([]);
+    expect(planner.resolvedEpisodeEdits(null)).toEqual([]);
   });
 });
 

@@ -431,7 +431,10 @@ export const resolveCliEffort = (effort, provider, model = null) => {
  */
 export const isEmbeddingModel = (id) =>
   typeof id === 'string' && id.length > 0 &&
-  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding/i.test(id);
+  // Mirror of EMBEDDING_RE in server/lib/localModelHeuristics.js — keep in lockstep.
+  // `embeddinggemma` needs its own alternative: the anchored `embedding` marker
+  // requires a separator after it, and that id glues the family straight on.
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma/i.test(id);
 
 /**
  * Vision-capable (multimodal) model detector — mirror of `isVisionModel` in
@@ -446,7 +449,7 @@ export const isEmbeddingModel = (id) =>
 export const isVisionModel = (id) =>
   typeof id === 'string' && id.length > 0 &&
   // Mirror of VISION_RE in server/lib/localModelHeuristics.js — keep in lockstep.
-  /(?:^|[-_/:])vision(?:[-_/:.]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|llava|bakllava|moondream|minicpm-?v|pixtral|gemma-?3|smolvlm|internvl|cogvlm|glm-?4v|phi-?3\.5?-vision|phi-?4-multimodal|got-ocr|idefics|fuyu|paligemma|kosmos|nanollava/i.test(id);
+  /(?:^|[-_/:])vision(?:[-_/:.]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|(?:^|[-_/:])gemma-?[34]|llava|bakllava|moondream|minicpm-?v|pixtral|smolvlm|internvl|cogvlm|glm-?4v|phi-?3\.5?-vision|phi-?4-multimodal|got-ocr|idefics|fuyu|paligemma|kosmos|nanollava/i.test(id);
 
 /**
  * Tool-use (function-calling) capable model detector — mirror of `isToolUseModel`
@@ -462,7 +465,7 @@ export const isVisionModel = (id) =>
 export const isToolUseModel = (id) =>
   typeof id === 'string' && id.length > 0 &&
   // Mirror of TOOL_USE_RE in server/lib/localModelHeuristics.js — keep in lockstep.
-  /qwen|llama-?3\.[1-9]|llama-?4|mistral|mixtral|ministral|codestral|devstral|magistral|command-?r|command-?a|firefunction|functionary|watt-tool|hermes|glm-?4|granite-?3|gpt-oss|nemotron|smollm2|deepseek-v3|deepseek-r1/i.test(id);
+  /qwen|llama-?3\.[1-9]|llama-?4|mistral|mixtral|ministral|codestral|devstral|magistral|command-?r|command-?a|north-mini-code|firefunction|functionary|watt-tool|hermes|functiongemma|glm-?4|granite-?[34]|(?:^|[-_/:])gemma-?4|gpt-oss|nemotron|olmo-?3|lfm2|ornith|muse-glimmer|nex-n2|smollm2|deepseek-v3|deepseek-r1|deepseek-v4/i.test(id);
 
 /**
  * Per-model filter for a CODING / tool-use picker: restrict LOCAL backends

@@ -31,7 +31,7 @@ import { getActiveProvider, getProviderById, getAllProviders } from '../services
 import { executeTuiRun } from './tuiPromptRunner.js';
 import { ServerError } from './errorHandler.js';
 import { PROVIDER_TYPES } from './aiToolkit/constants.js';
-import { analyzeError, ERROR_CATEGORIES } from './aiToolkit/errorDetection.js';
+import { analyzeError, ERROR_CATEGORIES, isRunCanceledError } from './aiToolkit/errorDetection.js';
 import { isSchemaTypeCategory, resolveProviderBench } from './providerCooldown.js';
 import { isGenerationModel } from './localModelHeuristics.js';
 import { getAIToolkitInstance } from './aiToolkitState.js';
@@ -496,6 +496,11 @@ export function assertVisionRunUsedImages(result, requestedProvider) {
  *   `text` value — callers receive the full buffered text either way.
  *   For TUI providers the stripped chunks are emitted; the final `text`
  *   is the cleaned response with the prompt-echo elided.
+ * @param {(runId:string)=>void} [args.onRunCreated] — called immediately after
+ *   each concrete primary/correction/fallback run id is known. Observational;
+ *   callback errors are logged and ignored.
+ * @param {(runId:string)=>void} [args.onRunSettled] — called when that concrete
+ *   attempt resolves or rejects. Observational; callback errors are ignored.
  * @param {string[]} [args.screenshots] — image paths for a vision/multimodal
  *   call (relative to the runner's screenshots dir, or absolute). API providers
  *   only: the toolkit's executeApiRun base64-encodes each and sends them as
@@ -610,7 +615,7 @@ export async function runPromptThroughProvider(args) {
   // An explicit Stop or host shutdown is a lifecycle outcome, not a failed AI
   // attempt. Do not enter any correction/fallback tier, mark the provider
   // unavailable, or escalate an investigation task.
-  if (firstError?.canceled || firstError?.code === 'RUN_CANCELED') {
+  if (isRunCanceledError(firstError)) {
     throw stripFallbackContext(firstError);
   }
 
@@ -1088,7 +1093,20 @@ function stripFallbackContext(err) {
  * swapped to a fallback when the requested provider was already marked
  * unavailable).
  */
-async function executeProviderRunOnce({ provider, prompt, source, model, effort = null, runId: callerRunId, onData: onDataCallback, timeout: timeoutOverride, cwd: cwdOverride, screenshots = [] }) {
+async function executeProviderRunOnce({
+  provider,
+  prompt,
+  source,
+  model,
+  effort = null,
+  runId: callerRunId,
+  onData: onDataCallback,
+  onRunCreated,
+  onRunSettled,
+  timeout: timeoutOverride,
+  cwd: cwdOverride,
+  screenshots = [],
+}) {
   // Resolve the model that'll actually run BEFORE creating the run record
   // so the record reflects reality. resolveEffectiveModel handles both
   // the override-honored fallback chain AND the args-baked-CLI case
@@ -1122,6 +1140,7 @@ async function executeProviderRunOnce({ provider, prompt, source, model, effort 
       prompt,
       source,
       workspacePath: effectiveCwd,
+      effort,
     });
     runId = runResult.runId;
     if (runResult.provider && runResult.provider.id !== provider.id) {
@@ -1144,6 +1163,16 @@ async function executeProviderRunOnce({ provider, prompt, source, model, effort 
         providerId: effectiveProvider.id,
         providerName: effectiveProvider.name,
       }).catch(() => { /* best-effort; metadata patch is not load-bearing */ });
+    }
+  }
+
+  // Lifecycle hooks let a parent orchestrator expose and stop the concrete
+  // provider run that is active inside a larger workflow. They fire for the
+  // caller-supplied primary run AND for every fresh correction/fallback run.
+  // Hook failures are observational only and must not break provider work.
+  if (typeof onRunCreated === 'function') {
+    try { onRunCreated(runId); } catch (err) {
+      console.error(`❌ run lifecycle start hook failed: ${err.message}`);
     }
   }
 
@@ -1278,5 +1307,10 @@ async function executeProviderRunOnce({ provider, prompt, source, model, effort 
     } else {
       safeReject(new Error(`Unsupported provider type: ${effectiveProvider.type}`));
     }
-  }));
+  })).finally(() => {
+    if (typeof onRunSettled !== 'function') return;
+    try { onRunSettled(runId); } catch (err) {
+      console.error(`❌ run lifecycle settle hook failed: ${err.message}`);
+    }
+  });
 }

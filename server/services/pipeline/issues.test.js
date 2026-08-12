@@ -276,6 +276,21 @@ describe('pipeline issues service', () => {
       expect(fresh.stages.idea.runHistory[0].createdAt).toBeTruthy();
     });
 
+    it('snapshots an input-only episode synopsis before replacement', async () => {
+      const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Pilot' });
+      await svc.updateStage(i.id, 'idea', {
+        status: 'edited', input: 'Authored episode synopsis', output: '',
+      });
+      await svc.updateStageWithLatest(i.id, 'idea', () => ({
+        status: 'empty', input: '', output: '', lastRunId: 'canon-reset-1',
+      }), { snapshotPrior: true });
+      const fresh = await svc.getIssue(i.id);
+      expect(fresh.stages.idea.runHistory).toHaveLength(1);
+      expect(fresh.stages.idea.runHistory[0]).toMatchObject({
+        runId: 'pre-canon-reset-1', input: 'Authored episode synopsis', output: '',
+      });
+    });
+
     it('newest snapshot is prepended (most-recent-first ordering)', async () => {
       const i = await seedFirstRun();
       await svc.updateStage(i.id, 'idea', { status: 'ready', output: 'v2', lastRunId: 'run-2' });

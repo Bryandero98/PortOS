@@ -56,6 +56,40 @@ const shiftDate = (iso, days) => {
   return date.toISOString().slice(0, 10);
 };
 
+// Append a dictated/typed segment to free-form journal text. Idempotent when
+// the segment text is already present (socket replay / double-fire). Shared by
+// the live socket path and the 409-retry merge so both stay byte-identical.
+export const appendJournalSegment = (content, text) => {
+  if (typeof text !== 'string' || text.length === 0) return content || '';
+  const prev = content || '';
+  if (prev.includes(text)) return prev;
+  return prev ? `${prev.replace(/\s+$/, '')}\n\n${text}` : text;
+};
+
+// Re-apply any voice segments the server holds that the local body is missing
+// — the recovery path after a STALE_JOURNAL 409 (an append landed while a PUT
+// was in flight). Only `source === 'voice'` segments are folded in: concurrent
+// typed/edit segments are already reflected in server content, and replaying
+// them would duplicate free-form edits. When local is empty we fall back to
+// the server body wholesale so a blank client still adopts remote state.
+export const mergeMissingVoiceSegments = (localContent, serverEntry) => {
+  let next = localContent || '';
+  const segs = Array.isArray(serverEntry?.segments) ? serverEntry.segments : [];
+  for (const seg of segs) {
+    if (seg?.source === 'voice' && typeof seg.text === 'string' && seg.text) {
+      next = appendJournalSegment(next, seg.text);
+    }
+  }
+  if (!next && serverEntry?.content) return serverEntry.content;
+  return next;
+};
+
+// Max PUT attempts per save (1 initial + retries). Each STALE_JOURNAL folds in
+// voice segments the concurrent write added and advances the ifMatch clock.
+// Cap is small: voice bursts are short, and the next autosave tick retries
+// whatever is still dirty if we exhaust the budget mid-burst.
+const STALE_JOURNAL_MAX_ATTEMPTS = 3;
+
 export default function DailyLogTab() {
   const [date, setDate] = useState(localToday());
   // Backend today — resolved via GET /daily-log/today on mount so the
@@ -80,12 +114,6 @@ export default function DailyLogTab() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  // Set when a dictated segment landed while the user had unsaved edits, so
-  // the textarea and the server have diverged. Autosave stands down until the
-  // user resolves it — a full-content PUT would silently drop the segment
-  // (setJournalContent replaces content wholesale). The explicit Save button
-  // still works: clicking it is the user choosing their edits.
-  const [voiceConflict, setVoiceConflict] = useState(false);
   const editorRef = useRef(null);
   const mountedRef = useMounted();
   // Single-flight gate. `saving` state lags re-renders, so the debounce timer
@@ -109,10 +137,6 @@ export default function DailyLogTab() {
   // the new entry loads, so this is the only safe answer to "what am I about
   // to overwrite?" — see the guard in saveRef.
   const loadedDateRef = useRef(null);
-  // Ref mirror of the dirty flag so the socket event handler can check it
-  // without adding `content`/`entry` to the effect's dependency list
-  // (which would re-subscribe on every keystroke).
-  const dirtyRef = useRef(false);
   // Monotonic counter of outstanding loadEntry() calls so an older fetch
   // resolving after a newer one can't overwrite the entry state for the
   // wrong date (common when prev/next is mashed or the server-today fetch
@@ -127,7 +151,6 @@ export default function DailyLogTab() {
   const pendingDictationRef = useRef(null);
 
   const dirty = content !== (entry?.content || '');
-  dirtyRef.current = dirty;
 
   const loadEntry = useCallback(async (d, { silent = false } = {}) => {
     if (!silent) setLoading(true);
@@ -136,7 +159,6 @@ export default function DailyLogTab() {
     if (reqId !== loadRequestRef.current) return;
     const data = res?.entry || null;
     loadedDateRef.current = d;
-    setVoiceConflict(false);
     setEntry(data);
     setContent(data?.content || '');
     if (!silent) setLoading(false);
@@ -235,20 +257,34 @@ export default function DailyLogTab() {
       });
       if (appendedDate === date) {
         setEntry((prev) => patchFullEntry(prev));
-        // Only sync the textarea when the user has no unsaved edits —
-        // otherwise an incoming voice segment would clobber whatever they're
-        // in the middle of typing. The entry state still updates so the
-        // segment count badge reflects the append.
-        if (!dirtyRef.current) {
-          setContent((prevContent) => (prevContent
-            ? `${prevContent.replace(/\s+$/, '')}\n\n${appendedText}`
-            : appendedText));
-        } else {
-          // Server and textarea have diverged — park autosave so it can't
-          // overwrite the segment with content that never contained it.
-          setVoiceConflict(true);
-          toast('Voice segment appended while you were editing — save or refresh to see it.', { icon: '📝' });
-        }
+        // Always fold the segment into the textarea — including when the user
+        // has unsaved edits. Replacing wholesale used to drop typed text; the
+        // previous fix parked autosave instead, which left the segment invisible
+        // until Save/refresh and still lost it if a PUT was already in flight.
+        // Append-at-end keeps mid-entry typing intact; restore the caret so a
+        // controlled-textarea re-render doesn't jump the cursor to the end.
+        setContent((prevContent) => {
+          const next = appendJournalSegment(prevContent, appendedText);
+          const el = editorRef.current;
+          // Only restore caret when the control is focused and reports a real
+          // selection (detached/non-textarea nodes leave selectionStart undefined).
+          if (
+            el
+            && document.activeElement === el
+            && next !== prevContent
+            && typeof el.selectionStart === 'number'
+            && typeof el.selectionEnd === 'number'
+          ) {
+            const start = el.selectionStart;
+            const end = el.selectionEnd;
+            queueMicrotask(() => {
+              if (editorRef.current === el) {
+                try { el.setSelectionRange(start, end); } catch { /* detached */ }
+              }
+            });
+          }
+          return next;
+        });
       }
     };
     const onDictation = (payload) => {
@@ -290,30 +326,44 @@ export default function DailyLogTab() {
     return () => offs.forEach((off) => off());
   }, [date]);
 
-  // Adopt the server's entry wholesale, textarea included — which is exactly
-  // the point any divergence with the server is resolved, so the voice-conflict
-  // park lifts here too.
+  // Adopt the server's entry wholesale, textarea included.
   const applyEntry = (next) => {
-    setVoiceConflict(false);
     setEntry(next);
     setContent(next.content || '');
     setHistory((prev) => upsertHistory(prev, next));
+  };
+
+  // One PUT attempt. Returns `{ entry }`, `{ stale, entry }` on concurrency
+  // conflict, or null on transport/other failure. Never toasts — the caller
+  // owns failure UX so auto vs explicit saves can differ.
+  const putDailyLog = async (targetDate, body, ifMatchUpdatedAt) => {
+    try {
+      return await api.updateDailyLog(targetDate, body, {
+        silent: true,
+        ...(ifMatchUpdatedAt ? { ifMatchUpdatedAt } : {}),
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_JOURNAL' && err.context?.entry) {
+        return { stale: true, entry: err.context.entry };
+      }
+      return null;
+    }
   };
 
   // Reassigned every render so it always closes over fresh `content`/`date`
   // without the callers needing it in a dependency list.
   saveRef.current = async ({ auto = false } = {}) => {
     if (savingRef.current || !dirty) return;
-    // Every automatic trigger (debounce, blur, backgrounding) funnels through
-    // here, so the voice-conflict park belongs here rather than in any one
-    // caller. An explicit save passes auto:false and is never parked.
-    if (auto && voiceConflict) return;
     // `content` belongs to loadedDateRef, not necessarily `date`: changing the
     // day flips `date` immediately while the new entry is still loading.
     // Saving in that window would write this day's text into another day.
     if (loadedDateRef.current !== date) return;
     const targetDate = date;
-    const body = content;
+    let body = content;
+    // Optimistic concurrency token — the last entry.updatedAt we observed.
+    // Voice appends advance it server-side; a PUT with a stale token 409s so
+    // we can fold the segment in and retry instead of clobbering it.
+    let ifMatch = entry?.updatedAt || null;
     savingRef.current = true;
     // Anchor the ceiling at attempt time, not on success: resetting it only
     // after a successful PUT would leave `waited` past the ceiling forever
@@ -321,11 +371,32 @@ export default function DailyLogTab() {
     // against an already-unhealthy server.
     firstDirtyAtRef.current = null;
     setSaving(true);
-    const res = await api.updateDailyLog(targetDate, body, { silent: true }).catch(() => null);
+    // Bounded stale-retry loop: each 409 folds in voice segments the concurrent
+    // write added, advances the ifMatch clock, and re-PUTs. Exhausting the
+    // budget falls through as failure — content stays dirty so the next
+    // autosave tick (or explicit Save) retries with a fresh clock.
+    let res = null;
+    for (let attempt = 0; attempt < STALE_JOURNAL_MAX_ATTEMPTS; attempt += 1) {
+      res = await putDailyLog(targetDate, body, ifMatch);
+      if (!res?.stale) break;
+      if (attempt === STALE_JOURNAL_MAX_ATTEMPTS - 1) break;
+      const serverEntry = res.entry;
+      body = mergeMissingVoiceSegments(body, serverEntry);
+      ifMatch = serverEntry.updatedAt || null;
+      if (loadedDateRef.current === targetDate && mountedRef.current) {
+        setEntry(serverEntry);
+        setHistory((prev) => upsertHistory(prev, serverEntry));
+        // Fold the segment into the live textarea too when the user hasn't
+        // typed past the body we just tried to save.
+        setContent((prev) => (prev === content
+          ? body
+          : mergeMissingVoiceSegments(prev, serverEntry)));
+      }
+    }
     savingRef.current = false;
     if (!mountedRef.current) return;
     setSaving(false);
-    if (!res?.entry) {
+    if (!res?.entry || res.stale) {
       if (!auto || !autoSaveFailedRef.current) toast.error('Save failed');
       autoSaveFailedRef.current = true;
       lastFailedBodyRef.current = body;
@@ -333,10 +404,10 @@ export default function DailyLogTab() {
     }
     autoSaveFailedRef.current = false;
     lastFailedBodyRef.current = null;
-    // Adopt the server's metadata but deliberately leave the textarea alone.
-    // Anything typed during the in-flight PUT stays in `content` and stays
-    // dirty against res.entry.content, so the next tick saves it — whereas
-    // applyEntry() would revert those keystrokes to the server's echo.
+    // Adopt the server's metadata but deliberately leave the textarea alone
+    // when the user typed during the in-flight PUT — those keystrokes stay in
+    // `content` and stay dirty against res.entry.content, so the next tick
+    // saves them. applyEntry() would revert them to the server's echo.
     if (loadedDateRef.current === targetDate) {
       setEntry(res.entry);
       setHistory((prev) => upsertHistory(prev, res.entry));
@@ -344,17 +415,13 @@ export default function DailyLogTab() {
     if (!auto) toast.success('Saved');
   };
 
-  const handleSave = () => {
-    // Explicit save = the user choosing their edits over the unmerged segment.
-    setVoiceConflict(false);
-    return saveRef.current?.();
-  };
+  const handleSave = () => saveRef.current?.();
 
   // Autosave. Re-arms on every render whose deps moved: each keystroke
   // restarts the debounce, and `saving` flipping back to false re-checks for
   // work that arrived mid-PUT (or was skipped by the single-flight gate).
   useEffect(() => {
-    if (!dirty || voiceConflict || loadedDateRef.current !== date) {
+    if (!dirty || loadedDateRef.current !== date) {
       firstDirtyAtRef.current = null;
       return undefined;
     }
@@ -370,7 +437,7 @@ export default function DailyLogTab() {
     const wait = Math.max(0, Math.min(AUTOSAVE_DEBOUNCE_MS, AUTOSAVE_MAX_WAIT_MS - waited));
     const timer = setTimeout(() => saveRef.current?.({ auto: true }), wait);
     return () => clearTimeout(timer);
-  }, [content, dirty, saving, voiceConflict, date]);
+  }, [content, dirty, saving, date]);
 
   // Flush when the tab/app is backgrounded. Mobile browsers can freeze or
   // discard the page without firing blur on the textarea, so the pending
@@ -439,7 +506,6 @@ export default function DailyLogTab() {
     }
     toast.success('Deleted');
     setConfirmDelete(false);
-    setVoiceConflict(false);
     setEntry(null);
     setContent('');
     setHistory((prev) => prev.filter((h) => h.date !== date));
@@ -503,12 +569,7 @@ export default function DailyLogTab() {
   const segmentCount = entry?.segments?.length ?? entry?.segmentCount ?? 0;
 
   // Autosave is silent, so the toolbar carries the feedback the toast used to.
-  // The park only means anything while there's something unsaved to park, so
-  // `dirty` gates it — otherwise a resolved conflict would leave the toolbar
-  // telling the user to click a Save button that's disabled.
-  const parked = dirty && voiceConflict;
   const saveStatus = saving ? 'Saving…'
-    : parked ? 'Autosave paused — save to keep your edits'
     : dirty ? 'Unsaved…'
     : entry ? 'Saved' : '';
 
@@ -761,7 +822,7 @@ export default function DailyLogTab() {
               <div className="text-xs text-gray-500 truncate">
                 {segmentCount} segment{segmentCount === 1 ? '' : 's'}
                 {entry?.obsidianPath ? ` · ${entry.obsidianPath}` : ''}
-                {saveStatus ? <span className={parked ? 'text-port-warning' : ''}> · {saveStatus}</span> : null}
+                {saveStatus ? <span> · {saveStatus}</span> : null}
               </div>
             </div>
             <button

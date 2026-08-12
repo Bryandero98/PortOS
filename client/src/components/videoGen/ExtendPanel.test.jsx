@@ -20,7 +20,8 @@ describe('ExtendPanel', () => {
       />,
     );
     fireEvent.change(screen.getByLabelText(/Pick a previous video to extend/i), { target: { value: 'v1' } });
-    expect(onPick).toHaveBeenCalledWith('v1');
+    // The picked record rides along — the form prefills its prompt from it.
+    expect(onPick).toHaveBeenCalledWith('v1', HISTORY[0]);
   });
 
   it('shows the extracting state and disables the picker', () => {

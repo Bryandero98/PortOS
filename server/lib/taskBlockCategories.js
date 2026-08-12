@@ -1,0 +1,61 @@
+/**
+ * `blockedCategory` vocabulary — which blocks are the system's to clear, and
+ * which are a person's.
+ *
+ * A blocked task carries a `blockedCategory` naming WHY it stopped, and three
+ * separate automations have to answer "may I move this?" from that one value:
+ * the pause logic (does this block keep a resume pointer?), the failure reaper
+ * (may I auto-expire this at 14 days?), and the investigation auto-retry (may I
+ * put this back in the queue?). Each used to keep its own hand-written literal
+ * set, which is how the retry's first draft shipped a `'user-paused'` that
+ * matches nothing — the real category is `agent-paused` — and silently missed
+ * `challenge-escalation` entirely.
+ *
+ * Pure and dependency-free (beyond the pause category it shares with
+ * `taskPauseHold.js`) so all three read ONE vocabulary.
+ */
+
+import { AGENT_PAUSED_CATEGORY } from './taskPauseHold.js';
+
+/**
+ * "Paused until something outside the task changes", not "finished with". A
+ * pause keeps the resume pointer (see `updateTask`) and is never auto-expired by
+ * the failure reaper — the task is expected to run again once the cooldown
+ * lapses or the user fixes the config.
+ */
+export const PAUSED_BLOCKED_CATEGORIES = new Set([
+  'orphan-cooldown',   // timed cooldown; unblockExpiredOrphanCooldowns revives it
+  'app-unresolved',    // the task's app has no usable Repository Path
+  'workspace-invalid'  // the resolved workspace isn't a usable directory
+]);
+
+/**
+ * Blocks that encode USER INTENT or an OPEN user decision, not a stale failure
+ * artifact — the reaper leaves these alone. Everything else with a
+ * `blockedCategory` is a failure-path block and therefore reapable.
+ *
+ * The workspace blocks are an open user decision, not a stale failure: the task
+ * is waiting for the app's Repository Path to be fixed, and auto-completing it
+ * at 14 days would silently retire work nobody decided to drop. (The third pause
+ * category, `orphan-cooldown`, stays reapable — it revives itself in ~30
+ * minutes, so one still sitting there after 14 days IS stale.)
+ */
+export const USER_DECISION_BLOCKED_CATEGORIES = new Set([
+  'user-terminated',      // user explicitly stopped the agent
+  AGENT_PAUSED_CATEGORY,  // user paused; resumable on demand
+  'challenge-escalation', // parked awaiting the user's arbitration
+  'app-unresolved',
+  'workspace-invalid'
+]);
+
+/**
+ * Blocks a completed investigation must NOT auto-retry. The union of the two
+ * sets above, expressed as a union rather than re-listed so it cannot drift from
+ * them: a standing user decision is not ours to override, and a self-reviving
+ * pause (`orphan-cooldown`) already has an owner that revives it on schedule —
+ * retrying it here would just double-drive that timer.
+ */
+export const NON_AUTO_RETRY_BLOCK_CATEGORIES = new Set([
+  ...USER_DECISION_BLOCKED_CATEGORIES,
+  ...PAUSED_BLOCKED_CATEGORIES
+]);

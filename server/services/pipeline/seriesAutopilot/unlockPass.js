@@ -113,6 +113,13 @@ async function unlockIssueStages(seriesId, issues) {
 // different key sets on an SSE frame the client reads field by field.
 const NO_UNIVERSE_UNLOCKS = Object.freeze({ canon: 0, canonForeignKept: 0, worldFields: 0, worldFieldsKept: 0 });
 
+// The starter idea is the author's originating creative contract. Autopilot
+// consumes it but has no legitimate write path for it, so "full control" must
+// not silently remove its protection while unlocking derived bible fields.
+// Keeping this lock also makes the UI truthfully show which premise is still
+// human-owned after an autonomous run.
+const AUTOPILOT_PROTECTED_WORLD_LOCKS = Object.freeze(['starterPrompt']);
+
 // Is this series the ONLY one linked to `universeId`? EVERY universe-side
 // unlock is gated on this (see `isSeriesScopedCanonEntry`), so it decides
 // whether shared records get unfrozen — and it therefore FAILS CLOSED. A
@@ -150,7 +157,12 @@ const hasLockedCanon = (universe) => BIBLE_KEYS.some((key) =>
 async function unlockUniverseFor(seriesId, universeId) {
   const universe = await getUniverse(universeId).catch(() => null);
   if (!universe) return NO_UNIVERSE_UNLOCKS;
-  const worldLocked = Object.values(universe.locked || {}).filter((v) => v === true).length;
+  const lockedWorldKeys = Object.entries(universe.locked || {})
+    .filter(([, value]) => value === true)
+    .map(([key]) => key);
+  const protectedWorldLocked = lockedWorldKeys
+    .filter((key) => AUTOPILOT_PROTECTED_WORLD_LOCKS.includes(key)).length;
+  const worldLocked = lockedWorldKeys.length - protectedWorldLocked;
   // One install-wide read at most, and only when a locked record's fate
   // actually depends on the answer.
   const soleSeries = (worldLocked > 0 || hasLockedCanon(universe))
@@ -158,12 +170,13 @@ async function unlockUniverseFor(seriesId, universeId) {
   const canon = await setCanonLocksForSeries(universeId, seriesId, false, {
     soleSeries,
     clearWorldLocks: worldLocked > 0 && soleSeries,
+    preserveWorldLockKeys: AUTOPILOT_PROTECTED_WORLD_LOCKS,
   });
   return {
     canon: canon.changed,
     canonForeignKept: canon.foreignKept,
     worldFields: soleSeries ? worldLocked : 0,
-    worldFieldsKept: soleSeries ? 0 : worldLocked,
+    worldFieldsKept: soleSeries ? protectedWorldLocked : lockedWorldKeys.length,
   };
 }
 

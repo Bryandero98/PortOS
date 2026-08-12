@@ -287,8 +287,10 @@ const sanitizeTextStage = (raw) => ({
  * Trigger conditions (ALL must hold):
  *   - `stageId` is in TEXT_STAGE_IDS — visual + audio shapes don't snapshot.
  *   - patch.lastRunId is a non-empty string that differs from prevStage.lastRunId.
- *   - prevStage.lastRunId is set AND prevStage.output is non-empty — there's
- *     prior content worth preserving for diff/restore.
+ *   - prevStage has non-empty input OR output — there's prior content worth
+ *     preserving. Episode synopsis plans intentionally live in `idea.input`,
+ *     so output-only history would make upstream planning impossible to
+ *     restore after a regeneration.
  *
  * Skipped triggers (and why):
  *   - First-time generate (prev.lastRunId === null) — nothing to snapshot.
@@ -311,12 +313,13 @@ export function snapshotRunHistory(prevStage, patch, stageId, { force = false } 
   // when the prior was never a run — so imported/hand-typed text stays
   // revertible from its very first edit.
   if (!prevStage?.lastRunId && !force) return prevHistory;
+  const prevInput = prevStage?.input || '';
   const prevOutput = prevStage?.output || '';
-  if (!prevOutput.trim()) return prevHistory;
+  if (!prevInput.trim() && !prevOutput.trim()) return prevHistory;
   const snapshot = {
     runId: prevStage.lastRunId || `pre-${nextRunId}`,
     createdAt: prevStage.updatedAt || new Date().toISOString(),
-    input: prevStage.input || '',
+    input: prevInput,
     output: prevOutput,
   };
   // Drop any prior entry whose runId matches the now-active runId. This is

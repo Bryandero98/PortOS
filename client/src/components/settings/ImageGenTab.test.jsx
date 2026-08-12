@@ -263,7 +263,7 @@ describe('ImageGenTab — Agy CLI section', () => {
     });
     await renderTab(['/media/image?mediaTab=defaults']);
     // Existing pin loads into its select.
-    const bibleSelect = await screen.findByLabelText('Universe Bible batch renders');
+    const bibleSelect = await screen.findByLabelText('Universe Bible & canon renders');
     expect(bibleSelect.value).toBe('codex');
     // Pin a model-capable backend on another surface → model input appears.
     const spriteSelect = screen.getByLabelText('Sprite references & anchors');

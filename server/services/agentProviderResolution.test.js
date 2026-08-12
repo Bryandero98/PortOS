@@ -237,6 +237,79 @@ describe('resolveAgentProviderAndModel', () => {
     expect(r.permanent).toBe(true);
   });
 
+  it('drops a user model pin when a fallback swap moved the task onto a DIFFERENT provider', async () => {
+    // Regression: a task pinned provider `antigravity-tui` + model
+    // `gemini-3.6-flash`. That provider hit an auth outage, the fallback chain
+    // swapped to `claude-code`, and the CLI-pass-through exemption honored the
+    // now-meaningless pin — shipping `claude --model gemini-3.6-flash`, which the
+    // CLI rejects instantly on every retry until the task blocks.
+    const pinned = { id: 'antigravity-tui', type: 'tui', models: ['gemini-3.6-flash-high'] };
+    const fallback = { id: 'claude-code', type: 'cli', models: ['claude-opus-5', 'claude-sonnet-5'], defaultModel: 'claude-sonnet-5' };
+    getProviderById.mockResolvedValue(pinned);
+    getActiveProvider.mockResolvedValue(pinned);
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockReturnValue({ message: 'auth-error', reason: 'auth-error' });
+    getAllProviders.mockResolvedValue({ providers: [pinned, fallback] });
+    // No configured fallback MODEL pin — the case that let the stale pin through.
+    getFallbackProvider.mockResolvedValue({ provider: fallback, model: null, source: 'system' });
+    selectModelForTask.mockResolvedValue({ model: 'gemini-3.6-flash', tier: 'user-specified', reason: 'user-preference' });
+
+    const r = await resolveAgentProviderAndModel({
+      id: 't', metadata: { provider: 'antigravity-tui', model: 'gemini-3.6-flash' }
+    });
+    expect(r.ok).toBe(true);
+    expect(r.provider).toBe(fallback);
+    expect(r.selectedModel).toBe('claude-sonnet-5'); // NOT the antigravity pin
+  });
+
+  it('drops a swap-invalidated pin even when the fallback provider enumerates no models', async () => {
+    // The model-list check can't fire at all here, so the swap guard must own it.
+    const pinned = { id: 'antigravity-tui', type: 'tui', models: ['gemini-3.6-flash-high'] };
+    const fallback = { id: 'opencode', type: 'cli', defaultModel: 'oc-default' }; // no `models`
+    getActiveProvider.mockResolvedValue(pinned);
+    getProviderById.mockResolvedValue(pinned);
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockReturnValue({ message: 'down', reason: 'x' });
+    getAllProviders.mockResolvedValue({ providers: [pinned, fallback] });
+    getFallbackProvider.mockResolvedValue({ provider: fallback, model: null, source: 'system' });
+    selectModelForTask.mockResolvedValue({ model: 'gemini-3.6-flash', tier: 'user-specified', reason: 'user-preference' });
+
+    const r = await resolveAgentProviderAndModel({
+      id: 't', metadata: { provider: 'antigravity-tui', model: 'gemini-3.6-flash' }
+    });
+    expect(r.ok).toBe(true);
+    expect(r.selectedModel).toBe('oc-default');
+  });
+
+  it('keeps a user model pin across a swap when the fallback provider DOES list it', async () => {
+    // Sibling providers share ids (claude-code / claude-code-tui) — a swap between
+    // them must not throw away a pin the new provider can honor.
+    const pinned = { id: 'claude-code', type: 'cli', models: ['claude-opus-5'] };
+    const fallback = { id: 'claude-code-tui', type: 'tui', models: ['claude-opus-5'], defaultModel: 'claude-sonnet-5' };
+    getActiveProvider.mockResolvedValue(pinned);
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockReturnValue({ message: 'down', reason: 'x' });
+    getAllProviders.mockResolvedValue({ providers: [pinned, fallback] });
+    getFallbackProvider.mockResolvedValue({ provider: fallback, model: null, source: 'system' });
+    selectModelForTask.mockResolvedValue({ model: 'claude-opus-5', tier: 'user-specified', reason: 'user-preference' });
+
+    const r = await resolveAgentProviderAndModel({ id: 't', metadata: { model: 'claude-opus-5' } });
+    expect(r.ok).toBe(true);
+    expect(r.selectedModel).toBe('claude-opus-5');
+  });
+
+  it('still honors an out-of-list user pin when NO provider swap happened', async () => {
+    // Guards the swap fix against over-reach: the CLI pass-through exemption must
+    // survive for the unavailable-provider-recovered / no-fallback path.
+    const provider = { id: 'claude-code', type: 'cli', models: ['claude-opus-5'], defaultModel: 'claude-opus-5' };
+    getActiveProvider.mockResolvedValue(provider);
+    isProviderAvailable.mockReturnValue(true);
+    selectModelForTask.mockResolvedValue({ model: 'claude-haiku-4-5', tier: 'user-specified', reason: 'user-preference' });
+
+    const r = await resolveAgentProviderAndModel({ id: 't', metadata: { model: 'claude-haiku-4-5' } });
+    expect(r.selectedModel).toBe('claude-haiku-4-5');
+  });
+
   it('falls back to the provider tier default when the selected model is not in the provider model list', async () => {
     const provider = { id: 'p1', type: 'cli', models: ['only-this'], heavyModel: 'heavy-x' };
     getActiveProvider.mockResolvedValue(provider);

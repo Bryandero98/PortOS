@@ -879,6 +879,77 @@ describe('pipeline series service', () => {
     });
   });
 
+  describe('sanitizeAutopilot discardedFindings', () => {
+    it('bounds the rolled-back candidate set the same way as residualFindings', () => {
+      const a = svc.sanitizeAutopilot({
+        status: 'paused',
+        pauseKind: 'regression',
+        discardedFindings: [
+          { severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' },
+          { severity: 'bogus', location: 'V4', problem: 'finale hook unresolved' }, // severity dropped, finding kept
+          { severity: 'high', location: 'V5' }, // no problem → dropped entirely
+        ],
+      });
+      expect(a.discardedFindings).toEqual([
+        { severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' },
+        { location: 'V4', problem: 'finale hook unresolved' },
+      ]);
+    });
+
+    it('caps the set so a runaway verifier round cannot bloat the marker', () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ severity: 'high', location: `V${i}`, problem: `hole ${i}` }));
+      expect(svc.sanitizeAutopilot({ status: 'paused', discardedFindings: many }).discardedFindings).toHaveLength(20);
+    });
+
+    it('is empty for a marker that carries none (non-regression pauses, older peers)', () => {
+      expect(svc.sanitizeAutopilot({ status: 'paused' }).discardedFindings).toEqual([]);
+      expect(svc.sanitizeAutopilot({ status: 'paused', discardedFindings: 'nope' }).discardedFindings).toEqual([]);
+    });
+
+    it('bounds runDiscardedFindings — the whole gate\'s history — the same way (#3829)', () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ severity: 'high', location: `V${i}`, problem: `hole ${i}` }));
+      const a = svc.sanitizeAutopilot({ status: 'paused', runDiscardedFindings: many });
+      expect(a.runDiscardedFindings).toHaveLength(20);
+      // Newest first, so the bound trims the oldest evidence rather than the set
+      // the gate just reverted.
+      expect(a.runDiscardedFindings[0]).toEqual(many[0]);
+      expect(svc.sanitizeAutopilot({ status: 'paused' }).runDiscardedFindings).toEqual([]);
+    });
+
+    it('falls back to discardedFindings for a marker written before the field existed', () => {
+      // The compat lives in the sanitizer so a resume reads one field with no
+      // branch — an older peer's paused marker still carries its evidence.
+      const older = { severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' };
+      const a = svc.sanitizeAutopilot({ status: 'paused', discardedFindings: [older] });
+      expect(a.runDiscardedFindings).toEqual([older]);
+      // A current marker's own history wins, empty included: the gate banks each
+      // set as it reverts it, so an empty history means nothing was reverted.
+      const b = svc.sanitizeAutopilot({
+        status: 'paused', discardedFindings: [older], runDiscardedFindings: [],
+      });
+      expect(b.runDiscardedFindings).toEqual([]);
+    });
+
+    it('bounds foundationDiscardedFindings per dimension and drops empty keys (#3835)', () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ severity: 'high', location: `V${i}`, problem: `hole ${i}` }));
+      const a = svc.sanitizeAutopilot({
+        status: 'paused',
+        foundationDiscardedFindings: { character: many, structure: [], craft: 'nope' },
+      });
+      expect(a.foundationDiscardedFindings.character).toHaveLength(20);
+      expect(a.foundationDiscardedFindings.character[0]).toEqual(many[0]);
+      expect(a.foundationDiscardedFindings).not.toHaveProperty('structure');
+      expect(a.foundationDiscardedFindings).not.toHaveProperty('craft');
+      // A marker written before the field existed resumes with an empty bank —
+      // there is no flat set to key by dimension, so there is nothing to fall
+      // back to (unlike runDiscardedFindings above).
+      expect(svc.sanitizeAutopilot({ status: 'paused' }).foundationDiscardedFindings).toEqual({});
+      expect(svc.sanitizeAutopilot({
+        status: 'paused', foundationDiscardedFindings: ['flat'],
+      }).foundationDiscardedFindings).toEqual({});
+    });
+  });
+
   describe('sanitizeAutopilot resumeOptions', () => {
     it('preserves only the paused run toggles that the UI can safely restore', () => {
       expect(svc.sanitizeAutopilot({
@@ -896,6 +967,12 @@ describe('pipeline series service', () => {
             effortOverride: 'xhigh',
             ignored: true,
           },
+          stageLlm: {
+            foundationGate: {
+              creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh', ignored: true },
+            },
+            typoStage: { judge: { modelOverride: 'discard-me' } },
+          },
         },
       }).resumeOptions).toEqual({
         includeVisual: false,
@@ -907,6 +984,11 @@ describe('pipeline series service', () => {
           providerOverride: 'codex-tui',
           modelOverride: 'gpt-5.6-sol',
           effortOverride: 'xhigh',
+        },
+        stageLlm: {
+          foundationGate: {
+            creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+          },
         },
       });
     });

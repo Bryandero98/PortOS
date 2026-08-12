@@ -38,10 +38,12 @@ const statusIcons = {
 };
 
 // Why an approval-required task is waiting on the user, keyed by the namespaced
-// `metadata.approvalReason` token its producer stamped. Today only the auto-filed
-// agent-failure investigations write one (server:
-// agentErrorAnalysis.resolveInvestigationApproval); other producers that hold a
-// task add their own entries here rather than a parallel field.
+// `metadata.approvalReason` token its producer stamped. Every failure-driven
+// investigation producer writes one through the same policy (server:
+// agentErrorAnalysis.resolveInvestigationApproval / resolveAutoInvestigationApproval
+// — agent failures, AI-provider failures, critical crashes, repeated orphaning),
+// so the two tokens below cover all of them. Other producers that hold a task add
+// their own entries here rather than a parallel field.
 const APPROVAL_REASON_HINTS = {
   'investigation-loop:repeat-fingerprint': 'Held for you: this same failure cause was investigated within the last 24 hours and came back.',
   'investigation-loop:failure-storm': 'Held for you: this hour is nearly out of investigation budget — failures are cascading, not isolated.'

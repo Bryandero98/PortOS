@@ -135,7 +135,7 @@ export default function ThreejsModels() {
             </span>
           )}
           {selectedImage && (
-            <span className="absolute inset-x-2 bottom-2 rounded bg-black/70 px-2 py-1 text-center text-xs text-white">
+            <span className="port-media-overlay-strong absolute inset-x-2 bottom-2 rounded px-2 py-1 text-center text-xs">
               Change image
             </span>
           )}

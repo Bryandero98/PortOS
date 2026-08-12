@@ -34,6 +34,9 @@ import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
+// Dependency-free leaf holding the shared agent maps + the runner-mode flag,
+// read by `isRunnerHolding` below.
+import { useRunner } from './agentState.js';
 
 // Shared state management (extracted to avoid circular deps)
 import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, canQueueImprovementTasks, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
@@ -75,6 +78,7 @@ import { firstLine, PRIORITY_VALUES, getUserTasks, getCosTasks, getAllTasks, get
 export { firstLine, getUserTasks, getCosTasks, getAllTasks, getTasks, getTaskById, addTask, updateTask, reviveBlockedTask, deleteTask, reorderTasks, approveTask, challengeTask, resolveTaskChallenge, resolveTaskChallengeWithRecheck, sweepResolvedFailureTasks };
 import { ensureInstanceId } from './instances.js';
 import { isHeldByOther, buildRenewal, buildClaim, getClaimOwner } from './cosTaskClaim.js';
+import { retryTasksResolvedByInvestigation } from './investigationRetry.js';
 
 const AGENT_ARCHIVE_RETENTION_DAYS = 90;
 const RESUME_DEQUEUE_DELAY_MS = 500;
@@ -532,8 +536,17 @@ export async function forceSpawnTask(taskId) {
   if (task.status !== 'pending') return { error: `Task is ${task.status}, not pending` };
   if (task.approvalRequired) return { error: 'Task requires approval before it can be spawned' };
 
+  if (!isDaemonRunning()) return { error: 'CoS daemon is stopped — start it before force-spawning tasks' };
+
   const state = await loadState();
   if (state.paused) return { error: 'CoS daemon is paused — resume before force-spawning tasks' };
+  // Dispatch HOLDS a task while the runner is down rather than failing it —
+  // right for the autonomous queue, wrong for an explicit "Run now", which would
+  // get `{ success: true }` and a "Spawning" toast for a task that quietly stays
+  // pending. Say what is actually wrong instead.
+  if (await isRunnerHolding()) {
+    return { error: 'CoS Runner is not reachable — start the cos-runner app before force-spawning tasks' };
+  }
   const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
   if (runningAgents >= state.config.maxConcurrentAgents) {
     return { error: `No available agent slots (${runningAgents}/${state.config.maxConcurrentAgents})` };
@@ -756,6 +769,21 @@ export function isRunning() {
 }
 
 /**
+ * Is spawning currently held because the CoS Runner is down?
+ *
+ * The single predicate behind the three places that must agree: the dequeue
+ * gate, `tryImmediateSpawn`, and `forceSpawnTask`'s refusal. False in direct
+ * mode, where there is no runner to be down. `cosRunnerClient` is imported
+ * lazily (mirroring cosAgentLifecycle's runner calls) so a static edge doesn't
+ * drag socket.io-client into the graph of every suite that loads this module.
+ */
+async function isRunnerHolding() {
+  if (!useRunner) return false;
+  const { isRunnerReachable } = await import('./cosRunnerClient.js');
+  return !(await isRunnerReachable());
+}
+
+/**
  * Attempt to immediately spawn a newly added user task if there are available agent slots.
  * This bypasses the evaluation interval for user-submitted tasks so they start instantly.
  */
@@ -764,6 +792,11 @@ async function tryImmediateSpawn(task) {
 
   const paused = await isPaused();
   if (paused) return;
+
+  if (await isRunnerHolding()) {
+    emitLog('debug', `⏳ Queued task ${task.id} - CoS Runner is down`);
+    return;
+  }
 
   const state = await loadState();
   const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
@@ -1147,6 +1180,15 @@ async function spawnDequeuePriority4IdleReview(ctx) {
 async function dequeueNextTask({ ignoreTaskId = null } = {}) {
   if (!isDaemonRunning()) return;
 
+  // In runner mode the cos-runner app owns every agent process, so a cycle run
+  // while it is down can only produce holds. Bail before the tiers rather than
+  // after: they drain on-demand requests, advance review cooldowns, bind the
+  // synthetic app-review marker, and spend `capacity` — side effects a hold
+  // downstream cannot take back. Same shape as the `availableSlots <= 0` gate
+  // below; "the runner is off" is the same fact as "there is nowhere to spawn".
+  // `connection:ready` re-runs this the moment the runner returns.
+  if (await isRunnerHolding()) return;
+
   // A global pause stops scheduled/autonomous spawning, but NOT explicit user
   // triggers: on-demand requests (Priority 0) are processed even while paused so
   // a manual "Run" from an app's automation page still fires. The autonomous
@@ -1410,6 +1452,9 @@ export async function init() {
   // - 'requeued': an in_progress task flipped back to pending — a failed run's
   //   retry released from its cleanup hold (#3373) or an orphan sweep requeue.
   //   Newly spawnable, and long after the completion dequeue ran — re-run dequeue.
+  // - a transition INTO `completed` (any action): if the finished task is an
+  //   INVESTIGATION, revive the failure-blocked task(s) it was diagnosing instead
+  //   of leaving them for a human to un-block by hand.
   cosEvents.on('tasks:changed', (data) => {
     if (!isDaemonRunning() || !data?.action) return;
     if (data.action === 'added') {
@@ -1422,6 +1467,17 @@ export async function init() {
       if (data.type === 'user' && data.task) setImmediate(() => tryImmediateSpawn(data.task));
     } else if (data.action === 'approved' || data.action === 'unblocked' || data.action === 'requeued') {
       setImmediate(() => dequeueNextTask());
+    } else if (data.task?.status === 'completed' && data.previousStatus !== 'completed') {
+      // A finished investigation releases the task(s) its failure was blocking
+      // (see investigationRetry.js). Keyed on the completion rather than on who
+      // wrote it, so it covers BOTH an investigation agent finishing its run and
+      // a human ticking the task off after fixing the cause by hand — and on the
+      // TRANSITION, not the level, so a later edit to an already-completed
+      // investigation can't spend a second auto-retry on a task that re-blocked.
+      // The service no-ops for every other completed task, and each revive emits
+      // its own `unblocked` above, which is what re-runs the dequeue.
+      setImmediate(() => retryTasksResolvedByInvestigation(data.task)
+        .catch(err => console.error(`❌ Auto-retry after investigation ${data.task?.id} failed: ${err.message}`)));
     }
   });
 

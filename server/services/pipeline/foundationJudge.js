@@ -43,7 +43,7 @@ import { manuscriptContentBudgetChars, estimateTokens } from '../../lib/contextB
 import { getStage } from '../promptService.js';
 import { composeStyleNotes, sanitizeStyleGuide, STYLE_GUIDE_LIMITS } from '../../lib/styleGuide.js';
 import { renderCharacterArcsForPrompt, sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
-import { BIBLE_SOURCE, sanitizeCharacter } from '../../lib/storyBible.js';
+import { BIBLE_KEYS, BIBLE_SOURCE, sanitizeCharacter } from '../../lib/storyBible.js';
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 import { getUniverse, updateUniverse } from '../universeBuilder.js';
 import { isBlankString, isBlankArray } from '../universeCharacterExpand.js';
@@ -51,7 +51,12 @@ import { expandWorldTemplate, narrativeRepairTargets } from '../universeBuilderE
 import { getSeries, updateSeries } from './series.js';
 import { listIssues } from './issues.js';
 import { getSeriesCanon } from './seriesCanon.js';
-import { resolveVerifyIssues } from './arcPlanner.js';
+import {
+  resolveVerifyIssues,
+  restoreArcState,
+  snapshotArcState,
+  verifyArc,
+} from './arcPlanner.js';
 
 const STAGE = 'pipeline-judge-foundation';
 const REPAIR_STAGE = 'pipeline-foundation-repair';
@@ -65,6 +70,7 @@ const WRITER_STAGE = 'pipeline-arc-overview';
 // the weighted composite, the fix router, sanitize, and client rendering.
 // Order is display order. Weights sum to 1.0 (asserted at module load).
 export const FOUNDATION_DIMENSIONS = Object.freeze(['worldbuilding', 'character', 'structure', 'craft']);
+const MAX_STRUCTURE_CORRECTION_PASSES = 3;
 export const FOUNDATION_WEIGHTS = Object.freeze({
   worldbuilding: 0.4,
   character: 0.3,
@@ -94,6 +100,37 @@ const SUMMARY_MAX = 600;
 const JUDGE_OUTPUT_RESERVE_TOKENS = 2_000;
 
 const nowIso = () => new Date().toISOString();
+
+const ARC_BLOCKER_SEVERITIES = Object.freeze(['high', 'medium', 'low']);
+
+function arcBlockerProfile(findings) {
+  const list = Array.isArray(findings) ? findings : [];
+  const profile = Object.fromEntries(ARC_BLOCKER_SEVERITIES.map((severity) => [severity, 0]));
+  for (const finding of list) {
+    const severity = ARC_BLOCKER_SEVERITIES.includes(finding?.severity) ? finding.severity : 'medium';
+    profile[severity] += 1;
+  }
+  return { ...profile, total: list.length };
+}
+
+// Negative means `left` is the safer checkpoint. A smaller high-severity count
+// outranks raw total: six polish findings are preferable to four findings that
+// still include a broken authorization or climax. Medium, low, then total break
+// ties. This is deliberately lexicographic rather than a weighted sum so no
+// number of low findings can conceal one unresolved high blocker.
+function compareArcBlockers(left, right) {
+  const a = arcBlockerProfile(left);
+  const b = arcBlockerProfile(right);
+  for (const key of [...ARC_BLOCKER_SEVERITIES, 'total']) {
+    if (a[key] !== b[key]) return a[key] - b[key];
+  }
+  return 0;
+}
+
+function formatArcBlockerProfile(findings) {
+  const profile = arcBlockerProfile(findings);
+  return `${profile.total} blocker(s): ${profile.high} high, ${profile.medium} medium, ${profile.low} low`;
+}
 
 // Defense-in-depth: refuse path-traversal-shaped ids before interpolating into
 // the on-disk snapshot path (series ids are `ser-<uuid>`).
@@ -132,6 +169,11 @@ export function foundationInputs(series, universe, issues = []) {
   return {
     world: universe
       ? {
+        // The starter prompt is the author's protected originating intent, not
+        // just another generated bible paragraph. A change here must invalidate
+        // a cached verdict, and the judge must compare every derived field to it
+        // so a polished-but-off-premise foundation cannot fast-pass forever.
+        starterPrompt: universe.starterPrompt || '',
         logline: universe.logline || '',
         premise: universe.premise || '',
         styleNotes: universe.styleNotes || '',
@@ -152,6 +194,8 @@ export function foundationInputs(series, universe, issues = []) {
       name: c.name,
       role: c.role || '',
       ...pickFrameworkFields(c),
+      ...pickProfileFields(c),
+      ...pickVisualFoundationFields(c),
     })),
     arc: series?.arc || null,
     seasons: Array.isArray(series?.seasons)
@@ -177,11 +221,36 @@ export function foundationInputs(series, universe, issues = []) {
 // Lie → Want → Need chain + secrets + arc fields). Shared by the hash projection
 // and the "thinnest character" fix target so both read the SAME field set.
 const FRAMEWORK_STRING_FIELDS = Object.freeze(['ghost', 'wound', 'lie', 'want', 'need', 'coreTheme', 'motivations', 'speechPattern']);
+// A dramatic engine alone does not make a complete bible card. These fields
+// prevent a later drafter or renderer from having to invent a supporting
+// character's identity, behavior, and capabilities after the plot is settled.
+const PROFILE_STRING_FIELDS = Object.freeze([
+  'pronouns', 'age', 'speechAccent', 'personality', 'background',
+  'likes', 'dislikes', 'mannerisms', 'relationships', 'skills',
+]);
+// Identity-bearing visual axes a graphic-novel lead needs before the plot is
+// allowed to grow around them. This intentionally stops short of requiring a
+// human facial-expression or wardrobe sheet from non-human characters.
+const VISUAL_FOUNDATION_STRING_FIELDS = Object.freeze([
+  'physicalDescription', 'visualNotes', 'silhouetteNotes', 'visualIdentity',
+]);
+const VISUAL_FOUNDATION_LIST_FIELDS = Object.freeze(['colorPalette']);
 function pickFrameworkFields(c) {
   const out = {};
   for (const f of FRAMEWORK_STRING_FIELDS) out[f] = c?.[f] || '';
   out.arcType = c?.arcType || '';
   out.secrets = Array.isArray(c?.secrets) ? c.secrets : [];
+  return out;
+}
+
+function pickProfileFields(c) {
+  return Object.fromEntries(PROFILE_STRING_FIELDS.map((field) => [field, c?.[field] || '']));
+}
+
+function pickVisualFoundationFields(c) {
+  const out = {};
+  for (const field of VISUAL_FOUNDATION_STRING_FIELDS) out[field] = c?.[field] || '';
+  for (const field of VISUAL_FOUNDATION_LIST_FIELDS) out[field] = Array.isArray(c?.[field]) ? c[field] : [];
   return out;
 }
 
@@ -363,17 +432,37 @@ export function isFoundationStale(snap, currentHash) {
 // core signal) without dumping the whole record.
 function renderCharacterLine(c, { core = false } = {}) {
   const role = c?.role ? ` (${c.role})` : '';
-  const concise = (value) => (typeof value === 'string' && value.trim()
-    ? value.trim().replace(/\s+/g, ' ').slice(0, 100)
-    : '—');
+  const concise = (value, maxChars = 100) => {
+    if (typeof value !== 'string' || !value.trim()) return '—';
+    const compact = value.trim().replace(/\s+/g, ' ');
+    return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars - 1).trimEnd()}…`;
+  };
   const framework = FRAMEWORK_STRING_FIELDS
+    .map((field) => `${field}: ${concise(c?.[field])}`)
+    .join(' | ');
+  const profile = PROFILE_STRING_FIELDS
     .map((field) => `${field}: ${concise(c?.[field])}`)
     .join(' | ');
   const secrets = (Array.isArray(c?.secrets) ? c.secrets : [])
     .map(concise)
     .slice(0, 3)
     .join('; ');
-  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — ${framework} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'}`;
+  // The harsh judge needs the actual render identity, not a presence marker.
+  // `ready` proved actively misleading: five complete character sheets were
+  // scored as absent because the prompt hid every distinguishing detail. Keep
+  // the lines bounded, but show enough anatomy, silhouette, palette, and visual
+  // grammar to compare the cast and identify generic or contradictory designs.
+  const visualString = (field) => (isBlankString(c?.[field]) ? 'BLANK' : concise(c[field], 320));
+  const visualList = (field) => {
+    if (isBlankArray(c?.[field])) return 'BLANK';
+    const compact = JSON.stringify(c[field]).replace(/\s+/g, ' ');
+    return compact.length <= 420 ? compact : `${compact.slice(0, 419).trimEnd()}…`;
+  };
+  const visual = [
+    ...VISUAL_FOUNDATION_STRING_FIELDS.map((field) => `${field}: ${visualString(field)}`),
+    ...VISUAL_FOUNDATION_LIST_FIELDS.map((field) => `${field}: ${visualList(field)}`),
+  ].join(' | ');
+  return `- ${core ? '[CORE] ' : ''}**${c?.name || 'Unnamed'}**${role} — dramatic framework: ${framework} | profile: ${profile} | arcType: ${c?.arcType || '—'} | secrets: ${secrets || '—'} | visual foundation: ${visual}`;
 }
 
 function countOccurrences(text, value) {
@@ -412,14 +501,19 @@ export function rankFoundationCharacters(characters, series, issues = [], { incl
     .filter((character) => character && (includeLocked || character.locked !== true))
     .map((character, index) => {
       const blanks = FRAMEWORK_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
-        + (isBlankArray(character.secrets) ? 1 : 0);
+        + PROFILE_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
+        + (isBlankArray(character.secrets) ? 1 : 0)
+        + VISUAL_FOUNDATION_STRING_FIELDS.filter((field) => isBlankString(character[field])).length
+        + VISUAL_FOUNDATION_LIST_FIELDS.filter((field) => isBlankArray(character[field])).length;
       const mentions = countOccurrences(storyText, character.name);
       const authoredArc = authoredArcKeys.has(character.id)
         || authoredArcKeys.has(`name:${String(character.name || '').trim().toLowerCase()}`);
       const coreRole = /protagonist|lead|hero|antagonist|villain|deuteragonist|mentor/i.test(character.role || '');
-      return { character, index, mentions, authoredArc, coreRole, blanks };
+      const seriesOwned = !!series?.id && character.sourceSeriesId === series.id;
+      return { character, index, mentions, authoredArc, coreRole, seriesOwned, blanks };
     })
     .sort((a, b) => Number(b.authoredArc) - Number(a.authoredArc)
+      || Number(b.seriesOwned) - Number(a.seriesOwned)
       || Number(b.coreRole) - Number(a.coreRole)
       || b.mentions - a.mentions
       || b.blanks - a.blanks
@@ -439,7 +533,7 @@ export function rankFoundationCharacters(characters, series, issues = [], { incl
  */
 export function seriesFoundationCharacters(characters, series, issues = []) {
   const ranked = rankFoundationCharacters(characters, series, issues, { includeLocked: true });
-  const referenced = ranked.filter(({ authoredArc, mentions }) => authoredArc || mentions > 0);
+  const referenced = ranked.filter(({ authoredArc, mentions, seriesOwned }) => authoredArc || mentions > 0 || seriesOwned);
   const selected = referenced.length > 0 ? referenced : ranked.slice(0, 6);
   return selected.map(({ character }) => character);
 }
@@ -447,6 +541,39 @@ export function seriesFoundationCharacters(characters, series, issues = []) {
 function repairableSeriesFoundationCharacters(characters, series, issues = []) {
   return seriesFoundationCharacters(characters, series, issues)
     .filter((character) => character?.locked !== true);
+}
+
+/**
+ * Blank foundation fields across the cast a `character` repair is allowed to
+ * write — the series roster minus locked members, over the SAME framework,
+ * profile, and visual field sets the character dimension is scored on.
+ *
+ * This is the gate's objective, LLM-free second opinion on a repair the judge
+ * scored as a tie. A judge can misread the cast — a presence-marker render once
+ * showed every authored design as the bare word `ready`, so a complete five-sheet
+ * character foundation was scored as absent and thrown away — but "25 named
+ * fields went from empty to authored" is a fact on disk, not an opinion.
+ */
+export function countFoundationCharacterBlanks(characters, series, issues = []) {
+  const targets = repairableSeriesFoundationCharacters(characters, series, issues);
+  return rankFoundationCharacters(targets, series, issues)
+    .reduce((total, { blanks }) => total + blanks, 0);
+}
+
+/**
+ * `countFoundationCharacterBlanks` against live records. Pass `charactersOverride`
+ * to measure a checkpoint's cast (the pre-repair snapshot) against the same
+ * series/issue roster the live count uses, so only the cast content differs.
+ */
+export async function readFoundationCharacterBlanks(seriesId, charactersOverride = null) {
+  assertValidSeriesId(seriesId);
+  const series = await getSeries(seriesId);
+  const [universe, issues] = await Promise.all([
+    series?.universeId ? getUniverse(series.universeId).catch(() => null) : null,
+    listIssues({ seriesId }),
+  ]);
+  const characters = Array.isArray(charactersOverride) ? charactersOverride : universe?.characters;
+  return countFoundationCharacterBlanks(characters, series, issues);
 }
 
 const joinedLength = (lines) => lines.reduce((total, line) => total + line.length + 1, 0);
@@ -579,6 +706,7 @@ function renderWorldFoundation(universe, { maxChars = Infinity } = {}) {
     ? `Embrace: ${(universe.influences.embrace || []).join(', ') || '—'}; Avoid: ${(universe.influences.avoid || []).join(', ') || '—'}`
     : '(none)';
   const spine = [
+    `Protected author intent (starter idea): ${universe.starterPrompt || '(none)'}`,
     `Universe logline: ${universe.logline || '(none)'}`,
     `Universe premise: ${universe.premise || '(none)'}`,
     `Universe style: ${universe.styleNotes || '(none)'}`,
@@ -673,6 +801,8 @@ export async function judgeFoundation(seriesId, {
   providerDefault,
   modelDefault,
   effortDefault,
+  onRunCreated,
+  onRunSettled,
   force = false,
 } = {}) {
   assertValidSeriesId(seriesId);
@@ -726,6 +856,8 @@ export async function judgeFoundation(seriesId, {
     providerOverride: judgeProvider.id,
     modelOverride: judgeModel,
     effortDefault: effort || effortDefault,
+    onRunCreated,
+    onRunSettled,
     source: STAGE,
   });
 
@@ -782,7 +914,10 @@ export function thinnestCharacter(characters) {
   for (const c of list) {
     if (!c || c.locked === true) continue;
     const blanks = FRAMEWORK_STRING_FIELDS.filter((f) => isBlankString(c[f])).length
-      + (isBlankArray(c.secrets) ? 1 : 0);
+      + PROFILE_STRING_FIELDS.filter((field) => isBlankString(c[field])).length
+      + (isBlankArray(c.secrets) ? 1 : 0)
+      + VISUAL_FOUNDATION_STRING_FIELDS.filter((field) => isBlankString(c[field])).length
+      + VISUAL_FOUNDATION_LIST_FIELDS.filter((field) => isBlankArray(c[field])).length;
     if (blanks === 0) continue;
     if (best === null || blanks > best.blanks) best = { id: c.id, blanks };
   }
@@ -791,11 +926,21 @@ export function thinnestCharacter(characters) {
 
 const REPAIRABLE_CHARACTER_FIELDS = Object.freeze([
   ...FRAMEWORK_STRING_FIELDS,
+  ...PROFILE_STRING_FIELDS,
+  ...VISUAL_FOUNDATION_STRING_FIELDS,
+  ...VISUAL_FOUNDATION_LIST_FIELDS,
   'arcType',
   'secrets',
   'personality',
   'background',
   'relationships',
+  'postureNotes',
+  'specialTraits',
+  'stats',
+  'props',
+  'expressions',
+  'handGestures',
+  'wardrobes',
 ]);
 
 const MAX_FOUNDATION_NEW_CHARACTERS = 3;
@@ -832,10 +977,12 @@ const REPAIR_SERIES_MAX_CHARS = 12_000;
 const REPAIR_CHARACTERS_MAX_CHARS = 12_000;
 
 // The character-foundation stage reasons over the whole ensemble at once, so it
-// is the slowest repair stage by a wide margin. The runner's 300s default is
-// what actually killed the 72KB run; TUI providers already default to 10
-// minutes (`providers.js`), and this gives a CLI provider the same headroom.
-const CHARACTER_FOUNDATION_TIMEOUT_MS = 600_000;
+// is the slowest repair stage by a wide margin. Ten minutes proved short enough
+// to kill productive high-effort work, and a fixed two-hour ceiling still cuts
+// off a healthy provider solely because the ensemble is large. Match the
+// quality-first ceiling used by the pipeline's other long-form editorial calls;
+// provider cancellation remains available for a truly hung run.
+const CHARACTER_FOUNDATION_TIMEOUT_MS = 43_200_000;
 
 const CRAFT_REPAIR_MAX_ATTEMPTS = 2;
 
@@ -916,15 +1063,17 @@ function renderRepairSeriesJson(series, maxChars = REPAIR_SERIES_MAX_CHARS) {
 // The full-ensemble roster is the unbounded half of the character payload:
 // `CHARACTER_FOUNDATION_BATCH_SIZE` bounds `targetCharacters`, but
 // `fullSeriesRoster` carries every cast member with every framework field, so it
-// grows with the series. Compact the roster to the differentiation spine before
-// dropping members — the roster exists so the batch can differentiate and keep
-// relationships straight, which a name/role/want/need line still supports.
+// grows with the series. Compact the roster to the narrative and visual
+// differentiation spine before dropping members — the roster exists so the
+// batch can differentiate relationships, motives, and render identities.
 const compactRosterCharacter = (character) => ({
   id: character?.id,
   name: character?.name,
   role: character?.role,
   want: character?.want || '',
   need: character?.need || '',
+  physicalDescription: character?.physicalDescription || '',
+  visualIdentity: character?.visualIdentity || '',
 });
 
 // `CHARACTER_FOUNDATION_BATCH_SIZE` bounds how MANY characters a batch carries,
@@ -983,14 +1132,14 @@ function renderRepairCharactersJson(payload, maxChars = REPAIR_CHARACTERS_MAX_CH
   const roster = Array.isArray(payload?.fullSeriesRoster) ? payload.fullSeriesRoster : [];
   const compactRoster = roster.map(compactRosterCharacter);
   const rosterNote = (kept) => (kept === compactRoster.length
-    ? 'Roster compacted to name/role/want/need to fit the prompt budget.'
+    ? 'Roster compacted to narrative and visual identity axes to fit the prompt budget.'
     : `Roster compacted and limited to ${kept} of ${compactRoster.length} members to fit the prompt budget.`);
   const buildTargets = (cap, spine) => {
     const shaped = spine ? targets.map(compactRosterCharacter) : targets;
     return cap ? shaped.map((character) => capCharacterFields(character, cap)) : shaped;
   };
   const targetNote = (cap, spine) => {
-    if (spine) return `Batch compacted to name/role/want/need and truncated at ${cap} characters to fit the prompt budget.`;
+    if (spine) return `Batch compacted to narrative and visual identity axes and truncated at ${cap} characters to fit the prompt budget.`;
     return cap ? `Character fields over ${cap} characters were truncated to fit the prompt budget.` : undefined;
   };
   const build = (kept, cap, spine = false) => render({
@@ -1065,6 +1214,14 @@ async function runFoundationRepair(series, issues, dimension, finding, character
     background: character.background,
     relationships: character.relationships,
     ...pickFrameworkFields(character),
+    ...pickVisualFoundationFields(character),
+    postureNotes: character.postureNotes || '',
+    specialTraits: character.specialTraits || '',
+    stats: Array.isArray(character.stats) ? character.stats : [],
+    props: Array.isArray(character.props) ? character.props : [],
+    expressions: Array.isArray(character.expressions) ? character.expressions : [],
+    handGestures: Array.isArray(character.handGestures) ? character.handGestures : [],
+    wardrobes: Array.isArray(character.wardrobes) ? character.wardrobes : [],
   });
   const charactersPayload = dimension === 'character'
     ? {
@@ -1076,6 +1233,10 @@ async function runFoundationRepair(series, issues, dimension, finding, character
   const maxAttempts = dimension === 'craft' ? CRAFT_REPAIR_MAX_ATTEMPTS : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const findingPayload = { gap: finding?.gap || '', fix: finding?.fix || '' };
+    // The gate may already have reverted an attempt at this dimension — say so,
+    // so the next proposal changes strategy instead of re-earning the same
+    // rollback. Craft's storage-contract retry below appends to this.
+    if (finding?.retryReason) findingPayload.retryReason = finding.retryReason;
     if (dimension === 'craft') {
       findingPayload.hardStorageContract = {
         voiceExemplars: '1-2 entries',
@@ -1085,7 +1246,10 @@ async function runFoundationRepair(series, issues, dimension, finding, character
         requirement: 'Every passage and note must end as complete prose within these limits; storage never preserves overflow.',
       };
       if (violations.length > 0) {
-        findingPayload.retryReason = `The previous proposal violated the hard storage contract: ${violations.join('; ')}. Rewrite it shorter; do not merely cut it off.`;
+        findingPayload.retryReason = [
+          findingPayload.retryReason,
+          `The previous proposal violated the hard storage contract: ${violations.join('; ')}. Rewrite it shorter; do not merely cut it off.`,
+        ].filter(Boolean).join(' ');
       }
     }
     const result = await runStagedLLM(stage, {
@@ -1100,6 +1264,8 @@ async function runFoundationRepair(series, issues, dimension, finding, character
       providerDefault: options.providerId,
       modelDefault: options.model,
       effortDefault: options.effort,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       source: stage,
       ...(stage === CHARACTER_FOUNDATION_STAGE ? { timeoutOverride: CHARACTER_FOUNDATION_TIMEOUT_MS } : {}),
     });
@@ -1278,8 +1444,11 @@ async function repairCharacters(series, issues, universe, finding, options) {
 
 function hasCompleteFramework(character) {
   return FRAMEWORK_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
+    && PROFILE_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
     && !isBlankArray(character?.secrets)
-    && !isBlankString(character?.arcType);
+    && !isBlankString(character?.arcType)
+    && VISUAL_FOUNDATION_STRING_FIELDS.every((field) => !isBlankString(character?.[field]))
+    && VISUAL_FOUNDATION_LIST_FIELDS.every((field) => !isBlankArray(character?.[field]));
 }
 
 /**
@@ -1292,6 +1461,8 @@ export async function establishCharacterFoundation(seriesId, {
   providerDefault,
   modelDefault,
   effortDefault,
+  onRunCreated,
+  onRunSettled,
 } = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
@@ -1316,12 +1487,14 @@ export async function establishCharacterFoundation(seriesId, {
     return { applied: false, skipped: true, ran: false, reason: 'core character foundation is already complete' };
   }
   const result = await repairCharacters(series, [], universe, {
-    gap: 'The plot spine has not been generated yet, so the core cast must first have specific causal inner engines and relationship tensions.',
-    fix: 'Complete the core ensemble from the premise: Ghost to Wound to Lie to Want to Need, distinct voice and contradictions, active relationships, and a provisional whole-series change path. Add only a genuinely missing core role.',
+    gap: 'The plot spine has not been generated yet, so the core cast must first have specific causal inner engines, relationship tensions, and stable render identities.',
+    fix: 'Complete the core ensemble from the premise: Ghost to Wound to Lie to Want to Need, distinct voice and contradictions, active relationships, mutually distinct physical descriptions, silhouettes, visual identities and palettes, and a provisional whole-series change path. Add only a genuinely missing core role.',
   }, {
     providerId: providerDefault,
     model: modelDefault,
     effort: effortDefault,
+    onRunCreated,
+    onRunSettled,
     phase: 'pre-arc character foundation',
   });
   return { ...result, ran: true };
@@ -1368,7 +1541,7 @@ async function repairCraft(series, issues, finding, options) {
 // no-clobber) — then persist through updateUniverse (serialized write queue).
 // Mirrors storyBuilder.js's `universeAesthetic` step. Returns false when there's
 // no universe to refine.
-async function refineWorld(universeId, { providerId, model, effort, finding = {} }) {
+async function refineWorld(universeId, { providerId, model, effort, onRunCreated, onRunSettled, finding = {} }) {
   if (!universeId) return { applied: false, reason: 'no linked universe' };
   const universe = await getUniverse(universeId).catch(() => null);
   if (!universe) return { applied: false, reason: 'universe not found' };
@@ -1379,10 +1552,15 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
     premise: universe.premise,
     styleNotes: universe.styleNotes,
     locked: universe.locked,
-    foundationDirective: [finding.gap, finding.fix].filter(Boolean).join('\nRequested repair: '),
+    foundationDirective: [
+      [finding.gap, finding.fix].filter(Boolean).join('\nRequested repair: '),
+      finding.retryReason ? `Previous attempt: ${finding.retryReason}` : '',
+    ].filter(Boolean).join('\n'),
     providerId,
     model,
     effort,
+    onRunCreated,
+    onRunSettled,
     narrativeOnly: true,
   });
   // Persist through the write-queue mutator against the FRESHEST record, and
@@ -1429,6 +1607,154 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
     : { applied: true };
 }
 
+const FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS = Object.freeze([
+  'logline', 'premise', 'styleNotes', 'influences', 'characters',
+]);
+
+const FOUNDATION_SERIES_SNAPSHOT_FIELDS = Object.freeze([
+  'styleNotes', 'styleGuide', 'characterArcs',
+]);
+
+const pickFoundationFields = (record, fields) => Object.fromEntries(
+  fields.map((field) => [
+    field,
+    record && Object.hasOwn(record, field) ? structuredClone(record[field]) : undefined,
+  ]),
+);
+
+// Per-canon-entry fields the universe WRITE PATH owns, which a faithful restore
+// therefore does NOT (and must not) bring back to the checkpoint value:
+//   - `updatedAt` is re-stamped by `updateUniverse` on every canon entry whose
+//     content changed vs the live record — and undoing a repair IS a content
+//     change, so a correct revert always comes back with a fresh LWW clock (it
+//     has to, or the canon→catalog projection would never carry the revert).
+//   - the render/sheet pointers are deliberately preserved FROM the live record
+//     (`mergePreservedSheetPointers` / `preserveImageRefsById`) so a sheet or
+//     render that completed while the repair ran isn't thrown away by the undo.
+// Comparing them made every faithful character rollback report itself as a
+// failed restore, which stalled the foundation gate with a checkpoint-corruption
+// warning that was never true. Authored content is still compared byte-for-byte.
+const CANON_WRITE_PATH_OWNED_FIELDS = Object.freeze([
+  'updatedAt', 'referenceSheetImageRef', 'referenceSheets', 'imageRefs',
+]);
+
+const comparableCanonEntry = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+  const rest = { ...entry };
+  for (const field of CANON_WRITE_PATH_OWNED_FIELDS) delete rest[field];
+  return rest;
+};
+
+// Walk EVERY canon array the bible defines, not just `characters`. The write
+// path (`stampChangedCanonEntries` in universeBuilder/crud.js) stamps
+// `updatedAt` across all of `BIBLE_KEYS`, so the moment a canon array beyond
+// `characters` joins FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS the same false
+// "restored foundation fields did not match the checkpoint" pause would return.
+const comparableUniverseFields = (universe) => {
+  if (!universe || typeof universe !== 'object') return universe ?? null;
+  const comparable = { ...universe };
+  for (const key of BIBLE_KEYS) {
+    if (Array.isArray(comparable[key])) comparable[key] = comparable[key].map(comparableCanonEntry);
+  }
+  return comparable;
+};
+
+// `undefined` (field absent from the record) is NOT the same as `null` — the
+// restore skips absent fields, so a repair-added field the checkpoint never had
+// is a genuine leftover the verification must still catch. The sentinel keeps
+// the two distinguishable through JSON.
+const comparablePart = (value) => (value === undefined ? '<absent>' : JSON.stringify(value ?? null));
+
+/**
+ * Field-keyed projection of a foundation snapshot for the post-restore check.
+ * Keyed (rather than one blob) so a mismatch can NAME what failed to come back —
+ * a bare "did not match" pause tells an operator nothing about what to inspect.
+ */
+const foundationSnapshotParts = (snapshot) => {
+  const universe = comparableUniverseFields(snapshot?.universe);
+  const parts = { universeId: comparablePart(snapshot?.universeId || null) };
+  for (const field of FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS) {
+    parts[`universe.${field}`] = comparablePart(universe ? universe[field] : null);
+  }
+  for (const field of FOUNDATION_SERIES_SNAPSHOT_FIELDS) {
+    parts[`series.${field}`] = comparablePart(snapshot?.series ? snapshot.series[field] : null);
+  }
+  parts.arc = comparablePart(snapshot?.arcState?.arc ?? null);
+  parts.seasons = comparablePart(snapshot?.arcState?.seasons || []);
+  parts.episodes = comparablePart(snapshot?.arcState?.episodes || []);
+  return parts;
+};
+
+/** The snapshot fields that did NOT come back — [] when the restore was faithful. */
+const mismatchedFoundationFields = (checkpoint, restored) => {
+  const before = foundationSnapshotParts(checkpoint);
+  const after = foundationSnapshotParts(restored);
+  return Object.keys(before).filter((field) => before[field] !== after[field]);
+};
+
+/**
+ * Capture every field an owned foundation repair may rewrite. Arc planning has
+ * its own exact snapshot (including episode ideas); this adds the world,
+ * character, and craft-owned records so the conductor can reject a repair that
+ * a fresh judge proves did not earn its changes.
+ */
+export async function snapshotFoundationState(seriesId) {
+  assertValidSeriesId(seriesId);
+  const series = await getSeries(seriesId);
+  const [universe, arcState] = await Promise.all([
+    series?.universeId ? getUniverse(series.universeId).catch(() => null) : null,
+    snapshotArcState(seriesId),
+  ]);
+  return {
+    seriesId,
+    universeId: series?.universeId || null,
+    universe: universe ? pickFoundationFields(universe, FOUNDATION_UNIVERSE_SNAPSHOT_FIELDS) : null,
+    series: pickFoundationFields(series, FOUNDATION_SERIES_SNAPSHOT_FIELDS),
+    arcState,
+  };
+}
+
+/**
+ * Restore a foundation snapshot and verify the tracked fields match exactly.
+ *
+ * `judge` is the verdict that scored the checkpoint being restored. The cached
+ * verdict on disk is keyed by a content hash, so after a rewind it describes
+ * content that no longer exists and the next `judgeFoundation` pays a full LLM
+ * call to re-derive a score this one already holds. Re-pinning it on a VERIFIED
+ * restore puts the cache back in step with the content. Optional: a caller
+ * without the pre-rewind verdict simply leaves the stale entry to self-
+ * invalidate on its hash.
+ */
+export async function restoreFoundationState(seriesId, snapshot, { judge } = {}) {
+  if (!snapshot || snapshot.seriesId !== seriesId || !snapshot.arcState) {
+    return { restored: false, reason: 'invalid foundation snapshot' };
+  }
+  if (snapshot.universeId && snapshot.universe) {
+    await updateUniverse(snapshot.universeId, Object.fromEntries(
+      Object.entries(structuredClone(snapshot.universe)).filter(([, value]) => value !== undefined),
+    ));
+  }
+  await updateSeries(seriesId, Object.fromEntries(
+    Object.entries(structuredClone(snapshot.series)).filter(([, value]) => value !== undefined),
+  ));
+  const arcRestore = await restoreArcState(seriesId, snapshot.arcState);
+  const restoredSnapshot = await snapshotFoundationState(seriesId);
+  const mismatched = mismatchedFoundationFields(snapshot, restoredSnapshot);
+  const restored = mismatched.length === 0;
+  if (restored && judge?.seriesId === seriesId && judge.sourceInputsHash) {
+    const { cached, ...verdict } = judge;
+    await saveSnapshot(verdict);
+  }
+  return {
+    restored,
+    reason: restored
+      ? null
+      : `restored foundation fields did not match the checkpoint: ${mismatched.join(', ')}`,
+    mismatchedFields: mismatched,
+    episodesRestored: arcRestore.episodesRestored || 0,
+  };
+}
+
 /**
  * Apply a fix for one foundation dimension through its OWNING service (never a
  * raw write; `force:false` everywhere so locked canon is a constraint, not a
@@ -1442,13 +1768,43 @@ async function refineWorld(universeId, { providerId, model, effort, finding = {}
  *
  * `finding` is the judge's `{ gap, fix }` for the targeted dimension, threaded
  * into the structure resolve as a synthesized arc finding.
+ *
+ * A retry after the caller REVERTED an earlier attempt at this same dimension
+ * describes that attempt so this one changes strategy instead of re-proposing
+ * discarded edits. It arrives on whichever channel the owning route has: the
+ * prose `finding.retryReason` for the LLM-payload routes (character/craft's
+ * finding JSON, worldbuilding's directive), and `avoidFindings` — the shared
+ * "a previous attempt produced these, do not author them again" contract of
+ * `resolveVerifyIssues` — for the structure route, so those stay OUT of the
+ * work-to-close list a `suggestion` would have put them in.
  */
-export async function applyFoundationFix(seriesId, dimension, { finding = {}, providerOverride, modelOverride, effortOverride, preserveDroppedSeasons = false } = {}) {
+export async function applyFoundationFix(seriesId, dimension, {
+  finding = {},
+  avoidFindings,
+  providerOverride,
+  modelOverride,
+  effortOverride,
+  judgeProviderDefault,
+  judgeModelDefault,
+  judgeEffortDefault,
+  judgeOnRunCreated,
+  judgeOnRunSettled,
+  preserveDroppedSeasons = false,
+  onRunCreated,
+  onRunSettled,
+} = {}) {
   assertValidSeriesId(seriesId);
   const series = await getSeries(seriesId);
   const issues = await listIssues({ seriesId });
   const universeId = series?.universeId || null;
-  const provider = { providerId: providerOverride, model: modelOverride, effort: effortOverride, finding };
+  const provider = {
+    providerId: providerOverride,
+    model: modelOverride,
+    effort: effortOverride,
+    finding,
+    onRunCreated,
+    onRunSettled,
+  };
 
   if (dimension === 'worldbuilding') {
     const r = await refineWorld(universeId, provider);
@@ -1484,18 +1840,144 @@ export async function applyFoundationFix(seriesId, dimension, { finding = {}, pr
       problem: finding.gap || 'arc structure is below the foundation-quality bar',
       suggestion: finding.fix || '',
     }];
-    const r = await resolveVerifyIssues(seriesId, {
-      findings,
+    const snapshot = await snapshotArcState(seriesId);
+    const structureRunIds = [];
+    const resolveOptions = {
       providerDefault: providerOverride,
       modelDefault: modelOverride,
+      // What a reverted earlier attempt at this dimension produced. The resolver
+      // renders these in its own "do not author these again" block, apart from
+      // the findings it must close (mirrors the arc gate's rollback retry).
+      ...(Array.isArray(avoidFindings) && avoidFindings.length > 0 ? { avoid: avoidFindings } : {}),
       // The autopilot's unlock-for-run mode clears both `series.locked.arc`
       // (disarming the short-circuit above) and every per-season lock, so this
       // is the third arc-rewriting path that could otherwise delete a volume.
       // Carry the same non-deletion guarantee the other two do.
       preserveDroppedSeasons,
       effortDefault: effortOverride,
+      onRunCreated: (runId) => {
+        structureRunIds.push(runId);
+        onRunCreated?.(runId);
+      },
+      onRunSettled,
+    };
+    const verifyOptions = {
+      providerDefault: judgeProviderDefault,
+      modelDefault: judgeModelDefault,
+      effortDefault: judgeEffortDefault,
+      onRunCreated: judgeOnRunCreated,
+      onRunSettled: judgeOnRunSettled,
+    };
+    const trackedResolve = async (resolveFindings) => {
+      const before = structureRunIds.length;
+      const result = await resolveVerifyIssues(seriesId, { findings: resolveFindings, ...resolveOptions });
+      return { result, runIds: structureRunIds.slice(before) };
+    };
+    const runGuardedStructureRepair = async () => {
+      const firstAttempt = await trackedResolve(findings);
+      const first = firstAttempt.result;
+      if (first?.applied === false) {
+        return { dimension, applied: false, reason: first?.notes || 'arc resolver applied no change' };
+      }
+
+      let verification = await verifyArc(seriesId, verifyOptions);
+      let blockers = Array.isArray(verification?.issues) ? verification.issues : [];
+      if (blockers.length === 0) {
+        return { dimension, applied: true, actions: 2, acceptedRunIds: firstAttempt.runIds };
+      }
+
+      const initialBlockers = blockers;
+      let retainedRunIds = [...firstAttempt.runIds];
+      let rejectedRunIds = [];
+      let bestVerified = {
+        blockers,
+        snapshot: await snapshotArcState(seriesId),
+        runIds: [...retainedRunIds],
+      };
+
+      // A foundation-directed structure rewrite can satisfy its broad judge
+      // while accidentally violating a narrower canon/location/timing rule.
+      // Keep correcting while the specialized verifier's severity profile improves.
+      // A single all-or-nothing pass threw away demonstrated 10 → 3 progress and
+      // forced the next run to rebuy all ten fixes. The bounded loop preserves
+      // the original rollback guarantee, but spends up to three focused passes
+      // when each one is moving monotonically toward a clean plan.
+      let actions = 2;
+      for (let pass = 0; pass < MAX_STRUCTURE_CORRECTION_PASSES && blockers.length > 0; pass += 1) {
+        const before = blockers;
+        const correctionAttempt = await trackedResolve(blockers);
+        const correction = correctionAttempt.result;
+        actions += 1;
+        if (correction?.applied === false) break;
+        verification = await verifyArc(seriesId, verifyOptions);
+        actions += 1;
+        const nextBlockers = Array.isArray(verification?.issues) ? verification.issues : [];
+        blockers = nextBlockers;
+        if (blockers.length === 0) {
+          return {
+            dimension,
+            applied: true,
+            actions,
+            acceptedRunIds: [...retainedRunIds, ...correctionAttempt.runIds],
+            rejectedRunIds,
+          };
+        }
+        if (compareArcBlockers(blockers, before) > 0) {
+          rejectedRunIds = [...rejectedRunIds, ...correctionAttempt.runIds];
+          break;
+        }
+        retainedRunIds = [...retainedRunIds, ...correctionAttempt.runIds];
+        if (compareArcBlockers(blockers, bestVerified.blockers) <= 0) {
+          bestVerified = {
+            blockers,
+            snapshot: await snapshotArcState(seriesId),
+            runIds: [...retainedRunIds],
+          };
+        }
+      }
+
+      // Do not throw away a demonstrated monotonic improvement merely because
+      // the next correction traded its final residual for a larger set. Keep
+      // the best independently verified checkpoint; the foundation judge will
+      // still decide whether it improved structure, and the normal full-arc
+      // gate remains latched dirty so it must close the residual before beats.
+      if (compareArcBlockers(bestVerified.blockers, initialBlockers) < 0) {
+        await restoreArcState(seriesId, bestVerified.snapshot);
+        return {
+          dimension,
+          applied: true,
+          partial: true,
+          actions,
+          reason: `structure repair retained its best verified improvement (${formatArcBlockerProfile(initialBlockers)} → ${formatArcBlockerProfile(bestVerified.blockers)}); the full arc gate must close the residual`,
+          residual: bestVerified.blockers,
+          discarded: blockers,
+          acceptedRunIds: bestVerified.runIds,
+          rejectedRunIds,
+        };
+      }
+
+      await restoreArcState(seriesId, snapshot);
+      return {
+        dimension,
+        applied: false,
+        reverted: true,
+        actions,
+        reason: `structure repair left ${blockers.length} arc-verification blocker(s); reverted to the pre-repair plan`,
+        // The blockers that condemned the rewrite. Without them the revert is a
+        // bare count in prose, and the pause it raises reports dimension-level
+        // gaps instead — a different set entirely — so the user is never shown
+        // why a plausible rewrite was thrown away.
+        discarded: blockers,
+        rejectedRunIds: structureRunIds,
+      };
+    };
+    // Any provider/parse failure after the first mutation must not strand the
+    // series in the unverified intermediate draft. Restore, then preserve the
+    // original error so the conductor pauses with the real provider diagnosis.
+    return runGuardedStructureRepair().catch(async (err) => {
+      await restoreArcState(seriesId, snapshot);
+      throw err;
     });
-    return { dimension, applied: r?.applied !== false };
   }
 
   return { dimension, applied: false, reason: `unknown dimension: ${dimension}` };
@@ -1518,4 +2000,8 @@ export const __testing = {
   CHARACTER_FOUNDATION_TIMEOUT_MS,
   CHARACTER_FOUNDATION_BATCH_SIZE,
   FRAMEWORK_STRING_FIELDS,
+  PROFILE_STRING_FIELDS,
+  mismatchedFoundationFields,
+  comparableUniverseFields,
+  CANON_WRITE_PATH_OWNED_FIELDS,
 };

@@ -112,14 +112,17 @@ const TOOL_USE_RE = new RegExp([
   'qwen',
   'llama-?3\\.[1-9]', 'llama-?4',
   'mistral', 'mixtral', 'ministral', 'codestral', 'devstral', 'magistral',
-  'command-?r', 'command-?a',
-  'firefunction', 'functionary', 'watt-tool', 'hermes',
+  'command-?r', 'command-?a', 'north-mini-code',
+  'firefunction', 'functionary', 'watt-tool', 'hermes', 'functiongemma',
   'glm-?4',
-  'granite-?3',
+  'granite-?[34]',
+  '(?:^|[-_/:])gemma-?4',
   'gpt-oss',
   'nemotron',
+  'olmo-?3',
+  'lfm2', 'ornith', 'muse-glimmer', 'nex-n2',
   'smollm2',
-  'deepseek-v3', 'deepseek-r1',
+  'deepseek-v3', 'deepseek-r1', 'deepseek-v4',
 ].join('|'), 'i');
 
 /** Normalize an Ollama base URL (strip trailing slash + an OpenAI-compat `/v1`). */

@@ -1264,3 +1264,65 @@ describe('useUniverseDraft', () => {
     });
   });
 });
+
+// The universe's own backend pin (Render tab → "This universe's default") has to
+// reach the per-entry render config, not just the batch form: the cast / places /
+// objects rows POST `/api/image-gen/generate` with an EXPLICIT `mode` taken from
+// `imageCfg`, and an explicit mode outranks the record pin on the server ladder.
+// Before this, an agy-pinned universe rendered its cast on the install default.
+describe('imageCfg — universe render pin', () => {
+  const CLOUD_ON = { codex: { enabled: true }, agy: { enabled: true } };
+
+  it('folds the universe pin over the install-wide settings default', async () => {
+    apiMocks.getSettings.mockResolvedValue({ imageGen: CLOUD_ON });
+    apiMocks.listUniverses.mockResolvedValue([{ ...universe, imageMode: 'agy' }]);
+    apiMocks.getUniverse.mockResolvedValue({ ...universe, imageMode: 'agy' });
+    const { result } = renderDraft();
+    // readPipelineImageSettings prefers codex when it's enabled, so 'agy' can
+    // only come from the record pin.
+    await waitFor(() => expect(result.current.imageCfg.mode).toBe('agy'));
+  });
+
+  it('keeps the install-wide default for an unpinned universe', async () => {
+    apiMocks.getSettings.mockResolvedValue({ imageGen: CLOUD_ON });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.imageCfg.mode).toBe('codex');
+  });
+
+  // The batch form's default mode and the per-entry cfg must agree — they are
+  // the same ladder, and a page that renders its cast on agy while its batch
+  // form says codex is the inconsistency this whole change is about.
+  it('resolves the batch form default mode through the same ladder', async () => {
+    apiMocks.getSettings.mockResolvedValue({ imageGen: { mode: 'codex', ...CLOUD_ON } });
+    apiMocks.listUniverses.mockResolvedValue([{ ...universe, imageMode: 'agy' }]);
+    apiMocks.getUniverse.mockResolvedValue({ ...universe, imageMode: 'agy' });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.effectiveDefaultMode).toBe('agy'));
+    expect(result.current.imageCfg.mode).toBe('agy');
+  });
+
+  it('ignores a pin whose backend this install no longer has enabled', async () => {
+    apiMocks.getSettings.mockResolvedValue({ imageGen: { codex: { enabled: true } } });
+    apiMocks.listUniverses.mockResolvedValue([{ ...universe, imageMode: 'agy' }]);
+    apiMocks.getUniverse.mockResolvedValue({ ...universe, imageMode: 'agy' });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.imageCfg.mode).toBe('codex');
+  });
+
+  // The rung between the record pin and the install default. Batch renders and
+  // character sheets already resolved it server-side, so omitting it here made
+  // two surfaces on one page disagree about the backend.
+  it("falls through an unpinned universe to the Universe Bible renderDefaults pin", async () => {
+    apiMocks.getSettings.mockResolvedValue({
+      imageGen: CLOUD_ON,
+      renderDefaults: { 'universe-bible': { imageMode: 'agy', imageModel: 'gemini-3.5-pro' } },
+    });
+    const { result } = renderDraft();
+    await waitFor(() => expect(result.current.imageCfg.mode).toBe('agy'));
+    expect(result.current.imageCfg.cloudModel).toBe('gemini-3.5-pro');
+    // The batch form's default mode runs the same ladder.
+    expect(result.current.effectiveDefaultMode).toBe('agy');
+  });
+});

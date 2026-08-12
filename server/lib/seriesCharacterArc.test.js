@@ -41,6 +41,25 @@ describe('sanitizeTransition', () => {
     expect(TRANSITION_KINDS).toContain('point-of-no-return');
     expect(TRANSITION_KINDS).toContain('sacrifice');
   });
+
+  // The arc auto-resolve path writes through this sanitizer directly (the route
+  // schema's .max() never sees it), and a hard clip left a live beat ending
+  // "…the four-minute crossing e" — which the next verify round reads as an
+  // authoring gap, so the verify→resolve loop can't converge.
+  it('caps an over-long label on a sentence boundary, never mid-word', () => {
+    const first = 'Aruun authorizes the bounded opening. ';
+    const label = `${first}${'x'.repeat(CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX)}`;
+    const out = sanitizeTransition({ kind: 'decision', label }).label;
+    expect(out.length).toBeLessThanOrEqual(CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX);
+    expect(out).toBe(first.trim());
+  });
+
+  it('falls back to a whole-word cut when an over-long note has no sentence break', () => {
+    const note = `${'word '.repeat(CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX / 2)}tail`;
+    const out = sanitizeTransition({ kind: 'decision', label: 'x', note }).note;
+    expect(out.length).toBeLessThanOrEqual(CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX);
+    expect(out.endsWith('word')).toBe(true);
+  });
 });
 
 describe('sanitizeCharacterArc', () => {
@@ -74,6 +93,17 @@ describe('sanitizeCharacterArc', () => {
     const many = Array.from({ length: 50 }, (_, i) => ({ kind: 'decision', label: `beat ${i}` }));
     const arc = sanitizeCharacterArc({ characterName: 'Lee', transitions: [...many, { kind: 'bad' }] });
     expect(arc.transitions).toHaveLength(CHARACTER_ARC_LIMITS.TRANSITIONS_PER_ARC_MAX);
+  });
+
+  it('caps want/need/startState/endState on a sentence boundary', () => {
+    const first = 'She wants the road reopened. ';
+    const arc = sanitizeCharacterArc({
+      characterName: 'Mara',
+      want: `${first}${'y'.repeat(CHARACTER_ARC_LIMITS.WANT_MAX)}`,
+      endState: `${first}${'y'.repeat(CHARACTER_ARC_LIMITS.END_STATE_MAX)}`,
+    });
+    expect(arc.want).toBe(first.trim());
+    expect(arc.endState).toBe(first.trim());
   });
 
   it('coerces an unknown status to draft', () => {

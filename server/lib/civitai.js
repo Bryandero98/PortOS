@@ -155,15 +155,40 @@ export const pickPrimaryFile = (version) => {
   return safetensors.find((f) => f.primary) || safetensors[0];
 };
 
+// Civitai's `images[]` is really a MEDIA list — entries carry `type: 'image'`
+// or `type: 'video'`, and video entries have `.mp4` / `.webm` URLs. The LoRA
+// card renders the pick in an `<img>`, so a video URL is a permanently broken
+// thumbnail. Older sidecars were written before `type` was recorded, so fall
+// back to the extension rather than trusting the field alone.
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v)(\?|#|$)/i;
+
+const isVideoUrl = (url) => typeof url === 'string' && VIDEO_EXT_RE.test(url);
+
+const isVideoMedia = (media) => media?.type === 'video' || isVideoUrl(media?.url);
+
+/**
+ * A stored preview URL, or null when it points at a video.
+ *
+ * Applied on READ as well as on install, so sidecars written before
+ * `pickPreviewImage` learned to skip videos stop rendering a broken `<img>`
+ * without needing a reinstall — same reasoning as normalizeCivitaiImageUrl's
+ * read-side application in services/loras.js.
+ */
+export const stillPreviewUrl = (url) => (isVideoUrl(url) ? null : url);
+
 // Pick a representative preview image URL for a version (for the LoRA card
 // thumbnail). Civitai returns nsfwLevel as a numeric flag — 1 is "None", 2
 // is "Soft", 4 is "Mature", 8 is "X". We prefer the lowest-rated image so
 // the manager UI thumbnail isn't unexpectedly explicit; users who want the
 // full preview can click through to civitai.com.
+//
+// Video entries are skipped entirely — a version whose only media are videos
+// yields null, so the card shows its placeholder instead of a broken image.
 export const pickPreviewImage = (version) => {
   const images = Array.isArray(version?.images) ? version.images : [];
-  if (!images.length) return null;
-  const sorted = [...images].sort((a, b) => (a.nsfwLevel ?? 0) - (b.nsfwLevel ?? 0));
+  const stills = images.filter((media) => !isVideoMedia(media));
+  if (!stills.length) return null;
+  const sorted = [...stills].sort((a, b) => (a.nsfwLevel ?? 0) - (b.nsfwLevel ?? 0));
   return sorted[0] || null;
 };
 

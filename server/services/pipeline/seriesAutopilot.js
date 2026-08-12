@@ -49,7 +49,9 @@
 * CANON GATE: before any visual production, a series-level canonVerify step
  * (canonReadiness.js) checks that every canon noun appearing where it'd be
  * DRAWN (comic-script panels / teleplay) has a description. Undescribed drawn
- * nouns pause the run for human review — an artist can't render a name. (An
+* nouns are first backfilled strictly from the issue prose; anything the
+* manuscript still cannot support pauses the run for human review — an artist
+* can't render a name. (An
  * off-page noun named only in prose narration is never drawn, so it doesn't
  * block here; it's a Nouns-stage quality note.)
  *
@@ -75,11 +77,14 @@
 export * from './seriesAutopilot/state.js';
 export * from './seriesAutopilot/config.js';
 export * from './seriesAutopilot/convergence.js';
+export * from './seriesAutopilot/discardedEvidence.js';
+export * from './seriesAutopilot/arcMutationLedger.js';
 export * from './seriesAutopilot/stepResolver.js';
 export * from './seriesAutopilot/session.js';
 export * from './seriesAutopilot/diagnosisCore.js';
 export * from './seriesAutopilot/selfImprove.js';
 export * from './seriesAutopilot/observer.js';
+export * from './seriesAutopilot/modelPerformance.js';
 export * from './seriesAutopilot/childRuns.js';
 export * from './seriesAutopilot/editorialSteps.js';
 export * from './seriesAutopilot/visualSteps.js';

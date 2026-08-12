@@ -5,7 +5,9 @@ import { MemoryRouter } from 'react-router';
 vi.mock('../../services/api', () => ({
   startPipelineAutopilot: vi.fn(),
   cancelPipelineAutopilot: vi.fn(),
+  pausePipelineAutopilot: vi.fn(),
   getPipelineAutopilotStatus: vi.fn(),
+  getPipelineAutopilotModelMetrics: vi.fn(),
   pipelineAutopilotSseUrl: (id) => `/api/pipeline/series/${id}/autopilot/progress`,
   getPipelineSeriesCanonReadiness: vi.fn(),
   getPipelineSeries: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock('../../hooks/usePipelineProgress', () => ({
 import {
   startPipelineAutopilot,
   getPipelineAutopilotStatus,
+  getPipelineAutopilotModelMetrics,
   getPipelineSeriesCanonReadiness,
   getPipelineSeries,
   listPipelineIssues,
@@ -52,6 +55,7 @@ beforeEach(() => {
   sseLatest = null;
   sseFrames = [];
   getPipelineAutopilotStatus.mockResolvedValue({ autopilot: null, active: false });
+  getPipelineAutopilotModelMetrics.mockResolvedValue({ evidenceRuns: 0, minimumQualitySamples: 2, metrics: [], recommendations: {} });
   getPipelineSeries.mockResolvedValue(null);
   listPipelineIssues.mockResolvedValue([]);
   startPipelineAutopilot.mockResolvedValue({ runId: 'r1', mode: 'execute', alreadyRunning: false });
@@ -88,6 +92,29 @@ describe('AutopilotPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1', { includeVisual: false, fileGaps: true }, { silent: true },
+    ));
+  });
+
+  it('persists and sends evidence-based model selection only after opt-in', async () => {
+    getPipelineAutopilotModelMetrics.mockResolvedValue({
+      evidenceRuns: 6,
+      minimumQualitySamples: 2,
+      metrics: [{ qualityEvaluated: 4 }],
+      recommendations: {},
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    const toggle = screen.getByLabelText(/choose models from stage-specific results/i);
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith(
+      'pipelineEditorialChecks', { autoSelectModels: true }, { silent: true },
+    ));
+    expect(await screen.findByText(/6 attributed runs, 4 quality-reviewed/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1', { includeVisual: true, fileGaps: false, autoSelectModels: true }, { silent: true },
     ));
   });
 
@@ -355,6 +382,41 @@ describe('AutopilotPanel', () => {
     ));
   });
 
+  it('can route one stage and role to a specialist model', async () => {
+    getProviders.mockResolvedValue({
+      activeProvider: 'codex-tui',
+      providers: [{
+        id: 'codex-tui', name: 'Codex TUI', type: 'cli', enabled: true,
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
+      }],
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex-tui', model: 'gpt-5.6-luna' } });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /options/i }));
+    fireEvent.click(screen.getByLabelText(/override a specific stage and role/i));
+    expect(screen.getByLabelText('Stage override')).toHaveValue('foundationGate');
+    expect(screen.getByLabelText('Role')).toHaveValue('creative');
+    const models = screen.getAllByLabelText('Model');
+    fireEvent.change(models[1], { target: { value: 'gpt-5.6-sol' } });
+    const efforts = screen.getAllByLabelText('Thinking effort');
+    fireEvent.change(efforts[1], { target: { value: 'xhigh' } });
+    expect(screen.getByText(/Active: Codex TUI \/ gpt-5\.6-sol \/ xhigh/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
+    await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
+      's1',
+      {
+        includeVisual: true,
+        fileGaps: false,
+        stageLlm: {
+          foundationGate: {
+            creative: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+          },
+        },
+      },
+      { silent: true },
+    ));
+  });
+
   it('restores split LLM routing when a paused run is resumed', async () => {
     getProviders.mockResolvedValue({
       activeProvider: 'codex-tui',
@@ -438,6 +500,42 @@ describe('AutopilotPanel', () => {
     expect(screen.getByText(/Paused at Verifying arc/i)).toBeInTheDocument();
     expect(screen.getByText(/plot hole/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /resume autopilot/i })).toBeInTheDocument();
+  });
+
+  it('offers the rolled-back round\'s findings alongside the preserved set on a regression pause', async () => {
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArc',
+        pauseKind: 'regression',
+        residualFindings: [{ severity: 'high', location: 'V1', problem: 'preserved plot hole' }],
+        discardedFindings: [{ severity: 'high', location: 'V3', problem: 'mentor subplot never pays off' }],
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    // The restored (better) set is the work queue and stays open; the rejected
+    // candidate is collapsed behind a disclosure but reachable for comparison.
+    expect(screen.getByText(/preserved plot hole/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/what the reverted round produced/i));
+    expect(screen.getByText(/mentor subplot never pays off/i)).toBeInTheDocument();
+  });
+
+  it('omits the discarded disclosure when the pause traded nothing away', async () => {
+    renderPanel({
+      id: 's1',
+      targetFormat: 'comic',
+      autopilot: {
+        status: 'paused',
+        currentStep: 'verifyArc',
+        pauseKind: 'maxRounds',
+        residualFindings: [{ severity: 'high', location: 'V1', problem: 'plot hole' }],
+        discardedFindings: [],
+      },
+    });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(screen.queryByText(/what the reverted round produced/i)).not.toBeInTheDocument();
   });
 
   it('restores run-local visual and gap choices when a paused run resumes', async () => {
@@ -633,6 +731,28 @@ describe('AutopilotPanel', () => {
     // The original Stop affordance is gone while cancelling.
     expect(screen.queryByRole('button', { name: /^stop$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/finishing the active step/i)).toBeInTheDocument();
+  });
+
+  it('shows a non-destructive Pausing… state for a graceful pause request', async () => {
+    getPipelineAutopilotStatus.mockResolvedValue({ autopilot: { status: 'running', runId: 'r1' }, active: true });
+    sseLatest = { type: 'pause:acknowledged', runId: 'r1' };
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: /pausing/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /stop now/i })).toBeEnabled();
+    expect(screen.getByText(/pausing safely.*finishing the active step/i)).toBeInTheDocument();
+  });
+
+  it('keeps Pausing… sticky when a later progress frame replaces the acknowledgment', async () => {
+    getPipelineAutopilotStatus.mockResolvedValue({
+      autopilot: { status: 'running', runId: 'r1' },
+      active: true,
+      pauseRequested: true,
+    });
+    sseLatest = { type: 'foundation:round', runId: 'r1', round: 2, weightedScore: 7.2 };
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    expect(await screen.findByRole('button', { name: /pausing/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /stop now/i })).toBeEnabled();
   });
 
   // Pipeline self-improvement — the opt-in that lets a run diagnose PortOS's own

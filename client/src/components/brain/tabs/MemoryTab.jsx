@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import * as api from '../../../services/api';
 import {Plus,
@@ -13,7 +13,6 @@ import {Plus,
   MessageSquareText} from 'lucide-react';
 import toast from '../../ui/Toast';
 import Banner from '../../ui/Banner';
-import MarkdownOutput from '../../cos/MarkdownOutput';
 import ConversationViewer from '../ConversationViewer';
 
 import {
@@ -29,6 +28,27 @@ import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import CopyableId from '../../ui/CopyableId';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 
+// Progressive list: imported ChatGPT corpora routinely top 1k+ records with
+// multi-KB transcripts. Mounting every card (and its Markdown tree) freezes
+// the tab and can push the DOM past 100k nodes. Show a window, load more on
+// demand; search still runs over the full in-memory set.
+const INITIAL_VISIBLE = 40;
+const LOAD_MORE = 40;
+
+// Plain-text teaser for imported transcripts — avoids mounting full markdown
+// for every card. The full thread is one click away via ConversationViewer.
+export function transcriptTeaser(content, maxLen = 220) {
+  if (typeof content !== 'string' || !content) return '';
+  const plain = content
+    .replace(/!\[[^\]]*]\([^)]*\)/g, '') // images
+    .replace(/\[([^\]]*)]\([^)]*\)/g, '$1') // links → label
+    .replace(/[#>*_`~-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (plain.length <= maxLen) return plain;
+  return `${plain.slice(0, maxLen).trimEnd()}…`;
+}
+
 export default function MemoryTab({ onRefresh }) {
   const navigate = useNavigate();
   const [activeType, setActiveType] = useState('memories');
@@ -43,6 +63,7 @@ export default function MemoryTab({ onRefresh }) {
   const [backendStatus, setBackendStatus] = useState(null);
   // The chatgpt-import conversation currently open in the full-transcript viewer.
   const [viewerRecord, setViewerRecord] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
   const fetchRecords = useCallback(async () => {
@@ -86,6 +107,25 @@ export default function MemoryTab({ onRefresh }) {
   useEffect(() => {
     fetchBackendStatus();
   }, [fetchBackendStatus]);
+
+  // Reset the progressive window whenever the user changes tab/filter/search
+  // so a "Show more" from memories doesn't leave people stuck deep into a
+  // short people list.
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE);
+  }, [activeType, statusFilter, searchQuery]);
+
+  const filteredRecords = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    if (!q) return records;
+    return records.filter((r) => {
+      const fields = [
+        r.name, r.title, r.context, r.content, r.notes, r.oneLiner,
+        r.nextAction, r.mood, ...(r.tags || []), ...(r.followUps || []),
+      ];
+      return fields.some((f) => f?.toLowerCase().includes(q));
+    });
+  }, [records, searchQuery]);
 
   const handleSave = async () => {
     let result;
@@ -545,13 +585,13 @@ export default function MemoryTab({ onRefresh }) {
                   )}
                 </div>
                 {record.content && (
-                  // Imported ChatGPT transcripts carry markdown (inline images,
-                  // asset links) — render them rich, but cap the height with an
-                  // internal scroll so a long transcript preview doesn't make
-                  // the card a mile tall (the full thread is in the viewer).
+                  // Imported ChatGPT transcripts can be multi-KB markdown with
+                  // images. Rendering full MarkdownOutput for every card was
+                  // ballooning the Memory tab past 100k DOM nodes. Show a
+                  // plain teaser here; the full thread opens in ConversationViewer.
                   // Hand-written memories stay plain pre-wrap text.
                   record.source === 'chatgpt-import'
-                    ? <div className="text-sm text-gray-400 mt-1 max-h-72 overflow-y-auto pr-1"><MarkdownOutput content={record.content} /></div>
+                    ? <p className="text-sm text-gray-400 mt-1 line-clamp-3 break-words">{transcriptTeaser(record.content)}</p>
                     : <p className="text-sm text-gray-400 mt-1 whitespace-pre-wrap break-words">{record.content}</p>
                 )}
                 {record.source === 'chatgpt-import' && record.sourceRef && (
@@ -773,26 +813,26 @@ export default function MemoryTab({ onRefresh }) {
         <div className="flex items-center justify-center h-32">
           <BrailleSpinner text="Loading" />
         </div>
-      ) : (() => {
-        const q = searchQuery.toLowerCase();
-        const filtered = q
-          ? records.filter(r => {
-              const fields = [r.name, r.title, r.context, r.content, r.notes, r.oneLiner, r.nextAction, r.mood, ...(r.tags || []), ...(r.followUps || [])];
-              return fields.some(f => f?.toLowerCase().includes(q));
-            })
-          : records;
-        return filtered.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">
-            {searchQuery
-              ? `No matches for "${searchQuery}"`
-              : `No ${DESTINATIONS[activeType]?.label?.toLowerCase() || 'records'} yet. Add one or capture thoughts in the Inbox.`}
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {filtered.map(record => renderRecord(record))}
-          </div>
-        );
-      })()}
+      ) : filteredRecords.length === 0 ? (
+        <p className="text-gray-500 text-center py-8">
+          {searchQuery
+            ? `No matches for "${searchQuery}"`
+            : `No ${DESTINATIONS[activeType]?.label?.toLowerCase() || 'records'} yet. Add one or capture thoughts in the Inbox.`}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {filteredRecords.slice(0, visibleCount).map(record => renderRecord(record))}
+          {filteredRecords.length > visibleCount && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((n) => n + LOAD_MORE)}
+              className="w-full py-2.5 text-xs text-port-accent hover:text-white bg-port-border/30 hover:bg-port-border/50 rounded-lg transition-colors min-h-[44px]"
+            >
+              Show more ({filteredRecords.length - visibleCount} remaining)
+            </button>
+          )}
+        </div>
+      )}
 
       {viewerRecord && (
         <ConversationViewer record={viewerRecord} onClose={() => setViewerRecord(null)} />

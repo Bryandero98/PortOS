@@ -45,6 +45,7 @@ export * from './validation.js';
 export * from './threejsModel.js';
 export * from './threejsModelCoverage.js';
 export * from './threejsModelFamilies.js';
+export * from './threejsModelPenetration.js';
 export * from './threejsModelRig.js';
 
 // === Story & narrative ===
@@ -225,6 +226,7 @@ export * from './htmlToText.js';
 export * from './jsonExtract.js';
 export * from './taskParser.js';
 export * from './taskPauseHold.js';
+export * from './taskBlockCategories.js';
 export * from './taskRequeue.js';
 export * from './taskRetryHold.js';
 export * from './taxonomyTally.js';
@@ -248,6 +250,7 @@ export * from './localLlmDisk.js';
 export * from './localModelHeuristics.js';
 export * from './loraDataset.js';
 export * from './issueLength.js';
+export * from './investigationTasks.js';
 export * from './mediaItemKey.js';
 export * from './migrationMarker.js';
 export * from './modelPricing.js';

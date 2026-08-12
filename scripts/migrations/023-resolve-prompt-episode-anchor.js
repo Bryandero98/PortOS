@@ -40,7 +40,7 @@ export const ACCEPTED_OLD_MD5 = {
 // drift-catch test stays green against the live data.reference sample; a fresh
 // install at the pre-123 hash still advances cleanly via the accepted-OLD list.
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-resolve.md': '8bb134554c122d1583c479ab3010e53d', // post-245 (finding-keyed sparse patches)
+  'pipeline-arc-resolve.md': '2349bce80e9df8caafa391a6106327b6', // post-259 (measured text budgets)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

@@ -6,13 +6,21 @@
 
 import { buildRenderSlot } from '../../../lib/renderSlot.js';
 import { parseComicScript } from '../../../lib/comicScriptParser.js';
+import { isRunCanceledError } from '../../../lib/aiToolkit/errorDetection.js';
 import { getDomainBudgetStatus, recordDomainUsage } from '../../domainUsage.js';
 import { getIssue, updateStageWithLatest } from '../issues.js';
+import { getSeries } from '../series.js';
+import { describeCanonFromProse } from '../../universeCanon.js';
 import { slotKeyForVariant } from '../owners.js';
 import { enqueueComicCover, enqueueComicBackCover, enqueueVisualComicPage } from '../visualStages.js';
 import { checkSeriesCanonReadiness } from '../canonReadiness.js';
 import { broadcast, fileGap, providerOverrideOpts } from './session.js';
 import { slotEnqueued, pageEnqueued, visualReady } from './stepResolver.js';
+
+// Mirror the manual describe-canon route's corpus ceiling. A generated prose
+// stage may be larger, but the repair prompt should not silently become the
+// pipeline's biggest request just because Autopilot invoked the same service.
+const CANON_REPAIR_CORPUS_MAX = 200_000;
 
 // Turn a render-enqueue result into the { slotKey, slot } pair the render
 // routes persist (proof → proofImage, final → finalImage).
@@ -167,7 +175,65 @@ export async function runVisualDraft(sId, issueId, record) {
 // has no description (it can't be drawn). Marks canonVerified when clean so the
 // run proceeds to visual drafting.
 export async function runCanonVerify(sId, record) {
-  const report = await checkSeriesCanonReadiness(sId);
+  let report = await checkSeriesCanonReadiness(sId);
+  if (!report.ready) {
+    const series = await getSeries(sId);
+    const providerOpts = providerOverrideOpts(record);
+    for (const blocking of (series?.universeId ? report.blockingIssues : [])) {
+      if (record.cancelRequested) return { canceled: true };
+      const issue = await getIssue(blocking.issueId);
+      const corpus = (issue.stages?.prose?.output || '').trim().slice(0, CANON_REPAIR_CORPUS_MAX);
+      const targets = (blocking.none || [])
+        .filter((noun) => noun.locked !== true)
+        .map((noun) => ({ id: noun.id, kind: noun.kind }));
+      // Strictly manuscript-grounded by contract: no prose evidence means this
+      // issue remains a visible blocker rather than Autopilot inventing canon.
+      if (!corpus || targets.length === 0) continue;
+      const budget = await getDomainBudgetStatus('cos');
+      if (!budget.withinBudget) {
+        return {
+          pause: true,
+          pauseKind: 'budget',
+          reason: `daily cos ${budget.exceeded || 'actions'} budget reached while describing canon`,
+          residual: report.undescribed.map((noun) => ({
+            severity: 'high', location: `${noun.kind} "${noun.name}"`,
+            problem: 'Appears where it would be drawn but has no description.',
+          })),
+        };
+      }
+      let repaired;
+      try {
+        repaired = await describeCanonFromProse(series.universeId, {
+          corpus,
+          targets,
+          ...providerOpts,
+        });
+      } catch (err) {
+        if (isRunCanceledError(err)) return { canceled: true };
+        const detail = (err?.message || String(err)).slice(0, 300);
+        return {
+          pause: true,
+          pauseKind: 'providerFailed',
+          reason: `Canon description repair could not complete: ${detail}`,
+          residual: report.undescribed.map((noun) => ({
+            severity: 'high', location: `${noun.kind} "${noun.name}"`,
+            problem: 'Appears where it would be drawn but has no description.',
+          })),
+        };
+      }
+      if (repaired?.runId) await recordDomainUsage('cos', { actions: 1 });
+      broadcast(sId, {
+        type: 'canon:repair',
+        issueId: blocking.issueId,
+        filled: repaired?.report?.filled || 0,
+        unsupported: repaired?.report?.none?.length || 0,
+        skippedLocked: repaired?.report?.skippedLocked?.length || 0,
+      });
+    }
+    // Re-read after every issue-local repair. Shared canon means one fill can
+    // clear the same noun across many later issues without another LLM call.
+    report = await checkSeriesCanonReadiness(sId);
+  }
   broadcast(sId, {
     type: 'verify:round', scope: 'canon', round: 1,
     findings: report.undescribed.length, blocking: report.undescribed.length,
@@ -219,6 +285,13 @@ export async function runProduceTeaser(sId, issueId, record) {
     return {};
   } catch (err) {
     const message = (err?.message || String(err)).slice(0, 300);
+    // A Stop that lands during the treatment call is not a failed deliverable —
+    // end the run as canceled rather than filing a "retry the teaser" gap task
+    // for work the user themselves interrupted.
+    if (isRunCanceledError(err)) {
+      broadcast(sId, { type: 'step:skip', kind: 'produceTeaser', issueId, reason: `teaser production canceled: ${message}` });
+      return { canceled: true };
+    }
     broadcast(sId, { type: 'step:skip', kind: 'produceTeaser', issueId, reason: `teaser production failed: ${message}` });
     await fileGap(record, sId, {
       gapKind: 'teaser-failed',

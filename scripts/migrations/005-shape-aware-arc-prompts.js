@@ -30,6 +30,7 @@ export const ACCEPTED_OLD_MD5 = {
   'pipeline-arc-verify.md': [
     '52e31abc93e3105176236fcaa5d1575a', // pre-005 (original)
     'ff56d8387162017e08d5d0491060ddd6', // post-005 / pre-019 — the hash this migration originally produced
+    '83347e7d923580a3062033ab39b3c14b', // post-250 / pre-261 — arc spine checkpoint before exhaustive verification
   ],
   'pipeline-volume-verify.md': [
     'c6ea28e972ad6e229bafb2d602b4dda3', // pre-005 (original)
@@ -49,11 +50,11 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-overview.md':    '74d6c26548660d85fc345b2099c63b6c', // post-173 (MICE thread nesting)
-  'pipeline-arc-verify.md':      '36aa70cdfc25d7549573a4d556e7702c', // post-019
+  'pipeline-arc-overview.md':    '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
+  'pipeline-arc-verify.md':      '68f6956d7e09ebdb3870d8726b1b2a7a', // post-261 exhaustive arc verification
   'pipeline-volume-verify.md':   '49458d36700cb94e34806d536ffe2940', // post-019
   'pipeline-season-episodes.md': 'a88e8e78a949b7aaf500d03314e2ea0b', // post-172 (structure rules)
-  'pipeline-arc-resolve.md':     '8bb134554c122d1583c479ab3010e53d', // post-245 (finding-keyed sparse patches)
+  'pipeline-arc-resolve.md':     '2349bce80e9df8caafa391a6106327b6', // post-259 (measured text budgets)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

@@ -51,6 +51,9 @@ vi.mock('./seriesCanon.js', async (importActual) => ({
 vi.mock('./arcPlanner.js', async (importActual) => ({
   ...(await importActual()),
   resolveVerifyIssues: vi.fn(async () => ({ applied: true })),
+  restoreArcState: vi.fn(async () => ({ restored: true })),
+  snapshotArcState: vi.fn(async () => ({ seriesId: 'ser-1', arc: {}, seasons: [], episodes: [] })),
+  verifyArc: vi.fn(async () => ({ issues: [] })),
 }));
 
 const fileUtils = await import('../../lib/fileUtils.js');
@@ -71,11 +74,14 @@ const {
   isValidFoundationShape,
   isFoundationStale,
   residualFindings,
+  snapshotFoundationState,
+  restoreFoundationState,
   applyFoundationFix,
   establishCharacterFoundation,
   thinnestCharacter,
   rankFoundationCharacters,
   seriesFoundationCharacters,
+  countFoundationCharacterBlanks,
   foundationInputsHash,
   FOUNDATION_DIMENSIONS,
   FOUNDATION_WEIGHTS,
@@ -95,9 +101,66 @@ beforeEach(() => {
   seriesSvc.getSeries.mockResolvedValue({ id: 'ser-1', name: 'S', logline: 'L', premise: 'P', universeId: 'uni-1' });
   universeBuilder.getUniverse.mockResolvedValue(null);
   issuesSvc.listIssues.mockResolvedValue([]);
+  arcPlanner.resolveVerifyIssues.mockResolvedValue({ applied: true });
+  arcPlanner.restoreArcState.mockResolvedValue({ restored: true });
+  arcPlanner.snapshotArcState.mockResolvedValue({ seriesId: 'ser-1', arc: {}, seasons: [], episodes: [] });
+  arcPlanner.verifyArc.mockResolvedValue({ issues: [] });
   // Restore the default authored-scalar echo so a test that overrides it (blank
   // /null values) doesn't leak into later order-dependent tests.
   universeBuilderExpand.expandWorldTemplate.mockResolvedValue({ logline: 'L2', premise: 'P2', styleNotes: 'S2', influences: null });
+});
+
+describe('foundation repair checkpoint', () => {
+  it('restores and verifies world, character, craft, arc, volume, and issue-seed state', async () => {
+    let seriesState = {
+      id: 'ser-1', universeId: 'uni-1', styleNotes: 'voice before',
+      styleGuide: { tone: ['spare'] }, characterArcs: [{ characterName: 'Example Lead' }],
+    };
+    let universeState = {
+      id: 'uni-1', logline: 'world before', premise: 'rules before', styleNotes: 'style before',
+      influences: { embrace: ['Example'], avoid: [] },
+      characters: [{ id: 'chr-1', name: 'Example Lead', need: 'trust' }],
+    };
+    let arcState = {
+      seriesId: 'ser-1', arc: { summary: 'arc before' },
+      seasons: [{ id: 'sea-1', synopsis: 'volume before' }],
+      episodes: [{ id: 'iss-1', seasonId: 'sea-1', idea: { input: 'seed before', output: '', status: 'ready' } }],
+    };
+    seriesSvc.getSeries.mockImplementation(async () => structuredClone(seriesState));
+    seriesSvc.updateSeries.mockImplementationOnce(async (_id, patch) => {
+      seriesState = { ...seriesState, ...structuredClone(patch) };
+      return structuredClone(seriesState);
+    });
+    universeBuilder.getUniverse.mockImplementation(async () => structuredClone(universeState));
+    universeBuilder.updateUniverse.mockImplementationOnce(async (_id, patch) => {
+      universeState = { ...universeState, ...structuredClone(patch) };
+      return structuredClone(universeState);
+    });
+    arcPlanner.snapshotArcState.mockImplementation(async () => structuredClone(arcState));
+    arcPlanner.restoreArcState.mockImplementation(async (_id, snapshot) => {
+      arcState = structuredClone(snapshot);
+      return { restored: true, episodesRestored: 1 };
+    });
+
+    const checkpoint = await snapshotFoundationState('ser-1');
+    seriesState = { ...seriesState, styleNotes: 'voice after', characterArcs: [] };
+    universeState = { ...universeState, premise: 'rules after', characters: [] };
+    arcState = { ...arcState, arc: { summary: 'arc after' }, episodes: [] };
+
+    const restored = await restoreFoundationState('ser-1', checkpoint);
+
+    expect(restored).toMatchObject({ restored: true, episodesRestored: 1 });
+    expect(seriesState).toMatchObject({
+      styleNotes: 'voice before',
+      styleGuide: { tone: ['spare'] },
+      characterArcs: [{ characterName: 'Example Lead' }],
+    });
+    expect(universeState).toMatchObject({
+      premise: 'rules before',
+      characters: [{ id: 'chr-1', name: 'Example Lead', need: 'trust' }],
+    });
+    expect(arcState).toEqual(checkpoint.arcState);
+  });
 });
 
 describe('computeWeightedScore — weighted composite', () => {
@@ -215,6 +278,32 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     const uni2 = { characters: [{ id: 'c1', name: 'Ana', wound: 'abandoned as a child' }] };
     expect(foundationInputsHash({}, uni1)).not.toBe(foundationInputsHash({}, uni2));
   });
+  it('changes when a core character visual foundation changes', () => {
+    const series = { premise: 'Lead crosses the flooded city.' };
+    const base = { characters: [{ id: 'c1', name: 'Lead', physicalDescription: '', visualIdentity: '' }] };
+    const designed = {
+      characters: [{
+        ...base.characters[0],
+        physicalDescription: 'A compact young surveyor with copper curls and a patched yellow pressure coat.',
+        visualIdentity: 'round survey instruments against a narrow triangular silhouette',
+        visualNotes: 'mustard and oxidized copper fieldwear',
+        silhouetteNotes: 'compact torso, wide tool belt, tapered boots',
+        colorPalette: [{ name: 'survey yellow', hex: '#d9a21b', role: 'coat' }],
+      }],
+    };
+    expect(foundationInputsHash(series, base)).not.toBe(foundationInputsHash(series, designed));
+  });
+  it('changes when a series-linked character profile field changes', () => {
+    const series = { id: 'ser-1', premise: 'Lead crosses the flooded city.' };
+    const base = { characters: [{ id: 'c1', name: 'Support', sourceSeriesId: 'ser-1', pronouns: '' }] };
+    const designed = { characters: [{ ...base.characters[0], pronouns: 'they/them', skills: 'pressure-system maintenance' }] };
+    expect(foundationInputsHash(series, base)).not.toBe(foundationInputsHash(series, designed));
+  });
+  it('changes when the protected author intent changes', () => {
+    const base = { starterPrompt: 'A clockmaker discovers that dragons control the weather.' };
+    const drifted = { starterPrompt: 'Train conductors regulate an intercity signal network.' };
+    expect(foundationInputsHash({}, base)).not.toBe(foundationInputsHash({}, drifted));
+  });
   it('ignores unrelated universe-only characters once the series cast is identifiable', () => {
     const series = { premise: 'Lead crosses the flooded city.' };
     const base = {
@@ -311,12 +400,65 @@ describe('rankFoundationCharacters — core-cast repair targets', () => {
     expect(seriesFoundationCharacters(characters, series)).toHaveLength(9);
   });
 
+  it('keeps every character explicitly minted by this series even before the synopsis names them', () => {
+    const characters = [
+      { id: 'lead', name: 'Lead' },
+      { id: 'support', name: 'Support', sourceSeriesId: 'ser-1' },
+      { id: 'other', name: 'Other', sourceSeriesId: 'ser-2' },
+    ];
+    const series = { id: 'ser-1', characterArcs: [{ characterId: 'lead' }] };
+    const ids = seriesFoundationCharacters(characters, series).map((character) => character.id);
+
+    expect(ids).toEqual(expect.arrayContaining(['lead', 'support']));
+    expect(ids).not.toContain('other');
+  });
+
   it('uses a six-character fallback only before story references exist', () => {
     const characters = Array.from({ length: 9 }, (_, index) => ({
       id: `chr-${index + 1}`,
       name: `Cast ${index + 1}`,
     }));
     expect(seriesFoundationCharacters(characters, {})).toHaveLength(6);
+  });
+});
+
+describe('countFoundationCharacterBlanks — objective repair evidence', () => {
+  const series = { characterArcs: [{ characterId: 'chr-lead', characterName: 'Lead' }] };
+  const blankLead = { id: 'chr-lead', name: 'Lead', role: 'protagonist' };
+  const authoredLead = {
+    ...blankLead,
+    ghost: 'g', wound: 'w', lie: 'l', want: 'wa', need: 'n', coreTheme: 'c', motivations: 'm', speechPattern: 's',
+    pronouns: 'they/them', age: 'thirty', speechAccent: 'low measured register',
+    personality: 'careful', background: 'trained on the docks', likes: 'tea', dislikes: 'waste',
+    mannerisms: 'counts breaths', relationships: 'protective of the crew', skills: 'pressure repair',
+    secrets: ['one'],
+    physicalDescription: 'p', visualNotes: 'v', silhouetteNotes: 'si', visualIdentity: 'vi',
+    colorPalette: [{ name: 'Rope Tan', hex: '#B89A6A' }],
+  };
+
+  it('drops to zero once every framework, profile, and visual field is authored', () => {
+    expect(countFoundationCharacterBlanks([blankLead], series)).toBe(24);
+    expect(countFoundationCharacterBlanks([authoredLead], series)).toBe(0);
+  });
+
+  it('counts only the repairable roster — locked and unreferenced cast are excluded', () => {
+    const cast = [
+      blankLead,
+      { id: 'chr-locked', name: 'Locked', locked: true },
+      { id: 'chr-extra', name: 'Extra' },
+    ];
+    const lockedSeries = {
+      characterArcs: [
+        { characterId: 'chr-lead', characterName: 'Lead' },
+        { characterId: 'chr-locked', characterName: 'Locked' },
+      ],
+    };
+    // Only the unlocked, story-referenced lead contributes its 24 blanks.
+    expect(countFoundationCharacterBlanks(cast, lockedSeries)).toBe(24);
+  });
+
+  it('treats a missing cast as nothing to measure rather than throwing', () => {
+    expect(countFoundationCharacterBlanks(null, series)).toBe(0);
   });
 });
 
@@ -501,7 +643,15 @@ describe('foundation repair prompt — bounded series seed and cast', () => {
     expect(parsed.targetCharacters[0].background).toBe('b'.repeat(200));
     // The roster degrades to the differentiation spine.
     expect(parsed.fullSeriesRoster.length).toBeGreaterThan(0);
-    expect(parsed.fullSeriesRoster[0]).toEqual({ id: 'chr-0', name: 'Cast 0', role: 'lead', want: 'w'.repeat(60), need: 'n'.repeat(60) });
+    expect(parsed.fullSeriesRoster[0]).toEqual({
+      id: 'chr-0',
+      name: 'Cast 0',
+      role: 'lead',
+      want: 'w'.repeat(60),
+      need: 'n'.repeat(60),
+      physicalDescription: '',
+      visualIdentity: '',
+    });
     expect(parsed.rosterNote).toMatch(/fit the prompt budget/);
   });
 
@@ -683,14 +833,14 @@ describe('foundation repair prompt — bounded outline', () => {
       }
     });
 
-    it('requests a 10-minute timeout so a CLI provider is not killed by the 300s default', async () => {
+    it('requests a twelve-hour timeout so productive high-effort ensemble work is not killed early', async () => {
       await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the causal chain' } });
 
-      expect(__testing.CHARACTER_FOUNDATION_TIMEOUT_MS).toBe(600_000);
+      expect(__testing.CHARACTER_FOUNDATION_TIMEOUT_MS).toBe(43_200_000);
       expect(stageRunner.runStagedLLM).toHaveBeenCalledWith(
         'pipeline-character-foundation',
         expect.anything(),
-        expect.objectContaining({ timeoutOverride: 600_000 }),
+        expect.objectContaining({ timeoutOverride: 43_200_000 }),
       );
     });
   });
@@ -712,6 +862,45 @@ describe('foundation judge context — complete planning altitude', () => {
     expect(ctx.worldEntitiesSummary).toContain('Every spell erases one shared fact.');
     expect(ctx.worldEntitiesSummary).not.toContain('The Naming Tax');
     expect(ctx.characterRoster).toContain('wound: Abandoned during the Naming Tax');
+  });
+
+  it('shows actual visual identity details instead of presence-only ready markers', () => {
+    const ctx = __testing.buildFoundationContext({
+      series: { name: 'Example Series', characterArcs: [{ characterId: 'chr-1' }], seasons: [] },
+      universe: {},
+      canon: { characters: [{
+        id: 'chr-1',
+        name: 'Lead',
+        physicalDescription: 'A compact young surveyor with copper curls and a patched yellow pressure coat.',
+        visualNotes: 'Every tool is repaired with visible blue ceramic staples.',
+        silhouetteNotes: 'Compact torso, wide tool belt, tapered boots.',
+        visualIdentity: 'Round survey instruments interrupt a narrow triangular silhouette.',
+        colorPalette: [{ name: 'survey yellow', hex: '#d9a21b', role: 'coat' }],
+      }] },
+      issues: [],
+      contentMax: 30_000,
+    });
+
+    expect(ctx.characterRoster).toContain('patched yellow pressure coat');
+    expect(ctx.characterRoster).toContain('Round survey instruments');
+    expect(ctx.characterRoster).toContain('survey yellow');
+    expect(ctx.characterRoster).not.toContain('physicalDescription: ready');
+  });
+
+  it('shows profile blanks for a series-linked supporting character', () => {
+    const ctx = __testing.buildFoundationContext({
+      series: { id: 'ser-1', name: 'Example Series', seasons: [] },
+      universe: {},
+      canon: { characters: [{
+        id: 'chr-support', name: 'Support', sourceSeriesId: 'ser-1',
+        personality: 'Methodical under pressure', pronouns: '', age: '', skills: '',
+      }] },
+      issues: [],
+      contentMax: 30_000,
+    });
+    expect(ctx.characterRoster).toContain('personality: Methodical under pressure');
+    expect(ctx.characterRoster).toContain('pronouns: —');
+    expect(ctx.characterRoster).toContain('skills: —');
   });
 
   it('judges the complete story-referenced cast and excludes unrelated universe assets', () => {
@@ -787,6 +976,15 @@ describe('renderWorldFoundation — budget spends the noun inventory, not the ru
     expect(budgeted).toContain(rulesTail);
     // …and the entity inventory is what paid for it.
     expect(budgeted).not.toContain('Place 59');
+  });
+
+  it('renders the protected author intent ahead of the derived world bible', () => {
+    const out = __testing.renderWorldFoundation({
+      starterPrompt: 'A baker discovers that the moon is a sleeping whale.',
+      premise: 'The current generated premise.',
+    });
+    expect(out).toContain('Protected author intent (starter idea): A baker discovers that the moon is a sleeping whale.');
+    expect(out.indexOf('Protected author intent')).toBeLessThan(out.indexOf('Universe premise'));
   });
 
   it('omits the canon line outright rather than rendering a useless stub', () => {
@@ -933,7 +1131,188 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledWith('ser-1', expect.objectContaining({
       findings: expect.arrayContaining([expect.objectContaining({ location: 'arc', problem: 'thin midpoint' })]),
     }));
-    expect(r).toMatchObject({ dimension: 'structure', applied: true });
+    expect(arcPlanner.snapshotArcState).toHaveBeenCalledWith('ser-1');
+    expect(arcPlanner.verifyArc).toHaveBeenCalledWith('ser-1', expect.any(Object));
+    expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 2 });
+  });
+
+  it('gives a structure repair one bounded arc-verifier correction pass', async () => {
+    const blocker = {
+      severity: 'high', location: 'Issue 6', problem: 'The crossing skips its destination consent.',
+      suggestion: 'Require the far operator to authorize the opening.',
+    };
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: [blocker] })
+      .mockResolvedValueOnce({ issues: [] });
+
+    const writerOnRunCreated = vi.fn();
+    const judgeOnRunCreated = vi.fn();
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
+      providerOverride: 'writer-provider',
+      modelOverride: 'writer-model',
+      effortOverride: 'max',
+      onRunCreated: writerOnRunCreated,
+      judgeProviderDefault: 'judge-provider',
+      judgeModelDefault: 'judge-model',
+      judgeEffortDefault: 'xhigh',
+      judgeOnRunCreated,
+    });
+
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenNthCalledWith(2, 'ser-1', expect.objectContaining({
+      findings: [blocker], providerDefault: 'writer-provider', modelDefault: 'writer-model', effortDefault: 'max',
+      onRunCreated: expect.any(Function),
+    }));
+    expect(arcPlanner.verifyArc).toHaveBeenNthCalledWith(1, 'ser-1', expect.objectContaining({
+      providerDefault: 'judge-provider', modelDefault: 'judge-model', effortDefault: 'xhigh',
+      onRunCreated: judgeOnRunCreated,
+    }));
+    expect(arcPlanner.restoreArcState).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 4 });
+  });
+
+  it('keeps correcting a structure repair while its blocker count shrinks', async () => {
+    const many = Array.from({ length: 10 }, (_, idx) => ({
+      severity: 'medium', location: `Issue ${idx + 1}`, problem: `Blocker ${idx + 1}`,
+    }));
+    const three = many.slice(0, 3);
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: many })
+      .mockResolvedValueOnce({ issues: three })
+      .mockResolvedValueOnce({ issues: [] });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The issue plan contradicts the series spine.', fix: 'Reconcile it.' },
+    });
+
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledTimes(3);
+    expect(arcPlanner.verifyArc).toHaveBeenCalledTimes(3);
+    expect(arcPlanner.restoreArcState).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ dimension: 'structure', applied: true, actions: 6 });
+  });
+
+  it('retains the best verified structure checkpoint when a later correction regresses', async () => {
+    const original = { seriesId: 'ser-1', arc: { logline: 'Original' }, seasons: [], episodes: [] };
+    const firstCandidate = { seriesId: 'ser-1', arc: { logline: 'Nine blockers' }, seasons: [], episodes: [] };
+    const bestCandidate = { seriesId: 'ser-1', arc: { logline: 'One blocker' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(firstCandidate)
+      .mockResolvedValueOnce(bestCandidate);
+    const findings = (n, prefix) => Array.from({ length: n }, (_, i) => ({
+      severity: 'medium', location: `Issue ${i + 1}`, problem: `${prefix} ${i + 1}`,
+    }));
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: findings(9, 'initial') })
+      .mockResolvedValueOnce({ issues: findings(1, 'best') })
+      .mockResolvedValueOnce({ issues: findings(5, 'regressed') });
+    arcPlanner.resolveVerifyIssues
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-broad');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-improved');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-regressed');
+        return { applied: true };
+      });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The issue plan contradicts the spine.', fix: 'Reconcile it.' },
+      onRunCreated: vi.fn(),
+    });
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', bestCandidate);
+    expect(arcPlanner.restoreArcState).not.toHaveBeenCalledWith('ser-1', original);
+    expect(r).toMatchObject({
+      dimension: 'structure', applied: true, partial: true,
+      acceptedRunIds: ['structure-broad', 'structure-improved'],
+      rejectedRunIds: ['structure-regressed'],
+    });
+    expect(r.residual).toHaveLength(1);
+    expect(r.discarded).toHaveLength(5);
+  });
+
+  it('prefers more lower-severity residuals over fewer high-severity blockers', async () => {
+    const original = { seriesId: 'ser-1', arc: { logline: 'Original' }, seasons: [], episodes: [] };
+    const highCheckpoint = { seriesId: 'ser-1', arc: { logline: 'Two high blockers remain' }, seasons: [], episodes: [] };
+    const lowerCheckpoint = { seriesId: 'ser-1', arc: { logline: 'Only medium and low residuals' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(highCheckpoint)
+      .mockResolvedValueOnce(lowerCheckpoint);
+    const findings = (severities, prefix) => severities.map((severity, i) => ({
+      severity, location: `Issue ${i + 1}`, problem: `${prefix} ${i + 1}`,
+    }));
+    const highResiduals = findings(['high', 'high', 'medium', 'medium'], 'high checkpoint');
+    const lowerResiduals = findings(['medium', 'medium', 'medium', 'medium', 'medium', 'low'], 'lower checkpoint');
+    const worseResiduals = findings(['medium', 'medium', 'medium', 'medium', 'medium', 'medium', 'low'], 'worse checkpoint');
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: highResiduals })
+      .mockResolvedValueOnce({ issues: lowerResiduals })
+      .mockResolvedValueOnce({ issues: worseResiduals });
+    arcPlanner.resolveVerifyIssues
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-broad');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-lower-severity');
+        return { applied: true };
+      })
+      .mockImplementationOnce(async (_id, options) => {
+        options.onRunCreated('structure-more-mediums');
+        return { applied: true };
+      });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The issue plan contradicts the spine.', fix: 'Reconcile it.' },
+      onRunCreated: vi.fn(),
+    });
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', lowerCheckpoint);
+    expect(r).toMatchObject({
+      dimension: 'structure', applied: true, partial: true,
+      acceptedRunIds: ['structure-broad', 'structure-lower-severity'],
+      rejectedRunIds: ['structure-more-mediums'],
+    });
+    expect(r.residual).toEqual(lowerResiduals);
+    expect(r.discarded).toEqual(worseResiduals);
+    expect(r.reason).toContain('0 high, 5 medium, 1 low');
+  });
+
+  it('rolls a structure repair back when its bounded correction remains unverified', async () => {
+    const snapshot = { seriesId: 'ser-1', arc: { logline: 'Before' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState.mockResolvedValue(snapshot);
+    arcPlanner.verifyArc
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 6', problem: 'First blocker' }] })
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 7', problem: 'Residual blocker' }] })
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 8', problem: 'Still blocked' }] })
+      .mockResolvedValueOnce({ issues: [{ severity: 'high', location: 'Issue 9', problem: 'Still blocked after cap' }] });
+
+    const r = await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
+    });
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', snapshot);
+    expect(r).toMatchObject({ dimension: 'structure', applied: false, actions: 8 });
+    expect(r.reason).toMatch(/reverted to the pre-repair plan/);
+  });
+
+  it('rolls a mutated structure repair back when verification errors', async () => {
+    const snapshot = { seriesId: 'ser-1', arc: { logline: 'Before' }, seasons: [], episodes: [] };
+    arcPlanner.snapshotArcState.mockResolvedValue(snapshot);
+    arcPlanner.verifyArc.mockRejectedValueOnce(new Error('judge provider unavailable'));
+
+    await expect(applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'The midpoint lacks a costly reversal.', fix: 'Add a costly reversal.' },
+    })).rejects.toThrow('judge provider unavailable');
+
+    expect(arcPlanner.restoreArcState).toHaveBeenCalledWith('ser-1', snapshot);
   });
 
   it('routes character → judge-directed core-cast and character-arc repair', async () => {
@@ -953,6 +1332,41 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     }), expect.any(Object));
     expect(seriesSvc.updateSeries).toHaveBeenCalledWith('ser-1', expect.objectContaining({ characterArcs: expect.any(Array) }));
     expect(r).toMatchObject({ dimension: 'character', applied: true, characterArcsUpdated: true });
+  });
+
+  it('carries a rejected earlier attempt into the retry so it can change strategy', async () => {
+    // The gate reverts a repair whose target did not improve and then retries it
+    // (see runFoundationGate). Without the reverted attempt in the payload, the
+    // retry re-proposes the same edits and buys a second rollback.
+    const retryReason = 'A previous character repair this run was REVERTED: it left the target score at 5.';
+    const uni = { id: 'uni-1', characters: [{ id: 'chr-thin', name: 'B' }] };
+    universeBuilder.getUniverse.mockResolvedValue(uni);
+    universeBuilder.updateUniverse.mockImplementation(async (id, mutator) => ({ id, ...(mutator(uni) || {}) }));
+    stageRunner.runStagedLLM.mockResolvedValue({ content: { characters: [] } });
+
+    await applyFoundationFix('ser-1', 'character', { finding: { gap: 'blank lead', fix: 'build the chain', retryReason } });
+    expect(JSON.parse(stageRunner.runStagedLLM.mock.calls.at(-1)[1].foundationFindingJson)).toMatchObject({
+      gap: 'blank lead', fix: 'build the chain', retryReason,
+    });
+
+    stageRunner.runStagedLLM.mockClear();
+    await applyFoundationFix('ser-1', 'worldbuilding', { finding: { gap: 'costless magic', fix: 'price it', retryReason } });
+    expect(universeBuilderExpand.expandWorldTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      foundationDirective: expect.stringContaining(retryReason),
+    }));
+
+    // Structure has a structured channel of its own: the reverted findings ride
+    // `avoid` (never authored again) instead of the suggestion the resolver
+    // would read as work to close.
+    const discarded = [{ severity: 'high', location: 'arc', problem: 'the charter handoff is still thin' }];
+    await applyFoundationFix('ser-1', 'structure', {
+      finding: { gap: 'thin handoff', fix: 'stage it', retryReason },
+      avoidFindings: discarded,
+    });
+    expect(arcPlanner.resolveVerifyIssues).toHaveBeenCalledWith('ser-1', expect.objectContaining({
+      findings: [expect.objectContaining({ problem: 'thin handoff', suggestion: 'stage it' })],
+      avoid: discarded,
+    }));
   });
 
   it('keeps existing transition beats structure-owned during post-arc character repair', async () => {
@@ -1086,6 +1500,11 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
         lie: 'Trust creates casualties', want: 'Act alone', need: 'Choose interdependence',
         coreTheme: 'trust', motivations: 'Protect others while hiding fear',
         speechPattern: 'clipped observations', arcType: 'positive', secrets: ['Caused the failure'],
+        physicalDescription: 'A compact young rescuer with close-cropped silver hair, a square jaw, and a patched ochre pressure coat.',
+        visualNotes: 'ochre and charcoal rescue layers with round analog gauges',
+        silhouetteNotes: 'compact torso, broad tool belt, tapered boots',
+        visualIdentity: 'rounded rescue hardware against a compact triangular silhouette',
+        colorPalette: [{ name: 'rescue ochre', hex: '#c88928', role: 'coat' }],
       }],
       characterArcs: [{
         characterId: 'chr-thin', characterName: 'Lead', want: 'Act alone', need: 'Choose interdependence',
@@ -1095,6 +1514,9 @@ describe('applyFoundationFix — dimension → owning-service routing table', ()
     } });
     const r = await establishCharacterFoundation('ser-1', { providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' });
     expect(r).toMatchObject({ ran: true, applied: true });
+    expect(r.updatedFields).toEqual(expect.arrayContaining([
+      'physicalDescription', 'visualNotes', 'silhouetteNotes', 'visualIdentity', 'colorPalette',
+    ]));
     expect(stageRunner.runStagedLLM).toHaveBeenCalledWith('pipeline-character-foundation', expect.objectContaining({
       phase: 'pre-arc character foundation',
     }), expect.objectContaining({ providerDefault: 'codex', modelDefault: 'gpt-x', effortDefault: 'high' }));

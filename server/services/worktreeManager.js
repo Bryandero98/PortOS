@@ -188,6 +188,10 @@ export async function forceRemoveWorktreeDir(repo, worktreePath, { label, log = 
  * lockfile churn. Pure (testable) — callers decide what to do with the result.
  *
  * @param {string} porcelain - raw `git status --porcelain` stdout
+ * @param {object} [options]
+ * @param {string[]} [options.ignoredPaths] - runtime-only paths that must not
+ *   preserve a completed worktree. They are still removed only when the rest of
+ *   the tree is safe to remove.
  * @returns {{ clean: boolean, lockfileOnly: boolean, lockfilePaths: string[], realChangePaths: string[], hasRealChanges: boolean }}
  *   - clean: no changes at all
  *   - lockfileOnly: every change is an auto-generated lockfile (safe to discard)
@@ -198,15 +202,19 @@ export async function forceRemoveWorktreeDir(repo, worktreePath, { label, log = 
  *     superseded while it sat uncommitted.
  *   - hasRealChanges: at least one non-lockfile change (worktree must be preserved)
  */
-export function classifyWorktreeDirt(porcelain) {
-  const lines = (porcelain || '').split('\n').map(l => l.trim()).filter(Boolean);
+export function classifyWorktreeDirt(porcelain, { ignoredPaths = [] } = {}) {
+  const ignored = new Set(ignoredPaths);
+  const toPath = (line) => line.replace(/^\s*\S+\s+/, '').split(' -> ').pop();
+  const lines = (porcelain || '').split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .filter(line => !ignored.has(toPath(line)));
   if (lines.length === 0) {
     return { clean: true, lockfileOnly: false, lockfilePaths: [], realChangePaths: [], hasRealChanges: false };
   }
   const isLockfile = (line) => AUTO_GENERATED_LOCKFILES.some(f => line.endsWith(f));
   // `R old -> new` (rename) names two paths; the post-rename path is the one
   // that exists on disk and the one a diff against the default branch reports.
-  const toPath = (line) => line.replace(/^\s*\S+\s+/, '').split(' -> ').pop();
   const lockfileLines = lines.filter(isLockfile);
   const lockfileOnly = lockfileLines.length === lines.length;
   return {
@@ -534,17 +542,21 @@ export async function removeWorktree(agentId, sourceWorkspace, branchName, optio
     warnings.push(`Worktree preserved — git status failed: ${err.message}`);
     return { merged: false, removed: false, uncommittedSaved: false, warnings };
   }
-  if (dirtyFiles && options.discardDirt) {
+  // `.agent-done` is a completion sentinel, not authored work. It has already
+  // been consumed by finalizeAgent before this cleanup runs. Ignore it for the
+  // preservation decision, while still preserving the tree if any real change
+  // remains; the eventual forced worktree removal discards the sentinel with the
+  // rest of the completed checkout.
+  const dirt = classifyWorktreeDirt(dirtyFiles, { ignoredPaths: ['.agent-done'] });
+  if (!dirt.clean && options.discardDirt) {
     // Throwaway posture: the caller has already established that nothing in this
     // tree is wanted. Log what is being dropped so a surprising loss is at least
     // traceable, then fall through to removal.
-    const dirt = classifyWorktreeDirt(dirtyFiles);
     const shown = dirt.realChangePaths.slice(0, DIRT_PATHS_IN_WARNING);
     if (shown.length) console.log(`🌳 Discarding uncommitted changes in throwaway worktree ${agentId}: ${shown.join(', ')}`);
-  } else if (dirtyFiles) {
+  } else if (!dirt.clean) {
     // Discard auto-generated lockfile changes that agents don't intend to commit
     // (e.g., npm install resolving ^version to exact version in package-lock.json)
-    const dirt = classifyWorktreeDirt(dirtyFiles);
     if (dirt.lockfileOnly) {
       console.log(`🧹 Discarding ${dirt.lockfilePaths.length} auto-generated lockfile change(s) in worktree ${agentId}`);
       await execGit(['checkout', '--', ...dirt.lockfilePaths], worktreePath);

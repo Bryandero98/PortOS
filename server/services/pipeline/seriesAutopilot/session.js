@@ -11,6 +11,7 @@ import { addNotification, removeByMetadata, NOTIFICATION_TYPES, PRIORITY_LEVELS 
 import { getSeries, updateSeries } from '../series.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
+import { patchRunMetadata, stopRun } from '../../runner.js';
 import { runs, autopilotEvents, noteSignal } from './state.js';
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,11 @@ import { runs, autopilotEvents, noteSignal } from './state.js';
 export function isAutopilotActive(seriesId) {
   const run = runs.get(seriesId);
   return !!run && !run.finished;
+}
+
+export function isAutopilotPauseRequested(seriesId) {
+  const run = runs.get(seriesId);
+  return !!run && !run.finished && run.pauseRequested === true;
 }
 
 // The `start` frame of an IN-FLIGHT run (null when none is active). Everything
@@ -53,6 +59,30 @@ export function cancelSeriesAutopilot(seriesId) {
   const child = run.activeChild;
   if (child?.kind === 'beats') volumeBeatsRunner.cancelVolumeBeatsRun(child.id);
   else if (child?.kind === 'text') autoRunner.cancelAutoRun(child.id);
+  // Direct staged-LLM steps (arc, episode plan, foundation judge/repair) do
+  // not have a delegated child coordinator. Stop their concrete run too; the
+  // prompt runner reports fallback run ids through the same lifecycle hook.
+  if (run.activeLlmRunId) {
+    stopRun(run.activeLlmRunId).catch((err) => {
+      console.log(`⚠️ autopilot: active LLM stop failed for ${seriesId.slice(0, 12)}: ${err.message}`);
+    });
+  }
+  return true;
+}
+
+// Graceful control for quality-first runs: finish the current top-level step
+// (and any provisional repair + independent verification transaction inside
+// it), then persist a resumable pause. Unlike Cancel this deliberately does not
+// stop the active provider run or delegated child.
+export function pauseSeriesAutopilot(seriesId) {
+  const run = runs.get(seriesId);
+  if (!run || run.finished) return false;
+  run.pauseRequested = true;
+  broadcastSse(run, {
+    type: 'pause:acknowledged',
+    runId: run.runId,
+    requestedAt: new Date().toISOString(),
+  });
   return true;
 }
 
@@ -105,6 +135,8 @@ export async function persistMarker(seriesId, patch) {
       ...(run.options.modelOverride ? { modelOverride: run.options.modelOverride } : {}),
       ...(run.options.effortOverride ? { effortOverride: run.options.effortOverride } : {}),
       ...(run.options.judgeLlm ? { judgeLlm: run.options.judgeLlm } : {}),
+      ...(run.options.stageLlm ? { stageLlm: run.options.stageLlm } : {}),
+      autoSelectModels: run.options.autoSelectModels === true,
     }
     : null;
   await updateSeries(seriesId, {
@@ -203,23 +235,12 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // stageRunner's `providerDefault`/`modelDefault` at the leaf call while keeping
 // its existing hard `providerOverride`/`providerId` + `modelOverride`/`model`
 // params untouched for manual route callers.
-export const roleLlm = (record, role = 'creative') => {
-  const base = record?.options || {};
-  const route = role === 'judge' && base.judgeLlm && typeof base.judgeLlm === 'object'
-    ? base.judgeLlm
-    : null;
-  if (!route) {
-    return {
-      providerOverride: base.providerOverride,
-      modelOverride: base.modelOverride,
-      effortOverride: base.effortOverride,
-    };
-  }
+const inheritLlmRoute = (route, base) => {
+  if (!route || typeof route !== 'object') return base;
   const providerOverride = route.providerOverride || base.providerOverride;
-  // A model id belongs to its provider. When the judge route changes provider
-  // and leaves model blank, use that provider's default instead of carrying the
-  // creative provider's model across. A same-provider/effort-only judge route
-  // deliberately inherits the creative model.
+  // A model id belongs to its provider. When a route changes provider and
+  // leaves model blank, use that provider's default instead of carrying a model
+  // across. Same-provider and effort-only routes deliberately inherit it.
   const providerChanged = !!route.providerOverride
     && route.providerOverride !== base.providerOverride;
   return {
@@ -229,12 +250,59 @@ export const roleLlm = (record, role = 'creative') => {
   };
 };
 
+export const roleLlm = (record, role = 'creative') => {
+  const options = record?.options || {};
+  const base = {
+    providerOverride: options.providerOverride,
+    modelOverride: options.modelOverride,
+    effortOverride: options.effortOverride,
+  };
+  const roleRoute = role === 'judge'
+    ? inheritLlmRoute(options.judgeLlm, base)
+    : base;
+  const stageRoute = options.stageLlm?.[record?.currentStep]?.[role];
+  if (stageRoute && typeof stageRoute === 'object' && Object.keys(stageRoute).length > 0) {
+    return inheritLlmRoute(stageRoute, roleRoute);
+  }
+  const learned = options.autoSelectModels === true
+    && options.modelRoutesExplicit?.[role] !== true
+    ? options.modelRecommendations?.[record?.currentStep]?.[role]
+    : null;
+  if (learned) {
+    return {
+      providerOverride: learned.providerOverride,
+      modelOverride: learned.modelOverride,
+      effortOverride: learned.effortOverride,
+    };
+  }
+  return roleRoute;
+};
+
+const runLifecycle = (record, role) => ({
+  onRunCreated: (runId) => {
+    record.activeLlmRunId = runId;
+    patchRunMetadata(runId, {
+      autopilotSystem: 'series',
+      autopilotRunId: record.runId || null,
+      pipelineStage: record.currentStep || 'unknown',
+      pipelineRole: role,
+    }).catch(() => {});
+    // Close the race where Stop lands after createRun but before provider
+    // execution registers its child process.
+    if (record.cancelRequested) stopRun(runId).catch(() => {});
+  },
+  onRunSettled: (runId) => {
+    if (record.activeLlmRunId === runId) record.activeLlmRunId = null;
+  },
+});
+
 export const providerOverrideOpts = (record, role = 'creative') => {
   const llm = roleLlm(record, role);
   return {
     providerDefault: llm.providerOverride,
     modelDefault: llm.modelOverride,
     effortDefault: llm.effortOverride,
+    ...runLifecycle(record, role),
   };
 };
 export const providerIdOpts = (record, role = 'creative') => {
@@ -243,6 +311,7 @@ export const providerIdOpts = (record, role = 'creative') => {
     providerIdDefault: llm.providerOverride,
     modelIdDefault: llm.modelOverride,
     effortIdDefault: llm.effortOverride,
+    ...runLifecycle(record, role),
     // Multi-candidate draft gate (#2169): bill one cos action per re-roll and stop
     // re-rolling when the daily budget is spent. Only ever invoked by
     // generateStage's runDraftGate on a judgeable stage with draftAttempts > 1 — a

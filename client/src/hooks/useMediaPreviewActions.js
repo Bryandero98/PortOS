@@ -25,6 +25,24 @@ function buildImageGenParams(item) {
   return params;
 }
 
+// Common params for every /media/video handoff — Send-to-Video (an image
+// becomes the i2v source) and Continue (a clip's last frame does). Both open
+// the form on the direction that produced the source, so the user isn't
+// retyping a prompt the record already carries. `(no prompt)` is the sidecar
+// placeholder for items that lost theirs — skip it so the next render doesn't
+// start with that literal, and an item we never generated lands on a blank
+// prompt rather than a bogus one. The caller adds `sourceImageFile`, which is
+// the only thing that differs between the two.
+function buildVideoGenParams(item) {
+  const params = new URLSearchParams();
+  if (item.prompt && item.prompt !== '(no prompt)') params.set('prompt', item.prompt);
+  const neg = item.negativePrompt || item.raw?.negativePrompt || item.raw?.negative_prompt;
+  if (neg) params.set('negativePrompt', neg);
+  if (item.width) params.set('w', String(item.width));
+  if (item.height) params.set('h', String(item.height));
+  return params;
+}
+
 /**
  * Shared MediaPreview / MediaLightbox action handlers. The same four
  * callbacks (`onRemix`, `onSendToVideo`, `onContinue`, `onClean`) used to
@@ -113,17 +131,11 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
   }, [navigate]);
 
   // Send to Video: open the Video Gen page with the image queued as the
-  // i2v source. `negativePrompt` is resolved from any of the legacy aliases
-  // (`raw.negativePrompt` / `raw.negative_prompt`) so older metadata still
-  // populates the field.
+  // i2v source.
   const handleSendToVideo = useCallback((item) => {
     if (!item?.filename) return;
-    const params = new URLSearchParams({ sourceImageFile: item.filename });
-    if (item.prompt && item.prompt !== '(no prompt)') params.set('prompt', item.prompt);
-    const neg = item.negativePrompt || item.raw?.negativePrompt || item.raw?.negative_prompt;
-    if (neg) params.set('negativePrompt', neg);
-    if (item.width) params.set('w', String(item.width));
-    if (item.height) params.set('h', String(item.height));
+    const params = buildVideoGenParams(item);
+    params.set('sourceImageFile', item.filename);
     navigate(`/media/video?${params}`);
   }, [navigate]);
 
@@ -139,6 +151,9 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
   // with it as the i2v source — the canonical "extend this take" path.
   // `item.id` is the video job id; extractLastFrame returns the new image
   // filename. Toast handles the error path; the caller doesn't need to.
+  // Takes the NORMALIZED item (normalizeVideo) — buildVideoGenParams reads the
+  // prompt/negative off that shape, so a raw history record must be normalized
+  // by the caller rather than passed through.
   const handleContinue = useCallback(async (item) => {
     if (!item?.id) return;
     const { filename } = await extractLastFrame(item.id, { silent: true }).catch((err) => {
@@ -146,9 +161,8 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
       return {};
     });
     if (!filename) return;
-    const params = new URLSearchParams({ sourceImageFile: filename });
-    if (item.width) params.set('w', String(item.width));
-    if (item.height) params.set('h', String(item.height));
+    const params = buildVideoGenParams(item);
+    params.set('sourceImageFile', filename);
     navigate(`/media/video?${params}`);
   }, [navigate]);
 

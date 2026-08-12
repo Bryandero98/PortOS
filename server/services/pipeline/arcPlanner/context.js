@@ -9,13 +9,13 @@
 
 import { MANUSCRIPT_TYPES } from '../series.js';
 import { listIssues, STAGE_INPUT_MAX } from '../issues.js';
-import { ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { ARC_LIMITS, ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
 import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { renderCharacterArcsForPrompt } from '../../../lib/seriesCharacterArc.js';
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
 import { DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
 import { getUniverse } from '../../universeBuilder.js';
-import { getSeriesCanon } from '../seriesCanon.js';
+import { getSeriesPlanningCanon, scopeCanonForSeries } from '../seriesCanon.js';
 import { renderCanonForPrompt, renderCategoriesForPrompt, renderCompositesForPrompt, renderEntitiesSummary } from '../../../lib/universePromptRenderers.js';
 
 export const ERR_VALIDATION = 'PIPELINE_ARC_VALIDATION';
@@ -109,10 +109,12 @@ export function appendCharacterFirstArcGuidance(shapeGuidance, characterFoundati
 // The world is the canonical source for factions, characters, environments,
 // etc. — without this, the arc planner would only see the series' own
 // characters/places/objects which are usually empty pre-prose.
-export async function loadWorldContext(universeId) {
-  if (!universeId) return null;
-  const world = await getUniverse(universeId).catch(() => null);
+export async function loadWorldContext(series) {
+  if (!series?.universeId) return null;
+  const world = await getUniverse(series.universeId).catch(() => null);
   if (!world) return null;
+  const planningCanon = scopeCanonForSeries(world, series);
+  const scopedWorld = { ...world, ...planningCanon };
 
   const embrace = Array.isArray(world.influences?.embrace) ? world.influences.embrace : [];
   const avoid = Array.isArray(world.influences?.avoid) ? world.influences.avoid : [];
@@ -135,13 +137,13 @@ export async function loadWorldContext(universeId) {
     // Universe canon — named characters/places/objects the arc references by
     // name. Separate from categories because the LLM should treat these as
     // first-class entities, not exploratory variations.
-    worldCanonText: renderCanonForPrompt(world) || '(none)',
-    worldCharacterFoundationText: renderCharacterFoundationForArc(world.characters),
+    worldCanonText: renderCanonForPrompt(scopedWorld) || '(none — no named entities are tied to this series yet)',
+    worldCharacterFoundationText: renderCharacterFoundationForArc(planningCanon.characters),
     // Compact one-line-per-kind synopsis of canon — intended for text stages
     // (prose/teleplay/comic-script) where the full canon dump would dominate
     // the prompt. Arc-level prompts also receive it so a template author can
     // pick whichever level of detail fits the section being grounded.
-    worldEntitiesSummary: renderEntitiesSummary(world) || '(none)',
+    worldEntitiesSummary: renderEntitiesSummary(scopedWorld) || '(none — no named entities are tied to this series yet)',
   };
 }
 
@@ -169,7 +171,7 @@ export const EMPTY_WORLD_CONTEXT = {
 // that chain (verify → resolve) don't reload the same world twice.
 export async function resolveWorldContext(series, preloaded) {
   if (preloaded) return preloaded;
-  return (await loadWorldContext(series.universeId)) || EMPTY_WORLD_CONTEXT;
+  return (await loadWorldContext(series)) || EMPTY_WORLD_CONTEXT;
 }
 
 // Canonical issue sort: arcPosition first (issues seeded by the season-
@@ -371,7 +373,7 @@ export async function buildArcOverviewContext(series, preloadedWorld) {
   const structure = recommendStructure(series.issueCountTarget);
   const [world, canon] = await Promise.all([
     resolveWorldContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
   const arc = series.arc || {};
   // Two-mode prompt: when arc.shape is set the prompt's `{{#pickedShapeId}}`
@@ -504,21 +506,31 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
   return tree;
 }
 
-export async function buildVerifyContext(series, preloadedWorld) {
+export async function buildVerifyContext(series, preloadedWorld, { spineOnly = false } = {}) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const [issues, base, canon] = await Promise.all([
-    listIssues({ seriesId: series.id }),
+    // Spine mode renders no episode leaves, so skip the load rather than fetch
+    // and sanitize every issue's full record (stage run history included) only
+    // for `groupIssuesBySeasonTree` to drop it.
+    spineOnly ? [] : listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
   const tree = groupIssuesBySeasonTree(seasons, issues, {
     // `synopsis` key (not `beats`) so it matches the prompt's existing
     // language; sourced from idea.input which carries the LLM's logline+synopsis.
+    // `arcRole` is required, not decorative: the verify prompt's arc-role
+    // imbalance check (#6) reports "zero pilot/finale" purely from this leaf, so
+    // omitting it made that finding unsatisfiable — a volume with a correct
+    // pilot and finale still got flagged, every pass. The foundation gate's
+    // structure arm reverts whenever verifyArc leaves any blocker, so that one
+    // permanent false positive stalled the gate on plans with nothing wrong.
     renderLeaf: (iss) => ({
       number: iss.number,
       title: iss.title,
       status: iss.status,
       arcPosition: iss.arcPosition,
+      arcRole: iss.arcRole || null,
       synopsis: (iss.stages?.idea?.input || '').trim() || null,
     }),
     seasonFields: (s) => ({
@@ -534,6 +546,7 @@ export async function buildVerifyContext(series, preloadedWorld) {
   });
   return {
     ...base,
+    arcSpineOnly: spineOnly,
     seasonsTreeJson: JSON.stringify(tree, null, 2),
     existingCharactersJson: JSON.stringify(canon.characters, null, 2),
     existingPlacesJson: JSON.stringify(canon.places, null, 2),
@@ -701,12 +714,63 @@ export function matchResolvedFindings(raw, validIds) {
   return { declared: true, matched };
 }
 
-export async function buildResolveContext(series, findings, preloadedWorld) {
-  const ctx = await buildVerifyContext(series, preloadedWorld);
+/**
+ * `options.avoid` — findings that a PREVIOUS attempt at this same round
+ * authored, and that got that attempt reverted. They are not in the plan the
+ * context describes (the caller restored the pre-attempt state first), so they
+ * are rendered as a separate "do not author these" list rather than mixed into
+ * `findingsJson`: asking the resolver to close a problem the plan no longer has
+ * is how a corrective pass invents a fresh contradiction. Absent/empty on a
+ * first attempt, which leaves the prompt section out entirely.
+ *
+ * `options.spineOnly` renders the same episode-empty plan the pre-episode
+ * checkpoint's verify saw, and sets the `arcSpineOnly` flag the prompt gates
+ * its scope prohibition on — see `resolveVerifyIssues` for why the two halves
+ * have to agree (#3789).
+ */
+export async function buildResolveContext(series, findings, preloadedWorld, options = {}) {
+  const ctx = await buildVerifyContext(series, preloadedWorld, { spineOnly: options.spineOnly === true });
   const structure = recommendStructure(series.issueCountTarget);
+  const avoid = shapeFindings(options.avoid);
   return {
     ...ctx,
+    characterArcsJson: JSON.stringify(series.characterArcs || [], null, 2),
     findingsJson: JSON.stringify(stampFindingIds(findings), null, 2),
+    // The bounded per-finding fallback: the prompt is told the one-record,
+    // one-field contract the server will enforce on this response, so an
+    // over-reaching candidate is discouraged rather than only discarded after
+    // the provider call is already paid for.
+    isolatedRepair: options.isolated === true,
+    hasAvoid: avoid.length > 0,
+    avoidJson: JSON.stringify(avoid, null, 2),
+    textBudgetsJson: JSON.stringify({
+      arc: {
+        summary: {
+          current: (series.arc?.summary || '').length,
+          max: ARC_LIMITS.SUMMARY_MAX,
+          remaining: Math.max(0, ARC_LIMITS.SUMMARY_MAX - (series.arc?.summary || '').length),
+        },
+        protagonistArc: {
+          current: (series.arc?.protagonistArc || '').length,
+          max: ARC_LIMITS.PROTAGONIST_ARC_MAX,
+          remaining: Math.max(0, ARC_LIMITS.PROTAGONIST_ARC_MAX - (series.arc?.protagonistArc || '').length),
+        },
+      },
+      seasons: (series.seasons || []).map((season) => ({
+        id: season.id,
+        number: season.number,
+        synopsis: {
+          current: (season.synopsis || '').length,
+          max: ARC_LIMITS.SEASON_SYNOPSIS_MAX,
+          remaining: Math.max(0, ARC_LIMITS.SEASON_SYNOPSIS_MAX - (season.synopsis || '').length),
+        },
+        endingHook: {
+          current: (season.endingHook || '').length,
+          max: ARC_LIMITS.SEASON_ENDING_HOOK_MAX,
+          remaining: Math.max(0, ARC_LIMITS.SEASON_ENDING_HOOK_MAX - (season.endingHook || '').length),
+        },
+      })),
+    }, null, 2),
     recommendedStructure: structure
       ? describeStructure(structure)
       : '(no target episode count set)',
@@ -738,7 +802,7 @@ async function buildBeatTree(series, preloadedWorld) {
   const [issues, base, canon] = await Promise.all([
     listIssues({ seriesId: series.id }),
     buildArcBaseContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
   const tree = groupIssuesBySeasonTree(seasons, issues, {
     renderLeaf: renderVolumeIssue,

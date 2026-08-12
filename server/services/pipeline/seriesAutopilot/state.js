@@ -10,8 +10,9 @@ import { EventEmitter } from 'events';
 // warns about.
 import { diagnosisOptedIn } from './diagnosisCore.js';
 
-// runs: Map<seriesId, { runId, clients[], lastPayload, startPayload, cancelRequested,
-//   finished, cleanupTimer, startedAt, mode, options, runState, activeChild }>
+// runs: Map<seriesId, { runId, clients[], lastPayload, startPayload, cancelRequested, pauseRequested,
+//   finished, cleanupTimer, startedAt, mode, options, runState, activeChild,
+//   activeLlmRunId }>
 // `startPayload` is the run's `start` frame, retained so a client attaching
 // mid-run can still read it (SSE replay only carries `lastPayload`).
 export const runs = new Map();
@@ -52,8 +53,8 @@ export const AUTOPILOT_TERMINAL_TYPES = new Set(['complete', 'paused', 'canceled
 // diagnosis runs BEFORE them, and their content reaches it as the `outcome` +
 // `reason` arguments instead.
 export const SIGNAL_FRAME_TYPES = Object.freeze(new Set([
-  'note', 'step:skip', 'verify:round', 'resolve:round', 'resolve:rollback', 'check:complete',
-  'foundation:round', 'foundation:fix', 'child:retry', 'child:escalate',
+  'note', 'step:skip', 'verify:round', 'resolve:round', 'resolve:rollback', 'resolve:isolate', 'check:complete',
+  'foundation:round', 'foundation:fix', 'foundation:rollback', 'canon:repair', 'child:retry', 'child:escalate',
   'revision:cycle', 'revision:converged', 'gap:filed',
 ]));
 

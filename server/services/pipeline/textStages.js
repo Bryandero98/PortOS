@@ -680,6 +680,8 @@ async function runStageLLMOnce(issueId, stageId, template, ctx, options) {
       // per-stage `effort` pin, and the runner clamps/drops it per provider.
       effortDefault: options.effortIdDefault,
       source: 'pipeline-text-stage',
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
     });
   } catch (err) {
     await updateStage(issueId, stageId, {

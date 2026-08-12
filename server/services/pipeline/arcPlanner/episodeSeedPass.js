@@ -5,12 +5,12 @@
 
 import { runStagedLLM } from '../../../lib/stageRunner.js';
 import { getSeries } from '../series.js';
-import { createIssue, listIssues } from '../issues.js';
+import { createIssue, listIssues, updateIssue, TEXT_STAGE_IDS } from '../issues.js';
 import { renderArcShapeGuidance, renderArcShapePositionSummary } from '../../../lib/storyArc.js';
 import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { extractCanonFromProse } from '../../universeCanon.js';
 import { resolveSeriesLlmOverride } from '../../../lib/seriesLlmOverride.js';
-import { getSeriesCanon } from '../seriesCanon.js';
+import { getSeriesPlanningCanon } from '../seriesCanon.js';
 import { ARC_ROLES, ERR_VALIDATION, SEASON_LENGTH_PRESETS, SHAPE_GUIDANCE_NONE, appendCharacterFirstArcGuidance, appendTickingClock, lengthProfileForArcRole, makeErr, renderPriorSeason, resolveWorldContext } from './context.js';
 
 /**
@@ -26,7 +26,7 @@ export async function buildSeasonEpisodesContext(series, season, priorSeasons, p
     : priorSeasons.map((s) => renderPriorSeason(s, priorIssues)).join('\n\n');
   const [world, canon] = await Promise.all([
     resolveWorldContext(series, preloadedWorld),
-    getSeriesCanon(series),
+    getSeriesPlanningCanon(series),
   ]);
   const totalSeasons = (series.seasons || []).length || 1;
   const arcGuidance = appendCharacterFirstArcGuidance(
@@ -166,6 +166,8 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
       modelOverride: options.modelOverride,
       modelDefault: options.modelDefault,
       effortDefault: options.effortDefault,
+      onRunCreated: options.onRunCreated,
+      onRunSettled: options.onRunSettled,
       returnsJson: true,
       source: 'pipeline-season-episodes',
     },
@@ -189,15 +191,42 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
  * Builder's "generate issues from arc" action so both mint byte-identical
  * issue shapes. The episode's logline + synopsis land in `stages.idea.input`.
  */
-export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], { preloadedSeries = null } = {}) {
+// Archived runHistory is deliberately NOT current work: preserving it while a
+// rejected draft's now-empty placeholder receives a new episode seed is the
+// point of reuse. Protect only present narrative or a genuinely in-flight
+// stage. A stale lastRunId on an empty terminal stage is attribution for the
+// archived version, not content that should force duplicate issue creation.
+const hasCurrentNarrativeWork = (issue) => TEXT_STAGE_IDS.some((stageId) => {
+  const stage = issue?.stages?.[stageId];
+  return Boolean(stage?.input?.trim() || stage?.output?.trim() || stage?.status === 'generating');
+});
+
+export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], {
+  preloadedSeries = null,
+  reuseUngrouped = false,
+} = {}) {
   // Fetch the series once for the whole batch (unless the caller already holds
   // it) and thread it into each createIssue's renumber pass. The series record
   // doesn't change as issues are appended, so an N-episode season otherwise
   // pays N redundant getSeries reads of an unchanging record.
   const series = preloadedSeries || await getSeries(seriesId).catch(() => null);
+  const ungrouped = reuseUngrouped
+    ? (await listIssues({ seriesId })).filter((issue) => !issue.seasonId)
+    : [];
+  const reusable = ungrouped
+    .filter((issue) => !hasCurrentNarrativeWork(issue))
+    .sort((a, b) => (a.number || 0) - (b.number || 0));
+  const canReuse = reusable.length === episodes.length && episodes.length > 0;
+  if (reuseUngrouped && episodes.length > 0 && ungrouped.length > 0 && !canReuse) {
+    throw makeErr(
+      `Cannot safely seed ${episodes.length} generated episode(s): the series has ${ungrouped.length} ungrouped issue record(s), and ${reusable.length} are empty narrative placeholders. Reconcile that set before resuming so Autopilot does not duplicate or overwrite issue work.`,
+      ERR_VALIDATION,
+    );
+  }
   const created = [];
-  for (const ep of episodes) {
-    const issue = await createIssue({
+  for (let index = 0; index < episodes.length; index += 1) {
+    const ep = episodes[index];
+    const patch = {
       seriesId,
       title: ep.title,
       // Issue `number` is derived from (volume order, arcPosition) by
@@ -216,9 +245,20 @@ export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], 
         idea: {
           status: ep.synopsis ? 'edited' : 'empty',
           input: [ep.logline, ep.synopsis].filter(Boolean).join('\n\n'),
+          // Reused placeholders can carry an archived run id even though the
+          // active text was intentionally cleared. The episode-plan seed was
+          // not produced by that old run; clear active attribution while the
+          // per-stage merge preserves runHistory.
+          lastRunId: null,
         },
       },
-    }, { preloadedSeries: series });
+    };
+    // Autopilot commonly starts from user-created issue placeholders. Reuse an
+    // exact empty ungrouped set so issue ids, history, and visual/catalog links
+    // survive; manual preview/confirm callers retain create-only semantics.
+    const issue = canReuse
+      ? await updateIssue(reusable[index].id, patch)
+      : await createIssue(patch, { preloadedSeries: series });
     created.push(issue);
   }
   return created;

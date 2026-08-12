@@ -7,7 +7,7 @@ import { recordDomainUsage } from '../../domainUsage.js';
 import { getSeries } from '../series.js';
 import {
   generateArcOverview, commitSeasonsWithRemap, generateSeasonEpisodes, commitEpisodesToIssues,
-  hasDuplicateSeasonNumbers,
+  ERR_VALIDATION, hasDuplicateSeasonNumbers,
 } from '../arcPlanner.js';
 import { providerOverrideOpts, seasonPreserveOpts } from './session.js';
 import { runArcVerify, runBeats, runBeatContinuity, runCharacterFoundation, runFoundationGate, runText } from './childRuns.js';
@@ -83,7 +83,20 @@ export async function dispatchStep(sId, step, record) {
       record.runState.episodesAttempted.add(step.seasonId);
       const r = await generateSeasonEpisodes(sId, step.seasonId, providerOverrideOpts(record));
       const cur = await getSeries(sId);
-      const created = await commitEpisodesToIssues(sId, step.seasonId, r.episodes, { preloadedSeries: cur });
+      const commitResult = await commitEpisodesToIssues(sId, step.seasonId, r.episodes, {
+        preloadedSeries: cur,
+        reuseUngrouped: true,
+      }).then((created) => ({ created, error: null })).catch((error) => ({ created: null, error }));
+      if (commitResult.error) {
+        if (commitResult.error.code !== ERR_VALIDATION) throw commitResult.error;
+        return {
+          pause: true,
+          pauseKind: 'inapplicable',
+          reason: commitResult.error.message,
+          residual: [{ severity: 'high', location: 'issue placeholders', problem: commitResult.error.message }],
+        };
+      }
+      const created = commitResult.created;
       await recordDomainUsage('cos', { actions: 1 });
       if (!Array.isArray(created) || created.length === 0) {
         return {
@@ -94,6 +107,8 @@ export async function dispatchStep(sId, step, record) {
       }
       return {};
     }
+    case 'verifyArcSpine':
+      return runArcVerify(sId, record, { spineOnly: true });
     case 'verifyArc':
       return runArcVerify(sId, record);
     case 'beatSheet':

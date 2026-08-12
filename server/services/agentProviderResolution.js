@@ -61,6 +61,10 @@ export async function resolveAgentProviderAndModel(task) {
   // and stays retryable; but an api primary whose fallback is also api (directType
   // 'api') can never gain a harness, so it stays permanent (no infinite retry).
   const directProviderType = provider.type;
+  // Id of that same DIRECTLY-resolved provider — the one a `task.metadata.model`
+  // pin was chosen FOR. Compared against `provider.id` after the fallback block
+  // to detect a provider swap, which invalidates the pin (see below).
+  const directProviderId = provider.id;
   // Check provider availability (usage limits, rate limits, etc.)
   // Set when we fall back below to a provider with a configured "Fallback
   // Model" pin — it overrides the usual per-task model selection so the
@@ -153,7 +157,33 @@ export async function resolveAgentProviderAndModel(task) {
   // the provider reject a genuine typo at runtime. Auto-selected models (and a
   // fallback-model pin, which the comment above deliberately guards) still fall
   // back to the provider's tier default.
-  const isUserPinnedModel = modelSelection.tier === 'user-specified' && !fallbackModelPin;
+  //
+  // …but ONLY on the provider the pin was chosen for. A `task.metadata.model`
+  // pin is provider-scoped (the task form picks a provider and then a model from
+  // THAT provider's catalog) — it is not a provider-agnostic preference. When
+  // the pinned/active provider is down and the fallback block above swapped us
+  // onto a different provider, the pin no longer describes anything the new
+  // provider can run, and the pass-through exemption — which deliberately skips
+  // the model list — is exactly what stops us from noticing. That combination
+  // shipped `claude --model gemini-3.6-flash` after an `antigravity-tui` auth
+  // outage: the CLI rejected it in ~1.5s ("There's an issue with the selected
+  // model"), on every retry, until the task hit max retries and blocked. So a
+  // provider swap drops the pin back to the new provider's own default unless
+  // that provider actually lists it.
+  const providerSwapped = provider.id !== directProviderId;
+  const isUserPin = modelSelection.tier === 'user-specified' && !fallbackModelPin;
+  const isUserPinnedModel = isUserPin && !providerSwapped;
+  if (isUserPin && providerSwapped && !(provider.models || []).includes(selectedModel)) {
+    // Handled here rather than left to the list check below, which can't fire at
+    // all for a fallback provider that enumerates no `models`.
+    emitLog('warn', `Dropping model "${selectedModel}" pinned for unavailable provider "${directProviderId}" — running on fallback "${provider.id}" with its default model`, {
+      taskId: task.id,
+      requestedModel: selectedModel,
+      pinnedProviderId: directProviderId,
+      providerId: provider.id
+    });
+    selectedModel = provider.defaultModel || null;
+  }
   if (selectedModel && provider.models && provider.models.length > 0) {
     const modelIsValid = provider.models.includes(selectedModel);
     if (!modelIsValid && isUserPinnedModel) {

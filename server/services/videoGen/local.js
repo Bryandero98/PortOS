@@ -22,13 +22,14 @@ import { spawnDetached } from '../../lib/detachedSpawn.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { createLineReader } from '../../lib/streamLines.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { videoLoraLayoutIssue } from '../../lib/safetensors.js';
 import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
 import {
   findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x,
   extractEvaluationFrames, probeFrameCount, trimVideoFromFrame,
-  hasAudioStream, buildTrimConcatArgs,
+  hasAudioStream, buildTrimConcatArgs, bt709TagFilter,
 } from '../../lib/ffmpeg.js';
 import {
   resolveContextFrames, resolveContinuityStrategy, extendLatentFrames,
@@ -38,8 +39,8 @@ import { hfChildEnv } from '../../lib/hfToken.js';
 import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
-import { assertSafeLoraFilename } from '../loras.js';
-import { isMlxVideoLtxLoraCapable } from '../../lib/runners.js';
+import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
+import { videoLoraFamily } from '../../lib/runners.js';
 import {
   isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
 } from '../../lib/videoDisclosure.js';
@@ -62,6 +63,9 @@ import {
   HUNYUAN_REPO_DIR,
   BYOV_RUNTIME_INFO,
   BYOV_VIDEO_RUNTIMES,
+  byovRuntimeLoraCapable,
+  resolveByovRuntimeLoraCapable,
+  videoLoraUnsupportedError,
   modelAnchorsLastFrame,
   assertByovRuntimeInstalled,
   invalidateByovReadyCache,
@@ -69,10 +73,12 @@ import {
 } from './runtimes.js';
 import { loadHistory, saveHistory, mutateVideoHistory } from './history.js';
 import { videoModeContractError, videoChainUnsupportedError, VIDEO_MODE_GATED_RUNTIMES } from './modeContract.js';
+import { estimateRenderMs } from './eta.js';
 // Re-export the extracted runtime + history surface so existing deep imports
 // (`from '../videoGen/local.js'`) keep resolving every symbol they used to.
 export * from './runtimes.js';
 export * from './modeContract.js';
+export * from './eta.js';
 export { loadHistory, saveHistory, mutateVideoHistory };
 
 // LoRA wrapper for the notapalindrome `mlx_video` runtime. The stock
@@ -148,14 +154,24 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 // Resolve a model by id from the LIVE registry (getVideoModels reads the
 // hot-reloadable cache), falling back to the boot snapshot. This is what the
 // render path uses so a runtime-added model resolves without a server restart.
-export const resolveVideoModel = (modelId) =>
-  getVideoModels().find((m) => m.id === modelId) || VIDEO_MODELS[modelId] || null;
+// Attach the runtime capabilities a model entry can't express on its own:
+// whether an FFLF last frame is a real anchor, and whether the *installed* BYOV
+// runner can apply user LoRAs (H3's DiT is quantized, so that depends on the
+// pinned checkout — see runtimes.js `loraProbeArgs`). Both are declared in
+// runtimes.js and surfaced here so the Video Gen form and videoLoraFamily() read
+// them off the model instead of keeping their own lists. Applied by BOTH model
+// resolvers, so the render path and the API payload can never disagree about
+// what a model supports.
+const decorateVideoModel = (m) => (m ? {
+  ...m,
+  lastFrameAnchored: modelAnchorsLastFrame(m),
+  runtimeLoraCapable: byovRuntimeLoraCapable(m.runtime),
+} : m);
 
-// Decorated with the one runtime capability the client can't derive: whether an
-// FFLF last frame is a real anchor. Declared in runtimes.js, surfaced here so
-// the Video Gen form reads it off the model instead of keeping its own list.
-export const listVideoModels = () => getVideoModels()
-  .map((m) => ({ ...m, lastFrameAnchored: modelAnchorsLastFrame(m) }));
+export const resolveVideoModel = (modelId) =>
+  decorateVideoModel(getVideoModels().find((m) => m.id === modelId) || VIDEO_MODELS[modelId] || null);
+
+export const listVideoModels = () => getVideoModels().map(decorateVideoModel);
 
 export const defaultVideoModelId = () => getDefaultVideoModelId();
 
@@ -294,17 +310,36 @@ export const resolveT2vTwoStageOverride = ({
 // Python FileNotFoundError deep inside the render. Returns [] for no LoRAs.
 // Only the ltx2 runtime consumes the result; buildArgs rejects LoRAs on the
 // other runtimes before this is even reached for a doomed job.
-export const resolveVideoLoras = (loras) => {
+//
+// Also gates on the safetensors KEY LAYOUT. The loader fuses `lora_A`/`lora_B`
+// pairs after stripping a leading `diffusion_model.`, so a kohya (lora_down/
+// lora_up) or diffusers/PEFT-prefixed file matches nothing: the render burns
+// minutes of GPU time and comes back as an un-LoRA'd (or noisy) clip with no
+// error anywhere. Refuse it up front with the layout named.
+export const resolveVideoLoras = async (loras) => {
   if (!Array.isArray(loras) || loras.length === 0) return [];
-  return loras.map((l) => {
+  const out = [];
+  for (const l of loras) {
     assertSafeLoraFilename(l?.filename);
     const path = join(PATHS.loras, l.filename);
     if (!existsSync(path)) {
       throw new ServerError(`LoRA not found: ${l.filename}`, { status: 400, code: 'LORA_NOT_FOUND' });
     }
+    const layout = await getLoraKeyLayout(l.filename);
+    const issue = videoLoraLayoutIssue(layout);
+    if (issue) {
+      throw new ServerError(
+        `LoRA "${l.filename}" can't be used for video: ${issue}.`,
+        { status: 400, code: 'LORA_LAYOUT_UNSUPPORTED' },
+      );
+    }
+    if (layout == null) {
+      console.log(`⚠️ LoRA key layout undetermined for ${l.filename} — fusing anyway`);
+    }
     const strength = Number.isFinite(l?.scale) ? l.scale : 1.0;
-    return { path, strength, filename: l.filename };
-  });
+    out.push({ path, strength, filename: l.filename });
+  }
+  return out;
 };
 
 // Build the spawn args for dgrauet's ltx-2-mlx runtime via our Python helper.
@@ -596,7 +631,7 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
 // Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
 // only exact, already-cached HF revisions; every network download remains an
 // explicit Video Gen UI action guarded by the model's terms acknowledgement.
-const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath }) => {
+const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras }) => {
   assertByovRuntimeInstalled('minimax_h3');
   assertRenderModeContract({
     model,
@@ -675,6 +710,11 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
   // the canvas as the geometry anchor, so a first-frame image must lead.
   if (sourceImagePath) args.push('--image', sourceImagePath, '--anchor', 'first');
   if (lastImagePath) args.push('--image', lastImagePath, '--anchor', 'last');
+  // Runtime (never fused) application — each --lora needs its own --lora-scale,
+  // in the same order, mirroring the --image/--anchor pairing above. buildArgs
+  // has already rejected LoRAs unless the probe proved this checkout can apply
+  // them to the quantized DiT (see runtimes.js `loraProbeArgs`).
+  for (const l of loras ?? []) args.push('--lora', l.path, '--lora-scale', String(l.strength));
   return { bin: MINIMAX_H3_VENV_PYTHON, args };
 };
 
@@ -734,26 +774,29 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
     );
   }
   const hasLoras = Array.isArray(loras) && loras.length > 0;
-  // Defense-in-depth: LoRAs fuse only on ltx2 (handled above) or a non-quantized
-  // LTX-2.x mlx_video model (the wrapper below), and the wrapper path is
-  // macOS/mlx-only. The route already rejects other runtimes, but a non-route
-  // caller (test, queue replay) — or a Windows install with a hand-edited/synced
-  // mlx_video LTX-2.x entry — could reach here. Fail clearly rather than fall
+  // Defense-in-depth: LoRAs run only where videoLoraFamily() says they can —
+  // ltx2 (handled above), a non-quantized LTX-2.x mlx_video model (the wrapper
+  // below), or a minimax_h3 checkout whose probe proved a quant-aware
+  // applicator. All of those macOS/mlx-only. The route already rejects the rest,
+  // but a non-route caller (test, queue replay) — or a Windows install with a
+  // hand-edited/synced entry — could reach here. Fail clearly rather than fall
   // through to the IS_WIN generate_win.py branch below, which would silently drop
   // the LoRAs and produce a base render the user thinks is LoRA-styled.
-  if (hasLoras && (!isMlxVideoLtxLoraCapable(model) || IS_WIN)) {
-    throw new ServerError(
-      IS_WIN
-        ? `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on Windows.`
-        : `LoRAs aren't supported on this model. Model "${modelId}" runs on "${model.runtime || 'mlx_video'}".`,
-      { status: 400, code: 'LORAS_REQUIRE_LTX2' },
-    );
+  // The same predicate the enqueue gate uses, off the same decorated model, so
+  // the two can't disagree — and the reason text comes from one factory.
+  if (hasLoras && (!videoLoraFamily(model) || IS_WIN)) {
+    throw IS_WIN
+      ? new ServerError(
+        `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on Windows.`,
+        { status: 400, code: 'LORAS_REQUIRE_LTX2' },
+      )
+      : videoLoraUnsupportedError(model, modelId);
   }
   if (model.runtime === 'wan22') {
     return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
   }
   if (model.runtime === 'minimax_h3') {
-    return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath });
+    return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras });
   }
   if (model.runtime === 'hunyuan') {
     return buildHunyuanArgs({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath });
@@ -958,7 +1001,14 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // missing/typo'd LoRA fails with a clean 400 before any GPU work. buildArgs
   // rejects LoRAs on non-ltx2 runtimes (the route also guards), so this is a
   // no-op there.
-  const resolvedLoras = resolveVideoLoras(loras);
+  const resolvedLoras = await resolveVideoLoras(loras);
+  // `model` was decorated from a SYNC cache read, which is false on a cold
+  // cache. Resolve the probe and re-decorate from the settled verdict before
+  // buildArgs reads it off the snapshot — otherwise the first LoRA render after
+  // boot is refused on a capable install and only heals on retry.
+  const loraCapableModel = resolvedLoras.length
+    ? { ...model, runtimeLoraCapable: await resolveByovRuntimeLoraCapable(model.runtime) }
+    : model;
 
   // IC-LoRA remix: resolve the per-mode weight before any GPU work. A cached
   // weight resolves to the exact file inside the HF snapshot; an un-cached one
@@ -1270,7 +1320,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
@@ -1290,8 +1340,26 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     throw err;
   }
 
-  console.log(`🎬 Generating video [${jobId.slice(0, 8)}]: ${modelId} ${w}x${h} frames=${parsedNumFrames} steps=${actualSteps}`);
-  videoGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps, ...meta });
+  // History-calibrated wall-clock estimate (#3801). `null` when this install
+  // has never measured a render on this model — an explicit "no estimate"
+  // sentinel the UI must render as "unknown", never as 0 or a guess. Stamped
+  // on the job so every progress frame can carry it alongside step progress.
+  const etaEstimate = estimateRenderMs({
+    history: await loadHistory(),
+    modelId,
+    width: w,
+    height: h,
+    numFrames: parsedNumFrames,
+    steps: actualSteps,
+  });
+  job.etaMs = etaEstimate ? etaEstimate.etaMs : null;
+  const etaFields = etaEstimate
+    ? { etaMs: etaEstimate.etaMs, etaBasis: etaEstimate.basis, etaSampleCount: etaEstimate.sampleCount }
+    : { etaMs: null };
+  job.renderStartedAtMs = Date.now();
+
+  console.log(`🎬 Generating video [${jobId.slice(0, 8)}]: ${modelId} ${w}x${h} frames=${parsedNumFrames} steps=${actualSteps} eta=${etaEstimate ? `${Math.round(etaEstimate.etaMs / 1000)}s (${etaEstimate.basis}, n=${etaEstimate.sampleCount})` : 'unknown'}`);
+  videoGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps, ...meta, ...etaFields });
 
   // Clear PYTHONPATH so the child uses the venv's own site-packages instead
   // of the parent shell's PYTHONPATH. Setting to `undefined` in a spread does
@@ -1703,6 +1771,32 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
   const outerJob = { id: outerJobId, clients: [], status: 'running' };
   jobs.set(outerJobId, outerJob);
 
+  // Chain-level wall-clock estimate (#3801). Every chunk is a full render that
+  // pays the fixed per-render cost again, so the chain estimate is the
+  // per-chunk estimate times the chunk count — `chunks` is handed to the
+  // estimator rather than folding the chain into one oversized render.
+  // The dimension/step defaults mirror generateVideo's own resolution (its
+  // `width = 768, height = 512` parameter defaults and the samplerLocked step
+  // rule); the estimator returns null on anything it can't resolve, so a drift
+  // here degrades to "no estimate" rather than to a wrong number.
+  // Deliberately placed AFTER `activeChain`/`jobs` are registered: it is the
+  // first await in this function, and a cancel arriving during the history
+  // read must still find the chain to stop.
+  const chainSteps = chainModel?.samplerLocked
+    ? chainModel.steps
+    : (rest.steps ? Number(rest.steps) : chainModel?.steps);
+  const chainEta = estimateRenderMs({
+    history: await loadHistory(),
+    modelId: rest.modelId || defaultVideoModelId(),
+    width: rest.width ?? 768,
+    height: rest.height ?? 512,
+    numFrames: rest.numFrames ?? chainModel?.defaultFrames ?? DEFAULT_NUM_FRAMES,
+    steps: chainSteps,
+    chunks: totalChunks,
+  });
+  const chainEtaField = chainEta ? { etaMs: chainEta.etaMs } : {};
+  console.log(`🎬 Chained video [${outerJobId.slice(0, 8)}]: ${totalChunks} chunks, eta=${chainEta ? `${Math.round(chainEta.etaMs / 1000)}s (${chainEta.basis}, n=${chainEta.sampleCount})` : 'unknown'}`);
+
   const chunkIds = [];
   let currentSource = rest.sourceImagePath;
   // 'window' continuation: the tail slice of the prior chunk that the next one
@@ -1738,6 +1832,9 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
         step: typeof e.step === 'number' ? e.step : undefined,
         totalSteps: typeof e.totalSteps === 'number' ? e.totalSteps : undefined,
         message: `Chunk ${i + 1}/${totalChunks}${e.message ? ` — ${e.message}` : ''}`,
+        // Chain-level estimate, NOT the inner chunk's — the outer id's
+        // consumers are watching the whole chain's clock.
+        ...chainEtaField,
       });
       broadcastSse(outerJob, {
         type: 'progress',
@@ -2247,6 +2344,11 @@ export async function stitchVideos(videoIds, opts = {}) {
         // `concat=a=1` needs an audio leg from EVERY input; one silent clip in
         // the set makes the whole graph video-only.
         withAudio: (await Promise.all(videoPaths.map((p) => hasAudioStream(p)))).every(Boolean),
+        // Pin BT.709 on the stitched output — this is the only re-encode a
+        // chained render's timeline gets, so an untagged result here is what a
+        // player would have to guess at. `null` on an ffmpeg without the
+        // filter; the container flags ride along inside the builder regardless.
+        colorTagFilter: await bt709TagFilter(),
       });
       const failure = args
         ? await runFfmpeg(args, { captureStderr: true }).then(() => null, (err) => err)

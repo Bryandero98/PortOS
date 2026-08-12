@@ -26,6 +26,75 @@ export const pickCanon = (universe) => ({
   objects: Array.isArray(universe?.objects) ? universe.objects : [],
 });
 
+const normalizeReferenceText = (value) => String(value || '').normalize('NFKC').toLocaleLowerCase();
+
+const referencedByName = (entry, referenceText) => {
+  const name = normalizeReferenceText(entry?.name || entry?.slugline);
+  return name.length >= 2 && referenceText.includes(name);
+};
+
+const seriesPlanningText = (series, universe) => normalizeReferenceText(JSON.stringify({
+  protectedWorldIntent: {
+    starterPrompt: universe?.starterPrompt || '',
+    logline: universe?.logline || '',
+    premise: universe?.premise || '',
+  },
+  series: {
+    name: series?.name || '',
+    logline: series?.logline || '',
+    premise: series?.premise || '',
+    arc: series?.arc || null,
+    seasons: series?.seasons || [],
+    characterArcs: series?.characterArcs || [],
+  },
+}));
+
+/**
+ * Scope a shared universe's canon to entities that demonstrably belong to one
+ * series' current planning contract. Universe Builder worlds can retain canon
+ * from abandoned drafts and from sibling series; injecting every old named
+ * entity into a new arc prompt makes those records look equally authoritative
+ * and can resurrect an incompatible plot.
+ *
+ * Stable character-arc ids/names and explicit mentions in protected world or
+ * series fields are the roots. The selected characters' authored records then
+ * provide one bounded relationship hop to supporting characters, places, and
+ * objects. Nothing is deleted from the universe or catalog — this only narrows
+ * generative prompt context. An empty result is intentional: protected premise
+ * text is safer than guessing that unrelated legacy canon belongs to the story.
+ */
+export function scopeCanonForSeries(universe, series) {
+  const canon = pickCanon(universe);
+  let referenceText = seriesPlanningText(series, universe);
+  const arcCharacterIds = new Set((series?.characterArcs || [])
+    .map((arc) => arc?.characterId)
+    .filter(Boolean));
+  const arcCharacterNames = new Set((series?.characterArcs || [])
+    .map((arc) => normalizeReferenceText(arc?.characterName))
+    .filter(Boolean));
+
+  const characters = canon.characters.filter((character) => (
+    arcCharacterIds.has(character?.id)
+    || arcCharacterNames.has(normalizeReferenceText(character?.name))
+    || referencedByName(character, referenceText)
+  ));
+
+  // One relationship hop admits supporting nouns the active principals name,
+  // while avoiding an unbounded graph walk through old draft relationships.
+  referenceText += `\n${normalizeReferenceText(JSON.stringify(characters))}`;
+  const supportingCharacters = canon.characters.filter((character) => (
+    !characters.includes(character) && referencedByName(character, referenceText)
+  ));
+  const scopedCharacters = [...characters, ...supportingCharacters];
+  referenceText += `\n${normalizeReferenceText(JSON.stringify(supportingCharacters))}`;
+
+  return {
+    characters: scopedCharacters,
+    places: canon.places.filter((place) => referencedByName(place, referenceText)),
+    objects: canon.objects.filter((object) => referencedByName(object, referenceText)),
+  };
+}
+
 /**
  * Async canon read for text/arc-planning stages that don't already have the
  * universe record in scope. Returns frozen-empty when the series is orphan
@@ -37,9 +106,11 @@ export const pickCanon = (universe) => ({
  * `filterCanonForIssue` / `filterCanonListForIssue` from
  * `server/lib/storyBible.js` before injecting it, so a later-reveal secret
  * can't leak into an earlier issue. The **judge, editorial checks, canon
- * extraction, arc/scene planning** intentionally consume the full canon (they
- * need the truth and have no single issue number). New prompt-builders that
- * load canon here for a drafting prompt MUST apply the filter; see
+ * extraction, and scene planning** intentionally consume the full canon (they
+ * need the truth and have no single issue number). Arc/episode planning uses
+ * `getSeriesPlanningCanon` below so abandoned sibling-draft entities do not
+ * compete with the active series contract. New prompt-builders that load canon
+ * here for a drafting prompt MUST apply the filter; see
  * `textStages.buildStageContext` and `perspectiveRewrite.resolveCast` for the
  * reference call sites.
  *
@@ -50,4 +121,12 @@ export async function getSeriesCanon(series) {
   const universe = await getUniverse(series.universeId).catch(() => null);
   if (!universe) return EMPTY;
   return pickCanon(universe);
+}
+
+/** Series-scoped canon for generative planning prompts. */
+export async function getSeriesPlanningCanon(series) {
+  if (!series?.universeId) return EMPTY;
+  const universe = await getUniverse(series.universeId).catch(() => null);
+  if (!universe) return EMPTY;
+  return scopeCanonForSeries(universe, series);
 }

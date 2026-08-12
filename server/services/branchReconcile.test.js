@@ -45,16 +45,23 @@ vi.mock('../lib/gitRemote.js', () => ({
     hasOrigin: true, isGithub: true, host: 'github.com', fullName: 'atomantic/PortOS'
   }))
 }));
+// `tryReadFile`/`atomicWrite` are reached through supersededLedger.js (the
+// SUPERSEDED verdict cache); the default `tryReadFile` returns null = no ledger,
+// which is the fail-open "analyze everything" path the pre-#3842 suite assumes.
+const tryReadFileMock = vi.fn(async () => null);
 vi.mock('../lib/fileUtils.js', () => ({
-  PATHS: { root: '/repo' },
-  safeJSONParse: (raw, fallback) => { try { return JSON.parse(raw); } catch { return fallback; } }
+  PATHS: { root: '/repo', cos: '/repo/data/cos' },
+  safeJSONParse: (raw, fallback) => { try { return JSON.parse(raw); } catch { return fallback; } },
+  tryReadFile: (...args) => tryReadFileMock(...args),
+  atomicWrite: vi.fn(async () => {})
 }));
 
 import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
   isAbandonedAgentWorktree, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
-  branchPriorityRank, prioritizeBranches
+  branchPriorityRank, prioritizeBranches,
+  upstreamBranchName, parseRemoteHeads, partitionRemoteOrphans, reapOrphanedRemotes
 } from './branchReconcile.js';
 import * as git from './git.js';
 import * as wt from './worktreeManager.js';
@@ -74,6 +81,7 @@ beforeEach(() => {
   git.deleteBranch.mockResolvedValue({ branch: 'x', results: { local: 'deleted' } });
   wt.forceRemoveWorktreeDir.mockResolvedValue(undefined);
   execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
+  tryReadFileMock.mockResolvedValue(null);
 });
 
 describe('classifyBranch', () => {
@@ -608,6 +616,121 @@ describe('reconcile', () => {
   });
 });
 
+// #3842 — a SUPERSEDED branch is left untouched by design and is never `isMerged`
+// (its work landed on the default branch under other names), so nothing reaps it
+// and every recheck paid a full coordinator run to re-derive the same verdict.
+// Two branches in this install were analyzed sixteen times that way.
+describe('reconcile — cached SUPERSEDED verdicts (#3842)', () => {
+  const BRANCH = 'cos/task-x/agent-deadbeef';
+  const WORKTREE = '/repo/data/cos/worktrees/agent-deadbeef';
+  const DIRTY = ' M server/services/thing.js\n';
+
+  // The abandoned-worktree shape: branch fully behind main, uncommitted work in a
+  // dead agent's worktree, one collision path with the default branch.
+  const setupAbandoned = ({ tip = 'aaaaaaa', replacedByReachable = true } = {}) => {
+    git.getBranches.mockResolvedValue([
+      { name: BRANCH, isDefault: false, current: false, tracking: 'origin/main', merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([{ path: WORKTREE, branch: `refs/heads/${BRANCH}` }]);
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGit.mockImplementation(async (args) => {
+      const [cmd] = args;
+      if (cmd === 'rev-parse') return { stdout: `${tip}\n`, exitCode: 0 };
+      if (cmd === 'merge-base' && args[1] === '--is-ancestor') {
+        return { stdout: '', exitCode: replacedByReachable ? 0 : 1 };
+      }
+      if (cmd === 'merge-base') return { stdout: 'base000\n', exitCode: 0 };
+      // `diff --name-only` on BOTH sides yields the same path → one collision.
+      if (cmd === 'diff') return { stdout: 'server/services/thing.js\n', exitCode: 0 };
+      if (cmd === 'rev-list') return { stdout: '301\t0\n', exitCode: 0 };
+      // `status --porcelain` in the worktree.
+      return { stdout: DIRTY, exitCode: 0 };
+    });
+  };
+
+  const ledger = (over = {}) => JSON.stringify({
+    version: 1,
+    entries: [{
+      branch: BRANCH,
+      repoPath: '/repo',
+      verdict: 'SUPERSEDED',
+      tip: 'aaaaaaa',
+      dirtyPaths: ['server/services/thing.js'],
+      collisionPaths: ['server/services/thing.js'],
+      replacedBy: ['ffffff1'],
+      replacedByNote: 'thing.js now exports doTheThing()',
+      ...over
+    }]
+  });
+
+  it('drops a branch with a fresh cached verdict out of the actionable set', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight).toEqual([]);
+    expect(res.superseded.map((s) => s.branch)).toEqual([BRANCH]);
+    // Left completely alone — the whole point is that merging it would regress main.
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('re-analyzes when the branch tip moved', async () => {
+    setupAbandoned({ tip: 'bbbbbbb' });
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('re-analyzes when the uncommitted change set moved', async () => {
+    // An ABANDONED_WIP branch's entire deliverable is its dirty tree, so a tip SHA
+    // alone would not notice a human editing the worktree.
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({ dirtyPaths: ['server/services/other.js'] }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('re-analyzes when the collision set changed', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({ collisionPaths: [] }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+  });
+
+  it('re-analyzes when what superseded the branch was reverted off the default branch', async () => {
+    setupAbandoned({ replacedByReachable: false });
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('fails open on a malformed ledger rather than hiding the branch', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue('{ not json');
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+  });
+
+  // One ledger serves every managed app; `feature/x` in two apps is two branches.
+  it('ignores a verdict recorded against a different app\'s repo', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({ repoPath: '/some/other-app' }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
+    expect(res.superseded).toEqual([]);
+  });
+});
+
 describe('actionOn', () => {
   it('is ON for absent/true, OFF only for explicit false', () => {
     expect(actionOn(undefined, 'openPr')).toBe(true);
@@ -861,5 +984,250 @@ describe('formatInFlightForPrompt', () => {
     );
     expect(block).toContain('- Drift: 0 commit(s) behind');
     expect(block).not.toContain('supersession shows up');
+  });
+});
+
+describe('orphaned remote branches', () => {
+  // `git ls-remote --heads` output is tab-separated: <sha>\trefs/heads/<branch>.
+  const lsRemote = (entries) =>
+    entries.map(([branch, sha]) => `${sha}\trefs/heads/${branch}`).join('\n');
+
+  /**
+   * Route `execGit` by subcommand so a case can state what origin holds without
+   * disturbing the rev-parse/rev-list calls the rest of the gather makes.
+   */
+  const mockRemote = (stdout, { exitCode = 0 } = {}) => {
+    execGit.mockImplementation(async (args) =>
+      args[0] === 'ls-remote' ? { stdout, exitCode } : { stdout: '', exitCode: 0 }
+    );
+  };
+
+  describe('upstreamBranchName', () => {
+    it('strips exactly the origin/ prefix, leaving slashes in the branch name', () => {
+      expect(upstreamBranchName('origin/cos/task-x/agent-y')).toBe('cos/task-x/agent-y');
+    });
+
+    it('ignores a remote we cannot delete against', () => {
+      // deleteBranch hardcodes `git push origin --delete`, so an upstream on any
+      // other remote must not be treated as a claim WE could act on.
+      expect(upstreamBranchName('upstream/main')).toBeNull();
+      expect(upstreamBranchName('fork/feature')).toBeNull();
+    });
+
+    it('returns null for a branch with no upstream', () => {
+      expect(upstreamBranchName('')).toBeNull();
+      expect(upstreamBranchName(null)).toBeNull();
+      expect(upstreamBranchName(undefined)).toBeNull();
+      // `origin/` with nothing after it names no branch.
+      expect(upstreamBranchName('origin/')).toBeNull();
+    });
+  });
+
+  describe('parseRemoteHeads', () => {
+    it('maps branch to SHA and ignores non-head refs', () => {
+      const heads = parseRemoteHeads([
+        'aaa1\trefs/heads/main',
+        'bbb2\trefs/heads/feature/x',
+        'ccc3\trefs/tags/v1.0.0',
+        'ddd4\trefs/pull/42/head'
+      ].join('\n'));
+      expect([...heads.keys()].sort()).toEqual(['feature/x', 'main']);
+      expect(heads.get('feature/x')).toBe('bbb2');
+    });
+
+    it('yields an empty map for empty output', () => {
+      expect(parseRemoteHeads('').size).toBe(0);
+    });
+  });
+
+  describe('partitionRemoteOrphans', () => {
+    it('treats a same-named local branch as a claim even with no upstream', () => {
+      // A local `foo` with no tracking still owns `origin/foo` — that is where a
+      // plain `git push` sends it. Reaping it would delete a live branch.
+      const orphans = partitionRemoteOrphans(
+        new Map([['foo', 'aaa']]),
+        [{ name: 'foo', tracking: '' }],
+        { defaultBranch: 'main' }
+      );
+      expect(orphans).toEqual([]);
+    });
+
+    it('treats a differently-named tracked branch as a claim', () => {
+      // The case the name check alone misses, and the reason gatherBranchState
+      // carries `tracking` rather than only the hasUpstream boolean.
+      const orphans = partitionRemoteOrphans(
+        new Map([['remote-name', 'aaa']]),
+        [{ name: 'local-name', tracking: 'origin/remote-name' }],
+        { defaultBranch: 'main' }
+      );
+      expect(orphans).toEqual([]);
+    });
+
+    it('never reports a protected or default branch as an orphan', () => {
+      const orphans = partitionRemoteOrphans(
+        new Map([['main', 'aaa'], ['release', 'bbb'], ['gh-pages', 'ccc']]),
+        [],
+        { defaultBranch: 'main' }
+      );
+      expect(orphans).toEqual([]);
+    });
+
+    it('surfaces a remote branch nothing local points at, name-sorted', () => {
+      const orphans = partitionRemoteOrphans(
+        new Map([['zeta', 'zzz'], ['alpha', 'aaa'], ['kept', 'kkk']]),
+        [{ name: 'kept', tracking: 'origin/kept' }],
+        { defaultBranch: 'main' }
+      );
+      expect(orphans).toEqual([
+        { branch: 'alpha', sha: 'aaa' },
+        { branch: 'zeta', sha: 'zzz' }
+      ]);
+    });
+  });
+
+  describe('reapOrphanedRemotes', () => {
+    it('reports a merged orphan instead of deleting it by default', async () => {
+      // The destructive step is opt-in: `git push origin --delete` reaches a
+      // shared forge and cannot be undone from here.
+      mockRemote(lsRemote([['stale/merged', 'sha-merged']]));
+      git.getBranches.mockResolvedValue([]);
+      git.isBranchMergedInto.mockResolvedValue(true);
+
+      const res = await reapOrphanedRemotes('/repo', 'main');
+      expect(res.reaped).toEqual([]);
+      expect(res.reported).toEqual([{ branch: 'stale/merged', reason: 'reap-disabled' }]);
+      expect(git.deleteBranch).not.toHaveBeenCalled();
+    });
+
+    it('deletes a merged orphan on the remote when reaping is enabled', async () => {
+      mockRemote(lsRemote([['stale/merged', 'sha-merged']]));
+      git.getBranches.mockResolvedValue([]);
+      git.isBranchMergedInto.mockResolvedValue(true);
+      git.deleteBranch.mockResolvedValue({ branch: 'stale/merged', results: { remote: 'deleted' } });
+
+      const res = await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(res.reaped).toEqual(['stale/merged']);
+      expect(res.reported).toEqual([]);
+      // Remote-only: the local half must not be touched, there is nothing local.
+      expect(git.deleteBranch).toHaveBeenCalledWith('/repo', 'stale/merged', { remote: true });
+    });
+
+    it('merge-checks the SHA ls-remote reported, not the branch name', async () => {
+      // A stale `origin/<branch>` ref can say "merged" about commits origin has
+      // since moved past; the live SHA is the only safe thing to judge.
+      mockRemote(lsRemote([['stale/merged', 'sha-from-ls-remote']]));
+      git.getBranches.mockResolvedValue([]);
+      git.isBranchMergedInto.mockResolvedValue(true);
+
+      await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(git.isBranchMergedInto).toHaveBeenCalledWith('/repo', 'sha-from-ls-remote', 'main');
+    });
+
+    it('never deletes an unmerged remote-only branch — it may be a peer\'s live work', async () => {
+      mockRemote(lsRemote([['peer/in-progress', 'sha-unmerged']]));
+      git.getBranches.mockResolvedValue([]);
+      git.isBranchMergedInto.mockResolvedValue(false);
+
+      const res = await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(res.reaped).toEqual([]);
+      expect(res.reported).toEqual([{ branch: 'peer/in-progress', reason: 'unmerged-remote-only' }]);
+      expect(git.deleteBranch).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the merge check itself errors', async () => {
+      // An unfetched SHA cannot be resolved locally — "unknown" must read as
+      // "leave it alone", never as "not merged, so safe to assume".
+      mockRemote(lsRemote([['never/fetched', 'sha-missing']]));
+      git.getBranches.mockResolvedValue([]);
+      git.isBranchMergedInto.mockRejectedValue(new Error('bad object'));
+
+      const res = await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(res.reaped).toEqual([]);
+      expect(res.reported).toEqual([{ branch: 'never/fetched', reason: 'unmerged-remote-only' }]);
+      expect(git.deleteBranch).not.toHaveBeenCalled();
+    });
+
+    it('reports nothing when the remote cannot be read', async () => {
+      // An unreadable remote must not read as "origin has no branches" — and an
+      // unknowable claim set must not make every remote branch look orphaned.
+      mockRemote('', { exitCode: 128 });
+      git.getBranches.mockResolvedValue([]);
+
+      const res = await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(res).toEqual({ reaped: [], reported: [], remoteUnavailable: true });
+      expect(git.deleteBranch).not.toHaveBeenCalled();
+    });
+
+    it('reports nothing when the local branch list cannot be read', async () => {
+      mockRemote(lsRemote([['anything', 'sha']]));
+      git.getBranches.mockRejectedValue(new Error('not a git repo'));
+
+      const res = await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(res.remoteUnavailable).toBe(true);
+      expect(git.deleteBranch).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a failed remote delete rather than claiming it was reaped', async () => {
+      mockRemote(lsRemote([['stale/merged', 'sha-merged']]));
+      git.getBranches.mockResolvedValue([]);
+      git.isBranchMergedInto.mockResolvedValue(true);
+      git.deleteBranch.mockResolvedValue({ results: { remote: 'failed: protected branch' } });
+
+      const res = await reapOrphanedRemotes('/repo', 'main', { reap: true });
+      expect(res.reaped).toEqual([]);
+      expect(res.reported[0].branch).toBe('stale/merged');
+      expect(res.reported[0].reason).toContain('remote-delete-failed');
+    });
+  });
+
+  describe('reconcile wiring', () => {
+    it('reports the merged orphan a local cleanup left behind, without deleting it', async () => {
+      // The composition this sweep exists for: cleanupMerged deletes the merged
+      // LOCAL branch and leaves `origin/<branch>` behind, which the sweep — running
+      // after it — then notices.
+      git.getBranches.mockResolvedValue([
+        { name: 'next/issue-1', isDefault: false, current: false, tracking: 'origin/next/issue-1', merged: true }
+      ]);
+      wt.listWorktrees.mockResolvedValue([]);
+      execGh.mockResolvedValue('[]');
+      git.isBranchMergedInto.mockResolvedValue(true);
+      mockRemote(lsRemote([['left/behind', 'sha-merged'], ['main', 'sha-main']]));
+
+      const res = await reconcile('/repo');
+      expect(res.cleaned).toEqual(['next/issue-1']);
+      expect(res.orphanRemotes.reaped).toEqual([]);
+      expect(res.orphanRemotes.reported).toEqual([{ branch: 'left/behind', reason: 'reap-disabled' }]);
+      // Only the local half of the cleanup ran.
+      expect(git.deleteBranch).toHaveBeenCalledWith('/repo', 'next/issue-1', { local: true });
+      expect(git.deleteBranch).not.toHaveBeenCalledWith('/repo', 'left/behind', { remote: true });
+    });
+
+    // getOriginInfo returns a fully-populated object with `hasOrigin: false` for an
+    // origin-less repo — it does NOT return null — so a truthiness gate would run
+    // the sweep anyway and log an ls-remote failure on every single cycle.
+    it('skips the sweep on a repo whose origin-info says there is no origin', async () => {
+      getOriginInfo.mockResolvedValue({
+        hasOrigin: false, originUrl: null, host: null, owner: null, repo: null,
+        fullName: null, isUpstream: false, isGithub: false, isFork: false
+      });
+      git.getBranches.mockResolvedValue([]);
+      wt.listWorktrees.mockResolvedValue([]);
+      mockRemote(lsRemote([['would/be/orphan', 'sha']]));
+
+      const res = await reconcile('/repo');
+      expect(res.orphanRemotes).toEqual({ reaped: [], reported: [] });
+      expect(execGit).not.toHaveBeenCalledWith(
+        expect.arrayContaining(['ls-remote']), expect.anything(), expect.anything()
+      );
+    });
+
+    it('skips the sweep when origin-info could not be read at all', async () => {
+      getOriginInfo.mockRejectedValue(new Error('not a git repo'));
+      git.getBranches.mockResolvedValue([]);
+      wt.listWorktrees.mockResolvedValue([]);
+
+      const res = await reconcile('/repo');
+      expect(res.orphanRemotes).toEqual({ reaped: [], reported: [] });
+    });
   });
 });

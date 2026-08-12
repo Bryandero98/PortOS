@@ -5,13 +5,13 @@ describe('universeCharacterExpand — exported field lists', () => {
   // These are the single source of truth for both the text expand and the
   // vision-driven expand (universeVisionExpand.js). A drift here means one of
   // the two flows silently stops filling a field.
-  it('exports the 21 string fields + 6 list fields', () => {
-    // 16 original + 5 framework prose fields (ghost/wound/lie/want/need, #2175).
-    expect(STRING_FIELDS).toHaveLength(21);
-    expect(STRING_FIELDS).toEqual(expect.arrayContaining(['ghost', 'wound', 'lie', 'want', 'need']));
-    // 5 original + `secrets` (#2175).
-    expect(LIST_FIELDS).toHaveLength(6);
-    expect(LIST_FIELDS).toEqual(['stats', 'colorPalette', 'props', 'expressions', 'handGestures', 'secrets']);
+  it('exports the complete string + list field contract', () => {
+    expect(STRING_FIELDS).toHaveLength(24);
+    expect(STRING_FIELDS).toEqual(expect.arrayContaining([
+      'physicalDescription', 'personality', 'background', 'ghost', 'wound', 'lie', 'want', 'need',
+    ]));
+    expect(LIST_FIELDS).toHaveLength(7);
+    expect(LIST_FIELDS).toEqual(['stats', 'colorPalette', 'props', 'expressions', 'handGestures', 'wardrobes', 'secrets']);
   });
 });
 
@@ -103,14 +103,16 @@ describe('universeCharacterExpand — applyExpansion (no-clobber merge semantics
 
   it('respects the full extended-field set (smoke check the field list stays in sync)', () => {
     const target = {
-      name: 'Vale', pronouns: '', age: '', coreTheme: '', speechAccent: '', speechPattern: '', visualNotes: '',
+      name: 'Vale', pronouns: '', age: '', coreTheme: '', speechAccent: '', speechPattern: '',
+      physicalDescription: '', personality: '', background: '', visualNotes: '',
       silhouetteNotes: '', postureNotes: '', specialTraits: '', visualIdentity: '',
       motivations: '', likes: '', dislikes: '', mannerisms: '', relationships: '', skills: '',
       ghost: '', wound: '', lie: '', want: '', need: '',
-      stats: [], colorPalette: [], props: [], expressions: [], handGestures: [], secrets: [],
+      stats: [], colorPalette: [], props: [], expressions: [], handGestures: [], wardrobes: [], secrets: [],
     };
     const content = {
-      pronouns: 'she/her', age: '27', coreTheme: 't', speechAccent: 'a', speechPattern: 'sp', visualNotes: 'v',
+      pronouns: 'she/her', age: '27', coreTheme: 't', speechAccent: 'a', speechPattern: 'sp',
+      physicalDescription: 'pd', personality: 'per', background: 'bg', visualNotes: 'v',
       silhouetteNotes: 's', postureNotes: 'p', specialTraits: 'st', visualIdentity: 'vi',
       motivations: 'm', likes: 'l', dislikes: 'd', mannerisms: 'mn', relationships: 'r', skills: 'sk',
       ghost: 'g', wound: 'w', lie: 'li', want: 'wa', need: 'ne',
@@ -119,11 +121,12 @@ describe('universeCharacterExpand — applyExpansion (no-clobber merge semantics
       props: [{ name: 'n' }],
       expressions: [{ name: 'n' }],
       handGestures: [{ name: 'n' }],
+      wardrobes: [{ name: 'fieldwear', description: 'patched coat', purpose: 'default' }],
       secrets: ['a hidden thing'],
     };
     const { updatedFields } = applyExpansion(target, content);
-    // 21 strings + 6 lists = 27 fields total in the expand contract.
-    expect(updatedFields).toHaveLength(27);
+    // 24 strings + 7 lists = 31 fields total in the expand contract.
+    expect(updatedFields).toHaveLength(31);
     expect(updatedFields).toContain('speechPattern');
     expect(updatedFields).toContain('lie');
     expect(updatedFields).toContain('secrets');

@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'crypto';
 import { getDomainMode } from '../../../lib/domainAutonomy.js';
+import { isRunCanceledError } from '../../../lib/aiToolkit/errorDetection.js';
 import { mergeSeverityWeights, resolveBlockingSet } from '../../../lib/editorial/index.js';
 import { loadState } from '../../cosState.js';
 import { getDomainBudgetStatus } from '../../domainUsage.js';
@@ -19,7 +20,9 @@ import {
   resolveAutopilotReadinessGate, resolveAutopilotCheckPauseThreshold, resolveAutopilotNotifyOnPause,
   resolveAutopilotProduceTeaser, resolveAutopilotRevision, resolveAutopilotLlm,
   resolveAutopilotUnlockForRun, resolveAutopilotSelfImprove, resolveAutopilotObserver,
+  resolveAutopilotAutoSelectModels,
 } from './config.js';
+import { getModelPerformanceReport } from './modelPerformance.js';
 import { runSelfImproveDiagnosis } from './selfImprove.js';
 import { observerEnabled, runObserverPass, summarizeObserver } from './observer.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
@@ -63,6 +66,47 @@ export async function startSeriesAutopilot(sId, options = {}) {
   // a resume re-reads them fresh. Loading the series here is cheap; a missing
   // series (deleted mid-run) falls through to the frozen defaults.
   const seriesRecord = await getSeries(sId).catch(() => null);
+  // A regressive arc repair is restored before the run pauses, and the rejected
+  // candidate's findings are persisted as `discardedFindings`. A fresh run used
+  // to forget that evidence and could immediately regenerate the same bad trade
+  // from the same checkpoint. Carry it into the next arc gate as an internal
+  // avoid-list only when the prior pause came from an arc verification step.
+  //
+  // The gate's WHOLE history, not just the round it reverted last: a run that
+  // reverted more than one rewrite holds the earlier ones only here (#3829), so
+  // resuming off `discardedFindings` let the resolver re-author the first one
+  // for free. `sanitizeAutopilot` owns the shape — bounded, array-typed, and
+  // already falling back for a marker written before the field existed.
+  const arcPause = seriesRecord?.autopilot?.status === 'paused'
+    && ['verifyArcSpine', 'verifyArc'].includes(seriesRecord.autopilot.currentStep)
+    ? seriesRecord.autopilot
+    : null;
+  const priorArcAvoidFindings = arcPause?.runDiscardedFindings || [];
+  // Same carry for the foundation gate, keyed by dimension (#3835). A resume
+  // starts a fresh gate with an empty bank, so without this the very repair the
+  // paused run reverted is free to come straight back — the loss #3832 closed
+  // for the arc gate. Only read off a pause that came FROM the foundation gate:
+  // evidence describing dimension gaps means nothing to another step's repairs.
+  const foundationPause = seriesRecord?.autopilot?.status === 'paused'
+    && seriesRecord.autopilot.currentStep === 'foundationGate'
+    ? seriesRecord.autopilot
+    : null;
+  const priorFoundationAvoidFindings = foundationPause?.foundationDiscardedFindings || {};
+  const autoSelectModels = resolveAutopilotAutoSelectModels(options, settings);
+  const modelPerformance = autoSelectModels
+    ? await getModelPerformanceReport().catch((err) => {
+      console.log(`⚠️ autopilot: model-performance read failed: ${err.message}`);
+      return { recommendations: {} };
+    })
+    : { recommendations: {} };
+  const creativeRouteExplicit = !!(
+    options?.providerOverride || options?.modelOverride || options?.effortOverride
+  );
+  const judgeRouteExplicit = !!(
+    options?.judgeLlm?.providerOverride
+    || options?.judgeLlm?.modelOverride
+    || options?.judgeLlm?.effortOverride
+  );
   const runOptions = {
     ...options,
     ...resolveAutopilotRounds(options, settings),
@@ -84,6 +128,14 @@ export async function startSeriesAutopilot(sId, options = {}) {
     // human gate) as pipeline defects surface. Same early resolution so the
     // signal tap retains frames from the first one.
     observer: resolveAutopilotObserver(options, settings),
+    autoSelectModels,
+    modelRecommendations: modelPerformance.recommendations || {},
+    modelRoutesExplicit: {
+      creative: creativeRouteExplicit,
+      judge: judgeRouteExplicit,
+    },
+    priorArcAvoidFindings,
+    priorFoundationAvoidFindings,
     // Run provider/model: per-run override → the series' own `series.llm` →
     // unset (stage pin / active provider downstream). Resolved ONCE here so the
     // manual run, a scheduled run and the UI's "this run calls X / Y" copy all
@@ -110,6 +162,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
     clients: [],
     lastPayload: null,
     cancelRequested: false,
+    pauseRequested: false,
     finished: false,
     cleanupTimer: null,
     startedAt: new Date().toISOString(),
@@ -130,6 +183,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
       // cast has causal wants/needs/relationships to drive it.
       characterFoundationEstablished: false,
       arcAttempted: false,
+      arcSpineVerified: false,
       arcVerified: false,
       // #2176 — foundation-quality gate satisfied this run (threshold cleared,
       // or the gate disabled/0-round). Boolean like arcVerified so the resolver
@@ -178,6 +232,8 @@ export async function startSeriesAutopilot(sId, options = {}) {
       observerFindings: [],
     },
     activeChild: null,
+    activeLlmRunId: null,
+    currentStep: null,
   };
   runs.set(sId, record);
 
@@ -196,6 +252,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         model: judge.modelOverride ?? null,
         effort: judge.effortOverride ?? null,
       } : null,
+      autoSelectModels: runOptions.autoSelectModels,
       ...extra,
     };
   };
@@ -255,6 +312,10 @@ export async function startSeriesAutopilot(sId, options = {}) {
 
   // Fire-and-forget coordinator. The try/catch is the permitted boundary use —
   // an unhandled LLM rejection here would crash the process on Node ≥15.
+  // `ordinal` (completed-step count) lives outside the try so the catch's
+  // cancellation terminal can report how far the run got, exactly as the
+  // cooperative between-steps cancel does.
+  let ordinal = 0;
   (async () => {
     try {
       // DRY-RUN: enumerate the plan, no side effects.
@@ -290,8 +351,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         broadcast(sId, { type: 'note', message: 'Draft visual rendering is not enabled in this build — running to text-ready + editorial review.' });
       }
 
-      let ordinal = 0;
-      while (!record.cancelRequested) {
+      while (!record.cancelRequested && !record.pauseRequested) {
         const series = await getSeries(sId);
         const issues = await listIssues({ seriesId: sId });
         const step = resolveNextStep(series, issues, record.runState, runOptions);
@@ -342,7 +402,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         // runEditorial short-circuit with no LLM spend, so "0 skips the gate" must
         // hold even when the budget is exhausted (otherwise the run pauses on
         // budget instead of skipping).
-        const zeroRoundSkip = (step.kind === 'verifyArc' && runOptions.maxArcVerifyRounds === 0)
+        const zeroRoundSkip = ((step.kind === 'verifyArc' || step.kind === 'verifyArcSpine') && runOptions.maxArcVerifyRounds === 0)
           || (step.kind === 'beatContinuity' && runOptions.maxBeatContinuityRounds === 0)
           || (step.kind === 'editorialReview' && runOptions.maxEditorialRounds === 0)
           || (step.kind === 'foundationGate' && (runOptions.maxFoundationRounds === 0 || runOptions.foundationGate === false));
@@ -367,6 +427,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         }
 
         ordinal += 1;
+        record.currentStep = step.kind;
         await persistMarker(sId, { status: 'running', runId, currentStep: step.kind });
         broadcast(sId, { type: 'step:start', kind: step.kind, seasonId: step.seasonId, issueId: step.issueId, ordinal, reason: step.reason });
 
@@ -378,9 +439,31 @@ export async function startSeriesAutopilot(sId, options = {}) {
           // rides it (a client tears its stream down on `paused`). No-ops unless
           // the run opted into self-improvement.
           const pm = await postMortem('paused', `${step.kind}: ${result.reason}`);
-          await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, residualFindings: result.residual || [], lastError: result.reason, pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, ...pm });
-          broadcast(sId, { type: 'paused', runId, scope: step.kind, reason: result.reason, residualFindings: result.residual || [], pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, ...pm, completedAt: new Date().toISOString() });
-          await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
+          // The marker and the frame report the same pause, so the shared terms
+          // live in one object — they only disagree on how they name the step
+          // and the reason. Keeping them in two literals is how a pause field
+          // ends up persisted but never broadcast (or the reverse).
+          const pausePayload = {
+            runId,
+            residualFindings: result.residual || [],
+            discardedFindings: result.discarded || [],
+            // The arc gate's whole rollback history (see `runArcVerify`); only
+            // that gate emits it. `discardedFindings` above stays scoped to the
+            // round that was reverted last, which is what the panel renders.
+            runDiscardedFindings: result.runDiscarded || [],
+            // The foundation gate's equivalent, keyed by dimension because its
+            // repairs are owned by independent editors (#3835). Same posture:
+            // resume evidence, not rendered.
+            foundationDiscardedFindings: result.foundationDiscarded || {},
+            pauseKind: result.pauseKind || null,
+            healthBreakdown: result.healthBreakdown || null,
+            ...pm,
+          };
+          await persistMarker(sId, { status: 'paused', currentStep: step.kind, lastError: result.reason, ...pausePayload });
+          // File BEFORE the terminal frame, for the same reason the post-mortem
+          // runs first: fileGap emits its own `gap:filed` frame, and SSE replay
+          // keeps only the LAST payload — filing afterwards leaves a client that
+          // attaches post-run replaying `gap:filed` and never seeing the pause.
           // Only file the generic stalled task when the step didn't already file
           // a more specific gap (canon-undescribed, visual-no-pages, …) — else
           // fileGaps would create two CoS tasks for one underlying problem (the
@@ -393,11 +476,27 @@ export async function startSeriesAutopilot(sId, options = {}) {
               context: JSON.stringify(result.residual || []).slice(0, 1000),
             });
           }
+          broadcast(sId, { type: 'paused', scope: step.kind, reason: result.reason, ...pausePayload, completedAt: new Date().toISOString() });
+          await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
           console.log(`⏸️  autopilot paused (${step.kind}) — series=${sId.slice(0, 12)}: ${result.reason}`);
           return;
         }
         broadcast(sId, { type: 'step:complete', kind: step.kind, seasonId: step.seasonId, issueId: step.issueId, ordinal });
         observeStep(step);
+      }
+
+      if (record.pauseRequested && !record.cancelRequested) {
+        const reason = 'paused by user after the active step completed';
+        await observerIdle();
+        await persistMarker(sId, {
+          status: 'paused', runId, currentStep: null, lastError: reason, pauseKind: 'manual',
+        });
+        broadcast(sId, {
+          type: 'paused', runId, reason, pauseKind: 'manual',
+          completedAt: new Date().toISOString(),
+        });
+        console.log(`⏸️  autopilot paused (manual) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
+        return;
       }
 
       // Cancelled. No post-mortem (nothing to explain), but an in-flight
@@ -408,18 +507,36 @@ export async function startSeriesAutopilot(sId, options = {}) {
       console.log(`🛑 autopilot canceled — series=${sId.slice(0, 12)} after ${ordinal} steps`);
     } catch (err) {
       const message = (err?.message || String(err)).slice(0, 1000);
+      // A step's LLM call can be stopped mid-flight — this run's Cancel reaches
+      // through to `stopRun(activeLlmRunId)`, /runs Stop kills the same pty, and
+      // a PortOS restart tree-kills it — and the prompt runner surfaces all
+      // three as a RUN_CANCELED rejection rather than a step result the loop
+      // could inspect. That is a lifecycle outcome, not an automation defect:
+      // route it to the same resumable `paused` + `canceled` terminal the
+      // cooperative between-steps cancel uses. Reporting `error` here would
+      // spend a post-mortem diagnosing the operator and file a `run-error` gap
+      // task for a human pressing Stop.
+      if (isRunCanceledError(err)) {
+        await observerIdle();
+        await persistMarker(sId, { status: 'paused', runId, currentStep: null, lastError: message });
+        broadcast(sId, { type: 'canceled', runId, steps: ordinal, reason: message, completedAt: new Date().toISOString() });
+        console.log(`🛑 autopilot canceled — series=${sId.slice(0, 12)} after ${ordinal} steps: ${message}`);
+        return;
+      }
       console.error(`❌ autopilot failed — series=${sId.slice(0, 12)} ${message}`);
       // Same ordering as the other terminals: diagnose first so the verdict can
       // ride the `error` frame + marker rather than arriving after the client
       // has torn its stream down.
       const pm = await postMortem('error', message);
       await persistMarker(sId, { status: 'error', runId, lastError: message, ...pm });
-      broadcast(sId, { type: 'error', runId, error: message, ...pm, failedAt: new Date().toISOString() });
+      // Filed before the frame for the same replay reason as the pause terminal:
+      // `gap:filed` would otherwise be the last retained payload.
       await fileGap(record, sId, {
         gapKind: 'run-error',
         summary: `The autonomous run failed and stopped: ${message}`,
         context: message,
       }).catch(() => {});
+      broadcast(sId, { type: 'error', runId, error: message, ...pm, failedAt: new Date().toISOString() });
     } finally {
       record.finished = true;
       scheduleCleanup(sId, record);

@@ -47,6 +47,7 @@ import {
   PASTE_MARKER_POLL_MS,
   countPasteMarkers,
   createWorkActivityTracker,
+  createSelfClearingSignalGate,
   createMergeQueueTracker,
   createReviewLoopTracker,
   createBackgroundShellTracker,
@@ -304,6 +305,10 @@ export async function spawnTuiAgent({
   let finalized = false;
   let immediateFallbackAnalysis = null;
   const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
+  // Holds the wait-it-out window for a provider signal carrying a `graceMs`
+  // (agy's account-eligibility banner). The idle timer below both resolves its
+  // deadline and defers to `.armed` for idle suppression.
+  const selfClearingGate = createSelfClearingSignalGate();
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
   // read-at-most-once invariant at the helper.
@@ -739,6 +744,24 @@ export async function spawnTuiAgent({
     // there is no reason to shrink it on the way out.
   };
 
+  // The single fail-over verdict, reached from two places: a signal with no grace
+  // window (immediate) and a grace window that expired without recovery. Sharing
+  // it keeps the deferred path provably identical to the immediate one.
+  //
+  // `immediateFallbackAnalysis` is set HERE and not at arm time on purpose — it is
+  // read at finalize by resolveErrorAnalysis, so stamping it when the window opens
+  // would tag a run that went on to RECOVER with the banner as its error.
+  const failOverToFallback = (analysis) => {
+    immediateFallbackAnalysis = analysis;
+    appendLine(`⚡ Provider fallback signal: ${analysis.message}`);
+    return finish({
+      success: false,
+      exitCode: 1,
+      error: analysis.message || 'Provider requires fallback',
+      reason: 'fallback-signal'
+    });
+  };
+
   const handleData = async (data) => {
     // EventEmitter listeners run outside the request lifecycle — a rejection
     // here on Node ≥15 will kill the process unless we catch locally. The
@@ -826,16 +849,26 @@ export async function spawnTuiAgent({
       // path. We still spool the raw stream to raw.txt for error analysis
       // on failure, and we detect early "command not found" so a missing
       // binary fails fast instead of idling.
+      //
+      // While a grace window is open, every chunk is evidence about whether the
+      // provider came back; the gate closes itself the moment it is.
+      if (selfClearingGate.observe(stripped)) {
+        appendLine(`✅ Provider signal cleared — ${tuiConfig.command} is generating again; continuing the run`);
+      }
+
       const fallbackSignal = detectImmediateFallbackSignal(stripped);
-      if (fallbackSignal) {
-        immediateFallbackAnalysis = fallbackSignal;
-        appendLine(`⚡ Provider fallback signal: ${fallbackSignal.message}`);
-        await finish({
-          success: false,
-          exitCode: 1,
-          error: fallbackSignal.message || 'Provider requires fallback',
-          reason: 'fallback-signal'
-        });
+      // Branch on the SIGNAL's own grace window, never on gate state: the
+      // detector buffers ~512 chars, so a banner keeps matching for many chunks
+      // after it has scrolled off. Reading gate state here would let one of those
+      // stale matches fall through to an immediate kill the moment the gate
+      // closed. A graceful signal can only ever arm a window (or be ignored,
+      // when one is already open or the provider already recovered).
+      if (fallbackSignal?.graceMs > 0) {
+        if (selfClearingGate.arm(fallbackSignal, now)) {
+          appendLine(`⏳ Provider signal (self-clearing): ${fallbackSignal.message} — holding the session up to ${Math.round(fallbackSignal.graceMs / 1000)}s for it to clear`);
+        }
+      } else if (fallbackSignal) {
+        await failOverToFallback(fallbackSignal);
         return;
       }
 
@@ -896,6 +929,14 @@ export async function spawnTuiAgent({
   // process terminated unexpectedly". Finalize it here instead, carrying the
   // spawn error into the record. Runs outside the Express request lifecycle, so
   // there is no middleware to bubble to.
+  //
+  // The REASON splits on which half failed. A durable-runner throw is a
+  // runner-hop failure (a `fetch failed` mid-restart, or a runner refusal) —
+  // no process ever existed, so it is `spawn-rejected` (non-actionable →
+  // retry), mirroring the direct-CLI runner path's deliberate split in
+  // agentLifecycle.js and the registration in COMPLETION_REASON_ANALYSES. A
+  // LOCAL PTY that won't open keeps the actionable `spawn-error`: that is a
+  // real host/config problem a retry cannot repair.
   let session;
   try {
     session = await createAgentTuiSession({
@@ -919,7 +960,7 @@ export async function spawnTuiAgent({
       success: false,
       exitCode: 1,
       error: `Failed to start TUI session: ${message}`,
-      reason: 'spawn-error',
+      reason: useDurableRunner ? 'spawn-rejected' : 'spawn-error',
     });
     return null;
   }
@@ -1347,7 +1388,26 @@ export async function spawnTuiAgent({
   }, READY_POLL_INTERVAL_MS);
 
   const idleTimer = setInterval(() => {
-    if (!promptSentAt || finalized) return;
+    if (finalized) return;
+    // Resolve an expired grace window. Checked BEFORE the promptSentAt gate
+    // below: the banner can paint during startup too, and a run stalled there
+    // would otherwise hold the window forever.
+    const expired = selfClearingGate.takeExpired(Date.now());
+    if (expired) {
+      // setInterval can't await, and an unhandled rejection here would crash the
+      // process (the callback-boundary hazard CLAUDE.md calls out).
+      failOverToFallback(expired).catch((err) =>
+        emitLog('error', `TUI agent ${agentId} deferred fallback finish failed: ${err?.message || err}`, { agentId }));
+      return;
+    }
+    // A session waiting out a provider handshake is silent by definition — but it
+    // is NOT idle, and letting the reaper finalize it would be far worse than the
+    // premature kill this window replaced: with no `.agent-done` sentinel the
+    // idle path reports `idle-complete` SUCCESS for a run that never produced a
+    // token. Safely bounded — the window carries its own deadline, resolved just
+    // above, which fires strictly before any idle window it outlasts.
+    if (selfClearingGate.armed) return;
+    if (!promptSentAt) return;
     // Don't reap a session that just received real input — a human pasting
     // into the Shell page, or our own auto-paste. A big bracketed paste can
     // sit in a silent reflow/commit window with no PTY output yet, which

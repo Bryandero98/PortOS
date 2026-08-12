@@ -34,7 +34,7 @@ import { existsSync } from 'fs';
 import { emitLog, cosEvents } from './cosEvents.js';
 import { updateAgent } from './cosAgentLifecycle.js';
 import { initProviderStatus } from './providerStatus.js';
-import { onCosRunnerEvent, initCosRunnerConnection, isRunnerAvailable } from './cosRunnerClient.js';
+import { onCosRunnerEvent, initCosRunnerConnection, isRunnerAvailable, isRunnerReachable } from './cosRunnerClient.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { loadSlashdoFile } from '../lib/slashdoLoader.js';
 import { getRunnerOutputBatcher, flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
@@ -42,7 +42,8 @@ import { syncRunnerAgents } from './agentRunnerSync.js';
 import { handleAgentCompletion } from './agentLifecycle.js';
 import { cleanupOrphanedAgents } from './agentManagement.js';
 import { completeAgentRun } from './agentRunTracking.js';
-import { runnerAgents, setUseRunner } from './agentState.js';
+import { runnerAgents, setUseRunner, useRunner } from './agentState.js';
+import { releaseAppReviewMarker } from './appActivity.js';
 // This module's own event wiring drives three LIFECYCLE TRANSITIONS, so it takes
 // them from the facade rather than from the three separate leaves that happen to
 // implement them (#3450). It can: nothing the facade imports imports this module
@@ -50,6 +51,10 @@ import { runnerAgents, setUseRunner } from './agentState.js';
 import { completeAgent, spawnAgentForTask, terminateAgent } from './agentOrchestrator.js';
 
 const RUNS_DIR = PATHS.runs;
+
+// Coalesce reconnect storms (a crash-looping runner) into one dequeue.
+const RECONNECT_DEQUEUE_DEBOUNCE_MS = 1000;
+let reconnectDequeueTimer = null;
 
 /**
  * Load a slashdo command from the bundled submodule, resolving !`cat` lib includes inline.
@@ -122,6 +127,29 @@ async function runInitSpawner() {
     if (synced > 0) {
       console.log(`🔄 Recovered ${synced} agents from CoS Runner`);
     }
+
+    // Runner liveness → the queue holds, then re-drives. `portos-cos` is a
+    // separate PM2 app the user can stop, and in runner mode it owns every agent
+    // process — so while it is down, dispatch HOLDS tasks as `pending` (see the
+    // `task:ready` listener below and `dequeueNextTask`'s gate) rather than
+    // failing them. These two events are the outage's edges: one warning when it
+    // goes, one dequeue when it returns, instead of a line per held task.
+    //
+    // The reconnect is debounced because `reconnectionAttempts` is unbounded: a
+    // crash-looping runner would otherwise drive one full five-tier dequeue
+    // cycle per restart.
+    onCosRunnerEvent('connection:lost', () => {
+      emitLog('warn', '⏸️ CoS Runner disconnected — holding agent tasks until it returns');
+    });
+
+    onCosRunnerEvent('connection:ready', () => {
+      clearTimeout(reconnectDequeueTimer);
+      reconnectDequeueTimer = setTimeout(() => {
+        emitLog('info', '▶️ CoS Runner reconnected — resuming held agent tasks');
+        cosEvents.emit('cos:dequeue-requested');
+      }, RECONNECT_DEQUEUE_DEBOUNCE_MS);
+      reconnectDequeueTimer.unref?.();
+    });
 
     // Set up event handlers for runner events
     onCosRunnerEvent('agent:output', async (data) => {
@@ -197,6 +225,31 @@ async function runInitSpawner() {
   }
 
   cosEvents.on('task:ready', async (task) => {
+    // Runner-down HOLD, at the one chokepoint all seven `task:ready` emitters
+    // funnel through. Dispatching into a stopped runner is not a task failure,
+    // but both spawn arms recorded it as one: the CLI arm finalized
+    // `spawn-rejected` (a retry each time, so a runner left off overnight walked
+    // every queued task through its retry budget into `blocked`), and the TUI arm
+    // threw into the actionable `spawn-error`, parking the task for a human over
+    // an app the user simply turned off.
+    //
+    // Held HERE rather than inside `runAgentSpawn`: a hold below this line would
+    // return past `releaseAppReviewMarker`, stranding the synthetic "in review"
+    // marker for the whole outage — issue #989's exact failure mode. The two
+    // releases below are the same ones the spawn body owns.
+    if (useRunner && !(await isRunnerReachable())) {
+      emitLog('debug', `⏸️ Holding task ${task.id} — CoS Runner is down`, { taskId: task.id });
+      await releaseAppReviewMarker(task.metadata?.app).catch(err =>
+        emitLog('warn', `Failed to release app review marker for ${task.metadata?.app}: ${err.message}`, { taskId: task.id })
+      );
+      // Clears `spawningJobIds` immediately and re-registers the cron schedule.
+      // Without it an autonomous job sits wedged until the scheduler's 5-minute
+      // spawn timeout — per job, per outage.
+      if (task.metadata?.jobId) {
+        cosEvents.emit('job:spawn-failed', { jobId: task.metadata.jobId });
+      }
+      return;
+    }
     try {
       await spawnAgentForTask(task);
     } catch (err) {

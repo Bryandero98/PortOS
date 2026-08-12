@@ -19,6 +19,7 @@ import { sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
 import { sanitizeStyleGuide } from '../../lib/styleGuide.js';
 import { sanitizeProseExportSettings } from '../../lib/proseExportSettings.js';
 import { sanitizeSeverityWeights, sanitizeBlockingSeverities } from '../../lib/editorial/severityConfig.js';
+import { CHECK_SEVERITIES } from '../../lib/editorial/checkRegistry.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import { persistedRenderPinFields } from '../../lib/renderTargets.js';
@@ -121,7 +122,32 @@ export const ARC_LOCKABLE_FIELDS = Object.freeze([
 export const AUTOPILOT_STATUSES = Object.freeze(['idle', 'running', 'paused', 'done', 'error']);
 export const AUTOPILOT_STEP_MAX = 80;
 export const AUTOPILOT_ERROR_MAX = 1000;
-const AUTOPILOT_FINDING_SEVERITIES = ['high', 'medium', 'low'];
+// The residual set is the user's work queue, so it holds the whole backlog.
+const AUTOPILOT_RESIDUAL_MAX = 50;
+// The discarded set is diagnostic context for a single decision, so it is capped
+// tighter. This one is exported because the arc loop slices its own emission to
+// this same constant — otherwise the live SSE frame would carry findings the
+// record then silently drops, and the two would disagree about what was thrown
+// away. The residual cap needs no such export: nothing emits residual pre-bounded.
+export const AUTOPILOT_DISCARDED_MAX = 20;
+export const AUTOPILOT_LLM_STAGE_KINDS = Object.freeze([
+  'characterFoundation',
+  'generateArc',
+  'repairArcStructure',
+  'verifyArcSpine',
+  'generateEpisodes',
+  'foundationGate',
+  'verifyArc',
+  'beatSheet',
+  'beatContinuity',
+  'textStages',
+  'scriptVerify',
+  'editorialReview',
+  'reverseOutline',
+  'editorialChecks',
+  'revisionCycle',
+  'produceTeaser',
+]);
 
 const sanitizeAutopilotLlmRoute = (raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -131,6 +157,22 @@ const sanitizeAutopilotLlmRoute = (raw) => {
   if (providerOverride) out.providerOverride = providerOverride;
   if (modelOverride) out.modelOverride = modelOverride;
   if (EFFORT_LEVELS.includes(raw.effortOverride)) out.effortOverride = raw.effortOverride;
+  return Object.keys(out).length ? out : null;
+};
+
+const sanitizeAutopilotStageLlm = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  for (const step of AUTOPILOT_LLM_STAGE_KINDS) {
+    const stage = raw[step];
+    if (!stage || typeof stage !== 'object' || Array.isArray(stage)) continue;
+    const creative = sanitizeAutopilotLlmRoute(stage.creative);
+    const judge = sanitizeAutopilotLlmRoute(stage.judge);
+    if (creative || judge) out[step] = {
+      ...(creative ? { creative } : {}),
+      ...(judge ? { judge } : {}),
+    };
+  }
   return Object.keys(out).length ? out : null;
 };
 
@@ -152,6 +194,9 @@ const sanitizeAutopilotResumeOptions = (raw) => {
   if (baseLlm?.effortOverride) out.effortOverride = baseLlm.effortOverride;
   const judgeLlm = sanitizeAutopilotLlmRoute(raw.judgeLlm);
   if (judgeLlm) out.judgeLlm = judgeLlm;
+  const stageLlm = sanitizeAutopilotStageLlm(raw.stageLlm);
+  if (stageLlm) out.stageLlm = stageLlm;
+  if (typeof raw.autoSelectModels === 'boolean') out.autoSelectModels = raw.autoSelectModels;
   return Object.keys(out).length ? out : null;
 };
 // Why a bounded-retry gate paused the run. Convergence gates (#1571):
@@ -171,37 +216,91 @@ const sanitizeAutopilotResumeOptions = (raw) => {
 // to each other without settling), `budget` (the daily spend cap was reached
 // mid-run), `providerFailed` (an LLM repair call failed outright — a provider
 // timeout, a dead CLI, a rate limit — after the prompt runner's own fallback
-// cascade was exhausted). This list must carry EVERY kind the autopilot emits:
+// cascade was exhausted), `manual` (the user asked for a graceful pause after
+// the active step/transaction). This list must carry EVERY kind the autopilot emits:
 // sanitizeAutopilot drops an unlisted one to null, which silently strips the
 // badge the UI would otherwise show.
 export const AUTOPILOT_PAUSE_KINDS = Object.freeze([
   'maxRounds', 'divergence', 'regression', 'childFailed', 'checkFindings',
-  'inapplicable', 'planningOscillation', 'budget', 'providerFailed',
+  'inapplicable', 'planningOscillation', 'budget', 'providerFailed', 'manual',
 ]);
+
+// Bound a marker-borne finding list to the wire shape the UI renders.
+const sanitizeAutopilotFindings = (raw, limit) => (Array.isArray(raw)
+  ? raw
+    .map((f) => {
+      if (!f || typeof f !== 'object') return null;
+      const problem = trimTo(f.problem, 2000);
+      if (!problem) return null;
+      return {
+        ...(CHECK_SEVERITIES.includes(f.severity) ? { severity: f.severity } : {}),
+        location: trimTo(f.location, 200),
+        problem,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, limit)
+  : []);
+
+// How many repair targets may carry their own discarded history. The foundation
+// gate keys by dimension and there are a fixed handful of those, so this only
+// ever bounds a marker written by a peer that knows dimensions this one doesn't.
+const AUTOPILOT_DISCARDED_KEYS_MAX = 12;
+
+// The keyed form of the above, for a gate whose repairs are owned by independent
+// targets (the foundation gate's dimensions): each key keeps its own bounded
+// history, and a key whose findings all fail sanitization is dropped rather than
+// persisted as an empty bucket.
+const sanitizeAutopilotKeyedFindings = (raw, limit) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [key, findings] of Object.entries(raw).slice(0, AUTOPILOT_DISCARDED_KEYS_MAX)) {
+    const name = trimTo(key, 80);
+    const bounded = sanitizeAutopilotFindings(findings, limit);
+    if (name && bounded.length > 0) out[name] = bounded;
+  }
+  return out;
+};
 
 export const sanitizeAutopilot = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
   const status = AUTOPILOT_STATUSES.includes(raw.status) ? raw.status : 'idle';
-  const residualFindings = Array.isArray(raw.residualFindings)
-    ? raw.residualFindings
-      .map((f) => {
-        if (!f || typeof f !== 'object') return null;
-        const problem = trimTo(f.problem, 2000);
-        if (!problem) return null;
-        return {
-          ...(AUTOPILOT_FINDING_SEVERITIES.includes(f.severity) ? { severity: f.severity } : {}),
-          location: trimTo(f.location, 200),
-          problem,
-        };
-      })
-      .filter(Boolean)
-      .slice(0, 50)
-    : [];
+  const residualFindings = sanitizeAutopilotFindings(raw.residualFindings, AUTOPILOT_RESIDUAL_MAX);
   return {
     status,
     runId: trimTo(raw.runId, 64) || null,
     currentStep: trimTo(raw.currentStep, AUTOPILOT_STEP_MAX) || null,
     residualFindings,
+    // The findings a rewound round produced, kept next to the (better) set that
+    // was restored so the trade is reviewable. Empty on any pause that threw
+    // nothing away. Same transient-marker posture as pauseKind: no schema gate.
+    discardedFindings: sanitizeAutopilotFindings(raw.discardedFindings, AUTOPILOT_DISCARDED_MAX),
+    // Every rewrite the paused gate reverted, newest first — a superset of
+    // `discardedFindings`, which stays scoped to the round that was reverted
+    // last so the panel's copy stays true. Not rendered: this is the resume
+    // evidence, so a run that reverted two different rewrites hands the next
+    // one both instead of only the second (#3829).
+    //
+    // A marker persisted before the field existed (or written by an older peer)
+    // falls back to the one set it does have, so the compat lives HERE — where
+    // this shape is owned — instead of every consumer re-deriving "absent" from
+    // an empty array. Safe because the gate banks each discarded set as it
+    // reverts it, so the history can never be empty while the last round isn't.
+    runDiscardedFindings: sanitizeAutopilotFindings(
+      raw.runDiscardedFindings ?? raw.discardedFindings,
+      AUTOPILOT_DISCARDED_MAX,
+    ),
+    // The same resume evidence for the foundation gate, which banks PER
+    // DIMENSION because its repairs are owned by independent editors: a rejected
+    // character rewrite is no reason for the structure editor to avoid anything
+    // (#3835). No `discardedFindings` fallback here — that field is flat and
+    // dimension-less, so there is nothing to key an older marker's set under;
+    // an install that paused before this field existed simply resumes with the
+    // in-run accumulation only, exactly as it does today.
+    foundationDiscardedFindings: sanitizeAutopilotKeyedFindings(
+      raw.foundationDiscardedFindings,
+      AUTOPILOT_DISCARDED_MAX,
+    ),
     lastError: trimTo(raw.lastError, AUTOPILOT_ERROR_MAX) || null,
     // No `pipelineSeries` schema-gate bump for this (or any) autopilot field: the
     // marker is transient, regenerated-every-run status, NOT durable creative

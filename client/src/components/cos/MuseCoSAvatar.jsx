@@ -1,4 +1,4 @@
-import { useRef, useMemo, useEffect, useState, useCallback, Suspense, Component } from 'react';
+import { useRef, useMemo, useEffect, useState, useCallback, Suspense } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
@@ -12,8 +12,8 @@ import {
   MUSE_ROOT_MOTION_CLIPS,
 } from './constants';
 import CoSAvatarOrbitControls from './CoSAvatarOrbitControls';
-import CoSAvatarFrame from './CoSAvatarFrame';
 import CoSBackgroundCamera from './CoSBackgroundCamera';
+import CoSCanvasGuard from './CoSCanvasGuard';
 import { withInPlaceClips, inPlaceClipName } from '../../utils/animationClips';
 import useClonedGltf, { GltfPrimitive } from '../../hooks/useClonedGltf';
 
@@ -314,25 +314,6 @@ function MissingModelHint({ background = false }) {
   );
 }
 
-// Error boundary so a corrupt/non-GLTF body (the HEAD probe only confirms
-// r.ok, not valid GLTF) degrades to the missing-model hint instead of
-// white-screening the whole CoS page.
-class AvatarErrorBoundary extends Component {
-  constructor(props) {
-    super(props);
-    this.state = { failed: false };
-  }
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  componentDidCatch(err) {
-    console.warn(`⚠️ Muse avatar failed to load: ${err?.message || err}`);
-  }
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
-}
-
 function LoadingPlaceholder({ background = false }) {
   return (
     <div className={`${background ? 'relative w-full h-full min-h-full' : 'relative w-full max-w-[8rem] lg:max-w-[12rem] aspect-[5/6]'} flex items-center justify-center`}>
@@ -361,19 +342,21 @@ export default function MuseCoSAvatar({ state, speaking, background = false }) {
   if (!modelPresent) return <MissingModelHint background={background} />;
 
   return (
-    <CoSAvatarFrame label="Muse 3D avatar. Drag to rotate." background={background}>
-      <AvatarErrorBoundary fallback={<MissingModelHint background={background} />}>
-        <Canvas
-          camera={{ position: [0, 0, 3.3], fov: 45 }}
-          style={{ width: '100%', height: '100%', background: 'transparent' }}
-          gl={{ alpha: true, antialias: true }}
-        >
-          <Suspense fallback={null}>
-            <Scene state={state} speaking={speaking} background={background} />
-          </Suspense>
-        </Canvas>
-      </AvatarErrorBoundary>
-    </CoSAvatarFrame>
+    <CoSCanvasGuard
+      label="Muse 3D avatar. Drag to rotate."
+      background={background}
+      fallback={<MissingModelHint background={background} />}
+    >
+      <Canvas
+        camera={{ position: [0, 0, 3.3], fov: 45 }}
+        style={{ width: '100%', height: '100%', background: 'transparent' }}
+        gl={{ alpha: true, antialias: true }}
+      >
+        <Suspense fallback={null}>
+          <Scene state={state} speaking={speaking} background={background} />
+        </Suspense>
+      </Canvas>
+    </CoSCanvasGuard>
   );
 }
 

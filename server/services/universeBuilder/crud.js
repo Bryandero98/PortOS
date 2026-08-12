@@ -13,7 +13,7 @@
 import { randomUUID } from 'crypto';
 import { PATHS, ensureDir, resolveImageRef } from '../../lib/fileUtils.js';
 import {
-  pruneStaleReferenceSheets, mergePreservedSheetPointers, isStr, trimTo,
+  BIBLE_KEYS, pruneStaleReferenceSheets, mergePreservedSheetPointers, isStr, trimTo,
 } from '../../lib/storyBible.js';
 import { store } from './storeFacade.js';
 import {
@@ -164,6 +164,35 @@ export async function getUniverse(id, { includeDeleted = false } = {}) {
   return w;
 }
 
+/**
+ * One universe's render pin (`imageMode` / `imageModelId`) and nothing else.
+ *
+ * Same motivation as `listUniverseNames` / `listUniverseStyles` above, applied
+ * to a by-id read: the two scalars a render-target ladder needs would otherwise
+ * cost a `getUniverse`, whose `sanitizeTemplate` pass walks every variation,
+ * composite sheet, and bible entry (minting UUIDs for id-less ones) — and that
+ * runs on EVERY mode-less universe-tagged render, so an agent filling a
+ * 20-entry cast pays it 20 times. Reach for this instead of
+ * `recordRenderPin(await getUniverse(id))`.
+ *
+ * This skips the SANITIZER, not the row fetch — both backends' `readRaw` still
+ * return the whole record. That's fine because the sanitize pass is the part
+ * that scales with canon size; projecting the two columns in SQL would shave a
+ * row read that is already a single indexed lookup, at the cost of a
+ * backend-specific query pair.
+ *
+ * Reading raw is safe because `recordRenderPin` applies the same
+ * `normalizeRenderPinValue` the sanitizer's persisted pin fields do. Raw reads
+ * DO return tombstones, so deleted records are filtered here; a missing or
+ * deleted universe resolves to `null` (the caller falls through the ladder)
+ * rather than throwing, since a render must not fail over a stale tag.
+ */
+export async function getUniverseRenderPin(id) {
+  const raw = await store().loadOneRaw(id);
+  if (!raw || raw.deleted) return null;
+  return { imageMode: raw.imageMode ?? null, imageModelId: raw.imageModelId ?? null };
+}
+
 // Returns true when the raw on-disk universe carries variations or composite
 // sheets that are missing a stable `id` field — i.e. sanitizeTemplate would
 // mint fresh UUIDs (and those UUIDs would differ on every read until the
@@ -304,9 +333,6 @@ export async function insertUniverseWithId(input = {}) {
   return next;
 }
 
-// Canon array keys carrying bible entries that project to catalog rows.
-const CANON_ARRAY_KEYS = ['characters', 'places', 'objects'];
-
 // Compare two canon entries for CONTENT equality, ignoring `updatedAt` (the
 // field we're deciding whether to bump). A cheap stable-stringify is enough —
 // entries are small plain objects and a false "changed" only costs a redundant
@@ -324,7 +350,7 @@ function canonEntryContentEqual(a, b) {
 // their old timestamp so this never manufactures projection churn.
 function stampChangedCanonEntries(prev, next) {
   const nowMs = Date.now();
-  for (const key of CANON_ARRAY_KEYS) {
+  for (const key of BIBLE_KEYS) {
     const nextList = Array.isArray(next[key]) ? next[key] : null;
     if (!nextList) continue;
     const prevById = new Map(
@@ -452,7 +478,7 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
       'imageMode', 'imageModelId',
       // Canon entity arrays — patched wholesale (the sanitizer reruns
       // sanitizeBibleList so per-entry shape is enforced on every save).
-      'characters', 'places', 'objects',
+      ...BIBLE_KEYS,
       // Share-bucket origin metadata (importer sets it; user clears via wholesale null).
       'origin',
       // Local-only "don't sync" marker — see sanitizeTemplate. The safety
@@ -549,7 +575,7 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     // stale. (The characters array was already remapped above for sheet
     // pointers — this preserves a different field and composes cleanly.)
     if (!isMutator) {
-      for (const canonKey of ['characters', 'places', 'objects']) {
+      for (const canonKey of BIBLE_KEYS) {
         if (Array.isArray(scalarPatch[canonKey]) && Array.isArray(cur[canonKey])) {
           scalarPatch[canonKey] = preserveImageRefsById(scalarPatch[canonKey], cur[canonKey]);
         }

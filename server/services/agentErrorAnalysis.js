@@ -6,13 +6,22 @@
  */
 
 import { emitLog } from './cosEvents.js';
-import { addTask, updateTask, getAllTasks } from './cos.js';
+import { addTask, updateTask } from './cos.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { redactOutput } from '../lib/commandSecurity.js';
 import { stripAnsi } from '../lib/ansiStrip.js';
 import { retryHoldMetadata } from '../lib/taskRetryHold.js';
-import { isTruthyMeta } from './agentState.js';
+import {
+  INVESTIGATION_CIRCUIT_MAX_CREATIONS,
+  INVESTIGATION_HEADLINE_PREFIX,
+  LOOP_REASON_PROSE,
+  MAX_AUTO_RETRIES_PER_TASK,
+  buildInvestigationFingerprint,
+  isInvestigationTask,
+  resolveInvestigationApproval,
+} from '../lib/investigationTasks.js';
+import { investigationCircuitOpen, noteInvestigationFiled, readAllTasksFlat, recentInvestigationCreations } from './investigationTaskProducer.js';
 import { PRIMARY_CHECKOUT_MUTATED_CATEGORY, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
 
 // Max retries before blocking a task
@@ -129,6 +138,30 @@ export const ERROR_PATTERNS = [
       message: `Model "${match[1] || match[2] || model || 'configured model'}" is not supported`,
       suggestedFix: 'Update the provider model configuration or leave the model blank so the CLI can use its own configured default.',
       affectedModel: match[1] || match[2] || model,
+      configuredModel: model
+    })
+  },
+  {
+    // The Claude Code CLI's own startup rejection of `--model <id>`, printed
+    // before any API call is made — so it never carries an `API Error: 4NN`
+    // token and matched none of the model patterns above. Untriaged it landed in
+    // the `unknown` bucket ("Error did not match known patterns"), which is Tier
+    // 4 (escalate) in autoFixer's map: the task burned all three retries against
+    // an id that can never work and then spawned an investigation task, instead
+    // of getting the Tier 1 config/env correction a model rejection deserves.
+    // Structured enough to promote to `origin: 'provider'` — the full sentence
+    // with the parenthesised id and the `--model` hint is CLI banner text, not
+    // something a task's own output prints in passing.
+    pattern: /There's an issue with the selected model \(([^)]+)\)/i,
+    category: 'model-not-found',
+    actionable: true,
+    origin: 'provider',
+    structuredMarker: /There's an issue with the selected model \([^)]+\)[\s\S]{0,120}?(?:may not exist|--model)/i,
+    escalation: 'Set a model id this provider actually serves for the task (or clear its model override so the CLI uses its own default), then approve the retry.',
+    extract: (match, output, task, model) => ({
+      message: `Model "${match[1]}" rejected by the CLI - it may not exist or the account lacks access`,
+      suggestedFix: `The CLI does not accept "${match[1]}". Check that the task's model override matches the provider it is running on, or clear the override so the CLI falls back to its own default.`,
+      affectedModel: match[1],
       configuredModel: model
     })
   },
@@ -877,73 +910,13 @@ export function analyzeAgentFailure(output, task, model, options = {}) {
 // fresh task is only allowed once the prior cause was actually dealt with.
 const OPEN_INVESTIGATION_STATUSES = new Set(['pending', 'in_progress', 'challenged', 'blocked']);
 
-// Rolling circuit breaker across ALL fingerprints, mirroring autoFixer.js's
-// tripCircuit: at most INVESTIGATION_CIRCUIT_MAX_CREATIONS investigation tasks
-// per rolling window. A systemic failure storm (provider outage, broken spawn
-// path) fails MANY distinct tasks at once, each minting a distinct fingerprint —
-// the per-fingerprint dedup alone can't stop that fan-out. The window is rolling:
-// stamps older than the window are pruned on every check, so the circuit
-// auto-closes once creations age out (no manual reset needed).
-export const INVESTIGATION_CIRCUIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-export const INVESTIGATION_CIRCUIT_MAX_CREATIONS = 3;
-let investigationCreationStamps = []; // ms timestamps, newest-last
-
-/**
- * How many investigation creations are still inside the rolling circuit window.
- * Prunes aged-out stamps as a side effect, so the circuit auto-closes without a
- * manual reset. The count (not just a boolean "open?") is what the caller needs:
- * at the cap it suppresses the task entirely, and below the cap a non-zero count
- * is the `failure-storm` loop signal that holds the task for a human.
- */
-function recentInvestigationCreations(now) {
-  investigationCreationStamps = investigationCreationStamps.filter(t => now - t < INVESTIGATION_CIRCUIT_WINDOW_MS);
-  return investigationCreationStamps.length;
-}
-
-// Test hook — the stamp list is module state, so suites reset it between cases.
-export function __resetInvestigationCircuit() {
-  investigationCreationStamps = [];
-}
-
-/**
- * Durable dedup key for investigation tasks: same failure category against the
- * same kind of task in the same app is the same cause. Deliberately NOT keyed
- * on the free-text failure message — for `unknown`-category failures that is a
- * raw agent-output line that varies per run, which is exactly the dedup hole
- * that let near-identical investigations pile up (#2615).
- */
-export function buildInvestigationFingerprint(originalTask, analysis) {
-  const category = analysis?.category || 'unknown';
-  const kind = originalTask?.metadata?.analysisType
-    || originalTask?.metadata?.selfImprovementType
-    || originalTask?.taskType
-    || 'task';
-  const app = originalTask?.metadata?.app || 'none';
-  return `${category}:${kind}:${app}`;
-}
-
-// Stable headline every investigation task ever created starts with — the one
-// signal that exists on BOTH new tasks and pre-#2615 tasks (and on tasks synced
-// from not-yet-upgraded federated peers, which a local migration couldn't fix).
-const INVESTIGATION_HEADLINE_PREFIX = '[Auto] Investigate agent failure';
-
-/**
- * Is this task an investigation task? Prefers the durable metadata marker;
- * falls back to the legacy headline shape so investigations persisted before
- * the marker existed still never spawn meta-investigations.
- */
-export function isInvestigationTask(task) {
-  if (isTruthyMeta(task?.metadata?.isInvestigation)) return true;
-  return typeof task?.description === 'string'
-    && task.description.trimStart().startsWith(INVESTIGATION_HEADLINE_PREFIX);
-}
-
-// Every task across both queues, flattened. One read serves both the
-// fingerprint dedup scan and the failure-loop detection below.
-async function readAllTasksFlat() {
-  const { user, cos } = await getAllTasks();
-  return [...(user?.tasks || []), ...(cos?.tasks || [])];
-}
+// The rolling circuit breaker, the creation counter, and the flat backlog read
+// live in `investigationTaskProducer.js` — shared with the provider / crash /
+// orphan producers so "how many investigations this hour" is ONE number rather
+// than one per producer. Re-exported here at the address the suites and callers
+// already use.
+export { INVESTIGATION_CIRCUIT_WINDOW_MS, INVESTIGATION_CIRCUIT_MAX_CREATIONS } from '../lib/investigationTasks.js';
+export { __resetInvestigationCircuit } from './investigationTaskProducer.js';
 
 // Find an existing investigation task (user or internal queue) still tracking
 // this fingerprint in a non-terminal status. Pure.
@@ -953,100 +926,6 @@ function findOpenInvestigationIn(tasks, fingerprint) {
     t.metadata?.investigationFingerprint === fingerprint
   ) || null;
 }
-
-// ===== Failure-loop detection / approval policy (#3714) =====
-
-// How recently a PRIOR investigation of the same cause must have finished for a
-// fresh failure to count as a LOOP rather than an unrelated recurrence. The
-// same fingerprint tripping again months later is new work (fingerprints are
-// coarse — `category:kind:app`, deliberately not keyed on the message); the same
-// fingerprint tripping again the day after we investigated it means the last
-// investigation did not hold, and burning another unattended agent on it just
-// spins. Wider than the circuit window on purpose: the circuit measures a storm
-// in progress, this measures "we already tried and it came back".
-export const INVESTIGATION_LOOP_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-// How many investigations already filed inside the circuit window make the NEXT
-// one a storm rather than ordinary traffic. Derived from the circuit cap, not a
-// magic number: the last slot before the circuit stops filing tasks at all is
-// the one worth a human. A couple of unrelated agent failures in an hour is
-// normal on a busy install and must stay unattended — otherwise this gate
-// re-creates the stall it exists to remove.
-// The `max(1, …)` floor keeps a hypothetical cap of 1 from making the threshold
-// 0, which would hold EVERY investigation — the exact inversion of this policy.
-export const INVESTIGATION_STORM_HOLD_THRESHOLD = Math.max(1, INVESTIGATION_CIRCUIT_MAX_CREATIONS - 1);
-
-/**
- * Did a genuine investigation of this fingerprint already finish inside the loop
- * window? `auto-expired` completions don't count — the reaper flips those to
- * `completed` because their origin tasks went away (cosTaskStore's
- * `sweepResolvedFailureTasks`), so nothing was ever actually attempted and
- * holding the next one for a human would punish a cleanup, not a loop. Pure.
- */
-function priorInvestigationSettledRecently(tasks, fingerprint, now) {
-  return tasks.some((t) => {
-    if (t.status !== 'completed') return false;
-    if (t.metadata?.investigationFingerprint !== fingerprint) return false;
-    if (t.metadata?.resolution === 'auto-expired') return false;
-    const settledAt = Date.parse(t.metadata?.updatedAt);
-    // An undated completion can't be proved recent — treat it as old, so the
-    // default stays "auto-approve" rather than silently gating on a legacy task.
-    if (!Number.isFinite(settledAt)) return false;
-    return now - settledAt < INVESTIGATION_LOOP_WINDOW_MS;
-  });
-}
-
-/**
- * Approval policy for a new investigation task.
- *
- * An agent failure is ordinary, expected traffic: the whole point of an
- * investigation task is that CoS diagnoses its own failures without a human in
- * the loop, so the DEFAULT is auto-approved and unattended. Human approval is
- * reserved for a failure LOOP — the two shapes where letting another agent run
- * unattended would just repeat what already didn't work:
- *
- *  - `repeat-fingerprint` — we investigated this exact cause within the last
- *    {@link INVESTIGATION_LOOP_WINDOW_MS} and it is back.
- *  - `failure-storm` — the circuit window is already at
- *    {@link INVESTIGATION_STORM_HOLD_THRESHOLD} investigations, i.e. failures
- *    are cascading rather than isolated. (One slot later the circuit stops
- *    filing tasks at all; this is the last one before that ceiling.)
- *
- * Pure — every input is injected so the branching is unit-testable.
- *
- * @param {{ fingerprint: string, tasks: object[], recentCreations?: number, now?: number }} args
- * @returns {{ approvalRequired: boolean, loopReason: 'repeat-fingerprint'|'failure-storm'|null }}
- */
-export function resolveInvestigationApproval({
-  fingerprint,
-  tasks = [],
-  recentCreations = 0,
-  now = Date.now()
-} = {}) {
-  if (priorInvestigationSettledRecently(tasks, fingerprint, now)) {
-    return { approvalRequired: true, loopReason: 'repeat-fingerprint' };
-  }
-  if (recentCreations >= INVESTIGATION_STORM_HOLD_THRESHOLD) {
-    return { approvalRequired: true, loopReason: 'failure-storm' };
-  }
-  return { approvalRequired: false, loopReason: null };
-}
-
-// Namespace for the loop reason when it is stamped as the task's generic
-// `metadata.approvalReason` — the shared "why is this waiting on me?" key that
-// any approval-required producer can write (cosTaskGenerator already computes
-// the same concept for its safety-kind / confidence holds). Prefixing keeps this
-// producer's vocabulary from colliding with theirs in one flat namespace.
-const INVESTIGATION_APPROVAL_REASON_PREFIX = 'investigation-loop:';
-
-// Human-facing prose for each loop reason, rendered into the task body so the
-// user reading the queue knows WHY this one stopped for them when the previous
-// investigation did not. Counts are interpolated from the constants above so the
-// prose can't drift from the thresholds it describes.
-const LOOP_REASON_PROSE = {
-  'repeat-fingerprint': `This exact failure cause was already investigated within the last ${INVESTIGATION_LOOP_WINDOW_MS / (60 * 60 * 1000)} hours and it has come back — the previous fix did not hold, so this one is held for you instead of spawning another unattended agent that would repeat it.`,
-  'failure-storm': `${INVESTIGATION_STORM_HOLD_THRESHOLD} other agent failure(s) were already filed for investigation this hour, one slot short of the circuit breaker suppressing them entirely — failures are cascading rather than isolated, so this one is held for you rather than spending another unattended agent on a symptom.`
-};
 
 /**
  * Create an investigation task in COS-TASKS.md for a failed agent.
@@ -1098,10 +977,9 @@ async function doCreateInvestigationTask(agentId, originalTask, errorAnalysis) {
     return existing;
   }
 
-  // Rolling circuit breaker: cap creations per window across all fingerprints.
+  // Rolling circuit breaker: cap creations per window across all producers.
   const now = Date.now();
-  const recentCreations = recentInvestigationCreations(now);
-  if (recentCreations >= INVESTIGATION_CIRCUIT_MAX_CREATIONS) {
+  if (investigationCircuitOpen(now)) {
     emitLog('warn', `🔌 Investigation circuit OPEN — ${INVESTIGATION_CIRCUIT_MAX_CREATIONS} investigations created within the last hour; suppressing task for ${fingerprint}`, {
       agentId, taskId: originalTask.id, fingerprint
     });
@@ -1109,9 +987,11 @@ async function doCreateInvestigationTask(agentId, originalTask, errorAnalysis) {
   }
 
   // Auto-approved unless this failure is a LOOP (#3714) — an isolated agent
-  // failure is exactly the work CoS is meant to diagnose for itself.
-  const { approvalRequired, loopReason } = resolveInvestigationApproval({
-    fingerprint, tasks: allTasks, recentCreations, now
+  // failure is exactly the work CoS is meant to diagnose for itself. The pure
+  // policy is called directly (rather than via `resolveAutoInvestigationApproval`)
+  // so the backlog already read for the dedup scan above serves both.
+  const { approvalRequired, loopReason, approvalReason } = resolveInvestigationApproval({
+    fingerprint, tasks: allTasks, recentCreations: recentInvestigationCreations(now), now
   });
 
   // Every interpolated free-text field is redacted before it lands in the body —
@@ -1138,9 +1018,11 @@ async function doCreateInvestigationTask(agentId, originalTask, errorAnalysis) {
         `## What to approve\n${remedy}`,
         `## Why this is held for you\n${LOOP_REASON_PROSE[loopReason]}`
       ].join('\n\n')
-    : `## What to do\nNo approval needed — this investigation runs unattended. Diagnose the failure above, apply the fix, and leave the task's findings in your summary.\n\n${remedy}`;
+    : `## What to do\nNo approval needed — this investigation runs unattended. Diagnose the failure above, apply the fix, and leave the task's findings in your summary. Do NOT un-block the original task by hand; completing this one does it.\n\n${remedy}`;
 
-  const unblocks = `${approvalRequired ? 'Approving and applying' : 'Applying'} the fix lets the original task \`${originalTask.id}\` be retried; it will resume: ${originalDesc}.`;
+  // Completing this task revives every blocked task in `affectedTasks`
+  // automatically (investigationRetry.js), so nobody has to go find them.
+  const unblocks = `${approvalRequired ? 'Approving and applying' : 'Applying'} the fix and completing this task automatically retries the original task \`${originalTask.id}\`; it will resume: ${originalDesc}. If the same cause blocks it again after ${MAX_AUTO_RETRIES_PER_TASK} automatic retries, it stays blocked for you.`;
 
   // The fingerprint rides in the headline so addTask's first-line dedup —
   // which sees no `metadata.app` on investigation tasks — tracks fingerprint
@@ -1171,13 +1053,13 @@ ${unblocks}`;
     investigationFingerprint: fingerprint,
     // Durable record of WHY this stopped for a human (null when it ran
     // unattended) — readable from the queue without re-deriving the verdict.
-    approvalReason: loopReason && `${INVESTIGATION_APPROVAL_REASON_PREFIX}${loopReason}`,
+    approvalReason,
     affectedTasks: [originalTask.id] // later same-fingerprint failures union in
   }, 'internal');
 
   // Count only genuine creations against the circuit — addTask's own
   // description-level dedup returning an existing task is not a new creation.
-  if (!investigationTask.duplicate) investigationCreationStamps.push(now);
+  if (!investigationTask.duplicate) noteInvestigationFiled(now);
 
   emitLog('info', `Created investigation task ${investigationTask.id} for failed agent ${agentId} — ${loopReason ? `held for approval (${loopReason})` : 'auto-approved'}`, {
     agentId,

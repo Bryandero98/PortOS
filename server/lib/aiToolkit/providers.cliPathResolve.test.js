@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -18,7 +17,8 @@ vi.mock('child_process', async (importOriginal) => {
 import { execFile } from 'child_process';
 import { createProviderService } from './providers.js';
 
-const TEST_DATA_DIR = join(process.cwd(), 'test-data-cli-resolve');
+// Temp dir, NOT a cwd-rooted one — see providerStatus.test.js (#3823).
+let TEST_DATA_DIR;
 
 describe('testProvider — cli command resolution (cross-platform PATH)', () => {
   let providerService;
@@ -28,7 +28,7 @@ describe('testProvider — cli command resolution (cross-platform PATH)', () => 
 
   beforeEach(async () => {
     originalPlatform = process.platform;
-    if (!existsSync(TEST_DATA_DIR)) await mkdir(TEST_DATA_DIR, { recursive: true });
+    TEST_DATA_DIR = await mkdtemp(join(tmpdir(), 'portos-cli-resolve-'));
     providerService = createProviderService({ dataDir: TEST_DATA_DIR, providersFile: 'providers.json' });
     // testProvider's win32 path now ALSO does its own filesystem-based
     // re-resolution (resolveWindowsExecutable) independent of the mocked
@@ -44,9 +44,9 @@ describe('testProvider — cli command resolution (cross-platform PATH)', () => 
   afterEach(async () => {
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
     process.env.PATH = originalPath;
-    await rm(fakePathDir, { recursive: true, force: true });
+    if (fakePathDir) await rm(fakePathDir, { recursive: true, force: true });
     vi.mocked(execFile).mockReset();
-    if (existsSync(TEST_DATA_DIR)) await rm(TEST_DATA_DIR, { recursive: true });
+    if (TEST_DATA_DIR) await rm(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   const setPlatform = (value) => Object.defineProperty(process, 'platform', { value, configurable: true });

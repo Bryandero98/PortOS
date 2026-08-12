@@ -5,6 +5,7 @@ import { filterSelectableModels } from '../utils/providers';
 import { composeCanonStyledPrompt } from '../lib/composeStyledPrompt';
 import { descriptorForCanonEntry } from '../lib/canonPrompt';
 import { pipelineImageCfgToRenderOpts } from '../lib/pipelineImageDefaults';
+import { RENDER_TARGET } from '../lib/imageGenBackends';
 import { buildUniverseSectionRenderTag } from '../lib/universeRunTag';
 import { capImageRefs } from '../lib/bibleLimits';
 import useImageRenderSettings from '../hooks/useImageRenderSettings';
@@ -927,7 +928,8 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
 // the universe canon entry's imageRefs.
 function StepCharacters({ session, universe, locked, onChanged, onUniverseCharRef }) {
   const cast = universe?.characters || [];
-  const { imageCfg } = useImageRenderSettings();
+  // Universe canon renders, so they resolve the universe's pin ladder (see renderPinLadder).
+  const { imageCfg } = useImageRenderSettings({ record: universe, target: RENDER_TARGET.UNIVERSE_BIBLE });
   const [refiningId, setRefiningId] = useState(null);
   const { start: startRefine, busy: refineBusy, phase: refinePhase } = useStepStream(session.id, 'characters');
 

@@ -299,10 +299,22 @@ export const appendDailyLog = (date, text, source = 'text', options = {}) => req
   `/brain/daily-log/${encodeURIComponent(date)}/append`,
   { method: 'POST', body: JSON.stringify({ text, source }), ...options }
 );
-export const updateDailyLog = (date, content, options = {}) => request(
-  `/brain/daily-log/${encodeURIComponent(date)}`,
-  { method: 'PUT', body: JSON.stringify({ content }), ...options }
-);
+export const updateDailyLog = (date, content, options = {}) => {
+  // `ifMatchUpdatedAt` is an optimistic concurrency token (the entry's
+  // updatedAt the client last observed). It rides in the JSON body; the rest
+  // of `options` (silent, headers, …) are request() fetch options. Only a
+  // non-empty string is forwarded — anything else is treated as "no token"
+  // so the server force-writes (same as omitting the field).
+  const { ifMatchUpdatedAt, ...requestOptions } = options;
+  const body = { content };
+  if (typeof ifMatchUpdatedAt === 'string' && ifMatchUpdatedAt.length > 0) {
+    body.ifMatchUpdatedAt = ifMatchUpdatedAt;
+  }
+  return request(
+    `/brain/daily-log/${encodeURIComponent(date)}`,
+    { method: 'PUT', body: JSON.stringify(body), ...requestOptions }
+  );
+};
 export const deleteDailyLog = (date, options = {}) => request(
   `/brain/daily-log/${encodeURIComponent(date)}`,
   { method: 'DELETE', ...options }

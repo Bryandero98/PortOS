@@ -325,6 +325,14 @@ describe('classifyWorktreeDirt (real exported helper)', () => {
     expect(r.lockfileOnly).toBe(true);
     expect(r.lockfilePaths).toEqual(['yarn.lock']);
   });
+
+  it('can ignore a consumed completion sentinel without hiding real work', () => {
+    expect(classifyWorktreeDirt('?? .agent-done', { ignoredPaths: ['.agent-done'] }).clean).toBe(true);
+
+    const r = classifyWorktreeDirt('?? .agent-done\n M src/index.js', { ignoredPaths: ['.agent-done'] });
+    expect(r.hasRealChanges).toBe(true);
+    expect(r.realChangePaths).toEqual(['src/index.js']);
+  });
 });
 
 describe('Broken Worktree Detection', () => {
@@ -681,6 +689,25 @@ describe('removeWorktree branch preservation for resume (#3167)', () => {
     expect(result.removed).toBe(false);
     expect(result.warnings.join(' ')).toContain('server/services/foo.js');
     expect(result.warnings.join(' ')).toContain('notes.md');
+  });
+
+  it('removes a completed worktree whose only dirt is the consumed sentinel', async () => {
+    scriptGit({ porcelain: '?? .agent-done' });
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
+
+    expect(result.removed).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('preserves real work while excluding the completion sentinel from the warning', async () => {
+    scriptGit({ porcelain: '?? .agent-done\n M src/index.js' });
+
+    const result = await removeWorktree('agent-x', '/repo', 'cos/task-1/agent-x', { merge: false });
+
+    expect(result.removed).toBe(false);
+    expect(result.warnings.join(' ')).toContain('src/index.js');
+    expect(result.warnings.join(' ')).not.toContain('.agent-done');
   });
 
   it('caps the named paths so a broad sweep cannot flood the notification', async () => {

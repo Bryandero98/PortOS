@@ -21,8 +21,8 @@ const ASSIGNMENTS = {
       name: 'Ollama',
       type: 'api',
       enabled: true,
-      defaultModel: 'gemma4:26b',
-      models: ['qwen2.5vl:latest', 'llava:latest', 'gemma4:26b', 'llama3.2:latest'],
+      defaultModel: 'gemma2:9b',
+      models: ['qwen2.5vl:latest', 'llava:latest', 'gemma2:9b', 'llama3.2:latest'],
     },
   ],
   assignments: [
@@ -63,7 +63,7 @@ describe('CreativeDirectorModelsDrawer', () => {
   it('warns when the plan stage is pinned to a local model that cannot call tools', async () => {
     // The incident: a plan agent on gemma (no tool use) narrates "done" without
     // ever PATCHing the plan, wedging the project. The drawer must flag it.
-    renderDrawer({ id: 'cd-1', name: 'Demo', modelOverrides: { plan: { providerId: 'ollama', model: 'gemma4:26b' } } });
+    renderDrawer({ id: 'cd-1', name: 'Demo', modelOverrides: { plan: { providerId: 'ollama', model: 'gemma2:9b' } } });
     await waitFor(() => expect(screen.getByLabelText('Production plan model')).toBeTruthy());
     expect(screen.getByText(/recognized tool-calling model/i)).toBeInTheDocument();
   });
@@ -75,7 +75,7 @@ describe('CreativeDirectorModelsDrawer', () => {
   });
 
   it('warns when the plan stage inherits a non-tool provider default (blank model)', async () => {
-    // ollama's defaultModel is gemma4:26b; a blank model pin runs that default.
+    // ollama's defaultModel is gemma2:9b; a blank model pin runs that default.
     renderDrawer({ id: 'cd-1', name: 'Demo', modelOverrides: { plan: { providerId: 'ollama', model: '' } } });
     await waitFor(() => expect(screen.getByLabelText('Production plan provider')).toBeTruthy());
     expect(screen.getByText(/recognized tool-calling model/i)).toBeInTheDocument();
@@ -84,7 +84,7 @@ describe('CreativeDirectorModelsDrawer', () => {
   it('never shows a tool-use warning on the vision (evaluation) stage', async () => {
     // The evaluation stage is a direct vision call, not an agent — a non-tool
     // local model there is expected and must NOT be flagged as tool-incapable.
-    renderDrawer({ id: 'cd-1', name: 'Demo', modelOverrides: { evaluation: { providerId: 'ollama', model: 'gemma4:26b' } } });
+    renderDrawer({ id: 'cd-1', name: 'Demo', modelOverrides: { evaluation: { providerId: 'ollama', model: 'gemma2:9b' } } });
     await waitFor(() => expect(screen.getByLabelText('Scene evaluation provider')).toBeTruthy());
     expect(screen.queryByText(/recognized tool-calling model/i)).not.toBeInTheDocument();
   });
@@ -128,20 +128,21 @@ describe('CreativeDirectorModelsDrawer', () => {
     expect(optionValues).toContain('');
     expect(optionValues).toContain('qwen2.5vl:latest');
     expect(optionValues).toContain('llava:latest');
-    expect(optionValues).not.toContain('gemma4:26b');
+    expect(optionValues).not.toContain('gemma2:9b');
     expect(optionValues).not.toContain('llama3.2:latest');
     // Text-only default is replaced by the first eligible VLM.
     expect(modelSelect.value).toBe('qwen2.5vl:latest');
   });
 
-  // The reported bug: the client id regex knows `gemma-3` but not `gemma4`, so a
-  // user whose only installed VLMs are gemma4/qwen3.6 saw an EMPTY Scene
-  // evaluation model picker. The server already knows better via Ollama's
-  // /api/show capabilities, so its verdict is unioned in.
+  // The reported bug: multimodal models whose id carries no `vl`/`vision` marker
+  // (Muse Glimmer, Ministral 3) are invisible to the client id regex, so a user
+  // whose only installed VLMs are those saw an EMPTY Scene evaluation model
+  // picker. The server knows better via Ollama's /api/show capabilities, so its
+  // verdict is unioned in.
   it('offers vision models the id regex misses but the server reports as vision-capable', async () => {
     getVisionModels.mockResolvedValue({
       models: [
-        { providerId: 'ollama', backend: 'ollama', id: 'gemma4:26b', vision: true },
+        { providerId: 'ollama', backend: 'ollama', id: 'muse-glimmer:30b', vision: true },
         { providerId: 'ollama', backend: 'ollama', id: 'llama3.2:latest', vision: true },
       ],
     });
@@ -155,7 +156,7 @@ describe('CreativeDirectorModelsDrawer', () => {
       screen.getByLabelText('Scene evaluation model').querySelectorAll('option'),
     ).map((o) => o.value);
     // Server-reported ids the regex would have hidden.
-    expect(optionValues).toContain('gemma4:26b');
+    expect(optionValues).toContain('muse-glimmer:30b');
     expect(optionValues).toContain('llama3.2:latest');
     // Union, not replacement — regex-matched ids the server didn't list survive.
     expect(optionValues).toContain('qwen2.5vl:latest');
@@ -175,7 +176,7 @@ describe('CreativeDirectorModelsDrawer', () => {
       ],
     });
     getVisionModels.mockResolvedValue({
-      models: [{ providerId: 'ollama', backend: 'ollama', id: 'gemma4:e4b', vision: true }],
+      models: [{ providerId: 'ollama', backend: 'ollama', id: 'muse-glimmer:30b', vision: true }],
     });
     renderDrawer({ id: 'cd-1', name: 'Demo', modelOverrides: {} });
     await waitFor(() => expect(getVisionModels).toHaveBeenCalled());
@@ -183,9 +184,9 @@ describe('CreativeDirectorModelsDrawer', () => {
     fireEvent.change(screen.getByLabelText('Scene evaluation provider'), { target: { value: 'ollama' } });
 
     const modelSelect = screen.getByLabelText('Scene evaluation model');
-    expect(Array.from(modelSelect.querySelectorAll('option')).map((o) => o.value)).toContain('gemma4:e4b');
+    expect(Array.from(modelSelect.querySelectorAll('option')).map((o) => o.value)).toContain('muse-glimmer:30b');
     // ...and it seeds, rather than leaving the stage on a blank/auto pin.
-    expect(modelSelect.value).toBe('gemma4:e4b');
+    expect(modelSelect.value).toBe('muse-glimmer:30b');
     expect(screen.queryByText(/No vision-capable models found/i)).toBeNull();
   });
 
@@ -202,7 +203,7 @@ describe('CreativeDirectorModelsDrawer', () => {
     expect(screen.getByLabelText('Scene evaluation provider').disabled).toBe(true);
     expect(screen.getByLabelText('Treatment provider').disabled).toBe(false);
 
-    resolveVision({ models: [{ providerId: 'ollama', backend: 'ollama', id: 'gemma4:26b', vision: true }] });
+    resolveVision({ models: [{ providerId: 'ollama', backend: 'ollama', id: 'muse-glimmer:30b', vision: true }] });
     await waitFor(() => expect(screen.getByLabelText('Scene evaluation provider').disabled).toBe(false));
   });
 
@@ -232,7 +233,7 @@ describe('CreativeDirectorModelsDrawer', () => {
   it('ignores cli-backend rows so a text-only model cannot be smuggled in as vision', async () => {
     getVisionModels.mockResolvedValue({
       models: [
-        { providerId: 'ollama', backend: 'ollama', id: 'gemma4:26b', vision: true },
+        { providerId: 'ollama', backend: 'ollama', id: 'muse-glimmer:30b', vision: true },
         // The ollama-backed Claude CLI fronting a text-only Ollama model whose id
         // is also in the real `ollama` provider's list.
         { providerId: 'claude-ollama', backend: 'cli', id: 'llama3.2:latest', vision: true },
@@ -248,7 +249,7 @@ describe('CreativeDirectorModelsDrawer', () => {
     const optionValues = Array.from(
       screen.getByLabelText('Scene evaluation model').querySelectorAll('option'),
     ).map((o) => o.value);
-    expect(optionValues).toContain('gemma4:26b');
+    expect(optionValues).toContain('muse-glimmer:30b');
     // The cli-backend row must NOT make this text-only id a vision option.
     expect(optionValues).not.toContain('llama3.2:latest');
   });

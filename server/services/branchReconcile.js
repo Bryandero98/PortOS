@@ -9,11 +9,17 @@
  * coordinator CoS agent — this module never spawns an agent, so it stays pure
  * enough to unit-test.
  *
- * PEER SAFETY: only `refs/heads/` (local) branches are ever considered. A branch
+ * PEER SAFETY: only `refs/heads/` (local) branches are ever *driven*. A branch
  * created on a federated peer exists here only as a remote-tracking ref
- * (`origin/*`), never as a local branch, so it is structurally invisible. We
- * never author-filter — every machine shares one GitHub login, so authorship
- * can't distinguish machines; local-branch existence can.
+ * (`origin/*`), never as a local branch, so it is structurally invisible to the
+ * classifier. We never author-filter — every machine shares one GitHub login, so
+ * authorship can't distinguish machines; local-branch existence can.
+ *
+ * The one thing that DOES look at the remote is the orphan sweep
+ * (`reapOrphanedRemotes`), and it stays peer-safe by only ever deleting a remote
+ * branch whose work is already merged into the default branch — a state in which
+ * no machine, ours or a peer's, can lose anything. An unmerged remote-only branch
+ * is reported, never touched.
  */
 
 import { stat } from 'node:fs/promises';
@@ -25,6 +31,7 @@ import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubRepoSpec, githubApiHost } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 import { PROTECTED_BRANCHES } from '../lib/gitArgs.js';
+import { readVerdictLedger, partitionSuperseded, recordVerdictInstruction } from './supersededLedger.js';
 
 // Never reconciled — the canonical long-lived-branch set (`main`/`master`/`dev`/
 // `develop`/`release`/`gh-pages`) shared with the git branch-cleanup guards in
@@ -343,6 +350,173 @@ export async function gatherDivergence(repoPath, branch, defaultBranch, dirtyPat
   return { behind, ahead, collisionPaths: [...touched].filter((p) => defaultSet.has(p)).sort(byCollisionSignal) };
 }
 
+// The only remote branch-reconcile acts on. `deleteBranch(…, { remote: true })`
+// hardcodes `git push origin --delete`, so a branch tracking anything else is
+// reported rather than reaped — there is no code path that could delete it
+// correctly, and guessing one is how you delete the wrong ref.
+const RECONCILED_REMOTE = 'origin';
+
+/**
+ * The remote branch name behind an upstream ref, or null when the branch tracks
+ * no remote or tracks one we don't reconcile. Pure.
+ *
+ * `%(upstream:short)` renders as `origin/<branch>` — and `<branch>` may itself
+ * contain slashes (`origin/cos/task-x/agent-y`), so this strips exactly the
+ * `origin/` prefix rather than splitting on `/`.
+ * @param {string|null|undefined} tracking
+ * @returns {string|null}
+ */
+export function upstreamBranchName(tracking) {
+  const prefix = `${RECONCILED_REMOTE}/`;
+  if (typeof tracking !== 'string' || !tracking.startsWith(prefix)) return null;
+  return tracking.slice(prefix.length) || null;
+}
+
+/**
+ * Parse `git ls-remote --heads` output into branch → SHA. Pure.
+ * @param {string} stdout
+ * @returns {Map<string,string>}
+ */
+export function parseRemoteHeads(stdout) {
+  const heads = new Map();
+  for (const line of gitLines(stdout)) {
+    const [sha, ref] = line.split(/\s+/);
+    if (sha && ref?.startsWith('refs/heads/')) heads.set(ref.slice('refs/heads/'.length), sha);
+  }
+  return heads;
+}
+
+/**
+ * Ground truth for what branches exist on `origin` right now, or `null` when the
+ * remote could not be read.
+ *
+ * `refs/remotes/origin/*` is deliberately NOT the source here: nothing in the
+ * reconcile path fetches, so those refs reflect whenever someone last pulled.
+ * Acting on a stale view means either deleting a ref that has since moved, or
+ * missing one entirely — and one `ls-remote` per cycle buys the real answer.
+ *
+ * `null` (not an empty Map) on failure, for the same reason `getOpenPrsByHead`
+ * distinguishes them: "we could not ask" must never read as "the remote has no
+ * branches", which would make every branch look like its remote was already gone.
+ *
+ * @param {string} repoPath
+ * @returns {Promise<Map<string,string>|null>}
+ */
+export async function listRemoteHeads(repoPath) {
+  const res = await execGit(['ls-remote', '--heads', RECONCILED_REMOTE], repoPath, { ignoreExitCode: true })
+    .catch(() => null);
+  if (!res || res.exitCode !== 0) {
+    console.error(`❌ branch-reconcile: git ls-remote ${RECONCILED_REMOTE} failed — remote branch state unknown this cycle`);
+    return null;
+  }
+  return parseRemoteHeads(res.stdout);
+}
+
+/**
+ * Which of `origin`'s branches nothing local points at any more. Pure.
+ *
+ * A remote branch is CLAIMED — and therefore never a sweep candidate — when
+ * either a local branch shares its name, or a local branch tracks it. Both halves
+ * are load-bearing: a local `foo` with no upstream still claims `origin/foo`
+ * (that is where a plain `git push` would send it), and a local branch may track
+ * a remote branch under a different name, which the name check alone would miss.
+ * That second case is why `gatherBranchState` carries `tracking` and not just the
+ * `hasUpstream` boolean.
+ *
+ * Protected branches and the default branch are dropped outright — a remote whose
+ * local counterpart is `main` must never appear as an orphan even in a report.
+ *
+ * @param {Map<string,string>} remoteHeads - branch → SHA on origin
+ * @param {object[]} localBranches - getBranches() records ({ name, tracking })
+ * @param {{ defaultBranch: string }} ctx
+ * @returns {{branch:string, sha:string}[]} orphans, name-sorted for stable output
+ */
+export function partitionRemoteOrphans(remoteHeads, localBranches, { defaultBranch }) {
+  const claimed = new Set();
+  for (const b of localBranches || []) {
+    if (b?.name) claimed.add(b.name);
+    const tracked = upstreamBranchName(b?.tracking);
+    if (tracked) claimed.add(tracked);
+  }
+  const protectedSet = new Set([...PROTECTED_BRANCHES, defaultBranch]);
+  return [...(remoteHeads || new Map())]
+    .filter(([branch]) => !claimed.has(branch) && !protectedSet.has(branch))
+    .map(([branch, sha]) => ({ branch, sha }))
+    .sort((a, b) => a.branch.localeCompare(b.branch));
+}
+
+/**
+ * Sweep `origin` for branches nothing local points at, and reap the ones whose
+ * work is already merged into the default branch.
+ *
+ * PEER SAFETY. This is the only part of reconcile that looks at the remote, and
+ * a federated peer's in-progress branch looks exactly like an orphan from here —
+ * it has no local counterpart on THIS machine because it never did. What makes
+ * the sweep safe is not knowing whose branch it is but what state it is in:
+ * deletion requires the branch to be already merged into the default branch, and
+ * no machine can lose work that the default branch already carries. Anything
+ * unmerged is reported and left alone, whoever pushed it.
+ *
+ * Merge-checked against the SHA `ls-remote` just reported, NOT `origin/<branch>`:
+ * a stale remote-tracking ref can say "merged" about commits that origin has
+ * since moved past, and reaping on that is how you delete unmerged work. An
+ * unresolvable SHA (a branch this clone has never fetched) is `unknown`, which
+ * fails closed to report-only.
+ *
+ * DEFAULTS TO REPORT-ONLY. `git push origin --delete` reaches off this machine to
+ * a shared forge and cannot be undone from here, so it stays opt-in per the same
+ * reasoning the superseded ledger uses for worktrees: automate the analysis, keep
+ * the destructive step a decision someone made on purpose. Callers that have not
+ * asked for `reap: true` get an unchanged, side-effect-free cycle.
+ *
+ * @param {string} repoPath
+ * @param {string} defaultBranch
+ * @param {{ reap?: boolean }} [opts] - `reap: true` actually deletes the merged
+ *   orphans; the default reports them under reason `reap-disabled`.
+ * @returns {Promise<{reaped:string[], reported:{branch:string,reason:string}[], remoteUnavailable?:boolean}>}
+ */
+export async function reapOrphanedRemotes(repoPath, defaultBranch, { reap = false } = {}) {
+  const [remoteHeads, localBranches] = await Promise.all([
+    listRemoteHeads(repoPath),
+    getBranches(repoPath).catch(() => null)
+  ]);
+  // Either read failing makes "nothing local claims this" unknowable, and an
+  // unknowable claim set would make every remote branch look orphaned.
+  if (!remoteHeads || !localBranches) {
+    return { reaped: [], reported: [], remoteUnavailable: true };
+  }
+
+  const orphans = partitionRemoteOrphans(remoteHeads, localBranches, { defaultBranch });
+  const reaped = [];
+  const reported = [];
+  for (const { branch, sha } of orphans) {
+    const merged = await isBranchMergedInto(repoPath, sha, defaultBranch).catch(() => false);
+    if (!merged) {
+      reported.push({ branch, reason: 'unmerged-remote-only' });
+      continue;
+    }
+    if (!reap) {
+      reported.push({ branch, reason: 'reap-disabled' });
+      continue;
+    }
+    const result = await deleteBranch(repoPath, branch, { remote: true }).catch((err) => ({ error: err.message }));
+    const outcome = result?.results?.remote;
+    if (result?.error || (outcome && outcome.startsWith('failed'))) {
+      reported.push({ branch, reason: `remote-delete-failed: ${result.error || outcome}` });
+      continue;
+    }
+    reaped.push(branch);
+    console.log(`🔀 branch-reconcile: reaped merged orphan ${RECONCILED_REMOTE}/${branch}`);
+  }
+  // Report-only is silent work unless it says so — without this line a merged
+  // orphan is detected every cycle and never surfaces anywhere a human looks.
+  const reapable = reported.filter((r) => r.reason === 'reap-disabled').length;
+  if (reapable) {
+    console.log(`🔀 branch-reconcile: ${reapable} merged branch(es) on ${RECONCILED_REMOTE} nothing local points at — reap is opt-in, not deleted`);
+  }
+  return { reaped, reported };
+}
+
 /**
  * Age of a worktree directory (ms since its last structural mtime), or null when
  * it can't be stat'd. The worktree root's mtime is set when `git worktree add`
@@ -367,8 +541,8 @@ async function worktreeAgeMs(worktreePath) {
  *   distinguishes a live agent's worktree from an abandoned one (see
  *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
  * @returns {Promise<object[]>} one entry per candidate branch:
- *   { branch, hasUpstream, isMerged, hasWorktree, worktreePath, worktreeDirty, dirtyPaths,
- *     behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
+ *   { branch, tip, hasUpstream, tracking, isMerged, hasWorktree, worktreePath, worktreeDirty,
+ *     dirtyPaths, behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
  */
 export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null }) {
   const protectedSet = new Set([...PROTECTED_BRANCHES, defaultBranch]);
@@ -407,9 +581,19 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
     // the harder cases via isBranchMergedInto (covers squash + rebase). Short
     // -circuit when the cheap check already proved it merged.
     const isMerged = b.merged || await isBranchMergedInto(repoPath, b.name, defaultBranch);
+    // Tip SHA is the primary cache key for a recorded SUPERSEDED verdict (see
+    // supersededLedger.js) — a branch that moved must be re-analyzed. `null` on
+    // failure so an unreadable tip can never match a recorded one.
+    const tipOut = await execGit(['rev-parse', b.name], repoPath, { ignoreExitCode: true }).catch(() => null);
+    const tip = (tipOut?.stdout || '').trim() || null;
     inputs.push({
       branch: b.name,
+      tip,
       hasUpstream: Boolean(b.tracking),
+      // Kept alongside the boolean because cleanup needs the NAME, not just the
+      // fact: a branch may track a remote branch called something else, and the
+      // remote-side delete has to name the right ref.
+      tracking: b.tracking || null,
       isMerged,
       hasWorktree: Boolean(worktreePath),
       worktreePath,
@@ -489,16 +673,19 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
  * in-flight set (branches needing an agent) for the scheduler to dispatch.
  *
  * @param {string} [repoPath=PATHS.root]
- * @param {{ cleanup?: boolean, activeAgentIds?: Set<string> }} [opts] - when cleanup
- *   is false, merged branches are reported (in `skipped`, reason `cleanup-disabled`)
- *   but not deleted. `activeAgentIds` protects in-use CoS agent worktrees.
- * @returns {Promise<{ defaultBranch:string, cleaned:string[], inFlight:object[], wip:object[], skipped:{branch:string,reason:string}[], forgeUnavailable?:boolean, prStateUnavailable?:boolean }>}
+ * @param {{ cleanup?: boolean, reapRemotes?: boolean, activeAgentIds?: Set<string> }} [opts] - when
+ *   cleanup is false, merged branches are reported (in `skipped`, reason `cleanup-disabled`)
+ *   but not deleted. `reapRemotes` (default false) additionally deletes merged
+ *   branches left on `origin` that nothing local points at; off, they are only
+ *   reported — see `reapOrphanedRemotes`. `activeAgentIds` protects in-use CoS
+ *   agent worktrees.
+ * @returns {Promise<{ defaultBranch:string, cleaned:string[], inFlight:object[], wip:object[], skipped:{branch:string,reason:string}[], orphanRemotes:{reaped:string[],reported:object[]}, forgeUnavailable?:boolean, prStateUnavailable?:boolean }>}
  *   `forgeUnavailable: true` means the cycle was SKIPPED before it started because
  *   the `gh` probe failed; `prStateUnavailable: true` means it ran but a gh read
  *   failed mid-cycle. Either way an empty `inFlight` says nothing about the repo
  *   and the caller must retry rather than park on it (#3358).
  */
-export async function reconcile(repoPath = PATHS.root, { cleanup = true, activeAgentIds = new Set() } = {}) {
+export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRemotes = false, activeAgentIds = new Set() } = {}) {
   // On a GitHub repo every classification below depends on PR state, so an
   // unreadable forge makes the whole pass a guess — skip with one line rather
   // than report a quiet repo. Probed against THIS repo's API host
@@ -529,16 +716,71 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, activeA
   // Priority-ordered so the coordinator agent works recognized work branches
   // (claim/cos/next/feature/fix/…) before anything unrecognized. The order flows
   // straight through filterActionable (a stable filter) into the prompt block.
-  const inFlight = prioritizeBranches(
+  const allInFlight = prioritizeBranches(
     classified.filter((c) => ['ABANDONED_WIP', 'CONFLICTED', 'IN_REVIEW', 'NEEDS_PR'].includes(c.state))
   );
+  // A branch already judged SUPERSEDED is left untouched by design and is never
+  // `isMerged` (its work landed under other names), so nothing reaps it and it
+  // stays in-flight forever — re-analyzed at full cost on every recheck. Drop it
+  // out of the actionable set on a cached verdict that still verifies (#3842).
+  const { actionable: inFlight, superseded } = await applySupersededLedger(repoPath, allInFlight, defaultBranch);
   const wip = classified.filter((c) => c.state === 'WIP');
 
   const { cleaned, skipped } = cleanup
     ? await cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds })
     : { cleaned: [], skipped: merged.map((m) => ({ branch: m.branch, reason: 'cleanup-disabled' })) };
 
-  return { defaultBranch, cleaned, inFlight, wip, skipped, prStateUnavailable };
+  // Runs AFTER cleanupMerged on purpose: that step deletes merged local branches
+  // and leaves their `origin/*` counterpart behind, which is precisely the orphan
+  // this sweep exists to notice. Skipped entirely on a repo with no origin —
+  // there is no remote to read, and probing one every cycle would log a failure
+  // forever. Gated on `hasOrigin`, NOT on `origin` itself: getOriginInfo returns a
+  // fully-populated object with `hasOrigin: false` for an origin-less repo, so a
+  // truthiness check would pass and re-introduce exactly that per-cycle failure.
+  // Report-only unless the caller opts into `reapRemotes`.
+  const orphanRemotes = origin?.hasOrigin
+    ? await reapOrphanedRemotes(repoPath, defaultBranch, { reap: reapRemotes })
+    : { reaped: [], reported: [] };
+
+  return { defaultBranch, cleaned, inFlight, superseded, wip, skipped, orphanRemotes, prStateUnavailable };
+}
+
+/**
+ * Resolve each cached SUPERSEDED verdict against the repo as it stands now and
+ * split the in-flight set accordingly. A verdict survives only while its
+ * `replacedBy` commits are still reachable from the default branch — a revert of
+ * what superseded the branch makes the branch wanted again, and that is the one
+ * change the pure freshness check can't see on its own.
+ *
+ * Fails OPEN in every direction: an unreadable ledger, an unresolvable SHA, or a
+ * git error all yield "not cached", which restores full analysis rather than
+ * silently hiding a branch that needs work.
+ *
+ * @param {string} repoPath
+ * @param {object[]} inFlight
+ * @param {string} defaultBranch
+ * @returns {Promise<{ actionable: object[], superseded: object[] }>}
+ */
+async function applySupersededLedger(repoPath, inFlight, defaultBranch) {
+  const entries = await readVerdictLedger().catch(() => []);
+  if (!entries.length || !inFlight.length) return { actionable: inFlight, superseded: [] };
+
+  // Only the SHAs belonging to entries that could still match are probed, so a
+  // large stale ledger costs nothing.
+  const relevant = new Set(inFlight.map((b) => b.branch));
+  const shas = [...new Set(
+    entries.filter((e) => e.repoPath === repoPath && relevant.has(e.branch)).flatMap((e) => e.replacedBy || [])
+  )];
+  const reachable = new Set();
+  for (const sha of shas) {
+    const ok = await execGit(['merge-base', '--is-ancestor', sha, defaultBranch], repoPath, { ignoreExitCode: true })
+      .then((r) => r?.exitCode === 0)
+      .catch(() => false);
+    if (ok) reachable.add(sha);
+  }
+  return partitionSuperseded(
+    inFlight, entries, (e) => (e.replacedBy || []).every((s) => reachable.has(s)), { repoPath }
+  );
 }
 
 // ============================================================
@@ -608,6 +850,7 @@ const supersessionGate = ({ collisionPaths = [], behind } = {}) => {
     `The default branch has ALSO changed these files since this branch diverged: ${shown.map((p) => `\`${p}\``).join(', ')}${more}.`,
     'For each, read the default branch\'s current version and compare it to what this branch does there. You are looking for one thing: has the default branch already solved this branch\'s problem, by any means? A differently-named function, a policy object where this branch has a boolean, a scheduled tick where this branch has a watcher — all count. It does not need to look like this branch\'s approach to have replaced it.',
     'If it HAS been solved there, this branch is SUPERSEDED: stop, do not commit, rebase, resolve, or merge anything, and report it as superseded naming the file(s) and what on the default branch replaced it. Merging it would undo work already shipped. Say so plainly rather than resolving the conflict — a conflict you can resolve is exactly how a regression gets in looking deliberate.',
+    recordVerdictInstruction(),
     'Only once you have confirmed the work is still needed, continue.'
   ].join(' ');
 };

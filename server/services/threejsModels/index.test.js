@@ -323,6 +323,112 @@ describe('Three.js model generation orchestration', () => {
     expect(current.runs.at(-1).feedback).toContain('cross-section check');
   });
 
+  it('records the cross-part penetration gate and folds it into an unsteered refinement', async () => {
+    // The lens is a SIBLING of the body here rather than its child, and it sits
+    // entirely inside it — nothing of it can ever be seen.
+    const buriedSpec = {
+      ...spec,
+      parts: [
+        {
+          id: 'body',
+          name: 'Body',
+          geometry: { type: 'box', width: 3, height: 3, depth: 3 },
+          material: 'body',
+        },
+        {
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.35 },
+          material: 'lens',
+        },
+      ],
+    };
+    let current = {
+      id: 'threejs-buried',
+      name: 'Example Beacon',
+      sourceImage: { filename: 'example.png' },
+      providerId: 'vision-api',
+      model: null,
+      prompt: '',
+      status: 'draft',
+      spec: null,
+      penetration: null,
+      runs: [],
+    };
+    store.getModel.mockImplementation(async () => current);
+    store.mutateModel.mockImplementation(async (_id, mutate) => {
+      const next = mutate(current);
+      if (next) current = next;
+      return current;
+    });
+    runPromptThroughProvider.mockResolvedValue({
+      text: JSON.stringify(buriedSpec),
+      runId: 'run-buried',
+      provider: { id: 'vision-api' },
+      model: null,
+    });
+
+    await startGeneration(current.id, { providerId: 'vision-api' });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+    expect(current.penetration).toMatchObject({ errorCount: 1, evaluatedPartCount: 2, comparedPairCount: 1 });
+    expect(current.penetration.findings[0]).toMatchObject({
+      code: 'buried-part',
+      severity: 'error',
+      partIds: ['lens', 'body'],
+    });
+
+    await startGeneration(current.id, { providerId: 'vision-api' });
+    expect(current.runs.at(-1).feedback).toContain('cross-part penetration check');
+  });
+
+  it('records the material-plausibility gate and folds it into an unsteered refinement', async () => {
+    // The body is named for oak and lit like polished chrome — valid against the
+    // schema, implausible against the substance the id names.
+    const woodSpec = {
+      ...spec,
+      materials: {
+        ...spec.materials,
+        oakBody: { color: '#8b5a2b', metalness: 0.9, roughness: 0.05 },
+      },
+      parts: spec.parts.map((part) => ({ ...part, material: 'oakBody' })),
+    };
+    let current = {
+      id: 'threejs-materials',
+      name: 'Example Beacon',
+      sourceImage: { filename: 'example.png' },
+      providerId: 'vision-api',
+      model: null,
+      prompt: '',
+      status: 'draft',
+      spec: null,
+      materialPlausibility: null,
+      runs: [],
+    };
+    store.getModel.mockImplementation(async () => current);
+    store.mutateModel.mockImplementation(async (_id, mutate) => {
+      const next = mutate(current);
+      if (next) current = next;
+      return current;
+    });
+    runPromptThroughProvider.mockResolvedValue({
+      text: JSON.stringify(woodSpec),
+      runId: 'run-materials',
+      provider: { id: 'vision-api' },
+      model: null,
+    });
+
+    await startGeneration(current.id, { providerId: 'vision-api' });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+    expect(current.materialPlausibility).toMatchObject({ errorCount: 0 });
+    const woodFinding = current.materialPlausibility.findings.find((finding) => finding.family === 'wood');
+    expect(woodFinding).toMatchObject({ code: 'implausible-material-values', materialIds: ['oakBody'] });
+    // Nothing is clamped — the stored spec keeps the values the model authored.
+    expect(current.spec.materials.oakBody.metalness).toBe(0.9);
+
+    await startGeneration(current.id, { providerId: 'vision-api' });
+    expect(current.runs.at(-1).feedback).toContain('do not match the substance');
+  });
+
   it('gives CLI agents a gallery path without passing an API attachment', async () => {
     getProviderById.mockResolvedValue({
       id: 'local-agent',

@@ -135,6 +135,8 @@ export async function startVolumeBeatsRun(seriesId, seasonId, options = {}) {
             // Soft run-level reasoning effort (Series Autopilot, #3641) — same soft
             // channel, so a per-stage `effort` pin still wins.
             effortIdDefault: options.effortIdDefault,
+            onRunCreated: options.onRunCreated,
+            onRunSettled: options.onRunSettled,
           });
           generated += 1;
           broadcast({
