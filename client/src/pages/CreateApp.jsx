@@ -545,7 +545,7 @@ export default function CreateApp() {
             {standardizeResult && (
               <Banner tone="success" size="md">
                 <p className="font-medium flex items-center gap-2">
-                  <Wrench size={14} /> PM2 Config Standardized
+                  <Wrench size={14} aria-hidden="true" /> PM2 Config Standardized
                 </p>
                 {standardizeResult.backupBranch && (
                   <p className="text-xs text-gray-400 mt-1">

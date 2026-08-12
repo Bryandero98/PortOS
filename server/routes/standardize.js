@@ -8,13 +8,14 @@ const router = Router();
 /**
  * Resolve the repo to standardize from `repoPath` or `appId`.
  *
- * An `appId` also gets the precondition check: standardization rewrites the
- * target repo, so an app PortOS never runs under PM2 (and PortOS itself) is
- * refused here rather than relying on the button being hidden in the UI.
+ * Whenever an `appId` names a real record, it gets the precondition check —
+ * even alongside an explicit `repoPath`, so passing both can't smuggle a
+ * refused app past the gate. Standardization rewrites the target repo, so an
+ * app PortOS never runs under PM2 (and PortOS itself) is refused here rather
+ * than relying on the button being hidden in the UI. A bare `repoPath` has no
+ * app record to type-check, so it is taken at face value.
  */
 async function resolveStandardizeTarget({ repoPath, appId }) {
-  if (repoPath) return repoPath;
-
   if (appId) {
     const app = await appsService.getAppById(appId);
     if (!app) {
@@ -24,8 +25,10 @@ async function resolveStandardizeTarget({ repoPath, appId }) {
     if (refusal) {
       throw new ServerError(refusal, { status: 400, code: 'NOT_STANDARDIZABLE' });
     }
-    return app.repoPath;
+    return repoPath || app.repoPath;
   }
+
+  if (repoPath) return repoPath;
 
   throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
 }
