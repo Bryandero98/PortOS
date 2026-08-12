@@ -1663,6 +1663,32 @@ describe('isResolveRegression (pure resolve-round damage check)', () => {
   });
 });
 
+describe('isTargetedPatchRegression (bounded exact-text damage check)', () => {
+  const { isTargetedPatchRegression } = autopilot;
+  const f = (problem, location = 'V1', severity = 'medium') => ({ severity, location, problem });
+
+  it('keeps a sparse patch that closed its target when an exhaustive judge exposes unrelated latent blockers', () => {
+    expect(isTargetedPatchRegression(
+      [f('the recovery order expires before the mandatory rest completes')],
+      [
+        f('the destination tow has no established local route', 'V3', 'high'),
+        f('the inherited seal kit has no supplier setup', 'V2'),
+      ],
+    )).toBe(false);
+  });
+
+  it('rejects a sparse patch when its target survives alongside new blockers or returns more severe', () => {
+    const target = f('the recovery order expires before the mandatory rest completes');
+    expect(isTargetedPatchRegression([target], [
+      target,
+      f('the inherited seal kit has no supplier setup', 'V2'),
+    ])).toBe(true);
+    expect(isTargetedPatchRegression([target], [
+      f('mandatory recovery outlasts the resource order', 'V1', 'high'),
+    ])).toBe(true);
+  });
+});
+
 describe('isBlockingSetRegression (arc rollback ordering)', () => {
   const { isBlockingSetRegression } = autopilot;
   const f = (severity, problem) => ({ severity, problem, location: 'V1' });
@@ -2450,6 +2476,52 @@ describe('autopilot conductor', () => {
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.type).toBe('paused');
     expect(last?.pauseKind).toBe('maxRounds');
+  });
+
+  it('keeps a bounded exact patch when a later judge exposes unrelated latent blockers', async () => {
+    const target = { severity: 'medium', problem: 'the recovery order expires before the mandatory rest completes', location: 'V1' };
+    const latent = [
+      { severity: 'high', problem: 'the destination tow has no established local route', location: 'V3' },
+      { severity: 'medium', problem: 'the inherited seal kit has no supplier setup', location: 'V2' },
+    ];
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [target] }))
+      .mockImplementationOnce(async () => ({ issues: latent }))
+      .mockImplementationOnce(async () => ({ issues: [] }));
+    arcSpies.resolveVerifyIssues
+      .mockResolvedValueOnce({ applied: true, patchMode: 'exact-text-v1', runId: 'exact-target' })
+      .mockResolvedValueOnce({ applied: true, patchMode: 'exact-text-v1', runId: 'exact-latent' });
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 5 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    expect(arcSpies.resolveVerifyIssues.mock.calls[1][1].findings).toEqual(latent);
+    expect(recordModelOutcome).toHaveBeenCalledWith('exact-target', expect.objectContaining({
+      outcome: 'accepted', scoreBefore: -1, scoreAfter: 0,
+    }));
+  });
+
+  it('does not rewind exact target closure at the round cap when the later judge is more exhaustive', async () => {
+    const target = { severity: 'medium', problem: 'the recovery order expires before the mandatory rest completes', location: 'V1' };
+    const latent = [
+      { severity: 'high', problem: 'the destination tow has no established local route', location: 'V3' },
+      { severity: 'medium', problem: 'the inherited seal kit has no supplier setup', location: 'V2' },
+    ];
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: [target] }))
+      .mockImplementationOnce(async () => ({ issues: latent }));
+    arcSpies.resolveVerifyIssues
+      .mockResolvedValueOnce({ applied: true, patchMode: 'exact-text-v1', runId: 'exact-before-cap' });
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 2 });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.restoreArcState).not.toHaveBeenCalled();
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({
+      type: 'paused', pauseKind: 'maxRounds', residualFindings: latent,
+    });
   });
 
   it('reverts an arc-resolve round that introduced blocking findings and pauses on the pre-round residual', async () => {

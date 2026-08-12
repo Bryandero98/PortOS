@@ -213,6 +213,25 @@ export function isResolveRegression(before, after) {
   return targeted.some((t) => containsFinding(current, t));
 }
 
+const FINDING_SEVERITY_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
+
+/**
+ * Regression test for a bounded, finding-keyed exact-text patch. Unlike a
+ * legacy whole-field rewrite, a sparse patch that closes its target may safely
+ * expose unrelated latent findings elsewhere in the already-authored plan.
+ * Revert only when a targeted finding survives while the set grows, or when
+ * that same finding returns at a higher severity.
+ */
+export function isTargetedPatchRegression(before, after) {
+  const targeted = Array.isArray(before) ? before : [];
+  const current = Array.isArray(after) ? after : [];
+  if (isResolveRegression(targeted, current)) return true;
+  return targeted.some((prior) => current.some((candidate) => (
+    sameFinding(prior, candidate)
+    && (FINDING_SEVERITY_RANK[candidate?.severity] || 0) > (FINDING_SEVERITY_RANK[prior?.severity] || 0)
+  )));
+}
+
 // The arc rollback guard's operational ordering. Total blockers remain the
 // primary signal: accepting a larger set is what caused the original runaway
 // repair loop. When the totals tie, severity is the tiebreaker so a resolver

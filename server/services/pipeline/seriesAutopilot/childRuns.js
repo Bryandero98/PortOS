@@ -28,6 +28,7 @@ import {
   CHILD_POLL_MS, DIVERGENCE_PATIENCE, trackConvergence, convergencePauseReason,
   divergencePauseReason, foundationPauseReason, foundationDivergenceReason,
   foundationRepairMissed, regressionPauseReason, sameFinding, containsFinding, isBlockingSetRegression,
+  isTargetedPatchRegression,
   isIsolatedFixSafe,
 } from './convergence.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
@@ -97,13 +98,20 @@ const arcQualityScore = (blocking) => (blocking.length === 0 ? 0 : -blocking.len
 async function recordArcResolveOutcome(candidate, record, { outcome, after, target }) {
   const runIds = Array.isArray(candidate?.runIds) ? candidate.runIds : [];
   if (runIds.length === 0) return;
+  // A bounded exact patch is judged on the finding(s) it was authorized to
+  // touch. An exhaustive follow-up may expose unrelated latent blockers, but
+  // those are new work for the next round—not a negative quality delta owned by
+  // this provider response. Legacy whole-field rewrites still own the full set.
+  const ownedAfter = candidate?.exactTextMode
+    ? candidate.blocking.filter((prior) => after.some((current) => sameFinding(prior, current)))
+    : after;
   await Promise.all(runIds.map((runId) => recordModelOutcome(runId, {
     role: 'creative',
     stage: record.currentStep || 'verifyArc',
     outcome,
     target,
     scoreBefore: arcQualityScore(candidate.blocking),
-    scoreAfter: arcQualityScore(after),
+    scoreAfter: arcQualityScore(ownedAfter),
   }).catch(() => {})));
   // The same checkpoint can remain `lastResolve` for comparison after its
   // verdict. Consume its evidence once so later seeded/re-confirmation rounds
@@ -346,11 +354,11 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, runDisc
   };
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
-  // Lowest verified blocker set seen in this gate, paired with the exact arc /
-  // volume / planning-synopsis state that produced it. A later resolver is not
-  // allowed to make this demonstrated best state worse: blocker-count growth
-  // pauses immediately and restores this snapshot, even when the verifier
-  // describes the new set as wholly latent findings.
+  // Best verified checkpoint seen in this gate, paired with the exact arc /
+  // volume / planning-synopsis state that produced it. Legacy whole-field
+  // candidates are ordered by total blockers. A bounded exact patch that closes
+  // its authorized targets may promote a larger newly exposed set instead—the
+  // verifier's earlier smaller set was incomplete, not a better draft.
   let bestVerified = null;
   // The findings the previous round's auto-resolve was handed, plus the state of
   // the arc just before it ran — the two halves the regression guard below needs
@@ -398,16 +406,17 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, runDisc
       }
       return {};
     }
-    // Monotonic regression guard: a resolver candidate that increases the
-    // TOTAL blocker count is operationally worse even when it closed the exact
-    // finding it was handed and exposed different latent defects. Restore the
-    // best verified state, not merely the immediately previous state; otherwise
-    // a 4 → 2 → 4 → 5 run pauses on 4 and discards the demonstrated 2-blocker
-    // draft. At an equal count, a worse severity mix is also a regression: two
-    // mediums becoming one medium plus one high is not a safe tie. Checked
-    // before maxRounds/divergence so no worse baseline survives.
+    // Legacy whole-field candidates keep the strict total-count ordering that
+    // prevents runaway rewrites. Finding-keyed exact patches own only their
+    // targets: a larger set of unrelated findings can be an exhaustive judge
+    // exposing pre-existing work, so only a surviving/escalated target proves
+    // that bounded patch regressed. Checked before maxRounds/divergence so a
+    // demonstrated regression never becomes the live checkpoint.
     // Reverting is unconditional; PAUSING is not — see the corrective pass below.
-    if (lastResolve && isBlockingSetRegression(lastResolve.blocking, blocking)) {
+    const regressed = lastResolve && (lastResolve.exactTextMode
+      ? isTargetedPatchRegression(lastResolve.blocking, blocking)
+      : isBlockingSetRegression(lastResolve.blocking, blocking));
+    if (regressed) {
       await recordArcResolveOutcome(lastResolve, record, { outcome: 'rejected', after: blocking, target: scope });
       const rollbackTarget = bestVerified || lastResolve;
       const rollback = await restoreArcState(seriesId, rollbackTarget.snapshot);
@@ -471,7 +480,11 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, runDisc
         // The restored state is what the retry has to beat, so the next round
         // compares against ITS count — not the rejected candidate's, which
         // would let the retry regress back to the discarded draft for free.
-        lastResolve = { ...rollbackTarget, runIds: arcResolveRunIds(retried) };
+        lastResolve = {
+          ...rollbackTarget,
+          runIds: arcResolveRunIds(retried),
+          exactTextMode: retried?.patchMode === 'exact-text-v1',
+        };
         broadcast(seriesId, {
           type: 'resolve:round', scope, round, retry: true, episodesEdited: editedCount(retried),
         });
@@ -533,19 +546,17 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, runDisc
         residual: blocking,
       };
     }
-    // Equal-count drafts may still represent real causal progress when their
-    // severity mix is not worse: a resolver can close broad structural findings
-    // and expose the same number of narrower handoff problems. Treat that latest
-    // verified tie as the checkpoint so a later stall never rewinds those
-    // repairs. Count growth and severity escalation are rejected above.
-    const isNewBest = !bestVerified || blocking.length <= bestVerified.blocking.length;
-    // Shared exit for the two bounded stops below: rewind to the checkpoint when
-    // the round they landed on is worse than it, reporting the discarded set the
-    // same way the regression guard does. Defensive rather than reachable today
-    // — that guard returns on ANY count growth, so a round that survives to here
-    // is never worse than the best and `isNewBest` always holds. It stays because
-    // it is the correct behavior if the guard order ever changes, and one shared
-    // helper is how both exits keep agreeing on what a rewind owes the user.
+    // A bounded patch that closed everything it was authorized to touch is a
+    // new checkpoint even when the verifier now reports MORE unrelated work.
+    // Rewinding to an earlier low count would merely restore the less exhaustive
+    // judge's snapshot and throw away a verified causal correction.
+    const exactTargetsClosed = lastResolve?.exactTextMode === true
+      && !lastResolve.blocking.some((prior) => blocking.some((current) => sameFinding(prior, current)));
+    const isNewBest = exactTargetsClosed || !bestVerified || blocking.length <= bestVerified.blocking.length;
+    // Shared exit for the two bounded stops below: rewind only when the current
+    // round is genuinely worse than the accepted checkpoint. Exact target
+    // closure above promotes its current state, so a newly exhaustive finding
+    // set cannot make the cap/divergence exit undo that verified repair.
     const rewind = async () => {
       if (isNewBest || !bestVerified) return { residual: blocking, discarded: [] };
       await restoreArcState(seriesId, bestVerified.snapshot);
@@ -598,7 +609,12 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, runDisc
       continue;
     }
     changed = true;
-    lastResolve = { blocking, snapshot, runIds: arcResolveRunIds(resolved) };
+    lastResolve = {
+      blocking,
+      snapshot,
+      runIds: arcResolveRunIds(resolved),
+      exactTextMode: resolved?.patchMode === 'exact-text-v1',
+    };
     broadcast(seriesId, {
       type: 'resolve:round', scope, round, episodesEdited: editedCount(resolved),
     });

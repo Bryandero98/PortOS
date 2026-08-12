@@ -734,6 +734,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   return {
     series: resolvedSeries,
     applied,
+    patchMode: exactTextMode ? 'exact-text-v1' : null,
     rejectedExactEdits,
     notes,
     findings,
