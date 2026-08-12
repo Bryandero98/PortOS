@@ -14,7 +14,7 @@ import { ARC_LOCKABLE_FIELDS, getSeries, updateSeries } from '../series.js';
 import { listIssues, listIssuesForSeries, recomputeIssueNumbersForSeries, updateIssue, updateStageWithLatest, updateStagesWithLatest } from '../issues.js';
 import { emitRecordUpdated, withReexportSuppressed } from '../../sharing/recordEvents.js';
 import { getSeason } from '../seasons.js';
-import { READER_MAP_BEAT_KINDS, buildSeason, cleanThemes, renderArcShapeGuidance, renderArcShapePositionSummary, sanitizeArc, sanitizeReaderMap, sanitizeSeason, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { ARC_LIMITS, READER_MAP_BEAT_KINDS, buildSeason, cleanThemes, renderArcShapeGuidance, renderArcShapePositionSummary, sanitizeArc, sanitizeReaderMap, sanitizeSeason, sanitizeSeasonList } from '../../../lib/storyArc.js';
 import { sanitizeCharacterArcList } from '../../../lib/seriesCharacterArc.js';
 import { runPromptRefineRaw, trimChanges } from '../refineHelpers.js';
 import { ERR_VALIDATION, SHAPE_GUIDANCE_NONE, appendTickingClock, buildArcBaseContext, buildArcOverviewContext, buildNeighborVolumes, buildReaderMapContext, buildResolveContext, buildVerifyContext, compareIssuesByPosition, findingIdSet, makeErr, matchIssueForEpisodeEdit, matchResolvedFindings, renderVolumeIssue, resolveWorldContext, seasonIdByNumberOf, shapeEpisodeResolutions, shapeFindings, shapeSeasonOutlines, shapeVerifyIssues } from './context.js';
@@ -462,6 +462,52 @@ export function mergeCharacterArcPatches(existingArcs, patches) {
   return sanitizeCharacterArcList(merged);
 }
 
+const EXACT_TEXT_PATCH_MODE = 'exact-text-v1';
+const EXACT_TEXT_EDITS_MAX = 12;
+
+/**
+ * Apply bounded exact-match replacements to one persisted long-form field.
+ *
+ * Arc verification findings are usually sentence-local, but `synopsis` and
+ * `summary` are monolithic strings. Asking the resolver to return either field
+ * wholesale gave a one-sentence repair thousands of unrelated words of blast
+ * radius, and an over-limit rewrite could then be truncated mid-sentence by the
+ * canonical sanitizer. Exact replacements keep the untouched text byte-for-byte
+ * stable. Ambiguous/missing anchors and over-limit results are skipped rather
+ * than guessed at; the next verification round will leave the original finding
+ * visible instead of persisting a speculative rewrite.
+ */
+export function applyExactTextEdits(current, rawEdits, maxLength) {
+  const original = typeof current === 'string' ? current : '';
+  if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
+    return { value: original, applied: 0, rejected: 0 };
+  }
+  let value = original;
+  let applied = 0;
+  let rejected = 0;
+  for (const raw of rawEdits.slice(0, EXACT_TEXT_EDITS_MAX)) {
+    const find = typeof raw?.find === 'string' ? raw.find : '';
+    const replacement = typeof raw?.replace === 'string' ? raw.replace : null;
+    const first = find ? value.indexOf(find) : -1;
+    const duplicate = first >= 0 && value.indexOf(find, first + find.length) >= 0;
+    const replacesWholeLongField = find.length === value.length
+      && maxLength > ARC_LIMITS.SEASON_ENDING_HOOK_MAX;
+    if (!find || replacement == null || first < 0 || duplicate || replacesWholeLongField) {
+      rejected += 1;
+      continue;
+    }
+    const candidate = `${value.slice(0, first)}${replacement}${value.slice(first + find.length)}`;
+    if (candidate.length > maxLength) {
+      rejected += 1;
+      continue;
+    }
+    value = candidate;
+    applied += 1;
+  }
+  rejected += Math.max(0, rawEdits.length - EXACT_TEXT_EDITS_MAX);
+  return { value, applied, rejected };
+}
+
 // Character arcs are patched in place by existing IDs; episode (issue) records
 // are never CREATED or DELETED here, and their drafted scripts are never
 // clobbered — a full-arc round may rewrite an episode's planning synopsis (see
@@ -539,6 +585,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // volume it touches is a chance to author the contradiction the next verify
   // files as a brand-new blocker.
   const edits = selectFindingKeyedEdits(content, findings, { spineOnly });
+  const exactTextMode = content?.patchMode === EXACT_TEXT_PATCH_MODE;
   // Only worth saying when there is actually something to apply unkeyed — a
   // response that proposed NO edits reads as legacy too, and warning about a
   // stale prompt there would be a lie.
@@ -555,11 +602,17 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     console.log(`⚠️ arc-resolve: discarded ${edits.episodesOutOfScope} episode edit(s) — the arc-spine gate resolves at arc/volume scope only`);
   }
 
+  const arcSummary = exactTextMode
+    ? applyExactTextEdits(series.arc.summary || '', edits.arc?.summaryEdits, ARC_LIMITS.SUMMARY_MAX)
+    : { value: edits.arc?.summary || series.arc.summary || '', applied: 0, rejected: 0 };
+  const protagonistArc = exactTextMode
+    ? applyExactTextEdits(series.arc.protagonistArc || '', edits.arc?.protagonistArcEdits, ARC_LIMITS.PROTAGONIST_ARC_MAX)
+    : { value: edits.arc?.protagonistArc ?? series.arc.protagonistArc ?? '', applied: 0, rejected: 0 };
   const arc = sanitizeArc({
     logline: edits.arc?.logline || series.arc.logline || '',
-    summary: edits.arc?.summary || series.arc.summary || '',
+    summary: arcSummary.value,
     themes: edits.arc?.themes ?? series.arc.themes,
-    protagonistArc: edits.arc?.protagonistArc ?? series.arc.protagonistArc ?? '',
+    protagonistArc: protagonistArc.value,
     shape: edits.arc?.shape ?? series.arc.shape ?? null,
     // The resolve prompt doesn't author the reader map — preserve any existing
     // one so auto-resolve never silently wipes a reader map the user already
@@ -599,13 +652,22 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   proposedSeasons.forEach((raw, idx) => {
     const existing = matchedExisting[idx];
     if (existing) {
+      const synopsis = exactTextMode
+        ? applyExactTextEdits(existing.synopsis || '', raw.synopsisEdits, ARC_LIMITS.SEASON_SYNOPSIS_MAX)
+        : { value: typeof raw.synopsis === 'string' ? raw.synopsis : existing.synopsis, applied: 0, rejected: 0 };
+      const endingHook = exactTextMode
+        ? applyExactTextEdits(existing.endingHook || '', raw.endingHookEdits, ARC_LIMITS.SEASON_ENDING_HOOK_MAX)
+        : { value: typeof raw.endingHook === 'string' ? raw.endingHook : existing.endingHook, applied: 0, rejected: 0 };
+      if (synopsis.rejected || endingHook.rejected) {
+        console.log(`⚠️ arc-resolve: skipped ${synopsis.rejected + endingHook.rejected} ambiguous or over-limit exact text edit(s) for volume ${existing.number}`);
+      }
       patchedById.set(existing.id, sanitizeSeason({
         ...existing,
         title: typeof raw.title === 'string' ? raw.title : existing.title,
         number: Number.isFinite(raw.number) ? raw.number : existing.number,
         logline: typeof raw.logline === 'string' ? raw.logline : existing.logline,
-        synopsis: typeof raw.synopsis === 'string' ? raw.synopsis : existing.synopsis,
-        endingHook: typeof raw.endingHook === 'string' ? raw.endingHook : existing.endingHook,
+        synopsis: synopsis.value,
+        endingHook: endingHook.value,
         episodeCountTarget: Number.isFinite(raw.episodeCountTarget)
           ? raw.episodeCountTarget
           : existing.episodeCountTarget,

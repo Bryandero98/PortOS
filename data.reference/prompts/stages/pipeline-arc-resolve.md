@@ -125,9 +125,10 @@ Resolve the findings above with edits that cannot re-create any of these. Concre
 6. **Unresolved finale hooks / theme drift** — surface the missing theme or arc payoff in the final volume's `synopsis`.
 7. **Preserve volume `id`** for every existing volume you edit. Only assign no `id` to brand-new volumes you are adding. Never delete a volume — if a finding could only be resolved by removing one, write that in the `notes` field instead of doing it.
 8. **Correct an episode synopsis when the contradiction *originates* in that episode.** Sometimes a finding can't be fixed at the volume level because the wrong content lives in a specific episode's `synopsis` — e.g. an episode stages an event that a later volume reserves as its own "first" occurrence, or a promised through-line silently disappears from the episodes that should carry it. In those cases the only convergent fix is to rewrite the offending episode's `synopsis` so it stops contradicting the rest of the arc. Return those rewrites in the `episodes[]` output array below, keyed by `seasonNumber` + `episodeNumber`. These are early planning synopses (no script has been drafted yet), so editing them is safe and is preferred over papering over the conflict at the volume level. Rules: edit an episode synopsis ONLY when a finding genuinely originates there; make the smallest change that removes the contradiction while preserving the episode's dramatic purpose; never delete an episode (omit it from `episodes[]` to leave it untouched). If a finding could only be resolved by removing issues entirely, write that in the `notes` field instead of doing it.
-9. **Return only the records you actually edited, and key every one of them to a finding.** `characterArcs[]`, `seasons[]`, and `episodes[]` are SPARSE patch lists: include a character arc only if you corrected it, a volume only if you rewrote it, an episode only if you rewrote it, and the `arc` block only if you rewrote the arc itself. Every entry — including `arc` — carries `resolves: ["f2", ...]`, the ids of the findings that edit closes. An edit that names no finding is discarded by the server, so do not return untouched records "for completeness": that is the single biggest source of NEW contradictions, because every untargeted rewrite is a chance to break something the verification pass had not flagged.
-10. **Within an edited record, return only the fields that must change.** A season may need a new `synopsis` without needing a new `logline`, `endingHook`, title, count, or themes. A character arc patch must repeat its existing `characterId` (or exact `characterName` when it has no ID), then include only changed top-level fields and changed transitions. Every transition patch must repeat its existing `id`; omit untouched transitions. To remove a transition that is itself the contradiction, return its `id` plus `"delete": true`. Omit every untouched key instead of paraphrasing the stored value "for completeness". The server preserves omitted fields and IDs. This field-level sparsity is load-bearing: rewriting an unrelated field can create the next round's contradiction even when the targeted finding was fixed.
-11. **Stay safely inside persisted string limits and end every field cleanly.** Hard limits are: arc logline 500 characters; arc summary 8,000; protagonist arc 4,000; volume logline 500; volume synopsis 8,000; volume ending hook 1,000. Target at most 450 / 7,500 / 3,700 / 450 / 7,500 / 900 characters respectively so punctuation and later edits have headroom. Before returning, check every changed string: it must be below its target and end at a complete clause or sentence. Never rely on the server to truncate prose. Keep a volume synopsis near 200 words when that can carry the issue allocation; expand only as much as the finding genuinely requires.
+9. **Return only the records you actually edited, and key every one of them to a finding.** `characterArcs[]`, `seasons[]`, and `episodes[]` are SPARSE patch lists: include a character arc only if you corrected it, a volume only if you changed it, an episode only if you rewrote it, and the `arc` block only if you changed the arc itself. Every entry — including `arc` — carries `resolves: ["f2", ...]`, the ids of the findings that edit closes. An edit that names no finding is discarded by the server, so do not return untouched records "for completeness": that is the single biggest source of NEW contradictions, because every untargeted rewrite is a chance to break something the verification pass had not flagged.
+10. **Patch long prose with exact text replacements; never return it wholesale.** Set top-level `patchMode` to `"exact-text-v1"`. For an existing arc, change `summary` only through `summaryEdits[]` and `protagonistArc` only through `protagonistArcEdits[]`. For an existing volume, change `synopsis` only through `synopsisEdits[]` and `endingHook` only through `endingHookEdits[]`. Each edit is `{ "find": "an exact unique excerpt copied verbatim from the current field", "replace": "the complete corrected excerpt" }`. Use the shortest excerpt that is still unique, normally one sentence or clause. The server rejects a missing or repeated `find`, so copy punctuation and whitespace exactly. To insert text, include a nearby unique sentence in both `find` and `replace`; to delete text, use an empty `replace`. Apply no more than 12 replacements per field. Never put a full stored summary, protagonist arc, or synopsis in `find` or `replace`: that recreates the wholesale-rewrite failure this contract prevents. A short one-clause `endingHook` may be matched whole when no smaller unique excerpt exists. Short fields such as title/logline/themes/count may still be returned directly when a finding names them.
+11. **Within an edited record, return only the fields that must change.** A character arc patch must repeat its existing `characterId` (or exact `characterName` when it has no ID), then include only changed top-level fields and changed transitions. Every transition patch must repeat its existing `id`; omit untouched transitions. To remove a transition that is itself the contradiction, return its `id` plus `"delete": true`. Omit every untouched key instead of paraphrasing the stored value "for completeness". The server preserves omitted fields and IDs. This field-level sparsity is load-bearing: rewriting an unrelated field can create the next round's contradiction even when the targeted finding was fixed.
+12. **Stay safely inside persisted string limits and end every replacement cleanly.** Hard limits are: arc logline 500 characters; arc summary 8,000; protagonist arc 4,000; volume logline 500; volume synopsis 8,000; volume ending hook 1,000. After mentally applying every replacement, the resulting field must remain under its hard limit and every `replace` must end at a complete clause or sentence. Never rely on the server to truncate prose. Keep a volume synopsis near 200 words when that can carry the issue allocation; expand only as much as the finding genuinely requires.
 
 ## Output contract
 
@@ -135,12 +136,17 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
 
 ```json
 {
+  "patchMode": "exact-text-v1",
   "arc": {
     "resolves": ["f1"],
     "logline": "string",
-    "summary": "string (~500 words, multi-paragraph; escape newlines as \\n)",
+    "summaryEdits": [
+      { "find": "exact unique existing sentence", "replace": "complete corrected sentence" }
+    ],
     "themes": ["string", "..."],
-    "protagonistArc": "string"
+    "protagonistArcEdits": [
+      { "find": "exact unique existing clause", "replace": "complete corrected clause" }
+    ]
   },
   "characterArcs": [
     {
@@ -163,8 +169,12 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
       "number": 1,
       "title": "string",
       "logline": "string",
-      "synopsis": "string",
-      "endingHook": "string",
+      "synopsisEdits": [
+        { "find": "exact unique existing sentence", "replace": "complete corrected sentence" }
+      ],
+      "endingHookEdits": [
+        { "find": "exact unique existing clause", "replace": "complete corrected clause" }
+      ],
       "episodeCountTarget": 8,
       "themes": ["string"]
     }
@@ -181,10 +191,10 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
 }
 ```
 
-The `seasons[]` array is a SPARSE list of volume rewrites — include only the volumes you actually edited, each carrying its `resolves` ids. Volumes you don't list are left exactly as they are; nothing is deleted by omission. Omit the array entirely (or leave it empty) when no volume needed editing.
+The `seasons[]` array is a SPARSE list of volume patches — include only the volumes you actually edited, each carrying its `resolves` ids. For existing volumes, use exact `synopsisEdits` / `endingHookEdits`; only a genuinely brand-new volume may carry complete `synopsis` / `endingHook` fields. Volumes you don't list are left exactly as they are; nothing is deleted by omission. Omit the array entirely (or leave it empty) when no volume needed editing.
 
 The `characterArcs[]` array is a SPARSE list of existing character-arc patches — include only the character and transition fields you actually corrected, preserve every supplied ID, and carry the finding's `resolves` ids on the character-arc entry. Character arcs and transitions you don't list are left exactly as they are. Unmatched/new IDs are discarded rather than minted.
 
 The `episodes[]` array is a SPARSE list of episode-synopsis corrections — include only the episodes you actually rewrote (per rule 8). Omit the array entirely (or leave it empty) when every finding was resolved at the arc/volume level. Episodes you don't list are left exactly as they are.
 
-Omit the `arc` block entirely when the arc itself needed no rewrite. Within every record you do return, omit fields that do not need to change. Every field you include must be complete and within the limits above — the server keeps the stored value for any field you leave out, but it does not merge two halves of a sentence.
+Omit the `arc` block entirely when the arc itself needed no edit. Within every record you do return, omit fields that do not need to change. Every direct short field and every exact replacement must be complete and leave the resulting persisted field within the limits above. The server keeps the stored value for every field and substring you leave untouched.

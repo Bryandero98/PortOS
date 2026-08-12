@@ -840,6 +840,87 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     });
   });
 
+  it('applies exact long-text edits without accepting a wholesale synopsis rewrite', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: {
+        logline: 'old logline',
+        summary: 'Opening stays. The route opens before consent. Finale stays.',
+        protagonistArc: 'They begin afraid. They end accountable.',
+      },
+    });
+    const existingSeason = await seasonsSvc.createSeason(s.id, {
+      title: 'Season 1',
+      synopsis: 'Issue one stays. Ledger D opens before the vote. Issue three stays.',
+      endingHook: 'The old charter remains active.',
+      episodeCountTarget: 3,
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        arc: {
+          resolves: ['f1'],
+          summary: 'WHOLESALE ARC REWRITE MUST BE IGNORED',
+          summaryEdits: [{
+            find: 'The route opens before consent.',
+            replace: 'The route opens only after affected delegates consent.',
+          }],
+        },
+        seasons: [{
+          resolves: ['f1'],
+          id: existingSeason.id,
+          synopsis: 'WHOLESALE VOLUME REWRITE MUST BE IGNORED',
+          synopsisEdits: [{
+            find: 'Ledger D opens before the vote.',
+            replace: 'Ledger D remains dark until the vote passes.',
+          }],
+          endingHookEdits: [{
+            find: 'The old charter remains active.',
+            replace: 'The old charter lapses when the crossing begins.',
+          }],
+        }],
+        notes: '',
+      },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'high', problem: 'The crossing precedes consent.', suggestion: 'Move consent first.' }],
+    });
+
+    expect(out.series.arc.summary).toBe(
+      'Opening stays. The route opens only after affected delegates consent. Finale stays.',
+    );
+    expect(out.series.arc.protagonistArc).toBe('They begin afraid. They end accountable.');
+    expect(out.series.seasons[0].synopsis).toBe(
+      'Issue one stays. Ledger D remains dark until the vote passes. Issue three stays.',
+    );
+    expect(out.series.seasons[0].endingHook).toBe(
+      'The old charter lapses when the crossing begins.',
+    );
+  });
+
+  it('rejects ambiguous, whole-field, and over-limit exact text edits', () => {
+    expect(planner.applyExactTextEdits(
+      'repeat here; repeat here',
+      [{ find: 'repeat here', replace: 'changed' }],
+      100,
+    )).toEqual({ value: 'repeat here; repeat here', applied: 0, rejected: 1 });
+
+    expect(planner.applyExactTextEdits(
+      'the complete field',
+      [{ find: 'the complete field', replace: 'wholesale replacement' }],
+      8000,
+    )).toEqual({ value: 'the complete field', applied: 0, rejected: 1 });
+
+    expect(planner.applyExactTextEdits(
+      'short anchor',
+      [{ find: 'anchor', replace: 'a replacement that exceeds the cap' }],
+      20,
+    )).toEqual({ value: 'short anchor', applied: 0, rejected: 1 });
+  });
+
   it('re-runs verify when no findings are supplied and short-circuits on a clean arc', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
