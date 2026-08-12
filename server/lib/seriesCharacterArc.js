@@ -32,7 +32,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { isStr, trimTo } from './storyBible.js';
+import { isStr, trimTo, trimToClause } from './storyBible.js';
 
 export const CHARACTER_ARC_LIMITS = Object.freeze({
   CHARACTER_NAME_MAX: 200,
@@ -84,8 +84,15 @@ export function sanitizeTransition(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const kind = TRANSITION_KINDS.includes(raw.kind) ? raw.kind : null;
   if (!kind) return null;
-  const label = trimTo(raw.label, CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX);
-  const note = trimTo(raw.note, CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX);
+  // Prose, not identifiers: `trimToClause` so an over-cap beat ends on a sentence
+  // (or at worst a whole word) instead of mid-word. The route schema 400s an
+  // over-cap label, but the arc auto-resolve path writes through the service
+  // sanitizer directly — a hard clip there hands the next verify round a beat that
+  // stops mid-thought ("…the four-minute crossing e"), which reads as an authoring
+  // gap and keeps the verify→resolve loop from converging. See trimToClause's own
+  // note on that loop in storyBible.js.
+  const label = trimToClause(raw.label, CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX);
+  const note = trimToClause(raw.note, CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX);
   // A kind with neither a label nor a note is an empty marker with nothing to
   // render or reason about — drop it (mirrors sanitizeReaderBeat's intent).
   if (!label && !note) return null;
@@ -122,10 +129,14 @@ export function sanitizeCharacterArc(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const characterId = isStr(raw.characterId) && CHARACTER_ID_RE.test(raw.characterId) ? raw.characterId : '';
   const characterName = trimTo(raw.characterName, CHARACTER_ARC_LIMITS.CHARACTER_NAME_MAX);
-  const want = trimTo(raw.want, CHARACTER_ARC_LIMITS.WANT_MAX);
-  const need = trimTo(raw.need, CHARACTER_ARC_LIMITS.NEED_MAX);
-  const startState = trimTo(raw.startState, CHARACTER_ARC_LIMITS.START_STATE_MAX);
-  const endState = trimTo(raw.endState, CHARACTER_ARC_LIMITS.END_STATE_MAX);
+  // want/need/startState/endState are LLM-authored prose rendered back into the
+  // verify + resolve prompts — boundary-aware caps for the same reason as the
+  // transition label/note above. `characterName` stays a hard trim: it's an
+  // identity string matched against the canon cast, not a sentence.
+  const want = trimToClause(raw.want, CHARACTER_ARC_LIMITS.WANT_MAX);
+  const need = trimToClause(raw.need, CHARACTER_ARC_LIMITS.NEED_MAX);
+  const startState = trimToClause(raw.startState, CHARACTER_ARC_LIMITS.START_STATE_MAX);
+  const endState = trimToClause(raw.endState, CHARACTER_ARC_LIMITS.END_STATE_MAX);
   const transitions = cleanTransitions(raw.transitions);
   // Without a character pointer/name there's nothing to attach the arc to, and
   // without any authored field or transition there's nothing to render — either
