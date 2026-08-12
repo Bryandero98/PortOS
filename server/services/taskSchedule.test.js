@@ -1714,6 +1714,23 @@ describe('taskSchedule', () => {
         expect(partial).toEqual([])
       })
 
+      // The churn detector (agentChurn.js) parks a coordinator and FILES a tracker
+      // issue off signatureRepeatCount, so a dispatch that leaves a stale count
+      // behind makes the next park increment it and over-report "same finding
+      // again". A dispatch only happens on a CHANGED set, so it resets to 1.
+      it('recordPerpetualDispatch resets signatureRepeatCount for the new signature', async () => {
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, lastActionableSignature: 'old-sig', signatureRepeatCount: 4 }
+          } } }
+        })
+        await recordPerpetualDispatch('branch-reconcile', 'app-1', 'new-sig')
+        const rec = JSON.parse(writeFile.mock.calls.at(-1)[1]).executions['task:branch-reconcile'].perApp['app-1']
+        expect(rec.lastActionableSignature).toBe('new-sig')
+        expect(rec.signatureRepeatCount).toBe(1)
+      })
+
       // The park has to land the zeroed budget itself: a second await is a step a
       // future park path can forget, and a stale count caps the NEXT drain early.
       it('parkPerpetual clears the dispatch budget when handed dispatchCount: 0', async () => {

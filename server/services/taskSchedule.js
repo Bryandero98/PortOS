@@ -1130,8 +1130,19 @@ export async function recordPerpetualDispatch(taskType, appId = null, signature)
   const schedule = await loadSchedule();
   const record = ensureExecutionRecord(schedule, taskType, appId);
   for (const field of PARK_FIELDS) delete record[field];
-  if (signature == null) delete record.lastActionableSignature;
-  else record.lastActionableSignature = signature;
+  // Mirrors parkPerpetual's signature handling, including the churn detector's
+  // `signatureRepeatCount`. A dispatch only happens when the set CHANGED (an
+  // unchanged one parks instead), so this is always the "new signature ⇒ first
+  // sighting" case — leaving the previous count in place would let the NEXT park
+  // increment a stale value, over-reporting "same finding again" to a detector
+  // that parks the coordinator and files a tracker issue off that number.
+  if (signature == null) {
+    delete record.lastActionableSignature;
+    delete record.signatureRepeatCount;
+  } else {
+    record.lastActionableSignature = signature;
+    record.signatureRepeatCount = 1;
+  }
   const count = (record.perpetualDispatchCount || 0) + 1;
   record.perpetualDispatchCount = count;
   await saveSchedule(schedule);
