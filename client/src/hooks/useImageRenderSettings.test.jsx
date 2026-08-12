@@ -60,9 +60,10 @@ describe('useImageRenderSettings', () => {
       expect(result.current.imageCfg.mode).toBe('codex');
     });
 
-    it('keeps the pin when the settings fetch fails rather than suppressing it', async () => {
-      // `[]` backends would gate every pin away; the hook must not conflate
-      // "settings not loaded" with "no backend enabled".
+    it('fails open to the bare defaults when the settings fetch fails', async () => {
+      // No settings blob means no install default and no backend list to gate a
+      // pin against, so the ladder is skipped entirely rather than applied over
+      // a guessed cfg — the pre-ladder fail-open behavior, unchanged.
       getSettings.mockRejectedValue(new Error('offline'));
       const { result } = renderHook(() => useImageRenderSettings({ record: { imageMode: 'agy' } }));
       await waitFor(() => expect(getSettings).toHaveBeenCalled());

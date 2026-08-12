@@ -27,9 +27,12 @@ import {
  */
 export default function useImageRenderSettings({ record = null, target = null } = {}) {
   // `null` = not fetched yet (or the fetch failed), which is NOT the same as a
-  // settings blob with no backends enabled — an empty backend list suppresses
-  // every pin, so collapsing the two would silently drop the record's pin
-  // whenever /api/settings is slow or down.
+  // settings blob with no backends enabled. Holding the raw blob (rather than a
+  // derived cfg seeded with `PIPELINE_IMAGE_DEFAULTS` and an `[]` backend list)
+  // keeps the two apart: `[]` reads as "loaded, nothing enabled" and would
+  // suppress every pin. Until the blob lands there is no install default and no
+  // backend list to gate against, so the hook fails open to the bare defaults —
+  // no pin — exactly as it did before the ladder existed.
   const [settings, setSettings] = useState(null);
 
   useEffect(() => {
