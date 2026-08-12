@@ -545,20 +545,32 @@ export function createGenerationActivityTracker() {
 // attempts inside the grace window.
 export const SELF_CLEARING_RESUBMIT_INTERVAL_MS = 20000;
 
+// How often a consumer without its own poll should ASK the gate whether a
+// re-submission is due. Deliberately a sub-multiple of the interval above rather
+// than equal to it: a timer whose period matches the cadence exactly can tick a
+// hair early (timer rounding vs. `Date.now()`, or an event-loop stall shifting
+// phase), `takeResubmit` refuses, and that attempt is silently forfeited for a
+// whole interval. Polling faster than the cadence leaves the gate the single
+// authority on timing — the same shape the agent path gets for free by folding
+// the question into its existing 5s idle poll.
+export const SELF_CLEARING_RESUBMIT_POLL_MS = 5000;
+
 // How long after a re-submission the gate ignores output when deciding whether
-// the provider recovered — applied ONLY to a prompt that could fake a recovery
-// (see the `prompt` option on createSelfClearingSignalGate).
+// the provider recovered.
 //
-// The generation tracker is deliberately loose ("any sign of life"), which is
-// safe only because it is normally fed a window that CANNOT contain the prompt
-// echo. Re-pasting inside the window breaks that: a prompt quoting `esc to
-// cancel` or `Generating…` (a task about this very failure mode does) would echo
-// straight into the tracker and latch a bogus recovery — strictly worse than the
-// expiry it replaced, because a recovered gate neither retries nor fails over,
-// leaving the run to idle-reap into a false success. 3s covers the paste and its
-// spaced submit-Enters (~1.4s); a provider that genuinely accepted the retry
-// repaints its in-flight chrome continuously (40–48 times in a healthy agy run),
-// so the next chunk past the window still latches.
+// The generation tracker matches a single chunk, which is safe only while the
+// stream cannot contain the prompt. Re-pasting breaks that: a prompt quoting
+// `Generating…` (a task about this very failure mode does) echoes straight into
+// the tracker and latches a bogus recovery — strictly worse than the expiry it
+// replaced, because a recovered gate neither retries nor fails over, leaving the
+// run to idle-reap into a false success. 3s covers the paste and its spaced
+// submit-Enters (~1.4s).
+//
+// Applied to every re-submission rather than only to prompts whose text could
+// actually match: conditioning on that made the gate's behavior depend on a
+// content coincidence in the caller's payload, and the thing it bought — up to
+// 3s of recovery latency on a 20s retry cadence, against chrome that repaints
+// continuously — is not worth the coupling.
 export const SELF_CLEARING_RESUBMIT_ECHO_MS = 3000;
 
 /**
@@ -587,24 +599,15 @@ export const SELF_CLEARING_RESUBMIT_ECHO_MS = 3000;
  * `gate.takeExpired(Date.now())` returns the analysis to fail over with, or null
  * while still waiting / after a recovery.
  *
- * @param {object} [opts]
- * @param {string} [opts.prompt] - the text this run re-pastes. Only a prompt
- *   that itself contains in-flight chrome can fake a recovery once it echoes
- *   back, so the echo window is armed only for those; every other prompt echoes
- *   inertly and suppressing its window would just delay a real recovery.
  * @returns {{ arm: (analysis: object, nowMs: number) => boolean,
- *             observe: (strippedText: string, nowMs?: number) => boolean,
+ *             observe: (strippedText: string, nowMs: number) => boolean,
  *             takeResubmit: (nowMs: number) => number,
  *             takeExpired: (nowMs: number) => object|null,
  *             readonly armed: boolean }}
  */
-export function createSelfClearingSignalGate({ prompt = '' } = {}) {
-  const echoCanFakeRecovery = typeof prompt === 'string' && GENERATION_ACTIVITY_PATTERN.test(prompt);
-  let armed = null; // { analysis, deadlineAt, nextResubmitAt }
+export function createSelfClearingSignalGate() {
+  let armed = null; // { analysis, deadlineAt, nextResubmitAt, echoUntil, resubmits }
   let activity = null;
-  // 1-based count of re-submissions made inside the CURRENT window (reset by
-  // arm), used only to label the attempt in the consumers' logs.
-  let resubmits = 0;
   // Latched once a window is ridden out successfully, which suppresses re-arming
   // for the rest of the run. This is not just tidiness: the caller's detector is
   // a BUFFERED stream matcher (createImmediateFallbackSignalDetector keeps a
@@ -631,22 +634,21 @@ export function createSelfClearingSignalGate({ prompt = '' } = {}) {
         nextResubmitAt: nowMs + SELF_CLEARING_RESUBMIT_INTERVAL_MS,
         // Nothing has been re-pasted yet, so nothing in the stream is our echo.
         echoUntil: 0,
+        // 1-based count of re-submissions made inside THIS window, used only to
+        // label the attempt in the consumers' logs. Lives on `armed` so its
+        // per-window lifetime is structural rather than a reset to remember.
+        resubmits: 0,
       };
       activity = createGenerationActivityTracker();
-      resubmits = 0;
       return true;
     },
     // Returns true on the call that ends the window because the provider came
     // back — disarming here (rather than at the deadline) is what stops a
     // recovered run from sitting under idle suppression for the rest of the
-    // window.
-    // `nowMs` is optional but every live consumer passes it: without a clock
-    // there is no way to tell our own re-pasted prompt from the provider's
-    // output, so the echo window (SELF_CLEARING_RESUBMIT_ECHO_MS) can't be
-    // applied and a chrome-quoting prompt can fake a recovery.
+    // window. `nowMs` is required: without a clock there is no way to tell our
+    // own re-pasted prompt from the provider's output.
     observe(strippedText, nowMs) {
-      if (!armed) return false;
-      if (echoCanFakeRecovery && typeof nowMs === 'number' && nowMs < armed.echoUntil) return false;
+      if (!armed || nowMs < armed.echoUntil) return false;
       if (!activity.observe(strippedText)) return false;
       armed = null;
       activity = null;
@@ -663,8 +665,8 @@ export function createSelfClearingSignalGate({ prompt = '' } = {}) {
       if (!armed || nowMs < armed.nextResubmitAt || nowMs >= armed.deadlineAt) return 0;
       armed.nextResubmitAt = nowMs + SELF_CLEARING_RESUBMIT_INTERVAL_MS;
       armed.echoUntil = nowMs + SELF_CLEARING_RESUBMIT_ECHO_MS;
-      resubmits += 1;
-      return resubmits;
+      armed.resubmits += 1;
+      return armed.resubmits;
     },
     // Returns the analysis to fail over with, or null while still waiting (or
     // after a recovery). `nowMs` is OPTIONAL: a poller passes the clock and gets

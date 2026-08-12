@@ -353,7 +353,7 @@ describe('tuiHandshake — paste timing constants', () => {
     it('closes on the first sign of generation instead of holding to the deadline', () => {
       const gate = createSelfClearingSignalGate();
       gate.arm(BANNER, 1000);
-      expect(gate.observe('Generating...')).toBe(true);
+      expect(gate.observe('Generating...', 2000)).toBe(true);
       expect(gate.armed).toBe(false);
       // Nothing left to fail over with — the run continues.
       expect(gate.takeExpired(61000)).toBeNull();
@@ -365,7 +365,7 @@ describe('tuiHandshake — paste timing constants', () => {
     it('does not re-arm on a stale banner match after the provider recovered', () => {
       const gate = createSelfClearingSignalGate();
       gate.arm(BANNER, 1000);
-      gate.observe('Generating...');
+      gate.observe('Generating...', 2000);
       expect(gate.recovered).toBe(true);
       expect(gate.arm(BANNER, 2000)).toBe(false);
       expect(gate.takeExpired(120000)).toBeNull();
@@ -391,10 +391,10 @@ describe('tuiHandshake — paste timing constants', () => {
 
     it('does not treat pre-arm output as evidence of recovery', () => {
       const gate = createSelfClearingSignalGate();
-      expect(gate.observe('Generating...')).toBe(false);
+      expect(gate.observe('Generating...', 500)).toBe(false);
       gate.arm(BANNER, 1000);
       // Only the banner screen repaints from here — still stuck.
-      gate.observe('> ? for shortcuts');
+      gate.observe('> ? for shortcuts', 2000);
       expect(gate.takeExpired(61001)).toBe(BANNER);
     });
 
@@ -413,7 +413,7 @@ describe('tuiHandshake — paste timing constants', () => {
     it('force-expiry still returns null once the provider recovered', () => {
       const gate = createSelfClearingSignalGate();
       gate.arm(BANNER, 1000);
-      gate.observe('Generating...');
+      gate.observe('Generating...', 2000);
       expect(gate.takeExpired()).toBeNull();
     });
 
@@ -469,19 +469,16 @@ describe('tuiHandshake — paste timing constants', () => {
         expect(gate.takeResubmit(BANNER.graceMs + I)).toBe(1);
       });
 
-      // The generation tracker is deliberately loose, which is only safe while it
-      // can't see the prompt. Re-pasting puts the prompt back in the stream, so a
-      // task whose text quotes in-flight chrome (a task about THIS failure mode
-      // does) would latch a bogus recovery — worse than expiring, because a
-      // recovered gate neither retries nor fails over and the run idle-reaps into
-      // a false success.
-      const RISKY_PROMPT = 'Investigate why the TUI shows `Generating…` forever';
-
-      it('discounts the echo of a chrome-quoting prompt it just re-pasted', () => {
-        const gate = createSelfClearingSignalGate({ prompt: RISKY_PROMPT });
+      // The tracker matches a single chunk, which is only safe while the stream
+      // can't contain the prompt. Re-pasting puts it back, so a task whose text
+      // quotes in-flight chrome (a task about THIS failure mode does) would latch
+      // a bogus recovery — worse than expiring, because a recovered gate neither
+      // retries nor fails over and the run idle-reaps into a false success.
+      it('discounts the echo of the prompt it just re-pasted', () => {
+        const gate = createSelfClearingSignalGate();
         gate.arm(BANNER, 0);
         gate.takeResubmit(I);
-        expect(gate.observe(RISKY_PROMPT, I + 10)).toBe(false);
+        expect(gate.observe('Investigate why the TUI shows `Generating…` forever', I + 10)).toBe(false);
         expect(gate.armed).toBe(true);
         // Real chrome repaints continuously, so the next chunk past the echo
         // window still latches.
@@ -489,28 +486,18 @@ describe('tuiHandshake — paste timing constants', () => {
       });
 
       it('only discounts the echo window, not everything after a re-submission', () => {
-        const gate = createSelfClearingSignalGate({ prompt: RISKY_PROMPT });
+        const gate = createSelfClearingSignalGate();
         gate.arm(BANNER, 0);
         gate.takeResubmit(I);
         expect(gate.observe('Generating...', I + SELF_CLEARING_RESUBMIT_ECHO_MS + 1)).toBe(true);
       });
 
-      // Suppression costs recovery latency, so it is scoped to the prompts that
-      // can actually cause the problem. An ordinary prompt echoes inertly — the
-      // provider's first sign of life still counts immediately, even if it lands
-      // in the same instant as the re-paste.
-      it('does not delay recovery for a prompt whose echo cannot fake one', () => {
-        const gate = createSelfClearingSignalGate({ prompt: 'update the documentation' });
+      // Nothing has been re-pasted before the first attempt, so nothing in the
+      // stream is our echo and a recovery counts immediately.
+      it('does not suppress anything before the first re-submission', () => {
+        const gate = createSelfClearingSignalGate();
         gate.arm(BANNER, 0);
-        gate.takeResubmit(I);
-        expect(gate.observe('Generating...', I + 10)).toBe(true);
-      });
-
-      it('keeps the clockless observe form working for callers that have no clock', () => {
-        const gate = createSelfClearingSignalGate({ prompt: RISKY_PROMPT });
-        gate.arm(BANNER, 0);
-        gate.takeResubmit(I);
-        expect(gate.observe('Generating...')).toBe(true);
+        expect(gate.observe('Generating...', 10)).toBe(true);
       });
 
       // Cross-file invariant between the signal that sets the window and the gate

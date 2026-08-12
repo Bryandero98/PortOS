@@ -678,9 +678,8 @@ export async function spawnTuiAgent({
   // Holds the wait-it-out window for a provider signal carrying a `graceMs`
   // (agy's account-eligibility banner). The idle timer below both resolves its
   // deadline, drives the re-submission cadence, and defers to `.armed` for idle
-  // suppression. The prompt is handed over so the gate can discount its own echo
-  // when re-pasting a prompt whose TEXT could fake a recovery.
-  const selfClearingGate = createSelfClearingSignalGate({ prompt });
+  // suppression.
+  const selfClearingGate = createSelfClearingSignalGate();
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
   // read-at-most-once invariant at the helper.
@@ -1138,13 +1137,13 @@ export async function spawnTuiAgent({
   const resubmitAfterSignal = () => {
     // A banner that paints during startup (before the prompt was ever submitted)
     // has nothing to re-send — the ordinary paste path still owns first delivery.
-    if (finalized || !promptSubmittedAt) return;
-    if (!sessionId || !shellService.getSession(sessionId)) return;
+    if (finalized || !promptSubmittedAt || !sessionId) return;
     const attempt = selfClearingGate.takeResubmit(Date.now());
     if (!attempt) return;
     // Overwriting a live handle would leak the previous attempt's Enter interval
-    // past finish(); pasteToSession returns a fresh one (or false on a session
-    // that vanished between the check above and the write).
+    // past finish(); pasteToSession returns a fresh one, or false once the
+    // session is gone — which is also the "don't bother" answer, since the
+    // deadline still owns the fail-over.
     if (submitEnterTimer) clearInterval(submitEnterTimer);
     submitEnterTimer = shellService.pasteToSession(sessionId, prompt, {
       label: '[cosAgents] provider-handshake resubmit',

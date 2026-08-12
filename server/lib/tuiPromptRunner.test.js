@@ -38,6 +38,17 @@ const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef } = v
     registerExternalSession: vi.fn(),
     unregisterExternalSession: vi.fn(),
     isExternalSessionAttached: vi.fn(() => false),
+    // The run registers its own PTY as an external session, so a paste routed
+    // through the session registry lands back on that PTY. Modelled faithfully
+    // (bracketed paste, then the submit Enter, then an interval handle for the
+    // caller to cancel) so assertions can read pty.write like the direct path.
+    pasteToSession: vi.fn((_sessionId, text) => {
+      const pty = ptyInstances[ptyInstances.length - 1];
+      if (!pty) return false;
+      pty.write(`\x1b[200~${text}\x1b[201~`);
+      pty.write('\r');
+      return setInterval(() => {}, 60000);
+    }),
   },
 }));
 runnerMocks.getRunsPath.mockImplementation(() => runsTmpDirRef.current);
@@ -52,7 +63,7 @@ vi.mock('./fileUtils.js', async () => {
 
 import { cleanTuiResponse, resolveTuiResponseText, executeTuiRun } from './tuiPromptRunner.js';
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from './hostShutdown.js';
-import { SELF_CLEARING_RESUBMIT_INTERVAL_MS } from './tuiHandshake.js';
+import { SELF_CLEARING_RESUBMIT_INTERVAL_MS, SELF_CLEARING_RESUBMIT_ECHO_MS } from './tuiHandshake.js';
 
 const makeFakePty = () => {
   const fake = {
@@ -837,8 +848,13 @@ describe('executeTuiRun', () => {
       expect(pastes()).toBe(2);
       expect(pty.write).toHaveBeenCalledWith('\r');
 
-      // …and it stops re-asking the moment agy actually answers.
-      pty.emitData('Generating...\nesc to cancel');
+      // …and it stops re-asking the moment agy actually answers. The first
+      // repaint lands inside the echo window and is discounted (it could be the
+      // prompt we just pasted echoing back); agy repaints continuously, so the
+      // next one is what closes the window.
+      pty.emitData('Generating...');
+      await vi.advanceTimersByTimeAsync(SELF_CLEARING_RESUBMIT_ECHO_MS);
+      pty.emitData('Generating...');
       await vi.advanceTimersByTimeAsync(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
       await flushAsync();
       expect(pastes()).toBe(2);
