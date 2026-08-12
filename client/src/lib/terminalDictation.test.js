@@ -202,6 +202,34 @@ describe('attachDictationBridge', () => {
     expect(sent).toEqual(['abc', 'next']);
   });
 
+  it('leaves an insertion the keypress path already sent to xterm', () => {
+    // Capitals and space are the keys xterm forwards from `keypress` without
+    // cancelling it, so the character lands in the textarea and fires `input`
+    // AFTER the PTY already has it. Diffing that insertion doubled every one.
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 84, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
+    textarea.value = 'T';
+    fireInput('insertText');
+    expect(sent).toEqual([]);
+    // It counts as floor, not as ours: dictating on top appends instead of
+    // erasing the capital xterm sent.
+    textarea.value = 'There';
+    fireInput('insertText');
+    expect(sent).toEqual(['here']);
+  });
+
+  it('still owns an insertion with no keypress behind it', () => {
+    // Dictation and soft keyboards insert without a keypress — the stale flag from
+    // an earlier capital must not disown them.
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 84, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keypress', { keyCode: 84, bubbles: true }));
+    textarea.value = 'T';
+    fireInput('insertText');
+    textarea.value = 'Today';
+    fireInput('insertText');
+    expect(sent).toEqual(['oday']);
+  });
+
   it('does not resync on the composition keycode soft keyboards report', () => {
     textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 229, bubbles: true }));
     textarea.value = 'ab';
@@ -301,6 +329,33 @@ describe('attachDictationBridge against a real xterm Terminal', () => {
     terminal.onData((d) => sent.push(d));
     dictate(['dde', 'deter', 'determin', 'determine', 'determines']);
     expect(sent.join('')).toBe('ddedeterdetermindeterminedetermines');
+  });
+
+  // A capital letter, keystroke-for-keystroke as Chrome delivers it: xterm ignores
+  // the keydown (its A-Z hack defers to keypress), forwards the character from
+  // keypress WITHOUT cancelling it, and the browser then inserts it into the
+  // textarea and fires `input`. Two senders, one character.
+  const typeCapital = (ch) => {
+    const code = ch.charCodeAt(0);
+    const { textarea } = terminal;
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: ch, keyCode: code, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keypress', { key: ch, keyCode: code, charCode: code, bubbles: true }));
+    textarea.value += ch;
+    textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ch, bubbles: true }));
+  };
+
+  it('does not double a capital that xterm sent from keypress', () => {
+    const sent = [];
+    terminal.onData((d) => sent.push(d));
+    typeCapital('T');
+    // Proves xterm really is the sender on this path — if an upgrade moves it to
+    // keydown-with-cancel, this fails and the bridge's keypress seam can go.
+    expect(sent).toEqual(['T']);
+
+    const dispose = attachDictationBridge(terminal, (d) => { sent.push(d); });
+    typeCapital('X');
+    dispose();
+    expect(sent).toEqual(['T', 'X']);
   });
 
   it('sends the dictated phrase once, not the accumulated garble', () => {
