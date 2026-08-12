@@ -50,8 +50,14 @@ export const AGY_IMAGEGEN_IMAGE_MODEL = 'imagen-3.0-generate-002';
 // (supportsModelOverride: false) and local video models are picked on the
 // surface itself, so no video-model control is offered anywhere.
 export const RENDER_TARGET_BACKEND_AUTO = 'auto';
+// Named ids for the targets the CLIENT resolves itself (via `renderTargetPin`),
+// so a call site names the surface instead of retyping the string. The ids are
+// bound to the server's RENDER_TARGETS by renderTargets.parity.test.js.
+export const RENDER_TARGET = Object.freeze({
+  UNIVERSE_BIBLE: 'universe-bible',
+});
 export const RENDER_TARGET_OPTIONS = Object.freeze([
-  { id: 'universe-bible', label: 'Universe Bible batch renders' },
+  { id: 'universe-bible', label: 'Universe Bible & canon renders' },
   { id: 'universe-character-sheet', label: 'Universe character sheets' },
   { id: 'series-first-pass', label: 'Series first-pass portraits & frames' },
   { id: 'sprite-reference', label: 'Sprite references & anchors' },
@@ -114,6 +120,79 @@ export const MODEL_OVERRIDE_CAPABLE_MODES = Object.freeze([
   IMAGE_GEN_MODE.AGY,
 ]);
 export const supportsCloudModelOverride = (mode) => MODEL_OVERRIDE_CAPABLE_MODES.includes(mode);
+
+/**
+ * Client mirror of the server's `renderTargetDefaults`
+ * (imageGen/cloudProviderConfig.js) — one surface's saved `settings.renderDefaults`
+ * pin, re-keyed to the flat `imageMode`/`imageModelId` shape `renderPinLadder`
+ * consumes so a target pin and a record pin are the same kind of thing.
+ */
+export const renderTargetPin = (settings, target) => ({
+  imageMode: settings?.renderDefaults?.[target]?.imageMode ?? null,
+  imageModelId: settings?.renderDefaults?.[target]?.imageModel ?? null,
+});
+
+/**
+ * Resolve the effective render pin from an ordered ladder of pin sources — the
+ * client mirror of the server's `resolveRenderTargetConfig` (#3231), minus the
+ * explicit-per-request rung the caller owns. Pass sources highest-priority
+ * first, which for every surface is: the record's own pin (`recordRenderPin`'s
+ * `imageMode`/`imageModelId`), then the target's `renderTargetPin(settings, target)`.
+ *
+ * Why the client resolves this at all: single-image render call sites (a
+ * universe cast reference, the base-style probe) send `mode` EXPLICITLY, and an
+ * explicit mode outranks every pin on the server ladder — so a universe pinned
+ * to agy rendered its cast on whatever the install-wide default resolved to
+ * (codex, on a codex-enabled install) until the client folded the pin in itself.
+ *
+ * `availableBackends` (the `deriveAvailableBackends` shape) is a client-side
+ * usability gate with no server counterpart: a pin naming a backend this install
+ * no longer has enabled falls through to the next rung rather than queueing a
+ * job that can only 400. Pass `null` when the backend list isn't loaded yet —
+ * an empty array means "loaded, nothing enabled" and suppresses every pin.
+ *
+ * @param {Array<object|null>} sources - Pin sources, highest priority first.
+ * @param {Array<{id:string}>|null} [availableBackends] - Enabled backends, or null.
+ * @returns {{mode: string|null, modelId: string|null}} The first usable pin.
+ */
+export function renderPinLadder(sources, availableBackends = null) {
+  for (const source of sources) {
+    const mode = normalizeRenderPinValue(source?.imageMode);
+    if (!mode) continue;
+    if (Array.isArray(availableBackends) && !availableBackends.some((b) => b.id === mode)) continue;
+    return { mode, modelId: normalizeRenderPinValue(source?.imageModelId) };
+  }
+  return { mode: null, modelId: null };
+}
+
+/**
+ * Fold `renderPinLadder`'s result over a settings-derived per-render config.
+ *
+ * Returns `cfg` BY IDENTITY when no pin applies — every consumer passes this
+ * cfg down as a prop, so an unconditional spread would churn a re-render for
+ * every unpinned record.
+ *
+ * @param {object} cfg - Settings-derived config (`readPipelineImageSettings` shape).
+ * @param {Array<object|null>} sources - Pin sources, highest priority first.
+ * @param {Array<{id:string}>|null} [availableBackends] - Enabled backends, or null.
+ * @returns {object} `cfg` unchanged when there's no usable pin, else a pinned copy.
+ */
+export function applyRecordRenderPin(cfg, sources, availableBackends = null) {
+  const { mode, modelId } = renderPinLadder(sources, availableBackends);
+  if (!mode) return cfg;
+  const isLocal = mode === IMAGE_GEN_MODE.LOCAL;
+  return {
+    ...cfg,
+    mode,
+    // The pinned model lands on the knob that backend actually reads: local
+    // diffusion takes `modelId`, an override-capable cloud CLI takes
+    // `cloudModel`. The other is nulled rather than omitted — `cfg` arrives
+    // spread in with a settings-derived local `modelId`, which would otherwise
+    // ride along into a cloud render.
+    modelId: isLocal ? (modelId || cfg?.modelId) : null,
+    cloudModel: !isLocal && supportsCloudModelOverride(mode) ? modelId : null,
+  };
+}
 
 // Human-facing name for a backend ('Local', 'Codex', 'Grok', 'Agy', 'External').
 // Shared so label ladders (`isCodex ? 'Codex model' : …`) don't re-type what

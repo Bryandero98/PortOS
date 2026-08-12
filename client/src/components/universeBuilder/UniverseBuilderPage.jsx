@@ -111,9 +111,9 @@ export default function UniverseBuilder() {
     availableBackends,
     availableLoras,
     clearPendingCanonAdditions,
-    defaultMode,
     draft,
     draftRef,
+    effectiveDefaultMode,
     flushDraftIfDirty,
     handleCanonChange,
     handleCreateNamed,
@@ -151,17 +151,6 @@ export default function UniverseBuilder() {
     updateCompositeSheets,
     updateDraft,
   } = useUniverseDraft({ selectedId, goToWorld });
-  // Universe render pin (#3231 Phase 3): the record's pinned backend becomes
-  // the page's default mode when that backend is available, so an untouched
-  // batch form actually renders on the pin (the client always sends an
-  // explicit body.mode once settings load — without this, the pin would only
-  // ever apply to mode-less API callers). An explicit renderOpts.mode still
-  // wins, and an unavailable pinned backend degrades to the install default
-  // (mirroring the server ladder's usability gate).
-  const effectiveDefaultMode = draft?.imageMode
-    && availableBackends.some((b) => b.id === draft.imageMode)
-    ? draft.imageMode
-    : defaultMode;
   const {
     canRender,
     clearPendingForEntry,
