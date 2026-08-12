@@ -1976,14 +1976,13 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
   });
 
   // The rollback used to treat ANY difference from the snapshot as the round's
-  // own work, so an episode synopsis written while the verification was running
-  // was reverted by a round that never touched it — observed as an arc-SPINE
-  // gate (whose resolver may not edit episodes at all) reporting
-  // `resolve:round episodesEdited: 0` followed by `resolve:rollback
-  // episodesReverted: 1`. The manifest is what makes ownership provable.
+  // own work — see `createArcMutationLedger` for the run that exposed it.
   describe('restores only the episodes the resolve round is on record as writing', () => {
     // The damage every case below shares: a rewritten arc, a minted volume that
     // took an episode off its own, and a synopsis rewrite on e1.
+    // Bound once so the manifest provably reports the value that was written.
+    const WROTE = { input: 'resolver rewrote e1', output: '', status: 'empty' };
+
     async function regressiveRound({ s, v1, v2, e1 }) {
       const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
       await seriesSvc.updateSeries(s.id, {
@@ -1991,8 +1990,8 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
         seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
       });
       await issuesSvc.updateIssue(e1.id, { seasonId: minted.id });
-      await issuesSvc.updateStage(e1.id, 'idea', { input: 'resolver rewrote e1', output: '', status: 'empty' });
-      return { minted, e1Edit: { issueId: e1.id, idea: { input: 'resolver rewrote e1', output: '', status: 'empty' } } };
+      await issuesSvc.updateStage(e1.id, 'idea', { ...WROTE });
+      return { e1Edit: { issueId: e1.id, idea: { ...WROTE } } };
     }
 
     it('reverts its own episode write and the volume it drove, and keeps an unrelated one', async () => {
@@ -2038,7 +2037,7 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
 
       const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [] });
       expect(result).toMatchObject({ restored: true, episodesRestored: 0, reassignedIssueCount: 1 });
-      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('resolver rewrote e1');
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe(WROTE.input);
       expect((await seriesSvc.getSeries(s.id)).seasons.map((x) => x.id)).toEqual([seed.v1.id, seed.v2.id]);
       expect((await issuesSvc.getIssue(e1.id)).seasonId).toBe(seed.v1.id);
     });

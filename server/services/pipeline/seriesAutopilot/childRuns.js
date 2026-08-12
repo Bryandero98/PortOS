@@ -32,6 +32,7 @@ import {
   isIsolatedFixSafe,
 } from './convergence.js';
 import { createDiscardedBank } from './discardedEvidence.js';
+import { createArcMutationLedger } from './arcMutationLedger.js';
 import { broadcast, budgetPause, providerOverrideOpts, providerIdOpts, roleLlm, seasonPreserveOpts } from './session.js';
 import { recordModelOutcome } from './modelPerformance.js';
 import { requiredScriptStages, textReady } from './stepResolver.js';
@@ -87,7 +88,7 @@ async function resolveArcFindings(seriesId, record, { findings, avoid, spineOnly
 
 // Episode synopses one resolve pass actually rewrote, for the telemetry frames.
 // Read off the same mutation manifest the rollback is driven by, so
-// `episodesEdited` and `episodesReverted` can no longer describe different sets:
+// `episodesEdited` and `episodesReverted` cannot describe different sets:
 // counting every reported entry included the ones the applier SKIPPED (locked
 // stage, no matching episode, failed write) as edits.
 const editedCount = (resolved) => resolvedEpisodeEdits(resolved).length;
@@ -211,6 +212,11 @@ async function verifyArcBlocking(seriesId, record, { spineOnly }) {
  * this loop reads as an attempt needing neither a rollback (nothing was written)
  * nor a verification round (the blocking set cannot have moved).
  *
+ * `ledger` is the gate's shared mutation ledger: this pass holds its snapshot in
+ * it and notes its own resolves, so a rejected attempt restores only the episode
+ * synopses it actually wrote — and a RETAINED one is visible to a later rewind
+ * in the round loop, which would otherwise have no record of it.
+ *
  * Bounded by `attemptsLeft` and budget-gated per attempt like every other
  * resolve. Returns `{ accepted, attempts, verified }` — `verified` being the
  * full verification of the state now standing in the store, which the caller
@@ -223,7 +229,7 @@ async function verifyArcBlocking(seriesId, record, { spineOnly }) {
  * resolve after a successful isolation gets too. Computing it once up front
  * made every attempt repeat the prompt the previous one had just failed with.
  */
-async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, baseline, bank, attemptsLeft }) {
+async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, baseline, bank, ledger, attemptsLeft }) {
   // The last verification that DESCRIBES THE STORE: it advances only on an
   // accepted patch, because a rejected one is rolled straight back to the state
   // its predecessor verified. So later targets are judged against what the
@@ -239,12 +245,6 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
   // capture an identical snapshot is pure I/O. Dropped after an accepted patch,
   // which is the only thing that moves the store on.
   let snapshot = null;
-  // The episode synopses the resolver has REPORTED writing since that snapshot
-  // was taken. A rejected attempt restores those and nothing else, so an episode
-  // edit that arrives from elsewhere while the verification runs is not swept up
-  // with the candidate being undone. Cleared alongside the snapshot: a restore
-  // has already undone them, and an accepted patch keeps them.
-  let ownedEdits = [];
   const blocking = () => standing?.blocking ?? baseline;
   for (const target of baseline) {
     if (attempts >= attemptsLeft) break;
@@ -261,10 +261,7 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
     // model-outcome record falls back to the gate's scope so a per-target
     // performance history is never keyed on an empty string.
     const targetLabel = typeof target.location === 'string' ? target.location : null;
-    if (!snapshot) {
-      snapshot = await snapshotArcState(seriesId);
-      ownedEdits = [];
-    }
+    if (!snapshot) snapshot = ledger.hold(await snapshotArcState(seriesId));
     // Recomputed per target: earlier attempts in this same pass have banked
     // their rejections by now. Everything still standing is an active repair
     // target for this pass, so the whole set — not just `target` — is what the
@@ -274,7 +271,7 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
     const resolved = await resolveArcFindings(seriesId, record, {
       findings: [target], avoid, spineOnly, isolated: true,
     });
-    ownedEdits.push(...resolvedEpisodeEdits(resolved));
+    ledger.note(resolvedEpisodeEdits(resolved));
     // The resolver applied nothing — for an isolated attempt that means the
     // candidate was too broad to BE one (see `isolatedCandidateRejection`) and
     // was discarded before it touched the store. Nothing was written, so there
@@ -303,7 +300,7 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
       // The run is ending mid-attempt, so this patch can never be judged. Put
       // the snapshot back rather than leaving an unverified rewrite in a plan
       // the user is about to be handed.
-      await restoreArcState(seriesId, snapshot, { episodeEdits: ownedEdits });
+      await restoreArcState(seriesId, snapshot, { episodeEdits: ledger.since(snapshot) });
       return { accepted, attempts, verified: standing, outcome: verified.outcome };
     }
     const kept = isIsolatedFixSafe(target, blocking(), verified.blocking);
@@ -323,8 +320,7 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
       // capture the state this patch left behind, not the one before it.
       snapshot = null;
     } else {
-      await restoreArcState(seriesId, snapshot, { episodeEdits: ownedEdits });
-      ownedEdits = [];
+      await restoreArcState(seriesId, snapshot, { episodeEdits: ledger.since(snapshot) });
       // The verified consequence of a rewrite the gate just threw away — the
       // same evidence a whole-set rollback banks, at single-finding grain.
       // Without this the pass paid a resolve + a verify to learn something no
@@ -385,29 +381,14 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
   // from a spine round misreports the failure to both the status line and the
   // stall-diagnosis prompt that replays these frames.
   const scope = spineOnly ? 'arcSpine' : 'arc';
-  // Every snapshot this gate is still holding, each paired with the episode
-  // synopses the resolver has REPORTED writing since it was taken. Rollback
-  // restores exactly those episodes, so an unrelated write that lands while a
-  // verification round is running survives instead of being reverted as if the
-  // round had authored it — "differs from the snapshot" was never proof of
-  // ownership, and an arc-spine round (which may not touch episodes at all) was
-  // reverting episode synopses on that reasoning alone.
-  //
-  // Per snapshot rather than per round because a checkpoint can outlive the
-  // round that took it: rewinding to a `bestVerified` from three rounds back has
-  // to undo every resolve that landed after it, not just the last one.
-  const held = [];
-  const takeSnapshot = async () => {
-    const snapshot = await snapshotArcState(seriesId);
-    held.push({ snapshot, episodeEdits: [] });
-    return snapshot;
-  };
-  const noteResolverEdits = (resolved) => {
-    const edits = resolvedEpisodeEdits(resolved);
-    if (edits.length) for (const entry of held) entry.episodeEdits.push(...edits);
-  };
+  // Which episode synopses each rollback is allowed to put back: the ones the
+  // resolver reported writing after that checkpoint was taken, and nothing else
+  // (see `createArcMutationLedger`). Shared with the isolation pass below, whose
+  // retained patches a later rewind to an older checkpoint also has to undo.
+  const ledger = createArcMutationLedger();
+  const takeSnapshot = async () => ledger.hold(await snapshotArcState(seriesId));
   const restoreTo = (snapshot) => restoreArcState(seriesId, snapshot, {
-    episodeEdits: held.find((entry) => entry.snapshot === snapshot)?.episodeEdits ?? [],
+    episodeEdits: ledger.since(snapshot),
   });
   let convergence = { best: null, sinceBest: 0 };
   let changed = false;
@@ -533,7 +514,7 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
           avoid: bank.avoid(discarded, rollbackTarget.blocking),
           spineOnly,
         });
-        noteResolverEdits(retried);
+        ledger.note(resolvedEpisodeEdits(retried));
         if (retried?.applied !== false) changed = true;
         // The restored state is what the retry has to beat, so the next round
         // compares against ITS count — not the rejected candidate's, which
@@ -557,6 +538,7 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
           scope, round, spineOnly,
           baseline: rollbackTarget.blocking,
           bank,
+          ledger,
           attemptsLeft: isolationLeft,
         });
         isolationLeft -= isolated.attempts;
@@ -652,7 +634,7 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
       avoid: bank.avoid([], blocking),
       spineOnly,
     });
-    noteResolverEdits(resolved);
+    ledger.note(resolvedEpisodeEdits(resolved));
     if (resolved?.applied === false) {
       await recordArcResolveOutcome(
         { blocking, runIds: arcResolveRunIds(resolved) },

@@ -1002,9 +1002,9 @@ const sameIdea = (a, b) => a.input === b.input && a.output === b.output && a.sta
  * The episode-synopsis writes ONE resolve pass actually landed, as
  * `[{ issueId, idea }]` — the exact-mutation manifest a rollback needs so it can
  * tell its own round's edits from a write that arrived from somewhere else while
- * the verification was running. Derived from the applier's own report (an entry
- * carries `idea` only when the write went through), so the manifest cannot claim
- * an edit that never happened.
+ * the verification was running. Derived from the applier's own report — an entry
+ * carries `idea` only when the write went through, never when it was skipped or
+ * failed — so the manifest cannot claim an edit that never happened.
  *
  * Empty for an arc-spine round: that gate's resolver may not touch episodes at
  * all (`selectFindingKeyedEdits` discards them), which is exactly why a
@@ -1012,7 +1012,7 @@ const sameIdea = (a, b) => a.input === b.input && a.output === b.output && a.sta
  */
 export const resolvedEpisodeEdits = (resolved) => (Array.isArray(resolved?.episodesResolved)
   ? resolved.episodesResolved
-    .filter((entry) => entry?.issueId && !entry.skipped && entry.idea)
+    .filter((entry) => entry?.issueId && entry.idea)
     .map((entry) => ({ issueId: entry.issueId, idea: entry.idea }))
   : []);
 
@@ -1065,14 +1065,20 @@ export async function snapshotArcState(seriesId) {
  * `options.episodeEdits` is the round's exact mutation manifest (see
  * `resolvedEpisodeEdits`): pass it and only those episodes' `idea` fields are
  * eligible, and only while the value the resolver wrote is still the one
- * standing. Everything else — including an unrelated synopsis edit that landed
- * while the verification ran — keeps whatever is in the store, because "differs
- * from the snapshot" was never proof the round owned the difference. An arc-spine
- * round always passes an empty manifest, so it can never restore an episode.
- * Omit it and every differing episode is restored (the pre-manifest behavior
- * foundation structure repair still relies on). Volume reassignment is NOT
- * manifest-gated either way: the volume list is being restored wholesale, so an
- * episode left pointing at a volume that is about to disappear would be stranded.
+ * standing — "differs from the snapshot" was never proof the round owned the
+ * difference. Two deliberate limits on that:
+ *   - Volume reassignment is never manifest-gated. The volume list is being
+ *     restored wholesale, so an episode left pointing at a volume that is about
+ *     to disappear would be stranded.
+ *   - Neither are the arc, character arcs and volume records themselves. Nothing
+ *     records what the resolver wrote at that altitude, and a non-spine round is
+ *     expected to rewrite all three, so the false-revert exposure is small — but
+ *     it is the same reasoning, and closing it needs a manifest one level up.
+ *
+ * Omit `episodeEdits` and every differing episode is restored. That is the right
+ * contract for `restoreFoundationState`, which verifies its own restore fidelity
+ * by diffing episodes wholesale; the foundation gate's structure-repair rollbacks
+ * merely inherit it, and are the next callers that should pass a manifest.
  *
  * Callers must re-verify after every resolve so they can distinguish a
  * regressive round from a good one. The arc convergence loop uses this to keep
