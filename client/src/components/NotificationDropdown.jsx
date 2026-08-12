@@ -161,7 +161,7 @@ export default function NotificationDropdown({
                 <button
                   type="button"
                   onClick={onMarkAllAsRead}
-                  className="p-1.5 rounded hover:bg-port-border transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent"
+                  className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded hover:bg-port-border transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent sm:min-w-0 sm:min-h-0 sm:p-1.5"
                   title="Mark all as read"
                   aria-label="Mark all notifications as read"
                 >
@@ -172,7 +172,7 @@ export default function NotificationDropdown({
                 <button
                   type="button"
                   onClick={onClearAll}
-                  className="p-1.5 rounded hover:bg-port-border transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent"
+                  className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded hover:bg-port-border transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent sm:min-w-0 sm:min-h-0 sm:p-1.5"
                   title="Clear all"
                   aria-label="Clear all notifications"
                 >

@@ -104,6 +104,22 @@ describe('NotificationDropdown', () => {
   });
 
   describe('touch targets', () => {
+    // These are the controls the panel exists to reach. Sized to their bare icon
+    // they are ~28px, well under the 44px minimum, and were the specific things
+    // the off-screen panel put out of reach.
+    it.each([
+      ['Mark all notifications as read'],
+      ['Clear all notifications'],
+      ['Close notifications']
+    ])('gives the %s control a 44px tap target on touch', (label) => {
+      renderDropdown();
+      openPanel();
+
+      const button = screen.getByRole('button', { name: label });
+      expect(button.className).toContain('min-w-[44px]');
+      expect(button.className).toContain('min-h-[44px]');
+    });
+
     it('gives each dismiss button a real tap target that is visible without hover', () => {
       renderDropdown();
       openPanel();
