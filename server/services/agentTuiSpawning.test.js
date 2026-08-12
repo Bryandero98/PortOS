@@ -211,7 +211,7 @@ import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
-import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
+import { MAX_RUNTIME_WRAP_UP_GRACE_MS, SELF_CLEARING_RESUBMIT_INTERVAL_MS } from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
 // it directly exercises the same code path production does.
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
@@ -1444,7 +1444,10 @@ describe('spawnTuiAgent runtime', () => {
   // ── 1c. claude waits for bracketed-paste mode (input ready) before pasting ───
   const claudeTuiConfig = { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100, idleTimeoutMs: 50 };
   // Antigravity (agy) gets the SAME positive input-ready gate as claude (#2705).
-  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100, idleTimeoutMs: 50 };
+  // maxRuntimeMs is explicit for the same reason defaultTuiConfig pins it: left
+  // undefined, the wall-clock backstop is a `setTimeout(…, undefined)` that fires
+  // on the next tick and prods every one of these runs to wrap up.
+  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100, idleTimeoutMs: 50, maxRuntimeMs: 3600000 };
   const pasteCount = () => vi.mocked(shellService.writeToSession).mock.calls
     .filter(([, d]) => typeof d === 'string' && d.includes('\x1b[200~')).length;
   // The launch shell turns bracketed-paste OFF to run the command, then claude
@@ -1703,6 +1706,41 @@ describe('spawnTuiAgent runtime', () => {
     expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
   });
 
+  // The banner is the REJECTION of the submission — agy discards the prompt and
+  // drops back to an empty, idle composer (agent-1f08178b's raw.txt, and a live
+  // session confirmed parked there). Nothing is in flight, so a PASSIVE window
+  // can never see the generation chrome it waits for: its only reachable outcome
+  // is expiry, making it a pause bolted in front of the same fail-over. Re-asking
+  // is the only way out, and what the banner itself instructs.
+  it('re-submits the prompt while the eligibility window is open, and stops once agy answers', async () => {
+    await driveAgyToSubmittedPrompt();
+
+    await capturedOnData(Buffer.from(ELIGIBILITY_BANNER));
+    await capturedOnData(Buffer.from('> ? for shortcuts'));
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(SELF_CLEARING_RESUBMIT_INTERVAL_MS + 5000);
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      'do the thing',
+      expect.objectContaining({ label: expect.stringContaining('handshake') }),
+    );
+
+    // The retry lands: agy paints its in-flight chrome, which closes the window
+    // and must stop the re-asking too.
+    await capturedOnData(Buffer.from('Generating...\nesc to cancel'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+    // The run belongs to the ordinary reaper again, not to the fail-over.
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'fallback-signal' })
+    );
+  });
+
   it('resumes the run when the eligibility banner clears and agy starts generating', async () => {
     await driveAgyToSubmittedPrompt();
 
@@ -1734,7 +1772,9 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.from('> ? for shortcuts'));
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(70000);
+    // Past the full grace window — every re-submission inside it went unanswered
+    // too, so the fail-over is the correct verdict.
+    await vi.advanceTimersByTimeAsync(130000);
     vi.useRealTimers();
     await completeDone;
 

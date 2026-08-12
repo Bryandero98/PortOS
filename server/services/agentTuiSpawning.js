@@ -677,8 +677,10 @@ export async function spawnTuiAgent({
   const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
   // Holds the wait-it-out window for a provider signal carrying a `graceMs`
   // (agy's account-eligibility banner). The idle timer below both resolves its
-  // deadline and defers to `.armed` for idle suppression.
-  const selfClearingGate = createSelfClearingSignalGate();
+  // deadline, drives the re-submission cadence, and defers to `.armed` for idle
+  // suppression. The prompt is handed over so the gate can discount its own echo
+  // when re-pasting a prompt whose TEXT could fake a recovery.
+  const selfClearingGate = createSelfClearingSignalGate({ prompt });
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
   // read-at-most-once invariant at the helper.
@@ -1116,6 +1118,40 @@ export async function spawnTuiAgent({
     });
   };
 
+  /**
+   * Re-deliver the prompt while a self-clearing provider signal's window is open.
+   *
+   * agy's eligibility banner is the REJECTION of a submission, not a spinner over
+   * an in-flight one: the prompt is discarded, the composer goes back to empty
+   * and the session sits at its idle footer indefinitely. So the window can only
+   * clear if something re-asks — hence a plain re-paste + submit, which is also
+   * literally what the banner instructs ("Please try again shortly").
+   *
+   * Re-pasting the WHOLE prompt is correct precisely because the composer is
+   * empty; the gate's 20s cadence keeps this well clear of the reflow that
+   * follows the rejected paste. Nothing here re-runs paste VERIFICATION: this
+   * prompt already rendered once (its rejection is why we're here), and routing
+   * back through `attemptPaste` would spend the startup paste-retry budget and
+   * let a verification hiccup mid-handshake finalize the run as
+   * `paste-not-rendered`.
+   */
+  const resubmitAfterSignal = () => {
+    // A banner that paints during startup (before the prompt was ever submitted)
+    // has nothing to re-send — the ordinary paste path still owns first delivery.
+    if (finalized || !promptSubmittedAt) return;
+    if (!sessionId || !shellService.getSession(sessionId)) return;
+    const attempt = selfClearingGate.takeResubmit(Date.now());
+    if (!attempt) return;
+    // Overwriting a live handle would leak the previous attempt's Enter interval
+    // past finish(); pasteToSession returns a fresh one (or false on a session
+    // that vanished between the check above and the write).
+    if (submitEnterTimer) clearInterval(submitEnterTimer);
+    submitEnterTimer = shellService.pasteToSession(sessionId, prompt, {
+      label: '[cosAgents] provider-handshake resubmit',
+    }) || null;
+    appendLine(`🔁 Provider handshake still open — re-submitted the prompt (attempt ${attempt})`);
+  };
+
   const handleData = async (data) => {
     // EventEmitter listeners run outside the request lifecycle — a rejection
     // here on Node ≥15 will kill the process unless we catch locally. The
@@ -1205,8 +1241,10 @@ export async function spawnTuiAgent({
       // binary fails fast instead of idling.
       //
       // While a grace window is open, every chunk is evidence about whether the
-      // provider came back; the gate closes itself the moment it is.
-      if (selfClearingGate.observe(stripped)) {
+      // provider came back; the gate closes itself the moment it is. The clock
+      // is load-bearing — it lets the gate discount the echo of a prompt IT just
+      // re-pasted (see SELF_CLEARING_RESUBMIT_ECHO_MS).
+      if (selfClearingGate.observe(stripped, now)) {
         appendLine(`✅ Provider signal cleared — ${tuiConfig.command} is generating again; continuing the run`);
       }
 
@@ -1497,7 +1535,13 @@ export async function spawnTuiAgent({
     // idle path reports `idle-complete` SUCCESS for a run that never produced a
     // token. Safely bounded — the window carries its own deadline, resolved just
     // above, which fires strictly before any idle window it outlasts.
-    if (selfClearingGate.armed) return;
+    //
+    // The wait is ACTIVE: re-send the prompt on the gate's cadence, because the
+    // banner is the provider REJECTING this submission (see resubmitAfterSignal).
+    if (selfClearingGate.armed) {
+      resubmitAfterSignal();
+      return;
+    }
     if (!promptSentAt) return;
     // Don't reap a session that just received real input — a human pasting
     // into the Shell page, or our own auto-paste. A big bracketed paste can

@@ -245,7 +245,7 @@ describe('Error Detection', () => {
     it('gives the eligibility banner a grace window instead of an immediate kill', () => {
       expect(detectImmediateFallbackSignal(
         "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
-      )).toMatchObject({ graceMs: 60000 });
+      )).toMatchObject({ graceMs: 120000 });
     });
 
     // `actionable` and `graceMs` are independent axes: a usage limit is equally

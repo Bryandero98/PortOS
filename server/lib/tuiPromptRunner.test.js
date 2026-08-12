@@ -52,6 +52,7 @@ vi.mock('./fileUtils.js', async () => {
 
 import { cleanTuiResponse, resolveTuiResponseText, executeTuiRun } from './tuiPromptRunner.js';
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from './hostShutdown.js';
+import { SELF_CLEARING_RESUBMIT_INTERVAL_MS } from './tuiHandshake.js';
 
 const makeFakePty = () => {
   const fake = {
@@ -812,6 +813,41 @@ describe('executeTuiRun', () => {
       await promise;
     });
 
+    // The banner is the REJECTION of the submission — agy discards the prompt and
+    // returns to an empty, idle composer — so a PASSIVE window can never see the
+    // generation chrome it waits for, and its only reachable outcome is expiry.
+    // Re-asking is both the only way out and what the banner itself instructs.
+    it('re-submits the prompt while the eligibility window is open', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      const provider = { id: 'antigravity', type: 'tui', command: 'agy', tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500 };
+      const prompt = 'do thing big enough to clear the prompt guard';
+      const promise = executeTuiRun({ runId: 'run-eligibility-retry', provider, prompt, workspacePath: TEST_WORKSPACE, onData: undefined, onComplete: vi.fn(), timeout: 600000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData('agy ready> ');
+      await vi.advanceTimersByTimeAsync(5000); // first delivery
+      const pastes = () => pty.write.mock.calls.filter(([chunk]) => String(chunk).includes(prompt)).length;
+      expect(pastes()).toBe(1);
+
+      pty.emitData(ELIGIBILITY_BANNER);
+      pty.emitData('> ? for shortcuts');
+      await vi.advanceTimersByTimeAsync(SELF_CLEARING_RESUBMIT_INTERVAL_MS + 1000);
+      await flushAsync();
+      expect(pastes()).toBe(2);
+      expect(pty.write).toHaveBeenCalledWith('\r');
+
+      // …and it stops re-asking the moment agy actually answers.
+      pty.emitData('Generating...\nesc to cancel');
+      await vi.advanceTimersByTimeAsync(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
+      await flushAsync();
+      expect(pastes()).toBe(2);
+
+      vi.useRealTimers();
+      pty.emitExit(0);
+      await promise;
+    });
+
     it('falls back once the eligibility banner outlasts its grace window with no generation', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
       const provider = { id: 'antigravity', type: 'tui', command: 'agy', tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500 };
@@ -824,7 +860,9 @@ describe('executeTuiRun', () => {
       // Only idle composer chrome repaints — no sign of life. Notably this must
       // NOT idle-complete as success and scrape the banner as the response.
       pty.emitData('> ? for shortcuts');
-      await vi.advanceTimersByTimeAsync(70000);
+      // Past the full grace window — every re-submission inside it went
+      // unanswered too, so the fail-over is the correct verdict.
+      await vi.advanceTimersByTimeAsync(130000);
       await flushAsync();
 
       await promise;

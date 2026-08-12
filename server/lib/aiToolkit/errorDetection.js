@@ -189,12 +189,23 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
     //     limit is equally self-resolving but resets in hours, so it stays at 0
     //     (fail now) while this waits.
     //
-    // Why 60s: the observed handshake retries are sub-second and Google's own
-    // copy says "this usually takes a moment", so 60s is far past any plausible
-    // settle while staying under the 180s default TUI idle timeout — a genuinely
-    // stuck provider still fails over sooner than the idle reaper would have
-    // caught it, which is the whole point of an immediate signal.
-    graceMs: 60000,
+    // ── 2026-08-12 FOLLOW-UP: the wait had to become ACTIVE ──
+    // A 60s PASSIVE window never once cleared, because the banner is agy's
+    // REJECTION of the submission, not a spinner over an in-flight one: agy
+    // discards the prompt, empties its composer and returns to its idle footer
+    // (agent-1f08178b's raw.txt; confirmed on a live session parked at the
+    // banner). With nothing in flight, the generation chrome the window watches
+    // for cannot appear, so its only reachable outcome was expiry — a 60s pause
+    // bolted in front of the same fail-over. The window now RE-SUBMITS the
+    // prompt on a cadence (createSelfClearingSignalGate#takeResubmit in
+    // ../tuiHandshake.js), which is what the vendor's own "try again shortly"
+    // asks for, and fails over only once those retries are exhausted.
+    //
+    // Why 120s: with retries every 20s that is five real attempts rather than
+    // one dead wait, and it still sits under the 180s default TUI idle timeout —
+    // a genuinely stuck provider fails over sooner than the idle reaper would
+    // have caught it, which is the whole point of an immediate signal.
+    graceMs: 120000,
     pattern: /We're finishing verifying your account eligibility\.\s*This usually takes a moment\. Please try again shortly\./i,
     // The banner sentence is distinctive, but it is not chrome-ONLY: it matches
     // anywhere in the stream, so an agent that merely quotes it (investigating

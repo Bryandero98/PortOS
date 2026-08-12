@@ -453,21 +453,31 @@ export function createWorkActivityTracker() {
 }
 
 // Chrome a TUI paints only while a model request is actually IN FLIGHT. agy
-// swaps its idle composer footer (`? for shortcuts`) for `esc to cancel` and an
-// animated `Generating…` for exactly as long as the request runs; Claude Code and
-// Codex render their bulleted elapsed counter, so WORK_COUNTER_PATTERN's shape is
-// spliced in (rather than re-spelled) to keep the two from drifting apart.
+// renders an animated `Generating…` for exactly as long as the request runs;
+// Claude Code and Codex render their bulleted elapsed counter, so
+// WORK_COUNTER_PATTERN's shape is spliced in (rather than re-spelled) to keep the
+// two from drifting apart.
 //
-// Measured against real transcripts: the five agy runs killed on the eligibility
-// banner (2026-08-07 → 2026-08-11) contain ZERO `esc to cancel` and ZERO
-// `Generating`, while healthy agy runs from 2026-08-05 carry 40–48 and 55–206
-// respectively — a clean separation, which is what makes this usable as the
-// "did the provider recover?" verdict.
+// `esc to cancel` is DELIBERATELY NOT HERE, despite being half of agy's in-flight
+// footer. It is ambiguous chrome: agy paints the identical footer (down to the
+// trailing `Gemini 3.6 Flash · medium` status) for its SLASH-COMMAND PALETTE,
+// where it means "esc to cancel the palette". agent-03904eb1 (2026-08-12) is the
+// receipt: parked on the eligibility banner, a `/usage` scrape opened the palette
+// in its session, the palette footer read as "the provider recovered", and the
+// gate latched — which disarms BOTH the re-submission and the fail-over, so the
+// run sat at the banner until the 180s idle reaper finalized it as a bogus
+// `idle-no-changes`. That is the failure this whole mechanism exists to prevent,
+// and no local feature separates the two footers.
+//
+// Dropping it costs nothing measurable: across every agy transcript on disk, each
+// healthy run carries 10–115 `Generating` hits (2026-08-02 → 08-05, n=14) while
+// every stuck-on-the-banner run carries zero. `Generating` alone is the clean
+// separator; `esc to cancel` only ever added false positives.
 export const GENERATION_ACTIVITY_PATTERN =
-  new RegExp(`esc to cancel|Generating\\s*[.·•…]|${WORK_COUNTER_PATTERN.source}`, 'i');
+  new RegExp(`Generating\\s*[.·•…]|${WORK_COUNTER_PATTERN.source}`, 'i');
 
 // Carry-over kept across chunks so in-flight chrome split by a PTY chunk boundary
-// (`esc to ` + `cancel`) still matches. The sibling trackers below each learned
+// (`Generat` + `ing…`) still matches. The sibling trackers below each learned
 // this the hard way — see createReviewLoopTracker's docblock.
 //
 // Only needs to span the longest pattern alternative, because `observe` tests the
@@ -481,13 +491,17 @@ const GENERATION_ACTIVITY_CARRY_CAP = 64;
  * `active` once any in-flight chrome appears, and returns true on the call that
  * flipped it (so a caller can react to the transition).
  *
- * Unlike `createWorkActivityTracker` this deliberately does NOT try to be
- * echo-proof, because its callers feed it a window that cannot contain the
- * prompt echo: observation starts only AFTER a provider banner has armed a grace
- * window, which is strictly after the paste has rendered. Within that window ANY
- * sign of life is the answer we want, so a loose pattern is the correct bias — a
- * false "recovered" merely falls back to the ordinary idle reaper, whereas a
- * false "still stuck" throws away a run that was about to work.
+ * Unlike `createWorkActivityTracker` this does not try to be echo-proof by
+ * construction — the gate that owns it handles the one case where the prompt can
+ * re-enter the stream (a re-submission; see SELF_CLEARING_RESUBMIT_ECHO_MS).
+ *
+ * It is NOT, however, a "match anything that looks alive" pattern, which is how
+ * `esc to cancel` got in and then cost a run (see GENERATION_ACTIVITY_PATTERN).
+ * The cost asymmetry runs the other way now that the grace window re-submits: a
+ * false "still stuck" merely re-asks a provider that was about to answer, while a
+ * false "recovered" latches, disarming the retry AND the fail-over and leaving
+ * the run to idle-reap into a reported success it never earned. Only chrome that
+ * a TUI paints EXCLUSIVELY while a request is in flight belongs here.
  *
  * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
  */
@@ -512,6 +526,41 @@ export function createGenerationActivityTracker() {
   };
 }
 
+// How often to re-submit the prompt while a self-clearing signal's grace window
+// is open.
+//
+// A passive wait CANNOT clear agy's eligibility banner: the banner is that
+// submission's REJECTION, not a progress spinner. agy discards the submitted
+// prompt, empties its composer and returns to the idle `? for shortcuts` footer
+// — verbatim from agent-1f08178b's raw.txt, and confirmed on a live session left
+// sitting at the banner. Nothing is in flight, so the generation chrome the gate
+// watches for can never appear and the window's only possible outcome is
+// expiry + fail-over. Retrying is also exactly what the vendor's own copy asks
+// for ("Please try again shortly"), so the window now re-pastes and re-submits
+// on this cadence and only fails over once the retries are exhausted.
+//
+// 20s: slow enough that a re-paste can't outrun agy's own reflow + round trip
+// (a submission that IS accepted paints `esc to cancel` within ~1s, which closes
+// the window before the next retry is due), and fast enough to fit several
+// attempts inside the grace window.
+export const SELF_CLEARING_RESUBMIT_INTERVAL_MS = 20000;
+
+// How long after a re-submission the gate ignores output when deciding whether
+// the provider recovered — applied ONLY to a prompt that could fake a recovery
+// (see the `prompt` option on createSelfClearingSignalGate).
+//
+// The generation tracker is deliberately loose ("any sign of life"), which is
+// safe only because it is normally fed a window that CANNOT contain the prompt
+// echo. Re-pasting inside the window breaks that: a prompt quoting `esc to
+// cancel` or `Generating…` (a task about this very failure mode does) would echo
+// straight into the tracker and latch a bogus recovery — strictly worse than the
+// expiry it replaced, because a recovered gate neither retries nor fails over,
+// leaving the run to idle-reap into a false success. 3s covers the paste and its
+// spaced submit-Enters (~1.4s); a provider that genuinely accepted the retry
+// repaints its in-flight chrome continuously (40–48 times in a healthy agy run),
+// so the next chunk past the window still latches.
+export const SELF_CLEARING_RESUBMIT_ECHO_MS = 3000;
+
 /**
  * The wait-it-out policy for a provider signal that carries a `graceMs` (today:
  * agy's account-eligibility banner — see IMMEDIATE_FALLBACK_SIGNALS in
@@ -519,57 +568,103 @@ export function createGenerationActivityTracker() {
  *
  * Owns the whole state machine so the consumers can't drift: arm-once (a
  * repainting TUI re-matches constantly and must not restart the clock),
- * feed-the-tracker only inside the window, disarm the moment the provider is
+ * feed-the-tracker only inside the window, re-submit the prompt on a cadence
+ * (see SELF_CLEARING_RESUBMIT_INTERVAL_MS — the wait is ACTIVE, because the
+ * banner rejected the submission), disarm the moment the provider is
  * demonstrably generating again, and hand back a verdict at the deadline. Each
  * consumer keeps only its own timing mechanism — `agentTuiSpawning` folds the
- * deadline into its existing 5s idle poll, while `tuiPromptRunner` needs a
- * `setTimeout` because its idle watcher is created lazily on the first
- * post-prompt chunk and may not exist yet when the banner paints.
+ * deadline and the retry cadence into its existing 5s idle poll, while
+ * `tuiPromptRunner` needs its own timers because its idle watcher is created
+ * lazily on the first post-prompt chunk and may not exist yet when the banner
+ * paints.
  *
  * Usage per chunk: `gate.observe(stripped)` then, on a match,
  * `gate.arm(analysis, Date.now())`. `gate.armed` is the idle-suppression
  * predicate — a session waiting out a handshake is silent by design, and letting
  * an idle reaper finalize it would report a bogus success that scrapes the
- * banner as the answer. `gate.takeExpired(Date.now())` returns the analysis to
- * fail over with, or null while still waiting / after a recovery.
+ * banner as the answer. `gate.takeResubmit(Date.now())` returns the 1-based
+ * attempt number when it is time to re-send the prompt (0 otherwise), and
+ * `gate.takeExpired(Date.now())` returns the analysis to fail over with, or null
+ * while still waiting / after a recovery.
  *
+ * @param {object} [opts]
+ * @param {string} [opts.prompt] - the text this run re-pastes. Only a prompt
+ *   that itself contains in-flight chrome can fake a recovery once it echoes
+ *   back, so the echo window is armed only for those; every other prompt echoes
+ *   inertly and suppressing its window would just delay a real recovery.
  * @returns {{ arm: (analysis: object, nowMs: number) => boolean,
- *             observe: (strippedText: string) => boolean,
+ *             observe: (strippedText: string, nowMs?: number) => boolean,
+ *             takeResubmit: (nowMs: number) => number,
  *             takeExpired: (nowMs: number) => object|null,
  *             readonly armed: boolean }}
  */
-export function createSelfClearingSignalGate() {
-  let armed = null; // { analysis, deadlineAt }
+export function createSelfClearingSignalGate({ prompt = '' } = {}) {
+  const echoCanFakeRecovery = typeof prompt === 'string' && GENERATION_ACTIVITY_PATTERN.test(prompt);
+  let armed = null; // { analysis, deadlineAt, nextResubmitAt }
   let activity = null;
+  // 1-based count of re-submissions made inside the CURRENT window (reset by
+  // arm), used only to label the attempt in the consumers' logs.
+  let resubmits = 0;
   // Latched once a window is ridden out successfully, which suppresses re-arming
   // for the rest of the run. This is not just tidiness: the caller's detector is
   // a BUFFERED stream matcher (createImmediateFallbackSignalDetector keeps a
   // 512-char window), so the banner keeps matching for many chunks after the
   // provider has recovered. Without this latch the first post-recovery chunk
-  // re-arms a fresh window and fails the run over 60s later — the exact bug the
-  // grace window exists to prevent. A genuine second banner is therefore ignored
-  // rather than re-waited; the provider has demonstrably worked once, and the
-  // idle reaper remains the backstop if it truly wedges.
+  // re-arms a fresh window and fails the run over a full grace window later —
+  // the exact bug the grace window exists to prevent (and it would now re-paste
+  // the prompt into a working session on the way there). A genuine second banner
+  // is therefore ignored rather than re-waited; the provider has demonstrably
+  // worked once, and the idle reaper remains the backstop if it truly wedges.
   let recovered = false;
   return {
     get armed() { return armed !== null; },
     get recovered() { return recovered; },
     arm(analysis, nowMs) {
       if (armed || recovered || !analysis || !(analysis.graceMs > 0)) return false;
-      armed = { analysis, deadlineAt: nowMs + analysis.graceMs };
+      armed = {
+        analysis,
+        deadlineAt: nowMs + analysis.graceMs,
+        // First retry is one full interval out, not immediate: the banner paints
+        // within a second of the submit-Enter, and re-pasting on top of a TUI
+        // still settling from the rejected paste is how you get two prompts
+        // concatenated in the composer.
+        nextResubmitAt: nowMs + SELF_CLEARING_RESUBMIT_INTERVAL_MS,
+        // Nothing has been re-pasted yet, so nothing in the stream is our echo.
+        echoUntil: 0,
+      };
       activity = createGenerationActivityTracker();
+      resubmits = 0;
       return true;
     },
     // Returns true on the call that ends the window because the provider came
     // back — disarming here (rather than at the deadline) is what stops a
     // recovered run from sitting under idle suppression for the rest of the
     // window.
-    observe(strippedText) {
-      if (!armed || !activity.observe(strippedText)) return false;
+    // `nowMs` is optional but every live consumer passes it: without a clock
+    // there is no way to tell our own re-pasted prompt from the provider's
+    // output, so the echo window (SELF_CLEARING_RESUBMIT_ECHO_MS) can't be
+    // applied and a chrome-quoting prompt can fake a recovery.
+    observe(strippedText, nowMs) {
+      if (!armed) return false;
+      if (echoCanFakeRecovery && typeof nowMs === 'number' && nowMs < armed.echoUntil) return false;
+      if (!activity.observe(strippedText)) return false;
       armed = null;
       activity = null;
       recovered = true;
       return true;
+    },
+    // Returns the 1-based attempt number when the prompt is due to be re-sent,
+    // or 0. The consumer owns the actual paste; this only owns "is it time?" so
+    // both consumers keep the same cadence. Deliberately silent once the
+    // provider has recovered (not armed) — and once the deadline has passed,
+    // because a retry that lands after `takeExpired` would paste into a session
+    // the fail-over is already tearing down.
+    takeResubmit(nowMs) {
+      if (!armed || nowMs < armed.nextResubmitAt || nowMs >= armed.deadlineAt) return 0;
+      armed.nextResubmitAt = nowMs + SELF_CLEARING_RESUBMIT_INTERVAL_MS;
+      armed.echoUntil = nowMs + SELF_CLEARING_RESUBMIT_ECHO_MS;
+      resubmits += 1;
+      return resubmits;
     },
     // Returns the analysis to fail over with, or null while still waiting (or
     // after a recovery). `nowMs` is OPTIONAL: a poller passes the clock and gets
