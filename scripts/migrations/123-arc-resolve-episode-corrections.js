@@ -28,7 +28,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-resolve.md': '31eca76b68f40de1b93734fe9bc9f4bb', // post-254 (character arcs)
+  'pipeline-arc-resolve.md': '2349bce80e9df8caafa391a6106327b6', // post-260 (isolated one-patch repairs)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

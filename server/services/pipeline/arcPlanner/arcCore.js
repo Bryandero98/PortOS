@@ -508,6 +508,147 @@ export function applyExactTextEdits(current, rawEdits, maxLength) {
   return { value, applied, rejected };
 }
 
+// Two stored values are the same edit-wise. `undefined` and `null` are one
+// value here: an omitted field and an explicit null both mean "no change I can
+// count", and the appliers treat them identically.
+const sameStored = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+// The fields a resolve response can change on the arc / on a volume — the same
+// surface the two appliers below spread (`sanitizeArc` at the arc, the season
+// patch inside `resolveVerifyIssues`), restated here because those do per-field
+// coercion rather than list iteration. THEY MOVE TOGETHER: a newly patchable
+// field the appliers accept but this list omits is a change the isolated bound
+// cannot see. Long prose is paired `[direct, editsKey, limit]` because under
+// `exact-text-v1` it lands ONLY through the `*Edits` array and a
+// directly-returned string is ignored (and vice versa) — counting the ignored
+// spelling would reject a candidate over an edit that was never going to be
+// persisted.
+const ARC_SHORT_FIELDS = Object.freeze(['logline', 'themes', 'shape', 'foreshadowing']);
+const ARC_LONG_FIELDS = Object.freeze([
+  ['summary', 'summaryEdits', ARC_LIMITS.SUMMARY_MAX],
+  ['protagonistArc', 'protagonistArcEdits', ARC_LIMITS.PROTAGONIST_ARC_MAX],
+]);
+const SEASON_SHORT_FIELDS = Object.freeze(['title', 'number', 'logline', 'episodeCountTarget', 'themes']);
+const SEASON_LONG_FIELDS = Object.freeze([
+  ['synopsis', 'synopsisEdits', ARC_LIMITS.SEASON_SYNOPSIS_MAX],
+  ['endingHook', 'endingHookEdits', ARC_LIMITS.SEASON_ENDING_HOOK_MAX],
+]);
+
+// How many stored values a patch would actually change. Echoed fields that
+// already match the record do not count: the resolve prompt asks for `id` and
+// `number` to be repeated, so "field present" is not "field changed". Exact-text
+// replacements are counted by running the real applier — one `{find, replace}`
+// pair is one causal change, and an anchor `applyExactTextEdits` would reject
+// (missing, ambiguous, over-limit) is none, so the count is the patch's
+// persisted effect rather than the size of what the model asked for.
+function countFieldChanges(patch, current, { shortFields, longFields = [], exactTextMode = false }) {
+  let changes = 0;
+  for (const field of shortFields) {
+    if (patch?.[field] === undefined) continue;
+    if (!sameStored(patch[field], current?.[field])) changes += 1;
+  }
+  for (const [direct, editsKey, limit] of longFields) {
+    if (exactTextMode) {
+      changes += applyExactTextEdits(current?.[direct] || '', patch?.[editsKey], limit).applied;
+    } else if (typeof patch?.[direct] === 'string' && !sameStored(patch[direct], current?.[direct] ?? '')) {
+      changes += 1;
+    }
+  }
+  return changes;
+}
+
+// Same accounting one altitude down, for a per-character arc patch: changed
+// top-level fields plus ONE per patched existing transition (a transition is the
+// causal unit — correcting its label and its issue anchor together is one
+// milestone repair). Transitions the merge would discard anyway (no `id`, or an
+// id no stored transition carries) are not changes.
+function countCharacterArcChanges(patch, current) {
+  let changes = countFieldChanges(patch, current, { shortFields: CHARACTER_ARC_PATCH_FIELDS });
+  const byId = new Map((current?.transitions || []).map((t) => [t.id, t]));
+  for (const raw of (Array.isArray(patch?.transitions) ? patch.transitions : [])) {
+    if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') continue;
+    const existing = byId.get(raw.id);
+    if (!existing) continue;
+    if (raw.delete === true) { changes += 1; continue; }
+    if (TRANSITION_PATCH_FIELDS.some((f) => raw[f] !== undefined && !sameStored(raw[f], existing[f]))) changes += 1;
+  }
+  return changes;
+}
+
+/**
+ * Decide whether an isolated (single-finding) resolve candidate is bounded
+ * enough to persist. Pure. Returns a short rejection reason, or null when the
+ * candidate is exactly ONE causal patch: one owner record, one changed field on
+ * it — one exact-text replacement, one short scalar, or one existing
+ * character-transition patch.
+ *
+ * This is what makes the arc gate's per-finding fallback (#3780) bounded.
+ * Isolating the FINDING never isolated the EDIT: every entry in a single-finding
+ * response trivially names that finding, so `selectFindingKeyedEdits` passed
+ * whole-arc rewrites and each "isolated" attempt regressed the blocking set
+ * exactly like the whole-set pass it escalated from.
+ *
+ * Checked BEFORE anything is written, so an over-reaching candidate costs its
+ * own resolve call and nothing else: no rewrite to undo, and no verification
+ * round billed to discover that the rewrite was worse. The post-apply verifier
+ * and rollback in the gate stay exactly as they are — this is a narrower net in
+ * front of them, not a replacement for them.
+ *
+ * Counting is against the STORED record, not the response's shape: an echoed
+ * `id`/`number`/title is not a change, and an edit the appliers would discard
+ * (an unmatched character arc, a transition with no id, an unanchored exact-text
+ * replacement, the ignored spelling of a long prose field) is not one either —
+ * rejecting on those would fail candidates that were already going to be no-ops.
+ */
+export function isolatedCandidateRejection(edits, { exactTextMode = false, series = {}, matchedSeasons } = {}) {
+  const touched = [];
+  if (edits.arc) {
+    const changes = countFieldChanges(edits.arc, series.arc || {}, {
+      shortFields: ARC_SHORT_FIELDS, longFields: ARC_LONG_FIELDS, exactTextMode,
+    });
+    if (changes) touched.push({ label: 'the arc', changes });
+  }
+  if (edits.characterArcs.length) {
+    const arcByKey = new Map(sanitizeCharacterArcList(series.characterArcs).map((a) => [characterArcKey(a), a]));
+    for (const patch of edits.characterArcs) {
+      // An unmatched key mints nothing (mergeCharacterArcPatches drops it), so
+      // it is not a record this candidate touches.
+      const existing = arcByKey.get(characterArcKey(patch));
+      if (!existing) continue;
+      const changes = countCharacterArcChanges(patch, existing);
+      if (changes) touched.push({ label: `character arc ${existing.characterId || 'unkeyed'}`, changes });
+    }
+  }
+  const matched = matchedSeasons || matchProposedSeasons(series.seasons, edits.seasons);
+  for (let idx = 0; idx < edits.seasons.length; idx += 1) {
+    const existing = matched[idx];
+    // An unmatched volume proposal MINTS one. A new volume is never the minimal
+    // causal patch for a single finding, and it is the one edit here that can't
+    // be undone by putting a field back.
+    if (!existing) return 'it would add a new volume instead of patching one';
+    const changes = countFieldChanges(edits.seasons[idx], existing, {
+      shortFields: SEASON_SHORT_FIELDS, longFields: SEASON_LONG_FIELDS, exactTextMode,
+    });
+    if (changes) touched.push({ label: `volume ${existing.number ?? '?'}`, changes });
+  }
+  // Shaped by the applier's own admission rule, so an entry `applyEpisodeResolutions`
+  // would drop (no integer episode number, past its cap) is not counted as a
+  // record this candidate touches.
+  for (const episode of shapeEpisodeResolutions(edits.episodes)) {
+    touched.push({ label: `episode ${episode.episodeNumber}`, changes: 1 });
+  }
+  if (touched.length === 0) return 'it changed nothing this gate would persist';
+  if (touched.length > 1) {
+    return `it edits ${touched.length} records (${touched.map((t) => t.label).join(', ')}) — an isolated repair may change only one`;
+  }
+  const [only] = touched;
+  if (only.changes > 1) {
+    return `it changes ${only.changes} fields on ${only.label} — an isolated repair may change only one`;
+  }
+  return null;
+}
+
+
 // Character arcs are patched in place by existing IDs; episode (issue) records
 // are never CREATED or DELETED here, and their drafted scripts are never
 // clobbered — a full-arc round may rewrite an episode's planning synopsis (see
@@ -527,6 +668,7 @@ export function applyExactTextEdits(current, rawEdits, maxLength) {
 // and actually judges them.
 export async function resolveVerifyIssues(seriesId, options = {}) {
   const spineOnly = options.spineOnly === true;
+  const isolated = options.isolated === true;
   const series = await getSeries(seriesId);
   if (!series.arc) {
     throw new ServerError(
@@ -563,7 +705,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // `options.avoid` carries the findings a reverted earlier attempt at these
   // same findings authored, so a corrective pass is told what NOT to re-create
   // instead of re-running the identical prompt and regressing identically.
-  const ctx = await buildResolveContext(series, findings, world, { avoid: options.avoid, spineOnly });
+  const ctx = await buildResolveContext(series, findings, world, { avoid: options.avoid, spineOnly, isolated });
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-resolve',
     ctx,
@@ -602,6 +744,44 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     console.log(`⚠️ arc-resolve: discarded ${edits.episodesOutOfScope} episode edit(s) — the arc-spine gate resolves at arc/volume scope only`);
   }
 
+  // What every return below carries regardless of whether the candidate landed.
+  const runMeta = {
+    notes: typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '',
+    findings,
+    runId,
+    providerId,
+    model,
+  };
+
+  // Which existing volume each proposal rewrites. Resolved once: the isolated
+  // check needs it to tell a patch from a mint, and the season merge below needs
+  // the same answer.
+  const matchedExisting = matchProposedSeasons(series.seasons, edits.seasons);
+
+  // The isolated fallback's candidate is judged BEFORE anything is written: a
+  // candidate that spans records or fields is discarded whole, so it costs its
+  // own resolve call and neither a rewrite to undo nor a verification round to
+  // discover the damage. Reported as a plain unapplied result — the shape the
+  // gate already reads for "nothing was written" — with the bound it broke as
+  // the reason. The post-apply verifier and rollback still judge everything that
+  // DOES get through.
+  const isolationRejected = isolated
+    ? isolatedCandidateRejection(edits, { exactTextMode, series, matchedSeasons: matchedExisting })
+    : null;
+  if (isolationRejected) {
+    console.log(`⚠️ arc-resolve: discarded an isolated repair candidate — ${isolationRejected}`);
+    return {
+      series,
+      applied: false,
+      reason: isolationRejected,
+      patchMode: exactTextMode ? 'exact-text-v1' : null,
+      rejectedExactEdits: 0,
+      episodesResolved: [],
+      ...runMeta,
+    };
+  }
+
+
   const arcSummary = exactTextMode
     ? applyExactTextEdits(series.arc.summary || '', edits.arc?.summaryEdits, ARC_LIMITS.SUMMARY_MAX)
     : { value: edits.arc?.summary || series.arc.summary || '', applied: 0, rejected: 0 };
@@ -638,14 +818,14 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // old "omit a volume and it is deleted" footgun — deletion is now an explicit
   // `notes` recommendation, matching how episode deletion already worked.
   const proposedSeasons = edits.seasons;
-  // Resolve each proposal to an existing record BEFORE minting. The resolve
-  // prompt frequently returns a rewritten volume WITHOUT echoing its `id`;
-  // matching on id alone read that as a brand-new season and minted one. With
-  // `preserveDroppedSeasons` on (the autopilot's unlock-for-run mode) the
-  // original was then re-inserted alongside the mint — so every auto-resolve
-  // round ADDED a duplicate "Volume 1" instead of clearing a finding, and
-  // arc-verify could never converge. See the divergence pause on 2026-08-09.
-  const matchedExisting = matchProposedSeasons(series.seasons, proposedSeasons);
+  // `matchedExisting` (resolved above) pairs each proposal with the existing
+  // record it rewrites BEFORE minting. The resolve prompt frequently returns a
+  // rewritten volume WITHOUT echoing its `id`; matching on id alone read that as
+  // a brand-new season and minted one. With `preserveDroppedSeasons` on (the
+  // autopilot's unlock-for-run mode) the original was then re-inserted alongside
+  // the mint — so every auto-resolve round ADDED a duplicate "Volume 1" instead
+  // of clearing a finding, and arc-verify could never converge. See the
+  // divergence pause on 2026-08-09.
   // Patched rewrites keyed by the record they land on, plus the genuinely-new
   // volumes to append. Untouched existing volumes are carried through verbatim.
   const patchedById = new Map();
@@ -707,7 +887,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     : { series };
 
   const characterArcs = mergeCharacterArcPatches(updated.characterArcs, edits.characterArcs);
-  const characterArcsChanged = JSON.stringify(characterArcs) !== JSON.stringify(updated.characterArcs || []);
+  const characterArcsChanged = !sameStored(characterArcs, updated.characterArcs || []);
   const resolvedSeries = characterArcsChanged
     ? await updateSeries(seriesId, { characterArcs })
     : updated;
@@ -730,18 +910,13 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     console.log(`⚠️ arc-resolve: response made no applicable change after ${rejectedExactEdits} exact text edit(s) were rejected`);
   }
 
-  const notes = typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '';
   return {
     series: resolvedSeries,
     applied,
     patchMode: exactTextMode ? 'exact-text-v1' : null,
     rejectedExactEdits,
-    notes,
-    findings,
     episodesResolved,
-    runId,
-    providerId,
-    model,
+    ...runMeta,
   };
 }
 

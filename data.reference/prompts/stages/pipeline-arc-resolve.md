@@ -113,6 +113,34 @@ exceed `max`.
 {{textBudgetsJson}}
 ```
 
+{{#isolatedRepair}}
+## Isolated repair — one record, one change
+
+This is a **bounded single-finding repair**. Two earlier passes over the whole
+residual were both reverted for leaving the plan with MORE blocking problems
+than it started with, so this attempt is deliberately tiny: exactly **one**
+finding, and the server will persist your response only if it is **one causal
+patch**.
+
+Hard contract for this response:
+
+- Edit **exactly one record** — either the `arc` block, or one `characterArcs[]`
+  entry, or one existing `seasons[]` entry, or one `episodes[]` entry. Not two.
+- Within that record, make **exactly one change**: one `{ "find", "replace" }`
+  replacement in one long field, OR one short field (title / logline / themes /
+  `episodeCountTarget` / `number`), OR one existing character-transition patch.
+- Do **not** add a volume. Keep the record's `id` (and any character /
+  transition id) so the patch lands on the right record — but do not echo any
+  other field you are not changing.
+- Pick the change that most directly removes the single finding above. If the
+  finding genuinely cannot be closed by one change, return `notes` explaining
+  what a coordinated repair would need and edit nothing — an honest open finding
+  is better than a rewrite that trades it for two new ones.
+
+A response that touches more than one record, or changes more than one field, is
+discarded whole: it closes nothing, and the finding stays open.
+{{/isolatedRepair}}
+
 {{#hasAvoid}}
 ## Problems a discarded earlier attempt introduced — do not author these
 

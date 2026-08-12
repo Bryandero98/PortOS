@@ -736,6 +736,11 @@ export async function buildResolveContext(series, findings, preloadedWorld, opti
     ...ctx,
     characterArcsJson: JSON.stringify(series.characterArcs || [], null, 2),
     findingsJson: JSON.stringify(stampFindingIds(findings), null, 2),
+    // The bounded per-finding fallback: the prompt is told the one-record,
+    // one-field contract the server will enforce on this response, so an
+    // over-reaching candidate is discouraged rather than only discarded after
+    // the provider call is already paid for.
+    isolatedRepair: options.isolated === true,
     hasAvoid: avoid.length > 0,
     avoidJson: JSON.stringify(avoid, null, 2),
     textBudgetsJson: JSON.stringify({
