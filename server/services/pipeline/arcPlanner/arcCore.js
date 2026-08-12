@@ -931,8 +931,15 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
  * that still encode the contradiction.
  *
  * A locked `idea` stage is left untouched (the user froze it) and reported as
- * skipped. Returns `[{ issueId, number, seasonNumber, clearedBeats, skipped }]`
+ * skipped. Returns `[{ issueId, number, seasonNumber, clearedBeats, skipped, idea }]`
  * for the conductor to surface; never throws — a bad match is dropped, not fatal.
+ *
+ * `idea` is the stage AS THIS CALL LEFT IT, and it is what makes the entry a
+ * mutation manifest rather than a report: rollback restores an episode only when
+ * the resolver is on record as having written it AND the value it wrote is still
+ * standing (see `restoreArcState`). A write that failed is reported skipped —
+ * counting it as an applied edit told the gate a synopsis had changed when the
+ * store still held the old one.
  */
 export async function applyEpisodeResolutions(seriesId, series, episodes) {
   if (!Array.isArray(episodes) || episodes.length === 0) return [];
@@ -956,14 +963,21 @@ export async function applyEpisodeResolutions(seriesId, series, episodes) {
       continue;
     }
     const hadBeats = !!(issue.stages?.idea?.output && issue.stages.idea.output.trim());
-    await updateStageWithLatest(issue.id, 'idea', (current) => (
+    const written = await updateStageWithLatest(issue.id, 'idea', (current) => (
       hadBeats
         ? { input: edit.synopsis, output: '', status: 'empty', errorMessage: '' }
         : { input: edit.synopsis }
     )).catch((err) => {
       console.log(`⚠️ arc-resolve: episode ${edit.episodeNumber} synopsis edit failed: ${err.message}`);
+      return null;
     });
-    applied.push({ issueId: issue.id, number: issue.number, seasonNumber: edit.seasonNumber, clearedBeats: hadBeats });
+    applied.push({
+      issueId: issue.id,
+      number: issue.number,
+      seasonNumber: edit.seasonNumber,
+      clearedBeats: hadBeats,
+      ...(written ? { idea: ideaSnapshotOf(written.stage) } : { skipped: 'write-failed' }),
+    });
   }
   if (applied.length) {
     const fixed = applied.filter((a) => !a.skipped).length;
@@ -981,6 +995,26 @@ const ideaSnapshotOf = (stage) => ({
   output: stage?.output ?? '',
   status: stage?.status ?? 'empty',
 });
+
+const sameIdea = (a, b) => a.input === b.input && a.output === b.output && a.status === b.status;
+
+/**
+ * The episode-synopsis writes ONE resolve pass actually landed, as
+ * `[{ issueId, idea }]` — the exact-mutation manifest a rollback needs so it can
+ * tell its own round's edits from a write that arrived from somewhere else while
+ * the verification was running. Derived from the applier's own report (an entry
+ * carries `idea` only when the write went through), so the manifest cannot claim
+ * an edit that never happened.
+ *
+ * Empty for an arc-spine round: that gate's resolver may not touch episodes at
+ * all (`selectFindingKeyedEdits` discards them), which is exactly why a
+ * spine-scope rollback must leave every episode `idea` field alone.
+ */
+export const resolvedEpisodeEdits = (resolved) => (Array.isArray(resolved?.episodesResolved)
+  ? resolved.episodesResolved
+    .filter((entry) => entry?.issueId && !entry.skipped && entry.idea)
+    .map((entry) => ({ issueId: entry.issueId, idea: entry.idea }))
+  : []);
 
 // Every issue in the series, without per-stage run history: `listIssues` caps at
 // 1000 (a longer series would lose its tail from the snapshot, making those
@@ -1028,18 +1062,35 @@ export async function snapshotArcState(seriesId) {
  * damage because a lock flipped mid-run would strand the user with the damage.
  * A locked `idea` stage IS skipped — the resolve pass never touched it.
  *
+ * `options.episodeEdits` is the round's exact mutation manifest (see
+ * `resolvedEpisodeEdits`): pass it and only those episodes' `idea` fields are
+ * eligible, and only while the value the resolver wrote is still the one
+ * standing. Everything else — including an unrelated synopsis edit that landed
+ * while the verification ran — keeps whatever is in the store, because "differs
+ * from the snapshot" was never proof the round owned the difference. An arc-spine
+ * round always passes an empty manifest, so it can never restore an episode.
+ * Omit it and every differing episode is restored (the pre-manifest behavior
+ * foundation structure repair still relies on). Volume reassignment is NOT
+ * manifest-gated either way: the volume list is being restored wholesale, so an
+ * episode left pointing at a volume that is about to disappear would be stranded.
+ *
  * Callers must re-verify after every resolve so they can distinguish a
  * regressive round from a good one. The arc convergence loop uses this to keep
  * its best verified checkpoint; foundation structure repair uses it to restore
  * the pre-repair plan when its bounded verify/correct pass is still blocked.
  * The manual `/arc/resolve` route remains an explicit unguarded user edit.
  */
-export async function restoreArcState(seriesId, snapshot) {
+export async function restoreArcState(seriesId, snapshot, { episodeEdits = null } = {}) {
   if (!snapshot || snapshot.seriesId !== seriesId || !Array.isArray(snapshot.episodes)) {
     return { restored: false, episodesRestored: 0, reassignedIssueCount: 0 };
   }
   const issues = await listEpisodesForSnapshot(seriesId);
   const byId = new Map(issues.map((iss) => [iss.id, iss]));
+  // What the round is on record as having written to each episode, or null when
+  // the caller kept the pre-manifest "restore every difference" contract.
+  const ownedIdea = Array.isArray(episodeEdits)
+    ? new Map(episodeEdits.map((e) => [e.issueId, e.idea]))
+    : null;
   const stageUpdates = [];
   const reassign = [];
   for (const snap of snapshot.episodes) {
@@ -1050,9 +1101,14 @@ export async function restoreArcState(seriesId, snapshot) {
     if ((cur.seasonId ?? null) !== snap.seasonId) reassign.push(snap);
     if (cur.stages?.idea?.locked === true) continue;
     const idea = ideaSnapshotOf(cur.stages?.idea);
-    if (idea.input === snap.idea.input
-      && idea.output === snap.idea.output
-      && idea.status === snap.idea.status) continue;
+    if (sameIdea(idea, snap.idea)) continue;
+    if (ownedIdea) {
+      const written = ownedIdea.get(snap.id);
+      // Either the round never wrote this episode, or its write has since been
+      // overwritten — in both cases what stands is someone else's, not the
+      // regressive candidate this rollback is undoing.
+      if (!written || !sameIdea(idea, written)) continue;
+    }
     stageUpdates.push({
       issueId: snap.id,
       stageId: 'idea',
