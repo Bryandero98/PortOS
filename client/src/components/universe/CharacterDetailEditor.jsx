@@ -189,6 +189,9 @@ function ListRow({ row, idx, columns, swatchHex, onChange, onDelete, disabled })
           title={`Preview ${swatchHex(row) || 'no hex'}`}
         />
       ) : null}
+      {/* A `narrow` column (the hex swatch) keeps a fixed width so the rows line
+          up, but 6rem of a phone-width row starves the free-text sibling —
+          step it down under `sm`. */}
       {columns.map((col) => (
         <input
           key={col.name}
@@ -199,7 +202,7 @@ function ListRow({ row, idx, columns, swatchHex, onChange, onDelete, disabled })
           placeholder={col.placeholder}
           maxLength={col.max}
           disabled={disabled}
-          className={`${col.narrow ? 'w-24 shrink-0' : 'flex-1 min-w-0'} px-1.5 py-0.5 text-xs bg-port-bg border border-port-border rounded text-white disabled:opacity-50`}
+          className={`${col.narrow ? 'w-16 sm:w-24 shrink-0' : 'flex-1 min-w-0'} px-1.5 py-0.5 text-xs bg-port-bg border border-port-border rounded text-white disabled:opacity-50`}
           aria-label={`row ${idx + 1} ${col.name}`}
         />
       ))}
@@ -218,6 +221,7 @@ function ListRow({ row, idx, columns, swatchHex, onChange, onDelete, disabled })
 
 function CollapsibleSection({ icon: Icon, label, summary, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
+  const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <div className="rounded border border-port-border bg-port-bg/50">
       <button
@@ -225,10 +229,10 @@ function CollapsibleSection({ icon: Icon, label, summary, defaultOpen = false, c
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center gap-1.5 px-2 py-1.5 text-[10px] uppercase tracking-wider text-gray-400 hover:text-white"
       >
-        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        <Icon size={11} />
-        <span className="text-gray-300">{label}</span>
-        {summary && !open ? <span className="text-gray-500 normal-case truncate">— {summary}</span> : null}
+        <Chevron size={11} className="shrink-0" />
+        <Icon size={11} className="shrink-0" />
+        <span className="shrink-0 text-gray-300">{label}</span>
+        {summary && !open ? <span className="min-w-0 text-gray-500 normal-case truncate">— {summary}</span> : null}
       </button>
       {open ? <div className="px-2.5 pb-2.5 pt-1 space-y-2">{children}</div> : null}
     </div>

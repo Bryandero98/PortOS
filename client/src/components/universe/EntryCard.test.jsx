@@ -116,6 +116,35 @@ describe('EntryCard — selectable mode', () => {
   });
 });
 
+describe('EntryCard — layout', () => {
+  // Smallest ancestor of `from` that also holds `other` — containment rather
+  // than a hop count, so the assertion survives a re-nesting that keeps the
+  // layout.
+  const smallestCommonAncestor = (from, other) => {
+    let node = from;
+    while (node && !node.contains(other)) node = node.parentElement;
+    return node;
+  };
+
+  it('keeps actions inside the content column, on the title row', () => {
+    render(wrapInList(
+      <EntryCard
+        title={<span>Lyra</span>}
+        body={<p>a description</p>}
+        actions={<button type="button">Edit</button>}
+      />,
+    ));
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    const body = screen.getByText('a description');
+    // Regression: `actions` used to be a sibling column of the content column,
+    // squeezing `body` to a third of a phone-width card.
+    expect(body.parentElement).toContainElement(edit);
+    // ...and it shares the title's row, so `body` still spans the full column.
+    expect(smallestCommonAncestor(edit, screen.getByText('Lyra')))
+      .not.toContainElement(body);
+  });
+});
+
 describe('EntryCard — thumbnail fallback', () => {
   it('renders the primary filename when present', () => {
     const { container } = render(wrapInList(

@@ -1282,6 +1282,40 @@ input[type="color"],
   cursor: pointer;
 }
 
+/* DRY left-alignment for flex buttons, same rationale as the cursor rule above.
+   Tailwind preflight leaves the UA `text-align: center` on <button>. Inside a
+   flex button the label is an anonymous flex item, so a label that WRAPS
+   centers every line — a two-line section header (chevron + icon + label)
+   renders as a ragged centered stack on a phone while reading fine on desktop,
+   which is why it goes unnoticed. Single-line labels are unaffected: the item
+   is sized to its content, so there is no slack for text-align to act on.
+
+   It corrects preflight, so it belongs in `@layer base` — and the layer is
+   load-bearing, not decorative. Tailwind emits `.text-center` into
+   `@layer utilities`, and an UNLAYERED rule beats every layered one no matter
+   how low its specificity, so writing this at the top level (as the cursor
+   rule above is) would override `text-center` on all ~38 flex buttons that ask
+   for it. From `base`, utilities come later in the cascade and win — which is
+   what `:where()`'s zero specificity also guarantees within the layer.
+
+   Being in the earliest layer does NOT weaken the fix, which is the tempting
+   misreading: the centering it overrides comes from the browser's UA
+   stylesheet, not from preflight (preflight never touches button text-align —
+   grep the build, this is the only author rule that sets it). Author styles
+   beat UA styles in every layer, because layers order rules *within* an origin
+   and never across origins. So on a flex button with no `text-*` utility this
+   wins; on one that asks for `text-center` the utility wins. Both intended.
+   `justify-center` buttons are excluded because there the centering is the
+   intent. Deliberately NOT a blanket `button { text-align: left }` — non-flex
+   full-width buttons rely on the centered default and would visibly shift. */
+@layer base {
+  button:where(.flex, .inline-flex):not(
+    :where([class*="justify-center"], [class*="justify-around"], [class*="justify-evenly"])
+  ) {
+    text-align: left;
+  }
+}
+
 /* Accessibility: Ensure disabled elements are perceivable but not interactive */
 [disabled],
 [aria-disabled="true"] {
