@@ -1,0 +1,105 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import express from 'express';
+import { request } from '../lib/testHelper.js';
+
+// Standardizing REWRITES the target repo (writes ecosystem.config.cjs, comments
+// ports out of .env/vite config), so these tests assert the precondition gate
+// runs before any of that — and that a refused request does zero work.
+vi.mock('../services/pm2Standardizer.js', () => ({
+  standardizeRefusalFor: vi.fn(() => null),
+  analyzeApp: vi.fn().mockResolvedValue({ success: true, proposedChanges: { processes: [{ name: 'p' }] } }),
+  applyStandardization: vi.fn().mockResolvedValue({ filesModified: [], backupBranch: null }),
+  createGitBackup: vi.fn().mockResolvedValue({ success: true, branch: 'backup-1' })
+}));
+
+vi.mock('../services/apps.js', () => ({
+  getAppById: vi.fn(),
+  updateApp: vi.fn().mockResolvedValue({})
+}));
+
+import standardizeRoutes from './standardize.js';
+import { errorMiddleware } from '../lib/errorHandler.js';
+import { standardizeRefusalFor, analyzeApp, applyStandardization, createGitBackup } from '../services/pm2Standardizer.js';
+import { getAppById } from '../services/apps.js';
+
+function makeApp() {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/standardize', standardizeRoutes);
+  app.use(errorMiddleware);
+  return app;
+}
+
+/** Nothing that touches the repo may have run. */
+function expectNoStandardizerWork() {
+  expect(analyzeApp).not.toHaveBeenCalled();
+  expect(applyStandardization).not.toHaveBeenCalled();
+  expect(createGitBackup).not.toHaveBeenCalled();
+}
+
+describe('standardize routes — target resolution and the refusal gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(standardizeRefusalFor).mockReturnValue(null);
+  });
+
+  it('resolves an allowed app to its repoPath and proceeds', async () => {
+    vi.mocked(getAppById).mockResolvedValue({ id: 'app-1', type: 'vite+express', repoPath: '/srv/example-app' });
+
+    const res = await request(makeApp()).post('/api/standardize/analyze').send({ appId: 'app-1' });
+
+    expect(res.status).toBe(200);
+    expect(analyzeApp).toHaveBeenCalledWith('/srv/example-app', undefined);
+  });
+
+  it('refuses an app the standardizer rejects, before touching the repo', async () => {
+    vi.mocked(getAppById).mockResolvedValue({ id: 'app-ios', type: 'ios-native', repoPath: '/srv/ios-app' });
+    vi.mocked(standardizeRefusalFor).mockReturnValue('ios-native apps are not run under PM2');
+
+    const res = await request(makeApp()).post('/api/standardize/analyze').send({ appId: 'app-ios' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code ?? res.body.code).toBe('NOT_STANDARDIZABLE');
+    expectNoStandardizerWork();
+  });
+
+  it('still refuses when an explicit repoPath is supplied alongside the appId', async () => {
+    // Taking repoPath early would let the pair smuggle a refused app past the gate.
+    vi.mocked(getAppById).mockResolvedValue({ id: 'app-ios', type: 'ios-native', repoPath: '/srv/ios-app' });
+    vi.mocked(standardizeRefusalFor).mockReturnValue('ios-native apps are not run under PM2');
+
+    const res = await request(makeApp())
+      .post('/api/standardize/apply')
+      .send({ appId: 'app-ios', repoPath: '/srv/somewhere-else', plan: {} });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code ?? res.body.code).toBe('NOT_STANDARDIZABLE');
+    expectNoStandardizerWork();
+  });
+
+  it('404s an appId with no app record', async () => {
+    vi.mocked(getAppById).mockResolvedValue(null);
+
+    const res = await request(makeApp()).post('/api/standardize/backup').send({ appId: 'app-gone' });
+
+    expect(res.status).toBe(404);
+    expectNoStandardizerWork();
+  });
+
+  it('takes a bare repoPath at face value — there is no app record to type-check', async () => {
+    const res = await request(makeApp()).post('/api/standardize/backup').send({ repoPath: '/srv/loose-repo' });
+
+    expect(res.status).toBe(200);
+    expect(getAppById).not.toHaveBeenCalled();
+    expect(standardizeRefusalFor).not.toHaveBeenCalled();
+    expect(createGitBackup).toHaveBeenCalledWith('/srv/loose-repo');
+  });
+
+  it('400s when neither repoPath nor appId is supplied', async () => {
+    const res = await request(makeApp()).post('/api/standardize/analyze').send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code ?? res.body.code).toBe('MISSING_PATH');
+    expectNoStandardizerWork();
+  });
+});

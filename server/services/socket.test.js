@@ -17,7 +17,7 @@ vi.mock('./cosEvents.js', () => ({ cosEvents: { on: vi.fn() }, emitLog: vi.fn() 
 vi.mock('./apps.js', () => ({ appsEvents: { on: vi.fn() }, getAppById: vi.fn(), resolvePm2HomeForProcess: vi.fn(), updateApp: vi.fn() }));
 vi.mock('../lib/errorHandler.js', () => ({ errorEvents: { on: vi.fn() } }));
 vi.mock('./autoFixer.js', () => ({ handleErrorRecovery: vi.fn() }));
-vi.mock('./pm2Standardizer.js', () => ({ analyzeApp: vi.fn(), createGitBackup: vi.fn(), applyStandardization: vi.fn(), runStandardizeFlow: vi.fn() }));
+vi.mock('./pm2Standardizer.js', () => ({ analyzeApp: vi.fn(), createGitBackup: vi.fn(), applyStandardization: vi.fn(), runStandardizeFlow: vi.fn(), standardizeRefusalFor: vi.fn(() => null) }));
 vi.mock('./notifications.js', () => ({ notificationEvents: { on: vi.fn() } }));
 vi.mock('./agentPersonalities.js', () => ({ agentPersonalityEvents: { on: vi.fn() } }));
 vi.mock('./platformAccounts.js', () => ({ platformAccountEvents: { on: vi.fn() } }));
@@ -70,6 +70,7 @@ import { audioGenEvents } from './audioGen/events.js';
 import { detachSocketSessions } from './shell.js';
 import * as shellService from './shell.js';
 import { updateApp as runAppUpdate } from './appUpdater.js';
+import { analyzeApp, standardizeRefusalFor } from './pm2Standardizer.js';
 
 // Build a minimal fake socket with per-event handler capture
 function makeSocket(id = 'sock-1') {
@@ -670,6 +671,24 @@ describe('socket.js — initSocket', () => {
       finishUpdate({ success: true, steps: [] });
       await running;
       await flush();
+    });
+
+    it('refuses to standardize an app the standardizer rejects, before any analysis runs', async () => {
+      // Standardizing rewrites the target repo (writes ecosystem.config.cjs), so
+      // the precondition is enforced here — not left to the button being hidden.
+      const socket = makeSocket('app-op-refusal');
+      io.connect(socket);
+
+      vi.mocked(getAppById).mockResolvedValueOnce({ id: 'app-ios', name: 'iOS App', type: 'ios-native', repoPath: '/srv/ios-app' });
+      vi.mocked(standardizeRefusalFor).mockReturnValueOnce('ios-native apps are not run under PM2');
+
+      await socket.handlers['app:standardize']({ appId: 'app-ios' });
+      await flush();
+
+      expect(socket.emitted.some(([ev, payload]) => (
+        ev === 'app:standardize:error' && payload.message.includes('not run under PM2')
+      ))).toBe(true);
+      expect(vi.mocked(analyzeApp)).not.toHaveBeenCalled();
     });
 
     it('buffers steps so a client that connects mid-operation rehydrates the log', async () => {

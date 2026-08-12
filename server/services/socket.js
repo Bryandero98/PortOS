@@ -509,6 +509,12 @@ export function initSocket(io) {
           return;
         }
 
+        const refusal = pm2Standardizer.standardizeRefusalFor(app);
+        if (refusal) {
+          socket.emit('app:standardize:error', { appId: app.id, message: refusal });
+          return;
+        }
+
         const inFlight = findConflictingOperation(app);
         if (inFlight) {
           socket.emit('app:standardize:error', {
