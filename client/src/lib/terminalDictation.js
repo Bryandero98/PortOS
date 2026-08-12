@@ -78,9 +78,13 @@ const commonPrefixLength = (a, b) => {
 export const planFieldEdit = (mirror, next, floor = 0) => {
   const rewindTo = Math.min(mirror.length, Math.max(commonPrefixLength(mirror, next), floor));
   const tail = next.slice(rewindTo);
+  // One DEL erases one CODE POINT at the far end, but JS string length counts
+  // UTF-16 code units — so an emoji is one erase, not two. Counting units would
+  // send a second DEL that eats the character before it.
+  const erased = [...mirror.slice(rewindTo)].length;
   return {
     // Pure append is the common case — skip building an empty DEL run for it.
-    data: rewindTo === mirror.length ? tail : TERMINAL_DEL.repeat(mirror.length - rewindTo) + tail,
+    data: rewindTo === mirror.length ? tail : TERMINAL_DEL.repeat(erased) + tail,
     committed: mirror.slice(0, rewindTo) + tail,
   };
 };

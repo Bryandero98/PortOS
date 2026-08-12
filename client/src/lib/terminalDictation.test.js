@@ -52,9 +52,16 @@ describe('planFieldEdit', () => {
     // 😀 and 😂 share a high surrogate; cutting between the halves would send a
     // lone surrogate, which serializes to U+FFFD instead of the emoji.
     const plan = planFieldEdit('hi 😀', 'hi 😂');
-    expect(plan.data).toBe(`${DEL.repeat(2)}😂`);
     expect(plan.committed).toBe('hi 😂');
     expect([...plan.data].every((ch) => ch.charCodeAt(0) < 0xd800 || ch.codePointAt(0) > 0xffff)).toBe(true);
+  });
+
+  it('erases one DEL per code point, not per UTF-16 unit', () => {
+    // The far end erases a whole character per DEL. Counting JS string length
+    // would send two for one emoji and eat the space before it.
+    expect(planFieldEdit('hi 😀', 'hi ').data).toBe(DEL);
+    expect(planFieldEdit('hi 😀', 'hi 😂').data).toBe(`${DEL}😂`);
+    expect(planFieldEdit('a😀b😀', 'a').data).toBe(DEL.repeat(3));
   });
 });
 
