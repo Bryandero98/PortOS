@@ -1464,10 +1464,14 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     expect(/plan\.lane === 'onDemand'/.test(fnSlice), 'refill must branch on the on-demand lane').toBe(true);
 
     const improveGateIdx = fnSlice.indexOf('if (!isImprovementEnabled(state)) return;');
-    const triggerIdx = fnSlice.indexOf('triggerOnDemandTask(plan.taskType, plan.appId, { emit: false })');
+    // `emit: false` avoids a redundant second dequeue; `origin: REFILL` marks the
+    // re-issue as automated so the on-demand engines do NOT clear the drain's park /
+    // convergence signature / dispatch counter on its behalf.
+    const triggerMatch = /triggerOnDemandTask\(plan\.taskType, plan\.appId, \{\s*emit: false, origin: taskScheduleMod\.ON_DEMAND_ORIGINS\.REFILL\s*\}\)/.exec(fnSlice);
+    const triggerIdx = triggerMatch ? triggerMatch.index : -1;
     const queueIdx = fnSlice.indexOf('queueEligibleImprovementTasks(state, cosTaskData');
     expect(improveGateIdx, 'manual lane must gate on isImprovementEnabled').toBeGreaterThan(-1);
-    expect(triggerIdx, 'manual lane must re-issue via triggerOnDemandTask(plan.taskType, plan.appId, { emit: false }) — emit:false avoids a redundant second dequeue').toBeGreaterThan(-1);
+    expect(triggerIdx, 'manual lane must re-issue via triggerOnDemandTask(plan.taskType, plan.appId, { emit: false, origin: ON_DEMAND_ORIGINS.REFILL })').toBeGreaterThan(-1);
     expect(queueIdx, 'scheduled queue lane must still exist').toBeGreaterThan(-1);
     // Improve gate precedes the re-issue; the manual lane returns before the queue lane.
     expect(improveGateIdx).toBeLessThan(triggerIdx);
@@ -1484,7 +1488,7 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     // engine's addTask must forward the dequeue's ignoreTaskId.
     const engIdx = COS_SRC.indexOf('async function spawnDequeuePriority0OnDemand');
     expect(engIdx, 'spawnDequeuePriority0OnDemand must exist').toBeGreaterThan(-1);
-    const engSlice = COS_SRC.slice(engIdx, engIdx + 5600);
+    const engSlice = COS_SRC.slice(engIdx, engIdx + 6400);
     expect(
       /onDemand:\s*true/.test(engSlice),
       'on-demand engine must stamp metadata.onDemand: true before addTask'

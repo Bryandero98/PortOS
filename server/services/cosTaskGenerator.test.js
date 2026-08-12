@@ -35,7 +35,7 @@ vi.mock('./github.js', async (importActual) => ({
   checkGhHealth: (...a) => ghHealth(...a),
 }));
 
-import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, recordPerpetualTransient, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, recordPerpetualTransient, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook, resolveReconcileDrainGate } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
@@ -1128,4 +1128,104 @@ describe('ignoreTaskId reaches BOTH completion-continuation generators (#3179)',
     expect(COS_SRC).toMatch(/async function dequeueNextTask\(\{ ignoreTaskId = null \} = \{\}\)/);
     expect(COS_SRC).toContain('generateIdleReviewTask(state, { ignoreTaskId })');
   });
+});
+
+/**
+ * The perpetual reconcile drains (branch- and issue-reconcile) re-issue themselves
+ * after every completed run, so their only brakes are the two this gate applies.
+ * On 2026-08-12 both were missing in practice — the refill rode the on-demand lane,
+ * which reset the convergence signature on every hop — and ~40 branch-reconcile
+ * coordinators ran between 05:19 and 08:47 against the same two branches.
+ */
+describe('resolveReconcileDrainGate', () => {
+  // Stand-in for the injected taskSchedule module.
+  const fakeSchedule = ({ signature = null, dispatchCount = 0, cap = 5 } = {}) => ({
+    PERPETUAL_DRAIN_DISPATCH_CAP: cap,
+    getPerpetualDrainState: vi.fn(async () => ({ signature, dispatchCount })),
+    parkPerpetual: vi.fn(async () => {}),
+    recordPerpetualDispatch: vi.fn(async () => dispatchCount + 1)
+  });
+  const app = { id: 'app-1', name: 'App One' };
+  const ctx = (over = {}) => ({
+    signature: 'a:NEEDS_PR:none', actionableCount: 1,
+    label: '🔀 branch-reconcile', unit: 'branch(es)', ...over
+  });
+
+  it('dispatches when the set advanced and the budget is unspent', async () => {
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none|b:IN_REVIEW:5', dispatchCount: 2 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx())).toBe(true);
+    expect(ts.parkPerpetual).not.toHaveBeenCalled();
+    // One write carries all three facts (park cleared, signature recorded, dispatch spent).
+    expect(ts.recordPerpetualDispatch).toHaveBeenCalledWith('branch-reconcile', 'app-1', 'a:NEEDS_PR:none');
+  });
+
+  it('parks no-progress on an unchanged set, clearing signature + counter in the park write', async () => {
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatchCount: 1 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx())).toBe(false);
+    expect(ts.parkPerpetual).toHaveBeenCalledWith('branch-reconcile', 'app-1', {
+      reason: 'no-progress', actionableCount: 1, signature: null, dispatchCount: 0
+    });
+    expect(ts.recordPerpetualDispatch).not.toHaveBeenCalled();
+  });
+
+  // The brake the no-progress guard cannot supply: every cycle looks like honest
+  // progress, so only a hard budget ends it.
+  it('parks drain-cap once the consecutive-dispatch budget is spent, even on real progress', async () => {
+    const ts = fakeSchedule({ signature: 'stale-sig', dispatchCount: 5 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx({ actionableCount: 3 }))).toBe(false);
+    expect(ts.parkPerpetual).toHaveBeenCalledWith('branch-reconcile', 'app-1', {
+      reason: 'drain-cap', actionableCount: 3, signature: null, dispatchCount: 0
+    });
+    // Nothing recorded as dispatched, so the next recheck re-drives from scratch.
+    expect(ts.recordPerpetualDispatch).not.toHaveBeenCalled();
+  });
+
+  it('spends exactly CAP dispatches before capping', async () => {
+    const outcomes = [];
+    for (let dispatchCount = 0; dispatchCount <= 5; dispatchCount += 1) {
+      const ts = fakeSchedule({ signature: `sig-${dispatchCount}`, dispatchCount, cap: 5 });
+      outcomes.push(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx()));
+    }
+    expect(outcomes).toEqual([true, true, true, true, true, false]);
+  });
+
+  it('checks no-progress BEFORE the cap, so a stuck set parks with the accurate reason', async () => {
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatchCount: 9 });
+    await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx());
+    expect(ts.parkPerpetual.mock.calls[0][2].reason).toBe('no-progress');
+  });
+});
+
+/**
+ * The loop's root cause: the drain's completion refill re-issues itself through the
+ * on-demand lane, and BOTH on-demand engines treated every request as a human "Run"
+ * — resetting the park, the convergence signature, and the dispatch counter, i.e.
+ * every brake the drain has. Either engine may drain a given request, so both must
+ * gate the reset on origin.
+ */
+describe('automated drain refills do not clear their own convergence brakes', () => {
+  it('the refill stamps origin: refill', () => {
+    expect(COS_SRC).toMatch(/triggerOnDemandTask\(plan\.taskType, plan\.appId, \{\s*emit: false, origin: taskScheduleMod\.ON_DEMAND_ORIGINS\.REFILL\s*\}\)/);
+  });
+
+  // The origin check lives in taskSchedule.applyOnDemandRunResets (behaviorally
+  // tested there), so what matters HERE is that no engine reaches around it: an
+  // engine calling the reset primitives directly is the exact regression, since
+  // that is the shape the loop had.
+  for (const [engine, src] of [['cos.dequeueNextTask', () => COS_SRC], ['cosTaskGenerator.spawnPriority0OnDemand', () => GEN_SRC]]) {
+    it(`${engine} resets on-demand state only through applyOnDemandRunResets`, () => {
+      const text = src();
+      expect(text).toMatch(/const userInitiated = await task[Ss]chedule(Mod)?\.applyOnDemandRunResets\(request, targetApp\?\.id \?\? null\)/);
+      for (const fn of ['resetPerpetualForManualRun', 'clearTaskTypeFailurePark']) {
+        const direct = text.split('\n').filter((l) => l.includes(`.${fn}(request.taskType`));
+        expect(direct, `${engine} must not call ${fn} directly — go through applyOnDemandRunResets`).toEqual([]);
+      }
+    });
+
+    // A refill that toasts "nothing to do" turns a healthy overnight drain into a
+    // pile of notifications nobody asked for.
+    it(`${engine} only reports an empty result for a user-initiated request`, () => {
+      expect(src()).toMatch(/\}\s*else if \(!task && userInitiated\) \{/);
+    });
+  }
 });
