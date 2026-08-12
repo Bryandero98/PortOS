@@ -79,6 +79,7 @@ export { firstLine, getUserTasks, getCosTasks, getAllTasks, getTasks, getTaskByI
 import { ensureInstanceId } from './instances.js';
 import { isHeldByOther, buildRenewal, buildClaim, getClaimOwner } from './cosTaskClaim.js';
 import { retryTasksResolvedByInvestigation } from './investigationRetry.js';
+import { notifyIfPrLeftOrphaned } from './orphanedPrNotifier.js';
 
 const AGENT_ARCHIVE_RETENTION_DAYS = 90;
 const RESUME_DEQUEUE_DELAY_MS = 500;
@@ -1483,6 +1484,17 @@ export async function init() {
       setImmediate(() => retryTasksResolvedByInvestigation(data.task)
         .catch(err => console.error(`❌ Auto-retry after investigation ${data.task?.id} failed: ${err.message}`)));
     }
+  });
+
+  // A task that was going to MERGE a pull request just got blocked — surface the
+  // PR it left orphaned. Registered separately from the dequeue listener above
+  // because it must fire on a transition that listener has no branch for
+  // (→ blocked), and it is not gated on `isDaemonRunning()`: a block that lands
+  // as the daemon stops still strands its PR. See orphanedPrNotifier.js for why
+  // nothing else ever recovers these.
+  cosEvents.on('tasks:changed', (data) => {
+    notifyIfPrLeftOrphaned(data)
+      .catch(err => console.error(`❌ Orphaned-PR check failed for task ${data?.task?.id}: ${err.message}`));
   });
 
   cosEvents.on('tasks:user:added', () => {
