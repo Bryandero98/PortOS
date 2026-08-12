@@ -540,9 +540,9 @@ export function createGenerationActivityTracker() {
 // on this cadence and only fails over once the retries are exhausted.
 //
 // 20s: slow enough that a re-paste can't outrun agy's own reflow + round trip
-// (a submission that IS accepted paints `esc to cancel` within ~1s, which closes
-// the window before the next retry is due), and fast enough to fit several
-// attempts inside the grace window.
+// (a submission that IS accepted starts painting `Generating…` within ~1s, which
+// closes the window before the next retry is due), and fast enough to fit
+// several attempts inside the grace window.
 export const SELF_CLEARING_RESUBMIT_INTERVAL_MS = 20000;
 
 // How often a consumer without its own poll should ASK the gate whether a
@@ -590,8 +590,8 @@ export const SELF_CLEARING_RESUBMIT_ECHO_MS = 3000;
  * lazily on the first post-prompt chunk and may not exist yet when the banner
  * paints.
  *
- * Usage per chunk: `gate.observe(stripped)` then, on a match,
- * `gate.arm(analysis, Date.now())`. `gate.armed` is the idle-suppression
+ * Usage per chunk: `gate.observe(stripped, now)` then, on a match,
+ * `gate.arm(analysis, now)`. `gate.armed` is the idle-suppression
  * predicate — a session waiting out a handshake is silent by design, and letting
  * an idle reaper finalize it would report a bogus success that scrapes the
  * banner as the answer. `gate.takeResubmit(Date.now())` returns the 1-based

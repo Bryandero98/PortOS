@@ -726,10 +726,16 @@ ${prompt}`;
       // has been unregistered, which is also the "don't bother" answer here —
       // the deadline timer still owns the fail-over.
       if (submitEnterTimer) clearInterval(submitEnterTimer);
-      submitEnterTimer = pasteToSession(runId, wrappedPrompt, {
+      const submitted = pasteToSession(runId, wrappedPrompt, {
         label: `[tuiRun ${runId}] provider-handshake resubmit`,
-      }) || null;
-      console.log(`🔁 TUI run ${runId} re-submitted its prompt while the provider handshake is open (attempt ${attempt})`);
+      });
+      submitEnterTimer = submitted || null;
+      // Only claim the re-submission that actually went out — `false` here means
+      // the PTY is already gone, and a log line saying otherwise would send a
+      // post-mortem looking for a paste the provider never received.
+      if (submitted) {
+        console.log(`🔁 TUI run ${runId} re-submitted its prompt while the provider handshake is open (attempt ${attempt})`);
+      }
     };
 
     // Ready watch — paste only once the TUI banner finishes repainting AND
