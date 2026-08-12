@@ -17,10 +17,14 @@ vi.mock('./store.js', () => ({
   emitLog: vi.fn(),
 }));
 vi.mock('../cos.js', () => ({ getAgents: vi.fn(async () => agentsStore.list) }));
+vi.mock('../agentChurn.js', () => ({
+  observeAgentChurn: vi.fn(async () => ({ flagged: false })),
+}));
 
 import { backfillFromHistory, initTaskLearning } from './lifecycle.js';
 import { recordTaskCompletion } from './metrics.js';
 import { cosEvents } from './store.js';
+import { observeAgentChurn } from '../agentChurn.js';
 
 const completed = (taskId, analysisType, validationPassed) => ({
   status: 'completed',
@@ -136,5 +140,15 @@ describe('agent:completed listener — a resumed record is a continuation, not a
       metadata: { taskType: 'user', taskDescription: 'Half-finished work' },
     });
     expect(recordTaskCompletion).toHaveBeenCalledTimes(1);
+    expect(observeAgentChurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not observe churn for a resume continuation', async () => {
+    await emitCompleted({
+      status: 'completed', taskId: 't1',
+      result: { success: false, resumed: true, resumedTaskId: 't1' },
+      metadata: { taskType: 'user', taskDescription: 'Half-finished work' },
+    });
+    expect(observeAgentChurn).not.toHaveBeenCalled();
   });
 });

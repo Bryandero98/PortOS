@@ -1047,9 +1047,20 @@ export async function parkPerpetual(taskType, appId = null, { reason = null, act
   // next recheck can tell "same stuck set" (park again) from "the set changed"
   // (resume). `null` clears it (an idle park with nothing actionable); `undefined`
   // (the default) leaves any prior signature untouched.
+  //
+  // `signatureRepeatCount` is the harvested "same finding again" metric the
+  // CoS churn detector reports: increment when this park restates the same
+  // signature, reset when the set changes, clear when idle.
   if (signature !== undefined) {
-    if (signature === null) delete record.lastActionableSignature;
-    else record.lastActionableSignature = signature;
+    if (signature === null) {
+      delete record.lastActionableSignature;
+      delete record.signatureRepeatCount;
+    } else if (signature === record.lastActionableSignature) {
+      record.signatureRepeatCount = (Number(record.signatureRepeatCount) || 1) + 1;
+    } else {
+      record.lastActionableSignature = signature;
+      record.signatureRepeatCount = 1;
+    }
   }
   await saveSchedule(schedule);
   emitLog('info', `Perpetual ${taskType} parked until ${parkedUntil} (${reason || 'idle'})`, { taskType, appId, parkedUntil }, '📅 TaskSchedule');
@@ -1072,7 +1083,8 @@ export async function getPerpetualParkInfo(taskType, appId = null) {
     parkReason: record.parkReason ?? null,
     parkActionableCount: record.parkActionableCount ?? null,
     parkCounts: record.parkCounts ?? null,
-    parkedAt: record.parkedAt ?? null
+    parkedAt: record.parkedAt ?? null,
+    signatureRepeatCount: Number.isFinite(record.signatureRepeatCount) ? record.signatureRepeatCount : null
   };
 }
 
@@ -1125,7 +1137,7 @@ export async function resetPerpetualForManualRun(taskType, appId = null) {
   const record = resolveExecutionRecord(schedule, taskType, appId);
   if (!record) return false;
   let changed = false;
-  for (const field of [...PARK_FIELDS, 'lastActionableSignature']) {
+  for (const field of [...PARK_FIELDS, 'lastActionableSignature', 'signatureRepeatCount']) {
     if (record[field] !== undefined) { delete record[field]; changed = true; }
   }
   if (changed) await saveSchedule(schedule);

@@ -3138,6 +3138,27 @@ describe('gatherSources cosMetrics windowed rate (issue #2460)', () => {
     expect(out.cosMetrics).toBeUndefined();
   });
 
+  it('harvests 24h short-lived run counts next to the lifetime duration', async () => {
+    const now = Date.now();
+    await writeLearning({
+      byTaskType: {
+        'self-improve:branch-reconcile': {
+          completed: 24, succeeded: 24, failed: 0, successRate: 100, avgDurationMs: 90_000,
+          recentOutcomes: Array.from({ length: 12 }, (_, i) => ({
+            t: new Date(now - i * 10 * 60 * 1000).toISOString(),
+            s: true,
+            d: 80_000
+          }))
+        }
+      }
+    });
+    const out = await gatherSources({ repoPath: dir }, { sources: { cosMetrics: true } }, { cosPath: dir });
+    const parsed = JSON.parse(out.cosMetrics);
+    expect(parsed['self-improve:branch-reconcile'].recent24hCompleted).toBe(12);
+    expect(parsed['self-improve:branch-reconcile'].recent24hShortLived).toBe(12);
+    expect(parsed['self-improve:branch-reconcile'].recent24hMedianDurationMs).toBe(80_000);
+  });
+
   it('does not emit scopeGuidance when cosMetrics is off (#2760)', async () => {
     await writeLearning({
       byTaskType: { 'accessibility': { completed: 4, succeeded: 0, failed: 4, successRate: 0, recentOutcomes: [] } }
