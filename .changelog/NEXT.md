@@ -1,6 +1,7 @@
 ## Added
 
 - CoS now notices when a scheduled task (the overnight branch-reconcile loop) finishes the same work over and over in short-lived agent runs. It parks a looping coordinator so it stops burning quota, files one GitHub issue to fix the drain, and records per-run duration so the burst is visible as a metric.
+- The Usage page can now record what you pay each month for your AI subscriptions (Claude, Codex, Antigravity, Grok) and shows what those plans saved against the estimated API cost. Each plan's price is prorated across whatever report window is selected, so both sides of the comparison cover the same days, and every plan gets its own row: monthly price, cost for this window, the API-rate cost its usage ran up, and the difference. Usage no subscription covers — pay-as-you-go API providers and pre-breakdown legacy rows — is reported separately instead of being credited to a plan.
 
 ## Fixed
 

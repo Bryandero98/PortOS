@@ -1,6 +1,8 @@
 import { join } from 'path';
 import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { resolveModelRates, isFreeProvider, isFreeModelId, estimateCostUsd, PRICING_AS_OF } from '../lib/modelPricing.js';
+import { familyForProvider } from '../lib/providerFamilies.js';
+import { roundCents } from '../lib/subscriptionSavings.js';
 
 const DATA_DIR = PATHS.data;
 const USAGE_FILE = join(DATA_DIR, 'usage.json');
@@ -168,6 +170,32 @@ async function saveUsage() {
  */
 export function getUsage() {
   return usageData || getEmptyUsage();
+}
+
+/**
+ * The earliest day usage was recorded (`YYYY-MM-DD`), or null on an install
+ * with no history yet. Rolled-up months only know their month, so they
+ * contribute their first day — a whole-month bucket's activity cannot have
+ * started earlier than that.
+ *
+ * Consumers: the subscription-savings window, which prorates a monthly plan
+ * price over an "All time" report and needs a real start day rather than an
+ * unbounded one (see lib/subscriptionSavings.js).
+ */
+export function getFirstActivityDay() {
+  const data = getUsage();
+  // Min over the keys rather than sort-then-head: on a full 400-day retention
+  // window that is one linear pass instead of three intermediate arrays and an
+  // O(n log n) string sort. YYYY-MM-DD compares correctly as a string.
+  let earliest = null;
+  const consider = (day) => { if (!earliest || day < earliest) earliest = day; };
+  for (const key of Object.keys(data.dailyActivity || {})) {
+    if (DAY_KEY_RE.test(key)) consider(key);
+  }
+  for (const key of Object.keys(data.monthlyActivity || {})) {
+    if (/^\d{4}-\d{2}$/.test(key)) consider(`${key}-01`);
+  }
+  return earliest;
 }
 
 /**
@@ -643,7 +671,6 @@ function findLongestStreak(dailyActivity) {
   return maxStreak;
 }
 
-const roundCents = (n) => Math.round(n * 100) / 100;
 
 /**
  * Aggregate the per-day per-provider per-model buckets over a date range into
@@ -875,6 +902,11 @@ export function buildUsageReport(dailyActivity, { from = null, to = null, provid
       id: pid,
       name: p.name,
       free,
+      // The subscription family this row's spend belongs to, stamped from the
+      // config already in hand — so a consumer comparing plan cost against API
+      // cost (lib/subscriptionSavings.js) groups rows without rebuilding this
+      // provider-id → config map. Null for a row no plan covers.
+      family: familyForProvider(config),
       sessions: p.sessions,
       messages: p.messages,
       tokensIn: p.tokensIn,

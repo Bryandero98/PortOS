@@ -4,7 +4,8 @@ import { getClaudeCodeUsage } from '../services/claudeCodeUsage.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
 import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
-import { validateRequest, usageQuerySchema, usageMessagesSchema, providerUsageQuerySchema } from '../lib/validation.js';
+import { validateRequest, usageQuerySchema, usageMessagesSchema, providerUsageQuerySchema, subscriptionCostsSchema } from '../lib/validation.js';
+import { saveSubscriptionCosts, getSubscriptionSavings } from '../services/subscriptionCosts.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import {
@@ -22,7 +23,26 @@ router.get('/', asyncHandler(async (req, res) => {
   const result = await getAllProviders();
   const providers = Array.isArray(result) ? result : (result?.providers || []);
   const summary = usage.getUsageSummary({ from, to, providers });
-  res.json(summary);
+  // The report prices this window's usage at published API rates; the savings
+  // block says what the user's flat-rate plans cost over the SAME window, so
+  // the headline figure has something to be compared against.
+  const subscriptionSavings = await getSubscriptionSavings({
+    report: summary.report,
+    providers,
+    from,
+    to,
+    // Only an unbounded ("All time") window needs a start day inferred from
+    // history; every other range already has one, so don't pay the scan.
+    firstActivityDay: from ? null : usage.getFirstActivityDay()
+  });
+  res.json({ ...summary, subscriptionSavings });
+}));
+
+// PUT /api/usage/subscriptions - Merge plan prices. An omitted family keeps its
+// stored price; one sent as null (or 0) is cleared.
+router.put('/subscriptions', asyncHandler(async (req, res) => {
+  const { costs } = validateRequest(subscriptionCostsSchema, req.body);
+  res.json({ costs: await saveSubscriptionCosts(costs) });
 }));
 
 // GET /api/usage/providers - Subscription-quota status for every enabled

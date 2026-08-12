@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
   formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
-  formatWeight, formatPercent,
+  formatWeight, formatPercent, formatUsd,
 } from './formatters.js';
 
 describe('formatWeight', () => {
@@ -42,6 +42,26 @@ describe('formatWeight', () => {
 
   it('accepts numeric strings', () => {
     expect(formatWeight('170.35000000000002')).toBe('170.4 lbs');
+  });
+});
+
+describe('formatUsd', () => {
+  it('renders cents by default and treats a missing amount as zero', () => {
+    expect(formatUsd(12.3)).toBe('$12.30');
+    expect(formatUsd(null)).toBe('$0.00');
+  });
+
+  // The minus belongs OUTSIDE the dollar sign, so a negative saving reads as a
+  // loss instead of as a malformed currency string.
+  it('puts the sign before the dollar sign when signed', () => {
+    expect(formatUsd(-5, { signed: true })).toBe('-$5.00');
+    expect(formatUsd(5, { signed: true })).toBe('$5.00');
+  });
+
+  it('trims .00 only when asked', () => {
+    expect(formatUsd(200, { trimWhole: true })).toBe('$200');
+    expect(formatUsd(19.99, { trimWhole: true })).toBe('$19.99');
+    expect(formatUsd(200)).toBe('$200.00');
   });
 });
 

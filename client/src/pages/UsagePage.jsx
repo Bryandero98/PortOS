@@ -1,13 +1,14 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 import { RefreshCw, Clock, AlertTriangle, DatabaseZap } from 'lucide-react';
 import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
-import { formatCompactCount, timeUntil } from '../utils/formatters';
+import { formatCompactCount, formatUsd, timeUntil } from '../utils/formatters';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import SubscriptionSavingsCard from '../components/usage/SubscriptionSavingsCard';
 
 // How often to re-ask while a provider's quota reading is still being taken. A
 // CLI/TUI scrape is a 10-20s spawn, so this is a handful of polls, not a loop.
@@ -23,7 +24,6 @@ const PERIOD_OPTIONS = [
 // Preserve the em-dash empty-state; delegate K/M abbreviation to the shared helper.
 const formatNumber = (num) => (num == null ? '—' : formatCompactCount(num));
 
-const formatCost = (cost) => `$${(cost ?? 0).toFixed(2)}`;
 
 // Every provider adapter normalizes its reset to ISO before it reaches here, so
 // this localizes and adds the relative "in 3h" that makes a reset time useful at
@@ -372,7 +372,7 @@ function CostReportTable({ report }) {
                 {!provider.free && <SourcePill source={provider.source} className="shrink-0" />}
               </div>
               <span className="text-sm font-semibold text-port-success shrink-0" title={approxMark(provider.rateMatch) ? 'Approximate pricing' : undefined}>
-                {approxMark(provider.rateMatch)}{formatCost(provider.estimatedCost)}
+                {approxMark(provider.rateMatch)}{formatUsd(provider.estimatedCost)}
               </span>
             </div>
 
@@ -402,7 +402,7 @@ function CostReportTable({ report }) {
                   <div key={m.model} className="bg-port-card/30 p-2 rounded text-xs space-y-1">
                     <div className="flex items-center justify-between font-mono text-gray-300 text-[11px]">
                       <span className="truncate pr-2" title={m.model}>{m.model}</span>
-                      <span className="text-gray-400 shrink-0 font-sans font-medium">{approxMark(m.rateMatch)}{formatCost(m.estimatedCost)}</span>
+                      <span className="text-gray-400 shrink-0 font-sans font-medium">{approxMark(m.rateMatch)}{formatUsd(m.estimatedCost)}</span>
                     </div>
                     <div className="flex items-center justify-between text-[10px] text-gray-400">
                       <span>{formatNumber(m.sessions)} sess</span>
@@ -418,7 +418,7 @@ function CostReportTable({ report }) {
 
         <div className="bg-port-bg border border-port-border rounded-lg p-3 flex items-center justify-between text-xs font-semibold text-white">
           <span>Total ({formatNumber(report.totals.sessions)} sessions)</span>
-          <span className="text-port-success text-sm">{formatCost(report.totals.estimatedCost)}</span>
+          <span className="text-port-success text-sm">{formatUsd(report.totals.estimatedCost)}</span>
         </div>
       </div>
 
@@ -449,7 +449,7 @@ function CostReportTable({ report }) {
               <td className="py-2 px-2 text-right hidden md:table-cell">{formatNumber(report.totals.cacheReadTokens)}</td>
               <td className="py-2 px-2 text-right hidden md:table-cell">{formatNumber(report.totals.cacheWriteTokens)}</td>
               <td className="py-2 px-2 text-right">{formatNumber(report.totals.tokensOut)}</td>
-              <td className="py-2 pl-2 text-right text-port-success">{formatCost(report.totals.estimatedCost)}</td>
+              <td className="py-2 pl-2 text-right text-port-success">{formatUsd(report.totals.estimatedCost)}</td>
             </tr>
           </tfoot>
         </table>
@@ -483,7 +483,7 @@ function ProviderCostRows({ provider }) {
           className="py-2 pl-2 text-right"
           title={approxMark(provider.rateMatch) ? 'Approximate — provider or legacy usage uses fallback pricing' : undefined}
         >
-          {approxMark(provider.rateMatch)}{formatCost(provider.estimatedCost)}
+          {approxMark(provider.rateMatch)}{formatUsd(provider.estimatedCost)}
         </td>
       </tr>
       {provider.models.map((m) => (
@@ -502,7 +502,7 @@ function ProviderCostRows({ provider }) {
           <td className="py-1.5 px-2 text-right text-xs hidden md:table-cell">{formatNumber(m.cacheWriteTokens)}</td>
           <td className="py-1.5 px-2 text-right text-xs">{formatNumber(m.tokensOut)}</td>
           <td className="py-1.5 pl-2 text-right text-xs" title={approxMark(m.rateMatch) ? 'Approximate — no exact published rate for this model id' : undefined}>
-            {approxMark(m.rateMatch)}{formatCost(m.estimatedCost)}
+            {approxMark(m.rateMatch)}{formatUsd(m.estimatedCost)}
           </td>
         </tr>
       ))}
@@ -648,22 +648,27 @@ function InternalUsageMetrics() {
   const [loading, setLoading] = useState(true);
   const [backfill, setBackfill] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
+  // One fetch for every trigger — the range effect, the backfill-complete
+  // refetch, and a subscription-price save (which re-derives the savings block
+  // server-side). It resolves once the new payload is applied, so a caller can
+  // keep its button busy until the screen actually reflects the change.
+  const requestRef = useRef(0);
+  const fetchUsage = useCallback(async () => {
+    const token = ++requestRef.current;
     const params = isCustom ? { from, to } : { period };
-    api.getUsage(params)
-      .catch(() => null)
-      .then((data) => {
-        if (cancelled) return;
-        // Keep the previously-loaded metrics on a failed fetch (e.g. an
-        // in-progress custom range where from > to briefly 400s) so the
-        // filter controls stay on screen for the user to correct the range.
-        if (data) setUsage(data);
-        setLoading(false);
-      });
-    return () => { cancelled = true; };
+    const data = await api.getUsage(params).catch(() => null);
+    // Keep the previously-loaded metrics on a failed fetch (e.g. an in-progress
+    // custom range where from > to briefly 400s) so the filter controls stay on
+    // screen for the user to correct the range — and drop a response a newer
+    // request has already superseded.
+    if (data && token === requestRef.current) setUsage(data);
+    return data;
   }, [period, from, to, isCustom]);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchUsage().finally(() => setLoading(false));
+  }, [fetchUsage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -688,9 +693,7 @@ function InternalUsageMetrics() {
           if (cancelled) return;
           setBackfill(status);
           if (status?.status === 'complete') {
-            const params = isCustom ? { from, to } : { period };
-            const refreshed = await api.getUsage(params);
-            if (!cancelled) setUsage(refreshed);
+            await fetchUsage();
           } else if (status?.status === 'running') {
             timer = setTimeout(poll, 1000);
           }
@@ -702,7 +705,7 @@ function InternalUsageMetrics() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [backfill?.status, isCustom, from, to, period]);
+  }, [backfill?.status, fetchUsage]);
 
 
   const setPeriod = (id) => {
@@ -815,7 +818,7 @@ function InternalUsageMetrics() {
           </div>
           <div className="flex items-center gap-2">
             {report?.totals?.source && <SourcePill source={report.totals.source} />}
-            <span className="text-xl font-bold text-port-success">{formatCost(report?.totals?.estimatedCost)}</span>
+            <span className="text-xl font-bold text-port-success">{formatUsd(report?.totals?.estimatedCost)}</span>
           </div>
         </div>
         <CostReportFilters period={period} from={from} to={to} isCustom={isCustom} onPeriod={setPeriod} onRange={setRange} />
@@ -831,6 +834,10 @@ function InternalUsageMetrics() {
           {' '}Rows marked ~ use an approximated rate.
         </p>
       </div>
+
+      {/* Directly under the API estimate it is derived from: the estimate is the
+          opportunity cost, this is what the quota plans actually cost to avoid it. */}
+      <SubscriptionSavingsCard savings={usage.subscriptionSavings} onSaved={fetchUsage} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
         {/* 7-Day Activity */}
@@ -899,7 +906,7 @@ function InternalUsageMetrics() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0 text-xs">
                     {provider.estimatedCost != null && provider.estimatedCost > 0 && (
-                      <span className="text-port-success font-semibold">{formatCost(provider.estimatedCost)}</span>
+                      <span className="text-port-success font-semibold">{formatUsd(provider.estimatedCost)}</span>
                     )}
                     <span className="text-gray-400 bg-port-bg border border-port-border px-1.5 py-0.5 rounded text-[10px] sm:text-xs font-mono">
                       {provider.percent}%
@@ -953,7 +960,7 @@ function InternalUsageMetrics() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0 text-xs">
                     {model.estimatedCost != null && model.estimatedCost > 0 && (
-                      <span className="text-port-success font-semibold">{formatCost(model.estimatedCost)}</span>
+                      <span className="text-port-success font-semibold">{formatUsd(model.estimatedCost)}</span>
                     )}
                     <span className="text-gray-400 bg-port-bg border border-port-border px-1.5 py-0.5 rounded text-[10px] sm:text-xs font-mono">
                       {model.percent}%
