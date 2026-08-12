@@ -124,6 +124,11 @@ import {
   resetPerpetualForManualRun,
   getPerpetualParkInfo,
   getPerpetualSignature,
+  getPerpetualDispatchCount,
+  bumpPerpetualDispatchCount,
+  resetPerpetualDispatchCount,
+  isRefillRequest,
+  ON_DEMAND_ORIGINS,
   setPerpetualSignature,
   recordTaskTypeFailure,
   recordTaskTypeSuccess,
@@ -1355,6 +1360,28 @@ describe('taskSchedule', () => {
       expect(result.appId).toBe('critical-mass')
       expect(result.id).toMatch(/^demand-/)
     })
+
+    // The drain's completion refill re-issues itself through this same queue. It
+    // must be distinguishable from a human "Run", because the engines clear the
+    // park + convergence signature + dispatch counter for a human and MUST NOT for
+    // a refill — that reset is what let branch-reconcile re-dispatch all night.
+    it('stamps origin: user by default and refill when the drain re-issues itself', async () => {
+      mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
+      expect((await triggerOnDemandTask('branch-reconcile', 'app-1')).origin).toBe(ON_DEMAND_ORIGINS.USER)
+
+      mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
+      const refill = await triggerOnDemandTask('branch-reconcile', 'app-1', { emit: false, origin: ON_DEMAND_ORIGINS.REFILL })
+      expect(refill.origin).toBe(ON_DEMAND_ORIGINS.REFILL)
+    })
+
+    it('isRefillRequest only matches an explicit refill origin', () => {
+      expect(isRefillRequest({ origin: ON_DEMAND_ORIGINS.REFILL })).toBe(true)
+      expect(isRefillRequest({ origin: ON_DEMAND_ORIGINS.USER })).toBe(false)
+      // A request queued before `origin` existed reads as user-initiated — the safe
+      // default for a queue that is otherwise human-filled.
+      expect(isRefillRequest({ taskType: 'branch-reconcile' })).toBe(false)
+      expect(isRefillRequest(null)).toBe(false)
+    })
   })
 
   describe('getScheduleStatus', () => {
@@ -1596,12 +1623,12 @@ describe('taskSchedule', () => {
         expect(await clearPerpetualPark('claim-issue', 'app-1')).toBe(false)
       })
 
-      it('resetPerpetualForManualRun drops BOTH the park and the convergence signature', async () => {
+      it('resetPerpetualForManualRun drops the park, the convergence signature, AND the dispatch count', async () => {
         const future = new Date(Date.now() + 60 * 60 * 1000).toISOString()
         mockSchedule({
           tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
           executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: {
-            'app-1': { lastRun: null, count: 0, parkedUntil: future, parkReason: 'no-progress', lastActionableSignature: 'a:NEEDS_PR:none' }
+            'app-1': { lastRun: null, count: 0, parkedUntil: future, parkReason: 'no-progress', lastActionableSignature: 'a:NEEDS_PR:none', perpetualDispatchCount: 4 }
           } } }
         })
         expect(await resetPerpetualForManualRun('branch-reconcile', 'app-1')).toBe(true)
@@ -1610,6 +1637,36 @@ describe('taskSchedule', () => {
         expect(rec.parkedUntil).toBeUndefined()
         expect(rec.parkReason).toBeUndefined()
         expect(rec.lastActionableSignature).toBeUndefined()
+        // A human asking to re-run gets a full dispatch budget, not the tail of the
+        // previous window — otherwise a drain that just hit the cap would park again
+        // on its first cycle.
+        expect(rec.perpetualDispatchCount).toBeUndefined()
+      })
+
+      it('bumpPerpetualDispatchCount counts consecutive dispatches and reset zeroes it', async () => {
+        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
+        expect(await bumpPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(1)
+
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, perpetualDispatchCount: 1 } } } }
+        })
+        expect(await bumpPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(2)
+        expect(await getPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(2)
+
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, perpetualDispatchCount: 3 } } } }
+        })
+        expect(await resetPerpetualDispatchCount('branch-reconcile', 'app-1')).toBe(true)
+        const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
+        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].perpetualDispatchCount).toBeUndefined()
+      })
+
+      it('getPerpetualDispatchCount is 0 for an unknown task/app and reset is a no-op there', async () => {
+        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } } })
+        expect(await getPerpetualDispatchCount('branch-reconcile', 'app-9')).toBe(0)
+        expect(await resetPerpetualDispatchCount('branch-reconcile', 'app-9')).toBe(false)
       })
 
       it('resetPerpetualForManualRun is a no-op (false) when nothing is cached', async () => {

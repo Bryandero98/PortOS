@@ -881,18 +881,26 @@ async function spawnDequeuePriority0OnDemand(ctx) {
 
     await taskScheduleMod.clearOnDemandRequest(request.id);
 
+    // A HUMAN "Run" clears the drain's brakes; an automated refill re-issue must
+    // not (see ON_DEMAND_ORIGINS). Requests written before `origin` existed have
+    // none and read as user-initiated, which is the safe default for a queue that
+    // is almost always human-filled.
+    const userInitiated = !taskScheduleMod.isRefillRequest(request);
+
     if (targetApp) {
-      emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}`, { requestId: request.id, appId: targetApp.id });
+      emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}${userInitiated ? '' : ' (drain refill)'}`, { requestId: request.id, appId: targetApp.id });
       // A user-initiated "Run" must re-check live state, never honor a stale
       // park or convergence signature — resetting both up front guarantees the
       // detector/reconcile below runs fresh and dispatches on live state (and,
       // if still idle, re-stamps a park reflecting THIS check).
-      await taskScheduleMod.resetPerpetualForManualRun(request.taskType, targetApp.id);
+      if (userInitiated) await taskScheduleMod.resetPerpetualForManualRun(request.taskType, targetApp.id);
       // A manual "Run" also unparks a failure-parked type (#2616) — clear this
       // app's consecutive-failure ledger. (Mirrors the sibling
       // spawnPriority0OnDemand engine in cosTaskGenerator.js; either engine may
-      // drain a given on-demand request, so both must unpark.)
-      await taskScheduleMod.clearTaskTypeFailurePark(request.taskType, targetApp.id);
+      // drain a given on-demand request, so both must unpark.) A refill is not an
+      // "I've addressed it" signal from anybody, so it leaves the ledger alone —
+      // otherwise a drain that fails every run resets its own failure park forever.
+      if (userInitiated) await taskScheduleMod.clearTaskTypeFailurePark(request.taskType, targetApp.id);
       // Advance the cooldown eagerly (deduped per app per cycle), but defer
       // binding the active agent until a task is produced — a null result
       // here must not strand `activeAgentId` (issue #978).
@@ -906,11 +914,12 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
       }
     } else {
-      emitLog('info', `Processing on-demand improvement: ${request.taskType}`, { requestId: request.id });
-      // Same fresh-check guarantee as the app-scoped branch above.
-      await taskScheduleMod.resetPerpetualForManualRun(request.taskType);
+      emitLog('info', `Processing on-demand improvement: ${request.taskType}${userInitiated ? '' : ' (drain refill)'}`, { requestId: request.id });
+      // Same fresh-check guarantee as the app-scoped branch above — and the same
+      // refill exemption.
+      if (userInitiated) await taskScheduleMod.resetPerpetualForManualRun(request.taskType);
       // Manual re-run unparks a failure-parked type (global scope) — #2616.
-      await taskScheduleMod.clearTaskTypeFailurePark(request.taskType);
+      if (userInitiated) await taskScheduleMod.clearTaskTypeFailurePark(request.taskType);
       await taskScheduleMod.recordExecution(`task:${request.taskType}`);
       await withStateLock(async () => {
         const s = await loadState();
@@ -1347,7 +1356,14 @@ async function refillPerpetualForCompletedAgent(agent) {
     // the still-`in_progress` completing task; letting triggerOnDemandTask emit
     // its event would fire a redundant SECOND dequeue of the same request.
     if (!isImprovementEnabled(state)) return;
-    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId, { emit: false });
+    // `origin: 'refill'` — this re-issue borrows the on-demand LANE but is not a
+    // human pressing Run, so the drain engines must leave the park, the
+    // convergence signature, and the dispatch counter intact. Without it the
+    // refill wipes its own convergence state on every hop and the drain never
+    // parks while one actionable item remains.
+    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId, {
+      emit: false, origin: taskScheduleMod.ON_DEMAND_ORIGINS.REFILL
+    });
     return;
   }
 

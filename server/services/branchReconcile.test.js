@@ -58,7 +58,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
-  isAbandonedAgentWorktree, gatherDivergence,
+  isAbandonedAgentWorktree, resolveLiveWorktreeReason, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
   branchPriorityRank, prioritizeBranches,
   upstreamBranchName, parseRemoteHeads, partitionRemoteOrphans, reapOrphanedRemotes
@@ -103,6 +103,27 @@ describe('classifyBranch', () => {
   it('dirty worktree wins over an open PR → WIP (never hand a dirty tree to the agent)', () => {
     expect(classifyBranch({ isMerged: false, openPr: { mergeable: 'MERGEABLE' }, hasUpstream: true, worktreeDirty: true })).toBe('WIP');
     expect(classifyBranch({ isMerged: false, openPr: { mergeable: 'CONFLICTING' }, hasUpstream: true, worktreeDirty: true })).toBe('WIP');
+  });
+  // A branch somebody is working in right now keeps moving on its own; dispatching
+  // an agent onto it both races the live session and re-advances the drain's
+  // progress signature every cycle (the overnight re-dispatch loop).
+  it('clean worktree of a LIVE owner → WIP, even with an open PR', () => {
+    const live = { isMerged: false, hasUpstream: true, worktreeDirty: false, liveWorktreeReason: 'worktree-active-agent' };
+    expect(classifyBranch({ ...live, openPr: { mergeable: 'MERGEABLE' } })).toBe('WIP');
+    expect(classifyBranch({ ...live, openPr: { mergeable: 'CONFLICTING' } })).toBe('WIP');
+    expect(classifyBranch({ ...live, openPr: null })).toBe('WIP');
+  });
+  it('a live worktree does NOT hide a merged branch from cleanup (MERGED still wins)', () => {
+    expect(classifyBranch({
+      isMerged: true, hasUpstream: true, worktreeDirty: false,
+      liveWorktreeReason: 'worktree-active-agent', openPr: null
+    })).toBe('MERGED');
+  });
+  it('an ABANDONED agent worktree is still driven (its owner is not live)', () => {
+    expect(classifyBranch({
+      isMerged: false, hasUpstream: true, worktreeDirty: true, abandonedAgentWorktree: true,
+      liveWorktreeReason: null, openPr: null
+    })).toBe('ABANDONED_WIP');
   });
   it('local-only (no upstream), no PR → WIP', () => {
     expect(classifyBranch({ isMerged: false, openPr: null, hasUpstream: false, worktreeDirty: false })).toBe('WIP');
@@ -330,6 +351,35 @@ describe('isAbandonedAgentWorktree', () => {
     expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: new Set() })).toBe(true);
     expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb' })).toBe(false);
     expect(isAbandonedAgentWorktree({ path: '/wt/agent-bbbbbbbb', activeAgentIds: ['agent-cccccccc'] })).toBe(false);
+  });
+});
+
+describe('resolveLiveWorktreeReason', () => {
+  const live = new Set(['agent-aaaaaaaa']);
+
+  it('reports the same reasons the teardown gate refuses on', () => {
+    expect(resolveLiveWorktreeReason({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe('worktree-active-agent');
+    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe('worktree-locked');
+    expect(resolveLiveWorktreeReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBe('worktree-human-claim');
+  });
+
+  it('is null for a free worktree, a dead agent, and no worktree at all', () => {
+    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: live })).toBeNull();
+    expect(resolveLiveWorktreeReason({ path: '/wt/next-issue-42', activeAgentIds: live })).toBeNull();
+    expect(resolveLiveWorktreeReason({ path: null, activeAgentIds: live })).toBeNull();
+  });
+
+  // The one case worktreeProtectionReason can't answer: it is only ever called with
+  // an authoritative Set, so a missing one reads there as "nobody is running". For a
+  // DISPATCH decision that default is backwards — presume live, like
+  // isAbandonedAgentWorktree does.
+  it('presumes an agent worktree is live when liveness is UNKNOWN', () => {
+    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb' })).toBe('worktree-agent-liveness-unknown');
+    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: ['agent-cccccccc'] })).toBe('worktree-agent-liveness-unknown');
+    // …but an authoritative empty Set really does mean nothing is running.
+    expect(resolveLiveWorktreeReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: new Set() })).toBeNull();
+    // and a non-agent worktree is nobody's live session either way.
+    expect(resolveLiveWorktreeReason({ path: '/wt/next-issue-42' })).toBeNull();
   });
 });
 
@@ -576,6 +626,35 @@ describe('reconcile', () => {
     expect(res.inFlight.map((i) => i.branch)).toEqual(['next/issue-2199']);
     expect(res.inFlight[0].state).toBe('IN_REVIEW');
     expect(res.wip.map((i) => i.branch)).toEqual(['wip-local']);
+  });
+
+  // The overnight re-dispatch loop's other half: a RUNNING agent's branch, clean
+  // and with an open PR, classified IN_REVIEW and was handed to the coordinator —
+  // which then raced the live session's pushes, each of which re-advanced the
+  // drain's progress signature. It belongs in heldLive, not inFlight.
+  it('holds a LIVE agent\'s branch out of the in-flight set even with an open PR', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'cos/task-y/agent-live1234', isDefault: false, current: false, tracking: 'origin/cos/task-y/agent-live1234', merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/agent-live1234', branch: 'refs/heads/cos/task-y/agent-live1234' }
+    ]);
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGh.mockResolvedValue(JSON.stringify([
+      { number: 4001, headRefName: 'cos/task-y/agent-live1234', mergeable: 'MERGEABLE', isDraft: false, url: 'u' }
+    ]));
+    // Clean worktree — the agent has committed and pushed but is still running.
+    execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set(['agent-live1234']) });
+    expect(res.inFlight).toEqual([]);
+    expect(res.heldLive.map((b) => [b.branch, b.liveWorktreeReason]))
+      .toEqual([['cos/task-y/agent-live1234', 'worktree-active-agent']]);
+    // …and the SAME repo with that agent gone is actionable again, so the hold is
+    // the liveness answer and not an unconditional "cos branches are off-limits".
+    const after = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(after.inFlight.map((i) => i.state)).toEqual(['IN_REVIEW']);
+    expect(after.heldLive).toEqual([]);
   });
 
   // Regression for the "3 orphan cos branches, no active agents, reconcile says
@@ -935,10 +1014,22 @@ describe('actionableSignature', () => {
     expect(actionableSignature(two)).not.toBe(actionableSignature(one));
   });
 
-  it('changes when an IN_REVIEW PR becomes mergeable (readiness advanced within the same state)', () => {
+  // GitHub computes mergeability asynchronously and answers UNKNOWN until it
+  // lands, so this field flaps across consecutive reads of a completely static PR.
+  // Counting that as progress is what let the drain re-dispatch ~40 coordinators in
+  // one night against two unchanged branches, so `mergeable` is deliberately OUT of
+  // the signature. Nothing is lost: CONFLICTING is what makes classifyBranch return
+  // CONFLICTED, so every real mergeability transition still shows up in `state`.
+  it('ignores openPr.mergeable — GitHub flaps UNKNOWN → MERGEABLE with no real change', () => {
     const unknown = [{ branch: 'a', state: 'IN_REVIEW', openPr: { number: 3, mergeable: 'UNKNOWN' } }];
     const mergeable = [{ branch: 'a', state: 'IN_REVIEW', openPr: { number: 3, mergeable: 'MERGEABLE' } }];
-    expect(actionableSignature(unknown)).not.toBe(actionableSignature(mergeable));
+    expect(actionableSignature(unknown)).toBe(actionableSignature(mergeable));
+  });
+
+  it('still changes when mergeability turns into a real state change (IN_REVIEW → CONFLICTED)', () => {
+    const review = [{ branch: 'a', state: 'IN_REVIEW', openPr: { number: 3, mergeable: 'MERGEABLE' } }];
+    const conflicted = [{ branch: 'a', state: 'CONFLICTED', openPr: { number: 3, mergeable: 'CONFLICTING' } }];
+    expect(actionableSignature(review)).not.toBe(actionableSignature(conflicted));
   });
 
   it('empty set yields an empty signature', () => {

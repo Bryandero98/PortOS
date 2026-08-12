@@ -15,9 +15,11 @@ const PARK_REASON_LABELS = {
   'owner-is-org': 'the "owner" filter matches an org, which can\'t author issues — set it to "self" or "any"',
   'owner-is-group': 'the "owner" filter matches a group, which can\'t author issues — set it to "self" or "any"',
   'no-in-flight-branches': 'no branches in flight',
+  'branches-held-by-live-owners': 'the only branches left belong to sessions still running — nothing to finish',
   'no-zombie-issues': 'no stale issues to reconcile',
   'no-actionable-plan-items': 'no unblocked PLAN items',
   'no-progress': 'already up to date',
+  'drain-cap': 'paused after several back-to-back runs — the rest waits for the next scheduled check',
   'no-detector': 'no work detector for this task'
 };
 

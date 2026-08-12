@@ -109,14 +109,17 @@ const PR_LIST_LIMIT = 200;
  *   CONFLICTED — open PR with merge conflicts        → agent resolves
  *   IN_REVIEW  — open PR, otherwise                  → agent drives to merge
  *   NEEDS_PR   — pushed, not merged, no PR, clean     → agent verifies + opens PR
- *   WIP        — local-only or dirty worktree         → skip + report (never touch)
+ *   WIP        — local-only, dirty, or LIVE worktree  → skip + report (never touch)
  *
- * @param {{ hasUpstream:boolean, isMerged:boolean, worktreeDirty:boolean, abandonedAgentWorktree?:boolean, openPr:({mergeable?:string}|null), prStateUnavailable?:boolean }} input
+ * @param {{ hasUpstream:boolean, isMerged:boolean, worktreeDirty:boolean, abandonedAgentWorktree?:boolean, liveWorktreeReason?:string|null, openPr:({mergeable?:string}|null), prStateUnavailable?:boolean }} input
  *   `prStateUnavailable` means the forge could not be READ this cycle — distinct
  *   from `openPr: null` ("the forge answered: no open PR").
+ *   `liveWorktreeReason` is `resolveLiveWorktreeReason`'s verdict for the branch's
+ *   worktree — non-null means somebody (an active CoS agent, a live human
+ *   `/claim`, a deliberate lock) is working in it right now.
  * @returns {'ABANDONED_WIP'|'MERGED'|'CONFLICTED'|'IN_REVIEW'|'NEEDS_PR'|'WIP'}
  */
-export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandonedAgentWorktree, openPr, prStateUnavailable = false }) {
+export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandonedAgentWorktree, liveWorktreeReason = null, openPr, prStateUnavailable = false }) {
   // A dead agent's worktree that still holds uncommitted work is the ONE dirty
   // case that must be driven rather than skipped — and it must be caught BEFORE
   // the `isMerged` test, because an agent that exited without committing leaves
@@ -128,6 +131,17 @@ export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandoned
   // indefinitely while every run logged "nothing in-flight".
   if (worktreeDirty && abandonedAgentWorktree) return 'ABANDONED_WIP';
   if (isMerged) return 'MERGED';
+  // A branch checked out in a LIVE worktree belongs to whoever is working in it —
+  // an active CoS agent, a live human `/claim`, or a worktree the user locked. Its
+  // branch will keep moving (commits, a PR opened, a rebase) for as long as that
+  // session runs, so handing it to the coordinator is wrong twice over: the agent
+  // races the live session's git operations, and every push the live session makes
+  // re-advances the drain's progress signature, which is exactly how the perpetual
+  // drain came to re-dispatch itself dozens of times in one night. Clean or dirty,
+  // PR or no PR: report it and never touch it. Checked AFTER `isMerged` on purpose
+  // — a merged branch in a live worktree still belongs in the MERGED bucket, where
+  // `cleanupMerged` applies the same protection and reports it as held back.
+  if (liveWorktreeReason) return 'WIP';
   // A worktree with real uncommitted changes is NEVER handed to the coordinator
   // agent — even for a branch with an open PR. The agent's per-state actions
   // (rebase/resolve/merge) run git operations that could stash/reset/checkout
@@ -229,7 +243,13 @@ export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, 
     if (typeof ageMs === 'number' && ageMs >= staleClaimIdleMs) return null;
     return 'worktree-human-claim';
   }
-  if (activeAgentIds?.has(basename)) return 'worktree-active-agent';
+  // `instanceof Set`, not a truthiness check: a caller that hands over a plain
+  // ARRAY of ids (an easy mistake — `getActiveAgentIds()` itself returns one) would
+  // otherwise throw `activeAgentIds.has is not a function` from inside a cleanup
+  // pass. Same sentinel discipline as isAbandonedAgentWorktree; a non-Set means
+  // liveness is unknown, which this gate answers "not protected" and
+  // resolveLiveWorktreeReason then upgrades for agent worktrees.
+  if (activeAgentIds instanceof Set && activeAgentIds.has(basename)) return 'worktree-active-agent';
   return null;
 }
 
@@ -260,6 +280,30 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
   const basename = path.split('/').pop() || '';
   if (!basename.startsWith('agent-') || isHumanClaimWorktree(basename)) return false;
   return !activeAgentIds.has(basename);
+}
+
+/**
+ * Why this worktree must be left ALONE this cycle — the dispatch-side counterpart
+ * to `worktreeProtectionReason`'s teardown gate, with one extra case it doesn't
+ * need: liveness we could not determine.
+ *
+ * `worktreeProtectionReason` is only ever called with an authoritative
+ * `activeAgentIds` Set (cleanupMerged defaults it to an empty one), so a missing
+ * Set reads there as "no agents running" and returns null. For the classifier that
+ * default is backwards: an `agent-*` worktree whose owner's liveness is UNKNOWN
+ * must be presumed live, exactly as `isAbandonedAgentWorktree` presumes it. Fail
+ * safe toward not-touching, never toward "nobody's home".
+ *
+ * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null }} input
+ * @returns {string|null} a stable reason slug, or null when the worktree is free
+ */
+export function resolveLiveWorktreeReason({ path, locked, activeAgentIds, ageMs }) {
+  if (!path) return null;
+  const reason = worktreeProtectionReason({ path, locked, activeAgentIds, ageMs });
+  if (reason) return reason;
+  const basename = path.split('/').pop() || '';
+  if (basename.startsWith('agent-') && !(activeAgentIds instanceof Set)) return 'worktree-agent-liveness-unknown';
+  return null;
 }
 
 /**
@@ -601,6 +645,14 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
       worktreeAgeMs: worktreeAge,
       worktreeDirty,
       dirtyPaths,
+      // Non-null ⇒ somebody is working in this worktree right now (active CoS
+      // agent / live human claim / locked). Same predicate `cleanupMerged` uses to
+      // refuse a teardown, reused by the classifier to refuse a DISPATCH — the two
+      // must agree, or the reconciler protects a worktree from deletion and then
+      // hands its branch to an agent that rebases underneath the live session.
+      liveWorktreeReason: resolveLiveWorktreeReason({
+        path: worktreePath, locked: worktreeLocked, activeAgentIds, ageMs: worktreeAge
+      }),
       behind: divergence.behind,
       ahead: divergence.ahead,
       collisionPaths: divergence.collisionPaths,
@@ -679,7 +731,9 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
  *   branches left on `origin` that nothing local points at; off, they are only
  *   reported — see `reapOrphanedRemotes`. `activeAgentIds` protects in-use CoS
  *   agent worktrees.
- * @returns {Promise<{ defaultBranch:string, cleaned:string[], inFlight:object[], wip:object[], skipped:{branch:string,reason:string}[], orphanRemotes:{reaped:string[],reported:object[]}, forgeUnavailable?:boolean, prStateUnavailable?:boolean }>}
+ * @returns {Promise<{ defaultBranch:string, cleaned:string[], inFlight:object[], wip:object[], heldLive:object[], skipped:{branch:string,reason:string}[], orphanRemotes:{reaped:string[],reported:object[]}, forgeUnavailable?:boolean, prStateUnavailable?:boolean }>}
+ *   `heldLive` is the `wip` subset held because a live agent/claim/lock owns the
+ *   branch's worktree — the "leave it alone, this reconcile IS done" case.
  *   `forgeUnavailable: true` means the cycle was SKIPPED before it started because
  *   the `gh` probe failed; `prStateUnavailable: true` means it ran but a gh read
  *   failed mid-cycle. Either way an empty `inFlight` says nothing about the repo
@@ -700,7 +754,7 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   if (githubRepoSpec(origin)) {
     const forge = await ensureForgeReachable('branch-reconcile', { hostname: githubApiHost(origin.host) });
     if (!forge.ok) {
-      return { defaultBranch: null, cleaned: [], inFlight: [], wip: [], skipped: [], forgeUnavailable: true, forgeStatus: forge.status };
+      return { defaultBranch: null, cleaned: [], inFlight: [], wip: [], heldLive: [], skipped: [], forgeUnavailable: true, forgeStatus: forge.status };
     }
   }
 
@@ -725,6 +779,12 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   // out of the actionable set on a cached verdict that still verifies (#3842).
   const { actionable: inFlight, superseded } = await applySupersededLedger(repoPath, allInFlight, defaultBranch);
   const wip = classified.filter((c) => c.state === 'WIP');
+  // The subset of `wip` that is WIP because somebody is working in it RIGHT NOW.
+  // Split out so the caller can say "the only branches left belong to running
+  // agents" — a finished reconcile, not a mysteriously quiet one. Without this the
+  // hold is indistinguishable from "no branches at all" in the park log, which is
+  // the same invisibility that once hid abandoned worktrees behind "cleaned 0".
+  const heldLive = wip.filter((c) => c.liveWorktreeReason);
 
   const { cleaned, skipped } = cleanup
     ? await cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds })
@@ -742,7 +802,7 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
     ? await reapOrphanedRemotes(repoPath, defaultBranch, { reap: reapRemotes })
     : { reaped: [], reported: [] };
 
-  return { defaultBranch, cleaned, inFlight, superseded, wip, skipped, orphanRemotes, prStateUnavailable };
+  return { defaultBranch, cleaned, inFlight, superseded, wip, heldLive, skipped, orphanRemotes, prStateUnavailable };
 }
 
 /**
@@ -956,12 +1016,21 @@ export function desiredEndState(state, actions, { prNumber, worktreePath, collis
  * blocked on human review / red CI) produces an identical signature, which the
  * generator treats as "no progress → park" instead of re-dispatching an
  * identical coordinator back-to-back. Order-independent (sorted).
+ *
+ * Deliberately does NOT include `openPr.mergeable`. GitHub computes mergeability
+ * asynchronously and answers `UNKNOWN` until it lands, so that field flaps
+ * UNKNOWN → MERGEABLE → UNKNOWN across consecutive reads of a completely static
+ * PR — which this guard would read as PROGRESS and re-dispatch on forever. It also
+ * carries no information the signature loses: `CONFLICTING` is what makes
+ * `classifyBranch` return CONFLICTED, so every real mergeability transition
+ * already shows up in `state`.
+ *
  * @param {object[]} actionable - post-filterActionable branches
  * @returns {string}
  */
 export function actionableSignature(actionable) {
   return actionable
-    .map((b) => `${b.branch}:${b.state}:${b.openPr?.number ?? 'none'}:${b.openPr?.mergeable ?? 'none'}`)
+    .map((b) => `${b.branch}:${b.state}:${b.openPr?.number ?? 'none'}`)
     .sort()
     .join('|');
 }
