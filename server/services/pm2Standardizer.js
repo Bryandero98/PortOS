@@ -8,6 +8,8 @@ import { spawn } from 'child_process';
 import { safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { getReservedPorts, getAllApps } from './apps.js';
+import { PORTOS_APP_ID } from '../lib/appIdentity.js';
+import { usesPm2 } from './streamingDetect.js';
 import { getListeningPorts } from '../lib/platform.js';
 
 const execAsync = promisify(exec);
@@ -28,6 +30,30 @@ const VITE_DEFAULT_PORTS = [5173, 5174];
 // DEFAULT_PORT_RANGE_START in services/ports.js) — clear of PortOS's own
 // 5553–5561 block and the Vite defaults.
 const REASSIGN_FROM = 6000;
+
+/**
+ * Why an app must not be standardized, or `null` when it may be.
+ *
+ * Standardizing rewrites files in the target repo — it writes an
+ * `ecosystem.config.cjs` and comments the ports out of `.env`/vite config — so
+ * the "is this even a PM2 app?" question has to be answered before the flow
+ * starts, not by whichever button happened to be rendered. Every entry point
+ * that resolves an app record (the `app:standardize` socket handler and the
+ * `/api/standardize/*` routes) runs this check; the Add App wizard has only a
+ * repoPath, so it gates in the UI instead.
+ *
+ * @param {object} app The app record.
+ * @returns {string|null} Refusal reason, or null if standardization is allowed.
+ */
+export function standardizeRefusalFor(app) {
+  if (app?.id === PORTOS_APP_ID) {
+    return 'PortOS manages its own ecosystem.config.cjs — that file is the canonical PORTS source and is not regenerated from an LLM analysis';
+  }
+  if (!usesPm2(app?.type)) {
+    return `${app?.type} apps are not run under PM2, so there is no ecosystem config to standardize`;
+  }
+  return null;
+}
 
 const isPortKey = (key) => /(^|_)PORT$/i.test(key);
 

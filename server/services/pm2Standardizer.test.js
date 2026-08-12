@@ -6,8 +6,29 @@ import {
   reassignCollidingPorts,
   runStandardizeFlow,
   applyStandardization,
+  standardizeRefusalFor,
   PORTOS_ECOSYSTEM_MARKER
 } from './pm2Standardizer.js';
+import { PORTOS_APP_ID } from '../lib/appIdentity.js';
+
+describe('standardizeRefusalFor', () => {
+  it('allows a PM2-managed app', () => {
+    expect(standardizeRefusalFor({ id: 'app-1', type: 'vite+express' })).toBeNull();
+  });
+
+  it('refuses app types PortOS never runs under PM2', () => {
+    // Standardizing writes an ecosystem.config.cjs into the repo, so the check
+    // belongs here rather than only in whichever button happened to render.
+    for (const type of ['ios-native', 'macos-native', 'xcode', 'swift']) {
+      expect(standardizeRefusalFor({ id: 'app-1', type })).toMatch(/not run under PM2/);
+    }
+  });
+
+  it('refuses PortOS itself — its ecosystem.config.cjs is the canonical PORTS source', () => {
+    expect(standardizeRefusalFor({ id: PORTOS_APP_ID, type: 'vite+express' }))
+      .toMatch(/manages its own ecosystem\.config\.cjs/);
+  });
+});
 
 describe('reassignCollidingPorts', () => {
   it('moves a process off a taken port and rewrites both env.PORT and --port args', () => {

@@ -5,23 +5,36 @@ import * as appsService from '../services/apps.js';
 
 const router = Router();
 
-// POST /api/standardize/analyze - Analyze app and generate standardization plan
-router.post('/analyze', asyncHandler(async (req, res) => {
-  const { repoPath, appId, providerId } = req.body;
+/**
+ * Resolve the repo to standardize from `repoPath` or `appId`.
+ *
+ * An `appId` also gets the precondition check: standardization rewrites the
+ * target repo, so an app PortOS never runs under PM2 (and PortOS itself) is
+ * refused here rather than relying on the button being hidden in the UI.
+ */
+async function resolveStandardizeTarget({ repoPath, appId }) {
+  if (repoPath) return repoPath;
 
-  // Get path from appId if provided
-  let path = repoPath;
-  if (!path && appId) {
+  if (appId) {
     const app = await appsService.getAppById(appId);
     if (!app) {
       throw new ServerError('App not found', { status: 404, code: 'NOT_FOUND' });
     }
-    path = app.repoPath;
+    const refusal = pm2Standardizer.standardizeRefusalFor(app);
+    if (refusal) {
+      throw new ServerError(refusal, { status: 400, code: 'NOT_STANDARDIZABLE' });
+    }
+    return app.repoPath;
   }
 
-  if (!path) {
-    throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
-  }
+  throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
+}
+
+// POST /api/standardize/analyze - Analyze app and generate standardization plan
+router.post('/analyze', asyncHandler(async (req, res) => {
+  const { repoPath, appId, providerId } = req.body;
+
+  const path = await resolveStandardizeTarget({ repoPath, appId });
 
   console.log(`🔧 Analyzing PM2 standardization for: ${path}`);
 
@@ -40,19 +53,7 @@ router.post('/analyze', asyncHandler(async (req, res) => {
 router.post('/apply', asyncHandler(async (req, res) => {
   const { repoPath, appId, plan, overwriteEcosystem = false } = req.body;
 
-  // Get path from appId if provided
-  let path = repoPath;
-  if (!path && appId) {
-    const app = await appsService.getAppById(appId);
-    if (!app) {
-      throw new ServerError('App not found', { status: 404, code: 'NOT_FOUND' });
-    }
-    path = app.repoPath;
-  }
-
-  if (!path) {
-    throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
-  }
+  const path = await resolveStandardizeTarget({ repoPath, appId });
 
   if (!plan) {
     throw new ServerError('Standardization plan is required', { status: 400, code: 'MISSING_PLAN' });
@@ -87,18 +88,7 @@ router.get('/template', asyncHandler(async (req, res) => {
 router.post('/backup', asyncHandler(async (req, res) => {
   const { repoPath, appId } = req.body;
 
-  let path = repoPath;
-  if (!path && appId) {
-    const app = await appsService.getAppById(appId);
-    if (!app) {
-      throw new ServerError('App not found', { status: 404, code: 'NOT_FOUND' });
-    }
-    path = app.repoPath;
-  }
-
-  if (!path) {
-    throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
-  }
+  const path = await resolveStandardizeTarget({ repoPath, appId });
 
   const result = await pm2Standardizer.createGitBackup(path);
 
