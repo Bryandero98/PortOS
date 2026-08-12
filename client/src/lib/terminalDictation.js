@@ -49,28 +49,40 @@ const isOwnedInput = (inputType) => (
   || inputType.startsWith('delete')
 );
 
+const isHighSurrogate = (code) => code >= 0xd800 && code <= 0xdbff;
+
 const commonPrefixLength = (a, b) => {
   const max = Math.min(a.length, b.length);
   let i = 0;
   while (i < max && a.charCodeAt(i) === b.charCodeAt(i)) i++;
-  return i;
+  // Never split a surrogate pair: cutting between the halves of an astral
+  // character (swapping 😀 for 😂 shares the high surrogate) would send a lone
+  // surrogate, which serializes to U+FFFD instead of the emoji.
+  return i > 0 && isHighSurrogate(a.charCodeAt(i - 1)) ? i - 1 : i;
 };
 
 /**
- * Translate a text-field edit into terminal input.
+ * Plan the terminal input for a text-field edit.
  *
- * @param {string} mirror   what the field held when we last forwarded it
+ * @param {string} mirror   what the PTY holds from this field
  * @param {string} next     what the field holds now
  * @param {number} floor    how much of `mirror` reached the PTY some other way
  *   (typed keystrokes, a paste). We retype from the floor rather than rewinding
  *   through it, so a correction can never erase text we didn't write.
- * @returns {string} the bytes to send to the PTY ('' when nothing changed)
+ * @returns {{data: string, committed: string}} `data` is the bytes to send ('' when
+ *   nothing changed); `committed` is what the PTY holds once they're applied. The
+ *   two differ from `next` only when `floor` blocked a full rewind — the caller
+ *   must track `committed`, not `next`, or every later diff is computed against a
+ *   baseline the PTY never had.
  */
-export const diffToTerminalInput = (mirror, next, floor = 0) => {
+export const planFieldEdit = (mirror, next, floor = 0) => {
   const rewindTo = Math.min(mirror.length, Math.max(commonPrefixLength(mirror, next), floor));
   const tail = next.slice(rewindTo);
-  // Pure append is the common case — skip building an empty DEL run for it.
-  return rewindTo === mirror.length ? tail : TERMINAL_DEL.repeat(mirror.length - rewindTo) + tail;
+  return {
+    // Pure append is the common case — skip building an empty DEL run for it.
+    data: rewindTo === mirror.length ? tail : TERMINAL_DEL.repeat(mirror.length - rewindTo) + tail,
+    committed: mirror.slice(0, rewindTo) + tail,
+  };
 };
 
 /**
@@ -89,9 +101,10 @@ export const attachDictationBridge = (terminal, sendData) => {
   const textarea = terminal?.textarea;
   if (!container || !textarea || typeof sendData !== 'function') return () => {};
 
-  // What the textarea held the last time we reconciled it with the PTY.
+  // What the PTY holds from this field. Usually equal to the textarea's value —
+  // it diverges only when `floor` blocked a full rewind (see planFieldEdit).
   let mirror = textarea.value;
-  // Length of `mirror` we did not put into the PTY ourselves — see diffToTerminalInput.
+  // Length of `mirror` we did not put into the PTY ourselves — see planFieldEdit.
   let floor = mirror.length;
   let resyncTimer = null;
 
@@ -132,13 +145,22 @@ export const attachDictationBridge = (terminal, sendData) => {
     // Ours: stop the event before xterm's textarea listener can append the raw
     // insertion on top of what we're about to reconcile.
     ev.stopPropagation();
-    const next = textarea.value;
-    const data = diffToTerminalInput(mirror, next, floor);
+    // We are reconciling the field right now, so a resync armed by the keystroke
+    // that produced this event would only re-read the same value — and pin `floor`
+    // to the whole phrase, silently blocking every later correction from rewinding.
+    if (resyncTimer != null) {
+      clearTimeout(resyncTimer);
+      resyncTimer = null;
+    }
+    const { data, committed } = planFieldEdit(mirror, textarea.value, floor);
     // A refused send leaves the PTY exactly as it was, so leave the mirror there
     // too — the next refinement then re-diffs against what the PTY really has
     // instead of erasing characters that never arrived.
     if (data && sendData(data) === false) return;
-    mirror = next;
+    // `committed`, not the field's value: when `floor` blocked a full rewind the
+    // PTY holds the un-rewound prefix, and claiming otherwise desyncs every
+    // later diff.
+    mirror = committed;
   };
 
   // blur/compositionend don't bubble, but capture-phase listeners still see them.

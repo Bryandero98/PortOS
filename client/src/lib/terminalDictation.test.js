@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Terminal } from '@xterm/xterm';
-import { TERMINAL_DEL as DEL, diffToTerminalInput, attachDictationBridge } from './terminalDictation.js';
+import { TERMINAL_DEL as DEL, planFieldEdit, attachDictationBridge } from './terminalDictation.js';
 
 // Replay an emitted terminal-input stream the way a line editor would, so a test
 // can assert "the prompt ends up holding what was dictated" rather than pinning
@@ -10,31 +10,51 @@ const render = (chunks) => chunks.join('').split('').reduce(
   '',
 );
 
-describe('diffToTerminalInput', () => {
+describe('planFieldEdit', () => {
+  const data = (...args) => planFieldEdit(...args).data;
+
   it('emits nothing when the field did not change', () => {
-    expect(diffToTerminalInput('hello', 'hello')).toBe('');
+    expect(data('hello', 'hello')).toBe('');
   });
 
   it('emits only the appended text when the field grew', () => {
-    expect(diffToTerminalInput('determin', 'determines')).toBe('es');
+    expect(data('determin', 'determines')).toBe('es');
   });
 
   it('erases the replaced tail before retyping it', () => {
-    expect(diffToTerminalInput('their', 'there')).toBe(`${DEL}${DEL}re`);
+    expect(data('their', 'there')).toBe(`${DEL}${DEL}re`);
   });
 
   it('emits pure deletions when the field shrank', () => {
-    expect(diffToTerminalInput('hello', 'hell')).toBe(DEL);
-    expect(diffToTerminalInput('hello', '')).toBe(DEL.repeat(5));
+    expect(data('hello', 'hell')).toBe(DEL);
+    expect(data('hello', '')).toBe(DEL.repeat(5));
   });
 
   it('never rewinds below the floor — it retypes instead of eating prior text', () => {
     // 'ls ' reached the PTY as keystrokes (floor 3); only 'foo' is ours.
-    expect(diffToTerminalInput('ls foo', 'ls bar', 3)).toBe(`${DEL.repeat(3)}bar`);
+    expect(data('ls foo', 'ls bar', 3)).toBe(`${DEL.repeat(3)}bar`);
     // Divergence below the floor: retype from the floor, delete nothing under it.
-    expect(diffToTerminalInput('ls foo', 'xx bar', 3)).toBe(`${DEL.repeat(3)}bar`);
+    expect(data('ls foo', 'xx bar', 3)).toBe(`${DEL.repeat(3)}bar`);
     // A floor past the end of the mirror clamps instead of emitting a negative run.
-    expect(diffToTerminalInput('ab', 'abc', 99)).toBe('c');
+    expect(data('ab', 'abc', 99)).toBe('c');
+  });
+
+  it('reports what the PTY holds, which is not the field when the floor blocked a rewind', () => {
+    // Normally the PTY ends up holding exactly what the field shows.
+    expect(planFieldEdit('their', 'there').committed).toBe('there');
+    // But 'ls ' is below the floor and was never rewound, so the PTY holds
+    // 'ls bar' even though the field reads 'xx bar'. Tracking the field here
+    // would make every later diff rewind against a baseline that never existed.
+    expect(planFieldEdit('ls foo', 'xx bar', 3).committed).toBe('ls bar');
+  });
+
+  it('does not split a surrogate pair', () => {
+    // 😀 and 😂 share a high surrogate; cutting between the halves would send a
+    // lone surrogate, which serializes to U+FFFD instead of the emoji.
+    const plan = planFieldEdit('hi 😀', 'hi 😂');
+    expect(plan.data).toBe(`${DEL.repeat(2)}😂`);
+    expect(plan.committed).toBe('hi 😂');
+    expect([...plan.data].every((ch) => ch.charCodeAt(0) < 0xd800 || ch.codePointAt(0) > 0xffff)).toBe(true);
   });
 });
 
@@ -194,6 +214,24 @@ describe('attachDictationBridge', () => {
     textarea.value = 'fresh';
     fireInput('insertText');
     expect(sent).toEqual(['abc', 'fresh']);
+  });
+
+  it('cancels a pending resync when it reconciles the field itself', () => {
+    // A keystroke xterm handled arms a resync; the dictation event that follows
+    // reconciles the field first. If the stale timer still fired it would pin the
+    // floor to the whole phrase and silently swallow every later correction.
+    textarea.value = 'their';
+    fireInput('insertText');
+    // Field is non-empty now, so this keystroke really does arm a resync.
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 32, bubbles: true }));
+    textarea.value = 'there';
+    fireInput('insertReplacementText');
+    vi.runAllTimers();
+    // A stale resync would have pinned floor to 'there'.length, and this
+    // correction would emit nothing at all.
+    textarea.value = 'their';
+    fireInput('insertReplacementText');
+    expect(sent).toEqual(['their', `${DEL}${DEL}re`, `${DEL}${DEL}ir`]);
   });
 
   it('arms no timer while typing leaves nothing to reconcile', () => {
