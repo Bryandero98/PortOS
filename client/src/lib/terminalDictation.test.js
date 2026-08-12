@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { DEL, commonPrefixLength, diffToTerminalInput, attachDictationBridge } from './terminalDictation.js';
+import { Terminal } from '@xterm/xterm';
+import { TERMINAL_DEL as DEL, diffToTerminalInput, attachDictationBridge } from './terminalDictation.js';
 
-describe('commonPrefixLength', () => {
-  it('counts the shared leading characters', () => {
-    expect(commonPrefixLength('determin', 'determines')).toBe(8);
-    expect(commonPrefixLength('abc', 'abc')).toBe(3);
-    expect(commonPrefixLength('abc', 'xyz')).toBe(0);
-    expect(commonPrefixLength('', 'abc')).toBe(0);
-  });
-});
+// Replay an emitted terminal-input stream the way a line editor would, so a test
+// can assert "the prompt ends up holding what was dictated" rather than pinning
+// the exact byte sequence that gets it there.
+const render = (chunks) => chunks.join('').split('').reduce(
+  (acc, ch) => (ch === DEL ? acc.slice(0, -1) : acc + ch),
+  '',
+);
 
 describe('diffToTerminalInput', () => {
   it('emits nothing when the field did not change', () => {
@@ -20,8 +20,6 @@ describe('diffToTerminalInput', () => {
   });
 
   it('erases the replaced tail before retyping it', () => {
-    // The dictation case: the field replaced "termine" with "termines".
-    expect(diffToTerminalInput('determine', 'determined')).toBe('d');
     expect(diffToTerminalInput('their', 'there')).toBe(`${DEL}${DEL}re`);
   });
 
@@ -35,9 +33,7 @@ describe('diffToTerminalInput', () => {
     expect(diffToTerminalInput('ls foo', 'ls bar', 3)).toBe(`${DEL.repeat(3)}bar`);
     // Divergence below the floor: retype from the floor, delete nothing under it.
     expect(diffToTerminalInput('ls foo', 'xx bar', 3)).toBe(`${DEL.repeat(3)}bar`);
-  });
-
-  it('clamps a floor longer than the mirror', () => {
+    // A floor past the end of the mirror clamps instead of emitting a negative run.
     expect(diffToTerminalInput('ab', 'abc', 99)).toBe('c');
   });
 });
@@ -45,21 +41,20 @@ describe('diffToTerminalInput', () => {
 describe('attachDictationBridge', () => {
   let container;
   let textarea;
+  let terminal;
   let sent;
   let dispose;
 
-  const fireInput = (inputType) => {
-    const ev = new Event('input', { bubbles: true });
-    // jsdom has no InputEvent#inputType on a plain Event — set it explicitly.
-    Object.defineProperty(ev, 'inputType', { value: inputType });
-    textarea.dispatchEvent(ev);
-    return ev;
+  // Faithful to what a browser dispatches: dictation/soft-keyboard edits arrive
+  // as InputEvents carrying inputType, and the field value is already updated.
+  const fireInput = (inputType, data = null) => {
+    textarea.dispatchEvent(new InputEvent('input', { inputType, data, bubbles: true }));
   };
 
   // Stands in for xterm's own textarea listener, which appends the raw insertion.
   const attachXtermStub = () => {
     const spy = vi.fn();
-    textarea.addEventListener('input', spy, true);
+    textarea.addEventListener('input', spy);
     return spy;
   };
 
@@ -69,8 +64,9 @@ describe('attachDictationBridge', () => {
     textarea = document.createElement('textarea');
     container.appendChild(textarea);
     document.body.appendChild(container);
+    terminal = { element: container, textarea, options: {} };
     sent = [];
-    dispose = attachDictationBridge({ container, textarea, sendData: (d) => sent.push(d) });
+    dispose = attachDictationBridge(terminal, (d) => { sent.push(d); });
   });
 
   afterEach(() => {
@@ -79,9 +75,9 @@ describe('attachDictationBridge', () => {
     vi.useRealTimers();
   });
 
-  it('is a no-op when wired with missing pieces', () => {
-    expect(attachDictationBridge({})()).toBeUndefined();
-    expect(attachDictationBridge({ container, textarea })()).toBeUndefined();
+  it('does not attach or throw when the terminal has no DOM yet', () => {
+    expect(() => attachDictationBridge({}, () => {})()).not.toThrow();
+    expect(() => attachDictationBridge(terminal, null)()).not.toThrow();
   });
 
   it('forwards a streaming dictation phrase without duplicating it', () => {
@@ -90,10 +86,7 @@ describe('attachDictationBridge', () => {
       textarea.value = partial;
       fireInput('insertText');
     }
-    // Replaying the emitted stream through a terminal-ish reducer must reproduce
-    // the field's final value — not the accumulated garble.
-    const rendered = sent.join('').split('').reduce((acc, ch) => (ch === DEL ? acc.slice(0, -1) : acc + ch), '');
-    expect(rendered).toBe('determines if any code');
+    expect(render(sent)).toBe('determines if any code');
   });
 
   it('stops the event before xterm can append the raw insertion', () => {
@@ -117,7 +110,9 @@ describe('attachDictationBridge', () => {
     fireInput('insertText');
     textarea.value = 'ab';
     fireInput('deleteContentBackward');
-    expect(sent).toEqual(['abc', DEL]);
+    textarea.value = '';
+    fireInput('deleteWordBackward');
+    expect(sent).toEqual(['abc', DEL, DEL.repeat(2)]);
   });
 
   it('leaves unowned input types to xterm and resyncs the mirror', () => {
@@ -135,13 +130,36 @@ describe('attachDictationBridge', () => {
 
   it('ignores input that belongs to an in-progress composition', () => {
     const xterm = attachXtermStub();
-    const ev = new Event('input', { bubbles: true });
-    Object.defineProperty(ev, 'inputType', { value: 'insertCompositionText' });
-    Object.defineProperty(ev, 'isComposing', { value: true });
     textarea.value = 'か';
-    textarea.dispatchEvent(ev);
+    textarea.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertCompositionText', data: 'か', isComposing: true, bubbles: true,
+    }));
     expect(sent).toEqual([]);
     expect(xterm).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays out of the way in screen-reader mode', () => {
+    const xterm = attachXtermStub();
+    terminal.options.screenReaderMode = true;
+    textarea.value = 'abc';
+    fireInput('insertText');
+    expect(sent).toEqual([]);
+    expect(xterm).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim text the sink reports as dropped', () => {
+    dispose();
+    let delivered = false;
+    dispose = attachDictationBridge(terminal, (d) => { if (delivered) sent.push(d); return delivered; });
+    // Mid session-switch: the emit is refused, so the PTY never saw 'abc'.
+    textarea.value = 'abc';
+    fireInput('insertText');
+    delivered = true;
+    // Once sends land again the whole phrase goes out — no DELs for characters
+    // that never arrived, and no silently swallowed words.
+    textarea.value = 'abd';
+    fireInput('insertReplacementText');
+    expect(sent).toEqual(['abd']);
   });
 
   it('resyncs after a keystroke xterm handles itself', () => {
@@ -178,6 +196,13 @@ describe('attachDictationBridge', () => {
     expect(sent).toEqual(['abc', 'fresh']);
   });
 
+  it('arms no timer while typing leaves nothing to reconcile', () => {
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 65, bubbles: true }));
+    expect(timer).not.toHaveBeenCalled();
+    timer.mockRestore();
+  });
+
   it('detaches every listener on dispose', () => {
     dispose();
     const xterm = attachXtermStub();
@@ -185,5 +210,63 @@ describe('attachDictationBridge', () => {
     fireInput('insertText');
     expect(sent).toEqual([]);
     expect(xterm).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The bridge's whole seam is "our capture-phase listener on terminal.element runs
+// before xterm's own listener on the textarea inside it". The stub above can't
+// prove that — only a real Terminal can, and this is what fails loudly if an
+// xterm upgrade moves or re-phases that listener.
+describe('attachDictationBridge against a real xterm Terminal', () => {
+  let container;
+  let terminal;
+
+  beforeEach(() => {
+    // xterm reads the device pixel ratio on open(); jsdom ships no matchMedia.
+    window.matchMedia = vi.fn(() => ({ matches: false, addListener() {}, removeListener() {} }));
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    terminal = new Terminal({ allowProposedApi: true });
+    terminal.open(container);
+  });
+
+  afterEach(() => {
+    terminal.dispose();
+    container.remove();
+    delete window.matchMedia;
+  });
+
+  // Each refinement replaces the field's whole contents, which is what Apple
+  // dictation does — `data` carries the text the field gained, exactly the value
+  // xterm's own handler forwards verbatim.
+  const dictate = (partials) => {
+    for (const partial of partials) {
+      terminal.textarea.value = partial;
+      terminal.textarea.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertText', data: partial, bubbles: true,
+      }));
+    }
+  };
+
+  // The bug, pinned upstream. If a future @xterm/xterm starts reconciling these
+  // events itself this fails — at which point the bridge is double-handling and
+  // should go, rather than quietly fighting xterm for the same input.
+  it('garbles the phrase when xterm handles the events alone', () => {
+    const sent = [];
+    terminal.onData((d) => sent.push(d));
+    dictate(['dde', 'deter', 'determin', 'determine', 'determines']);
+    expect(sent.join('')).toBe('ddedeterdetermindeterminedetermines');
+  });
+
+  it('sends the dictated phrase once, not the accumulated garble', () => {
+    const sent = [];
+    // onData is where xterm's own textarea handling would surface, so anything it
+    // forwards behind our back shows up here too.
+    terminal.onData((d) => sent.push(d));
+    const dispose = attachDictationBridge(terminal, (d) => { sent.push(d); });
+    dictate(['dde', 'deter', 'determin', 'determine', 'determines']);
+    dispose();
+
+    expect(render(sent)).toBe('determines');
   });
 });
