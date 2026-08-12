@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { Bell, X, CheckCheck, Trash2, Brain, ListTodo, AlertTriangle, Code, HelpCircle, BellRing, Sparkles } from 'lucide-react';
 import { timeAgo } from '../utils/formatters';
 import { clickableProps } from '../lib/a11yKeyboard';
+import useClickOutside from '../hooks/useClickOutside.js';
+import usePopoverPosition, { VIEWPORT_PADDING } from '../hooks/usePopoverPosition.js';
 
 const NOTIFICATION_TYPE_CONFIG = {
   memory_approval: {
@@ -47,6 +50,9 @@ const NOTIFICATION_TYPE_CONFIG = {
   }
 };
 
+const COLLAPSED_LIMIT = 10;
+const PANEL_WIDTH = 320;
+
 const PRIORITY_COLORS = {
   low: 'border-gray-500/30',
   medium: 'border-yellow-500/30',
@@ -61,23 +67,45 @@ export default function NotificationDropdown({
   onMarkAllAsRead,
   onRemove,
   onClearAll,
-  position = 'bottom' // 'bottom' opens upward, 'top' opens downward
+  position = 'above' // 'above' prefers opening upward, 'below' downward
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef(null);
+  const [showAll, setShowAll] = useState(false);
+  const containerRef = useRef(null);
   const navigate = useNavigate();
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setIsOpen(false);
-      }
-    };
+  // The panel is portaled to <body> and placed in viewport coordinates. That is
+  // what keeps it on-screen from this trigger: the bell sits mid-screen in the
+  // sidebar footer, so an absolutely-positioned 320px panel ran off the right
+  // edge on a phone — titles clipped, dismiss and mark-all/clear-all controls
+  // unreachable with nothing to scroll. The hook clamps into the viewport and
+  // flips above/below, so there is no breakpoint branch to keep in sync. Height
+  // changes (expanding the list) re-measure via contentDeps.
+  const { triggerRef, popoverRef, style: panelStyle } = usePopoverPosition({
+    open: isOpen,
+    width: PANEL_WIDTH,
+    minWidth: 260,
+    position,
+    contentDeps: [showAll, notifications.length]
+  });
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  // Both refs: the panel lives outside the trigger's subtree once portaled, so a
+  // trigger-only containment check would read clicks on the panel as outside.
+  useClickOutside([containerRef, popoverRef], isOpen, () => setIsOpen(false));
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setIsOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen]);
+
+  // Collapse back to the first page each time the panel is dismissed
+  useEffect(() => {
+    if (!isOpen) setShowAll(false);
+  }, [isOpen]);
 
   const handleNotificationClick = (notification) => {
     if (!notification.read) {
@@ -89,10 +117,14 @@ export default function NotificationDropdown({
     }
   };
 
+  const visible = showAll ? notifications : notifications.slice(0, COLLAPSED_LIMIT);
+  const hiddenCount = notifications.length - visible.length;
+
   return (
-    <div className="relative" ref={dropdownRef}>
+    <div className="relative" ref={containerRef}>
       {/* Bell button with badge */}
       <button
+        ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
         className="relative inline-flex items-center justify-center min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-2 rounded-lg hover:bg-port-card transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent focus:ring-offset-2 focus:ring-offset-port-bg"
         title="Notifications"
@@ -108,16 +140,18 @@ export default function NotificationDropdown({
         )}
       </button>
 
-      {/* Dropdown panel - position determines direction */}
-      {isOpen && (
+      {isOpen && createPortal(
         <div
+          ref={popoverRef}
           role="menu"
           aria-label="Notifications menu"
-          className={`absolute w-80 max-w-[calc(100vw-2rem)] bg-port-card border border-port-border rounded-lg shadow-xl z-50 overflow-hidden ${
-            position === 'bottom'
-              ? 'left-0 bottom-full mb-2'  // Opens upward from sidebar footer
-              : 'right-0 top-full mt-2'     // Opens downward from header
-          }`}
+          className="fixed bg-port-card border border-port-border rounded-lg shadow-xl z-[100] overflow-hidden"
+          style={{
+            left: panelStyle?.left ?? `${VIEWPORT_PADDING}px`,
+            top: panelStyle?.top ?? `${VIEWPORT_PADDING}px`,
+            width: panelStyle?.width ?? `${PANEL_WIDTH}px`,
+            visibility: panelStyle ? 'visible' : 'hidden'
+          }}
         >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-port-border">
@@ -145,17 +179,28 @@ export default function NotificationDropdown({
                   <Trash2 className="w-4 h-4 text-gray-400" aria-hidden="true" />
                 </button>
               )}
+              {/* Touch has no Escape key, and a tall panel can be clamped over the
+                  bell, so mobile needs an explicit dismiss it can always reach. */}
+              <button
+                type="button"
+                onClick={() => setIsOpen(false)}
+                className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded hover:bg-port-border transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent sm:hidden"
+                title="Close"
+                aria-label="Close notifications"
+              >
+                <X className="w-4 h-4 text-gray-400" aria-hidden="true" />
+              </button>
             </div>
           </div>
 
           {/* Notification list */}
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-[60dvh] overflow-y-auto sm:max-h-96">
             {notifications.length === 0 ? (
               <div className="px-4 py-8 text-center text-gray-500">
                 No notifications
               </div>
             ) : (
-              notifications.slice(0, 10).map(notification => {
+              visible.map(notification => {
                 const config = NOTIFICATION_TYPE_CONFIG[notification.type] || NOTIFICATION_TYPE_CONFIG.task_approval;
                 const Icon = config.icon;
 
@@ -176,8 +221,8 @@ export default function NotificationDropdown({
                         <Icon className={`w-4 h-4 ${config.color}`} />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className={`text-sm font-medium ${!notification.read ? 'text-white' : 'text-gray-300'}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={`min-w-0 flex-1 text-sm font-medium break-words ${!notification.read ? 'text-white' : 'text-gray-300'}`}>
                             {notification.title}
                           </span>
                           <button
@@ -186,18 +231,18 @@ export default function NotificationDropdown({
                               e.stopPropagation();
                               onRemove(notification.id);
                             }}
-                            className="p-1 rounded hover:bg-port-border transition-colors opacity-40 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 focus:outline-hidden focus:ring-2 focus:ring-port-accent"
+                            className="shrink-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] -my-2 rounded hover:bg-port-border transition-colors sm:min-w-0 sm:min-h-0 sm:my-0 sm:p-1 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 focus:outline-hidden focus:ring-2 focus:ring-port-accent"
                             aria-label={`Remove notification: ${notification.title}`}
                           >
-                            <X className="w-3 h-3 text-gray-500" aria-hidden="true" />
+                            <X className="w-4 h-4 text-gray-500 sm:w-3 sm:h-3" aria-hidden="true" />
                           </button>
                         </div>
                         {notification.description && (
-                          <p className="text-xs text-gray-500 mt-0.5 truncate">
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">
                             {notification.description}
                           </p>
                         )}
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-3 mt-1 sm:gap-2">
                           <span className="text-[10px] text-gray-600">
                             {timeAgo(notification.timestamp)}
                           </span>
@@ -208,7 +253,7 @@ export default function NotificationDropdown({
                                 e.stopPropagation();
                                 onMarkAsRead(notification.id);
                               }}
-                              className="text-[10px] text-port-accent hover:underline"
+                              className="text-[10px] text-port-accent hover:underline py-2 -my-2 sm:py-0 sm:my-0"
                             >
                               Mark read
                             </button>
@@ -222,15 +267,20 @@ export default function NotificationDropdown({
             )}
           </div>
 
-          {/* Footer */}
-          {notifications.length > 10 && (
-            <div className="px-4 py-2 border-t border-port-border text-center">
-              <span className="text-xs text-gray-500">
-                +{notifications.length - 10} more notifications
-              </span>
+          {/* Actionable, so the overflow is reachable rather than merely counted */}
+          {hiddenCount > 0 && (
+            <div className="border-t border-port-border text-center">
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="w-full px-4 py-3 text-xs text-port-accent hover:bg-port-border/50 transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent sm:py-2"
+              >
+                Show {hiddenCount} more notification{hiddenCount === 1 ? '' : 's'}
+              </button>
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
