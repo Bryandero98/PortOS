@@ -1388,6 +1388,11 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.episodesResolved[0]).toMatchObject({ issueId: issue.id, number: fresh.number, clearedBeats: false });
     const updated = await issuesSvc.getIssue(issue.id);
     expect(updated.stages.idea.input).toBe('corrected — the Atrium is NOT convened here');
+    // The entry doubles as the rollback's mutation manifest: it reports the
+    // value this call actually left standing.
+    expect(planner.resolvedEpisodeEdits(out)).toEqual([
+      { issueId: issue.id, idea: { input: updated.stages.idea.input, output: '', status: updated.stages.idea.status } },
+    ]);
   });
 
   // The pre-episode arc-spine gate verifies an episode-EMPTY plan (#3789). A
@@ -1970,6 +1975,74 @@ describe('arcPlanner — snapshotArcState / restoreArcState (resolve-round rollb
     expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('e1 planning synopsis');
   });
 
+  // The rollback used to treat ANY difference from the snapshot as the round's
+  // own work — see `createArcMutationLedger` for the run that exposed it.
+  describe('restores only the episodes the resolve round is on record as writing', () => {
+    // The damage every case below shares: a rewritten arc, a minted volume that
+    // took an episode off its own, and a synopsis rewrite on e1.
+    // Bound once so the manifest provably reports the value that was written.
+    const WROTE = { input: 'resolver rewrote e1', output: '', status: 'empty' };
+
+    async function regressiveRound({ s, v1, v2, e1 }) {
+      const minted = await seasonsSvc.createSeason(s.id, { title: 'Volume 1', synopsis: 'duplicate', episodeCountTarget: 2 });
+      await seriesSvc.updateSeries(s.id, {
+        arc: { logline: 'rewritten logline', summary: 'rewritten summary' },
+        seasons: [{ ...v1, synopsis: 'rewritten v1' }, v2, minted],
+      });
+      await issuesSvc.updateIssue(e1.id, { seasonId: minted.id });
+      await issuesSvc.updateStage(e1.id, 'idea', { ...WROTE });
+      return { e1Edit: { issueId: e1.id, idea: { ...WROTE } } };
+    }
+
+    it('reverts its own episode write and the volume it drove, and keeps an unrelated one', async () => {
+      const seed = await seedArc();
+      const { s, v2, e1, e2 } = seed;
+      const snapshot = await planner.snapshotArcState(s.id);
+      const { e1Edit } = await regressiveRound(seed);
+      // Lands between the snapshot and the rollback, from outside this round.
+      await issuesSvc.updateStage(e2.id, 'idea', { input: 'edited elsewhere mid-verify' });
+
+      const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [e1Edit] });
+      expect(result).toMatchObject({ restored: true, episodesRestored: 1, reassignedIssueCount: 1 });
+
+      const series = await seriesSvc.getSeries(s.id);
+      expect(series.arc.logline).toBe('original logline');
+      expect(series.seasons[0].synopsis).toBe('v1 synopsis');
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('e1 planning synopsis');
+      // The minted volume is gone, so its episode still has to come back with it.
+      expect((await issuesSvc.getIssue(e1.id)).seasonId).toBe(seed.v1.id);
+      expect((await issuesSvc.getIssue(e2.id)).stages.idea.input).toBe('edited elsewhere mid-verify');
+      expect((await issuesSvc.getIssue(e2.id)).seasonId).toBe(v2.id);
+    });
+
+    it('leaves an episode it wrote alone once a later write lands on top of it', async () => {
+      const seed = await seedArc();
+      const { s, e1 } = seed;
+      const snapshot = await planner.snapshotArcState(s.id);
+      const { e1Edit } = await regressiveRound(seed);
+      await issuesSvc.updateStage(e1.id, 'idea', { input: 'a human kept editing after the resolver' });
+
+      const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [e1Edit] });
+      expect(result).toMatchObject({ restored: true, episodesRestored: 0 });
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe('a human kept editing after the resolver');
+      // The arc-level revert still happens — only the episode is off limits.
+      expect((await seriesSvc.getSeries(s.id)).arc.logline).toBe('original logline');
+    });
+
+    it('restores no synopsis at all for an arc-spine round (empty manifest)', async () => {
+      const seed = await seedArc();
+      const { s, e1 } = seed;
+      const snapshot = await planner.snapshotArcState(s.id);
+      await regressiveRound(seed);
+
+      const result = await planner.restoreArcState(s.id, snapshot, { episodeEdits: [] });
+      expect(result).toMatchObject({ restored: true, episodesRestored: 0, reassignedIssueCount: 1 });
+      expect((await issuesSvc.getIssue(e1.id)).stages.idea.input).toBe(WROTE.input);
+      expect((await seriesSvc.getSeries(s.id)).seasons.map((x) => x.id)).toEqual([seed.v1.id, seed.v2.id]);
+      expect((await issuesSvc.getIssue(e1.id)).seasonId).toBe(seed.v1.id);
+    });
+  });
+
   it('leaves a locked idea stage alone (the resolve pass never touched it)', async () => {
     const { s, e1 } = await seedArc();
     const snapshot = await planner.snapshotArcState(s.id);
@@ -2028,6 +2101,25 @@ describe('arcPlanner — shapeEpisodeResolutions', () => {
   it('caps at RESOLVE_EPISODE_MAX entries', () => {
     const many = Array.from({ length: 60 }, (_, i) => ({ episodeNumber: i + 1, synopsis: `s${i}` }));
     expect(planner.shapeEpisodeResolutions(many)).toHaveLength(50);
+  });
+});
+
+describe('arcPlanner — resolvedEpisodeEdits (rollback mutation manifest)', () => {
+  it('carries only the writes that landed, with the value they left', () => {
+    expect(planner.resolvedEpisodeEdits({
+      episodesResolved: [
+        { issueId: 'iss-1', number: 1, idea: { input: 'rewritten', output: '', status: 'empty' } },
+        { issueId: 'iss-2', number: 2, skipped: 'locked' },
+        { issueId: 'iss-3', number: 3, skipped: 'write-failed' },
+        { seasonNumber: 2, episodeNumber: 9, skipped: 'no-match' },
+      ],
+    })).toEqual([{ issueId: 'iss-1', idea: { input: 'rewritten', output: '', status: 'empty' } }]);
+  });
+
+  it('is empty for a round that reported nothing — including an arc-spine one', () => {
+    expect(planner.resolvedEpisodeEdits({ applied: true, episodesResolved: [] })).toEqual([]);
+    expect(planner.resolvedEpisodeEdits({ applied: false })).toEqual([]);
+    expect(planner.resolvedEpisodeEdits(null)).toEqual([]);
   });
 });
 

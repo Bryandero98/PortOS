@@ -2658,9 +2658,12 @@ describe('autopilot conductor', () => {
     // Only the first-attempt resolve snapshots; the corrective pass reuses the
     // checkpoint it was just rewound to rather than pinning the reverted draft.
     expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(1);
+    // The resolver reported no episode writes, so the rollback is authorized to
+    // restore none — the arc and volumes come back, every synopsis stays put.
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
+      { episodeEdits: [] },
     );
     // The corrective pass is handed the CHECKPOINT's findings (what the restored
     // plan actually has) plus the rejected attempt's own findings to steer away
@@ -2966,9 +2969,10 @@ describe('autopilot conductor', () => {
       .mockImplementationOnce(async () => round(5, 2));
     // The round reports real work (the observed `resolve:round episodesEdited=1`)
     // — it edited episodes and STILL came back worse, which is the whole point.
+    // The reported `idea` is the mutation manifest the rollback is restricted to.
     arcSpies.resolveVerifyIssues.mockImplementationOnce(async () => ({
       applied: true,
-      episodesResolved: [{ issueId: 'i1', number: 1 }],
+      episodesResolved: [{ issueId: 'i1', number: 1, idea: { input: 'rewritten', output: '', status: 'empty' } }],
     }));
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
@@ -2978,9 +2982,12 @@ describe('autopilot conductor', () => {
     // again with no retries left, so rounds 4-6 are never billed.
     expect(arcSpies.verifyArc).toHaveBeenCalledTimes(3);
     expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    // Rolled back with the round's own episode write attached, so the restore
+    // puts that synopsis back and leaves every other episode alone.
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
+      { episodeEdits: [{ issueId: 'i1', idea: { input: 'rewritten', output: '', status: 'empty' } }] },
     );
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
@@ -3014,6 +3021,7 @@ describe('autopilot conductor', () => {
     expect(arcSpies.restoreArcState).toHaveBeenCalledWith(
       seriesId,
       await arcSpies.snapshotArcState.mock.results[0].value,
+      { episodeEdits: [] },
     );
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
@@ -3053,7 +3061,7 @@ describe('autopilot conductor', () => {
     // (none here) moves the store on and forces a fresh one. The corrective pass
     // still rewinds to the checkpoint it already holds.
     expect(arcSpies.snapshotArcState).toHaveBeenCalledTimes(3);
-    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot, { episodeEdits: [] });
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
     expect(last?.reason).toMatch(/best verified 2-finding state/);
@@ -3300,7 +3308,7 @@ describe('autopilot conductor', () => {
 
     const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
     expect(last?.pauseKind).toBe('regression');
-    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot);
+    expect(arcSpies.restoreArcState).toHaveBeenCalledWith(seriesId, bestSnapshot, { episodeEdits: [] });
     expect(last?.residualFindings).toEqual(rounds[0]);
     expect(last?.discardedFindings).toEqual(rounds[1]);
   });
