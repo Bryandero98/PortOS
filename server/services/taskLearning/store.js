@@ -67,14 +67,21 @@ export const DEFAULT_WINDOW_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 /**
  * Append a recent outcome to a task-type metrics bucket's bounded ring (issue
  * #2460). Mutates `metrics` in place and returns it for chaining. Stores the compact `{ t, s }`
- * shape (ISO timestamp + success bool). Tolerates a bucket that predates the ring
- * (older learning.json before migration 188) by initializing it. Enforces
- * `RECENT_OUTCOMES_CAP`, dropping the oldest sample first.
+ * shape (ISO timestamp + success bool), plus `d` (duration ms) when a finite
+ * duration was measured — omitted when unknown so a pre-duration sample and a
+ * duration-less new sample stay the same shape (absent ≠ 0). Tolerates a bucket
+ * that predates the ring (older learning.json before migration 188) by
+ * initializing it. Enforces `RECENT_OUTCOMES_CAP`, dropping the oldest sample first.
  */
-export function appendRecentOutcome(metrics, { success, at } = {}) {
+export function appendRecentOutcome(metrics, { success, at, durationMs } = {}) {
   if (!metrics || typeof metrics !== 'object') return metrics;
   if (!Array.isArray(metrics.recentOutcomes)) metrics.recentOutcomes = [];
-  metrics.recentOutcomes.push({ t: at || new Date().toISOString(), s: !!success });
+  const sample = { t: at || new Date().toISOString(), s: !!success };
+  // Only a finite, non-negative duration is a measurement. `|| 0` would collapse
+  // "not recorded" into "instant", which is exactly the sentinel the churn
+  // detector must not trip on for pre-instrumentation history.
+  if (Number.isFinite(durationMs) && durationMs >= 0) sample.d = durationMs;
+  metrics.recentOutcomes.push(sample);
   if (metrics.recentOutcomes.length > RECENT_OUTCOMES_CAP) {
     metrics.recentOutcomes = metrics.recentOutcomes.slice(-RECENT_OUTCOMES_CAP);
   }

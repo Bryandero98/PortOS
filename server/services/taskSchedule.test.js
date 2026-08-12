@@ -1660,6 +1660,28 @@ describe('taskSchedule', () => {
         const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
         expect(saved.executions['task:branch-reconcile'].perApp['app-1'].lastActionableSignature).toBeUndefined()
       })
+
+      it('parkPerpetual increments signatureRepeatCount when the same finding is parked again', async () => {
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, lastActionableSignature: 'a:NEEDS_PR:none' } } } }
+        })
+        await parkPerpetual('branch-reconcile', 'app-1', { reason: 'no-progress', actionableCount: 1, signature: 'a:NEEDS_PR:none' })
+        const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
+        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].signatureRepeatCount).toBe(2)
+        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].lastActionableSignature).toBe('a:NEEDS_PR:none')
+      })
+
+      it('parkPerpetual resets signatureRepeatCount when the finding changes', async () => {
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: { 'app-1': { lastRun: null, count: 0, lastActionableSignature: 'old', signatureRepeatCount: 6 } } } }
+        })
+        await parkPerpetual('branch-reconcile', 'app-1', { reason: 'no-progress', actionableCount: 1, signature: 'new' })
+        const saved = JSON.parse(writeFile.mock.calls.at(-1)[1])
+        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].lastActionableSignature).toBe('new')
+        expect(saved.executions['task:branch-reconcile'].perApp['app-1'].signatureRepeatCount).toBe(1)
+      })
     })
 
     describe('type-level failure ledger (#2616)', () => {

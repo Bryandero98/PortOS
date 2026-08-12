@@ -420,6 +420,19 @@ describe('store.appendRecentOutcome', () => {
   it('is a no-op on a non-object metrics bucket', () => {
     expect(appendRecentOutcome(null, { success: true })).toBeNull();
   });
+
+  it('stores a finite duration as d and omits the key when duration is unknown', () => {
+    const metrics = {};
+    appendRecentOutcome(metrics, { success: true, at: '2026-07-10T00:00:00.000Z', durationMs: 90_000 });
+    expect(metrics.recentOutcomes[0]).toEqual({ t: '2026-07-10T00:00:00.000Z', s: true, d: 90_000 });
+    appendRecentOutcome(metrics, { success: false, at: '2026-07-10T00:01:00.000Z' });
+    expect(metrics.recentOutcomes[1]).toEqual({ t: '2026-07-10T00:01:00.000Z', s: false });
+    appendRecentOutcome(metrics, { success: true, at: '2026-07-10T00:02:00.000Z', durationMs: null });
+    expect(metrics.recentOutcomes[2]).not.toHaveProperty('d');
+    // A measured 0 is a real instant run, not "unknown".
+    appendRecentOutcome(metrics, { success: true, at: '2026-07-10T00:03:00.000Z', durationMs: 0 });
+    expect(metrics.recentOutcomes[3].d).toBe(0);
+  });
 });
 
 describe('store.computeWindowedStats', () => {

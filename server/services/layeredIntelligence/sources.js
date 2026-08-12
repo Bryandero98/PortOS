@@ -15,6 +15,7 @@ import { fetchPublicText } from '../../lib/safeUrlFetch.js';
 import { validateCommand } from '../../lib/commandSecurity.js';
 import { getSettings } from '../settings.js';
 import { computeWindowedStats } from '../taskLearning/store.js';
+import { summarizeRecentRuns, SHORT_LIVED_MS } from '../agentChurn.js';
 import {
   PLANNED_WORK_LABEL, PLANNED_WORK_NONE, PLANNED_WORK_UNAVAILABLE_PREFIX,
   PLANNED_WORK_MAX_ITEMS, PLANNED_WORK_MAX_CHARS, LI_TASK_TYPE,
@@ -298,14 +299,23 @@ export async function gatherSources(app, config, { cosPath = PATHS.cos, trustShe
     // still have approved-but-undelivered proposals worth surfacing. When both halves
     // are empty renderCosMetricsSource returns '' and the source is omitted as before.
     const summary = {};
+    const DAY_MS = 24 * 60 * 60 * 1000;
     for (const [type, m] of Object.entries(learning?.byTaskType || {})) {
       const windowed = computeWindowedStats(m?.recentOutcomes);
+      // 24h burst stats (duration + count) so the PortOS reasoner can see a
+      // short-lived loop as numbers even though detection/filing is now
+      // programmatic at agent completion, not an LI judgment call.
+      const burst = summarizeRecentRuns(m?.recentOutcomes, { windowMs: DAY_MS });
       summary[type] = {
         lifetimeSuccessRate: typeof m?.successRate === 'number' ? m.successRate : null,
         lifetimeCompleted: m?.completed || 0,
         recentSuccessRate: windowed.windowedSuccessRate,
         recentCompleted: windowed.windowedCompleted,
-        avgDurationMs: m?.avgDurationMs || 0
+        avgDurationMs: m?.avgDurationMs || 0,
+        recent24hCompleted: burst.windowCompleted,
+        recent24hShortLived: burst.shortLivedCount,
+        recent24hMedianDurationMs: burst.medianDurationMs,
+        shortLivedMs: SHORT_LIVED_MS
       };
     }
     // No delivery block yet: the approval → delivery numbers come from the app's
