@@ -101,6 +101,18 @@ The verification pass flagged these problems. Resolve **every** one of them in y
 {{findingsJson}}
 ```
 
+## Exact-text field budgets
+
+These are measured from the current persisted strings above. For every exact
+replacement, `replace.length - find.length` must be less than or equal to the
+field's `remaining` value. A negative delta frees space. The server rejects the
+entire replacement instead of truncating it when the resulting field would
+exceed `max`.
+
+```json
+{{textBudgetsJson}}
+```
+
 {{#hasAvoid}}
 ## Problems a discarded earlier attempt introduced — do not author these
 
@@ -128,7 +140,7 @@ Resolve the findings above with edits that cannot re-create any of these. Concre
 9. **Return only the records you actually edited, and key every one of them to a finding.** `characterArcs[]`, `seasons[]`, and `episodes[]` are SPARSE patch lists: include a character arc only if you corrected it, a volume only if you changed it, an episode only if you rewrote it, and the `arc` block only if you changed the arc itself. Every entry — including `arc` — carries `resolves: ["f2", ...]`, the ids of the findings that edit closes. An edit that names no finding is discarded by the server, so do not return untouched records "for completeness": that is the single biggest source of NEW contradictions, because every untargeted rewrite is a chance to break something the verification pass had not flagged.
 10. **Patch long prose with exact text replacements; never return it wholesale.** Set top-level `patchMode` to `"exact-text-v1"`. For an existing arc, change `summary` only through `summaryEdits[]` and `protagonistArc` only through `protagonistArcEdits[]`. For an existing volume, change `synopsis` only through `synopsisEdits[]` and `endingHook` only through `endingHookEdits[]`. Each edit is `{ "find": "an exact unique excerpt copied verbatim from the current field", "replace": "the complete corrected excerpt" }`. Use the shortest excerpt that is still unique, normally one sentence or clause. The server rejects a missing or repeated `find`, so copy punctuation and whitespace exactly. To insert text, include a nearby unique sentence in both `find` and `replace`; to delete text, use an empty `replace`. Apply no more than 12 replacements per field. Never put a full stored summary, protagonist arc, or synopsis in `find` or `replace`: that recreates the wholesale-rewrite failure this contract prevents. A short one-clause `endingHook` may be matched whole when no smaller unique excerpt exists. Short fields such as title/logline/themes/count may still be returned directly when a finding names them.
 11. **Within an edited record, return only the fields that must change.** A character arc patch must repeat its existing `characterId` (or exact `characterName` when it has no ID), then include only changed top-level fields and changed transitions. Every transition patch must repeat its existing `id`; omit untouched transitions. To remove a transition that is itself the contradiction, return its `id` plus `"delete": true`. Omit every untouched key instead of paraphrasing the stored value "for completeness". The server preserves omitted fields and IDs. This field-level sparsity is load-bearing: rewriting an unrelated field can create the next round's contradiction even when the targeted finding was fixed.
-12. **Stay safely inside persisted string limits and end every replacement cleanly.** Hard limits are: arc logline 500 characters; arc summary 8,000; protagonist arc 4,000; volume logline 500; volume synopsis 8,000; volume ending hook 1,000. After mentally applying every replacement, the resulting field must remain under its hard limit and every `replace` must end at a complete clause or sentence. Never rely on the server to truncate prose. Keep a volume synopsis near 200 words when that can carry the issue allocation; expand only as much as the finding genuinely requires.
+12. **Stay inside the measured field budgets and end every replacement cleanly.** Hard limits are: arc logline 500 characters; arc summary 8,000; protagonist arc 4,000; volume logline 500; volume synopsis 8,000; volume ending hook 1,000. Use the exact `current` / `max` / `remaining` values above: for each field, the combined replacement delta (`replace.length - find.length`) must not exceed `remaining`. Prefer a shorter correction or delete redundant wording nearby when the field has little headroom. Every `replace` must end at a complete clause or sentence. Never rely on the server to truncate prose. Keep a volume synopsis near 200 words when that can carry the issue allocation; expand only as much as the finding genuinely requires.
 
 ## Output contract
 

@@ -12,7 +12,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-resolve.md': '17fbb066d7957dc2e345df1795bb0d9d', // post-258 (exact long-text patches)
+  'pipeline-arc-resolve.md': 'ebd85d3a0b5949f16877c25ca498cce9', // post-259 (measured text budgets)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

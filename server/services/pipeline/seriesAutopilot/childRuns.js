@@ -375,6 +375,19 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
         episodesReverted: rollback.episodesRestored,
         retrying: canRetry || canIsolate,
       });
+      // Pause is graceful at the verifier transaction boundary: the candidate
+      // has now been independently judged and the regressive edit restored, so
+      // the store is safe to hand back. Do not spend a corrective or isolation
+      // call after the user has asked this convergence loop to stop.
+      if (record.pauseRequested) {
+        return {
+          pause: true,
+          pauseKind: 'manual',
+          reason: 'paused by user after the active arc judgment completed',
+          residual: rollbackTarget.blocking,
+          discarded,
+        };
+      }
       // Corrective pass (#3781): the revert above put the best verified state
       // back, so re-run the resolver against exactly the findings that state
       // has — this time carrying the rejected attempt's own findings as an
@@ -448,6 +461,17 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
     // remains the live checkpoint. It is quality-accepted even when the count
     // ties (the gate separately rejects a worse severity mix above).
     await recordArcResolveOutcome(lastResolve, record, { outcome: 'accepted', after: blocking, target: scope });
+    // A judge result is the atomic boundary for an arc round. When Pause was
+    // requested while that provider call was running, retain its verdict and
+    // stop here instead of silently dispatching another resolver + judge pair.
+    if (record.pauseRequested) {
+      return {
+        pause: true,
+        pauseKind: 'manual',
+        reason: 'paused by user after the active arc judgment completed',
+        residual: blocking,
+      };
+    }
     // Equal-count drafts may still represent real causal progress when their
     // severity mix is not worse: a resolver can close broad structural findings
     // and expose the same number of narrower handoff problems. Treat that latest
@@ -497,7 +521,20 @@ export async function runArcVerify(seriesId, record, { spineOnly = false } = {})
       avoid: avoidFindings([], blocking),
       spineOnly,
     });
-    if (resolved?.applied !== false) changed = true;
+    if (resolved?.applied === false) {
+      await recordArcResolveOutcome(
+        { blocking, runIds: arcResolveRunIds(resolved) },
+        record,
+        { outcome: 'rejected', after: blocking, target: scope },
+      );
+      seededVerify = verified;
+      broadcast(seriesId, {
+        type: 'resolve:no-change', scope, round,
+        rejectedExactEdits: resolved.rejectedExactEdits || 0,
+      });
+      continue;
+    }
+    changed = true;
     lastResolve = { blocking, snapshot, runIds: arcResolveRunIds(resolved) };
     broadcast(seriesId, {
       type: 'resolve:round', scope, round, episodesEdited: editedCount(resolved),

@@ -2426,6 +2426,32 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.pauseKind).toBe('divergence');
   });
 
+  it('does not pay for another judge when an exact arc repair applied nothing', async () => {
+    verifyFindings = [{ severity: 'high', problem: 'plot hole', location: 'V1' }];
+    const noOp = {
+      applied: false,
+      rejectedExactEdits: 1,
+      runId: 'no-op-resolve',
+    };
+    arcSpies.resolveVerifyIssues
+      .mockResolvedValueOnce(noOp)
+      .mockResolvedValueOnce(noOp);
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 3 });
+    await waitFor(runFinished(seriesId));
+
+    // The unchanged verifier result seeds the next round. The gate may retry a
+    // shorter patch, but it never bills another judge for an identical store.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(1);
+    expect(arcSpies.resolveVerifyIssues).toHaveBeenCalledTimes(2);
+    expect(recordModelOutcome).toHaveBeenCalledWith('no-op-resolve', expect.objectContaining({
+      outcome: 'rejected', scoreBefore: -1, scoreAfter: -1,
+    }));
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.type).toBe('paused');
+    expect(last?.pauseKind).toBe('maxRounds');
+  });
+
   it('reverts an arc-resolve round that introduced blocking findings and pauses on the pre-round residual', async () => {
     // The 2026-08-09 non-convergence, replayed: the loop hands the resolver ONE
     // blocking finding and gets 3 back, then 5 — with the original still
@@ -3376,6 +3402,31 @@ describe('autopilot conductor', () => {
     expect(last?.reason).toMatch(/paused by user after the active step completed/i);
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot).toMatchObject({ status: 'paused', pauseKind: 'manual' });
+  });
+
+  it('gracefully pauses an arc convergence loop after its active judge without dispatching a repair', async () => {
+    let finishJudge;
+    const judge = new Promise((resolve) => { finishJudge = resolve; });
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc.mockImplementationOnce(async () => judge);
+    const blocker = { severity: 'medium', problem: 'A causal handoff is missing.', location: 'volume:1' };
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 5 });
+    await waitFor(() => arcSpies.verifyArc.mock.calls.length === 1);
+
+    expect(autopilot.pauseSeriesAutopilot(seriesId)).toBe(true);
+    finishJudge({ issues: [blocker] });
+    await waitFor(runFinished(seriesId));
+
+    expect(arcSpies.resolveVerifyIssues).not.toHaveBeenCalled();
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(1);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last).toMatchObject({
+      type: 'paused',
+      pauseKind: 'manual',
+      residualFindings: [blocker],
+    });
+    expect(last?.reason).toMatch(/active arc judgment completed/i);
   });
 
   it('drafts cover + interior pages when includeVisual is set', async () => {

@@ -9,7 +9,7 @@
 
 import { MANUSCRIPT_TYPES } from '../series.js';
 import { listIssues, STAGE_INPUT_MAX } from '../issues.js';
-import { ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { ARC_LIMITS, ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
 import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { renderCharacterArcsForPrompt } from '../../../lib/seriesCharacterArc.js';
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
@@ -738,6 +738,34 @@ export async function buildResolveContext(series, findings, preloadedWorld, opti
     findingsJson: JSON.stringify(stampFindingIds(findings), null, 2),
     hasAvoid: avoid.length > 0,
     avoidJson: JSON.stringify(avoid, null, 2),
+    textBudgetsJson: JSON.stringify({
+      arc: {
+        summary: {
+          current: (series.arc?.summary || '').length,
+          max: ARC_LIMITS.SUMMARY_MAX,
+          remaining: Math.max(0, ARC_LIMITS.SUMMARY_MAX - (series.arc?.summary || '').length),
+        },
+        protagonistArc: {
+          current: (series.arc?.protagonistArc || '').length,
+          max: ARC_LIMITS.PROTAGONIST_ARC_MAX,
+          remaining: Math.max(0, ARC_LIMITS.PROTAGONIST_ARC_MAX - (series.arc?.protagonistArc || '').length),
+        },
+      },
+      seasons: (series.seasons || []).map((season) => ({
+        id: season.id,
+        number: season.number,
+        synopsis: {
+          current: (season.synopsis || '').length,
+          max: ARC_LIMITS.SEASON_SYNOPSIS_MAX,
+          remaining: Math.max(0, ARC_LIMITS.SEASON_SYNOPSIS_MAX - (season.synopsis || '').length),
+        },
+        endingHook: {
+          current: (season.endingHook || '').length,
+          max: ARC_LIMITS.SEASON_ENDING_HOOK_MAX,
+          remaining: Math.max(0, ARC_LIMITS.SEASON_ENDING_HOOK_MAX - (season.endingHook || '').length),
+        },
+      })),
+    }, null, 2),
     recommendedStructure: structure
       ? describeStructure(structure)
       : '(no target episode count set)',

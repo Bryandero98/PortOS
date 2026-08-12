@@ -899,6 +899,12 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.series.seasons[0].endingHook).toBe(
       'The old charter lapses when the crossing begins.',
     );
+    const budgets = JSON.parse(stageRunnerSpy.mock.calls[0][1].textBudgetsJson);
+    expect(budgets.seasons[0].endingHook).toEqual({
+      current: 'The old charter remains active.'.length,
+      max: 1000,
+      remaining: 1000 - 'The old charter remains active.'.length,
+    });
   });
 
   it('rejects ambiguous, whole-field, and over-limit exact text edits', () => {
@@ -919,6 +925,42 @@ describe('arcPlanner — resolveVerifyIssues', () => {
       [{ find: 'anchor', replace: 'a replacement that exceeds the cap' }],
       20,
     )).toEqual({ value: 'short anchor', applied: 0, rejected: 1 });
+  });
+
+  it('reports an over-limit exact-only response as not applied', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const originalHook = `${'x'.repeat(980)} target`;
+    const season = await seasonsSvc.createSeason(s.id, {
+      number: 1,
+      title: 'Vol 1',
+      synopsis: 'The volume remains unchanged.',
+      endingHook: originalHook,
+      episodeCountTarget: 1,
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        patchMode: 'exact-text-v1',
+        seasons: [{
+          resolves: ['f1'],
+          id: season.id,
+          endingHookEdits: [{
+            find: 'target',
+            replace: 'a much longer replacement that cannot fit inside the field cap',
+          }],
+        }],
+      },
+      runId: 'r-over-limit', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'medium', problem: 'Fix the hook.', suggestion: 'Use the right legal state.' }],
+    });
+
+    expect(out.applied).toBe(false);
+    expect(out.rejectedExactEdits).toBe(1);
+    expect(out.series.seasons[0].endingHook).toBe(originalHook);
   });
 
   it('re-runs verify when no findings are supplied and short-circuits on a clean arc', async () => {

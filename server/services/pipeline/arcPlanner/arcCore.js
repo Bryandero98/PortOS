@@ -608,6 +608,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   const protagonistArc = exactTextMode
     ? applyExactTextEdits(series.arc.protagonistArc || '', edits.arc?.protagonistArcEdits, ARC_LIMITS.PROTAGONIST_ARC_MAX)
     : { value: edits.arc?.protagonistArc ?? series.arc.protagonistArc ?? '', applied: 0, rejected: 0 };
+  let rejectedExactEdits = arcSummary.rejected + protagonistArc.rejected;
   const arc = sanitizeArc({
     logline: edits.arc?.logline || series.arc.logline || '',
     summary: arcSummary.value,
@@ -661,6 +662,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
       if (synopsis.rejected || endingHook.rejected) {
         console.log(`⚠️ arc-resolve: skipped ${synopsis.rejected + endingHook.rejected} ambiguous or over-limit exact text edit(s) for volume ${existing.number}`);
       }
+      rejectedExactEdits += synopsis.rejected + endingHook.rejected;
       patchedById.set(existing.id, sanitizeSeason({
         ...existing,
         title: typeof raw.title === 'string' ? raw.title : existing.title,
@@ -694,11 +696,15 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // `preserveDroppedSeasons` (autopilot unlock-for-run) rides through so an
   // auto-resolve can rewrite a volume but never delete one — see the option's
   // contract on commitSeasonsWithRemap.
-  const { series: updated } = await commitSeasonsWithRemap(
-    series,
-    { arc, seasons },
-    { preserveDroppedSeasons: options.preserveDroppedSeasons === true },
-  );
+  const arcOrSeasonsChanged = JSON.stringify(arc) !== JSON.stringify(series.arc)
+    || JSON.stringify(seasons) !== JSON.stringify(series.seasons || []);
+  const { series: updated } = arcOrSeasonsChanged
+    ? await commitSeasonsWithRemap(
+      series,
+      { arc, seasons },
+      { preserveDroppedSeasons: options.preserveDroppedSeasons === true },
+    )
+    : { series };
 
   const characterArcs = mergeCharacterArcPatches(updated.characterArcs, edits.characterArcs);
   const characterArcsChanged = JSON.stringify(characterArcs) !== JSON.stringify(updated.characterArcs || []);
@@ -718,10 +724,17 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     shapeEpisodeResolutions(edits.episodes),
   );
 
+  const episodesChanged = episodesResolved.some((entry) => !entry.skipped);
+  const applied = arcOrSeasonsChanged || characterArcsChanged || episodesChanged;
+  if (!applied && rejectedExactEdits) {
+    console.log(`⚠️ arc-resolve: response made no applicable change after ${rejectedExactEdits} exact text edit(s) were rejected`);
+  }
+
   const notes = typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '';
   return {
     series: resolvedSeries,
-    applied: true,
+    applied,
+    rejectedExactEdits,
     notes,
     findings,
     episodesResolved,
