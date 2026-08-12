@@ -475,7 +475,7 @@ function VariationCard({
     />
   );
 
-  const title = <div className="text-sm text-white font-medium truncate">{v.label}</div>;
+  const title = <div className="min-w-0 text-sm text-white font-medium break-words">{v.label}</div>;
   const body = <div className="text-xs text-gray-400 line-clamp-2 mt-1">{v.prompt}</div>;
   const actions = (
     <div className="flex items-center gap-1">

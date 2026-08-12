@@ -277,8 +277,8 @@ function SheetRow({
     />
   );
   const title = (
-    <div className="flex items-center gap-2">
-      <div className="text-sm text-white font-medium truncate">{sheet.label}</div>
+    <div className="flex items-center gap-2 flex-wrap">
+      <div className="min-w-0 text-sm text-white font-medium break-words">{sheet.label}</div>
       <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-port-accent/10 text-port-accent border border-port-accent/20">
         {compositeKindLabel(sheet.kind)}
       </span>

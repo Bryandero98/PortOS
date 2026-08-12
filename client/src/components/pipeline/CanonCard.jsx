@@ -149,8 +149,8 @@ function RevealTimingField({ entry, editable, onPatch }) {
   return (
     <details className="mt-2 group">
       <summary className="cursor-pointer list-none flex items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300">
-        <ChevronRight size={11} className="group-open:hidden" />
-        <ChevronDown size={11} className="hidden group-open:inline" />
+        <ChevronRight size={11} className="shrink-0 group-open:hidden" />
+        <ChevronDown size={11} className="hidden shrink-0 group-open:inline" />
         Reveal timing (spoiler scoping)
         {gated ? <span className="ml-1 text-port-warning normal-case tracking-normal">· gated</span> : null}
       </summary>
@@ -212,15 +212,16 @@ function RevealTimingField({ entry, editable, onPatch }) {
 // novelist / graphic-novelist fields or generating a reference sheet.
 function CharacterDetailsToggle({ children }) {
   const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <div className="mt-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-white"
+        className="flex w-full items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-white"
       >
-        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-        <BookOpen size={10} />
+        <Chevron size={10} className="shrink-0" />
+        <BookOpen size={10} className="shrink-0" />
         Character details {open ? '' : '+ reference sheet'}
       </button>
       {open ? <div>{children}</div> : null}
@@ -311,6 +312,7 @@ function WardrobeSection({ wardrobes, editable, onChange }) {
 
   if (!editable && merged.length === 0) return null;
 
+  const Chevron = open ? ChevronDown : ChevronRight;
   const summary = merged.map((w) => w.name).filter(Boolean).join(', ');
 
   const addOne = () => {
@@ -323,11 +325,14 @@ function WardrobeSection({ wardrobes, editable, onChange }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-white"
+        className="flex w-full items-center gap-1 text-[10px] uppercase tracking-wider text-gray-500 hover:text-white"
       >
-        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-        <Shirt size={10} />
-        Outfits ({merged.length}){summary && !open ? `: ${summary}` : ''}
+        <Chevron size={10} className="shrink-0" />
+        <Shirt size={10} className="shrink-0" />
+        <span className="shrink-0">Outfits ({merged.length})</span>
+        {/* One clipped line — the joined outfit names are long enough to wrap
+            into a paragraph-tall collapsed header on a phone. */}
+        {summary && !open ? <span className="min-w-0 truncate">: {summary}</span> : null}
       </button>
       {open ? (
         <div className="mt-1.5 pl-3 border-l border-port-border space-y-1.5">
@@ -449,9 +454,13 @@ export default function CanonCard({
 
   const title = (
     <div className="flex items-center gap-2 flex-wrap">
-      <span className="text-sm text-white font-medium truncate">{entry.name}</span>
+      {/* Wrap rather than truncate: the title column is what gives way to the
+          action strip on a phone, and a name clipped to its first word hides
+          which entry the card is. `min-w-0` is what lets `break-words` engage —
+          a flex item can otherwise not shrink below its longest word. */}
+      <span className="min-w-0 text-sm text-white font-medium break-words">{entry.name}</span>
       {entry.aliases?.length ? (
-        <span className="text-[10px] text-gray-500 truncate">
+        <span className="min-w-0 text-[10px] text-gray-500 break-words">
           aka {entry.aliases.join(', ')}
         </span>
       ) : null}
