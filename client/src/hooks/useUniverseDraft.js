@@ -17,7 +17,10 @@ import {
   WORLD_LOCKABLE_FIELDS,
   ensureInfluences,
 } from '../services/api';
-import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
+import {
+  applyRecordRenderPin, deriveAvailableBackends, renderPinLadder, renderTargetPin,
+  IMAGE_GEN_MODE, RENDER_TARGET,
+} from '../lib/imageGenBackends';
 import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipelineImageDefaults';
 import { sameJsonShape } from '../lib/sameJsonShape';
 import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
@@ -87,7 +90,11 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
   const [availableLoras, setAvailableLoras] = useState([]);
   const [availableBackends, setAvailableBackends] = useState([]);
   const [defaultMode, setDefaultMode] = useState(null);
-  const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
+  const [settingsImageCfg, setSettingsImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
+  // The Universe Bible target's own `settings.renderDefaults` pin — the rung
+  // between this universe's pin and the install default. Held as the normalized
+  // pin rather than the whole settings blob so the memo below has a stable dep.
+  const [targetPin, setTargetPin] = useState(null);
   const [draft, setDraft] = useState(createEmptyUniverseDraft);
   const [runs, setRuns] = useState([]);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
@@ -198,7 +205,8 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       setAvailableBackends(backends);
       const saved = settings?.imageGen?.mode;
       setDefaultMode(backends.find((backend) => backend.id === saved)?.id || backends[0]?.id || IMAGE_GEN_MODE.LOCAL);
-      setImageCfg(readPipelineImageSettings(settings));
+      setSettingsImageCfg(readPipelineImageSettings(settings));
+      setTargetPin(renderTargetPin(settings, RENDER_TARGET.UNIVERSE_BIBLE));
     }
     setLoading(false);
   };
@@ -653,6 +661,25 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     savedStyleSnapshotRef.current,
     ensureInfluences(draft.influences),
   );
+  // The render-pin ladder's inputs (see `renderPinLadder`), resolved here at the
+  // source — this hook owns every rung — rather than at each consumer, so a new
+  // render affordance on this page inherits the pin instead of re-introducing
+  // the bug. `targetPin` doubles as the "settings loaded" sentinel: it is only
+  // ever set from a successful read, and the backend list must be passed as
+  // `null` (not the initial `[]`, which reads as "loaded, nothing enabled" and
+  // would suppress every pin) until then.
+  const pinSources = [draft, targetPin];
+  const pinBackends = targetPin ? availableBackends : null;
+  // What every SINGLE-image render on this page uses: cast / places / objects
+  // reference renders and clean plates.
+  const imageCfg = useMemo(
+    () => applyRecordRenderPin(settingsImageCfg, pinSources, pinBackends),
+    [settingsImageCfg, targetPin, draft.imageMode, draft.imageModelId, availableBackends],
+  );
+  // The same ladder for the BATCH form's default mode. The client always sends
+  // an explicit body.mode once settings load, so without resolving it here the
+  // pins would only ever apply to mode-less API callers.
+  const effectiveDefaultMode = renderPinLadder(pinSources, pinBackends).mode || defaultMode;
 
   return {
     activeProviderId,
@@ -665,6 +692,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     defaultMode,
     draft,
     draftRef,
+    effectiveDefaultMode,
     flushDraftIfDirty,
     handleCanonChange,
     handleCreateNamed,

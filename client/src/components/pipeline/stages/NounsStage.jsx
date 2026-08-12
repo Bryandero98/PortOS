@@ -42,7 +42,9 @@ import CanonCard from '../CanonCard';
 import MediaPreview from '../../media/MediaPreview';
 import Drawer from '../../Drawer';
 import ImageGenSettingsForm from '../../imageGen/ImageGenSettingsForm';
-import { deriveAvailableBackends } from '../../../lib/imageGenBackends';
+import {
+  applyRecordRenderPin, deriveAvailableBackends, renderTargetPin, RENDER_TARGET,
+} from '../../../lib/imageGenBackends';
 import {
   PIPELINE_IMAGE_DEFAULTS,
   readPipelineImageSettings,
@@ -142,10 +144,31 @@ export default function NounsStage({ issue, series, onStageUpdate }) {
     [sysSettings],
   );
 
+  // Reference renders here are UNIVERSE canon renders (same records, same
+  // `universeRun` tag as the Universe Builder's cast rows), so they resolve the
+  // same render-pin ladder: the linked universe's pin, then the Universe Bible
+  // `renderDefaults` pin, then this stage's saved config. `imageCfg` stays the
+  // raw saved config so the settings drawer keeps editing the install-wide
+  // default rather than a value the pin overrode. Backends pass as `null` until
+  // settings land — `[]` means "loaded, nothing enabled" and would suppress the
+  // pin entirely (see renderPinLadder).
+  const renderCfg = useMemo(
+    () => applyRecordRenderPin(
+      imageCfg,
+      [universe, renderTargetPin(sysSettings, RENDER_TARGET.UNIVERSE_BIBLE)],
+      sysSettings ? availableBackends : null,
+    ),
+    [imageCfg, sysSettings, availableBackends, universe?.imageMode, universe?.imageModelId],
+  );
+
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      getSettings().catch(() => ({})),
+      // `null` on failure, NOT `{}` — a `{}` stand-in derives an empty backend
+      // list, which `renderPinLadder` reads as "loaded, nothing enabled" and
+      // uses to suppress every pin. A settings fetch that failed must not look
+      // like an install with no backends.
+      getSettings().catch(() => null),
       listImageModels().catch(() => []),
     ]).then(([s, modelList]) => {
       if (cancelled || !mountedRef.current) return;
@@ -357,7 +380,7 @@ export default function NounsStage({ issue, series, onStageUpdate }) {
       toast.error(`Add a description before generating a reference for ${entry.name}`);
       return;
     }
-    const baseOpts = pipelineImageCfgToRenderOpts(imageCfg);
+    const baseOpts = pipelineImageCfgToRenderOpts(renderCfg);
     // Inject the universe's stylePrompt as a prefix and merge negativePrompts so
     // ref images and comic pages share the same aesthetic (Codex doesn't
     // accept reference images, so style consistency comes from text alone).
@@ -399,7 +422,7 @@ export default function NounsStage({ issue, series, onStageUpdate }) {
       toast.error(`Add a description, palette, or recurring details before generating a clean plate for ${entry.name}`);
       return;
     }
-    const baseOpts = pipelineImageCfgToRenderOpts(imageCfg);
+    const baseOpts = pipelineImageCfgToRenderOpts(renderCfg);
     const plate = composeCleanPlatePrompt(entry, baseOpts.negativePrompt || '');
     const styled = composeStyledPrompt(
       plate.prompt,
@@ -504,7 +527,7 @@ export default function NounsStage({ issue, series, onStageUpdate }) {
             type="button"
             onClick={openSettings}
             className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-port-card border border-port-border text-gray-300 text-xs hover:border-port-accent/50 hover:text-white"
-            title={`Reference image gen settings — backend: ${imageCfg.mode}`}
+            title={`Reference image gen settings — backend: ${renderCfg.mode}${renderCfg.mode === imageCfg.mode ? '' : ' (pinned by the linked universe)'}`}
           >
             <SettingsIcon size={12} /> Image gen
           </button>

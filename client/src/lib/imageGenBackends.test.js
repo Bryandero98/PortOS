@@ -9,6 +9,9 @@ import {
   referenceSlotsFor,
   supportsReferenceStrength,
   deriveAvailableBackends,
+  applyRecordRenderPin,
+  renderPinLadder,
+  renderTargetPin,
 } from './imageGenBackends';
 
 describe('I2I_CAPABLE_MODES / isI2iCapableMode', () => {
@@ -102,5 +105,87 @@ describe('deriveAvailableBackends', () => {
     expect(deriveAvailableBackends(settings, { excludeExternal: true }).map((b) => b.id))
       .toEqual([IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.AGY]);
     expect(deriveAvailableBackends(undefined)).toEqual([]);
+  });
+});
+
+describe('renderPinLadder', () => {
+  const backends = [
+    { id: IMAGE_GEN_MODE.LOCAL }, { id: IMAGE_GEN_MODE.CODEX }, { id: IMAGE_GEN_MODE.AGY },
+  ];
+  const record = (imageMode, imageModelId = null) => ({ imageMode, imageModelId });
+
+  it('reports no pin when every source is empty', () => {
+    expect(renderPinLadder([null, {}, record(null)])).toEqual({ mode: null, modelId: null });
+    // 'auto' is the "no pin" sentinel, same as the server's normalizer.
+    expect(renderPinLadder([record('auto')])).toEqual({ mode: null, modelId: null });
+  });
+
+  it('takes the highest-priority source that carries a pin', () => {
+    expect(renderPinLadder([record(null), record('agy', 'm')], backends))
+      .toEqual({ mode: IMAGE_GEN_MODE.AGY, modelId: 'm' });
+    expect(renderPinLadder([record('codex'), record('agy')], backends).mode)
+      .toBe(IMAGE_GEN_MODE.CODEX);
+  });
+
+  it('falls THROUGH a pin whose backend is not enabled, rather than giving up', () => {
+    // The old behavior returned "no pin" here, so a stale record pin also
+    // suppressed the target pin sitting below it.
+    expect(renderPinLadder([record('grok'), record('agy')], backends).mode)
+      .toBe(IMAGE_GEN_MODE.AGY);
+    // A null backend list skips the usability gate entirely.
+    expect(renderPinLadder([record('grok')], null).mode).toBe(IMAGE_GEN_MODE.GROK);
+    // `[]` is "loaded, nothing enabled" — a real gate, not "unknown".
+    expect(renderPinLadder([record('agy')], []).mode).toBeNull();
+  });
+});
+
+describe('renderTargetPin', () => {
+  it("re-keys settings.renderDefaults[target] to the flat record-pin shape", () => {
+    const settings = { renderDefaults: { 'universe-bible': { imageMode: 'agy', imageModel: 'm' } } };
+    expect(renderTargetPin(settings, 'universe-bible')).toEqual({ imageMode: 'agy', imageModelId: 'm' });
+    expect(renderTargetPin(settings, 'music-video')).toEqual({ imageMode: null, imageModelId: null });
+    expect(renderTargetPin(undefined, 'universe-bible')).toEqual({ imageMode: null, imageModelId: null });
+  });
+});
+
+describe('applyRecordRenderPin', () => {
+  const backends = [
+    { id: IMAGE_GEN_MODE.LOCAL }, { id: IMAGE_GEN_MODE.CODEX }, { id: IMAGE_GEN_MODE.AGY },
+  ];
+  const cfg = { mode: IMAGE_GEN_MODE.CODEX, modelId: 'flux2-klein-4b', width: 1024 };
+
+  it('returns the cfg BY IDENTITY when no pin applies', () => {
+    // Identity matters: this cfg is a prop, so a fresh object every render
+    // would churn every consumer for the common unpinned case.
+    expect(applyRecordRenderPin(cfg, [null, {}], backends)).toBe(cfg);
+  });
+
+  it('overrides the settings-derived mode and keeps the untouched knobs', () => {
+    const out = applyRecordRenderPin(cfg, [{ imageMode: 'agy' }], backends);
+    expect(out.mode).toBe(IMAGE_GEN_MODE.AGY);
+    expect(out.width).toBe(1024);
+  });
+
+  it('routes the pinned model to modelId for local and cloudModel for a cloud CLI', () => {
+    const local = applyRecordRenderPin(cfg, [{ imageMode: 'local', imageModelId: 'flux-1' }], backends);
+    expect(local.modelId).toBe('flux-1');
+    expect(local.cloudModel).toBeNull();
+
+    const cloud = applyRecordRenderPin(cfg, [{ imageMode: 'agy', imageModelId: 'gemini-3.5-pro' }], backends);
+    expect(cloud.cloudModel).toBe('gemini-3.5-pro');
+    // The settings-derived LOCAL model must not leak into a cloud render.
+    expect(cloud.modelId).toBeNull();
+  });
+
+  it('drops a pinned model for a cloud CLI with no model knob (grok)', () => {
+    const out = applyRecordRenderPin(cfg, [{ imageMode: 'grok', imageModelId: 'nope' }], null);
+    expect(out.cloudModel).toBeNull();
+    expect(out.modelId).toBeNull();
+  });
+
+  it('still applies a model-only pin when the pinned mode equals the settings mode', () => {
+    const out = applyRecordRenderPin(cfg, [{ imageMode: 'codex', imageModelId: 'gpt-5.6-luna' }], backends);
+    expect(out.mode).toBe(IMAGE_GEN_MODE.CODEX);
+    expect(out.cloudModel).toBe('gpt-5.6-luna');
   });
 });

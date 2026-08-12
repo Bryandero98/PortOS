@@ -164,6 +164,35 @@ export async function getUniverse(id, { includeDeleted = false } = {}) {
   return w;
 }
 
+/**
+ * One universe's render pin (`imageMode` / `imageModelId`) and nothing else.
+ *
+ * Same motivation as `listUniverseNames` / `listUniverseStyles` above, applied
+ * to a by-id read: the two scalars a render-target ladder needs would otherwise
+ * cost a `getUniverse`, whose `sanitizeTemplate` pass walks every variation,
+ * composite sheet, and bible entry (minting UUIDs for id-less ones) — and that
+ * runs on EVERY mode-less universe-tagged render, so an agent filling a
+ * 20-entry cast pays it 20 times. Reach for this instead of
+ * `recordRenderPin(await getUniverse(id))`.
+ *
+ * This skips the SANITIZER, not the row fetch — both backends' `readRaw` still
+ * return the whole record. That's fine because the sanitize pass is the part
+ * that scales with canon size; projecting the two columns in SQL would shave a
+ * row read that is already a single indexed lookup, at the cost of a
+ * backend-specific query pair.
+ *
+ * Reading raw is safe because `recordRenderPin` applies the same
+ * `normalizeRenderPinValue` the sanitizer's persisted pin fields do. Raw reads
+ * DO return tombstones, so deleted records are filtered here; a missing or
+ * deleted universe resolves to `null` (the caller falls through the ladder)
+ * rather than throwing, since a render must not fail over a stale tag.
+ */
+export async function getUniverseRenderPin(id) {
+  const raw = await store().loadOneRaw(id);
+  if (!raw || raw.deleted) return null;
+  return { imageMode: raw.imageMode ?? null, imageModelId: raw.imageModelId ?? null };
+}
+
 // Returns true when the raw on-disk universe carries variations or composite
 // sheets that are missing a stable `id` field — i.e. sanitizeTemplate would
 // mint fresh UUIDs (and those UUIDs would differ on every read until the

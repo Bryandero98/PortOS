@@ -20,6 +20,7 @@ import { useRef } from 'react';
 import { Sparkles } from 'lucide-react';
 import { updateUniverse } from '../../services/api';
 import { universeStylePreset } from '../../lib/universeStylePreset';
+import { RENDER_TARGET } from '../../lib/imageGenBackends';
 import useImageRenderSettings from '../../hooks/useImageRenderSettings';
 import useSingleImageRender from '../../hooks/useSingleImageRender';
 import EntryThumbSlot from './EntryThumbSlot';
@@ -61,7 +62,8 @@ export const shouldPersistProbe = ({ styleDirty, capturedKey, currentKey }) =>
   !styleDirty && capturedKey !== null && currentKey === capturedKey;
 
 export default function StyleProbeImage({ universe, onUniverseChange, canRender = true, styleDirty = false, onPreview = null, onRenderComplete = null }) {
-  const { imageCfg } = useImageRenderSettings();
+  // A universe render, so it resolves the universe's pin ladder (see renderPinLadder).
+  const { imageCfg } = useImageRenderSettings({ record: universe, target: RENDER_TARGET.UNIVERSE_BIBLE });
   // The style key the in-flight probe was queued against, captured at render
   // time so the async completion can detect mid-render style drift. Keyed by
   // universe so this component can stay mounted across a universe switch (no

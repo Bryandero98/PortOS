@@ -35,7 +35,34 @@ import {
 } from './cloudProviderConfig.js';
 import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
+import { getUniverseRenderPin } from '../universeBuilder/crud.js';
 import { getImageModels, isFlux2 } from '../../lib/mediaModels.js';
+
+// The job tags that name the record owning a render, each mapped to the record
+// loader and the render target whose `renderDefaults` pin backs it. A generate
+// request carrying one of these and NO explicit mode resolves its backend
+// through that record's pin — see the ladder below. Ordered by priority; the
+// first tag present on the request wins.
+//
+// `load` runs on every mode-less tagged render and only two scalars are read
+// off it, so prefer a projected pin-only read over a full record load for any
+// record big enough to care — a universe carries its whole canon plus a
+// sanitize pass, hence `getUniverseRenderPin`. A music-video project is small,
+// so it still uses the ordinary getter.
+const RECORD_PIN_SOURCES = Object.freeze([
+  {
+    tag: 'musicVideo',
+    idKey: 'projectId',
+    target: RENDER_TARGET.MUSIC_VIDEO,
+    load: getMusicVideoProject,
+  },
+  {
+    tag: 'universeRun',
+    idKey: 'universeId',
+    target: RENDER_TARGET.UNIVERSE_BIBLE,
+    load: getUniverseRenderPin,
+  },
+]);
 
 // Only the formats mflux can decode — mirrors the route's MIME_TO_EXT map
 // so the route never silently relabels (e.g. HEIC) bytes as ".png".
@@ -97,20 +124,24 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // is cheap — it's already read again below for the per-mode dispatch.)
   const settings = await getSettings();
   let mode = data.mode || settings.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
-  // #3231 Phase 4 — Music Video scene-frame renders resolve through the
-  // render-target ladder: the owning project's record pin
-  // (`imageMode`/`imageModelId`) → `renderDefaults['music-video']` → the
-  // install default above. The director board sends NO mode with its frame
-  // renders, so the record/target pins are live without any client seeding
-  // (unlike the universe batch form). An explicit per-request mode wins
-  // outright (and blocks the pinned model from leaking), so the project fetch
-  // is skipped entirely in that case. The layered model is stamped onto
-  // `data.cloudModel` so the route/dispatch resolution downstream picks it up;
-  // an explicit per-request cloudModel wins untouched.
-  if (!data.mode && data.musicVideo?.projectId) {
-    const project = await getMusicVideoProject(data.musicVideo.projectId).catch(() => null);
-    const pin = recordRenderPin(project || {});
-    const resolved = resolveRenderTargetConfig(settings, RENDER_TARGET.MUSIC_VIDEO, {
+  // #3231 Phase 4 — a render tagged with the record that owns it resolves
+  // through the render-target ladder: that record's pin
+  // (`imageMode`/`imageModelId`) → `renderDefaults[target]` → the install
+  // default above. An explicit per-request mode wins outright (and blocks the
+  // pinned model from leaking), so the record fetch is skipped entirely in that
+  // case. The layered model is stamped onto `data.cloudModel` so the
+  // route/dispatch resolution downstream picks it up; an explicit per-request
+  // cloudModel wins untouched.
+  //
+  // First matching tag wins — a payload carrying two tags would otherwise let
+  // whichever branch ran last silently overwrite the other's mode while
+  // inheriting its model. Adding a surface is one row here, matching the
+  // "one entry + one resolve call" contract in lib/renderTargets.js.
+  const source = data.mode ? null : RECORD_PIN_SOURCES.find((s) => data[s.tag]?.[s.idKey]);
+  if (source) {
+    const record = await source.load(data[source.tag][source.idKey]).catch(() => null);
+    const pin = recordRenderPin(record || {});
+    const resolved = resolveRenderTargetConfig(settings, source.target, {
       model: data.cloudModel || null,
       recordMode: pin.mode,
       recordModel: pin.modelId,
