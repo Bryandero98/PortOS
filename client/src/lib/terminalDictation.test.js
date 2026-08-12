@@ -78,6 +78,12 @@ describe('attachDictationBridge', () => {
     textarea.dispatchEvent(new InputEvent('input', { inputType, data, bubbles: true }));
   };
 
+  // Key events the latch reads. 84 is 'T' — a capital, the case this bridge exists
+  // for, so the tests that don't care about the specific key take it by default.
+  const fireKey = (type, keyCode = 84) => {
+    textarea.dispatchEvent(new KeyboardEvent(type, { keyCode, bubbles: true }));
+  };
+
   // Stands in for xterm's own textarea listener, which appends the raw insertion.
   const attachXtermStub = () => {
     const spy = vi.fn();
@@ -193,7 +199,7 @@ describe('attachDictationBridge', () => {
     textarea.value = 'abc';
     fireInput('insertText');
     // Enter: xterm sends CR and clears the textarea.
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 13, bubbles: true }));
+    fireKey('keydown', 13);
     textarea.value = '';
     vi.runAllTimers();
     // Next dictation starts from a clean mirror — no phantom DELs for 'abc'.
@@ -202,8 +208,45 @@ describe('attachDictationBridge', () => {
     expect(sent).toEqual(['abc', 'next']);
   });
 
+  it('leaves an insertion the keypress path already sent to xterm', () => {
+    // Capitals and space are the keys xterm forwards from `keypress` without
+    // cancelling it, so the character lands in the textarea and fires `input`
+    // AFTER the PTY already has it. Diffing that insertion doubled every one.
+    fireKey('keydown');
+    fireKey('keypress');
+    textarea.value = 'T';
+    fireInput('insertText');
+    expect(sent).toEqual([]);
+    // It counts as floor, not as ours: dictating on top appends instead of
+    // erasing the capital xterm sent.
+    textarea.value = 'There';
+    fireInput('insertText');
+    expect(sent).toEqual(['here']);
+  });
+
+  it('does not let a keypress that inserted nothing disown the next phrase', () => {
+    // The insertion a keypress produces can fail to arrive. Dictation then follows
+    // with no key events at all, so only keyup can clear the latch in time —
+    // waiting for the next keydown would swallow the phrase into the floor.
+    fireKey('keypress');
+    fireKey('keyup');
+    textarea.value = 'ab';
+    fireInput('insertText');
+    expect(sent).toEqual(['ab']);
+  });
+
+  it('disarms the latch when focus leaves mid-keystroke', () => {
+    // Blur can land between the keypress and the keyup that would have cleared it.
+    fireKey('keypress');
+    textarea.dispatchEvent(new FocusEvent('blur'));
+    vi.runAllTimers();
+    textarea.value = 'ab';
+    fireInput('insertText');
+    expect(sent).toEqual(['ab']);
+  });
+
   it('does not resync on the composition keycode soft keyboards report', () => {
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 229, bubbles: true }));
+    fireKey('keydown', 229);
     textarea.value = 'ab';
     fireInput('insertText');
     vi.runAllTimers();
@@ -230,7 +273,7 @@ describe('attachDictationBridge', () => {
     textarea.value = 'their';
     fireInput('insertText');
     // Field is non-empty now, so this keystroke really does arm a resync.
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 32, bubbles: true }));
+    fireKey('keydown', 32);
     textarea.value = 'there';
     fireInput('insertReplacementText');
     vi.runAllTimers();
@@ -243,7 +286,7 @@ describe('attachDictationBridge', () => {
 
   it('arms no timer while typing leaves nothing to reconcile', () => {
     const timer = vi.spyOn(globalThis, 'setTimeout');
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 65, bubbles: true }));
+    fireKey('keydown', 65);
     expect(timer).not.toHaveBeenCalled();
     timer.mockRestore();
   });
@@ -301,6 +344,39 @@ describe('attachDictationBridge against a real xterm Terminal', () => {
     terminal.onData((d) => sent.push(d));
     dictate(['dde', 'deter', 'determin', 'determine', 'determines']);
     expect(sent.join('')).toBe('ddedeterdetermindeterminedetermines');
+  });
+
+  // A keystroke xterm defers to keypress, exactly as Chrome delivers it: xterm
+  // ignores the keydown, forwards the character from keypress WITHOUT cancelling
+  // it, and the browser then inserts it into the textarea and fires `input`. Two
+  // senders, one character.
+  const typeThroughKeypress = (ch) => {
+    const code = ch.charCodeAt(0);
+    const { textarea } = terminal;
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: ch, keyCode: code, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keypress', { key: ch, keyCode: code, charCode: code, bubbles: true }));
+    textarea.value += ch;
+    textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ch, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keyup', { key: ch, keyCode: code, bubbles: true }));
+  };
+
+  it('does not double a character xterm sent from keypress', () => {
+    const sent = [];
+    terminal.onData((d) => sent.push(d));
+    // Capitals land here through xterm's A-Z hack, space because its keyCode falls
+    // below the printable range xterm's keyboard map claims — two mechanisms, and
+    // the changelog claims both. Proves xterm really is the sender on this path: if
+    // an upgrade moves either to keydown-with-cancel, this fails and the bridge's
+    // keypress seam can go.
+    typeThroughKeypress('T');
+    typeThroughKeypress(' ');
+    expect(sent).toEqual(['T', ' ']);
+
+    const dispose = attachDictationBridge(terminal, (d) => { sent.push(d); });
+    typeThroughKeypress('X');
+    typeThroughKeypress(' ');
+    dispose();
+    expect(sent).toEqual(['T', ' ', 'X', ' ']);
   });
 
   it('sends the dictated phrase once, not the accumulated garble', () => {

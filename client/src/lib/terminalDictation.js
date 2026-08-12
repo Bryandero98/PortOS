@@ -24,6 +24,28 @@
 // reset the mirror without emitting anything, because those paths send to the PTY
 // through xterm and may clear the textarea out from under us.
 //
+// ── The keypress seam ──────────────────────────────────────────────────────────
+// Mirrored from @xterm/xterm 6.0.0 — `CoreBrowserTerminal#_keyPress` and
+// `#_inputEvent`. Re-read those two before trusting this section against a newer
+// xterm; the real-Terminal tests fail loudly if either mechanism moves.
+// Not every physical keystroke is settled on `keydown`. xterm cancels that event
+// for most printable keys (so the character never reaches the textarea and no
+// input event fires), but it deliberately defers A-Z and keys its keyboard map
+// doesn't claim — space among them — to the `keypress` handler, which forwards the
+// character and then does NOT preventDefault. The browser therefore inserts it
+// into the textarea and fires `input` for a character the PTY already has, and
+// xterm's own `_inputEvent` drops that event via its `_keyPressHandled` guard.
+// Stopping the event before xterm took that guard's say away, and diffing the
+// insertion sent the character a second time — the reported "every capital letter
+// and space is doubled". So an insertion with a live keypress behind it is now
+// xterm's: it counts as a resync point, not ours to forward, and the event goes
+// through untouched.
+//
+// We mirror `_keyPressHandled` and only that flag. xterm's `_inputEvent` also gates
+// on `_keyDownSeen` and clears an `_unprocessedDeadKey`; the omissions are
+// deliberate, because our own resync points already cover both — the keydown resync
+// for the first, the `compositionend` resync for the second.
+//
 // ── Boundaries ─────────────────────────────────────────────────────────────────
 // Corrections are streamed live, which assumes the far end treats 0x7f as "erase
 // the previous character" — true at a shell prompt and in the line editors of the
@@ -111,9 +133,16 @@ export const attachDictationBridge = (terminal, sendData) => {
   // Length of `mirror` we did not put into the PTY ourselves — see planFieldEdit.
   let floor = mirror.length;
   let resyncTimer = null;
+  // Set on `keypress`, consumed by the next event — see "The keypress seam" above.
+  let keyPressSeen = false;
+
+  const cancelResync = () => {
+    clearTimeout(resyncTimer);
+    resyncTimer = null;
+  };
 
   const resyncNow = () => {
-    resyncTimer = null;
+    cancelResync();
     mirror = textarea.value;
     floor = mirror.length;
   };
@@ -128,14 +157,42 @@ export const attachDictationBridge = (terminal, sendData) => {
   };
 
   const handleKeyDown = (ev) => {
+    // Whatever this keystroke inserts is xterm's only if a keypress follows it.
+    keyPressSeen = false;
     // 229 is the "composition character" every soft keyboard/IME reports — those
     // keystrokes land in the textarea and are ours to diff, not a resync point.
+    // They fire no keypress either, which is what keeps them ours below.
     if (ev.keyCode === 229 || ev.isComposing) return;
+    scheduleResync();
+  };
+
+  const handleKeyPress = () => { keyPressSeen = true; };
+
+  // The insertion a keypress produces can fail to arrive (the browser consumes the
+  // combination itself, focus leaves mid-keystroke). Disarm on keyup — as xterm's
+  // own `_keyUp` disarms `_keyPressHandled` — so the latch can't outlive the
+  // keystroke and disown the next insertion. Dictation supplies no key events at
+  // all, so waiting for another keydown to clear it would swallow a dictated phrase.
+  // `input` fires during the keypress default action, long before keyup, so this
+  // never races the consume.
+  const disarmKeyPress = () => { keyPressSeen = false; };
+
+  const handleBlur = () => {
+    disarmKeyPress();
     scheduleResync();
   };
 
   const handleInput = (ev) => {
     if (ev.target !== textarea) return;
+    // The character reached the PTY through xterm's keypress path already (see "The
+    // keypress seam"). Take the insertion into the floor so a later correction can't
+    // rewind through it, and leave the event alone. Consumed ahead of the guards
+    // below so the latch is strictly one-shot.
+    if (keyPressSeen) {
+      disarmKeyPress();
+      resyncNow();
+      return;
+    }
     // A real composition (IME candidate window) is xterm's CompositionHelper's job;
     // it forwards the committed text on compositionend.
     if (ev.isComposing) return;
@@ -152,10 +209,7 @@ export const attachDictationBridge = (terminal, sendData) => {
     // We are reconciling the field right now, so a resync armed by the keystroke
     // that produced this event would only re-read the same value — and pin `floor`
     // to the whole phrase, silently blocking every later correction from rewinding.
-    if (resyncTimer != null) {
-      clearTimeout(resyncTimer);
-      resyncTimer = null;
-    }
+    cancelResync();
     const { data, committed } = planFieldEdit(mirror, textarea.value, floor);
     // A refused send leaves the PTY exactly as it was, so leave the mirror there
     // too — the next refinement then re-diffs against what the PTY really has
@@ -170,14 +224,16 @@ export const attachDictationBridge = (terminal, sendData) => {
   // blur/compositionend don't bubble, but capture-phase listeners still see them.
   const listeners = [
     ['keydown', handleKeyDown],
+    ['keypress', handleKeyPress],
+    ['keyup', disarmKeyPress],
     ['input', handleInput],
-    ['blur', scheduleResync],
+    ['blur', handleBlur],
     ['compositionend', scheduleResync],
   ];
   for (const [type, handler] of listeners) container.addEventListener(type, handler, true);
 
   return () => {
-    clearTimeout(resyncTimer);
+    cancelResync();
     for (const [type, handler] of listeners) container.removeEventListener(type, handler, true);
   };
 };
