@@ -96,6 +96,22 @@ describe('migration 267 — MiniMax H3 native output controls', () => {
     expect(readJson(path)).toEqual(registryWith(custom));
   });
 
+  it('does not mix shipped presets with a partially customized geometry contract', async () => {
+    const customStep = { ...h3(), resolutionStep: 64 };
+    writeJson(path, registryWith(customStep));
+    await migration.up({ rootDir });
+    const withCustomStep = readJson(path).video.macos[0];
+    expect(withCustomStep.resolutionStep).toBe(64);
+    expect(withCustomStep).not.toHaveProperty('resolutionOptions');
+
+    const customOptions = { ...h3(), resolutionOptions: [] };
+    writeJson(path, registryWith(customOptions));
+    await migration.up({ rootDir });
+    const withCustomOptions = readJson(path).video.macos[0];
+    expect(withCustomOptions).not.toHaveProperty('resolutionStep');
+    expect(withCustomOptions.resolutionOptions).toEqual([]);
+  });
+
   it('skips a user-repointed or deleted entry and a missing registry', async () => {
     const forked = { ...h3(), repo: 'example-org/h3-fork' };
     writeJson(path, registryWith(forked));

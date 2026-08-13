@@ -256,6 +256,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  settingsState.acceptedModelTerms = [];
   vi.clearAllMocks();
 });
 
@@ -326,6 +327,41 @@ async function runChainAndCaptureArgs(chainParams, totalChunks) {
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
+
+describe('generateChainedVideo — model-aware ETA geometry', () => {
+  it('estimates an omitted H3 canvas at the model native default', async () => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValue([{
+      modelId: 'minimax_h3_8bit',
+      width: 1344,
+      height: 768,
+      numFrames: 124,
+      steps: 8,
+      renderMs: 10_000,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }]);
+    settingsState.acceptedModelTerms = [H3_TERMS];
+    const outerJobId = randomUUID();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let outerCompleted = false;
+    videoGenEvents.on('completed', (event) => {
+      if (event.generationId === outerJobId) outerCompleted = true;
+    });
+
+    await generateChainedVideo({
+      chunks: 2,
+      jobId: outerJobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'test prompt',
+      mode: 'text',
+    });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('2 chunks, eta=20s (measured, n=1)'));
+    await vi.waitFor(() => expect(outerCompleted).toBe(true));
+    videoGenEvents.removeAllListeners('completed');
+    logSpy.mockRestore();
+  });
+});
 
 describe('generateChainedVideo — continuation strategy (context window vs last frame)', () => {
   // numFrames=25 → extendLatentFrames(25) = 3 latents = 24 new pixel frames.
@@ -2193,6 +2229,37 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(args[args.indexOf('--height') + 1]).toBe('768');
     expect(args[args.indexOf('--num-frames') + 1]).toBe('124');
   });
+
+  it('falls back when user-edited model defaults are not valid dimensions', async () => {
+    const mediaModels = await import('../../lib/mediaModels.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const getVideoModelsMock = vi.mocked(mediaModels.getVideoModels);
+    const catalog = getVideoModelsMock();
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    getVideoModelsMock.mockReturnValue(catalog.map((model) => (
+      model.id === 'minimax_h3_8bit'
+        ? { ...model, defaultWidth: '', defaultHeight: 'not-a-number' }
+        : model
+    )));
+
+    try {
+      await generateVideo({
+        jobId: 'h3-invalid-native-default',
+        modelId: 'minimax_h3_8bit',
+        prompt: 'a fox watches the rain',
+        mode: 'text',
+      });
+    } finally {
+      getVideoModelsMock.mockReturnValue(catalog);
+    }
+
+    const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
+      Array.isArray(childArgs) && childArgs.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(args[args.indexOf('--width') + 1]).toBe('768');
+    expect(args[args.indexOf('--height') + 1]).toBe('512');
+  });
 });
 
 // H3's DiT is quantized, so LoRAs ride along only if the installed runner
@@ -2208,6 +2275,7 @@ describe('MiniMax H3 user LoRAs', () => {
     loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
   });
 
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
   afterEach(() => { h3LoraState.capable = false; h3LoraState.cached = null; });
 
   // The model is decorated from the sync cache read, so on a capable install the

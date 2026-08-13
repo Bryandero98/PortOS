@@ -891,6 +891,18 @@ export const DEFAULT_NUM_FRAMES = 121;
 // a still regardless of how many frames carry it.
 export const IC_STILL_REFERENCE_FRAMES = 9;
 
+const configuredVideoDimension = (value, fallback) => {
+  const configured = Number(value);
+  return Number.isFinite(configured) && configured >= 64 && configured <= 2048
+    ? configured
+    : fallback;
+};
+
+const resolveVideoDimensions = (model, width, height) => ({
+  width: width ?? configuredVideoDimension(model?.defaultWidth, 768),
+  height: height ?? configuredVideoDimension(model?.defaultHeight, 512),
+});
+
 export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
@@ -934,8 +946,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     audioStartSec,
     icReferencePaths,
   });
-  width = width ?? model.defaultWidth ?? 768;
-  height = height ?? model.defaultHeight ?? 512;
+  // Registry defaults are user-editable. Validate them at this internal-call
+  // boundary so an empty or malformed value cannot turn into a 0/NaN runner
+  // argument when the caller deliberately leaves the resolution unset.
+  ({ width, height } = resolveVideoDimensions(model, width, height));
   numFrames = numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   let wanModelPath = null;
   const wanRequiredWeights = [];
@@ -1786,21 +1800,22 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
   // pays the fixed per-render cost again, so the chain estimate is the
   // per-chunk estimate times the chunk count — `chunks` is handed to the
   // estimator rather than folding the chain into one oversized render.
-  // The dimension/step defaults mirror generateVideo's own resolution (its
-  // `width = 768, height = 512` parameter defaults and the samplerLocked step
-  // rule); the estimator returns null on anything it can't resolve, so a drift
-  // here degrades to "no estimate" rather than to a wrong number.
+  // The dimension/step defaults mirror generateVideo's model-aware resolution
+  // and samplerLocked step rule; the estimator returns null on anything it
+  // can't resolve, so malformed custom registry defaults degrade to the legacy
+  // canvas rather than producing a wrong or non-finite estimate.
   // Deliberately placed AFTER `activeChain`/`jobs` are registered: it is the
   // first await in this function, and a cancel arriving during the history
   // read must still find the chain to stop.
   const chainSteps = chainModel?.samplerLocked
     ? chainModel.steps
     : (rest.steps ? Number(rest.steps) : chainModel?.steps);
+  const chainDimensions = resolveVideoDimensions(chainModel, rest.width, rest.height);
   const chainEta = estimateRenderMs({
     history: await loadHistory(),
     modelId: rest.modelId || defaultVideoModelId(),
-    width: rest.width ?? 768,
-    height: rest.height ?? 512,
+    width: chainDimensions.width,
+    height: chainDimensions.height,
     numFrames: rest.numFrames ?? chainModel?.defaultFrames ?? DEFAULT_NUM_FRAMES,
     steps: chainSteps,
     chunks: totalChunks,

@@ -29,6 +29,7 @@ const H3 = {
   frameOptions: [107, 124, 141, 158], fpsOptions: [24], defaultFrames: 124,
   defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
   resolutionOptions: [
+    { label: '1536x672', w: 1536, h: 672 },
     { label: '1344x768', w: 1344, h: 768 },
     { label: '768x1344', w: 768, h: 1344 },
   ],
@@ -286,17 +287,18 @@ describe('useVideoGenForm', () => {
     expect(payload.prompt).toBe('a fox watches the rain\n\nno music, no soundtrack');
   });
 
-  it('preserves a deliberately chosen custom resolution when switching to H3', async () => {
+  it('preserves H3 native 32px-grid geometry in the submitted payload', async () => {
     const { result } = render({
       models: [MLX, H3],
       status: { connected: true, defaultModel: MLX.id },
     });
     await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
-    act(() => result.current.handleResolutionChange(640, 384));
     act(() => result.current.handleModelChange(H3.id));
     await waitFor(() => expect(result.current.modelId).toBe(H3.id));
-    expect(result.current.width).toBe(640);
-    expect(result.current.height).toBe(384);
+    act(() => result.current.handleResolutionChange(1536, 672));
+    expect(result.current.width).toBe(1536);
+    expect(result.current.height).toBe(672);
+    expect(result.current.buildGeneratePayload()).toMatchObject({ width: 1536, height: 672 });
   });
 
   // H3's fl2va path anchors keyframes at the first/last latent frame, so image

@@ -164,7 +164,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   }, [incomingNegativePrompt]);
   // When "Continue" pipes a video's last frame here, also sync the resolution
   // so the new render matches the source. Width/height get rounded to the
-  // model's 64-pixel grid server-side, so off-grid sources still work.
+  // selected model's declared resolution grid server-side, so off-grid sources
+  // still work.
   useEffect(() => {
     const w = Number(incomingWidth);
     const h = Number(incomingHeight);
@@ -531,8 +532,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // on image upload stops overriding it (same flag the remix/deep-link paths set).
   // ResolutionField passes a transient 0 mid-edit and blur-snaps each edge to the
   // 64..2048 bound; the preview + FFLF-budget math guard against a transient 0,
-  // and the server floors both dims to a multiple of 64 (generateVideo in
-  // local.js) before enforcing the per-tier pixel budget.
+  // and the server floors both dims to the selected model's declared grid
+  // (generateVideo in local.js) before enforcing the per-tier pixel budget.
   const handleResolutionChange = (w, h) => {
     setWidth(w); setHeight(h); sizeManuallySetRef.current = true;
   };

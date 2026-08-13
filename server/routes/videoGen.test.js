@@ -449,8 +449,11 @@ describe('videoGen routes', () => {
       termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
       supportedModes: ['text'],
       defaultFrames: 124,
-      frameOptions: [124, 141, 158],
+      frameOptions: [107, 124, 141, 158],
       fpsOptions: [24],
+      defaultWidth: 1344,
+      defaultHeight: 768,
+      resolutionStep: 32,
       steps: 8,
       guidance: 0,
       samplerLocked: true,
@@ -517,14 +520,26 @@ describe('videoGen routes', () => {
         prompt: 'a fox watches the rain',
         modelId: h3.id,
         mode: 'text',
+        numFrames: 107,
+        fps: 24,
+        width: 1536,
+        height: 672,
       });
       expect(render.status).toBe(200);
       // Nothing about the acceptance rides the job: the render re-resolves it
       // from settings, so a withdrawal reaches work already in the queue.
       expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
         kind: 'video',
-        params: expect.not.objectContaining({ termsAcceptance: expect.anything() }),
+        params: expect.objectContaining({
+          modelId: h3.id,
+          numFrames: 107,
+          fps: 24,
+          width: 1536,
+          height: 672,
+        }),
       }));
+      expect(mediaJobQueue.enqueueJob.mock.calls.at(-1)[0].params)
+        .not.toHaveProperty('termsAcceptance');
 
       const asserted = await request(app).post('/api/video-gen/').send({
         prompt: 'a fox watches the rain',

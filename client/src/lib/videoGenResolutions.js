@@ -42,8 +42,8 @@ export const defaultResolutionForModel = (model) => {
 // Pick the preset whose aspect ratio is closest to a source image's, so an I2V
 // default doesn't cover-crop the subject out of a mismatched frame (the server
 // resizes the source with force_original_aspect_ratio=increase,crop). Every
-// preset is already 64-aligned, so the nearest-aspect preset IS the nearest
-// 64-aligned size that matches the image — no rounding needed here. Aspect
+// preset already satisfies its model's declared resolution grid, so the
+// nearest-aspect preset needs no additional rounding here. Aspect
 // error is compared in log space so a too-wide and an equally-too-tall preset
 // are penalised symmetrically. Returns `{ w, h }`, or null when the inputs are
 // unusable (non-positive dims / empty preset list) so the caller can no-op.

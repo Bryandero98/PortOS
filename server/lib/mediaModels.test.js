@@ -509,6 +509,61 @@ describe('mediaModels registry', () => {
     });
   });
 
+  // Like retirement, migration 267's H3 upgrade must also happen at LOAD:
+  // routes cache this registry before bootstrap migrations run, and mutators
+  // persist the cached object wholesale later in the same boot.
+  describe('MiniMax H3 output-control upgrade', () => {
+    const OLD_FRAMES = [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362];
+    const shippedMacosIds = JSON.parse(readFileSync(SAMPLE_REGISTRY_PATH, 'utf-8'))
+      .video.macos.map((entry) => entry.id);
+    const legacyH3 = (extra = {}) => ({
+      id: 'minimax_h3_8bit',
+      name: 'MiniMax H3',
+      repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+      runtime: 'minimax_h3',
+      defaultFrames: 124,
+      frameOptions: [...OLD_FRAMES],
+      steps: 8,
+      guidance: 0,
+      ...extra,
+    });
+    const writeRegistry = (entry) => writeFileSync(registryFile, JSON.stringify({
+      video: { macos: [entry], windows: [], defaultMacos: entry.id, defaultWindows: 'ltx_video' },
+      image: [],
+      textEncoders: [{ id: 't', label: 't', repo: 'r' }],
+      selectedTextEncoder: 't',
+      _shippedDefaults: { video: { macos: shippedMacosIds, windows: [] } },
+    }));
+
+    it('upgrades the cached legacy shipped row before migrations run', async () => {
+      writeRegistry(legacyH3());
+      const { loadMediaModels } = await import('./mediaModels.js');
+      const entry = loadMediaModels().video.macos[0];
+      expect(entry).toMatchObject({
+        defaultWidth: 1344,
+        defaultHeight: 768,
+        resolutionStep: 32,
+      });
+      expect(entry.frameOptions[0]).toBe(107);
+      expect(entry.resolutionOptions).toContainEqual({
+        label: '1536x672 (21:9 H3 native)', w: 1536, h: 672,
+      });
+    });
+
+    it('preserves a repointed row and a partial custom geometry contract', async () => {
+      writeRegistry(legacyH3({ repo: 'example-org/h3-fork' }));
+      let module = await import('./mediaModels.js');
+      expect(module.loadMediaModels().video.macos[0]).not.toHaveProperty('defaultWidth');
+
+      vi.resetModules();
+      writeRegistry(legacyH3({ resolutionStep: 64 }));
+      module = await import('./mediaModels.js');
+      const entry = module.loadMediaModels().video.macos[0];
+      expect(entry.resolutionStep).toBe(64);
+      expect(entry).not.toHaveProperty('resolutionOptions');
+    });
+  });
+
   it('user-deleted built-in video model is NOT re-added on subsequent load', async () => {
     const platformKey = process.platform === 'win32' ? 'windows' : 'macos';
     const otherKey = process.platform === 'win32' ? 'macos' : 'windows';

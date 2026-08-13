@@ -79,10 +79,10 @@ export const supportsVideoAudioControls = (model) => model?.supportsDisableAudio
 // Disable audio checkbox must stay hidden.
 export const supportsVideoAudioPromptControls = (model) => model?.supportsAudioPrompting !== false;
 
-// Per-edge bounds for video: mirrors the videoGen route (64..2048) and the
-// server's floor-to-multiple-of-64 (generateVideo in local.js). Shared by the
-// ResolutionField control and the submit-time clamp so a hand-typed / mid-edit
-// value can never POST an out-of-range or 0 dimension.
+// Per-edge bounds for video: mirrors the videoGen route (64..2048). The base
+// grid is 64px, while a model may declare a finer resolutionStep (H3 uses 32).
+// Shared by the ResolutionField control and the submit-time clamp so a
+// hand-typed / mid-edit value can never POST an out-of-range or 0 dimension.
 export const VIDEO_EDGE_BOUNDS = { min: 64, max: 2048, step: 64 };
 export const videoEdgeBoundsForModel = (model) => {
   const step = Number(model?.resolutionStep);
