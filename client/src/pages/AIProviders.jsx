@@ -226,10 +226,12 @@ export default function AIProviders() {
     try {
       await api.createProvider(provider);
       setSampleProviders(prev => prev.filter(p => p.id !== provider.id));
-      loadData();
+      await loadData();
       toast.success(`Added ${provider.name}`);
     } catch (err) {
-      const message = err?.message || err?.error || (typeof err === 'string' ? err : 'An unknown error occurred');
+      const message = (typeof err?.message === 'string' && err.message) ||
+                      (typeof err?.error === 'string' && err.error) ||
+                      (typeof err === 'string' ? err : 'An unknown error occurred');
       toast.error(`Failed to add provider: ${message}`);
     } finally {
       setAddingSample(prev => ({ ...prev, [provider.id]: false }));
