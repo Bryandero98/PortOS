@@ -1,0 +1,1 @@
+- Prompt preview requests now sequence correctly to prevent stale out-of-order responses from overwriting newer previews.

@@ -773,4 +773,55 @@ describe('PromptManager job skill unsaved-edit guard', () => {
     expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
     await waitFor(() => expect(currentSearch()).toContain('skill=doc-writer'));
   });
+
+  it('disables Preview button while request is in flight and re-enables when complete', async () => {
+    let resolvePreview;
+    previewJobSkill.mockReset().mockImplementationOnce(() => new Promise((r) => { resolvePreview = r; }));
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+
+    const previewBtn = screen.getByRole('button', { name: /preview/i });
+    expect(previewBtn.disabled).toBe(false);
+
+    fireEvent.click(previewBtn);
+    expect(previewBtn.disabled).toBe(true);
+
+    resolvePreview({ preview: 'latest preview content' });
+    await waitFor(() => expect(previewBtn.disabled).toBe(false));
+    expect(screen.getByText('latest preview content')).toBeTruthy();
+  });
+
+  it('sequences preview requests for the same skill and ignores stale out-of-order responses', async () => {
+    let resolveFirst;
+    let resolveSecond;
+    let previewBtn;
+
+    previewJobSkill
+      .mockReset()
+      .mockImplementationOnce(() => {
+        fireEvent.click(previewBtn);
+        return new Promise((r) => { resolveFirst = r; });
+      })
+      .mockImplementationOnce(() => new Promise((r) => { resolveSecond = r; }));
+
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+
+    previewBtn = screen.getByRole('button', { name: /preview/i });
+
+    // Trigger first request (which synchronously triggers second request)
+    fireEvent.click(previewBtn);
+
+    // Resolve second request first
+    resolveSecond({ preview: 'second response' });
+    await waitFor(() => expect(screen.getByText('second response')).toBeTruthy());
+
+    // Resolve first request later (stale out-of-order response)
+    resolveFirst({ preview: 'stale first response' });
+
+    // Verify stale response is ignored and second response remains rendered
+    expect(screen.queryByText('stale first response')).toBeNull();
+    expect(screen.getByText('second response')).toBeTruthy();
+  });
 });
+
