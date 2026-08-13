@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, RefreshCw, Play, Trash2, ChevronDown, ChevronUp, Clock, ToggleLeft, ToggleRight, Edit3, Save, X, Terminal } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
-import { timeAgo, formatDateTime } from '../../../utils/formatters';
+import { timeAgo, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import { CRON_PRESETS, DEFAULT_CRON, describeCron } from '../../../utils/cronHelpers';
 import WeekdayTimePicker from '../../WeekdayTimePicker';
 import { effectiveModelFor, effortAwareModelOptions } from '../../../utils/providers';
@@ -587,7 +587,7 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
                   <span>AI: <span className="text-gray-300">{providers.find(p => p.id === job.providerId)?.name || job.providerId}{job.model ? ` / ${job.model}` : ''}{job.effort ? ` · ${job.effort}` : ''}</span></span>
                 )}
                 {isShell && <span>Action: <span className="text-gray-300">{job.triggerAction || 'log-only'}</span></span>}
-                <span>Created: <span className="text-gray-300">{job.createdAt ? new Date(job.createdAt).toLocaleDateString() : '—'}</span></span>
+                <span>Created: <span className="text-gray-300">{formatDateNumeric(job.createdAt, '—')}</span></span>
               </div>
               {job.config && BRIEFING_CONFIG_OPTIONS.some(o => job.config[o.key]) && (
                 <div className="flex flex-wrap gap-2 text-xs">

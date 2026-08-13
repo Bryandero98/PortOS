@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { HardDrive, RefreshCw, Archive, Trash2, ChevronDown, ChevronRight, FolderOpen, File, Package } from 'lucide-react';
 import * as api from '../services/api';
-import { formatBytes } from '../utils/formatters';
+import { formatBytes, formatDateNumeric } from '../utils/formatters';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
@@ -324,7 +324,7 @@ function BackupsSection({ backups, loading, onDelete }) {
                   <span className="truncate">{b.name}</span>
                 </td>
                 <td className="p-2 text-right text-gray-400 font-mono">{formatBytes(b.size)}</td>
-                <td className="p-2 text-right text-gray-500">{b.created ? new Date(b.created).toLocaleDateString() : '—'}</td>
+                <td className="p-2 text-right text-gray-500">{formatDateNumeric(b.created, '—')}</td>
                 <td className="p-2 pr-3 text-right">
                   {isConfirming(b.name) ? (
                     <ConfirmButtonPair

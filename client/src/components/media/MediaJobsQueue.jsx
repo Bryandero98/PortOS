@@ -12,6 +12,7 @@ import { lossSparklineGeometry } from '../../lib/lossSparkline';
 import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import useMounted from '../../hooks/useMounted';
+import { formatTimeOfDaySeconds } from '../../utils/formatters';
 
 const STATUS_BADGE = {
   queued: 'bg-port-border text-port-text-muted',
@@ -445,9 +446,9 @@ function JobRow({ job, onCancel, onRetry, onRunNow, onDelete }) {
         <TrainingJobDetail runId={job.params.runId} status={job.status} />
       )}
       <div className="text-xs text-port-text-muted mt-1">
-        {job.queuedAt && `queued ${new Date(job.queuedAt).toLocaleTimeString()}`}
-        {job.startedAt && ` · started ${new Date(job.startedAt).toLocaleTimeString()}`}
-        {job.completedAt && ` · finished ${new Date(job.completedAt).toLocaleTimeString()}`}
+        {job.queuedAt && `queued ${formatTimeOfDaySeconds(job.queuedAt)}`}
+        {job.startedAt && ` · started ${formatTimeOfDaySeconds(job.startedAt)}`}
+        {job.completedAt && ` · finished ${formatTimeOfDaySeconds(job.completedAt)}`}
       </div>
       {editing && (
         <EditRetryForm

@@ -10,6 +10,7 @@ import toast from '../ui/Toast';
 import DeclareChangeDrawer from './DeclareChangeDrawer';
 import { VAULT_TYPES, CHANGE_KINDS, labelFor } from './constants';
 import { isHttpUrl } from '../../utils/urlNormalize';
+import { formatDateNumeric } from '../../utils/formatters';
 
 // A slim progress bar over pending/updated/removed. Done = zero pending.
 function ProgressBar({ progress }) {
@@ -197,7 +198,7 @@ export default function PrivacyChangesTab({ subjectId }) {
                       <span className="text-white truncate">{ev.replacementRecord?.maskedValue ?? 'removed'}</span>
                     </div>
                     <div className="text-[11px] text-gray-600 mt-0.5">
-                      {labelFor(VAULT_TYPES, ev.oldRecord?.type)} · {ev.declaredAt ? new Date(ev.declaredAt).toLocaleDateString() : ''}
+                      {labelFor(VAULT_TYPES, ev.oldRecord?.type)} · {formatDateNumeric(ev.declaredAt)}
                     </div>
                   </div>
                   <ProgressBar progress={ev.progress} />

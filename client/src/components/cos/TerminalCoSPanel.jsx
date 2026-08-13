@@ -1,5 +1,6 @@
 import { Play, Square } from 'lucide-react';
 import { AGENT_STATES } from './constants';
+import { formatClockTime } from '../../utils/formatters';
 
 export default function TerminalCoSPanel({ state, speaking, statusMessage, eventLogs, running, onStart, onStop, stats }) {
   const stateConfig = AGENT_STATES[state] || AGENT_STATES.sleeping;
@@ -204,7 +205,7 @@ export default function TerminalCoSPanel({ state, speaking, statusMessage, event
           ) : (
             eventLogs.slice(-20).reverse().map((log, i) => (
               <div key={i} className={`text-xs break-all ${levelColors[log.level] || termTextDim} leading-relaxed`}>
-                <span className={termTextFaint}>{new Date(log.timestamp).toLocaleTimeString('en-US', { hour12: false })}</span>
+                <span className={termTextFaint}>{formatClockTime(log.timestamp, { hour12: false })}</span>
                 {' '}
                 <span className={levelColors[log.level]}>{levelPrefixes[log.level] || '[LOG]'}</span>
                 {' '}

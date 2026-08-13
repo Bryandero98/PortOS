@@ -28,6 +28,7 @@ import Banner from '../../ui/Banner';
 import MarkdownOutput from '../../cos/MarkdownOutput';
 import { isApiProvider } from '../../../utils/providers';
 import ObservedTasteEvidence from '../ObservedTasteEvidence';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 const SECTION_ICONS = {
   movies: Film,
@@ -664,7 +665,7 @@ export default function TasteTab({ onRefresh }) {
 
         {profile?.lastSessionAt && (
           <p className="text-sm text-gray-500 mt-3">
-            Last session: {new Date(profile.lastSessionAt).toLocaleDateString()}
+            Last session: {formatDateNumeric(profile.lastSessionAt)}
           </p>
         )}
       </div>

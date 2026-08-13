@@ -7,6 +7,7 @@ import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import { FormField } from '../../ui/FormField';
 import * as api from '../../../services/api';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 const CATEGORY_CONFIG = {
   creative: { label: 'Creative', icon: Lightbulb, color: 'text-purple-400', bg: 'bg-purple-500/20' },
@@ -392,7 +393,7 @@ export default function GoalsTab({ onRefresh }) {
                           </span>
                         )}
                         <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-400">
-                          Created {new Date(goal.createdAt).toLocaleDateString()}
+                          Created {formatDateNumeric(goal.createdAt)}
                         </span>
                       </div>
 
@@ -422,7 +423,7 @@ export default function GoalsTab({ onRefresh }) {
                                 </span>
                                 {ms.targetDate && (
                                   <span className="text-xs text-gray-600 ml-auto">
-                                    {new Date(ms.targetDate).toLocaleDateString()}
+                                    {formatDateNumeric(ms.targetDate)}
                                   </span>
                                 )}
                               </div>

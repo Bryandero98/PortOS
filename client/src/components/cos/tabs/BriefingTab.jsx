@@ -15,6 +15,7 @@ import {
 import * as api from '../../../services/api';
 import { RapidReaderTrigger } from '../../RapidReader';
 import BrailleSpinner from '../../BrailleSpinner';
+import { formatWeekdayDate } from '../../../utils/formatters';
 
 const SECTION_ICONS = {
   'Task Queue': CheckCircle,
@@ -224,12 +225,7 @@ export default function BriefingTab() {
             >
               {briefings.map(b => (
                 <option key={b.date} value={b.date}>
-                  {new Date(b.date + 'T12:00:00').toLocaleDateString('en-US', {
-                    weekday: 'short',
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric'
-                  })}
+                  {formatWeekdayDate(b.date, { weekday: 'short', year: true })}
                 </option>
               ))}
             </select>

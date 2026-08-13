@@ -13,7 +13,7 @@ import { isEditableTarget } from '../../hooks/useKeyboardShortcuts';
 import useFocusTrap from '../../hooks/useFocusTrap.js';
 import { copyToClipboard } from '../../lib/clipboard';
 import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, formatDateNumeric } from '../../utils/formatters';
 
 // Intentionally NOT migrated to <ui/Modal> or <components/Drawer>. The
 // prev/next buttons sit as viewport-edge siblings of the card (not children
@@ -383,7 +383,7 @@ function PeerNotes({ others }) {
                 {o.starred && <Star className="w-3 h-3 fill-current text-port-warning" />}
                 <span>{o.authorName || 'Unknown'}</span>
               </span>
-              <span>{o.updatedAt ? new Date(o.updatedAt).toLocaleDateString() : ''}</span>
+              <span>{formatDateNumeric(o.updatedAt)}</span>
             </div>
             {o.note && <p className="text-gray-200 whitespace-pre-wrap text-xs">{o.note}</p>}
           </li>

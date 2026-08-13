@@ -9,13 +9,14 @@
  */
 
 import { Users } from 'lucide-react';
+import { formatDateNumeric } from '../../utils/formatters';
 
 export default function OriginBadge({ origin, compact = false, className = '' }) {
   if (!origin || typeof origin !== 'object') return null;
   const { source, bucketName, sourceBio, importedAt } = origin;
   if (!source) return null;
 
-  const importedDate = importedAt ? new Date(importedAt).toLocaleDateString() : null;
+  const importedDate = importedAt ? formatDateNumeric(importedAt) : null;
   const title = [
     `From ${source}`,
     bucketName ? `via ${bucketName}` : null,

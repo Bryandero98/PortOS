@@ -3,6 +3,8 @@ import {
   formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
   formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
   formatWeight, formatPercent, formatUsd, formatBytes,
+  formatDateNumeric, formatTimeOfDaySeconds, formatClockTime, formatWeekdayDate,
+  formatMonthDay, formatMonthYear, formatWeekdayShort, formatWeekdayTime, formatDateFull, formatDateShort, formatDateTime,
 } from './formatters.js';
 
 describe('formatBytes', () => {
@@ -205,14 +207,15 @@ describe('formatEventDateTime', () => {
     expect(formatEventDateTime(sample, null)).toBe(formatEventDateTime(sample));
   });
 
-  it('passes malformed input straight through, like the original local formatter (no guard, by design)', () => {
-    // The migration is deliberately behavior-identical: unparseable input
-    // yields the raw toLocaleString result ("Invalid Date"), not an empty
-    // string. Locks the no-guard decision so a future change does not re-add
-    // a guard and silently alter the (unreachable) degenerate path.
-    expect(formatEventDateTime('not-a-date')).toBe(
-      new Date('not-a-date').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-    );
+  it("renders an empty string for malformed/missing input on BOTH branches (#3870)", () => {
+    // Used to pass the raw "Invalid Date" string through for migration
+    // fidelity. Once the all-day branch started routing through formatDateFull's
+    // guard, one branch was guarded and one was not; both now follow the
+    // module-wide fallback contract.
+    expect(formatEventDateTime('not-a-date')).toBe('');
+    expect(formatEventDateTime('not-a-date', { allDay: true })).toBe('');
+    expect(formatEventDateTime(null)).toBe('');
+    expect(formatEventDateTime('')).toBe('');
   });
 });
 
@@ -388,5 +391,139 @@ describe('middleTruncate', () => {
     expect(middleTruncate('keep me', NaN)).toBe('keep me');
     expect(middleTruncate('keep me', Infinity)).toBe('keep me');
     expect(middleTruncate('keep me', undefined)).toBe('keep me');
+  });
+});
+
+describe('canonical date/time formatters (#3870)', () => {
+  // The helpers below replaced ~60 inline `new Date(x).toLocaleDateString()`
+  // calls across components. These assert the two contracts that inline call
+  // sites got wrong or hand-rolled: local-midnight anchoring of a bare
+  // calendar date, and a caller-chosen fallback instead of "Invalid Date".
+
+  describe('formatDateNumeric', () => {
+    it('anchors a bare YYYY-MM-DD at LOCAL midnight, not UTC', () => {
+      // `new Date('2026-03-05')` is UTC midnight, which renders as Mar 4 in any
+      // negative-offset zone — the reason call sites appended 'T00:00:00' by hand.
+      expect(formatDateNumeric('2026-03-05')).toBe(new Date(2026, 2, 5).toLocaleDateString());
+    });
+
+    it('renders a full ISO timestamp and a Date the same way', () => {
+      const d = new Date(2026, 2, 5, 13, 30);
+      expect(formatDateNumeric(d)).toBe(formatDateNumeric(d.toISOString()));
+    });
+
+    it('returns the fallback for missing/blank/unparseable input', () => {
+      expect(formatDateNumeric(null)).toBe('');
+      expect(formatDateNumeric(undefined)).toBe('');
+      expect(formatDateNumeric('')).toBe('');
+      expect(formatDateNumeric('not-a-date', '—')).toBe('—');
+      expect(formatDateNumeric(null, '—')).toBe('—');
+    });
+  });
+
+  describe('formatTimeOfDaySeconds', () => {
+    it('includes seconds and honors the fallback', () => {
+      expect(formatTimeOfDaySeconds(new Date(2026, 2, 5, 14, 30, 45))).toMatch(/\b30\D+45\b/);
+      expect(formatTimeOfDaySeconds(null)).toBe('');
+      expect(formatTimeOfDaySeconds('garbage', '—')).toBe('—');
+    });
+  });
+
+  describe('formatClockTime', () => {
+    const at = new Date(2026, 2, 5, 14, 30, 45);
+
+    it('includes seconds by default and drops them with seconds:false', () => {
+      expect(formatClockTime(at)).toMatch(/\d{2}:\d{2}:\d{2}/);
+      expect(formatClockTime(at, { seconds: false })).not.toMatch(/\d{2}:\d{2}:\d{2}/);
+    });
+
+    it('forces a 24-hour clock with hour12:false', () => {
+      expect(formatClockTime(at, { hour12: false })).toContain('14:30:45');
+    });
+
+    it('accepts an ISO string, not just a Date, and falls back on missing input', () => {
+      expect(formatClockTime(at.toISOString())).toBe(formatClockTime(at));
+      expect(formatClockTime(null)).toBe('');
+    });
+  });
+
+  describe('formatWeekdayDate', () => {
+    const day = new Date(2026, 2, 5);
+
+    it('appends the year only when asked', () => {
+      expect(formatWeekdayDate(day, { year: true })).toContain('2026');
+      expect(formatWeekdayDate(day)).not.toContain('2026');
+    });
+
+    it('shortens the weekday on request', () => {
+      const long = formatWeekdayDate(day);
+      const short = formatWeekdayDate(day, { weekday: 'short' });
+      expect(short.length).toBeLessThan(long.length);
+    });
+
+    it('anchors a bare calendar date locally', () => {
+      expect(formatWeekdayDate('2026-03-05')).toBe(formatWeekdayDate(day));
+    });
+  });
+
+  describe('formatMonthDay / formatMonthYear / formatWeekdayShort', () => {
+    const day = new Date(2026, 2, 5);
+
+    it('renders the day without a year, and the month without a day', () => {
+      expect(formatMonthDay(day)).toContain('5');
+      expect(formatMonthDay(day)).not.toContain('2026');
+      expect(formatMonthYear(day)).toContain('2026');
+      expect(formatMonthYear(day)).not.toContain('5');
+    });
+
+    it('renders an abbreviated weekday', () => {
+      expect(formatWeekdayShort(day)).toMatch(/^[A-Za-z.]{2,5}$/);
+    });
+
+    it('formatWeekdayTime pairs the weekday with a time and drops the date', () => {
+      const out = formatWeekdayTime(new Date(2026, 2, 5, 7, 0));
+      expect(out).toMatch(/^[A-Za-z.]{2,5}\b/);
+      expect(out).toContain('7');
+      expect(out).not.toContain('2026');
+      expect(formatWeekdayTime(null)).toBe('');
+      expect(formatWeekdayTime('nope')).toBe('');
+    });
+
+    it('falls back rather than rendering "Invalid Date"', () => {
+      expect(formatMonthDay('nope', '—')).toBe('—');
+      expect(formatMonthYear(null)).toBe('');
+      expect(formatWeekdayShort(null)).toBe('');
+    });
+  });
+
+  describe('formatDateFull / formatDateShort', () => {
+    it('formatDateFull accepts a bare calendar date string', () => {
+      expect(formatDateFull('2026-03-05')).toBe(formatDateFull(new Date(2026, 2, 5)));
+      expect(formatDateFull('2026-03-05')).toContain('2026');
+    });
+
+    it('formatDateFull returns "" instead of throwing on bad input', () => {
+      expect(formatDateFull(null)).toBe('');
+      expect(formatDateFull('nope')).toBe('');
+    });
+
+    it('formatDateShort keeps its em-dash fallback and anchors bare dates locally', () => {
+      expect(formatDateShort(null)).toBe('—');
+      expect(formatDateShort('nope')).toBe('—');
+      expect(formatDateShort('2026-03-05')).toBe(formatDateShort(new Date(2026, 2, 5)));
+    });
+  });
+
+  describe('formatDateTime', () => {
+    it('takes a caller-supplied fallback for missing/invalid input', () => {
+      expect(formatDateTime(null)).toBe('Unknown time');
+      expect(formatDateTime(null, '—')).toBe('—');
+      expect(formatDateTime('', 'Never')).toBe('Never');
+      expect(formatDateTime('not-a-date', '—')).toBe('—');
+    });
+
+    it('anchors a bare calendar date locally', () => {
+      expect(formatDateTime('2026-03-05')).toBe(formatDateTime(new Date(2026, 2, 5)));
+    });
   });
 });

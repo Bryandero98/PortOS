@@ -1,6 +1,8 @@
 // Pure date/grid computation helpers for the Life Calendar.
 // No React, no DOM — safe to unit-test in isolation.
 
+import { formatDateNumeric } from '../../../../utils/formatters';
+
 export const MS_PER_DAY = 86400000;
 
 export const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -194,7 +196,7 @@ export function computeMonthCalendars(birthDate, deathDate, selectedAge) {
       else if (date <= now && now < dateEnd) status = 'c';
       else status = 'r';
       const isBirthday = month === birthMonth && d === birthDay;
-      days.push({ day: d, status, isBirthday, dow: date.getDay(), label: date.toLocaleDateString() });
+      days.push({ day: d, status, isBirthday, dow: date.getDay(), label: formatDateNumeric(date) });
     }
 
     months.push({ year, month, name: `${MONTH_NAMES[month]} ${year}`, firstDow, days });

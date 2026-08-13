@@ -1,3 +1,5 @@
+import { formatTimeOfDaySeconds } from '../../utils/formatters';
+
 /**
  * Renders a PM2 process's log lines (the body of a log pane).
  *
@@ -29,7 +31,7 @@ export default function ProcessLogLines({ logs, subscribed, showTimestamps = fal
     >
       {showTimestamps && (
         <span className={`text-gray-600 ${timestampGap}`}>
-          {new Date(log.timestamp).toLocaleTimeString()}
+          {formatTimeOfDaySeconds(log.timestamp)}
         </span>
       )}
       {log.line}

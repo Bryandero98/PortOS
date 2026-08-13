@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';
 import socket from '../../services/socket';
-import { timeAgo } from '../../utils/formatters';
+import { timeAgo, formatDateNumeric } from '../../utils/formatters';
 import MessageDetail from './MessageDetail';
 
 const ACTION_CONFIG = {
@@ -522,7 +522,7 @@ export default function InboxTab({ accounts }) {
                     {msg.from?.name || msg.from?.email || 'Unknown'}
                   </span>
                   <span className="text-xs text-gray-600 shrink-0">
-                    {msg.date ? new Date(msg.date).toLocaleDateString() : ''}
+                    {formatDateNumeric(msg.date)}
                   </span>
                 </div>
                 <div className={`text-sm truncate ${msg.isUnread || !msg.isRead ? 'text-gray-300' : 'text-gray-500'}`}>

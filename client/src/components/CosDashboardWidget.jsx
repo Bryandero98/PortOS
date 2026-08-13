@@ -17,7 +17,7 @@ import {
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { useTimeTick } from '../hooks/useTimeTick';
-import { timeAgo, formatDateWeekday } from '../utils/formatters';
+import { timeAgo, formatWeekdayDate } from '../utils/formatters';
 
 /**
  * CosDashboardWidget - Compact CoS status widget for the main Dashboard
@@ -431,7 +431,7 @@ function ActivityCalendar({ data }) {
                     ${day.isToday ? 'ring-1 ring-port-accent' : ''}
                     ${day.isFuture ? 'opacity-30' : ''}
                   `}
-                  title={day.isFuture ? '' : `${formatDateWeekday(day.date)}: ${day.tasks} task${day.tasks !== 1 ? 's' : ''} (${day.successRate}% success)`}
+                  title={day.isFuture ? '' : `${formatWeekdayDate(day.date, { weekday: 'short' })}: ${day.tasks} task${day.tasks !== 1 ? 's' : ''} (${day.successRate}% success)`}
                 />
               ))}
             </div>

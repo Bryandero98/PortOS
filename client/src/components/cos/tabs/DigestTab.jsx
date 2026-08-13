@@ -18,6 +18,7 @@ import {
 import * as api from '../../../services/api';
 import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 export default function DigestTab() {
   const [currentDigest, setCurrentDigest] = useState(null);
@@ -405,7 +406,7 @@ export default function DigestTab() {
           {/* Meta info */}
           <div className="text-xs text-gray-600 text-center pt-4 border-t border-port-border">
             Week: {currentDigest.weekId}
-            ({new Date(currentDigest.weekStart).toLocaleDateString()} - {new Date(currentDigest.weekEnd).toLocaleDateString()})
+            ({formatDateNumeric(currentDigest.weekStart)} - {formatDateNumeric(currentDigest.weekEnd)})
             {currentDigest.previousWeekId && (
               <span className="ml-2">| Compared to {currentDigest.previousWeekId}</span>
             )}

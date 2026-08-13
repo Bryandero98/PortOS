@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Upload, Loader2, CheckCircle2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import FilePickerButton from '../ui/FilePickerButton';
+import { formatDateNumeric } from '../../utils/formatters';
 
 // Shared bulk-backfill importer panel for the timeline (#2160). Two-step flow:
 // pick a file → preview (parse-only, no write) → confirm import. The import is
@@ -178,7 +179,7 @@ export default function ActivityImportPanel({ icon: Icon, title, noun, help, imp
 // single date when from === to), or null when either bound is missing.
 export function dateRangeLabel(from, to) {
   if (!from || !to) return null;
-  const f = new Date(from).toLocaleDateString();
-  const t = new Date(to).toLocaleDateString();
+  const f = formatDateNumeric(from);
+  const t = formatDateNumeric(to);
   return f === t ? f : `${f} — ${t}`;
 }

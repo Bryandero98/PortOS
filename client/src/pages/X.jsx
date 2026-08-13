@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import TabPills from '../components/ui/TabPills';
 import { useValidTab } from '../hooks/useValidTab';
+import { formatDateTime } from '../utils/formatters';
 
 const TABS = [
   { id: 'health', label: 'Reach & health', icon: BarChart3 },
@@ -21,7 +22,7 @@ const secondaryButton = 'rounded border border-port-border px-3 py-2 text-sm tex
 
 const sameAccount = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const formatCount = (value) => Number.isInteger(value) ? value.toLocaleString() : '—';
-const formatDate = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString() : '—';
+const formatDate = (value) => formatDateTime(value, '—');
 const stateLabel = (state) => ({ draft: 'Draft', pending_review: 'Awaiting review', approved: 'Approved', rejected: 'Rejected', opened: 'Opened in X' }[state] || state);
 const normalizeHandle = (value) => String(value || '').trim().replace(/^@/, '');
 

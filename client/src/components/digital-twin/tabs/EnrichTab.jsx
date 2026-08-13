@@ -18,6 +18,7 @@ import { FormField } from '../../ui/FormField';
 import { ENRICHMENT_CATEGORIES } from '../constants';
 import ListEnrichment from '../ListEnrichment';
 import ScaleInput from '../ScaleInput';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 export default function EnrichTab({ onRefresh }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -450,7 +451,7 @@ export default function EnrichTab({ onRefresh }) {
 
         {progress?.lastSession && (
           <p className="text-sm text-gray-500 mt-3">
-            Last session: {new Date(progress.lastSession).toLocaleDateString()}
+            Last session: {formatDateNumeric(progress.lastSession)}
           </p>
         )}
       </div>

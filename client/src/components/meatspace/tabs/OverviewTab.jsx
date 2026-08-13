@@ -7,7 +7,7 @@ import DeathClockCountdown from '../../DeathClockCountdown';
 import ProvenanceChip from '../../ui/ProvenanceChip';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
 import { clickableProps } from '../../../lib/a11yKeyboard.js';
-import { formatWeight, formatPercent } from '../../../utils/formatters.js';
+import { formatWeight, formatPercent, formatDateShort } from '../../../utils/formatters';
 
 function HealthTile({ icon: Icon, iconColor, label, metrics, onClick }) {
   return (
@@ -49,7 +49,7 @@ function CompactCountdown({ deathDate, lifeExpectancy, percentComplete, lev }) {
           whatWouldChange="New genome, lifestyle, or body-metric data shifts the projection; the actuarial baseline updates with your age."
         />
         <span className="text-xs text-gray-500">
-          ({new Date(deathDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })})
+          ({formatDateShort(deathDate)})
           {lev?.onTrack && <span className="text-port-success font-medium"> +LEV</span>}
         </span>
       </div>

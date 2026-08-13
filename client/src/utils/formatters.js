@@ -18,17 +18,68 @@ export function formatTime(timestamp) {
   if (diff < 60000) return 'Just now';
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return date.toLocaleDateString();
+  return formatDateNumeric(date);
+}
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Coerce a Date / ISO timestamp / epoch ms into a Date for display.
+ *
+ * A bare calendar date ("2026-03-05") is parsed by `new Date(...)` as UTC
+ * midnight, which renders as the PREVIOUS day everywhere west of Greenwich.
+ * Anchor it at LOCAL midnight instead — exactly what the call sites used to
+ * do by hand with `new Date(value + 'T00:00:00')`.
+ * @param {string|number|Date|null|undefined} value
+ * @returns {Date} A Date (possibly Invalid — callers validate)
+ */
+function toDisplayDate(value) {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' && DATE_ONLY_RE.test(value)) return new Date(`${value}T00:00:00`);
+  return new Date(value);
+}
+
+/**
+ * Render `value` through `toLocaleDateString`/`toLocaleTimeString` with the
+ * given options, returning `fallback` for missing or unparseable input so a
+ * blank record never renders the literal string "Invalid Date".
+ * @param {'date'|'time'} kind
+ * @param {string|number|Date|null|undefined} value
+ * @param {Intl.DateTimeFormatOptions|undefined} options
+ * @param {string} fallback
+ * @returns {string}
+ */
+function localized(kind, value, options, fallback) {
+  if (value == null || value === '') return fallback;
+  const date = toDisplayDate(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return kind === 'date'
+    ? date.toLocaleDateString([], options)
+    : date.toLocaleTimeString([], options);
 }
 
 /**
  * Format a timestamp as a localized time-of-day string (e.g., "1:30 PM")
  * @param {string|Date} dateStr - ISO timestamp or Date object
- * @returns {string} Formatted time of day
+ * @param {object} [options]
+ * @param {string} [options.timeZone] - Render in a specific IANA timezone
+ * @returns {string} Formatted time of day, or '' for missing/invalid input
  */
-export function formatTimeOfDay(dateStr) {
-  if (!dateStr) return '';
-  return new Date(dateStr).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+export function formatTimeOfDay(dateStr, { timeZone } = {}) {
+  return localized('time', dateStr, { hour: 'numeric', minute: '2-digit', ...(timeZone ? { timeZone } : {}) }, '');
+}
+
+/**
+ * Format a timestamp as a localized time-of-day string WITH seconds
+ * (e.g., "1:30:45 PM") — the shape log/queue rows want, where the second
+ * matters for ordering. Pair with `formatTimeOfDay` when seconds are noise
+ * and `formatClockTime` when the zero-padded 24h-capable clock shape is wanted.
+ * @param {string|number|Date|null} value - ISO timestamp, epoch ms, or Date
+ * @param {string} [fallback=''] - Rendered for missing/invalid input
+ * @returns {string} Formatted time of day with seconds
+ */
+export function formatTimeOfDaySeconds(value, fallback = '') {
+  return localized('time', value, undefined, fallback);
 }
 
 /**
@@ -38,27 +89,112 @@ export function formatTimeOfDay(dateStr) {
  */
 export function formatDate(dateStr) {
   if (!dateStr) return null;
-  return new Date(dateStr).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+  return localized('date', dateStr, { month: 'long', day: 'numeric', year: 'numeric' }, null);
+}
+
+/**
+ * Format a date in the browser's short numeric locale form (e.g., "3/5/2026").
+ * This is the canonical home for what used to be a bare
+ * `new Date(x).toLocaleDateString()` scattered across components — compact
+ * list/table cells where a spelled-out month would not fit.
+ * @param {string|number|Date|null} value - ISO timestamp, `YYYY-MM-DD`, epoch ms, or Date
+ * @param {string} [fallback=''] - Rendered for missing/invalid input
+ * @returns {string} Formatted numeric date
+ */
+export function formatDateNumeric(value, fallback = '') {
+  return localized('date', value, undefined, fallback);
+}
+
+/**
+ * Format a date as month + day only (e.g., "Mar 5"). For dense HUD/badge
+ * chrome and week ranges where the year is implied by context.
+ * @param {string|number|Date|null} value
+ * @param {string} [fallback=''] - Rendered for missing/invalid input
+ * @returns {string}
+ */
+export function formatMonthDay(value, fallback = '') {
+  return localized('date', value, { month: 'short', day: 'numeric' }, fallback);
+}
+
+/**
+ * Format a date as month + year (e.g., "March 2026") — calendar month headers.
+ * @param {string|number|Date|null} value
+ * @param {string} [fallback=''] - Rendered for missing/invalid input
+ * @returns {string}
+ */
+export function formatMonthYear(value, fallback = '') {
+  return localized('date', value, { month: 'long', year: 'numeric' }, fallback);
+}
+
+/**
+ * Format an abbreviated weekday plus time-of-day (e.g., "Mon, 7:00 AM") — a
+ * week-scale schedule timeline, where the day matters but the date does not.
+ * @param {string|number|Date|null} value
+ * @param {object} [options]
+ * @param {string} [options.timeZone] - Render in a specific IANA timezone
+ * @returns {string} Formatted weekday + time, or '' for missing/invalid input
+ */
+export function formatWeekdayTime(value, { timeZone } = {}) {
+  if (value == null || value === '') return '';
+  const date = toDisplayDate(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit', ...(timeZone ? { timeZone } : {}) });
+}
+
+/**
+ * Format a date as an abbreviated weekday only (e.g., "Mon") — calendar
+ * column headers and timeline axis ticks.
+ * @param {string|number|Date|null} value
+ * @param {object} [options]
+ * @param {string} [options.timeZone] - Render the weekday in a specific IANA timezone
+ * @returns {string} Abbreviated weekday, or '' for missing/invalid input
+ */
+export function formatWeekdayShort(value, { timeZone } = {}) {
+  return localized('date', value, { weekday: 'short', ...(timeZone ? { timeZone } : {}) }, '');
+}
+
+/**
+ * Format a weekday-led date with a short month (e.g., "Monday, Mar 5", or
+ * "Mon, Mar 5, 2026" with `{ weekday: 'short', year: true }`). Distinct from
+ * `formatDateFull` (long month, always with year).
+ * @param {string|number|Date|null} value
+ * @param {object} [options]
+ * @param {'long'|'short'} [options.weekday='long'] - Weekday width
+ * @param {boolean} [options.year=false] - Append the year
+ * @param {string} [options.fallback=''] - Rendered for missing/invalid input
+ * @returns {string}
+ */
+export function formatWeekdayDate(value, { weekday = 'long', year = false, fallback = '' } = {}) {
+  return localized('date', value, { weekday, month: 'short', day: 'numeric', ...(year ? { year: 'numeric' } : {}) }, fallback);
 }
 
 /**
  * Format a date with full detail including weekday (e.g., "Saturday, March 5, 2026")
- * @param {Date} date - Date object
- * @returns {string} Formatted date string
+ * @param {string|number|Date|null} value - Date object, ISO timestamp, or `YYYY-MM-DD`
+ * @returns {string} Formatted date string, or '' for missing/invalid input
  */
-export function formatDateFull(date) {
-  return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+export function formatDateFull(value) {
+  return localized('date', value, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }, '');
 }
 
 /**
  * Format a Date as a clock time string with seconds (e.g., "02:30:45 PM")
- * @param {Date} date - Date object
- * @param {object} [options] - { timeZone } — render in a specific IANA timezone
+ * @param {string|number|Date|null} date - Date object, ISO timestamp, or epoch ms
+ * @param {object} [options]
+ * @param {string} [options.timeZone] - Render in a specific IANA timezone
  *   (e.g. the server's configured user timezone) instead of the browser's
- * @returns {string} Formatted clock time
+ * @param {boolean} [options.seconds=true] - Include seconds ("02:30:45 PM" vs "02:30 PM")
+ * @param {boolean} [options.hour12] - Force 12h/24h; omit to follow the locale
+ * @returns {string} Formatted clock time, or '' for missing/invalid input
  */
-export function formatClockTime(date, { timeZone } = {}) {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', ...(timeZone ? { timeZone } : {}) });
+export function formatClockTime(date, { timeZone, seconds = true, hour12 } = {}) {
+  return localized('time', date, {
+    hour: '2-digit',
+    minute: '2-digit',
+    ...(seconds ? { second: '2-digit' } : {}),
+    ...(timeZone ? { timeZone } : {}),
+    ...(hour12 === undefined ? {} : { hour12 }),
+  }, '');
 }
 
 /**
@@ -272,10 +408,10 @@ export function formatCountdown(seconds) {
  */
 const _dateTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
-export function formatDateTime(value) {
-  if (!value) return 'Unknown time';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Unknown time';
+export function formatDateTime(value, fallback = 'Unknown time') {
+  if (value == null || value === '') return fallback;
+  const date = toDisplayDate(value);
+  if (Number.isNaN(date.getTime())) return fallback;
   return _dateTimeFormatter.format(date);
 }
 
@@ -309,10 +445,7 @@ export function formatTimecode(seconds) {
  * fallback) depending on the surrounding UI.
  */
 export function formatDateShort(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return localized('date', value, { year: 'numeric', month: 'short', day: 'numeric' }, '—');
 }
 
 // Per-call LLM timeout bounds. Client-side mirror of the canonical
@@ -401,11 +534,11 @@ export function formatDurationMin(minutes, options = {}) {
  * time (e.g. "Sat, Apr 1, 1:30 PM"); all-day events show a full weekday and
  * year (e.g. "Saturday, April 1, 2026"). Kept separate from `formatDateTime`
  * because the weekday-led shape is event-specific.
- * Behavior-identical to the local formatter it replaced: any input is passed
- * straight to `new Date(...)`, so malformed/empty values render the same
- * `Invalid Date` / epoch string the original did. The two call sites always
- * pass a real event time, so this degenerate path is never exercised — kept
- * faithful so the migration introduces zero visual change.
+ * Missing/unparseable input renders '' — the same fallback contract every
+ * other helper here follows. (It used to pass the raw `Invalid Date` string
+ * through "for migration fidelity"; once the all-day branch started routing
+ * through `formatDateFull`'s guard, that left one branch guarded and one not.
+ * Both call sites pass a real event time, so nothing visible changes.)
  * @param {string|Date|null} dateStr - ISO timestamp or Date object
  * @param {object} [options]
  * @param {boolean} [options.allDay=false] - Render date-only (all-day event).
@@ -413,25 +546,12 @@ export function formatDurationMin(minutes, options = {}) {
  */
 export function formatEventDateTime(dateStr, options = {}) {
   const { allDay = false } = options ?? {};
-  const date = new Date(dateStr);
   // All-day events render exactly like `formatDateFull` (full weekday + year).
-  if (allDay) return formatDateFull(date);
+  if (allDay) return formatDateFull(dateStr);
+  if (dateStr == null || dateStr === '') return '';
+  const date = toDisplayDate(dateStr);
+  if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
-
-/**
- * Format a date string as a short weekday + month + day string
- * (e.g., "Sat, Mar 5"). Used for activity-heatmap tooltips where compact
- * output with a leading weekday abbreviation is important.
- * The input is treated as a calendar date (anchored at local noon to avoid
- * day-boundary drift), not as a precise timestamp.
- * @param {string} dateStr - Date-only string ("YYYY-MM-DD"); a full ISO
- *   timestamp is NOT supported (the noon-anchor suffix would make it invalid)
- * @returns {string} Formatted date (e.g., "Sat, Mar 5")
- */
-export function formatDateWeekday(dateStr) {
-  const date = new Date(dateStr + 'T12:00:00');
-  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 /**

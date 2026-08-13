@@ -4,6 +4,7 @@ import toast from '../../ui/Toast';
 import Modal from '../../ui/Modal';
 import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 function buildReleasePrompt({ repoPath, appName, comparison, baseBranch, devBranch, hasChangelog }) {
   const commitList = comparison.commits
@@ -544,7 +545,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
                         <span className="text-sm text-white truncate">{commit.message}</span>
                       </div>
                       <div className="text-xs text-gray-500 mt-1">
-                        {commit.author} • {new Date(commit.date).toLocaleDateString()}
+                        {commit.author} • {formatDateNumeric(commit.date)}
                       </div>
                     </div>
                   ))}
@@ -784,7 +785,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
                       <div className="flex items-center gap-2 shrink-0">
                         {rb.lastCommitDate && (
                           <span className="text-xs text-gray-500 hidden sm:inline">
-                            {new Date(rb.lastCommitDate).toLocaleDateString()}
+                            {formatDateNumeric(rb.lastCommitDate)}
                           </span>
                         )}
                         {!rb.hasLocal && (

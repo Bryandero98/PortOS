@@ -31,7 +31,7 @@ import {
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
 import BrailleSpinner from '../../BrailleSpinner';
-import { formatDurationMin, formatDateTime } from '../../../utils/formatters';
+import { formatDurationMin, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 
 // Evidence pairing (issue #2617): when the server classified a task type on
 // its recency-windowed rate, label the percentage with the WINDOW's sample
@@ -859,7 +859,7 @@ export default function LearningTab() {
                           <div key={idx} className="p-3">
                             <div className="flex items-center justify-between mb-1">
                               <span className="text-xs text-gray-500 font-mono">{err.taskType}</span>
-                              <span className="text-xs text-gray-600">{new Date(err.recordedAt).toLocaleDateString()}</span>
+                              <span className="text-xs text-gray-600">{formatDateNumeric(err.recordedAt)}</span>
                             </div>
                             <div className="text-sm text-gray-300 font-mono break-all">{err.message || 'No message'}</div>
                             {err.details && (

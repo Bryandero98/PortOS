@@ -32,7 +32,7 @@ import toast from '../../ui/Toast';
 import { copyToClipboard } from '../../../lib/clipboard';
 import { extractCosTaskType } from '../../../lib/cosTaskType';
 import { DEFAULT_REVIEWER, normalizeReviewers } from '../constants';
-import { formatBytes, formatDurationMs, formatDateTime } from '../../../utils/formatters';
+import { formatBytes, formatDurationMs, formatDateTime, formatMonthDay, formatTimeOfDay } from '../../../utils/formatters';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
@@ -557,8 +557,8 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             <>
               <span className="text-gray-600">|</span>
               <span className="text-gray-500 whitespace-nowrap" title={formatDateTime(agent.completedAt)}>
-                {new Date(agent.completedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}{' '}
-                {new Date(agent.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                {formatMonthDay(agent.completedAt)}{' '}
+                {formatTimeOfDay(agent.completedAt)}
               </span>
             </>
           )}
@@ -710,7 +710,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                 <div className="min-w-0">
                   <span className="text-yellow-400">BTW:</span>{' '}
                   <span className="text-gray-300">{btw.message}</span>
-                  <span className="text-gray-600 ml-2">{new Date(btw.timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>
+                  <span className="text-gray-600 ml-2">{formatTimeOfDay(btw.timestamp)}</span>
                 </div>
               </div>
             ))}
