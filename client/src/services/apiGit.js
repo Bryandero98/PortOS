@@ -88,8 +88,14 @@ export const checkoutRemoteBranch = (path, branch, options = {}) => request('/gi
   body: JSON.stringify({ path, branch }),
   ...options
 });
-export const getSubmodules = () => request('/git/submodules/status');
-export const updateSubmodule = (path) => request('/git/submodules/update', {
+// repoPath is optional — omitted, the server reports the PortOS checkout's
+// submodules. Resolves to `{ submodules, defaultBranch }`.
+export const getSubmodules = (repoPath, options = {}) => request(
+  `/git/submodules/status${repoPath ? `?${new URLSearchParams({ repoPath })}` : ''}`,
+  options
+);
+export const updateSubmodule = (path, { repoPath, commit, ...options } = {}) => request('/git/submodules/update', {
   method: 'POST',
-  body: JSON.stringify({ path })
+  body: JSON.stringify({ path, repoPath, commit }),
+  ...options
 });

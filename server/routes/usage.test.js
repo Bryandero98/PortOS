@@ -6,10 +6,16 @@ import { errorMiddleware } from '../lib/errorHandler.js';
 vi.mock('../services/usage.js', () => ({
   getUsageSummary: vi.fn(),
   getUsage: vi.fn(),
+  getFirstActivityDay: vi.fn(() => '2026-01-01'),
   recordSession: vi.fn(),
   recordMessages: vi.fn(),
   recordTokens: vi.fn(),
   resetUsage: vi.fn()
+}));
+
+vi.mock('../services/subscriptionCosts.js', () => ({
+  saveSubscriptionCosts: vi.fn(async (costs) => costs),
+  getSubscriptionSavings: vi.fn(async () => ({ configured: false, families: [] }))
 }));
 
 vi.mock('../services/providers.js', () => ({
@@ -35,6 +41,7 @@ import * as usage from '../services/usage.js';
 import { getAllProviders } from '../services/providers.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
 import { getHistoricalUsageBackfillStatus, startHistoricalUsageBackfill } from '../services/usageBackfill.js';
+import { getSubscriptionSavings, saveSubscriptionCosts } from '../services/subscriptionCosts.js';
 import usageRoutes from './usage.js';
 
 const buildApp = () => {
@@ -54,7 +61,11 @@ describe('usage routes', () => {
     usage.getUsageSummary.mockReturnValue({ totalSessions: 4, providers: ['anthropic'] });
     const res = await request(buildApp()).get('/api/usage');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ totalSessions: 4, providers: ['anthropic'] });
+    expect(res.body).toEqual({
+      totalSessions: 4,
+      providers: ['anthropic'],
+      subscriptionSavings: { configured: false, families: [] }
+    });
     const arg = usage.getUsageSummary.mock.calls[0][0];
     expect(arg.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(arg.to).toBeNull();
@@ -99,6 +110,64 @@ describe('usage routes', () => {
 
   it('GET /api/usage rejects an unknown period', async () => {
     const res = await request(buildApp()).get('/api/usage?period=14d');
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /api/usage prorates the savings block over the same window as the report', async () => {
+    usage.getUsageSummary.mockReturnValue({ report: { totals: { estimatedCost: 12 } } });
+    getAllProviders.mockResolvedValue({ activeProvider: null, providers: [{ id: 'claude-code' }] });
+    const res = await request(buildApp()).get('/api/usage?from=2026-02-01&to=2026-02-07');
+    expect(res.status).toBe(200);
+    expect(getSubscriptionSavings).toHaveBeenCalledWith({
+      report: { totals: { estimatedCost: 12 } },
+      providers: [{ id: 'claude-code' }],
+      from: '2026-02-01',
+      to: '2026-02-07',
+      firstActivityDay: null
+    });
+  });
+
+  // Only an unbounded window needs a start day inferred from history; paying
+  // for the scan on every 7d/30d request would throw the result away.
+  it('GET /api/usage only reads the first activity day for an unbounded range', async () => {
+    usage.getUsageSummary.mockReturnValue({});
+    await request(buildApp()).get('/api/usage?period=7d');
+    expect(usage.getFirstActivityDay).not.toHaveBeenCalled();
+
+    await request(buildApp()).get('/api/usage?period=all');
+    expect(usage.getFirstActivityDay).toHaveBeenCalled();
+  });
+
+  it('PUT /api/usage/subscriptions saves a price patch, including a null clear', async () => {
+    const res = await request(buildApp())
+      .put('/api/usage/subscriptions')
+      .send({ costs: { claude: 200, codex: null } });
+    expect(res.status).toBe(200);
+    expect(saveSubscriptionCosts).toHaveBeenCalledWith({ claude: 200, codex: null });
+  });
+
+  it('PUT /api/usage/subscriptions rejects a non-numeric price', async () => {
+    const res = await request(buildApp())
+      .put('/api/usage/subscriptions')
+      .send({ costs: { claude: '200' } });
+    expect(res.status).toBe(400);
+    expect(saveSubscriptionCosts).not.toHaveBeenCalled();
+  });
+
+  // A key that isn't a real family would persist forever with no editor row to
+  // clear it, so it is rejected at the edge rather than normalized away later.
+  it('PUT /api/usage/subscriptions rejects an unknown family key', async () => {
+    const res = await request(buildApp())
+      .put('/api/usage/subscriptions')
+      .send({ costs: { 'not-a-family': 10 } });
+    expect(res.status).toBe(400);
+    expect(saveSubscriptionCosts).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/usage/subscriptions rejects an over-cap price', async () => {
+    const res = await request(buildApp())
+      .put('/api/usage/subscriptions')
+      .send({ costs: { claude: 100001 } });
     expect(res.status).toBe(400);
   });
 

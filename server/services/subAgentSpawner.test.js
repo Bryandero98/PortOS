@@ -401,6 +401,18 @@ describe('Worktree & metadata flag helpers', () => {
       expect(metadata.useWorktree).toBe(true);
       expect(metadata.openPR).toBe(true);
     });
+
+    it('should default openPR to true when worktree is enabled and defaultOpenPR is not false', () => {
+      const metadata = { useWorktree: true };
+      applyAppWorktreeDefault(metadata, {});
+      expect(metadata.openPR).toBe(true);
+
+      const metadata2 = {};
+      applyAppWorktreeDefault(metadata2, { defaultUseWorktree: true });
+      expect(metadata2.useWorktree).toBe(true);
+      expect(metadata2.openPR).toBe(true);
+    });
   });
 
 });
+

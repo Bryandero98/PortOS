@@ -3501,6 +3501,69 @@ describe('peerSync', () => {
       // Gated before merge — bundle apply never runs.
       expect(applyCatalogRemoteChanges).not.toHaveBeenCalled();
     });
+
+    // #3926: the gate used to key on `ingredients` alone, so any bundle whose
+    // live rows sat in another block (`refs` today; `relations`/`tags`/`media`/
+    // `catalogTypes` from catalog v4–v8) slipped past it and got applied on a
+    // receiver that can't interpret the newer shape.
+    it.each([
+      ['relations', { ingredients: [], refs: [], relations: [{ fromIngredientId: 'cat-chr-1', toIngredientId: 'cat-chr-2', kind: 'ally-of', updatedAt: '2026-01-02T00:00:00Z' }] }],
+      ['tags', { ingredients: [], refs: [], tags: [{ id: 'cat-tag-1', label: 'Protagonists', parentId: null, updatedAt: '2026-01-02T00:00:00Z' }] }],
+      ['media', { ingredients: [], media: [{ ingredientId: 'cat-chr-1', mediaKey: 'img-1', mediaType: 'image', updatedAt: '2026-01-02T00:00:00Z' }] }],
+      ['refs', { ingredients: [], refs: [{ ingredientId: 'cat-chr-1', refKind: 'universe', refId: 'u1', role: 'canon-character', createdAt: '2026-01-02T00:00:00Z' }] }],
+      // A block this receiver's catalog version doesn't know about yet must
+      // gate too — that is precisely the payload the gate protects against.
+      ['an unknown future block', { ingredients: [], refs: [], someFutureBlock: [{ id: 'x1', updatedAt: '2026-01-02T00:00:00Z' }] }],
+    ])('receiver rejects a bundle whose only live rows are %s when the sender is schema-ahead on catalog', async (_label, catalogBundle) => {
+      vi.mocked(getBackendName).mockReturnValue('postgres');
+      const rejection = await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1', name: 'Foo', deleted: false, deletedAt: null },
+        assetManifest: [],
+        catalogBundle,
+        sourceInstanceId: 'peer-a',
+        portosMeta: { schemaVersions: { ...PORTOS_SCHEMA_VERSIONS, catalog: PORTOS_SCHEMA_VERSIONS.catalog + 1 }, portosVersion: '99.0.0' },
+      }).catch((err) => err);
+      expect(rejection.code).toBe('PEER_SYNC_SCHEMA_VERSION_AHEAD');
+      expect(rejection.details.ahead).toEqual([
+        { category: 'catalog', senderV: PORTOS_SCHEMA_VERSIONS.catalog + 1, receiverV: PORTOS_SCHEMA_VERSIONS.catalog },
+      ]);
+      expect(applyCatalogRemoteChanges).not.toHaveBeenCalled();
+    });
+
+    it('receiver applies an ingredient-free bundle when the sender is NOT schema-ahead', async () => {
+      // The widened gate must not turn into a blanket rejection: an
+      // equal-version sender's relations-only bundle still applies.
+      vi.mocked(getBackendName).mockReturnValue('postgres');
+      await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1', name: 'Foo', deleted: false, deletedAt: null },
+        assetManifest: [],
+        catalogBundle: { ingredients: [], refs: [], relations: [{ fromIngredientId: 'cat-chr-1', toIngredientId: 'cat-chr-2', kind: 'ally-of', updatedAt: '2026-01-02T00:00:00Z' }] },
+        sourceInstanceId: 'peer-a',
+        portosMeta: { schemaVersions: { ...PORTOS_SCHEMA_VERSIONS } },
+      });
+      expect(applyCatalogRemoteChanges).toHaveBeenCalledTimes(1);
+    });
+
+    it('receiver does NOT gate a tombstone-only bundle from a schema-ahead sender', async () => {
+      // Tombstone rows are id+deleted+deletedAt+updatedAt at every catalog
+      // version, so they stay exempt — otherwise federated catalog deletes
+      // would stall the moment one peer upgrades ahead.
+      vi.mocked(getBackendName).mockReturnValue('postgres');
+      await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1', name: 'Foo', deleted: false, deletedAt: null },
+        assetManifest: [],
+        catalogBundle: {
+          ingredients: [{ id: 'cat-chr-1', deleted: true, deletedAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-01T00:00:00Z' }],
+          relations: [{ id: 'cat-rel-1', deleted: true, deletedAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-01T00:00:00Z' }],
+        },
+        sourceInstanceId: 'peer-a',
+        portosMeta: { schemaVersions: { ...PORTOS_SCHEMA_VERSIONS, catalog: PORTOS_SCHEMA_VERSIONS.catalog + 1 }, portosVersion: '99.0.0' },
+      });
+      expect(applyCatalogRemoteChanges).toHaveBeenCalledTimes(1);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -4079,6 +4142,147 @@ describe('peerSync', () => {
         // Hash withheld so the outline re-sends once the peer upgrades.
         const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
         expect(refreshed.lastPushedHash).toBeFalsy();
+      });
+
+      // #3928 — the legacy-stripped water-mark. Withholding `lastPushedHash`
+      // (the two tests above) is what keeps the stripped key deliverable, but
+      // on its own it made EVERY subsequent cycle re-run the 400 +
+      // stripped-retry pair forever. `lastPushedLegacyHash` records the full
+      // payload hash we delivered in stripped form so an unchanged record
+      // settles.
+      const legacyRejectsKey = (key) => {
+        const rejection = { ok: false, status: 400, json: async () => ({
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          context: { details: [{ path: '', message: `Unrecognized key(s) in object: '${key}'` }] },
+        }) };
+        rejection.clone = () => rejection;
+        return rejection;
+      };
+      const mockLegacyReviewPeer = () => {
+        // A pre-feature peer: rejects `manuscriptReview` on every full push,
+        // accepts the stripped retry.
+        vi.mocked(peerFetch).mockImplementation(async (_url, init) => (
+          JSON.parse(init.body).manuscriptReview
+            ? legacyRejectsKey('manuscriptReview')
+            : { ok: true, status: 200, json: async () => ({}) }
+        ));
+      };
+
+      it('records lastPushedLegacyHash when a stripped retry lands on a legacy peer (#3928)', async () => {
+        vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+        vi.mocked(listIssues).mockResolvedValue([{ id: 'i1', seriesId: 's1', number: 1 }]);
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        });
+        mockLegacyReviewPeer();
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+        }, { adoptedFromReverse: true });
+        const result = await pushRecordToPeer(sub);
+        expect(result.pushed).toBe(true);
+        const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
+        // The review is still owed (hash withheld) but the delivered content
+        // is water-marked so the next cycle can settle.
+        expect(refreshed.lastPushedHash).toBeFalsy();
+        expect(refreshed.lastPushedLegacyHash).toBe(result.hash);
+      });
+
+      it('short-circuits the next cycle as unchanged instead of re-running the 400 + retry pair (#3928)', async () => {
+        vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+        vi.mocked(listIssues).mockResolvedValue([{ id: 'i1', seriesId: 's1', number: 1 }]);
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        });
+        mockLegacyReviewPeer();
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+        }, { adoptedFromReverse: true });
+        await pushRecordToPeer(sub);
+        expect(vi.mocked(peerFetch).mock.calls.length).toBe(2); // 400 + stripped retry
+        // Next sync cycle, same content: zero HTTP.
+        const second = await pushRecordToPeer(await findPeerSubscription('peer-a', 'series', 's1'));
+        expect(second.pushed).toBe(false);
+        expect(second.reason).toBe('unchanged-legacy-stripped');
+        expect(vi.mocked(peerFetch).mock.calls.length).toBe(2);
+      });
+
+      it('re-pushes when the bundled review actually changes after a stripped push (#3928)', async () => {
+        vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+        vi.mocked(listIssues).mockResolvedValue([{ id: 'i1', seriesId: 's1', number: 1 }]);
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        });
+        mockLegacyReviewPeer();
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+        }, { adoptedFromReverse: true });
+        const first = await pushRecordToPeer(sub);
+        const callsAfterFirst = vi.mocked(peerFetch).mock.calls.length;
+        // The user resolves the comment — the review content moved, so the
+        // water-mark must NOT hold the push back.
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'resolved', updatedAt: '2026-06-03T00:00:00Z' }],
+        });
+        const second = await pushRecordToPeer(await findPeerSubscription('peer-a', 'series', 's1'));
+        expect(second.pushed).toBe(true);
+        expect(second.hash).not.toBe(first.hash);
+        expect(vi.mocked(peerFetch).mock.calls.length).toBe(callsAfterFirst + 2);
+        const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
+        expect(refreshed.lastPushedLegacyHash).toBe(second.hash);
+      });
+
+      it('re-attempts the full push on a peer:online re-probe even when the legacy hash matches (#3928)', async () => {
+        vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+        vi.mocked(listIssues).mockResolvedValue([{ id: 'i1', seriesId: 's1', number: 1 }]);
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        });
+        mockLegacyReviewPeer();
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+        }, { adoptedFromReverse: true });
+        await pushRecordToPeer(sub);
+        // The peer upgraded and came back online — it now accepts the review.
+        vi.mocked(peerFetch).mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+        const upgraded = await pushRecordToPeer(
+          await findPeerSubscription('peer-a', 'series', 's1'),
+          { bypassSchemaCooldown: true },
+        );
+        expect(upgraded.pushed).toBe(true);
+        const payload = JSON.parse(vi.mocked(peerFetch).mock.calls.at(-1)[1].body);
+        expect(payload.manuscriptReview).toBeDefined();
+        // Fully delivered → the normal hash takes over and the legacy
+        // water-mark clears.
+        const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
+        expect(refreshed.lastPushedHash).toBe(upgraded.hash);
+        expect(refreshed.lastPushedLegacyHash).toBeFalsy();
+      });
+
+      it('does NOT record a legacy hash when the RECEIVER reported the bundled merge failed (#3928)', async () => {
+        // `reviewSyncPending` from the receiver is a transient merge failure,
+        // not a version gap — the next cycle must genuinely re-push.
+        vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+        vi.mocked(listIssues).mockResolvedValue([{ id: 'i1', seriesId: 's1', number: 1 }]);
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        });
+        vi.mocked(peerFetch).mockResolvedValue({ ok: true, status: 200, json: async () => ({ reviewSyncPending: true }) });
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+        }, { adoptedFromReverse: true });
+        await pushRecordToPeer(sub);
+        const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
+        expect(refreshed.lastPushedHash).toBeFalsy();
+        expect(refreshed.lastPushedLegacyHash).toBeFalsy();
+        const second = await pushRecordToPeer(refreshed);
+        expect(second.pushed).toBe(true);
       });
 
       it('does NOT retry on a 400 whose validation error is unrelated to portosMeta', async () => {

@@ -211,7 +211,14 @@ import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
-import { MAX_RUNTIME_WRAP_UP_GRACE_MS } from '../lib/tuiHandshake.js';
+import {
+  MAX_RUNTIME_WRAP_UP_GRACE_MS,
+  SELF_CLEARING_RESUBMIT_INTERVAL_MS,
+  MERGE_QUEUE_IDLE_TIMEOUT_MS,
+  REVIEW_LOOP_IDLE_TIMEOUT_MS,
+  BACKGROUND_SHELL_IDLE_TIMEOUT_MS,
+  decideIdleReap,
+} from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
 // it directly exercises the same code path production does.
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
@@ -603,7 +610,9 @@ describe('spawnTuiAgent runtime', () => {
       taskId: 'task-1',
       command: 'codex',
       workspacePath: '/tmp/ws',
-      doneSentinelPath: '/tmp/ws/.agent-done',
+      // Per-agent sentinel: `/tmp/ws` is a SHARED workspace (its basename is not
+      // the agent id), so the run watches only its own `.agent-done-agent-1`.
+      doneSentinelPath: '/tmp/ws/.agent-done-agent-1',
     }));
     expect(shellService.createShellSession).not.toHaveBeenCalled();
     expect(shellService.registerExternalSession).toHaveBeenCalledWith(
@@ -1444,7 +1453,10 @@ describe('spawnTuiAgent runtime', () => {
   // ── 1c. claude waits for bracketed-paste mode (input ready) before pasting ───
   const claudeTuiConfig = { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100, idleTimeoutMs: 50 };
   // Antigravity (agy) gets the SAME positive input-ready gate as claude (#2705).
-  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100, idleTimeoutMs: 50 };
+  // maxRuntimeMs is explicit for the same reason defaultTuiConfig pins it: left
+  // undefined, the wall-clock backstop is a `setTimeout(…, undefined)` that fires
+  // on the next tick and prods every one of these runs to wrap up.
+  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100, idleTimeoutMs: 50, maxRuntimeMs: 3600000 };
   const pasteCount = () => vi.mocked(shellService.writeToSession).mock.calls
     .filter(([, d]) => typeof d === 'string' && d.includes('\x1b[200~')).length;
   // The launch shell turns bracketed-paste OFF to run the command, then claude
@@ -1703,6 +1715,41 @@ describe('spawnTuiAgent runtime', () => {
     expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
   });
 
+  // The banner is the REJECTION of the submission — agy discards the prompt and
+  // drops back to an empty, idle composer (agent-1f08178b's raw.txt, and a live
+  // session confirmed parked there). Nothing is in flight, so a PASSIVE window
+  // can never see the generation chrome it waits for: its only reachable outcome
+  // is expiry, making it a pause bolted in front of the same fail-over. Re-asking
+  // is the only way out, and what the banner itself instructs.
+  it('re-submits the prompt while the eligibility window is open, and stops once agy answers', async () => {
+    await driveAgyToSubmittedPrompt();
+
+    await capturedOnData(Buffer.from(ELIGIBILITY_BANNER));
+    await capturedOnData(Buffer.from('> ? for shortcuts'));
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(SELF_CLEARING_RESUBMIT_INTERVAL_MS + 5000);
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      'do the thing',
+      expect.objectContaining({ label: expect.stringContaining('handshake') }),
+    );
+
+    // The retry lands: agy paints its in-flight chrome, which closes the window
+    // and must stop the re-asking too.
+    await capturedOnData(Buffer.from('Generating...\nesc to cancel'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+    // The run belongs to the ordinary reaper again, not to the fail-over.
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'fallback-signal' })
+    );
+  });
+
   it('resumes the run when the eligibility banner clears and agy starts generating', async () => {
     await driveAgyToSubmittedPrompt();
 
@@ -1734,7 +1781,9 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.from('> ? for shortcuts'));
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(70000);
+    // Past the full grace window — every re-submission inside it went unanswered
+    // too, so the fail-over is the correct verdict.
+    await vi.advanceTimersByTimeAsync(130000);
     vi.useRealTimers();
     await completeDone;
 
@@ -2235,8 +2284,9 @@ describe('spawnTuiAgent runtime', () => {
     const { appendFile } = await import('fs/promises');
     const sentinel = '## Summary\nImplemented the fix.\n\n## PR\nhttps://example.com/pr/42';
     vi.mocked(existsSync).mockReturnValue(true);
+    // The agent writes the run-scoped sentinel name the prompt gave it.
     vi.mocked(readFile).mockImplementation(async (p) =>
-      typeof p === 'string' && p.endsWith('.agent-done') ? sentinel : ''
+      typeof p === 'string' && p.endsWith('.agent-done-agent-1') ? sentinel : ''
     );
 
     const spawnPromise = runSpawn({ workspacePath: '/tmp/ws' });
@@ -2406,39 +2456,15 @@ describe('spawnTuiAgent runtime', () => {
 
 // Issue #2074 — the idle reaper must extend its grace while a swarm orchestrator
 // is in its Phase C merge queue, and, if the EXTENDED window still blows, surface
-// a needs-manual-finish failure instead of a silent `status: completed`. This is
-// the exact decision the `idleTimer` interval makes; mirror it as a pure function
-// (the inline-copy pattern from subAgentSpawner.test.js) so the branch matrix is
-// tested without standing up the full fake-timer PTY harness. Generalized to
-// do:release/do:pr/do:rpr's multi-reviewer loop below (agent-61508f36, PR #2084).
+// a needs-manual-finish failure instead of a silent `status: completed`.
+//
+// Exercises the REAL `decideIdleReap` the idleTimer body calls (it was an inline
+// copy here until the merge-follow-up branch below made the drift risk concrete
+// — a copy would have "passed" while the shipped reaper still failed merged
+// PRs). The real code keeps an async worktree-changes check (#2191) that can
+// downgrade `idle-complete` to `idle-no-changes`; that's covered by the full
+// fake-timer harness above, not by this pure function.
 describe('agentTuiSpawning — idle reap decision (#2074)', () => {
-  const MERGE_QUEUE_IDLE_TIMEOUT_MS = 900000;
-  const REVIEW_LOOP_IDLE_TIMEOUT_MS = 900000;
-
-  // Faithful copy of the SYNCHRONOUS part of the idleTimer body's finalize-
-  // selection logic. The real code has an async worktree-changes check (#2191)
-  // that may downgrade `idle-complete` to `idle-no-changes` — that's tested via
-  // the full fake-timer harness above, not this pure function.
-  function decideIdleReap({ idle, baseIdleTimeoutMs, mergeQueueActive, reviewLoopActive, workActive, rendersCounter }) {
-    const effectiveIdleTimeoutMs = mergeQueueActive
-      ? Math.max(baseIdleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
-      : reviewLoopActive
-        ? Math.max(baseIdleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
-        : baseIdleTimeoutMs;
-    if (idle < effectiveIdleTimeoutMs) return { action: 'wait', effectiveIdleTimeoutMs };
-    if (mergeQueueActive) {
-      return { action: 'reap', success: false, reason: 'merge-queue-idle-timeout', effectiveIdleTimeoutMs };
-    }
-    if (reviewLoopActive) {
-      return { action: 'reap', success: false, reason: 'review-loop-idle-timeout', effectiveIdleTimeoutMs };
-    }
-    const noWorkButCounterExpected = !workActive && rendersCounter;
-    if (noWorkButCounterExpected) {
-      return { action: 'reap', success: false, reason: 'idle-no-activity', effectiveIdleTimeoutMs };
-    }
-    return { action: 'reap', success: true, reason: 'idle-complete', effectiveIdleTimeoutMs };
-  }
-
   const BASE = 180000;
 
   it('does NOT reap at the 3-min default while in a merge queue — grace extends to 15min', () => {
@@ -2500,5 +2526,63 @@ describe('agentTuiSpawning — idle reap decision (#2074)', () => {
   it('a merge-queue reap takes precedence over a review-loop reap when both are (implausibly) active', () => {
     const r = decideIdleReap({ idle: 900001, baseIdleTimeoutMs: BASE, mergeQueueActive: true, reviewLoopActive: true, workActive: true, rendersCounter: true });
     expect(r.reason).toBe('merge-queue-idle-timeout');
+  });
+
+  it('a background-shell wait extends the window but carries no verdict of its own', () => {
+    const waiting = decideIdleReap({ idle: BASE + 1, baseIdleTimeoutMs: BASE, backgroundShellActive: true, workActive: true, rendersCounter: true });
+    expect(waiting.action).toBe('wait');
+    expect(waiting.effectiveIdleTimeoutMs).toBe(BACKGROUND_SHELL_IDLE_TIMEOUT_MS);
+    const blown = decideIdleReap({ idle: BACKGROUND_SHELL_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, backgroundShellActive: true, workActive: true, rendersCounter: true });
+    expect(blown.reason).toBe('idle-complete');
+    expect(blown.success).toBe(true);
+  });
+
+  // The merge-follow-up false failure (task sys-rl-msr1j1a5 / PR #3909,
+  // 2026-08-13). The follow-up prompt QUOTES `gh pr checks` / `gh pr merge` /
+  // `--delete-branch`, so the TUI's echo of it latches `mergeQueueActive` before
+  // any work runs. The agent then merged the PR in ~60s, printed "PR Status:
+  // MERGED", made no commit (nothing to commit — it only merges), skipped the
+  // sentinel, and idled — and was recorded as `merge-queue-idle-timeout` 15
+  // minutes later, three times over, ending in Blocked with a HIGH "PR left
+  // open" card naming an already-merged PR.
+  describe('PR follow-up whose PR already merged', () => {
+    it('reaps as a SUCCESS at the BASE window even with the merge queue latched', () => {
+      const r = decideIdleReap({
+        idle: BASE + 1, baseIdleTimeoutMs: BASE,
+        mergeQueueActive: true, prFollowUpMerged: true, workActive: true, rendersCounter: true,
+      });
+      expect(r.action).toBe('reap');
+      expect(r.success).toBe(true);
+      expect(r.reason).toBe('pr-follow-up-merged');
+    });
+
+    it('does not fire before the BASE window — a merged PR is not a reason to cut a working agent short', () => {
+      const r = decideIdleReap({
+        idle: BASE - 1, baseIdleTimeoutMs: BASE,
+        mergeQueueActive: true, prFollowUpMerged: true, workActive: true, rendersCounter: true,
+      });
+      expect(r.action).toBe('wait');
+    });
+
+    it('outranks the no-activity downgrade too — the deliverable landed regardless of the work counter', () => {
+      const r = decideIdleReap({
+        idle: BASE + 1, baseIdleTimeoutMs: BASE,
+        prFollowUpMerged: true, workActive: false, rendersCounter: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.reason).toBe('pr-follow-up-merged');
+    });
+
+    // The bug this whole branch exists to kill: without `prFollowUpMerged` the
+    // SAME signals produce the needs-manual-finish failure. Guards against a
+    // future refactor that quietly stops threading the forge answer through.
+    it('still fails as needs-manual-finish when the PR did NOT merge', () => {
+      const r = decideIdleReap({
+        idle: MERGE_QUEUE_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE,
+        mergeQueueActive: true, prFollowUpMerged: false, workActive: true, rendersCounter: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.reason).toBe('merge-queue-idle-timeout');
+    });
   });
 });

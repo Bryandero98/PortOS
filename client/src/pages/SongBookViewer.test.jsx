@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 
 // Mock the api barrel (RoundEditor.test.jsx harness style).
 const api = vi.hoisted(() => ({
@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../services/api', () => api);
 vi.mock('../components/ui/Toast', () => ({ default: { error: vi.fn(), success: vi.fn() } }));
 
+import toast from '../components/ui/Toast';
 import SongBookViewer from './SongBookViewer.jsx';
 
 // Invented fixture data only (privacy convention) — nonsense sheet content.
@@ -41,11 +42,21 @@ const song = (extra = {}) => ({
   ...extra,
 });
 
-const renderPage = (path = '/songbook/abc') => render(
-  <MemoryRouter initialEntries={[path]}>
-    <Routes><Route path="/songbook/:id" element={<SongBookViewer />} /></Routes>
-  </MemoryRouter>,
-);
+// Data router (not <MemoryRouter>) — SongBookViewer's unsaved-draft guard uses
+// react-router's `useBlocker`, which only exists under one, matching how
+// main.jsx mounts the app (#3958). The index route stands in for anywhere else
+// the user might navigate (sidebar link, ⌘K, Back).
+// router.navigate resolves asynchronously — settle it inside act() or the
+// suite's strict act-warning guard fails the test (src/test/setup.js).
+const navigate = (router, to) => act(async () => { await router.navigate(to); });
+
+const renderPage = (path = '/songbook/abc', { history = [] } = {}) => {
+  const router = createMemoryRouter([
+    { path: '/songbook', element: <div>All songs index</div> },
+    { path: '/songbook/:id', element: <SongBookViewer /> },
+  ], { initialEntries: [...history, path], initialIndex: history.length });
+  return { ...render(<RouterProvider router={router} />), router };
+};
 
 describe('SongBookViewer', () => {
   beforeEach(() => {
@@ -111,6 +122,124 @@ describe('SongBookViewer', () => {
     const link = screen.getByRole('link', { name: 'Local copy' });
     expect(link.getAttribute('href')).toBe('/api/brain/songbook/abc/attachments/bbbb2222-local.pdf');
     expect(screen.queryByRole('link', { name: /Sheet music/ })).toBeNull();
+  });
+
+  describe('attachment mutations after a failed presence lookup (#3900)', () => {
+    const SYNCED = [
+      { filename: 'aaaa1111-sheet.pdf', label: 'Sheet music', mime: 'application/pdf', size: 1024, sha256: 'x' },
+      { filename: 'bbbb2222-chart.pdf', label: 'Drum chart', mime: 'application/pdf', size: 2048, sha256: 'y' },
+    ];
+
+    beforeEach(() => {
+      api.getSong.mockResolvedValue(song({ attachments: SYNCED }));
+      api.listSongAttachments.mockRejectedValue(new Error('presence lookup failed'));
+      api.deleteSongAttachment.mockReset();
+      api.uploadSongAttachment.mockReset();
+    });
+
+    it('deletes without throwing on the "failed" sentinel and keeps presence unknown', async () => {
+      api.deleteSongAttachment.mockResolvedValue({ attachments: [SYNCED[1]] });
+      renderPage();
+      // Both synced entries render as links (presence unknown → no absent pill).
+      expect(await screen.findByRole('link', { name: 'Sheet music' })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Delete attachment Sheet music' }));
+      const confirmGroup = screen.getByRole('group', { name: 'Confirm delete Sheet music' });
+      fireEvent.click(within(confirmGroup).getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => expect(screen.queryByText('Sheet music')).toBeNull());
+      // Survivor still renders, still as a link — no false "not on this machine".
+      expect(screen.getByRole('link', { name: 'Drum chart' })).toBeTruthy();
+      expect(screen.queryByText('not on this machine')).toBeNull();
+    });
+
+    it('appends an upload to the synced list instead of spreading the sentinel string', async () => {
+      api.uploadSongAttachment.mockResolvedValue({
+        attachment: { filename: 'cccc3333-new.pdf', label: 'New sheet', mime: 'application/pdf', size: 512, sha256: 'z' },
+      });
+      renderPage();
+      expect(await screen.findByRole('link', { name: 'Sheet music' })).toBeTruthy();
+
+      const input = document.querySelector('input[type="file"]');
+      const file = new File(['x'], 'new.pdf', { type: 'application/pdf' });
+      fireEvent.change(input, { target: { files: [file] } });
+
+      expect(await screen.findByRole('link', { name: 'New sheet' })).toBeTruthy();
+      // The pre-existing synced entries survive; no 'f','a','i','l','e','d' rows.
+      expect(screen.getByRole('link', { name: 'Sheet music' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: 'Drum chart' })).toBeTruthy();
+      expect(screen.getAllByRole('listitem').length).toBe(3);
+    });
+
+    it('keeps presence unknown for synced entries when a delete follows an upload', async () => {
+      api.uploadSongAttachment.mockResolvedValue({
+        attachment: { filename: 'cccc3333-new.pdf', label: 'New sheet', mime: 'application/pdf', size: 512, sha256: 'z' },
+      });
+      api.deleteSongAttachment.mockResolvedValue({ attachments: [SYNCED[0], SYNCED[1]] });
+      renderPage();
+      expect(await screen.findByRole('link', { name: 'Sheet music' })).toBeTruthy();
+
+      // Upload first — that replaces the sentinel with an array whose synced
+      // entries still have no resolved presence.
+      const input = document.querySelector('input[type="file"]');
+      fireEvent.change(input, { target: { files: [new File(['x'], 'new.pdf', { type: 'application/pdf' })] } });
+      expect(await screen.findByRole('link', { name: 'New sheet' })).toBeTruthy();
+
+      // Then delete the uploaded file: the survivors must not be stamped absent.
+      fireEvent.click(screen.getByRole('button', { name: 'Delete attachment New sheet' }));
+      const group = screen.getByRole('group', { name: 'Confirm delete New sheet' });
+      fireEvent.click(within(group).getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => expect(screen.queryByText('New sheet')).toBeNull());
+      expect(screen.getByRole('link', { name: 'Sheet music' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: 'Drum chart' })).toBeTruthy();
+      expect(screen.queryByText('not on this machine')).toBeNull();
+    });
+  });
+
+  describe('multi-file upload failure isolation (#3901)', () => {
+    beforeEach(() => {
+      api.uploadSongAttachment.mockReset();
+      toast.error.mockClear();
+    });
+
+    it('keeps uploading the rest of the batch after one file fails', async () => {
+      api.uploadSongAttachment.mockImplementation(async (_id, { filename }) => {
+        if (filename === 'b.pdf') throw new Error('Server exploded');
+        return { attachment: { filename: `x-${filename}`, label: filename, mime: 'application/pdf', size: 10, sha256: 'h' } };
+      });
+      renderPage();
+      expect(await screen.findByText(/No attachments/)).toBeTruthy();
+
+      const input = document.querySelector('input[type="file"]');
+      fireEvent.change(input, {
+        target: {
+          files: [
+            new File(['a'], 'a.pdf', { type: 'application/pdf' }),
+            new File(['b'], 'b.pdf', { type: 'application/pdf' }),
+            new File(['c'], 'c.pdf', { type: 'application/pdf' }),
+          ],
+        },
+      });
+
+      // Every file is attempted — the failure does not break the loop.
+      await waitFor(() => expect(api.uploadSongAttachment).toHaveBeenCalledTimes(3));
+      // The two successes land in local state.
+      expect(await screen.findByRole('link', { name: 'a.pdf' })).toBeTruthy();
+      expect(await screen.findByRole('link', { name: 'c.pdf' })).toBeTruthy();
+      expect(screen.queryByRole('link', { name: 'b.pdf' })).toBeNull();
+    });
+
+    it('toasts an error naming the failed file', async () => {
+      api.uploadSongAttachment.mockRejectedValue(new Error('Server exploded'));
+      renderPage();
+      expect(await screen.findByText(/No attachments/)).toBeTruthy();
+
+      const input = document.querySelector('input[type="file"]');
+      fireEvent.change(input, { target: { files: [new File(['b'], 'b.pdf', { type: 'application/pdf' })] } });
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to upload "b.pdf": Server exploded'));
+    });
   });
 
   describe('instrument-view toggle (#2656)', () => {
@@ -447,5 +576,164 @@ K:  o - - - - - o -`;
     expect(patch.content).toEqual({ format: 'tab', text: SHEET });
     // attachments is server-managed — never sent.
     expect('attachments' in patch).toBe(false);
+  });
+
+  describe('unsaved-edit guard (#3902)', () => {
+    const editSheet = async (value = 'Edited sheet text') => {
+      const textarea = await screen.findByLabelText('Content');
+      fireEvent.change(textarea, { target: { value } });
+      return textarea;
+    };
+
+    it('switches straight to play mode when the draft is clean', async () => {
+      renderPage('/songbook/abc?mode=edit');
+      fireEvent.click(await screen.findByRole('button', { name: 'View' }));
+      // The edit-mode PREVIEW renders the sheet text too, so "we left edit
+      // mode" is asserted on the form going away, not on the sheet appearing.
+      await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
+      expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull();
+      expect(screen.getByText('Nonsense words here')).toBeTruthy();
+    });
+
+    it('confirms before the View toggle discards unsaved edits', async () => {
+      renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      // Still in edit mode, with the discard confirm armed.
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      expect(screen.getByLabelText('Content')).toBeTruthy();
+
+      // Keep editing → stay put, draft intact.
+      fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+      expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull();
+      expect(screen.getByLabelText('Content').value).toBe('Edited sheet text');
+
+      // Discard → the exit runs and the draft resets to the saved song.
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
+      await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      expect((await screen.findByLabelText('Content')).value).toBe(SHEET);
+      expect(api.updateSong).not.toHaveBeenCalled();
+    });
+
+    it('confirms before the All songs link leaves with unsaved edits', async () => {
+      renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      fireEvent.click(screen.getByRole('link', { name: /All songs/ }));
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      // The navigation was swallowed — the editor is still mounted.
+      expect(screen.getByLabelText('Content').value).toBe('Edited sheet text');
+    });
+
+    it('treats a retyped capo value as clean (number input round-trip)', async () => {
+      renderPage('/songbook/abc?mode=edit');
+      const capo = await screen.findByLabelText('Capo');
+      fireEvent.change(capo, { target: { value: '3' } });
+      fireEvent.change(capo, { target: { value: '2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
+      expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull();
+    });
+
+    it('treats tag whitespace and a trailing comma as clean (parseTags round-trip)', async () => {
+      api.getSong.mockResolvedValue(song({ tags: ['campfire', 'fingerstyle'] }));
+      renderPage('/songbook/abc?mode=edit');
+      const tags = await screen.findByLabelText('Tags (comma-separated)');
+      expect(tags.value).toBe('campfire, fingerstyle');
+      // Same saved value — different raw text.
+      fireEvent.change(tags, { target: { value: 'campfire,fingerstyle,' } });
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
+      expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull();
+    });
+
+    it('hides the discard row while a save is in flight', async () => {
+      let resolveSave;
+      api.updateSong.mockImplementation((_id, patch) => new Promise((resolve) => {
+        resolveSave = () => resolve(song({ ...patch }));
+      }));
+      renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      // Save starts → the row goes away, so Discard can't reset the draft under
+      // the in-flight PATCH.
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull());
+      expect(screen.getByRole('button', { name: 'Saving…' })).toBeTruthy();
+      // The save settles the draft, so the exit the user asked for runs instead
+      // of being swallowed with the confirm row.
+      resolveSave();
+      await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
+      expect(api.updateSong).toHaveBeenCalled();
+    });
+
+    it('lets a modified click open All songs in a new tab without prompting', async () => {
+      renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      // ⌘/Ctrl-click opens a second tab and leaves this editor standing — there
+      // is no unsaved work at risk, so the guard must not swallow it.
+      fireEvent.click(screen.getByRole('link', { name: /All songs/ }), { metaKey: true });
+      expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull();
+      expect(screen.getByLabelText('Content').value).toBe('Edited sheet text');
+    });
+
+    // Exits that never touch a control on this page — a sidebar link, a ⌘K
+    // palette jump, a voice ui_navigate, the browser Back button. They all
+    // reach the router the same way, so driving router.navigate covers them.
+    it('confirms before a sidebar/⌘K navigation leaves with unsaved edits', async () => {
+      const { router } = renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      await navigate(router, '/songbook');
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      // Parked, not run — the editor is still mounted with the draft intact.
+      expect(screen.getByLabelText('Content').value).toBe('Edited sheet text');
+      expect(screen.queryByText('All songs index')).toBeNull();
+
+      // Keep editing → the navigation is dropped and the draft survives.
+      fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+      await waitFor(() => expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull());
+      expect(screen.getByLabelText('Content').value).toBe('Edited sheet text');
+    });
+
+    it('discards and completes the parked navigation on confirm', async () => {
+      const { router } = renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      await navigate(router, '/songbook');
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
+      expect(await screen.findByText('All songs index')).toBeTruthy();
+      expect(api.updateSong).not.toHaveBeenCalled();
+    });
+
+    it('confirms before the browser Back button leaves with unsaved edits', async () => {
+      const { router } = renderPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
+      await editSheet();
+      await navigate(router, -1);
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      expect(screen.getByLabelText('Content').value).toBe('Edited sheet text');
+    });
+
+    it('lets a navigation through once the draft is saved clean', async () => {
+      api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
+      const { router } = renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      await navigate(router, '/songbook');
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      // Saving settles the draft, so the parked navigation RUNS rather than
+      // being swallowed with the confirm row.
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(await screen.findByText('All songs index')).toBeTruthy();
+    });
+
+    it('drops the armed confirm once a save settles the draft', async () => {
+      api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
+      renderPage('/songbook/abc?mode=edit');
+      await editSheet();
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull());
+    });
   });
 });

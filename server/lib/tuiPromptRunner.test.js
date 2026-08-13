@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 
 // executeTuiRun validates that a requested workspace actually exists before
 // spawning (#3180 — a bad repoPath used to silently run in the PortOS root), so
@@ -10,14 +10,18 @@ const TEST_WORKSPACE = process.cwd();
 
 // node-pty + runner hooks are mocked so executeTuiRun can be driven
 // synchronously from the test without spawning a real terminal. fileUtils
-// stays real for everything except `ensureDir` (which would otherwise create
-// real run directories the SUT never needs in these tests). Mocks live
+// stays real except for `ensureDir` (which would otherwise create real run
+// directories the SUT never needs in these tests) and `tryReadFile` (which
+// serves seeded response files from memory — see below). Mocks live
 // inside vi.hoisted so the vi.mock factories (which are themselves hoisted
 // to the top of the file) can reference them.
-const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef } = vi.hoisted(() => ({
+const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef, responseFiles } = vi.hoisted(() => ({
   ptyInstances: [],
   ptySpawnMock: vi.fn(),
   runsTmpDirRef: { current: null },
+  // Absolute response-file path → contents, for the runs driven under fake
+  // timers (see the fileUtils mock below).
+  responseFiles: new Map(),
   runnerMocks: {
     finalizeRunRecord: vi.fn(),
     emitRunStarted: vi.fn(),
@@ -38,6 +42,17 @@ const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef } = v
     registerExternalSession: vi.fn(),
     unregisterExternalSession: vi.fn(),
     isExternalSessionAttached: vi.fn(() => false),
+    // The run registers its own PTY as an external session, so a paste routed
+    // through the session registry lands back on that PTY. Modelled faithfully
+    // (bracketed paste, then the submit Enter, then an interval handle for the
+    // caller to cancel) so assertions can read pty.write like the direct path.
+    pasteToSession: vi.fn((_sessionId, text) => {
+      const pty = ptyInstances[ptyInstances.length - 1];
+      if (!pty) return false;
+      pty.write(`\x1b[200~${text}\x1b[201~`);
+      pty.write('\r');
+      return setInterval(() => {}, 60000);
+    }),
   },
 }));
 runnerMocks.getRunsPath.mockImplementation(() => runsTmpDirRef.current);
@@ -47,11 +62,36 @@ vi.mock('../services/runner.js', () => runnerMocks);
 vi.mock('../services/shell.js', () => shellMocks);
 vi.mock('./fileUtils.js', async () => {
   const actual = await vi.importActual('./fileUtils.js');
-  return { ...actual, ensureDir: vi.fn(async () => {}) };
+  // Imported here rather than relied on from the module scope: vi.mock
+  // factories are hoisted above the import list.
+  const { resolve: resolvePath } = await import('path');
+  return {
+    ...actual,
+    ensureDir: vi.fn(async () => {}),
+    // Response-file reads resolve from `responseFiles` when the test seeded
+    // that path, and fall through to the real read otherwise (the
+    // resolveTuiResponseText suite below drives real temp files directly).
+    //
+    // Why in-memory (#3874): executeTuiRun's size-stability window is polled
+    // on a 1s interval that these suites drive with fake timers, but a REAL
+    // `readFile` resolves on the libuv threadpool — advancing fake timers
+    // does not wait for it. Under load a poll's read could land after the
+    // test moved on, so the baseline was never seeded and the run took the
+    // timeout/fallback path instead of the response-file path. A seeded read
+    // settles as a microtask, which timer advancement always drains.
+    // Keys are normalized on both sides so a relative or unnormalized path
+    // from the SUT still hits the seeded entry rather than silently falling
+    // through to a real (missing-file) read.
+    tryReadFile: vi.fn(async (filePath, ...rest) => {
+      const key = resolvePath(filePath);
+      return responseFiles.has(key) ? responseFiles.get(key) : actual.tryReadFile(filePath, ...rest);
+    }),
+  };
 });
 
 import { cleanTuiResponse, resolveTuiResponseText, executeTuiRun } from './tuiPromptRunner.js';
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from './hostShutdown.js';
+import { SELF_CLEARING_RESUBMIT_INTERVAL_MS, SELF_CLEARING_RESUBMIT_ECHO_MS } from './tuiHandshake.js';
 
 const makeFakePty = () => {
   const fake = {
@@ -69,7 +109,15 @@ const makeFakePty = () => {
   return fake;
 };
 
-const flushAsync = () => new Promise((resolve) => setImmediate(resolve));
+const flushAsync = () => new Promise((res) => setImmediate(res));
+
+// Stands in for "the model wrote its complete response to the file the runner
+// directed it to" — same absolute path executeTuiRun derives (getRunsPath() →
+// runId → tui-response.txt), served from memory so the read is deterministic
+// under fake timers.
+const seedResponseFile = (runId, text) => {
+  responseFiles.set(resolve(runsTmpDirRef.current, runId, 'tui-response.txt'), text);
+};
 
 // Targeted coverage for the cleanTuiResponse helper — it shapes what every
 // TUI-provider caller sees as the model response (paste-marker removal,
@@ -254,6 +302,7 @@ describe('resolveTuiResponseText', () => {
 describe('executeTuiRun', () => {
   beforeEach(async () => {
     runsTmpDirRef.current = await mkdtemp(join(tmpdir(), 'tui-runner-test-'));
+    responseFiles.clear();
     ptyInstances.length = 0;
     ptySpawnMock.mockReset();
     ptySpawnMock.mockImplementation(() => makeFakePty());
@@ -519,9 +568,7 @@ describe('executeTuiRun', () => {
       await flushAsync();
       expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
 
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), '{"repaired":true}');
+      seedResponseFile(runId, '{"repaired":true}');
       await vi.advanceTimersByTimeAsync(1100);
       await vi.advanceTimersByTimeAsync(1100);
       await flushAsync();
@@ -602,9 +649,7 @@ describe('executeTuiRun', () => {
 
       // The model writes its COMPLETE response to the file the runner directed
       // it to (and, like Claude Code's TUI, does NOT exit afterward).
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), '{"issues":[]}');
+      seedResponseFile(runId, '{"issues":[]}');
 
       // First tick seeds the size-stability baseline; the second confirms it.
       await vi.advanceTimersByTimeAsync(1100);
@@ -641,9 +686,7 @@ describe('executeTuiRun', () => {
       await vi.advanceTimersByTimeAsync(2000); // ready-watch pastes → response-file watcher starts
       await vi.advanceTimersByTimeAsync(4000); // enter submitted; still zero post-paste output
 
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), 'silent result body');
+      seedResponseFile(runId, 'silent result body');
 
       await vi.advanceTimersByTimeAsync(1100); // poll 1: seed baseline
       await vi.advanceTimersByTimeAsync(1100); // poll 2: stable → complete
@@ -669,9 +712,7 @@ describe('executeTuiRun', () => {
       // The model finished and wrote its file, but the TUI never exited and the
       // idle watcher was never armed (no post-paste chunk) — so only the hard
       // timeout remains to terminate the run. It must NOT throw the result away.
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), 'the completed review body');
+      seedResponseFile(runId, 'the completed review body');
 
       const promise = executeTuiRun({ runId, provider, prompt: 'a prompt long enough to clear the guard', workspacePath: TEST_WORKSPACE, timeout: 500 });
       await flushAsync();
@@ -812,6 +853,46 @@ describe('executeTuiRun', () => {
       await promise;
     });
 
+    // The banner is the REJECTION of the submission — agy discards the prompt and
+    // returns to an empty, idle composer — so a PASSIVE window can never see the
+    // generation chrome it waits for, and its only reachable outcome is expiry.
+    // Re-asking is both the only way out and what the banner itself instructs.
+    it('re-submits the prompt while the eligibility window is open', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      const provider = { id: 'antigravity', type: 'tui', command: 'agy', tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500 };
+      const prompt = 'do thing big enough to clear the prompt guard';
+      const promise = executeTuiRun({ runId: 'run-eligibility-retry', provider, prompt, workspacePath: TEST_WORKSPACE, onData: undefined, onComplete: vi.fn(), timeout: 600000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData('agy ready> ');
+      await vi.advanceTimersByTimeAsync(5000); // first delivery
+      const pastes = () => pty.write.mock.calls.filter(([chunk]) => String(chunk).includes(prompt)).length;
+      expect(pastes()).toBe(1);
+
+      pty.emitData(ELIGIBILITY_BANNER);
+      pty.emitData('> ? for shortcuts');
+      await vi.advanceTimersByTimeAsync(SELF_CLEARING_RESUBMIT_INTERVAL_MS + 1000);
+      await flushAsync();
+      expect(pastes()).toBe(2);
+      expect(pty.write).toHaveBeenCalledWith('\r');
+
+      // …and it stops re-asking the moment agy actually answers. The first
+      // repaint lands inside the echo window and is discounted (it could be the
+      // prompt we just pasted echoing back); agy repaints continuously, so the
+      // next one is what closes the window.
+      pty.emitData('Generating...');
+      await vi.advanceTimersByTimeAsync(SELF_CLEARING_RESUBMIT_ECHO_MS);
+      pty.emitData('Generating...');
+      await vi.advanceTimersByTimeAsync(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
+      await flushAsync();
+      expect(pastes()).toBe(2);
+
+      vi.useRealTimers();
+      pty.emitExit(0);
+      await promise;
+    });
+
     it('falls back once the eligibility banner outlasts its grace window with no generation', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
       const provider = { id: 'antigravity', type: 'tui', command: 'agy', tuiPromptDelayMs: 50, tuiOneShotIdleMs: 500 };
@@ -824,7 +905,9 @@ describe('executeTuiRun', () => {
       // Only idle composer chrome repaints — no sign of life. Notably this must
       // NOT idle-complete as success and scrape the banner as the response.
       pty.emitData('> ? for shortcuts');
-      await vi.advanceTimersByTimeAsync(70000);
+      // Past the full grace window — every re-submission inside it went
+      // unanswered too, so the fail-over is the correct verdict.
+      await vi.advanceTimersByTimeAsync(130000);
       await flushAsync();
 
       await promise;
@@ -961,9 +1044,7 @@ describe('executeTuiRun', () => {
       await vi.advanceTimersByTimeAsync(2000); // paste → response-file watcher armed
       await vi.advanceTimersByTimeAsync(4000); // enter
 
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), 'the finished review body');
+      seedResponseFile(runId, 'the finished review body');
       // Poll 1 only seeds the size-stability baseline — the run is NOT finalized
       // yet even though the complete answer is already on disk.
       await vi.advanceTimersByTimeAsync(1100);

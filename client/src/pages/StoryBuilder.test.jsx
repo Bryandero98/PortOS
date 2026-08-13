@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import { MockEventSource, lastEventSource } from '../test/mockEventSource';
 
 const STEPS = [
   { id: 'idea', label: 'Idea', description: 'Capture a starter idea.' },
@@ -64,11 +65,18 @@ const toastMock = vi.hoisted(() => {
 });
 vi.mock('../components/ui/Toast', () => ({ default: toastMock, toast: toastMock, Toaster: () => null }));
 
+// Stand-in for the committer ArcContent hands up through ArcCanvas when its
+// logline / summary / protagonist-arc editor is open with unsaved text.
+const arcDraftFlush = vi.hoisted(() => vi.fn(async () => true));
+
 // The plotArc step embeds the full ArcCanvas roadmap editor; mock it to an
 // inert sentinel so these tests assert the EMBEDDING (and its props) without
 // pulling ArcCanvas's heavy import graph or its own API calls into scope.
 vi.mock('../components/pipeline/ArcCanvas', () => ({
-  default: ({ series }) => <div data-testid="arc-canvas">ArcCanvas[{series?.id}]</div>,
+  default: ({ series, onRegisterDraftFlush }) => {
+    onRegisterDraftFlush?.(arcDraftFlush);
+    return <div data-testid="arc-canvas">ArcCanvas[{series?.id}]</div>;
+  },
 }));
 
 import StoryBuilder, { composeSeedFromIngredients } from './StoryBuilder';
@@ -177,6 +185,46 @@ describe('StoryBuilder — index', () => {
     expect(await screen.findByLabelText('Universe / story name')).toBeTruthy();
     expect(screen.getByText('Start from an idea')).toBeTruthy();
     expect(screen.getByText('Import a finished work')).toBeTruthy();
+  });
+
+  it('session list: shows a loading skeleton until the fetch resolves, then the sessions (#3906)', async () => {
+    let resolveList;
+    api.listStorySessions.mockReturnValue(new Promise((res) => { resolveList = res; }));
+
+    renderAt('/story-builder');
+
+    expect(await screen.findByLabelText('Loading your stories')).toBeTruthy();
+    await act(async () => { resolveList([{ id: 'stb-1', title: 'Example Story', currentStep: 'idea' }]); });
+
+    await waitFor(() => expect(screen.queryByLabelText('Loading your stories')).toBeNull());
+    expect(screen.getByText('Example Story')).toBeTruthy();
+  });
+
+  it('session list: a failed fetch shows an error banner with Retry, and Retry restores the list (#3906)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.listStorySessions.mockRejectedValueOnce(new Error('Network is down'));
+
+    renderAt('/story-builder');
+
+    // The section stays visible with the failure named — not silently blank.
+    expect(await screen.findByText('Couldn’t load your saved stories')).toBeTruthy();
+    expect(screen.getByText('Network is down')).toBeTruthy();
+    expect(screen.getByText('Continue a story')).toBeTruthy();
+
+    api.listStorySessions.mockResolvedValue([{ id: 'stb-2', title: 'Recovered Story', currentStep: 'plotArc' }]);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Retry/i })); });
+
+    await waitFor(() => expect(screen.getByText('Recovered Story')).toBeTruthy());
+    expect(screen.queryByText('Couldn’t load your saved stories')).toBeNull();
+    expect(api.listStorySessions).toHaveBeenCalledTimes(2);
+  });
+
+  it('session list: a successful but empty list hides the section entirely (#3906)', async () => {
+    api.listStorySessions.mockResolvedValue([]);
+    renderAt('/story-builder');
+    await screen.findByLabelText('Universe / story name');
+    await waitFor(() => expect(screen.queryByLabelText('Loading your stories')).toBeNull());
+    expect(screen.queryByText('Continue a story')).toBeNull();
   });
 
   it('remix handoff: hydrates selected ingredients into chips + a prefilled seed, and forwards the ids on create', async () => {
@@ -377,6 +425,53 @@ describe('StoryBuilder — index', () => {
     await waitFor(() => expect(screen.getByText(/Retry issue split/)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Import & start building/ }).disabled).toBe(true);
   });
+
+  it('import tab: a round trip through the seed tab keeps the typed intake and the analysis preview (#3904)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.analyzeImport.mockResolvedValue({
+      universe: { id: 'u1', name: 'Example Universe' }, series: { id: 's1' },
+      canonPreview: { characters: [{ name: 'A' }], places: [], objects: [] },
+      arcPreview: { logline: 'A courier outruns the tide.', summary: 'S' }, seasonsPreview: [],
+      issueProposals: [{ number: 1, title: 'One' }],
+    });
+    renderAt('/story-builder');
+
+    fireEvent.click(await screen.findByText('Import a finished work'));
+    fireEvent.change(await screen.findByLabelText('Universe name'), { target: { value: 'Example Universe' } });
+    fireEvent.change(screen.getByLabelText('Series name'), { target: { value: 'Example Series' } });
+    fireEvent.change(screen.getByLabelText(/Source text/), { target: { value: 'PAGE ONE. A long manuscript.' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Analyze$/ }));
+
+    // The minute-long analysis landed.
+    expect(await screen.findByText(/Extracted “Example Universe”/)).toBeTruthy();
+    expect(api.analyzeImport).toHaveBeenCalledTimes(1);
+
+    // Flip to the seed tab and back — this used to unmount <ImportPanel> and
+    // destroy the manuscript, the form fields, and the preview with it.
+    fireEvent.click(screen.getByText('Start from an idea'));
+    expect(await screen.findByLabelText('Universe / story name')).toBeTruthy();
+    fireEvent.click(screen.getByText('Import a finished work'));
+
+    // Everything survived, and no second analyze was needed to get it back.
+    expect(await screen.findByText(/Extracted “Example Universe”/)).toBeTruthy();
+    expect(screen.getByLabelText('Universe name').value).toBe('Example Universe');
+    expect(screen.getByLabelText('Series name').value).toBe('Example Series');
+    expect(screen.getByLabelText(/Source text/).value).toBe('PAGE ONE. A long manuscript.');
+    expect(api.analyzeImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('intake tab: ?intake=import deep-links straight to the import form (#3904)', async () => {
+    renderAt('/story-builder?intake=import');
+    expect(await screen.findByLabelText('Universe name')).toBeTruthy();
+    // The seed form is the one that was replaced, not merely hidden alongside it.
+    expect(screen.queryByLabelText('Universe / story name')).toBeNull();
+  });
+
+  it('intake tab: an unknown ?intake= value degrades to the seed tab, not a blank panel (#3904)', async () => {
+    renderAt('/story-builder?intake=bogus');
+    expect(await screen.findByLabelText('Universe / story name')).toBeTruthy();
+    expect(screen.queryByLabelText('Universe name')).toBeNull();
+  });
 });
 
 describe('StoryBuilder — detail stepper', () => {
@@ -387,10 +482,66 @@ describe('StoryBuilder — detail stepper', () => {
     });
     renderAt('/story-builder/stb-1/idea');
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
-    // Idea not locked → primary action is "Lock & continue" and Next is disabled.
+    // Idea not locked → primary action is "Lock & continue" and Next is blocked.
     expect(screen.getByText('Lock & continue')).toBeTruthy();
     const next = screen.getByRole('button', { name: /Next/i });
-    expect(next.disabled).toBe(true);
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('explains WHY Next is blocked via title + an aria-describedby hint, and ignores clicks while blocked', async () => {
+    // The step rail is un-gated, so a silently-dead "Next" reads as a bug. The
+    // reason must reach mouse (title), keyboard and screen-reader users (#3908).
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps(), staleSteps: [],
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+
+    const next = screen.getByRole('button', { name: /Next/i });
+    const reason = 'Lock this step to advance to the next step.';
+    expect(next.getAttribute('title')).toBe(reason);
+    const hint = document.getElementById(next.getAttribute('aria-describedby'));
+    expect(hint.textContent).toBe(reason);
+    // The accessible NAME is still "Next" — the reason is supplementary.
+    expect(next.textContent).toContain('Next');
+
+    // aria-disabled keeps it focusable, so the click handler must be inert.
+    fireEvent.click(next);
+    expect(api.setStoryCurrentStep).not.toHaveBeenCalled();
+  });
+
+  it('names staleness (not the lock) as the Next blocker when the locked step went stale', async () => {
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps({ idea: { locked: true } }), staleSteps: ['idea'],
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+
+    const next = screen.getByRole('button', { name: /Next/i });
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+    expect(next.getAttribute('title')).toContain('re-lock this step');
+    expect(document.getElementById(next.getAttribute('aria-describedby')).textContent)
+      .toContain('re-lock this step');
+  });
+
+  it('drops the blocked state (and advances) once the step is locked and fresh', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps({ idea: { locked: true } }), staleSteps: [],
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+
+    const next = screen.getByRole('button', { name: /Next/i });
+    expect(next.getAttribute('aria-disabled')).toBeNull();
+    expect(next.getAttribute('title')).toBe('Go to the next step.');
+
+    await act(async () => { fireEvent.click(next); });
+    await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
   });
 
   it('shows "Generate reader map" when empty and "Re-generate" once content exists', async () => {
@@ -474,6 +625,42 @@ describe('StoryBuilder — detail stepper', () => {
     await waitFor(() => expect(api.lockStoryStep).toHaveBeenCalledWith('stb-1', 'idea', expect.anything()));
     // …then advances the current-step pointer to the next step (universeAesthetic).
     await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
+  });
+
+  it('"Lock & continue" flushes the open Arc Canvas draft BEFORE locking the step', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'plotArc', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({ idea: { locked: true }, universeAesthetic: { locked: true } }),
+      staleSteps: [], llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/plotArc');
+    await waitFor(() => expect(screen.getByTestId('arc-canvas')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Lock & continue'));
+    await waitFor(() => expect(api.lockStoryStep).toHaveBeenCalledWith('stb-1', 'plotArc', expect.anything()));
+    // Locking makes the step read-only (and unmounts the canvas), so the
+    // pending draft has to land first or the edit is silently lost.
+    expect(arcDraftFlush).toHaveBeenCalled();
+    expect(arcDraftFlush.mock.invocationCallOrder[0])
+      .toBeLessThan(api.lockStoryStep.mock.invocationCallOrder[0]);
+  });
+
+  it('"Unlock to revise" does NOT flush — unlocking re-opens the step, nothing to preserve', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'plotArc', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({ idea: { locked: true }, universeAesthetic: { locked: true }, plotArc: { locked: true } }),
+      staleSteps: [], llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/plotArc');
+    await waitFor(() => expect(screen.getByText('Unlock to revise')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Unlock to revise'));
+    await waitFor(() => expect(api.unlockStoryStep).toHaveBeenCalledWith('stb-1', 'plotArc', expect.anything()));
+    expect(arcDraftFlush).not.toHaveBeenCalled();
   });
 
   it('manual step click: a rejected pointer move stays put and resyncs (no navigation)', async () => {
@@ -647,5 +834,35 @@ describe('StoryBuilder — detail stepper', () => {
     // The recomputed view's staleSteps merges reactively → stale banner appears
     // without a full refetch.
     await waitFor(() => expect(screen.getByText(/re-review and re-lock/i)).toBeTruthy());
+  });
+
+  // #3905 — the step panel is keyed by the active step, so clicking the rail
+  // mid-run used to unmount it, sever the SSE stream, and drop the completion
+  // toast. The run now lives above the rail.
+  it('a generate started on one step survives rail navigation and still toasts on completion', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    MockEventSource.reset();
+    global.EventSource = MockEventSource;
+    api.generateStoryStep.mockResolvedValue({ runId: 'run-1' });
+    api.getPipelineSeries.mockResolvedValue({ id: 's1', arc: { logline: 'AL', summary: 'AS', readerMap: null } });
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'X', currentStep: 'readerMap', universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({ idea: { locked: true }, universeAesthetic: { locked: true }, plotArc: { locked: true } }),
+      staleSteps: [], llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/readerMap');
+    await waitFor(() => expect(screen.getByText('Generate reader map')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Generate reader map'));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+
+    // Navigate the rail to another step — the panel unmounts.
+    fireEvent.click(screen.getByRole('button', { name: /Characters/ }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Characters' })).toBeTruthy());
+    expect(lastEventSource().closed).toBe(false);
+
+    await act(async () => { lastEventSource().emit({ runId: 'run-1', type: 'complete' }); });
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Generated'));
+    delete global.EventSource;
   });
 });

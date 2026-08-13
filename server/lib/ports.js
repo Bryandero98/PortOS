@@ -13,8 +13,18 @@ export const PORTS = {
   CDP_HEALTH: 5557, // Browser health check endpoint
   COS: 5558,        // Chief of Staff agent runner (portos-cos)
   AUTOFIXER: 5559,  // Autofixer API
-  AUTOFIXER_UI: 5560 // Autofixer UI
+  AUTOFIXER_UI: 5560, // Autofixer UI
+  POSTGRES_DOCKER: 5561, // PostgreSQL Docker container (host port mapping)
+  POSTGRES_NATIVE: 5432  // System PostgreSQL (PGMODE=native)
 };
+
+// The ecosystem config resolves a single active `PORTS.POSTGRES` by reading
+// PGMODE out of .env at load time. This module stays free of filesystem reads
+// (it is imported by nearly every server module), so the mode-dependent value is
+// a function instead of a constant — callers pass the mode they already know.
+export const resolvePostgresPort = (pgMode) =>
+  (pgMode === 'native' ? PORTS.POSTGRES_NATIVE : PORTS.POSTGRES_DOCKER);
+
 export const DEFAULT_PEER_PORT = PORTS.API;
 export const PORTOS_UI_URL = process.env.PORTOS_UI_URL
   || `http://${process.env.PORTOS_HOST || 'localhost'}:${process.env.PORT_UI || PORTS.UI}`;

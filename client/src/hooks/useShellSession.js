@@ -8,6 +8,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useSocket } from './useSocket';
 import { useThemeContext } from '../components/ThemeContext';
 import { buildTerminalTheme, parseCssColorToHex } from '../lib/terminalTheme';
+import { attachDictationBridge } from '../lib/terminalDictation';
 import { readFileAsBase64 } from '../utils/fileUpload';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
@@ -147,12 +148,15 @@ export function useShellSession({ isFullscreen } = {}) {
   // focus:false skips returning keyboard focus to the terminal after sending — used by
   // the nav-key hot buttons so repeated arrow taps on touch devices don't keep re-summoning
   // the on-screen keyboard (input is delivered over the socket regardless of focus).
+  // Returns whether the data actually went out — the dictation bridge needs to know,
+  // since it tracks what the PTY has received to compute its next correction.
   const emitShellInput = useCallback((data, { focus = true } = {}) => {
-    if (!socket || !sessionIdRef.current) return;
+    if (!socket || !sessionIdRef.current) return false;
     // Don't fire quick-commands into the prior session while a switch/start is mid-flight.
-    if (pendingAttachRef.current.target) return;
+    if (pendingAttachRef.current.target) return false;
     socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
     if (focus) termInstanceRef.current?.focus();
+    return true;
   }, [socket]);
 
   // Send a photo (plus an optional message) to whatever is running in the active
@@ -309,20 +313,34 @@ export function useShellSession({ isFullscreen } = {}) {
     };
   }, [refitTerminal]);
 
-  // Handle terminal input
+  // Handle terminal input. emitShellInput already owns the "don't land keystrokes in
+  // the session we're leaving" guard (the terminal has been cleared and "Attaching…"
+  // is showing), so both input paths go through it rather than re-deriving it.
+  // focus:false — typing is already focused, and the bridge must not steal focus.
   useEffect(() => {
-    if (!termInstanceRef.current || !socket) return;
+    if (!termInstanceRef.current) return;
+    const send = (data) => emitShellInput(data, { focus: false });
 
-    const disposable = termInstanceRef.current.onData((data) => {
-      // Drop keystrokes during a pending start/attach so they don't land in the previous
-      // session — the terminal has already been cleared and "Attaching…" is showing.
-      if (sessionIdRef.current && !pendingAttachRef.current.target) {
-        socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
-      }
-    });
+    const disposable = termInstanceRef.current.onData(send);
 
-    return () => disposable.dispose();
-  }, [socket]);
+    // Voice dictation (iOS mic key, macOS Fn Fn) streams progressively refined
+    // guesses and rewrites what it already typed. xterm forwards each insertion
+    // and ignores the matching deletions, so the PTY accumulates the garble
+    // ("determin" + "determine" + "determines"…). The bridge intercepts the
+    // hidden textarea and forwards a diff (DELs + additions) instead. It sends
+    // straight to `send` rather than looping back through `terminal.input()`:
+    // onData's only consumer IS this emit, and the round trip would throw away
+    // the delivered/dropped signal the bridge needs to track the PTY.
+    const detachDictation = attachDictationBridge(termInstanceRef.current, send);
+
+    // Detach the DOM listeners first — at unmount the terminal-init effect's
+    // cleanup has already disposed the terminal, so nothing here should depend
+    // on xterm's disposable running successfully.
+    return () => {
+      detachDictation();
+      disposable.dispose();
+    };
+  }, [emitShellInput]);
 
   const clearActiveSession = useCallback(() => {
     sessionIdRef.current = null;

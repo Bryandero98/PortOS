@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { updatePipelineSeries } from '../../../services/api';
@@ -8,7 +8,7 @@ import TickingClockEditor from './TickingClockEditor.jsx';
 import TickingClockCard from './TickingClockCard.jsx';
 import ThemeChips from './ThemeChips.jsx';
 
-export default function ArcContent({ series, onSeriesUpdate }) {
+export default function ArcContent({ series, onSeriesUpdate, onRegisterDraftFlush }) {
   const arc = series.arc;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(arc);
@@ -25,18 +25,42 @@ export default function ArcContent({ series, onSeriesUpdate }) {
     setDraft(arc);
   };
 
-  const save = async () => {
+  // Latest editor state for the host-driven flush below, which is registered
+  // once and would otherwise close over the first render's draft.
+  const stateRef = useRef(null);
+  stateRef.current = { editing, draft, arc };
+
+  const persistDraft = useCallback(async (nextDraft) => {
     setSaving(true);
-    const updated = await updatePipelineSeries(series.id, { arc: draft }, { silent: true }).catch((err) => {
+    const updated = await updatePipelineSeries(series.id, { arc: nextDraft }, { silent: true }).catch((err) => {
       toast.error(err.message || 'Save failed');
       return null;
     });
     setSaving(false);
-    if (!updated) return;
+    if (!updated) return null;
     onSeriesUpdate(updated);
     setEditing(false);
-    toast.success('Arc saved');
+    return updated;
+  }, [series.id, onSeriesUpdate]);
+
+  const save = async () => {
+    if (await persistDraft(draft)) toast.success('Arc saved');
   };
+
+  // Hand the host a committer for the OPEN editor, so any "flush before you
+  // act" path (Lock & continue, Generate arc, Save series) persists what is on
+  // screen instead of silently discarding it (#3907). Returns `true` only when
+  // it actually wrote. Unregisters on unmount so a torn-down editor can never
+  // be committed.
+  useEffect(() => {
+    if (!onRegisterDraftFlush) return undefined;
+    onRegisterDraftFlush(async () => {
+      const { editing: isEditing, draft: pending, arc: current } = stateRef.current;
+      if (!isEditing || JSON.stringify(pending ?? null) === JSON.stringify(current ?? null)) return false;
+      return Boolean(await persistDraft(pending));
+    });
+    return () => onRegisterDraftFlush(null);
+  }, [onRegisterDraftFlush, persistDraft]);
 
   if (editing) {
     return (

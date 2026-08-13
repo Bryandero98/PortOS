@@ -56,7 +56,7 @@ async function parseZipText(arrayBuffer, ext = '.txt') {
 }
 import * as api from '../../../services/api';
 import { ATTACHMENT_MAX_FILE_SIZE } from '../../../utils/fileUpload';
-import { formatBytes } from '../../../utils/formatters';
+import { formatBytes, formatDateNumeric } from '../../../utils/formatters';
 import GenomeCategoryCard from '../GenomeCategoryCard';
 import EpigeneticTracker from '../EpigeneticTracker';
 import ProvenanceChip from '../../ui/ProvenanceChip';
@@ -688,7 +688,7 @@ export default function GenomeTab() {
             <>
               <span className="text-xs text-gray-500">
                 {clinvarStatus.variantCount?.toLocaleString()} variants indexed
-                {clinvarStatus.syncedAt && ` (synced ${new Date(clinvarStatus.syncedAt).toLocaleDateString()})`}
+                {clinvarStatus.syncedAt && ` (synced ${formatDateNumeric(clinvarStatus.syncedAt)})`}
               </span>
               <button
                 onClick={handleClinvarScan}

@@ -62,6 +62,61 @@ describe('useClickOutside', () => {
     expect(addSpy.mock.calls.filter(([type]) => type === 'mousedown').length).toBe(subs);
   });
 
+  // The array form exists for portaled popovers: the panel renders into <body>,
+  // so it is not inside the trigger's subtree and a single-ref check would treat
+  // every click on the panel as an outside click and close it.
+  describe('multiple refs', () => {
+    it('treats a click in any of the refs as inside', () => {
+      const { inside: trigger, outside } = setupDom();
+      const panel = document.createElement('div');
+      document.body.append(panel);
+      const onOutside = vi.fn();
+      renderHook(() => {
+        const triggerRef = useRef(trigger);
+        const panelRef = useRef(panel);
+        useClickOutside([triggerRef, panelRef], true, onOutside);
+      });
+
+      fireEvent.mouseDown(trigger);
+      fireEvent.mouseDown(panel);
+      expect(onOutside).not.toHaveBeenCalled();
+
+      fireEvent.mouseDown(outside);
+      expect(onOutside).toHaveBeenCalledTimes(1);
+    });
+
+    it('tolerates a ref that has not attached yet', () => {
+      const { inside: trigger, outside } = setupDom();
+      const onOutside = vi.fn();
+      renderHook(() => {
+        const triggerRef = useRef(trigger);
+        const unattachedRef = useRef(null);
+        useClickOutside([triggerRef, unattachedRef], true, onOutside);
+      });
+
+      fireEvent.mouseDown(outside);
+      expect(onOutside).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not resubscribe when the caller passes a fresh array literal each render', () => {
+      const { inside: trigger } = setupDom();
+      const panel = document.createElement('div');
+      document.body.append(panel);
+      const addSpy = vi.spyOn(window, 'addEventListener');
+      const { rerender } = renderHook(() => {
+        const triggerRef = useRef(trigger);
+        const panelRef = useRef(panel);
+        // A new array every render — the common call-site shape.
+        useClickOutside([triggerRef, panelRef], true, vi.fn());
+      });
+
+      const subs = addSpy.mock.calls.filter(([type]) => type === 'mousedown').length;
+      rerender();
+      rerender();
+      expect(addSpy.mock.calls.filter(([type]) => type === 'mousedown').length).toBe(subs);
+    });
+  });
+
   it('detaches the listener on unmount', () => {
     const { outside } = setupDom();
     const onOutside = vi.fn();

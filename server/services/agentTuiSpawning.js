@@ -18,7 +18,7 @@ import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, isFalsyMeta, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { isProgrammaticIoTaskType, resolveTaskHookType } from './taskTypeHooks.js';
 import { PATHS } from '../lib/fileUtils.js';
-import { DONE_SENTINEL_NAME, parseSentinelPayload } from '../lib/agentSentinel.js';
+import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
@@ -33,6 +33,7 @@ import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isMachineOnline } from '../lib/connectivity.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
+import { detectForgeCli } from '../lib/gitForge.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
@@ -42,6 +43,7 @@ import {
   MERGE_QUEUE_IDLE_TIMEOUT_MS,
   REVIEW_LOOP_IDLE_TIMEOUT_MS,
   BACKGROUND_SHELL_IDLE_TIMEOUT_MS,
+  decideIdleReap,
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
   PASTE_MARKER_POLL_MS,
@@ -103,6 +105,13 @@ const PASTE_INPUT_GRACE_MS = 15000;
 const CONNECTIVITY_RECHECK_MS = 10000;
 const CONNECTIVITY_PROBE_LEAD_MS = 20000;
 
+// Throttle for the PR-follow-up deliverable check (see refreshFollowUpPrState).
+// Far slacker than the connectivity probe because it shells out to `gh` over the
+// network and the answer it is waiting for — "the PR flipped to MERGED" — only
+// ever changes once per run. Polling starts only after the session has already
+// been silent for its BASE idle window, so a busy follow-up never hits the forge.
+const PR_STATE_RECHECK_MS = 30000;
+
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
 // worktree-inspection helpers (readFileTail, worktreeHasChanges, commitsSince,
 // worktreeHasWorkEvidence, captureWorktreeDiff, resolveErrorAnalysis,
@@ -113,7 +122,7 @@ const CONNECTIVITY_PROBE_LEAD_MS = 20000;
 // when they've finished /simplify + /do:pr (or /do:push) — we poll for it
 // here so the agent gets cleanly finalized as soon as the work is done,
 // without waiting on the much longer idle timeout fallback.
-// DONE_SENTINEL_NAME is shared from ../lib/agentSentinel.js.
+// The filename is per agent instance — see doneSentinelName in ../lib/agentSentinel.js.
 const DONE_POLL_INTERVAL_MS = 2000;
 
 /**
@@ -254,6 +263,423 @@ export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, 
   };
 }
 
+// Paste + submit-Enter + max-runtime retry machinery for spawnTuiAgent's
+// prompt delivery. Separated from spawnTuiAgent so retries don't re-run the
+// liveness guard or re-set the outer promptSentAt (see `sendPrompt` below) —
+// the cluster spawnTuiAgent's own comments already described as one cohesive
+// concern. Owns the paste-attempt counter, the post-paste accumulator, the
+// paste-marker/verify timers, the submit-Enter backstop timer, the
+// max-runtime wall-clock timer, and the wrap-up grace window it opens instead
+// of reaping immediately.
+//
+// `isFinalized`/`markPromptSent`/`markPromptSubmitted` are accessors into
+// spawnTuiAgent's own `finalized`/`promptSentAt`/`promptSubmittedAt` — those
+// are read by handleData and the idle reaper well outside this cluster, so
+// they stay owned by spawnTuiAgent and are threaded through rather than
+// duplicated here. `finish`/`finishStartupFailure`/`appendLine`/
+// `sentinelPresent` are likewise spawnTuiAgent's own closures, passed in
+// rather than re-implemented.
+function createPasteRetryController({
+  agentId,
+  sessionId,
+  pid,
+  useDurableRunner,
+  prompt,
+  tuiConfig,
+  cwd,
+  agentDir,
+  mcpBoot,
+  appendLine,
+  sentinelPresent,
+  isFinalized,
+  markPromptSent,
+  markPromptSubmitted,
+  finish,
+  finishStartupFailure,
+}) {
+  // Markers already present in the prompt text itself (a transcript-analysis task
+  // can echo `[Pasted text #N]` back). The paste-commit fast path must wait for
+  // the TUI's OWN marker — i.e. the count to EXCEED this — so an echoed marker
+  // doesn't fire the submit-Enters mid-reflow (issue #1229 review). STRIP the
+  // prompt first: a pasted RAW transcript may carry the cursor-positioned marker
+  // form (`[Pasted\x1b[11Gtext…`), which counts as 0 unstripped but echoes back as
+  // the stripped `[Pastedtext#…]` (count 1) — so we must count the prompt the same
+  // way the post-paste buffer is counted, or the gate undercounts and fires early.
+  const promptMarkerCount = countPasteMarkers(stripAnsi(prompt));
+  // Extract a verifiable prefix from the prompt for paste verification (issue #2192).
+  // Computed once up front so retry attempts use the same verification target.
+  const verifiablePrefix = extractVerifiablePromptPrefix(prompt);
+
+  // Bounded post-paste accumulator. Lives only while pasteEnterTimer is
+  // running (a few seconds at most), so the in-memory cost is bounded by
+  // however much the TUI emits during the paste-marker window — typically
+  // a few KB. Set to '' when sendPrompt fires; nulled when paste detection
+  // resolves or the agent finalizes.
+  let postPasteBuffer = null;
+  let pasteEnterTimer = null;
+  let pasteVerifyTimer = null;
+  let submitEnterTimer = null;
+  // Absolute wall-clock backstop — armed once the prompt is SUBMITTED, cleared
+  // by cancel(). Unlike the idle reaper (which resets on every PTY repaint and
+  // so never fires for a busy-but-stuck agent whose working counter keeps
+  // ticking), this bounds the total run so a hung provider/CLI can't run
+  // unbounded. See DEFAULT_TUI_MAX_RUNTIME_MS for the incident.
+  let maxRuntimeTimer = null;
+  // Deadline for the wrap-up grace window the max-runtime ceiling opens instead of
+  // reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared by cancel()
+  // alongside every other timer.
+  let wrapUpTimer = null;
+  let pasteAttempt = 0;
+  // Wall-clock of the FIRST paste attempt — the anchor for the MCP-boot-aware
+  // retry deadline (retries are time-bounded, not attempt-count-bounded, while
+  // codex is still booting its MCP servers).
+  let firstPasteStartedAt = null;
+  // Guards re-entry the way the outer promptSentAt used to before this state
+  // moved here — sendPrompt is this controller's only setter for it now.
+  let sent = false;
+
+  /**
+   * Re-deliver the prompt while a self-clearing provider signal's grace window
+   * is open (agy's account-eligibility banner).
+   *
+   * The banner is the REJECTION of the submission, not a spinner over an
+   * in-flight one: agy discards the prompt, empties its composer and returns to
+   * its idle footer, so nothing will generate until something re-asks — which is
+   * also what the banner instructs ("try again shortly"). Re-pasting the WHOLE
+   * prompt is correct precisely because the composer is empty.
+   *
+   * Lives here rather than in spawnTuiAgent because this controller owns
+   * `submitEnterTimer`; leaving the handle in one scope and the re-delivery in
+   * another is how you leak an Enter interval past finish(). Nothing here
+   * re-runs paste VERIFICATION: the prompt already rendered once (its rejection
+   * is why we're here), and routing back through `attemptPaste` would spend the
+   * startup paste-retry budget and let a verification hiccup mid-handshake
+   * finalize the run as `paste-not-rendered`.
+   *
+   * @returns {boolean} whether the paste actually went out (false once the
+   *   session is gone — the caller must not claim a re-submission that didn't
+   *   happen).
+   */
+  const resubmit = () => {
+    if (isFinalized() || !sessionId) return false;
+    // Overwriting a live handle would leak the previous attempt's Enter interval
+    // past cancel(); pasteToSession returns a fresh one, or false once the
+    // session is gone — which is also the "don't bother" answer, since the
+    // grace window's deadline still owns the fail-over.
+    if (submitEnterTimer) clearInterval(submitEnterTimer);
+    const handle = shellService.pasteToSession(sessionId, prompt, {
+      label: '[cosAgents] provider-handshake resubmit',
+    });
+    submitEnterTimer = handle || null;
+    return !!handle;
+  };
+
+  // Reap the run as a max-runtime failure. Shared by the wrap-up grace window's
+  // expiry and its own "session already died" branch so both produce the same
+  // record: uncommitted work captured for post-mortem, then a
+  // needs-manual-finish error (same recovery guidance as the merge-queue /
+  // review-loop idle-timeout paths — a stuck orchestrator may have left
+  // PRs/worktrees behind).
+  const finishMaxRuntimeFailure = (detail, reason = 'max-runtime-timeout') => {
+    captureWorktreeDiff(cwd, agentDir).catch(() => {});
+    finish({
+      success: false,
+      exitCode: 124,
+      error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — ${detail} check for open or merged-but-uncleaned PRs and finish them manually.`,
+      reason,
+    }).catch(err => {
+      emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
+    });
+  };
+
+  // Max-runtime wrap-up grace: prod the agent to land its sentinel, then watch
+  // for it before reaping (see MAX_RUNTIME_WRAP_UP_GRACE_MS). The prod goes in
+  // over the same bracketed-paste + delayed-Enter channel `sendBtwToAgent` uses,
+  // so from the agent's side it is indistinguishable from the user typing it.
+  //
+  // Success here finalizes through the ordinary sentinel path — we do NOT call
+  // finish() ourselves on the happy path, because the 2s doneSentinelTimer is
+  // still running and owns that transition; racing it would just be a second
+  // caller into the same `finalized` guard. This poll exists to bound the WAIT
+  // and to reap when the prod doesn't work.
+  const startWrapUpGrace = () => {
+    if (isFinalized() || wrapUpTimer) return;
+    // A dead session can't be prodded — nothing will ever write the sentinel, so
+    // skip the grace window entirely rather than idling out the full 5min.
+    if (!sessionId || !shellService.getSession(sessionId)) {
+      finishMaxRuntimeFailure('the TUI session was already gone, so it could not be asked to wrap up;');
+      return;
+    }
+    const graceMin = Math.round(MAX_RUNTIME_WRAP_UP_GRACE_MS / 60000);
+    appendLine(`⏳ Max runtime reached — asking the agent to wrap up and write its sentinel (${graceMin}min grace)`);
+    emitLog('warn', `TUI agent ${agentId} hit max runtime — prodding it to wrap up with ${graceMin}min of grace before reaping`, { agentId, phase: 'wrap-up' });
+    updateAgent(agentId, { metadata: { phase: 'wrap-up' } }).catch(err => {
+      emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
+    });
+
+    // Clear any prior submit-Enter interval first: hours after submission the
+    // prompt's own is long finished, but overwriting a live handle would leak
+    // it past finish().
+    if (submitEnterTimer) clearInterval(submitEnterTimer);
+    submitEnterTimer = shellService.pasteToSession(
+      sessionId,
+      // The agent's OWN sentinel name — the bare `.agent-done` is a path no
+      // poller is watching.
+      buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS, doneSentinelName(agentId)),
+      { label: '[cosAgents] max-runtime wrap-up' },
+    );
+
+    // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
+    // this exact path at this exact cadence and owns the success transition (and
+    // cancel() clears this handle), so polling here would just double the
+    // existsSync syscalls for 5 minutes to learn something the other timer acts on
+    // first. All this needs to do is fire once at the end of the window.
+    wrapUpTimer = setTimeout(() => {
+      try {
+        wrapUpTimer = null;
+        if (isFinalized()) return;
+        // The sentinel landed right at the boundary — the prod worked after all.
+        // Let the sentinel path finalize it as the success it is.
+        if (sentinelPresent()) return;
+        finishMaxRuntimeFailure(
+          `it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`,
+          'max-runtime-no-wrap-up',
+        );
+      } catch (err) {
+        // setTimeout callback: an uncaught throw here would crash the process.
+        console.error(`❌ wrapUpTimer callback failed: ${err.message}`);
+      }
+    }, MAX_RUNTIME_WRAP_UP_GRACE_MS);
+  };
+
+  const sendPrompt = async (reason) => {
+    if (isFinalized() || sent) return;
+    sent = true;
+    markPromptSent();
+    // Liveness guard: the TUI command runs as a child of the persistent PTY
+    // shell, so if it exited at startup (e.g. claude failing to enter
+    // interactive mode) the PTY stays open and onExit never fires. Pasting now
+    // would dump the bracketed-paste prompt into the bare shell — the wedged
+    // `^[[200~ …` session. If the shell has no live child, the command is gone:
+    // fail loudly with whatever it printed instead of pasting into the shell.
+    //
+    // Runner mode has no launch shell — the TUI IS the PTY process — so "does
+    // this pid have a live child?" is the wrong question (claude may have zero
+    // children at paste time) and a TUI exit kills the PTY, firing onExit. Skip
+    // the probe there.
+    if (!useDurableRunner && !(await shellHasLiveChild(pid))) {
+      if (isFinalized()) return; // a real onExit may have finalized during the probe await
+      await finishStartupFailure(
+        'tui-exited-early',
+        `${tuiConfig.command} exited at startup before the TUI was ready, so no prompt was sent.`,
+      );
+      return;
+    }
+    // Start the paste attempt — may be retried if verification fails (issue #2192).
+    attemptPaste(reason);
+  };
+
+  // Actually perform a paste attempt. Separated from sendPrompt so retries don't
+  // re-run the liveness guard or re-set promptSentAt. Increments pasteAttempt on
+  // each call; clears any pending timers from the previous attempt first.
+  const attemptPaste = (reason) => {
+    pasteAttempt += 1;
+    const attemptNum = pasteAttempt;
+    if (firstPasteStartedAt === null) firstPasteStartedAt = Date.now();
+    if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
+    if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
+    // Start capturing post-paste output. Set BEFORE writing the paste so
+    // every chunk that arrives in response gets appended. Cleared the moment
+    // detection resolves (marker seen or fallback elapsed) so the accumulator
+    // never lives beyond the paste-marker window.
+    postPasteBuffer = '';
+    shellService.writeToSession(sessionId, `\x1b[200~${prompt}\x1b[201~`);
+    const attemptSuffix = attemptNum > 1 ? ` [attempt ${attemptNum}/${PASTE_RETRY_MAX_ATTEMPTS}]` : '';
+    appendLine(`📟 Prompt pasted into TUI session ${sessionId.slice(0, 8)} (${reason})${attemptSuffix}`);
+
+    // Submit the pasted prompt with repeated Enters — a single `\r` can be
+    // swallowed while the TUI is still reflowing a large paste, stranding the
+    // prompt unsent (the "I had to hit Enter myself" bug). Tracked in
+    // submitEnterTimer so cancel() can cancel pending retries if the agent ends.
+    const submitEnter = () => {
+      // Mark submission so work-activity observation begins only now — after the
+      // Enter is written, past the prompt-echo window (issue #1229 review).
+      markPromptSubmitted();
+      submitEnterTimer = scheduleSubmitEnters(
+        () => shellService.writeToSession(sessionId, '\r'),
+        () => isFinalized()
+      );
+      // Arm the absolute wall-clock backstop from submission (once — a paste
+      // retry re-enters submitEnter but must not stack timers). The idle reaper
+      // can't bound a busy-but-stuck agent because Claude Code's working counter
+      // keeps repainting through a stalled provider retry, resetting lastOutputAt
+      // forever; this timer is the honest ceiling regardless of PTY chatter.
+      if (!maxRuntimeTimer) {
+        maxRuntimeTimer = setTimeout(() => {
+          try {
+            if (isFinalized()) return;
+            // Salvage net: if the agent already wrote its .agent-done sentinel the
+            // run truly finished (the TUI just never idled/exited), so complete as
+            // success — mirrors the one-shot runner's response-file salvage. The
+            // 2s doneSentinelTimer normally catches this first; this covers the
+            // boundary where it lands right at the deadline.
+            if (sentinelPresent()) {
+              finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
+                emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
+              });
+              return;
+            }
+            // No sentinel yet — but a wall-clock deadline lands wherever it lands,
+            // including on an agent seconds from writing one (see
+            // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
+            // wrap up and keep watching for the sentinel through the grace window
+            // before reaping. Only then does this become a real failure.
+            startWrapUpGrace();
+          } catch (err) {
+            // setTimeout callback: an uncaught throw here (e.g. a PTY write racing
+            // a dead session) would crash the whole process, killing every other
+            // in-flight agent, not just this one.
+            console.error(`❌ maxRuntimeTimer callback failed: ${err.message}`);
+          }
+        }, tuiConfig.maxRuntimeMs);
+      }
+    };
+
+    // Confirms the TUI actually received the paste before we submit. The
+    // paste-commit MARKER ([Pasted text #N]) is authoritative — Claude Code
+    // collapses a multi-line paste into that chip and HIDES the body text, so a
+    // literal text check false-negatives on every multi-line prompt (real
+    // incident 2026-07-05: agent-656efa6e et al. failed `paste-not-rendered`
+    // despite the marker being present). Literal-text verification is only the
+    // fallback for the markerless path — see isPasteConfirmed.
+    const pasteConfirmed = (buffer) =>
+      isPasteConfirmed(buffer, { verifiablePrefix, promptMarkerCount });
+
+    // Markerless AND the prompt text never rendered → the paste was swallowed by
+    // a still-initializing TUI (issue #2192). Retry, then fail.
+    //
+    // Budget is boot-aware: once codex's MCP-boot banner has been seen (mcpBoot
+    // active), the boot can legitimately run for tens of seconds — up to ~2min
+    // for a node_repl/npx server — during which EVERY paste is swallowed. Switch
+    // from the fixed 3-attempt/exponential-backoff budget to a TIME budget
+    // (MCP_BOOT_PASTE_DEADLINE_MS from the first paste) with a fixed cadence, so
+    // retries outlast the boot and the paste finally lands once the input box is
+    // live (incident 2026-07-10, agent-c5a26b40). No MCP boot → unchanged.
+    const retryOrFailPaste = () => {
+      if (isFinalized()) return;
+      const bootActive = mcpBoot.active;
+      const withinBudget = bootActive
+        ? (Date.now() - firstPasteStartedAt) < MCP_BOOT_PASTE_DEADLINE_MS
+        : attemptNum < PASTE_RETRY_MAX_ATTEMPTS;
+      if (withinBudget) {
+        const retryDelayMs = bootActive
+          ? MCP_BOOT_PASTE_RETRY_DELAY_MS
+          : PASTE_RETRY_BASE_DELAY_MS * Math.pow(2, attemptNum - 1);
+        const bootNote = bootActive
+          ? ` (waiting for ${tuiConfig.command} MCP servers to finish booting)`
+          : '';
+        appendLine(`⚠️ Paste verification failed — prompt text not found in buffer, retrying in ${retryDelayMs}ms${bootNote}`);
+        setTimeout(() => {
+          if (isFinalized()) return;
+          attemptPaste(reason);
+        }, retryDelayMs);
+        return;
+      }
+      // Budget exhausted — fail the agent, naming the MCP-boot cause when that's
+      // what kept the paste from landing so the operator knows to check their
+      // codex config rather than chasing a phantom paste-timing bug.
+      const bootSecs = Math.round(MCP_BOOT_PASTE_DEADLINE_MS / 1000);
+      const summary = bootActive
+        ? `${tuiConfig.command} did not finish booting its MCP servers within ${bootSecs}s, so the prompt was never delivered. A slow or hung MCP server in your ~/.codex config (e.g. playwright via npx, or a node_repl) blocks codex from accepting input — disable or fix it, or remove it for headless runs.`
+        : `${tuiConfig.command} was still initializing and the paste was silently swallowed. The prompt never appeared in the TUI buffer after ${PASTE_RETRY_MAX_ATTEMPTS} attempts.`;
+      appendLine(
+        bootActive
+          ? `❌ Paste never landed after ${bootSecs}s of waiting for MCP servers to boot — prompt never rendered`
+          : `❌ Paste verification failed after ${PASTE_RETRY_MAX_ATTEMPTS} attempts — prompt never rendered`,
+      );
+      finishStartupFailure('paste-not-rendered', summary)
+        .catch(err => emitLog('error', `TUI agent ${agentId} finishStartupFailure(paste-not-rendered) failed: ${err?.message || err}`, { agentId }));
+    };
+
+    const pasteSentAt = Date.now();
+    pasteEnterTimer = setInterval(() => {
+      if (isFinalized()) {
+        clearInterval(pasteEnterTimer);
+        pasteEnterTimer = null;
+        postPasteBuffer = null;
+        return;
+      }
+      const elapsed = Date.now() - pasteSentAt;
+      const markerSeen = countPasteMarkers(postPasteBuffer) > promptMarkerCount;
+      // Submit when EITHER the paste-commit marker appears (preferred) or
+      // the fallback window elapses (covers small prompts that don't render
+      // the marker).
+      if ((markerSeen && elapsed >= PASTE_TO_ENTER_MIN_DELAY_MS)
+        || elapsed >= PASTE_TO_ENTER_FALLBACK_MS) {
+        clearInterval(pasteEnterTimer);
+        pasteEnterTimer = null;
+        // Capture the buffer before clearing, then confirm the paste (issue #2192).
+        const commitBuffer = postPasteBuffer || '';
+        postPasteBuffer = null;
+        // Marker present (or text already visible, or nothing to verify) → the
+        // paste landed; submit now. Trusting the marker here is what fixes the
+        // multi-line-collapse false negative — Claude hides the pasted body text.
+        if (pasteConfirmed(commitBuffer)) {
+          submitEnter();
+          return;
+        }
+        // Markerless AND text not visible yet: give the prompt a short window to
+        // render (a late marker also counts as confirmed) before declaring it
+        // swallowed. Resume accumulation for the verification window.
+        let verifyBuffer = commitBuffer;
+        const verifyStartedAt = Date.now();
+        postPasteBuffer = commitBuffer;
+        pasteVerifyTimer = setInterval(() => {
+          if (isFinalized()) {
+            clearInterval(pasteVerifyTimer);
+            pasteVerifyTimer = null;
+            postPasteBuffer = null;
+            return;
+          }
+          verifyBuffer = postPasteBuffer || verifyBuffer;
+          const verifyElapsed = Date.now() - verifyStartedAt;
+          const confirmed = pasteConfirmed(verifyBuffer);
+          // Submit once confirmed, or give up and retry/fail when the window expires.
+          if (confirmed || verifyElapsed >= PASTE_VERIFY_WINDOW_MS) {
+            clearInterval(pasteVerifyTimer);
+            pasteVerifyTimer = null;
+            postPasteBuffer = null;
+            if (confirmed) submitEnter();
+            else retryOrFailPaste();
+          }
+        }, PASTE_VERIFY_POLL_MS);
+      }
+    }, PASTE_MARKER_POLL_MS);
+  };
+
+  // handleData's own hook: accumulates PTY output into postPasteBuffer while a
+  // paste attempt is awaiting its marker/verification window (see
+  // postPasteBuffer above). A no-op the rest of the time.
+  const ingestChunk = (stripped) => {
+    if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
+  };
+
+  // Stop everything this controller armed. Safe to call unconditionally (a run
+  // that ends before any paste was attempted just clears nulls) — see
+  // stopRunMachinery's own comment for why every teardown site must go through
+  // one chokepoint.
+  const cancel = () => {
+    if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
+    if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
+    if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
+    if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
+    if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
+    postPasteBuffer = null;
+  };
+
+  return { sendPrompt, resubmit, ingestChunk, cancel };
+}
+
 export async function spawnTuiAgent({
   agentId,
   task,
@@ -289,25 +715,19 @@ export async function spawnTuiAgent({
   // finalize path; finish() also ingests the sentinel directly so the summary
   // is captured even if some other path (idle/exit) finalizes first. Computed
   // up front so both the watcher AND finish() can read it (see ingestDoneSentinel).
-  const doneSentinelPath = workspacePath ? join(workspacePath, DONE_SENTINEL_NAME) : null;
+  // Resolved from the shared helper, so this is byte-identical to the path the
+  // prompt told the agent to write (see resolveSentinelPath).
+  const doneSentinelPath = resolveDoneSentinelPath(workspacePath, agentId);
   const promptPreview = prompt.replace(/\s+/g, ' ').slice(0, 100);
   const commandName = tuiConfig.command.split('/').pop();
-  // Markers already present in the prompt text itself (a transcript-analysis task
-  // can echo `[Pasted text #N]` back). The paste-commit fast path must wait for
-  // the TUI's OWN marker — i.e. the count to EXCEED this — so an echoed marker
-  // doesn't fire the submit-Enters mid-reflow (issue #1229 review). STRIP the
-  // prompt first: a pasted RAW transcript may carry the cursor-positioned marker
-  // form (`[Pasted\x1b[11Gtext…`), which counts as 0 unstripped but echoes back as
-  // the stripped `[Pastedtext#…]` (count 1) — so we must count the prompt the same
-  // way the post-paste buffer is counted, or the gate undercounts and fires early.
-  const promptMarkerCount = countPasteMarkers(stripAnsi(prompt));
 
   let finalized = false;
   let immediateFallbackAnalysis = null;
   const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
   // Holds the wait-it-out window for a provider signal carrying a `graceMs`
   // (agy's account-eligibility banner). The idle timer below both resolves its
-  // deadline and defers to `.armed` for idle suppression.
+  // deadline, drives the re-submission cadence, and defers to `.armed` for idle
+  // suppression.
   const selfClearingGate = createSelfClearingSignalGate();
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
@@ -426,26 +846,55 @@ export async function spawnTuiAgent({
       .finally(() => { connectivity.checking = false; });
   };
 
-  // Bounded post-paste accumulator. Lives only while pasteEnterTimer is
-  // running (a few seconds at most), so the in-memory cost is bounded by
-  // however much the TUI emits during the paste-marker window — typically
-  // a few KB. Set to '' when sendPrompt fires; nulled when paste detection
-  // resolves or the agent finalizes.
-  let postPasteBuffer = null;
+  // PR-follow-up deliverable gate. A follow-up run spawned by
+  // `spawnReviewLoopFollowUp` exists to land ONE pull request — it makes no
+  // commit, is told to "Exit" when the PR reads MERGED, and (on Antigravity,
+  // which routinely skips the sentinel) then just sits at its prompt. Every
+  // signal the idle reaper otherwise has is a proxy that gets this run WRONG:
+  // its prompt quotes `gh pr checks` / `gh pr merge` / `--delete-branch`, so the
+  // TUI's echo latches the merge-queue tracker before any work happens, and the
+  // finished run is reaped 15 minutes later as `merge-queue-idle-timeout` — a
+  // needs-manual-finish FAILURE naming a PR that is already merged, retried to
+  // `Max retries exceeded` and a HIGH orphaned-PR notification (sys-rl-msr1j1a5
+  // / PR #3909, 2026-08-13). So ask the forge the actual question instead.
+  //
+  // `merged` starts false and only a `known` MERGED answer flips it: a gh we
+  // could not run (firewalled, offline) is NOT evidence of anything and must
+  // leave the pre-existing verdicts untouched. GitHub only — `gh pr view`
+  // against a GitLab MR answers nothing, so those follow-ups keep prior behavior.
+  const prFollowUpRef = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp)
+    && detectForgeCli(task.metadata?.reviewLoopPRHost) === 'gh'
+    ? (task.metadata?.reviewLoopPRUrl || task.metadata?.reviewLoopPRNumber || null)
+    : null;
+  const followUpPr = { merged: false, checking: false, lastCheckAt: 0 };
+  const refreshFollowUpPrState = () => {
+    if (!prFollowUpRef || followUpPr.merged || followUpPr.checking) return;
+    if (Date.now() - followUpPr.lastCheckAt < PR_STATE_RECHECK_MS) return;
+    followUpPr.checking = true;
+    followUpPr.lastCheckAt = Date.now();
+    // Dynamic import, matching agentFinalization's forge-lookup call site: it
+    // keeps `github.js` (and its settings/data-file dependencies) out of the
+    // module graph of every suite that mocks this spawner.
+    import('./github.js')
+      .then(({ getPullRequestState }) => getPullRequestState(prFollowUpRef, { cwd }))
+      .then((res) => {
+        if (finalized) return;
+        if (res?.status === 'known' && res.state === 'MERGED') {
+          followUpPr.merged = true;
+          emitLog('info', `TUI agent ${agentId} follow-up PR reads MERGED — finalizing on the deliverable rather than the idle window`, { agentId });
+        }
+      })
+      .catch(() => {})
+      .finally(() => { followUpPr.checking = false; });
+  };
 
-  let pasteEnterTimer = null;
-  let pasteVerifyTimer = null;
-  let submitEnterTimer = null;
-  // Absolute wall-clock backstop — armed once the prompt is SUBMITTED, cleared
-  // in finish(). Unlike the idle reaper (which resets on every PTY repaint and
-  // so never fires for a busy-but-stuck agent whose working counter keeps
-  // ticking), this bounds the total run so a hung provider/CLI can't run
-  // unbounded. See DEFAULT_TUI_MAX_RUNTIME_MS for the incident.
-  let maxRuntimeTimer = null;
-  // Deadline for the wrap-up grace window the max-runtime ceiling opens instead of
-  // reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared in finish()
-  // alongside every other timer.
-  let wrapUpTimer = null;
+  // The paste-attempt / max-runtime / wrap-up-grace machinery (postPasteBuffer,
+  // pasteEnterTimer, pasteVerifyTimer, submitEnterTimer, maxRuntimeTimer,
+  // wrapUpTimer) lives in createPasteRetryController rather than this closure
+  // — see its own comment for why that cluster is separated out.
+  // `pasteController` is created once sessionId/pid are known (below) and torn
+  // down from stopRunMachinery via `pasteController?.cancel()`.
+  let pasteController = null;
 
   const streamingStrip = createStreamingAnsiStripper();
 
@@ -509,16 +958,13 @@ export async function spawnTuiAgent({
     if (agentData?.idleTimer) clearInterval(agentData.idleTimer);
     if (agentData?.promptTimer) clearInterval(agentData.promptTimer);
     if (agentData?.doneSentinelTimer) clearInterval(agentData.doneSentinelTimer);
-    if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
-    if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
-    if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
-    if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
-    if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
-    // Release the post-paste accumulator even when the run ends mid-paste-window.
-    // The pasteEnterTimer's own cleanup path nulls this too, but if the run ends
-    // from elsewhere (shell-exit, command-not-found, user termination, a host
-    // restart) that timer never gets a chance to run.
-    postPasteBuffer = null;
+    // Cancels the paste-attempt/max-runtime/wrap-up timers and releases the
+    // post-paste accumulator even when the run ends mid-paste-window — see
+    // createPasteRetryController's own cancel() for why each is safe to clear
+    // unconditionally (a run that ends from elsewhere — shell-exit,
+    // command-not-found, user termination, a host restart — never gets a
+    // chance to let its own cleanup path run).
+    pasteController?.cancel();
     return agentData;
   };
 
@@ -627,6 +1073,7 @@ export async function spawnTuiAgent({
     // also the gate for the PR-claim verification (#3358): only a run that owned
     // its own PR creation can be expected to have produced one by finalize time.
     const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+    const taskReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
     const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
@@ -666,7 +1113,9 @@ export async function spawnTuiAgent({
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
     } finally {
-      if (workspacePath) await rm(join(workspacePath, DONE_SENTINEL_NAME)).catch(() => {});
+      // This run's sentinel only — a sibling agent sharing this workspace owns
+      // its own file and may still be running.
+      if (doneSentinelPath) await rm(doneSentinelPath).catch(() => {});
 
       const reviewOptions = cleanupSuccess && taskOpenPR && !agentOwnsPR
         ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
@@ -679,7 +1128,7 @@ export async function spawnTuiAgent({
         openPR: agentOwnsPR ? false : taskOpenPR,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
-        skipMerge: agentOwnsPR,
+        skipMerge: taskReviewLoopFollowUp || agentOwnsPR,
         description: task.description,
         agentOutput: getOutputBuffer(),
         originalTask: task
@@ -762,6 +1211,37 @@ export async function spawnTuiAgent({
     });
   };
 
+  /**
+   * Re-deliver the prompt while a self-clearing provider signal's window is open.
+   *
+   * agy's eligibility banner is the REJECTION of a submission, not a spinner over
+   * an in-flight one: the prompt is discarded, the composer goes back to empty
+   * and the session sits at its idle footer indefinitely. So the window can only
+   * clear if something re-asks — hence a plain re-paste + submit, which is also
+   * literally what the banner instructs ("Please try again shortly").
+   *
+   * Re-pasting the WHOLE prompt is correct precisely because the composer is
+   * empty; the gate's 20s cadence keeps this well clear of the reflow that
+   * follows the rejected paste. Nothing here re-runs paste VERIFICATION: this
+   * prompt already rendered once (its rejection is why we're here), and routing
+   * back through `attemptPaste` would spend the startup paste-retry budget and
+   * let a verification hiccup mid-handshake finalize the run as
+   * `paste-not-rendered`.
+   */
+  const resubmitAfterSignal = () => {
+    // A banner that paints during startup (before the prompt was ever submitted)
+    // has nothing to re-send — the ordinary paste path still owns first delivery.
+    if (finalized || !promptSubmittedAt) return;
+    const attempt = selfClearingGate.takeResubmit(Date.now());
+    if (!attempt) return;
+    // Only claim the re-submission that actually went out — a false return means
+    // the session is already gone, and a transcript line saying otherwise would
+    // send a post-mortem looking for a paste the provider never received.
+    if (pasteController?.resubmit()) {
+      appendLine(`🔁 Provider handshake still open — re-submitted the prompt (attempt ${attempt})`);
+    }
+  };
+
   const handleData = async (data) => {
     // EventEmitter listeners run outside the request lifecycle — a rejection
     // here on Node ≥15 will kill the process unless we catch locally. The
@@ -787,7 +1267,7 @@ export async function spawnTuiAgent({
       // matches after stripping (see countPasteMarkers). Appending raw text here
       // — as this did before #1229 — left the marker unmatchable and the fast
       // path dead.
-      if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
+      pasteController?.ingestChunk(stripped);
       // Observe claude's input-readiness / folder-trust chrome (before the
       // paste). Raw `text` carries the bracketed-paste-mode toggles; `stripped`
       // carries the visible footer/trust text. Only AFTER the CLI command is
@@ -851,8 +1331,10 @@ export async function spawnTuiAgent({
       // binary fails fast instead of idling.
       //
       // While a grace window is open, every chunk is evidence about whether the
-      // provider came back; the gate closes itself the moment it is.
-      if (selfClearingGate.observe(stripped)) {
+      // provider came back; the gate closes itself the moment it is. The clock
+      // is load-bearing — it lets the gate discount the echo of a prompt IT just
+      // re-pasted (see SELF_CLEARING_RESUBMIT_ECHO_MS).
+      if (selfClearingGate.observe(stripped, now)) {
         appendLine(`✅ Provider signal cleared — ${tuiConfig.command} is generating again; continuing the run`);
       }
 
@@ -1018,294 +1500,31 @@ export async function spawnTuiAgent({
     });
   };
 
-  // Extract a verifiable prefix from the prompt for paste verification (issue #2192).
-  // Computed once up front so retry attempts use the same verification target.
-  const verifiablePrefix = extractVerifiablePromptPrefix(prompt);
-  let pasteAttempt = 0;
-  // Wall-clock of the FIRST paste attempt — the anchor for the MCP-boot-aware
-  // retry deadline (retries are time-bounded, not attempt-count-bounded, while
-  // codex is still booting its MCP servers).
-  let firstPasteStartedAt = null;
-
-  // Reap the run as a max-runtime failure. Shared by the wrap-up grace window's
-  // expiry and its own "session already died" branch so both produce the same
-  // record: uncommitted work captured for post-mortem, then a
-  // needs-manual-finish error (same recovery guidance as the merge-queue /
-  // review-loop idle-timeout paths — a stuck orchestrator may have left
-  // PRs/worktrees behind).
-  const finishMaxRuntimeFailure = (detail, reason = 'max-runtime-timeout') => {
-    captureWorktreeDiff(cwd, agentDir).catch(() => {});
-    finish({
-      success: false,
-      exitCode: 124,
-      error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — ${detail} check for open or merged-but-uncleaned PRs and finish them manually.`,
-      reason,
-    }).catch(err => {
-      emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
-    });
-  };
-
-  // Max-runtime wrap-up grace: prod the agent to land its sentinel, then watch
-  // for it before reaping (see MAX_RUNTIME_WRAP_UP_GRACE_MS). The prod goes in
-  // over the same bracketed-paste + delayed-Enter channel `sendBtwToAgent` uses,
-  // so from the agent's side it is indistinguishable from the user typing it.
-  //
-  // Success here finalizes through the ordinary sentinel path — we do NOT call
-  // finish() ourselves on the happy path, because the 2s doneSentinelTimer is
-  // still running and owns that transition; racing it would just be a second
-  // caller into the same `finalized` guard. This poll exists to bound the WAIT
-  // and to reap when the prod doesn't work.
-  const startWrapUpGrace = () => {
-    if (finalized || wrapUpTimer) return;
-    // A dead session can't be prodded — nothing will ever write the sentinel, so
-    // skip the grace window entirely rather than idling out the full 5min.
-    if (!sessionId || !shellService.getSession(sessionId)) {
-      finishMaxRuntimeFailure('the TUI session was already gone, so it could not be asked to wrap up;');
-      return;
-    }
-    const graceMin = Math.round(MAX_RUNTIME_WRAP_UP_GRACE_MS / 60000);
-    appendLine(`⏳ Max runtime reached — asking the agent to wrap up and write its sentinel (${graceMin}min grace)`);
-    emitLog('warn', `TUI agent ${agentId} hit max runtime — prodding it to wrap up with ${graceMin}min of grace before reaping`, { agentId, phase: 'wrap-up' });
-    updateAgent(agentId, { metadata: { phase: 'wrap-up' } }).catch(err => {
-      emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
-    });
-
-    // Clear any prior submit-Enter interval first: hours after submission the
-    // prompt's own is long finished, but overwriting a live handle would leak
-    // it past finish().
-    if (submitEnterTimer) clearInterval(submitEnterTimer);
-    submitEnterTimer = shellService.pasteToSession(
-      sessionId,
-      buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS),
-      { label: '[cosAgents] max-runtime wrap-up' },
-    );
-
-    // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
-    // this exact path at this exact cadence and owns the success transition (and
-    // finish() clears this handle), so polling here would just double the
-    // existsSync syscalls for 5 minutes to learn something the other timer acts on
-    // first. All this needs to do is fire once at the end of the window.
-    wrapUpTimer = setTimeout(() => {
-      try {
-        wrapUpTimer = null;
-        if (finalized) return;
-        // The sentinel landed right at the boundary — the prod worked after all.
-        // Let the sentinel path finalize it as the success it is.
-        if (sentinelPresent()) return;
-        finishMaxRuntimeFailure(
-          `it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (a stalled request keeps the working counter repainting so the idle reaper never fires);`,
-          'max-runtime-no-wrap-up',
-        );
-      } catch (err) {
-        // setTimeout callback: an uncaught throw here would crash the process.
-        console.error(`❌ wrapUpTimer callback failed: ${err.message}`);
-      }
-    }, MAX_RUNTIME_WRAP_UP_GRACE_MS);
-  };
-
-  const sendPrompt = async (reason) => {
-    if (finalized || promptSentAt) return;
-    promptSentAt = Date.now();
-    // Liveness guard: the TUI command runs as a child of the persistent PTY
-    // shell, so if it exited at startup (e.g. claude failing to enter
-    // interactive mode) the PTY stays open and onExit never fires. Pasting now
-    // would dump the bracketed-paste prompt into the bare shell — the wedged
-    // `^[[200~ …` session. If the shell has no live child, the command is gone:
-    // fail loudly with whatever it printed instead of pasting into the shell.
-    //
-    // Runner mode has no launch shell — the TUI IS the PTY process — so "does
-    // this pid have a live child?" is the wrong question (claude may have zero
-    // children at paste time) and a TUI exit kills the PTY, firing onExit. Skip
-    // the probe there.
-    if (!useDurableRunner && !(await shellHasLiveChild(pid))) {
-      if (finalized) return; // a real onExit may have finalized during the probe await
-      await finishStartupFailure(
-        'tui-exited-early',
-        `${tuiConfig.command} exited at startup before the TUI was ready, so no prompt was sent.`,
-      );
-      return;
-    }
-    // Start the paste attempt — may be retried if verification fails (issue #2192).
-    attemptPaste(reason);
-  };
-
-  // Actually perform a paste attempt. Separated from sendPrompt so retries don't
-  // re-run the liveness guard or re-set promptSentAt. Increments pasteAttempt on
-  // each call; clears any pending timers from the previous attempt first.
-  const attemptPaste = (reason) => {
-    pasteAttempt += 1;
-    const attemptNum = pasteAttempt;
-    if (firstPasteStartedAt === null) firstPasteStartedAt = Date.now();
-    if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
-    if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
-    // Start capturing post-paste output. Set BEFORE writing the paste so
-    // every chunk that arrives in response gets appended. Cleared the moment
-    // detection resolves (marker seen or fallback elapsed) so the accumulator
-    // never lives beyond the paste-marker window.
-    postPasteBuffer = '';
-    shellService.writeToSession(sessionId, `\x1b[200~${prompt}\x1b[201~`);
-    const attemptSuffix = attemptNum > 1 ? ` [attempt ${attemptNum}/${PASTE_RETRY_MAX_ATTEMPTS}]` : '';
-    appendLine(`📟 Prompt pasted into TUI session ${sessionId.slice(0, 8)} (${reason})${attemptSuffix}`);
-
-    // Submit the pasted prompt with repeated Enters — a single `\r` can be
-    // swallowed while the TUI is still reflowing a large paste, stranding the
-    // prompt unsent (the "I had to hit Enter myself" bug). Tracked in
-    // submitEnterTimer so finish() can cancel pending retries if the agent ends.
-    const submitEnter = () => {
-      // Mark submission so work-activity observation begins only now — after the
-      // Enter is written, past the prompt-echo window (issue #1229 review).
-      if (promptSubmittedAt === null) promptSubmittedAt = Date.now();
-      submitEnterTimer = scheduleSubmitEnters(
-        () => shellService.writeToSession(sessionId, '\r'),
-        () => finalized
-      );
-      // Arm the absolute wall-clock backstop from submission (once — a paste
-      // retry re-enters submitEnter but must not stack timers). The idle reaper
-      // can't bound a busy-but-stuck agent because Claude Code's working counter
-      // keeps repainting through a stalled provider retry, resetting lastOutputAt
-      // forever; this timer is the honest ceiling regardless of PTY chatter.
-      if (!maxRuntimeTimer) {
-        maxRuntimeTimer = setTimeout(() => {
-          try {
-            if (finalized) return;
-            // Salvage net: if the agent already wrote its .agent-done sentinel the
-            // run truly finished (the TUI just never idled/exited), so complete as
-            // success — mirrors the one-shot runner's response-file salvage. The
-            // 2s doneSentinelTimer normally catches this first; this covers the
-            // boundary where it lands right at the deadline.
-            if (sentinelPresent()) {
-              finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
-                emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
-              });
-              return;
-            }
-            // No sentinel yet — but a wall-clock deadline lands wherever it lands,
-            // including on an agent seconds from writing one (see
-            // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
-            // wrap up and keep watching for the sentinel through the grace window
-            // before reaping. Only then does this become a real failure.
-            startWrapUpGrace();
-          } catch (err) {
-            // setTimeout callback: an uncaught throw here (e.g. a PTY write racing
-            // a dead session) would crash the whole process, killing every other
-            // in-flight agent, not just this one.
-            console.error(`❌ maxRuntimeTimer callback failed: ${err.message}`);
-          }
-        }, tuiConfig.maxRuntimeMs);
-      }
-    };
-
-    // Confirms the TUI actually received the paste before we submit. The
-    // paste-commit MARKER ([Pasted text #N]) is authoritative — Claude Code
-    // collapses a multi-line paste into that chip and HIDES the body text, so a
-    // literal text check false-negatives on every multi-line prompt (real
-    // incident 2026-07-05: agent-656efa6e et al. failed `paste-not-rendered`
-    // despite the marker being present). Literal-text verification is only the
-    // fallback for the markerless path — see isPasteConfirmed.
-    const pasteConfirmed = (buffer) =>
-      isPasteConfirmed(buffer, { verifiablePrefix, promptMarkerCount });
-
-    // Markerless AND the prompt text never rendered → the paste was swallowed by
-    // a still-initializing TUI (issue #2192). Retry, then fail.
-    //
-    // Budget is boot-aware: once codex's MCP-boot banner has been seen (mcpBoot
-    // active), the boot can legitimately run for tens of seconds — up to ~2min
-    // for a node_repl/npx server — during which EVERY paste is swallowed. Switch
-    // from the fixed 3-attempt/exponential-backoff budget to a TIME budget
-    // (MCP_BOOT_PASTE_DEADLINE_MS from the first paste) with a fixed cadence, so
-    // retries outlast the boot and the paste finally lands once the input box is
-    // live (incident 2026-07-10, agent-c5a26b40). No MCP boot → unchanged.
-    const retryOrFailPaste = () => {
-      if (finalized) return;
-      const bootActive = mcpBoot.active;
-      const withinBudget = bootActive
-        ? (Date.now() - firstPasteStartedAt) < MCP_BOOT_PASTE_DEADLINE_MS
-        : attemptNum < PASTE_RETRY_MAX_ATTEMPTS;
-      if (withinBudget) {
-        const retryDelayMs = bootActive
-          ? MCP_BOOT_PASTE_RETRY_DELAY_MS
-          : PASTE_RETRY_BASE_DELAY_MS * Math.pow(2, attemptNum - 1);
-        const bootNote = bootActive
-          ? ` (waiting for ${tuiConfig.command} MCP servers to finish booting)`
-          : '';
-        appendLine(`⚠️ Paste verification failed — prompt text not found in buffer, retrying in ${retryDelayMs}ms${bootNote}`);
-        setTimeout(() => {
-          if (finalized) return;
-          attemptPaste(reason);
-        }, retryDelayMs);
-        return;
-      }
-      // Budget exhausted — fail the agent, naming the MCP-boot cause when that's
-      // what kept the paste from landing so the operator knows to check their
-      // codex config rather than chasing a phantom paste-timing bug.
-      const bootSecs = Math.round(MCP_BOOT_PASTE_DEADLINE_MS / 1000);
-      const summary = bootActive
-        ? `${tuiConfig.command} did not finish booting its MCP servers within ${bootSecs}s, so the prompt was never delivered. A slow or hung MCP server in your ~/.codex config (e.g. playwright via npx, or a node_repl) blocks codex from accepting input — disable or fix it, or remove it for headless runs.`
-        : `${tuiConfig.command} was still initializing and the paste was silently swallowed. The prompt never appeared in the TUI buffer after ${PASTE_RETRY_MAX_ATTEMPTS} attempts.`;
-      appendLine(
-        bootActive
-          ? `❌ Paste never landed after ${bootSecs}s of waiting for MCP servers to boot — prompt never rendered`
-          : `❌ Paste verification failed after ${PASTE_RETRY_MAX_ATTEMPTS} attempts — prompt never rendered`,
-      );
-      finishStartupFailure('paste-not-rendered', summary)
-        .catch(err => emitLog('error', `TUI agent ${agentId} finishStartupFailure(paste-not-rendered) failed: ${err?.message || err}`, { agentId }));
-    };
-
-    const pasteSentAt = Date.now();
-    pasteEnterTimer = setInterval(() => {
-      if (finalized) {
-        clearInterval(pasteEnterTimer);
-        pasteEnterTimer = null;
-        postPasteBuffer = null;
-        return;
-      }
-      const elapsed = Date.now() - pasteSentAt;
-      const markerSeen = countPasteMarkers(postPasteBuffer) > promptMarkerCount;
-      // Submit when EITHER the paste-commit marker appears (preferred) or
-      // the fallback window elapses (covers small prompts that don't render
-      // the marker).
-      if ((markerSeen && elapsed >= PASTE_TO_ENTER_MIN_DELAY_MS)
-        || elapsed >= PASTE_TO_ENTER_FALLBACK_MS) {
-        clearInterval(pasteEnterTimer);
-        pasteEnterTimer = null;
-        // Capture the buffer before clearing, then confirm the paste (issue #2192).
-        const commitBuffer = postPasteBuffer || '';
-        postPasteBuffer = null;
-        // Marker present (or text already visible, or nothing to verify) → the
-        // paste landed; submit now. Trusting the marker here is what fixes the
-        // multi-line-collapse false negative — Claude hides the pasted body text.
-        if (pasteConfirmed(commitBuffer)) {
-          submitEnter();
-          return;
-        }
-        // Markerless AND text not visible yet: give the prompt a short window to
-        // render (a late marker also counts as confirmed) before declaring it
-        // swallowed. Resume accumulation for the verification window.
-        let verifyBuffer = commitBuffer;
-        const verifyStartedAt = Date.now();
-        postPasteBuffer = commitBuffer;
-        pasteVerifyTimer = setInterval(() => {
-          if (finalized) {
-            clearInterval(pasteVerifyTimer);
-            pasteVerifyTimer = null;
-            postPasteBuffer = null;
-            return;
-          }
-          verifyBuffer = postPasteBuffer || verifyBuffer;
-          const verifyElapsed = Date.now() - verifyStartedAt;
-          const confirmed = pasteConfirmed(verifyBuffer);
-          // Submit once confirmed, or give up and retry/fail when the window expires.
-          if (confirmed || verifyElapsed >= PASTE_VERIFY_WINDOW_MS) {
-            clearInterval(pasteVerifyTimer);
-            pasteVerifyTimer = null;
-            postPasteBuffer = null;
-            if (confirmed) submitEnter();
-            else retryOrFailPaste();
-          }
-        }, PASTE_VERIFY_POLL_MS);
-      }
-    }, PASTE_MARKER_POLL_MS);
-  };
+  // Owns the paste-attempt counter, the post-paste accumulator, the paste
+  // timers and the max-runtime/wrap-up machinery — see
+  // createPasteRetryController's own comment for why that cluster lives
+  // outside this closure. `isFinalized`/`markPromptSent`/`markPromptSubmitted`
+  // are accessors into THIS closure's `finalized`/`promptSentAt`/
+  // `promptSubmittedAt`, which handleData and the idle reaper below still read
+  // directly.
+  pasteController = createPasteRetryController({
+    agentId,
+    sessionId,
+    pid,
+    useDurableRunner,
+    prompt,
+    tuiConfig,
+    cwd,
+    agentDir,
+    mcpBoot,
+    appendLine,
+    sentinelPresent,
+    isFinalized: () => finalized,
+    markPromptSent: () => { promptSentAt = Date.now(); },
+    markPromptSubmitted: () => { if (promptSubmittedAt === null) promptSubmittedAt = Date.now(); },
+    finish,
+    finishStartupFailure,
+  });
 
   // Claude Code renders a startup banner and (in unfamiliar folders) a
   // folder-trust gate before its input box exists, and the old "saw output then
@@ -1336,7 +1555,7 @@ export async function spawnTuiAgent({
   // unhandled rejection there (e.g. a finalizeAgent throw inside finish())
   // would crash the process — the callback-boundary hazard CLAUDE.md calls out.
   // Wrap each floating call so a rejection is logged, not thrown.
-  const safeSendPrompt = (reason) => sendPrompt(reason).catch((err) =>
+  const safeSendPrompt = (reason) => pasteController.sendPrompt(reason).catch((err) =>
     emitLog('error', `TUI agent ${agentId} sendPrompt(${reason}) failed: ${err?.message || err}`, { agentId }));
   const safeFinishStartupFailure = (reason, summary) => finishStartupFailure(reason, summary).catch((err) =>
     emitLog('error', `TUI agent ${agentId} finishStartupFailure(${reason}) failed: ${err?.message || err}`, { agentId }));
@@ -1406,7 +1625,13 @@ export async function spawnTuiAgent({
     // idle path reports `idle-complete` SUCCESS for a run that never produced a
     // token. Safely bounded — the window carries its own deadline, resolved just
     // above, which fires strictly before any idle window it outlasts.
-    if (selfClearingGate.armed) return;
+    //
+    // The wait is ACTIVE: re-send the prompt on the gate's cadence, because the
+    // banner is the provider REJECTING this submission (see resubmitAfterSignal).
+    if (selfClearingGate.armed) {
+      resubmitAfterSignal();
+      return;
+    }
     if (!promptSentAt) return;
     // Don't reap a session that just received real input — a human pasting
     // into the Shell page, or our own auto-paste. A big bracketed paste can
@@ -1434,13 +1659,26 @@ export async function spawnTuiAgent({
     // re-runs go silent for minutes at a time; extend the idle grace so a
     // still-working orchestrator isn't reaped mid-merge (issue #2074). The
     // extended window still bounds a genuinely-dead orchestrator's reap.
-    const effectiveIdleTimeoutMs = mergeQueue.active
-      ? Math.max(tuiConfig.idleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
-      : reviewLoop.active
-        ? Math.max(tuiConfig.idleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
-        : backgroundShell.active
-          ? Math.max(tuiConfig.idleTimeoutMs, BACKGROUND_SHELL_IDLE_TIMEOUT_MS)
-          : tuiConfig.idleTimeoutMs;
+    // Which verdict this tick warrants — the whole branch matrix, as a pure
+    // function so it can be unit-tested against the real implementation instead
+    // of a drifting inline copy. This body just executes what it returns.
+    const decision = decideIdleReap({
+      idle,
+      baseIdleTimeoutMs: tuiConfig.idleTimeoutMs,
+      mergeQueueActive: mergeQueue.active,
+      reviewLoopActive: reviewLoop.active,
+      backgroundShellActive: backgroundShell.active,
+      prFollowUpMerged: followUpPr.merged,
+      workActive: workActivity.active,
+      rendersCounter: rendersWorkCounter(commandName),
+    });
+    const { effectiveIdleTimeoutMs } = decision;
+    // Past the BASE idle window a PR follow-up asks the forge whether its one
+    // deliverable already landed (throttled, non-blocking — the reading is read
+    // synchronously by the NEXT tick's decision). Keyed on the base window, not
+    // the extended one, precisely because the extended one is the bug: a merge
+    // follow-up latches the merge-queue grace off its own echoed prompt.
+    if (idle >= tuiConfig.idleTimeoutMs) refreshFollowUpPrState();
     // Once within the LEAD window of the (possibly extended) reap deadline, keep
     // a reachability reading fresh (throttled, non-blocking) so the gate below
     // can read it synchronously and won't reap an agent that's only silent
@@ -1448,7 +1686,17 @@ export async function spawnTuiAgent({
     // fixed lead off the base window) keeps a long merge-queue/review-loop idle
     // from probing for its whole 15-min window.
     if (idle >= effectiveIdleTimeoutMs - CONNECTIVITY_PROBE_LEAD_MS) refreshConnectivity();
-    if (idle >= effectiveIdleTimeoutMs) {
+    if (decision.action === 'reap') {
+      // The follow-up's PR is MERGED and the session has gone quiet: the
+      // deliverable is provably in hand, so finalize on it. Deliberately ahead
+      // of the offline defer below — that gate exists because silence is
+      // ambiguous, and this verdict does not rest on silence.
+      if (decision.reason === 'pr-follow-up-merged') {
+        finish({ success: true, exitCode: 0, reason: 'pr-follow-up-merged' }).catch(err => {
+          emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
+        });
+        return;
+      }
       // An internet outage silences a live TUI exactly like a hung or finished
       // agent looks to this timer. If a recent probe says we're offline, DEFER
       // the reap — the agent is only blocked on the network and resumes when it
@@ -1465,7 +1713,7 @@ export async function spawnTuiAgent({
       // almost certainly died mid-merge with PRs opened/merged-but-uncleaned.
       // Surface it as a needs-manual-finish FAILURE rather than the silent
       // `status: completed` that hid the half-done merge queue (issue #2074).
-      if (mergeQueue.active) {
+      if (decision.reason === 'merge-queue-idle-timeout') {
         finish({
           success: false,
           exitCode: 1,
@@ -1481,7 +1729,7 @@ export async function spawnTuiAgent({
       // simply exceeded budget. Surface it as a needs-manual-finish FAILURE
       // rather than the silent `status: completed` that let PR #2084 sit
       // open+unmerged for hours while agent-61508f36 looked "done".
-      if (reviewLoop.active) {
+      if (decision.reason === 'review-loop-idle-timeout') {
         finish({
           success: false,
           exitCode: 1,
@@ -1513,8 +1761,7 @@ export async function spawnTuiAgent({
       // orchestrator doesn't treat a no-op as done. Capture the diff into the
       // agent archive dir before cleanup so post-mortems can see what (if
       // anything) was left behind.
-      const noWorkButCounterExpected = !workActivity.active && rendersWorkCounter(commandName);
-      if (noWorkButCounterExpected) {
+      if (decision.reason === 'idle-no-activity') {
         // Capture any uncommitted changes for post-mortem analysis
         captureWorktreeDiff(cwd, agentDir).catch(() => {});
         finish({
@@ -1608,7 +1855,7 @@ export async function spawnTuiAgent({
   const doneSentinelTimer = doneSentinelPath ? setInterval(() => {
     try {
       if (finalized) return;
-      if (!existsSync(doneSentinelPath)) return;
+      if (!sentinelPresent()) return;
       clearInterval(doneSentinelTimer);
       finish({ success: true, exitCode: 0, reason: 'agent-signaled-done' }).catch(err => {
         emitLog('error', `Failed to finalize TUI agent ${agentId} after sentinel: ${err.message}`, { agentId });

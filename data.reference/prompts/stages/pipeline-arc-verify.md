@@ -39,6 +39,25 @@ that an old draft's cast, villain, faction, or institution belongs in this arc.
 ```
 {{worldCanonText}}
 ```
+
+### World entity categories — established factions, locations, technology
+
+```
+{{worldCategoriesText}}
+```
+
+### World composite reference sheets
+
+```
+{{worldCompositesText}}
+```
+
+The categories and composites above are **established world canon**, not exploratory scratch.
+A faction, location, vehicle, artifact, or interface listed there is grounded
+even when no named-canon record exists for it — the canon trunks above stay
+empty until prose mints entities into them. Do NOT report such an entity as
+invented, un-canonized, or absent from the world bible; check this block before
+flagging any entity as ungrounded.
 {{/hasLinkedWorld}}
 
 ## Full arc

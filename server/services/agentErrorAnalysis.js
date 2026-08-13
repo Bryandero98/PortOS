@@ -189,7 +189,7 @@ export const ERROR_PATTERNS = [
   },
   {
     // Catches both "hit your usage limit" and session limits like "hit your limit · resets 6am"
-    pattern: /(?:hit your (?:usage )?limit|usage.?limit|quota exceeded|Upgrade to Pro|plan.?limit|daily.?limit|session.?limit|\d+-hour limit reached|(?:^|\n)\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$))/i,
+    pattern: /(?:hit your (?:usage )?limit|usage.?limit|quota exceeded|Upgrade to Pro|upgrade your subscription to increase your limits|plan.?limit|daily.?limit|session.?limit|\d+-hour limit reached|(?:^|\n)\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$))/i,
     category: 'usage-limit',
     actionable: true, // Need to switch provider
     // Promote only the distinctive provider-billing idioms (the matched
@@ -205,7 +205,16 @@ export const ERROR_PATTERNS = [
     // same way. They stay distinctive enough that a task's own output does not
     // trip them (unlike the bare `quota exceeded` / `plan limit` alternatives,
     // which remain deliberately unpromoted).
-    structuredMarker: /hit your (?:usage )?limit|(?:usage|session) limit reached|\d+-hour limit reached|Upgrade to Pro|Now using extra usage/i,
+    //
+    // Antigravity's `⚠ <Whose> quota reached. Please upgrade your subscription to
+    // increase your limits. Resets in 3h51m14s.` is the same case: the bare
+    // "quota reached" half is generic, but the upgrade sentence is vendor
+    // wording. WITHOUT it a spent agy subscription matched no alternative at
+    // all, stayed `unknown`, and left agy unbenched — so a series-autopilot run
+    // burned both foundation-judge attempts on the dead provider and reported the
+    // resulting screen scrape as a placeholder rubric (2026-08-13). The banner
+    // itself is caught in-stream by AGY_QUOTA_BANNER in aiToolkit/errorDetection.js.
+    structuredMarker: /hit your (?:usage )?limit|(?:usage|session) limit reached|\d+-hour limit reached|Upgrade to Pro|upgrade your subscription to increase your limits|Now using extra usage/i,
     extract: (match, output) => {
       const timeMatch = output.match(/(?:try again in|resets?)\s+(.+?)(?:\.|·|\n|$)/im);
       const waitTime = timeMatch ? timeMatch[1].trim() : null;

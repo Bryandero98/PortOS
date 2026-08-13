@@ -286,7 +286,7 @@ Repository: {repoPath}
 
 4. Update PLAN.md if present:
    - Remove completed milestones from PLAN.md outright. Do NOT archive to a \`DONE.md\` — that file is retired; \`git log\` and \`.changelog/\` (or per-app equivalent) are the audit trail.
-   - If the repo has a \`.changelog/NEXT.md\` (or similar), log what shipped there in the project's existing prose style.
+   - If the repo maintains a changelog, log what shipped there **following the convention the repo documents** — check its \`CLAUDE.md\` and changelog README first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the project's existing prose style only when no convention is documented.
    - Keep PLAN.md focused on next actions and future work
 
 Commit documentation improvements.`,
@@ -596,21 +596,23 @@ Use \`feat:\` / \`fix:\` / \`refactor:\` / \`chore:\` / etc. (The bracketed-scop
 
 ## Phase 5 — Update PLAN.md and the changelog
 
-**Remove the item from PLAN.md outright.** The audit trail for shipped work lives in \`git log\` and the project's changelog (e.g. \`.changelog/NEXT.md\`) — do NOT archive to a \`DONE.md\`, that file has been retired. Do NOT leave a checked \`- [x]\` behind in PLAN.md.
+**Remove the item from PLAN.md outright.** The audit trail for shipped work lives in \`git log\` and the project's changelog (however that repo keeps it) — do NOT archive to a \`DONE.md\`, that file has been retired. Do NOT leave a checked \`- [x]\` behind in PLAN.md.
 
 1. Remove the picked \`- [ ]\` line from PLAN.md entirely. If removing it leaves a heading empty, leave the heading alone — section curation is \`do-replan\`'s job.
-2. Detect the repo's changelog convention (in this order — pick the first match):
-   - \`.changelog/NEXT.md\` (PortOS-style staged-release file)
+2. Record the shipped item in the repo's changelog, **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) BEFORE writing anything. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge. When such a convention is documented, use it — run the documented command and remember the fragment file it created as \`CHANGELOG_FILE\`.
+
+   Only when no convention is documented, detect a changelog file (in this order — pick the first match) and append an entry there:
+   - \`.changelog/NEXT.md\` (staged-release file)
    - \`CHANGELOG.md\` at repo root with an \`## Unreleased\` or \`## [Unreleased]\` heading
    - any other \`changelog\`-shaped file the repo already maintains (look at recent \`git log\` for examples of where prior entries landed)
 
-   If exactly one is found, append an entry there. Mirror the prose style of recent entries; lead with the slug in brackets so \`git log --grep='<slug>'\` and changelog greps line up:
+   Either way, mirror the prose style of recent entries; lead with the slug in brackets so \`git log --grep='<slug>'\` and changelog greps line up:
 
    \`\`\`markdown
    - **[<slug>] <Title from the PLAN.md line>** — <1–3 sentences on what shipped, key files touched, any caveats>
    \`\`\`
 
-   Remember the exact path you wrote to as \`CHANGELOG_FILE\` — you'll stage it in step 3. If no changelog convention exists, skip the changelog append and leave \`CHANGELOG_FILE\` unset; the commit message + \`git log\` becomes the audit trail.
+   Remember the exact path you wrote to as \`CHANGELOG_FILE\` — you'll stage it in step 3. If the repo has no changelog at all, skip this step and leave \`CHANGELOG_FILE\` unset; the commit message + \`git log\` becomes the audit trail.
 
 3. Stage PLAN.md plus the changelog file you actually edited (if any) and commit. **Do NOT use a glob or a swallow-on-failure fallback** — staging the exact file you edited is what keeps the audit trail honest:
 
@@ -651,7 +653,7 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. \`copilot
      cd {repoPath}
      git worktree remove "\${WORKTREE}"
      \`\`\`
-     Leave the local \`claim/<slug>\` branch and the open PR alone. Do NOT run Phase 7 — that phase assumes a merged PR. PLAN.md and \`.changelog/NEXT.md\` were already updated in Phase 5, and that's fine even though the merge didn't happen: the next \`plan-task\` run will see the slug as in-flight via the open PR and pick a different item.
+     Leave the local \`claim/<slug>\` branch and the open PR alone. Do NOT run Phase 7 — that phase assumes a merged PR. PLAN.md and the changelog were already updated in Phase 5, and that's fine even though the merge didn't happen: the next \`plan-task\` run will see the slug as in-flight via the open PR and pick a different item.
 
    - **\`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\`** — Invoke that CLI in headless mode against the PR diff to critique it, apply the fixes, run tests, and re-push. Iterate until the CLI reports no further blocking findings, then advance to the next configured reviewer (or merge if it's the last). Cap at **3 rounds** here — this inline claim flow is intentionally more conservative than the dedicated CoS-spawned review-loop follow-up (which allows up to 10 iterations per reviewer); after 3 rounds, leave the PR for human follow-up. A configured CLI reviewer whose binary is not on PATH is UNSATISFIED, not clean — that is a broken setup, not a passing review. Do NOT substitute your own self-review and do NOT merge; comment on the PR naming the missing command and stop.
 
@@ -770,7 +772,7 @@ Commit with a conventional message referencing the issue so the trail is grep-ab
 
 This flow ships GitHub issues — it does NOT touch PLAN.md. The audit trail is the merged PR + \`git log\`.
 
-1. If the repo maintains a changelog (\`.changelog/NEXT.md\`, or a \`## Unreleased\` section in \`CHANGELOG.md\`), append a one-line entry mirroring the repo's existing prose style. If no changelog convention exists, skip this — the PR + commit history is the record.
+1. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this — the PR + commit history is the record.
 2. Push the branch: \`git push -u origin "claim/issue-\${NUM}"\`
 3. Open the PR with \`gh pr create\`. Summarize what shipped + a short test plan. **Choose the issue trailer deliberately:** if this PR FULLY satisfies the issue's scope, the body MUST contain \`Closes #\${NUM}\` so the merge auto-closes it. If you deliberately shipped only PART of the issue (a valuable slice, with real scope still remaining), use \`Refs #\${NUM}\` instead (NOT \`Closes\`) and add a \`## Remaining\` section listing what's left — Phase 7 reconciles the issue so it is never stranded.
 
@@ -903,7 +905,7 @@ Commit with a conventional message referencing the issue:
 
 This flow ships GitLab issues — it does NOT touch PLAN.md. The audit trail is the merged MR + \`git log\`.
 
-1. If the repo maintains a changelog (\`.changelog/NEXT.md\`, or a \`## Unreleased\` section in \`CHANGELOG.md\`), append a one-line entry mirroring the repo's existing prose style. If no changelog convention exists, skip this.
+1. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this.
 2. Push the branch: \`git push -u origin "claim/issue-\${NUM}"\`
 3. Open the MR with \`glab mr create --fill --source-branch "claim/issue-\${NUM}" --target-branch "\${DEFAULT_BRANCH}" --yes\`. **Choose the issue trailer deliberately:** if this MR FULLY satisfies the issue's scope, the description MUST contain \`Closes #\${NUM}\` so the merge auto-closes it; if you deliberately shipped only PART of the issue (a valuable slice with real scope remaining), use \`Refs #\${NUM}\` instead (NOT \`Closes\`) and add a \`## Remaining\` section listing what's left — Phase 7 reconciles the issue so it is never stranded. Summarize what shipped + a short test plan (pass \`--description\` if \`--fill\` didn't capture it).
 
@@ -1034,7 +1036,7 @@ Commit with a conventional message referencing the ticket so the trail is grep-a
 
 The audit trail is the merged MR/PR + \`git log\`. Detect the forge from the git origin and use the matching CLI (\`gh\` for GitHub, \`glab\` for GitLab).
 
-1. If the repo maintains a changelog (\`.changelog/NEXT.md\`, or a \`## Unreleased\` section in \`CHANGELOG.md\`), append a one-line entry mirroring the repo's existing prose style. Otherwise skip it.
+1. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. Otherwise skip it.
 2. Push the branch: \`git push -u origin "claim/\${KEY}"\`
 3. Open the MR/PR. Reference the JIRA \`KEY\` in the title and description (there is NO \`Closes\` auto-close for JIRA). Summarize what shipped + a short test plan.
    - GitHub: \`gh pr create --fill --head "claim/\${KEY}"\` (then edit the body to mention \`KEY\` if \`--fill\` didn't).
@@ -1259,9 +1261,10 @@ If no documentation specifies a release flow, fall back to: source=dev, target=m
 
 Using the changelog location discovered in Step 0:
 - Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
+- **Also read the entries not yet folded into that file.** Repos that collect per-branch fragments (e.g. \`.changelog/next/\`, so parallel agents don't conflict on a shared file) keep unreleased entries there until the release collects them, so the staged file alone under-counts the work. Read the fragment directory directly, and if the repo's changelog README documents a preview/collect command, use that to assemble the unreleased notes in one call. Do NOT guess a command name — only run one this repo actually documents.
 - Read the current version: \`node -p "require('{repoPath}/package.json').version"\` or equivalent
 
-Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections). If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections) across the **assembled** unreleased notes — the staged file plus any uncollected fragments. If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
 
 ## Step 2: Verify Clean State
 
@@ -1847,8 +1850,11 @@ Default branch: {defaultBranch}
    If you changed the catalog's exported shape you broke the contract — revert
    that part. Fix any test you legitimately invalidated (e.g. an entry count).
 
-7. Add a one-line entry to \`{repoPath}/.changelog/NEXT.md\` under \`## Changed\`
-   summarizing the catalog refresh.
+7. Log the refresh in the changelog with
+   \`cd {repoPath} && npm run changelog:add -- changed "<one line summarizing the catalog refresh>"\`.
+   That writes a per-branch fragment under \`.changelog/next/\`, which is what keeps
+   parallel agents from conflicting on the shared \`.changelog/NEXT.md\`. Do NOT
+   append to \`.changelog/NEXT.md\` by hand.
 
 ## Output
 

@@ -57,6 +57,7 @@ export * from './goalFeatureMap.js';
 
 // === Generic UI / collection utilities ===
 export * from './a11yKeyboard.js';
+export * from './appIdentity.js';
 export * from './applyManuscriptEdits.js';
 export * from './audioRecorder.js';
 export * from './bareUrl.js';
@@ -134,6 +135,7 @@ export * from './spriteWalkUnlock.js';
 export * from './streakGlyph.js';
 export * from './syncCounts.js';
 export * from './tabNotation.js';
+export * from './terminalDictation.js';
 export * from './terminalTheme.js';
 export * from './threejsExplode.js';
 export * from './threejsRig.js';

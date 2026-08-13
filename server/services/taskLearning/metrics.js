@@ -490,7 +490,17 @@ export async function recordTaskCompletion(agent, task) {
     // counters above never decay; the ring lets LI read a recency-windowed rate so
     // a since-resolved failure burst ages out of the "is work needed" signal
     // instead of depressing it forever. Stamped with the same `lastCompleted` time.
-    appendRecentOutcome(typeMetrics, { success: outcomeSuccess, at: typeMetrics.lastCompleted });
+    // Prefer the runner's measured duration; fall back to the wall split so a
+    // coordinator that never stamped `result.duration` still contributes to the
+    // short-lived-burst detector. Absent both → omit `d` (not 0).
+    const durationMs = Number.isFinite(agent.result?.duration)
+      ? agent.result.duration
+      : telemetry.latency?.executionMs;
+    appendRecentOutcome(typeMetrics, {
+      success: outcomeSuccess,
+      at: typeMetrics.lastCompleted,
+      durationMs: Number.isFinite(durationMs) ? durationMs : null
+    });
 
     // Update model tier metrics
     const tierMetrics = data.byModelTier[modelTier];

@@ -15,14 +15,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Flame, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Flame, RefreshCw } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import Banner from '../components/ui/Banner';
 import BrailleSpinner from '../components/BrailleSpinner';
 import FamilyCard from '../components/quotaBurn/FamilyCard';
 import { NumberField } from '../components/quotaBurn/fields';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { mergeQuotaBurnPatch } from '../lib/quotaBurnPatch';
+import { safeReadJsonSession, safeRemoveSession, safeWriteJsonSession } from '../lib/safeStorage';
 import { coalesce } from '../utils/coalesce';
 import { timeAgo } from '../utils/formatters';
 
@@ -37,6 +39,41 @@ const PENDING_POLL_MS = 4000;
 
 const EMPTY_CATALOG = { jobTypes: [], apps: [], universes: [], imageModes: [] };
 
+// Where a patch the server never accepted waits for the next visit. Session
+// scope, not local: this is a crash buffer for the current tab, and a patch
+// resurrected days later would be applied on top of a config it no longer
+// describes.
+const UNSAVED_PATCH_KEY = 'quotaBurn:unsavedPatch';
+
+// A stash written by an older build (or hand-edited) must not be replayed as a
+// patch — the PUT body is an object, and anything else would 400 the save the
+// restore is supposed to rescue. An object with no keys is equally not a
+// restore: replaying it would PUT nothing and still announce recovered edits.
+const readStashedPatch = () => {
+  const stored = safeReadJsonSession(UNSAVED_PATCH_KEY);
+  const isPatch = stored && typeof stored === 'object' && !Array.isArray(stored) && Object.keys(stored).length > 0;
+  return isPatch ? stored : null;
+};
+
+// Distinguishes a read that THREW from one that resolved with nothing — the
+// two need opposite handling of the error state, and both are falsy.
+const READ_FAILED = Symbol('quota-burn-read-failed');
+
+// A catalog the server answered with, but which is missing the job types the
+// form needs, is indistinguishable from a failed fetch as far as the page is
+// concerned — both leave every dropdown empty — so normalize to the same shape
+// and let the caller decide which message to show. Each list is validated
+// rather than merely defaulted: a spread alone lets an explicit `null` through
+// (a partial payload, an older peer), and every consumer of this object reads
+// `.length` on it.
+const normalizeCatalog = (data) => ({
+  ...EMPTY_CATALOG,
+  ...(data || {}),
+  ...Object.fromEntries(Object.keys(EMPTY_CATALOG).map((key) => [
+    key, Array.isArray(data?.[key]) ? data[key] : [],
+  ])),
+});
+
 export default function QuotaBurn() {
   // Which family is expanded lives in the URL, not local state, so a specific
   // family's plan is linkable and survives a reload.
@@ -47,6 +84,23 @@ export default function QuotaBurn() {
   const [status, setStatus] = useState(null);
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [loading, setLoading] = useState(true);
+  // Distinct from `loading`: a manual re-read is reported ON the button that
+  // asked for it, never by replacing the page with a spinner.
+  const [refreshing, setRefreshing] = useState(false);
+  // `null` = the read has never failed; a string = the message from the read
+  // that did. Collapsing the two into a boolean (or into `!config`) is what
+  // left a failed first load indistinguishable from "the server answered, and
+  // it has no plan" — one is retryable and names a cause, the other doesn't.
+  const [loadError, setLoadError] = useState(null);
+  // Same `null` = never failed / string = the cause convention as `loadError`,
+  // for the SECOND read this page makes. The catalog fetch used to be swallowed
+  // outright, which is what left the preset picker missing, "Add job" disabled,
+  // and every job row's dropdown empty with nothing on screen saying why — and
+  // editing a step against an empty job-type list submits `jobType: ""`, which
+  // the strict PUT schema 400s into a stalled save.
+  const [catalogError, setCatalogError] = useState(null);
+  // Reported ON the retry button, like `refreshing` — the plan stays rendered.
+  const [catalogRetrying, setCatalogRetrying] = useState(false);
   // `unsaved` covers BOTH the debounce window and the in-flight PUT. Every "run"
   // control reads server-side config, so it must stay disabled until the edit
   // has actually landed — otherwise the user changes a model, clicks Burn, and
@@ -72,14 +126,54 @@ export default function QuotaBurn() {
   const retriedRef = useRef(false);
   const persistRef = useRef(null);
   const savingRef = useRef(false);
+  // `save` is re-created every render and the mount effect must not re-run when
+  // it changes, so the restore path reaches it through a ref — same shape as
+  // `persistRef` above.
+  const saveRef = useRef(null);
+  const hasConfigRef = useRef(false);
+  // Pure request-ordering guard for `load()`, distinct from `editSeqRef` above
+  // (which only tracks the user's own edits). The manual Refresh button and the
+  // background poll can both have a `load()` in flight at once — a family scrape
+  // takes 10-20s, longer than the poll interval — so a slower, earlier-started
+  // request can resolve AFTER a faster, later one and silently revert the page
+  // to stale numbers. Only the response to the most recently issued request may
+  // write state.
+  const loadSeqRef = useRef(0);
 
+  // Every failure — first load, manual refresh, or a background poll — is
+  // reported by `loadError` and rendered as this page's ONE banner, so the
+  // caller doesn't need the cause back.
   const load = useCallback(async (refresh = false) => {
     const seq = editSeqRef.current;
-    const data = await api.getQuotaBurn(refresh, { silent: true }).catch(() => null);
+    const requestSeq = ++loadSeqRef.current;
+    // `silent: true` because the failure is rendered by this page's own banner
+    // rather than the request helper's toast — see client/src/CLAUDE.md's
+    // silent-vs-toasting rule.
+    const data = await api.getQuotaBurn(refresh, { silent: true })
+      .catch((err) => {
+        setLoadError(err?.message || 'The request failed.');
+        return READ_FAILED;
+      });
+    // The sentinel — not a falsy check — is what separates the two: a read that
+    // FAILED must keep its message, while a read that merely answered with
+    // nothing has to clear the previous failure, or the banner goes on blaming
+    // a network error for what is now the server returning no plan.
+    if (data === READ_FAILED) return;
+    // A slower, earlier-started `load()` (e.g. a poll issued before a manual
+    // Refresh) resolving after a fresher one must not overwrite what the fresher
+    // response already wrote.
+    if (loadSeqRef.current !== requestSeq) return;
+    // Cleared on ANY successful read, including the polls: the last error no
+    // longer describes the page once the server has answered.
+    setLoadError(null);
     if (!data) return;
     // `status` is derived server-side and never edited here, so it is always
     // safe to adopt; `config` is the form's own state and must not be rewound.
     setStatus(data.status);
+    // Whether the page ever got a plan to merge onto. A stashed patch replayed
+    // onto `null` would render a config with no `families` and crash the plan
+    // section, so the restore waits for a read that actually answered.
+    if (data.config) hasConfigRef.current = true;
     // The counter alone only catches an edit that landed WHILE this GET was in
     // flight. An edit made just BEFORE it was issued leaves the counter
     // unmoved, so the response — which predates the still-debounced PUT —
@@ -90,12 +184,56 @@ export default function QuotaBurn() {
     if (editSeqRef.current === seq && !pendingRef.current && !savingRef.current) setConfig(data.config);
   }, []);
 
+  // The catalog is the page's second read and fails independently of the plan:
+  // the plan can render perfectly while every choice the form offers is empty.
+  // `silent: true` for the same reason as `load` — the failure is rendered by
+  // the family card's own banner, not the request helper's toast.
+  const loadCatalog = useCallback(async () => {
+    let failure = null;
+    const data = await api.getQuotaBurnCatalog({ silent: true })
+      .catch((err) => {
+        failure = err?.message || 'The request failed.';
+        return READ_FAILED;
+      });
+    if (data === READ_FAILED) {
+      setCatalogError(failure);
+      return;
+    }
+    const next = normalizeCatalog(data);
+    setCatalog(next);
+    // A 200 carrying no job types is a different failure with the same symptom
+    // — say so rather than reporting success into an empty form.
+    setCatalogError(next.jobTypes.length ? null : 'The server returned no job types.');
+  }, []);
+
   useEffect(() => {
-    Promise.all([
-      load(),
-      api.getQuotaBurnCatalog({ silent: true }).then(setCatalog).catch(() => {}),
-    ]).finally(() => setLoading(false));
-  }, [load]);
+    let mounted = true;
+    Promise.all([load(), loadCatalog()]).finally(() => {
+      setLoading(false);
+      // Navigating away while the first read was still open must not consume
+      // the stash: the unmount flush has already run, so a patch restored now
+      // would be cleared from storage with no page left to persist it from.
+      if (!mounted) return;
+      // Edits the last visit could not persist. Replaying them through `save`
+      // — rather than only re-rendering them — puts them back on screen AND
+      // re-arms the debounce, so the recovery ends in the server holding them
+      // instead of the user having to retype the field to trigger a PUT.
+      // A failed read leaves the stash alone rather than dropping it — the next
+      // visit that does get a plan is where the recovery belongs.
+      const stashed = hasConfigRef.current ? readStashedPatch() : null;
+      if (!stashed) return;
+      safeRemoveSession(UNSAVED_PATCH_KEY);
+      saveRef.current?.(stashed);
+      toast('Restored Quota Burn edits that could not be saved last time.');
+    });
+    return () => { mounted = false; };
+  }, [load, loadCatalog]);
+
+  const retryCatalog = async () => {
+    setCatalogRetrying(true);
+    await loadCatalog();
+    setCatalogRetrying(false);
+  };
 
   // A cold quota cache comes back as `pending` families rather than holding the
   // response open for a 20s-per-family PTY scrape, so the page renders its plan
@@ -165,7 +303,22 @@ export default function QuotaBurn() {
     // Flush, don't drop. `cancel()` alone discards everything typed in the last
     // debounce window — navigating away 200ms after pasting a work prompt would
     // lose it silently, with nothing on screen having said it was unsaved.
-    if (pendingRef.current) api.saveQuotaBurn(pendingRef.current, { silent: true }).catch(() => {});
+    const patch = pendingRef.current;
+    if (!patch) return;
+    pendingRef.current = null;
+    api.saveQuotaBurn(patch, { silent: true })
+      // The page is gone, so there is no header indicator left to tell the
+      // truth about persistence: swallowing this failure is what turned
+      // "Saving changes…" into permanently-lost edits. Say so, and keep the
+      // patch for the next visit — the toast is transient, the work isn't.
+      // If the user is already back on the page when this rejects, the stash
+      // waits for the visit AFTER this one rather than being applied live; the
+      // toast still names the failure, and holding the edits is strictly better
+      // than the drop this replaces.
+      .catch(() => {
+        safeWriteJsonSession(UNSAVED_PATCH_KEY, mergeQuotaBurnPatch(readStashedPatch(), patch));
+        toast.error('Quota Burn changes could not be saved — they will be restored next time you open the page.');
+      });
   }, [persist]);
 
   const save = (patch) => {
@@ -179,7 +332,22 @@ export default function QuotaBurn() {
     persist();
   };
 
+  saveRef.current = save;
+
   const patchFamily = (familyId, patch) => save({ families: { [familyId]: patch } });
+
+  // Re-arm spends nothing — it only makes a spent `run once` step eligible again
+  // — so it needs no confirm, and the response carries the fresh status so the
+  // badges clear without a second round trip. `config` is deliberately NOT
+  // touched: completions live in their own ledger, and adopting a config here
+  // would fight the debounced save.
+  const rearm = async (familyId, jobId = null) => {
+    setRunning(true);
+    const next = await api.rearmQuotaBurn(familyId, jobId, { silent: true })
+      .catch((err) => { toast.error(`Could not re-arm: ${err.message}`); return null; });
+    if (next?.status) setStatus(next.status);
+    setRunning(false);
+  };
 
   const run = async (body, label) => {
     setRunning(true);
@@ -194,13 +362,78 @@ export default function QuotaBurn() {
     setRunning(false);
   };
 
+  // A re-read must NOT go back through `loading`: that unmounts every family
+  // card, control, and status number behind a full-page spinner for the length
+  // of a 10-20s PTY quota scrape, and then — if the scrape fails — puts the
+  // stale numbers back with nothing having said so. The button carries its own
+  // spinner and the page keeps rendering what it has.
+  const refreshQuota = async (hard = false) => {
+    setRefreshing(true);
+    await load(hard);
+    setRefreshing(false);
+    // No toast: `loadError` is rendered as a banner in BOTH branches below, so
+    // a toast on top of it would report the same failure twice — and a toast
+    // fades while a poll that keeps failing deserves a standing indicator.
+  };
+
   if (loading) return <div className="p-6 text-gray-400"><BrailleSpinner /> Loading burn plan…</div>;
-  if (!config) return <div className="p-6 text-gray-400">Quota burn is unavailable — the server did not return a plan.</div>;
+  // A failed first read used to land here with no cause and no way out but a
+  // browser reload — the header (and its "Refresh quota") returns above.
+  if (!config) {
+    return (
+      <div className="p-6">
+        <Banner
+          tone="error"
+          icon={AlertTriangle}
+          size="md"
+          title="Quota burn is unavailable"
+          actions={(
+            <button
+              type="button"
+              className="text-xs px-3 py-1.5 rounded border border-port-error/40 hover:bg-port-error/10 disabled:opacity-40"
+              disabled={refreshing}
+              onClick={() => refreshQuota()}
+            >
+              {refreshing ? 'Retrying…' : 'Retry'}
+            </button>
+          )}
+        >
+          <p className="mt-0.5 break-words">{loadError || 'The server did not return a plan.'}</p>
+        </Banner>
+      </div>
+    );
+  }
 
   const lastRun = status?.runs?.[0];
 
   return (
     <div className="space-y-4">
+      {/* A refresh or a poll that failed with a plan already on screen used to
+          change nothing at all — the numbers stayed put and a read that never
+          landed looked exactly like one that landed unchanged. `warning`, not
+          `error`: the plan below is still rendered and still usable, and this
+          clears itself on the next successful read (including a poll), so a
+          transient blip should not read as a page-blocking failure. */}
+      {loadError && (
+        <Banner
+          tone="warning"
+          icon={AlertTriangle}
+          role="status"
+          aria-live="polite"
+          actions={(
+            <button
+              type="button"
+              className="text-xs px-3 py-1.5 rounded border border-port-warning/40 hover:bg-port-warning/10 disabled:opacity-40"
+              disabled={refreshing}
+              onClick={() => refreshQuota()}
+            >
+              {refreshing ? 'Retrying…' : 'Retry'}
+            </button>
+          )}
+        >
+          <p className="break-words">Quota stats could not be refreshed — showing the last values read. {loadError}</p>
+        </Banner>
+      )}
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold text-white flex items-center gap-2"><Flame size={20} className="text-orange-400" /> Quota Burn</h1>
         {/* There is no Save button on this page, and nothing else said so — the
@@ -216,10 +449,12 @@ export default function QuotaBurn() {
         </span>
         <button
           type="button"
-          className="inline-flex items-center gap-1 text-xs text-gray-300 hover:text-white"
-          onClick={() => { setLoading(true); load(true).finally(() => setLoading(false)); }}
+          className="inline-flex items-center gap-1 text-xs text-gray-300 hover:text-white disabled:opacity-40"
+          disabled={refreshing}
+          onClick={() => refreshQuota(true)}
         >
-          <RefreshCw size={13} /> Refresh quota
+          <RefreshCw size={13} className={refreshing ? 'animate-spin' : undefined} aria-hidden="true" />
+          {refreshing ? 'Refreshing…' : 'Refresh quota'}
         </button>
         <button
           type="button"
@@ -260,7 +495,9 @@ export default function QuotaBurn() {
         <p className="text-xs text-gray-400">
           One loop for this install, but each provider family burns independently: every family whose window is inside its reset
           horizon, above its reserve, and under its dispatch cap (unlimited by default) runs the first job in its plan that has work waiting — one job
-          per family per cycle. Turning this on is explicit consent to spend those subscriptions on a schedule.
+          per family per cycle. A plan is a rotation: steps repeat lap after lap until a gate closes, unless you mark one
+          “Run once” — one-shot work then drops out after its dispatch until you re-arm it. Turning this on is explicit
+          consent to spend those subscriptions on a schedule.
         </p>
         {lastRun && (
           <p className="text-[11px] text-gray-500">
@@ -277,12 +514,16 @@ export default function QuotaBurn() {
             config={family}
             status={(status?.families || []).find((row) => row.id === familyId)}
             catalog={catalog}
+            catalogError={catalogError}
+            catalogRetrying={catalogRetrying}
+            onRetryCatalog={retryCatalog}
             expanded={expanded === familyId}
             actionsBusy={unsaved || running}
             onToggleExpand={(id) => navigate(expanded === id ? '/devtools/quota-burn' : `/devtools/quota-burn/${id}`)}
             onPatch={(patch) => patchFamily(familyId, patch)}
             onRunFamily={(id) => run({ familyId: id }, 'Burn')}
             onRunJob={(id, job) => run({ familyId: id, jobId: job.id, force: true }, 'Job run')}
+            onRearm={rearm}
           />
         ))}
       </section>

@@ -53,6 +53,7 @@ import {
   computeDeliveryThrottle,
   formatDeliveryThrottleGuidance,
   renderCosMetricsSource,
+  renderChurnSignals,
   COS_METRICS_MAX_CHARS,
   computeProposalExecutionAwareness,
   computeCrossReferenceAnalysis,
@@ -1418,6 +1419,29 @@ describe('buildPrompt', () => {
     expect(withGuidance).toContain('completion rates for THIS install'); // honest framing (codex P1)
     // rendered under its dedicated heading, never as a generic "### scopeGuidance" dump
     expect(withGuidance).not.toContain('### scopeGuidance');
+  });
+
+  it('frames PortOS churn metrics as local evidence that needs a concrete fix', () => {
+    const source = 'Instance-local CoS churn signals\n- self-improve:branch-reconcile: signal=short-lived-burst';
+    const portos = buildPrompt({
+      app,
+      isPortos: true,
+      config: { allowedScopes: ['loop-meta'], rules: '' },
+      sources: { churnSignals: source }
+    });
+    expect(portos).toContain('### liChurnSignals');
+    expect(portos).toContain('not an automatic filing instruction');
+    expect(portos).toContain('concrete fix');
+    expect(portos).not.toContain('### churnSignals');
+
+    const managed = buildPrompt({
+      app,
+      isPortos: false,
+      config: { allowedScopes: ['app-improvement'], rules: '' },
+      sources: { churnSignals: source }
+    });
+    expect(managed).not.toContain('### liChurnSignals');
+    expect(managed).not.toContain(source);
   });
 
   it('injects the per-proposal-domain execution block only when a report is passed (#2765)', () => {
@@ -3136,6 +3160,77 @@ describe('gatherSources cosMetrics windowed rate (issue #2460)', () => {
     const out = await gatherSources({ repoPath: dir }, { sources: { cosMetrics: true } }, { cosPath: dir });
     expect(out.cosMetricsByType).toEqual({});
     expect(out.cosMetrics).toBeUndefined();
+  });
+
+  it('harvests 24h short-lived run counts next to the lifetime duration', async () => {
+    const now = Date.now();
+    await writeLearning({
+      byTaskType: {
+        'self-improve:branch-reconcile': {
+          completed: 24, succeeded: 24, failed: 0, successRate: 100, avgDurationMs: 90_000,
+          recentOutcomes: Array.from({ length: 12 }, (_, i) => ({
+            t: new Date(now - i * 10 * 60 * 1000).toISOString(),
+            s: true,
+            d: 80_000
+          }))
+        }
+      }
+    });
+    const out = await gatherSources({ repoPath: dir }, { sources: { cosMetrics: true } }, { cosPath: dir });
+    const parsed = JSON.parse(out.cosMetrics);
+    expect(parsed['self-improve:branch-reconcile'].recent24hCompleted).toBe(12);
+    expect(parsed['self-improve:branch-reconcile'].recent24hShortLived).toBe(12);
+    expect(parsed['self-improve:branch-reconcile'].recent24hMedianDurationMs).toBe(80_000);
+  });
+
+  it('surfaces an active churn signal to PortOS LI as local evidence, not tracker work', async () => {
+    const now = Date.now();
+    await writeLearning({
+      byTaskType: {
+        'self-improve:branch-reconcile': {
+          completed: 12, succeeded: 12, failed: 0, successRate: 100, avgDurationMs: 80_000,
+          recentOutcomes: Array.from({ length: 12 }, (_, i) => ({
+            t: new Date(now - i * 10 * 60 * 1000).toISOString(),
+            s: true,
+            d: 80_000
+          }))
+        }
+      }
+    });
+    const portos = await gatherSources(
+      { repoPath: dir },
+      { sources: { cosMetrics: true } },
+      { cosPath: dir, isPortos: true }
+    );
+    const parsed = JSON.parse(portos.cosMetrics);
+    expect(parsed['self-improve:branch-reconcile'].churn).toMatchObject({
+      signal: 'short-lived-burst',
+      windowCompleted: 12,
+      shortLivedCount: 12,
+      shortLivedSampleSize: 12
+    });
+    expect(portos.churnSignals).toContain('Instance-local CoS churn signals');
+    expect(portos.churnSignals).toContain('concrete planned fix');
+
+    const managed = await gatherSources(
+      { repoPath: dir },
+      { sources: { cosMetrics: true } },
+      { cosPath: dir, isPortos: false }
+    );
+    expect(managed.churnSignals).toBeUndefined();
+    expect(JSON.parse(managed.cosMetrics)['self-improve:branch-reconcile'].churn).toBeUndefined();
+  });
+
+  it('renders only active churn entries and caps the signal list', () => {
+    const rendered = renderChurnSignals({
+      calm: { lifetimeCompleted: 2 },
+      noisy: { churn: { signal: 'short-lived-burst', windowCompleted: 8, windowMs: 1000, shortLivedCount: 8, shortLivedSampleSize: 8, medianDurationMs: 20, medianGapMs: 30 } },
+      noisy2: { churn: { signal: 'rapid-succession', windowCompleted: 9, windowMs: 1000, shortLivedCount: 0, shortLivedSampleSize: 0, medianDurationMs: null, medianGapMs: 30 } }
+    }, { maxItems: 1 });
+    expect(rendered).toContain('noisy');
+    expect(rendered).not.toContain('noisy2');
+    expect(rendered).not.toContain('calm');
+    expect(rendered).toContain('additional churn signal(s) omitted');
   });
 
   it('does not emit scopeGuidance when cosMetrics is off (#2760)', async () => {

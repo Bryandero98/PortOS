@@ -290,6 +290,14 @@ export const pipelineEditorialChecksSettingsSchema = z.object({
   // this opt-in permits sufficiently sampled recommendations to become the
   // run's soft provider/model/effort defaults. Explicit run/stage pins win.
   autoSelectModels: z.boolean().optional(),
+  // Series Autopilot: run the whole pipeline on ONE provider/model/effort by
+  // ignoring the per-stage pins set on the Prompts page. Defaults OFF (opt-in),
+  // and persistable unlike unlockForRun — it re-routes spend but mutates
+  // nothing, and an unattended scheduled run is exactly where "always use my
+  // one provider" belongs. Optional + additive so older peers fall through to
+  // off. See seriesAutopilot/config.js#resolveAutopilotOverrideStagePins and
+  // lib/stagePinPolicy.js.
+  overrideStagePins: z.boolean().optional(),
 }).strict();
 
 // Cursor-context payload for the CD-bridge suggest route — identical shape to

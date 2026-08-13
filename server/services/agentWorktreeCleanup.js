@@ -734,7 +734,13 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
   }
   if (sourceMeta.effort) providerPins.effort = sourceMeta.effort;
 
-  const appId = originalTask?.metadata?.app || null;
+  // Routing key, and the one field here that turns a serialization slip into a
+  // dead PR: a follow-up whose `app` doesn't resolve is BLOCKED by
+  // prepareAgentWorkspace before it starts, so the PR it exists to land sits
+  // open forever. Left undefined (not `null`) for a PortOS-local task —
+  // generateTasksMarkdown drops nullish metadata, so the key never reaches the
+  // task file to be re-read as an app literally named "null".
+  const appId = originalTask?.metadata?.app;
   const sourceTaskDesc = originalTask?.description || 'CoS automated task';
   const firstLine = sourceTaskDesc.split(/[\r\n]/).find(l => l.trim()) || sourceTaskDesc;
   const followUpTitle = `[${kind.title}] ${firstLine.trim().substring(0, 80)} (${prUrl})`;

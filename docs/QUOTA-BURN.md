@@ -19,8 +19,8 @@ Every `checkIntervalMinutes` (default 30, bounded 5–720) the runner:
    have headroom above `reservePercent` in *every* window on the card, and that have
    not spent `maxDispatchesPerWindow` for that window (`-1`, the default, means
    no cap — see below). Ties break on `priority` (lower wins).
-4. Runs the **first enabled job in that family's ordered plan that reports
-   pending work** — at most one dispatch per cycle.
+4. Runs the **first enabled, unspent job in that family's ordered plan that
+   reports pending work** — at most one dispatch per cycle.
 5. Charges the window in `data/cos/quota-burn-dispatches.json` and appends the
    outcome (including skips, with reasons) to `data/cos/quota-burn-runs.json`.
 
@@ -118,6 +118,63 @@ its own type, optional model/provider pin, and type-specific params.
 | `agent-prompt` | Queues a CoS agent in a named managed app with a custom prompt. Visible in the CoS queue and Active Agents like any other task. |
 | `universe-bible-images` | **Programmatic** — no agent. Enqueues renders for universe bible entries whose `imageRefs[]` is empty. Render backend defaults to the burning family's own image mode, so a codex burn spends codex's image quota. |
 
+### Repeating vs one-shot work (`runOnce`)
+
+A plan is a **rotation**: the walk resumes after the family's last dispatch
+(`rotatePlanAfter`), so an N-job plan cycles through all N and then starts the
+next lap, spending the window until a gate closes. That is right for standing
+work — an audit dimension is worth re-running as the code moves — and wrong for
+work that only needs doing once, which was simply re-done every lap.
+
+Each job therefore carries a **`runOnce`** flag (default `false`, so every plan
+written before it keeps repeating):
+
+| `runOnce` | Behavior |
+| --- | --- |
+| `false` | Standing work. Repeats every lap while the window still has quota. |
+| `true` | One-shot. Records its dispatch and drops out of the rotation until re-armed. |
+
+A whole plan of `runOnce` steps is how "run this series once" is expressed: the
+completion continuation walks it one agent at a time and it stops of its own
+accord instead of looping.
+
+- **The ledger is `data/cos/quota-burn-completions.json`**, `<familyId>:<jobId>`
+  → the ISO instant it ran, capped (newest kept) at **twice** the keys a
+  maxed-out plan can hold — derived from `QUOTA_BURN_FAMILIES` and
+  `jobsPerFamily.max`, so pruning can only evict a job already deleted from the
+  plan, never a live one. It is a
+  separate file rather than a flag on the job because a config PUT **replaces**
+  a family's `jobs` array — that is how every reorder and edit saves — so a flag
+  on the job would be reset by an unrelated edit, and by the client's optimistic
+  copy of the plan, which never sees the runner's write. The run log can't answer
+  it either: it is a capped UI feed, so a job that ran last month has aged out.
+- **Recorded only on a real dispatch.** A job that declines (`dispatched: false`)
+  is not spent — a misconfigured step must stay retryable.
+- **A forced ▶ run bypasses the gate AND still records.** `charge: false` is about
+  the *window's automatic budget*; `runOnce` is a statement about the *work*, and
+  the work just happened however it was triggered.
+- **An unreadable ledger fails CLOSED** — `getQuotaBurnCompletions` returns
+  `null` (not `{}`) for a failed read, so the cycle reports `run-once ledger
+  unreadable` rather than treating "nothing has run" as fact and re-dispatching
+  every one-shot job. `writeLedger` refuses to write over an unread ledger for
+  the same reason: an empty write erases the completions that survived. Same
+  posture, and the same `readJSONFileStrict` shape, as `quotaBurnDenials.js`.
+- **A finished plan stops costing a quota scrape.** `familyHasRunnableJobs(family,
+  completions)` returns false once every enabled job is a spent one-shot, so the
+  cycle returns before the multi-second per-family TUI scrape. The page reports
+  it as `every enabled job has already run once` (`PLAN_COMPLETE_SKIP_REASON`,
+  shared with the runner's pre-scrape early return so one condition can't be
+  worded two ways), kept distinct from `no enabled jobs configured` — a finished
+  plan wants Re-arm, an unset one wants a job added. It is a **second named
+  predicate** rather than an optional argument on `familyIsConfigured`: array
+  callbacks pass the index as the second argument, so an overloaded arity turns
+  `some(familyIsConfigured)` silently wrong.
+- **Re-arm** puts steps back in the rotation: the ↺ on a job row for one step,
+  **Re-arm all** on the plan header for the family. `POST /api/quota-burn/rearm`
+  with `{ familyId, jobId? }`; a `familyId` is required, since a bare "clear
+  everything" would silently re-queue every one-shot job on the install. It
+  dispatches nothing — the next cycle still faces every gate.
+
 Adding a job type is three edits: a `QUOTA_BURN_JOB_TYPE` entry + catalog row in
 `server/lib/quotaBurnConfig.js`, a module in `server/services/quotaBurnJobs/`, and
 one line in that directory's `JOB_MODULES`. The config page builds its form from
@@ -210,7 +267,7 @@ request), and the catalog descriptors the client renders as `min`/`max`.
 
 ## Storage
 
-Five files under `data/cos/`, all machine-local and intentionally **not federated**: the plan (`quota-burn.json`), the per-window dispatch ledger (`quota-burn-dispatches.json`), the run log (`quota-burn-runs.json`), the in-flight set (`quota-burn-inflight.json` — entries a job enqueued whose renders have not landed yet, so the next cycle does not re-queue them; 6-hour TTL), and the denial ledger (`quota-burn-denials.json` — per-family blocks from an observed provider refusal, cleared by the next successful burn or a 5-hour TTL). They are not federated: quota belongs to a
+Six files under `data/cos/`, all machine-local and intentionally **not federated**: the plan (`quota-burn.json`), the per-window dispatch ledger (`quota-burn-dispatches.json`), the run log (`quota-burn-runs.json`), the in-flight set (`quota-burn-inflight.json` — entries a job enqueued whose renders have not landed yet, so the next cycle does not re-queue them; 6-hour TTL), the denial ledger (`quota-burn-denials.json` — per-family blocks from an observed provider refusal, cleared by the next successful burn or a 5-hour TTL), and the `run once` completion ledger (`quota-burn-completions.json` — which one-shot steps have had their dispatch, cleared by Re-arm). They are not federated: quota belongs to a
 particular machine and provider account, and the "which managed app" targets
 differ per machine.
 
@@ -232,6 +289,7 @@ folds those overrides into the single plan (each app's family prompt becomes an
 | `server/lib/quotaWindows.js` | Classifies a window by period — target (broadest) vs limiting (narrowest) |
 | `server/services/quotaBurnStore.js` | `data/cos/quota-burn.json` + the run log |
 | `server/services/quotaBurn.js` | `evaluateFamily` — the one gate ladder both selection and the page's skip reasons read — plus the dispatch ledger |
+| `server/services/quotaBurnCompletions.js` | The `run once` completion ledger and its re-arm |
 | `server/services/quotaBurnDenials.js` | The observed-refusal ledger and its `agent:completed` subscriber |
 | `server/services/quotaBurnJobs/` | The job registry and its modules |
 | `server/services/quotaBurnRunner.js` | The loop, the cycle, and the status feed |

@@ -57,7 +57,7 @@ it('names the effective provider/model and the cos budget cap in the consent cop
 it('enable toggle is OFF by default and enabling persists enabled:true', async () => {
   getSettings.mockResolvedValue(settingsWith([{ seriesId: 's1', enabled: false, cron: '0 3 * * *' }]));
   render(<SeriesAutopilotSchedule series={SERIES} {...providerProps()} />);
-  const toggle = await screen.findByRole('checkbox');
+  const toggle = await screen.findByRole('checkbox', { name: /Enable scheduled autopilot/ });
   expect(toggle).not.toBeChecked();
   fireEvent.click(toggle);
   await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalled());
@@ -74,7 +74,7 @@ it('preserves OTHER series schedules when saving this one', async () => {
     { seriesId: 's1', enabled: false, cron: '0 3 * * *' },
   ]));
   render(<SeriesAutopilotSchedule series={SERIES} {...providerProps()} />);
-  const toggle = await screen.findByRole('checkbox');
+  const toggle = await screen.findByRole('checkbox', { name: /Enable scheduled autopilot/ });
   fireEvent.click(toggle);
   await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalled());
   const ids = patchSettingsSlice.mock.calls[0][1].schedules.map((s) => s.seriesId);

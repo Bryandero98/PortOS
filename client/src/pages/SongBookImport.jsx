@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { toVoicingInstrument } from '../lib/chordShapes.js';
 import { useNavigate, Link } from 'react-router';
-import { ListMusic, ArrowLeft, ClipboardPaste, Eraser, Wand2, Globe, FileText, Save } from 'lucide-react';
+import { ListMusic, ArrowLeft, ClipboardPaste, Eraser, Wand2, Globe, FileText, Save, AlertTriangle, RotateCw } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';
 import TabPills from '../components/ui/TabPills';
@@ -59,6 +59,8 @@ const IMPORT_ERROR_MESSAGES = {
   SONG_IMPORT_EMPTY: 'No tab or chord content found on that page — try copy/pasting the tab instead.',
 };
 
+const importErrorMessage = (err) => IMPORT_ERROR_MESSAGES[err?.code] || err?.message || 'Import failed';
+
 const TABS = [
   { id: 'paste', label: 'Paste', icon: FileText },
   { id: 'url', label: 'From URL', icon: Globe },
@@ -77,6 +79,9 @@ export default function SongBookImport() {
   // URL tab state
   const [url, setUrl] = useState('');
   const [fetched, setFetched] = useState(null); // server draft: { title, artist, content, sourceUrl }
+  // null = no failure. A failed fetch keeps its message on screen (the toast is
+  // transient) so the URL still sitting in the input has visible context.
+  const [fetchError, setFetchError] = useState(null);
 
   // Shared draft form
   const [title, setTitle] = useState('');
@@ -111,17 +116,39 @@ export default function SongBookImport() {
     applyMetaDefaults(parseTabSheet(normalizePastedTab(text)).meta);
   }, [applyMetaDefaults]);
 
+  // The input stays editable while a fetch is in flight, so the request that
+  // resolves may no longer be the one the form is showing. Refs (not the stale
+  // closure values) say what's on screen when the promise settles.
+  const urlRef = useRef(url);
+  urlRef.current = url;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+
   // Error mapping lives in the .catch alone — it swallows every rejection, so
   // a useAsyncAction errorMessage layer could never fire (single toast layer).
   const [fetchUrl, fetching] = useAsyncAction(async () => {
-    const normalizedUrl = normalizeUrl(url);
+    const submittedUrl = url;
+    const normalizedUrl = normalizeUrl(submittedUrl);
     if (!normalizedUrl || !isUrl(normalizedUrl)) { toast.error('Enter a valid URL'); return null; }
+    // A result for a URL the user has since edited away from — or for a tab
+    // they've left — must not write itself over what's on screen now.
+    const isCurrent = () => urlRef.current === submittedUrl && tabRef.current === 'url';
     const data = await importSongFromUrl(normalizedUrl, { silent: true }).catch((err) => {
-      toast.error(IMPORT_ERROR_MESSAGES[err?.code] || err?.message || 'Import failed');
+      // The toast is gated too — a failure for a URL the user has already typed
+      // past is not news about the form they're looking at.
+      if (!isCurrent()) return null;
+      const message = importErrorMessage(err);
+      toast.error(message);
+      // Drop any earlier draft: leaving the previous song previewed under a
+      // failed URL is exactly the stale-form confusion this guards against.
+      setFetched(null);
+      applyMetaDefaults({});
+      setFetchError(message);
       return null;
     });
     const draft = data?.draft;
-    if (!draft) return null;
+    if (!draft || !isCurrent()) return null;
+    setFetchError(null);
     setFetched(draft);
     applyMetaDefaults(draft);
     return draft;
@@ -161,6 +188,14 @@ export default function SongBookImport() {
     return detectFormat(contentText);
   }, [tab, fetchedFormat, contentText, instrument]);
   const previewIsDrum = contentFormat === DRUM_FORMAT;
+
+  // Why Save is disabled — otherwise a failed URL import surfaces only as the
+  // unrelated "Nothing to save" toast once the user clicks.
+  const saveHint = contentText.trim()
+    ? null
+    : (tab === 'url' && fetchError
+      ? 'That URL import failed — retry it above, or switch to Paste and paste the tab.'
+      : 'Paste or fetch a tab first — there\'s nothing to save yet.');
 
   const [save, saving] = useAsyncAction(async () => {
     const name = title.trim();
@@ -251,7 +286,7 @@ export default function SongBookImport() {
                 id="import-url"
                 type="text"
                 value={url}
-                onChange={(e) => setUrl(e.target.value)}
+                onChange={(e) => { setUrl(e.target.value); setFetchError(null); }}
                 placeholder="https://example.com/tabs/example-song"
                 className={inputClass}
               />
@@ -265,6 +300,26 @@ export default function SongBookImport() {
               {fetching ? 'Fetching…' : 'Fetch'}
             </button>
           </form>
+          {fetchError && (
+            <div
+              role="alert"
+              className="mt-2 flex flex-col sm:flex-row sm:items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+            >
+              <AlertTriangle size={14} className="shrink-0" />
+              <span className="flex-1">
+                Import failed — {fetchError} Nothing was fetched, so there&apos;s nothing to save yet.
+              </span>
+              <button
+                type="button"
+                onClick={() => fetchUrl()}
+                disabled={fetching || !isUrl(normalizeUrl(url) || '')}
+                className={`${btnClass} shrink-0`}
+              >
+                <RotateCw size={13} />
+                Retry
+              </button>
+            </div>
+          )}
           {fetched && (
             <p className="text-xs text-gray-500 mt-2">
               Fetched <span className="text-gray-300">{fetched.title || 'untitled'}</span>
@@ -325,7 +380,7 @@ export default function SongBookImport() {
           <label htmlFor="import-tags" className={labelClass}>Tags (comma-separated)</label>
           <input id="import-tags" type="text" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="e.g. campfire" className={inputClass} />
         </div>
-        <div className="sm:col-span-2 lg:col-span-5">
+        <div className="sm:col-span-2 lg:col-span-5 flex flex-col sm:flex-row sm:items-center gap-2">
           <button
             type="submit"
             disabled={saving || !contentText.trim()}
@@ -334,6 +389,7 @@ export default function SongBookImport() {
             <Save size={15} />
             {saving ? 'Saving…' : 'Save song'}
           </button>
+          {saveHint && <span className="text-xs text-gray-400">{saveHint}</span>}
         </div>
       </form>
       </div>

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import PromptManager from './PromptManager';
+import toast from '../components/ui/Toast';
 
 // The Stages pane is the subject: 100+ rows with no way to reach one (#3284).
 // Only the list-shaping API calls need real fixtures; everything else resolves
@@ -10,6 +11,12 @@ const getPrompts = vi.fn();
 const getPrompt = vi.fn();
 const getPromptUsage = vi.fn();
 const deletePrompt = vi.fn();
+const getPromptVariables = vi.fn();
+const deletePromptVariable = vi.fn();
+const getJobSkills = vi.fn(() => Promise.resolve({ skills: [] }));
+const getJobSkill = vi.fn(() => Promise.resolve({}));
+const saveJobSkill = vi.fn();
+const previewJobSkill = vi.fn();
 
 vi.mock('../services/apiPrompts', () => ({
   getPrompts: (...a) => getPrompts(...a),
@@ -19,14 +26,14 @@ vi.mock('../services/apiPrompts', () => ({
   deletePrompt: (...a) => deletePrompt(...a),
   previewPrompt: vi.fn(),
   getPromptUsage: (...a) => getPromptUsage(...a),
-  getPromptVariables: vi.fn(() => Promise.resolve({ variables: {} })),
+  getPromptVariables: (...a) => getPromptVariables(...a),
   createPromptVariable: vi.fn(),
   savePromptVariable: vi.fn(),
-  deletePromptVariable: vi.fn(),
-  getJobSkills: vi.fn(() => Promise.resolve({ skills: [] })),
-  getJobSkill: vi.fn(),
-  saveJobSkill: vi.fn(),
-  previewJobSkill: vi.fn(),
+  deletePromptVariable: (...a) => deletePromptVariable(...a),
+  getJobSkills: (...a) => getJobSkills(...a),
+  getJobSkill: (...a) => getJobSkill(...a),
+  saveJobSkill: (...a) => saveJobSkill(...a),
+  previewJobSkill: (...a) => previewJobSkill(...a),
 }));
 
 vi.mock('../services/apiProviders', () => ({
@@ -48,11 +55,27 @@ const STAGES = {
 // badges and filters exactly what GET /api/prompts names in `systemStages`.
 const SYSTEM_STAGES = ['brain-classifier'];
 
+// Surfaces the live search string so URL-driven selection can be asserted on.
+const LocationProbe = () => {
+  const { search } = useLocation();
+  return <div data-testid="location-search">{search}</div>;
+};
+
 const renderPage = (entry = '/prompts') => render(
   <MemoryRouter initialEntries={[entry]}>
     <PromptManager />
+    <LocationProbe />
   </MemoryRouter>,
 );
+
+const currentSearch = () => screen.getByTestId('location-search').textContent;
+
+// File-level defaults so every describe mounts against the same empty-ish page;
+// individual suites override only what they assert on.
+beforeEach(() => {
+  getPromptVariables.mockReset().mockResolvedValue({ variables: {} });
+  deletePromptVariable.mockReset().mockResolvedValue({ success: true });
+});
 
 const searchBox = () => screen.getByLabelText('Search prompt stages');
 const groupHeader = (label) => screen.getByRole('button', { name: new RegExp(`^${label}, \\d+ stages?$`, 'i') });
@@ -353,5 +376,401 @@ describe('PromptManager delete demotion', () => {
     await waitFor(() => expect(deletePrompt).toHaveBeenCalledWith(
       'pipeline-comic-script', { force: false }, { silent: true },
     ));
+  });
+});
+
+// #3935: the row trash icon used to fire DELETE on the first click, so a
+// mis-click on a 14px target destroyed the variable with no undo.
+describe('PromptManager variable deletion', () => {
+  const VARIABLES = {
+    'tone-guide': { name: 'Tone Guide', category: 'style', content: 'stay wry' },
+    'house-style': { name: 'House Style', category: 'style', content: 'oxford comma' },
+  };
+
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getPromptVariables.mockResolvedValue({ variables: VARIABLES });
+  });
+
+  const openVariables = async () => {
+    renderPage('/prompts?tab=variables');
+    return screen.findByText('Tone Guide');
+  };
+
+  it('arms an inline confirm instead of deleting on the trash click', async () => {
+    await openVariables();
+
+    fireEvent.click(screen.getByLabelText('Delete variable Tone Guide'));
+
+    expect(deletePromptVariable).not.toHaveBeenCalled();
+    expect(screen.getByText('Delete "Tone Guide"?')).toBeTruthy();
+    // Only the armed row confirms; its sibling stays a normal row.
+    expect(screen.getByLabelText('Delete variable House Style')).toBeTruthy();
+  });
+
+  it('deletes only after the inline confirm', async () => {
+    await openVariables();
+
+    fireEvent.click(screen.getByLabelText('Delete variable Tone Guide'));
+    fireEvent.click(within(screen.getByLabelText('Confirm delete variable Tone Guide'))
+      .getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => expect(deletePromptVariable).toHaveBeenCalledWith('tone-guide', { silent: true }));
+  });
+
+  it('leaves the variable intact when the confirm is cancelled', async () => {
+    await openVariables();
+
+    fireEvent.click(screen.getByLabelText('Delete variable Tone Guide'));
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(deletePromptVariable).not.toHaveBeenCalled();
+    expect(screen.queryByText('Delete "Tone Guide"?')).toBeNull();
+    expect(screen.getByLabelText('Delete variable Tone Guide')).toBeTruthy();
+  });
+
+  it('arms one row at a time', async () => {
+    await openVariables();
+
+    fireEvent.click(screen.getByLabelText('Delete variable Tone Guide'));
+    fireEvent.click(screen.getByLabelText('Delete variable House Style'));
+
+    expect(screen.queryByText('Delete "Tone Guide"?')).toBeNull();
+    expect(screen.getByText('Delete "House Style"?')).toBeTruthy();
+  });
+});
+
+// Job skill selection lives in `?skill=` so the open editor is deep-linkable and
+// survives a reload or a tab round-trip (#3936).
+describe('PromptManager job skill selection', () => {
+  const SKILLS = [
+    { name: 'code-fixer', jobId: 'job-code-fixer', hasTemplate: true },
+    { name: 'doc-writer', jobId: 'job-doc-writer', hasTemplate: false },
+  ];
+
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getJobSkills.mockReset().mockResolvedValue({ skills: SKILLS });
+    getJobSkill.mockReset().mockImplementation((name) => Promise.resolve({
+      content: `# ${name} template`,
+      jobName: `Job ${name}`,
+      jobId: `job-${name}`,
+      category: 'maintenance',
+      interval: 'daily',
+    }));
+  });
+
+  it('writes the picked skill to the URL instead of local state', async () => {
+    renderPage('/prompts?tab=job-skills');
+    await screen.findByText('code-fixer');
+
+    fireEvent.click(screen.getByText('code-fixer'));
+
+    await waitFor(() => expect(currentSearch()).toContain('skill=code-fixer'));
+    expect(currentSearch()).toContain('tab=job-skills');
+    await screen.findByText('Job code-fixer');
+  });
+
+  it('loads the skill named by a deep link on mount', async () => {
+    renderPage('/prompts?tab=job-skills&skill=doc-writer');
+
+    await screen.findByText('Job doc-writer');
+    expect(getJobSkill).toHaveBeenCalledWith('doc-writer', { silent: true });
+    expect(screen.getByDisplayValue('# doc-writer template')).toBeTruthy();
+  });
+
+  it('keeps the open skill editor across a tab round-trip', async () => {
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+
+    fireEvent.click(screen.getByRole('button', { name: /variables/i }));
+    fireEvent.click(screen.getByRole('button', { name: /job skills/i }));
+
+    await screen.findByText('Job code-fixer');
+    expect(currentSearch()).toContain('skill=code-fixer');
+  });
+
+  it('does not leave the previous skill rendered when the next fetch fails', async () => {
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+
+    getJobSkill.mockRejectedValueOnce(new Error('gone'));
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    // The heading falls back to the raw param, and the editor is empty — never
+    // the previous skill's template under the new skill's name.
+    await screen.findByText('doc-writer', { selector: 'h3' });
+    expect(screen.queryByDisplayValue('# code-fixer template')).toBeNull();
+    expect(screen.queryByText('Job code-fixer')).toBeNull();
+  });
+
+  it('shows the placeholder when no skill is named in the URL', async () => {
+    renderPage('/prompts?tab=job-skills');
+    await screen.findByText('code-fixer');
+
+    expect(getJobSkill).not.toHaveBeenCalled();
+    expect(screen.getByText('Select a job skill to edit its prompt template')).toBeTruthy();
+  });
+});
+
+// A failed PUT used to be swallowed entirely: the Save button re-enabled and the
+// user believed the edit had persisted (#3937).
+describe('PromptManager job skill save feedback', () => {
+  const SKILLS = [{ name: 'code-fixer', jobId: 'job-code-fixer', hasTemplate: true }];
+
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getJobSkills.mockReset().mockResolvedValue({ skills: SKILLS });
+    getJobSkill.mockReset().mockResolvedValue({
+      content: '# code-fixer template', jobName: 'Job code-fixer', jobId: 'job-code-fixer',
+    });
+    saveJobSkill.mockReset().mockResolvedValue({ success: true });
+    previewJobSkill.mockReset().mockResolvedValue({ preview: 'rendered' });
+    toast.error.mockReset();
+    toast.success.mockReset();
+  });
+
+  const openEditor = async () => {
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+  };
+
+  it('toasts the failure message when the save rejects', async () => {
+    saveJobSkill.mockRejectedValueOnce(new Error('boom'));
+    await openEditor();
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to save job skill: boom'));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('re-enables Save after a failure so the user can retry', async () => {
+    saveJobSkill.mockRejectedValueOnce(new Error('boom'));
+    await openEditor();
+
+    const save = screen.getByRole('button', { name: /save/i });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    await waitFor(() => expect(save.disabled).toBe(false));
+  });
+
+  it('confirms a successful save', async () => {
+    await openEditor();
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Job skill saved'));
+    expect(saveJobSkill).toHaveBeenCalledWith('code-fixer', '# code-fixer template', { silent: true });
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('toasts a failed preview instead of blanking the panel', async () => {
+    previewJobSkill.mockRejectedValueOnce(new Error('nope'));
+    await openEditor();
+
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to preview: nope'));
+  });
+});
+
+// Clicking another skill used to overwrite the editor outright, silently
+// discarding whatever the user had typed (#3939).
+describe('PromptManager job skill unsaved-edit guard', () => {
+  const SKILLS = [
+    { name: 'code-fixer', jobId: 'job-code-fixer', hasTemplate: true },
+    { name: 'doc-writer', jobId: 'job-doc-writer', hasTemplate: false },
+  ];
+
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getJobSkills.mockReset().mockResolvedValue({ skills: SKILLS });
+    getJobSkill.mockReset().mockImplementation((name) => Promise.resolve({
+      content: `# ${name} template`,
+      jobName: `Job ${name}`,
+      jobId: `job-${name}`,
+    }));
+    saveJobSkill.mockReset().mockResolvedValue({ success: true });
+    toast.error.mockReset();
+    toast.success.mockReset();
+  });
+
+  const editor = () => screen.getByLabelText('Skill Template (Markdown)');
+
+  const openDirtyEditor = async () => {
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+    fireEvent.change(editor(), { target: { value: '# edited by hand' } });
+    await screen.findByText('Unsaved changes');
+  };
+
+  it('marks the editor dirty once the template is modified', async () => {
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+
+    fireEvent.change(editor(), { target: { value: '# edited by hand' } });
+
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+  });
+
+  it('treats an edit reverted to the loaded text as clean again', async () => {
+    await openDirtyEditor();
+
+    fireEvent.change(editor(), { target: { value: '# code-fixer template' } });
+
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('asks before discarding unsaved edits when another skill is clicked', async () => {
+    await openDirtyEditor();
+
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    expect(screen.getByText('Discard unsaved changes to "Job code-fixer"?')).toBeTruthy();
+    // Nothing switched yet: the URL, the fetch, and the typed text all hold.
+    expect(currentSearch()).toContain('skill=code-fixer');
+    expect(getJobSkill).not.toHaveBeenCalledWith('doc-writer', { silent: true });
+    expect(screen.getByDisplayValue('# edited by hand')).toBeTruthy();
+  });
+
+  it('keeps the edits when the discard prompt is cancelled', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    expect(screen.getByDisplayValue('# edited by hand')).toBeTruthy();
+    expect(currentSearch()).toContain('skill=code-fixer');
+  });
+
+  it('switches skills after the discard is confirmed', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => expect(currentSearch()).toContain('skill=doc-writer'));
+    await screen.findByText('Job doc-writer');
+    expect(screen.getByDisplayValue('# doc-writer template')).toBeTruthy();
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('switches without prompting once the edits are saved', async () => {
+    await openDirtyEditor();
+
+    // Exact match: the dirty list row is labelled "… Unsaved", which /save/i
+    // would also match.
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    await waitFor(() => expect(currentSearch()).toContain('skill=doc-writer'));
+  });
+
+  it('drops the armed prompt when the edit is undone back to the saved text', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+    expect(screen.getByText(/Discard unsaved changes/)).toBeTruthy();
+
+    fireEvent.change(editor(), { target: { value: '# code-fixer template' } });
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    expect(screen.getByText('doc-writer')).toBeTruthy();
+  });
+
+  it('does not re-arm the old prompt when the editor goes dirty a second time', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+    fireEvent.change(editor(), { target: { value: '# code-fixer template' } });
+
+    fireEvent.change(editor(), { target: { value: '# a different edit' } });
+
+    // The question only ever appears in response to a click on another skill.
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+  });
+
+  it('drops the armed prompt when the edits are saved instead of discarded', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+    expect(screen.getByText(/Discard unsaved changes/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+
+    await waitFor(() => expect(screen.queryByText(/Discard unsaved changes/)).toBeNull());
+    expect(currentSearch()).toContain('skill=code-fixer');
+  });
+
+  it('disarms the prompt when the already-open skill is clicked', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    fireEvent.click(screen.getByText('code-fixer'));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    expect(screen.getByDisplayValue('# edited by hand')).toBeTruthy();
+  });
+
+  it('does not adopt an in-flight save as the next skill\'s baseline', async () => {
+    let resolveSave;
+    saveJobSkill.mockImplementationOnce(() => new Promise((r) => { resolveSave = r; }));
+    await openDirtyEditor();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    // Switch away while the PUT is still open, then let it land.
+    fireEvent.click(screen.getByText('doc-writer'));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    await screen.findByText('Job doc-writer');
+    resolveSave({ success: true });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    // The old skill's text must not become the new skill's clean baseline.
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('never renders the outgoing skill\'s text or dirty badge under the new skill', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    // Synchronously after the switch — before the fetch resolves — the editor is
+    // already empty and clean rather than still showing code-fixer's edit.
+    expect(screen.queryByDisplayValue('# edited by hand')).toBeNull();
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+
+    // Settle the in-flight load so the fetch's state updates land inside act().
+    await screen.findByText('Job doc-writer');
+  });
+
+  it('drops a preview that resolves after the user switched skills', async () => {
+    let resolvePreview;
+    previewJobSkill.mockReset().mockImplementationOnce(() => new Promise((r) => { resolvePreview = r; }));
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }));
+    fireEvent.click(screen.getByText('doc-writer'));
+    await screen.findByText('Job doc-writer');
+    resolvePreview({ preview: 'code-fixer rendered' });
+
+    await waitFor(() => expect(screen.queryByText('code-fixer rendered')).toBeNull());
+  });
+
+  it('does not prompt when a clean editor switches skills', async () => {
+    renderPage('/prompts?tab=job-skills&skill=code-fixer');
+    await screen.findByText('Job code-fixer');
+
+    fireEvent.click(screen.getByText('doc-writer'));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    await waitFor(() => expect(currentSearch()).toContain('skill=doc-writer'));
   });
 });

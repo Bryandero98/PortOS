@@ -3,8 +3,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { getAllProviders } from './providers.js';
 import { getClaudeCodeUsage, systemTimeZone } from './claudeCodeUsage.js';
-import { commandBasename, isClaudeCommand } from '../lib/providerModels.js';
-import { isGrokCommand } from '../lib/grok.js';
+import { commandBasename } from '../lib/providerModels.js';
+import { PROVIDER_FAMILIES } from '../lib/providerFamilies.js';
 import { scrapeTuiUsage } from '../lib/tuiUsageScrape.js';
 import { createStaleWhileRevalidate, PENDING, WAIT } from '../lib/staleWhileRevalidate.js';
 import { parseHumanReset } from '../lib/quotaReset.js';
@@ -439,12 +439,37 @@ export function parseGrokUsage(text, { now = Date.now(), timezone } = {}) {
   // of the newer one, so keep the LAST value seen per window (freshest frame) —
   // same repaint hazard as parseAgyUsage.
   const byWindow = new Map();
-  for (const m of str.matchAll(/(weekly|monthly) limit:\s*([\d.]+)\s*%/gi)) {
-    byWindow.set(m[1].toLowerCase(), Math.round(parseFloat(m[2])));
+
+  const matches = [...str.matchAll(/(weekly|monthly)\s+limit(?:\s*\([^)]+\))?:?/gi)];
+  for (let idx = 0; idx < matches.length; idx++) {
+    const m = matches[idx];
+    const window = m[1].toLowerCase();
+    if (!GROK_WINDOWS[window]) continue;
+
+    const startPos = m.index + m[0].length;
+    const endPos = idx + 1 < matches.length ? matches[idx + 1].index : str.length;
+    const segment = str.slice(startPos, endPos);
+    const segmentLines = segment.split('\n');
+
+    let percentUsed = null;
+    for (let l = 0; l < Math.min(segmentLines.length, 5); l++) {
+      const pct = segmentLines[l].match(/([\d.]+)\s*%/);
+      if (pct) {
+        percentUsed = Math.round(parseFloat(pct[1]));
+        break;
+      }
+    }
+
+    if (percentUsed !== null && !Number.isNaN(percentUsed)) {
+      byWindow.set(window, percentUsed);
+    }
   }
+
   if (!byWindow.size) return { limits: [] };
-  const resets = [...str.matchAll(/next reset:\s*([A-Za-z0-9 ,:]+?)(?:\s{2,}|$)/gi)];
+
+  const resets = [...str.matchAll(/(?:next reset|resets):\s*([A-Za-z0-9 ,:]+?)(?:\s{2,}|│|$|\n)/gi)];
   const resetsAt = resets.length ? parseHumanReset(resets[resets.length - 1][1], { now, timezone }) : null;
+
   const limits = [...byWindow].map(([window, percentUsed]) => ({
     key: window,
     label: GROK_WINDOWS[window].label,
@@ -566,37 +591,20 @@ async function fetchClaudeQuota({ wait = WAIT.CACHED } = {}) {
 // --- Family registry --------------------------------------------------------
 
 /**
- * A provider config belongs to at most one family. CLI/TUI commands are
- * matched by binary basename; the Grok/Kimi-style API providers by id or
- * endpoint. Ollama-backed CLI wrappers are local/free and have no
- * subscription quota, so they map to no family.
+ * The quota reader for each family, keyed by the family id that
+ * `lib/providerFamilies.js` defines. Identity (which provider is on which plan)
+ * lives in that pure lib so cost attribution and route validation can ask
+ * without importing this module's PTY-scraping graph; only the readers — which
+ * genuinely spawn subprocesses — live here.
  */
-const FAMILIES = [
-  {
-    id: 'claude',
-    label: 'Claude Code',
-    matches: (p) => (p.type === 'cli' || p.type === 'tui') && isClaudeCommand(p.command),
-    fetch: fetchClaudeQuota
-  },
-  {
-    id: 'codex',
-    label: 'Codex',
-    matches: (p) => commandBasename(p.command) === 'codex',
-    fetch: () => fetchCodexQuota()
-  },
-  {
-    id: 'agy',
-    label: 'Antigravity',
-    matches: (p) => commandBasename(p.command) === 'agy' || /antigravity/i.test(p.id || ''),
-    fetch: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit(?:\s+Remaining)?|Five Hour Limit(?:\s+Remaining)?|Models & Quota/i })
-  },
-  {
-    id: 'grok',
-    label: 'Grok',
-    matches: (p) => isGrokCommand(p.command) || /grok/i.test(p.id || ''),
-    fetch: makeTuiUsageFetcher({ id: 'grok', binary: 'grok', slashCommand: '/usage show', label: 'Grok', parse: parseGrokUsage, name: 'Grok Build CLI', readyMarker: /(Weekly|Monthly) limit:/i })
-  }
-];
+const FAMILY_FETCHERS = {
+  claude: fetchClaudeQuota,
+  codex: () => fetchCodexQuota(),
+  agy: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit(?:\s+Remaining)?|Five Hour Limit(?:\s+Remaining)?|Models & Quota/i }),
+  grok: makeTuiUsageFetcher({ id: 'grok', binary: 'grok', slashCommand: '/usage show', label: 'Grok', parse: parseGrokUsage, name: 'Grok Build CLI', readyMarker: /(Weekly|Monthly) limit/i })
+};
+
+const FAMILIES = PROVIDER_FAMILIES.map((family) => ({ ...family, fetch: FAMILY_FETCHERS[family.id] }));
 
 /**
  * Distinct quota families among the enabled providers, in registry order.

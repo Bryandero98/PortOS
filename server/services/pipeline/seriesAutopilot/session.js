@@ -137,6 +137,7 @@ export async function persistMarker(seriesId, patch) {
       ...(run.options.judgeLlm ? { judgeLlm: run.options.judgeLlm } : {}),
       ...(run.options.stageLlm ? { stageLlm: run.options.stageLlm } : {}),
       autoSelectModels: run.options.autoSelectModels === true,
+      overrideStagePins: run.options.overrideStagePins === true,
     }
     : null;
   await updateSeries(seriesId, {
@@ -227,6 +228,11 @@ export async function notifyPause(record, sId, { reason, pauseKind = null, curre
 // The run's reasoning effort (#3641) rides the same soft channel as a third
 // dimension: `effortDefault` applies only to stages with no `stage.effort` pin,
 // and the runner clamps it to (or drops it for) whatever provider actually runs.
+//
+// The run's `overrideStagePins` option does NOT change the channels below — the
+// values here still come from the per-role/per-stage routes. It only stops
+// stageRunner from consulting the stage-config pins that would otherwise
+// outrank them (lib/stagePinPolicy.js).
 //
 // Two shapes because the delegated services disagree on field names: the
 // arc/episode/verify passes take `providerDefault`/`modelDefault`; the child

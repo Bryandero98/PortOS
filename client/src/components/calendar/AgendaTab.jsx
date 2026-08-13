@@ -4,7 +4,7 @@ import toast from '../ui/Toast';
 import * as api from '../../services/api';
 import socket from '../../services/socket';
 import EventDetail from './EventDetail';
-import { formatTimeOfDay as formatTime } from '../../utils/formatters';
+import { formatTimeOfDay as formatTime, formatWeekdayDate } from '../../utils/formatters';
 import BrailleSpinner from '../BrailleSpinner';
 
 const RSVP_STYLES = {
@@ -22,7 +22,7 @@ function formatDayHeader(dateStr) {
 
   if (date.toDateString() === today.toDateString()) return 'Today';
   if (date.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
-  return date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  return formatWeekdayDate(date);
 }
 
 function groupEventsByDay(events) {

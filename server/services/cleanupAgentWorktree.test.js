@@ -1523,6 +1523,30 @@ describe('spawnReviewLoopFollowUp', () => {
     });
     expect(addTask.mock.calls[0][0].priority).toBe('MEDIUM');
   });
+
+  it('leaves `app` nullish for a PortOS-local source task so it never reaches the task file', async () => {
+    // `app: null` used to serialize into the task file as the bare word `null`
+    // and re-parse as the app id 'null', which prepareAgentWorkspace blocks with
+    // `app-unresolved` — so the PR this follow-up exists to merge sat open
+    // forever. Most visible on slashdo-free providers (grok/opencode), where the
+    // follow-up IS the entire merge path. generateTasksMarkdown drops nullish
+    // metadata, so what matters is that nothing truthy lands here.
+    await spawnReviewLoopFollowUp({
+      originalAgentId: 'agent-1',
+      originalTask: { id: 'task-1', metadata: {}, description: 'X' },
+      prUrl: 'https://github.com/o/r/pull/9', prBranch: 'cos/task-1/agent-1', sourceWorkspace: '/ws'
+    });
+    expect(addTask.mock.calls[0][0].metadata.app).toBeUndefined();
+  });
+
+  it('carries `app` through when the source task is routed to a managed app', async () => {
+    await spawnReviewLoopFollowUp({
+      originalAgentId: 'agent-1',
+      originalTask: { id: 'task-1', metadata: { app: 'example-app' }, description: 'X' },
+      prUrl: 'https://github.com/o/r/pull/9', prBranch: 'cos/task-1/agent-1', sourceWorkspace: '/ws'
+    });
+    expect(addTask.mock.calls[0][0].metadata.app).toBe('example-app');
+  });
 });
 
 describe('spawnMergeRecoveryTask', () => {

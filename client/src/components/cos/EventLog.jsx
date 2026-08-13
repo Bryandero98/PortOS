@@ -1,3 +1,5 @@
+import { formatTimeOfDaySeconds } from '../../utils/formatters';
+
 const levelColors = {
   info: 'text-port-accent',
   warn: 'text-port-warning',
@@ -24,7 +26,7 @@ export default function EventLog({ logs }) {
         {logs.slice(-25).reverse().map((log, i) => (
           <div key={i} className={`text-xs font-mono py-0.5 break-all ${levelColors[log.level] || 'text-gray-400'}`}>
             <span className="mr-1">[{levelIcons[log.level] || '*'}]</span>
-            <span className="text-gray-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
+            <span className="text-gray-500">{formatTimeOfDaySeconds(log.timestamp)}</span>
             {' '}
             <span>{log.message}</span>
           </div>

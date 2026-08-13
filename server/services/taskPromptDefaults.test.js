@@ -218,11 +218,11 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // declared the reviewer unavailable, and merged its PR on a self-review. Every
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
-    ['plan-task', 12],
-    ['claim-issue', 9],
-    ['claim-issue-gitlab', 8],
-    ['claim-issue-jira', 6],
-  ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the outgoing default', (key, version) => {
+    ['plan-task', 13],
+    ['claim-issue', 10],
+    ['claim-issue-gitlab', 9],
+    ['claim-issue-jira', 7],
+  ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     expect(PROMPT_VERSIONS[key]).toBe(version);
     // EVERY mention of the slug carries the binary — a bare `antigravity`
@@ -234,13 +234,80 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('is UNSATISFIED, not clean');
     expect(current).toContain('Do NOT substitute your own self-review');
 
-    // The outgoing default named only the slug; preserved verbatim so installs
-    // holding it are recognized and auto-upgraded.
-    const previous = PREVIOUS_DEFAULT_PROMPTS[key];
+    // The pre-`agy` default named only the slug; preserved verbatim so installs
+    // holding it are recognized and auto-upgraded. Located by CONTENT, not array
+    // position — later revisions append their own outgoing bodies after it.
+    const preAgy = PREVIOUS_DEFAULT_PROMPTS[key].find(
+      (p) => p.includes('`antigravity`') && !p.includes('CLI binary: `agy`'),
+    );
+    expect(preAgy).toBeDefined();
+    expect(preAgy).not.toContain('is UNSATISFIED, not clean');
+    expect(preAgy).not.toBe(current);
+  });
+
+  // Changelog instructions defer to the convention the repo documents rather
+  // than prescribing an append to `.changelog/NEXT.md`. PortOS (and any repo
+  // that adopts the same shape) collects per-branch fragments so parallel
+  // agents don't conflict on one shared file; a prompt that hardcodes the
+  // append sends every agent down the legacy path. These prompts run against
+  // MANAGED apps too, so they must NOT hardcode `npm run changelog:add` — that
+  // script does not exist in most repos.
+  // Versions are NOT re-pinned here: the snapshot test above already pins every
+  // PROMPT_VERSIONS value, so a content test that also asserts one just has to be
+  // edited by every unrelated bump.
+  it.each([
+    'documentation',
+    'plan-task',
+    'claim-issue',
+    'claim-issue-gitlab',
+    'claim-issue-jira',
+  ])('%s defers to the repo\'s documented changelog convention, preserving the outgoing default', (key) => {
+    const current = DEFAULT_TASK_PROMPTS[key];
+    expect(current).toContain('per-branch fragment');
+    // Repo-agnostic: no PortOS-only helper script in a prompt that runs
+    // against managed apps.
+    expect(current).not.toContain('changelog:add');
+    // The append is now the documented-convention FALLBACK, never the instruction.
+    expect(current).not.toMatch(/append (?:a one-line entry )?to `\.changelog\/NEXT\.md`/);
+
+    const outgoing = PREVIOUS_DEFAULT_PROMPTS[key][PREVIOUS_DEFAULT_PROMPTS[key].length - 1];
+    expect(outgoing).not.toContain('per-branch fragment');
+    expect(outgoing).toContain('.changelog/NEXT.md');
+    expect(outgoing).not.toBe(current);
+  });
+
+  // release-check READS the changelog rather than writing it, so its fix is the
+  // mirror image: an unreleased set that lives in uncollected fragments must not
+  // read as "not enough work accumulated for a release".
+  it('release-check counts uncollected changelog fragments, preserving the outgoing default', () => {
+    const current = DEFAULT_TASK_PROMPTS['release-check'];
+    expect(current).toContain('per-branch fragments');
+    expect(current).toContain('assembled');
+    // release-check is a generic {appName} prompt — it runs against managed apps,
+    // which have no `npm run changelog:preview`. It must send the agent to the
+    // repo's own documented command, never name a PortOS script to run.
+    expect(current).not.toContain('changelog:preview');
+    expect(current).toContain('Do NOT guess a command name');
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
     const outgoing = previous[previous.length - 1];
-    expect(outgoing).toContain('`antigravity`');
-    expect(outgoing).not.toContain('CLI binary: `agy`');
-    expect(outgoing).not.toContain('is UNSATISFIED, not clean');
+    expect(outgoing).not.toContain('per-branch fragments');
+    expect(outgoing).not.toBe(current);
+  });
+
+  // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it
+  // edits PortOS's own bundled catalog), so it may — and should — name the
+  // fragment helper directly instead of describing the convention.
+  it('refresh-local-llm-catalog uses the changelog:add fragment helper, preserving the outgoing default', () => {
+    const current = DEFAULT_TASK_PROMPTS['refresh-local-llm-catalog'];
+    expect(current).toContain('npm run changelog:add -- changed');
+    // Line-wrap-insensitive — the prompt body is hard-wrapped.
+    expect(current).toMatch(/Do NOT\s+append to `\.changelog\/NEXT\.md` by hand/);
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['refresh-local-llm-catalog'];
+    const outgoing = previous[previous.length - 1];
+    expect(outgoing).not.toContain('changelog:add');
+    expect(outgoing).toContain('Add a one-line entry to `{repoPath}/.changelog/NEXT.md`');
     expect(outgoing).not.toBe(current);
   });
 

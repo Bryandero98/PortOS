@@ -341,7 +341,7 @@ For EACH picked issue, spawn a subagent that runs the single-issue **Phases 2–
 ## Phase C — Serialize the merges (orchestrator, after all agents finish)
 Merge the ready ${pr}s ONE AT A TIME. For each: re-sync onto the latest default branch, gate on **required** CI (one re-run on a flaky required check, then proceed; a real failure or an irreconcilable conflict leaves that ${pr} OPEN and recorded — move to the next), then \`${mergeCmd}\`. After all merges, run Phase 7 cleanup once per merged worktree.
 
-**Then — orchestrator only, ALWAYS, even though swarm work ships via ${pr}s with no working-tree change — write the completion sentinel** described in the **Completion Workflow** section below (\`.agent-done\`, with a short run summary of the issues claimed + their ${pr}s + merge outcomes). Skip the \`/simplify\` and push/${pr} steps of that workflow (each fan-out agent already ran them), but the sentinel write is NOT optional: it is the ONLY signal that marks this CoS task complete and hands the orchestrator's summary back. A swarm run that ends without the sentinel leaves the task hanging as if it never finished.
+**Then — orchestrator only, ALWAYS, even though swarm work ships via ${pr}s with no working-tree change — write the completion sentinel** described in the **Completion Workflow** section below (write it at the EXACT sentinel path that section gives you — the filename carries your agent id — with a short run summary of the issues claimed + their ${pr}s + merge outcomes). Skip the \`/simplify\` and push/${pr} steps of that workflow (each fan-out agent already ran them), but the sentinel write is NOT optional: it is the ONLY signal that marks this CoS task complete and hands the orchestrator's summary back. A swarm run that ends without the sentinel leaves the task hanging as if it never finished.
 
 Everything not covered above (claim mechanics, branch naming, verify/skip rules, implement conventions, ${pr} body, review loop) is exactly the single-issue flow documented below.
 
@@ -870,16 +870,14 @@ async function spawnPriority0OnDemand(ctx) {
 
       await taskSchedule.clearOnDemandRequest(request.id);
 
+      // Only a human "Run" may clear the drain's brakes; an automated refill
+      // (origin: 'refill') inherits them. The policy — and the origin check — lives
+      // in applyOnDemandRunResets so this engine and its siblings can't drift.
+      const userInitiated = await taskSchedule.applyOnDemandRunResets(request, targetApp?.id ?? null);
+      const lane = userInitiated ? '' : ' (drain refill)';
+
       if (targetApp) {
-        emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}`, { requestId: request.id, appId: targetApp.id });
-        // A user-initiated "Run" must re-check live state — reset any park + the
-        // reconcile convergence signature so the detector below runs fresh (see
-        // cos.dequeueNextTask for the full rationale).
-        await taskSchedule.resetPerpetualForManualRun(request.taskType, targetApp.id);
-        // A manual "Run" also unparks a failure-parked type (#2616): the user
-        // explicitly re-running is an "I've addressed it" signal, so clear the
-        // per-type consecutive-failure ledger for this app.
-        await taskSchedule.clearTaskTypeFailurePark(request.taskType, targetApp.id);
+        emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}${lane}`, { requestId: request.id, appId: targetApp.id });
         // Advance the cooldown eagerly (deduped per app per cycle), but defer
         // binding the active agent until a task is produced — a null result
         // here must not strand `activeAgentId` (issue #978).
@@ -893,10 +891,7 @@ async function spawnPriority0OnDemand(ctx) {
           await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
         }
       } else {
-        emitLog('info', `Processing on-demand improvement: ${request.taskType}`, { requestId: request.id });
-        await taskSchedule.resetPerpetualForManualRun(request.taskType);
-        // Manual re-run unparks a failure-parked type (global scope) — #2616.
-        await taskSchedule.clearTaskTypeFailurePark(request.taskType);
+        emitLog('info', `Processing on-demand improvement: ${request.taskType}${lane}`, { requestId: request.id });
         await taskSchedule.recordExecution(`task:${request.taskType}`);
         await withStateLock(async () => {
           const s = await loadState();
@@ -928,9 +923,11 @@ async function spawnPriority0OnDemand(ctx) {
           trackSpawn(revived);
           emitLog('info', `🔁 On-demand ${request.taskType} revived blocked task ${persisted.id}`, { taskId: persisted.id });
         }
-      } else if (!task) {
+      } else if (!task && userInitiated) {
         // Explicit user Run produced no task on THIS engine too — same feedback
         // as cos.dequeueNextTask so a request drained here isn't a silent no-op.
+        // An automated refill is skipped for the same reason it is there: it ends
+        // by converging, and nobody is waiting on the toast.
         await emitOnDemandEmpty({ taskScheduleMod: taskSchedule, request, targetApp, taskConfig: liveSchedule.tasks[request.taskType] });
       }
     }
@@ -1842,6 +1839,9 @@ export function applyAppWorktreeDefault(metadata, app) {
       metadata.useWorktree = true; // openPR implies useWorktree
     } else if (app.defaultOpenPR === false || taskTypeDisabledWorktree) {
       metadata.openPR = false;
+    } else if ((app.defaultUseWorktree === true || metadata.useWorktree === true || metadata.useWorktree === 'true') && app.defaultOpenPR !== false) {
+      metadata.openPR = true;
+      metadata.useWorktree = true;
     }
   }
 
@@ -1890,6 +1890,12 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   if (appRequests.length > 0) {
     const request = appRequests[0];
     await taskSchedule.clearOnDemandRequest(request.id);
+    // Only a human "Run" may clear the drain's brakes (park state, dispatch
+    // count); the policy lives in applyOnDemandRunResets so this idle-review
+    // path can't drift from its spawnPriority0OnDemand siblings — without it,
+    // a currently drain-capped or parked perpetual type dequeued here stays
+    // capped/parked and the explicit "Run" silently produces no task.
+    await taskSchedule.applyOnDemandRunResets(request, app.id);
     nextType = request.taskType;
     selectionReason = 'on-demand';
     emitLog('info', `Processing on-demand app task request: ${nextType} for ${app.name}`, { requestId: request.id });
@@ -2150,11 +2156,19 @@ async function resolveClaimWorkRouting(app, taskType, metadata, taskSchedule) {
  * the 'perpetual' interval — excluding branch-/issue-reconcile, whose own scan
  * IS the detector — a programmatic detector decides whether there's anything to
  * claim BEFORE building the (expensive) prompt or burning an agent:
- *   - actionable → clear any park, stamp metadata.perpetual (skip cooldown), proceed;
+ *   - actionable → stamp metadata.perpetual (skip cooldown), proceed;
  *   - idle (definitive) → PARK on the recheck cadence, skip;
  *   - transient probe failure → skip WITHOUT parking so the next tick retries.
- * The detector keys on the RESOLVED promptTaskType. Returns `{ skip }` and
- * mutates `metadata.perpetual` on the actionable path.
+ * The detector keys on the RESOLVED promptTaskType. Returns `{ skip, spendDispatch }`
+ * and mutates `metadata.perpetual` on the actionable path.
+ *
+ * `spendDispatch` is the caller's cue to call `recordPerpetualDispatch` (which
+ * clears the park and spends one unit of the type's `drainDispatchCap` budget in a
+ * single write) — deliberately NOT done here. Gates that run AFTER this one can
+ * still return null with no agent ever spawned (`applyPlanIdMetadata` skips
+ * plan-task when every unchecked item is in-flight or blocked), and charging the
+ * budget for a task that was never created would exhaust a capped drain on
+ * evaluations alone, parking it for `drain-cap` without a single dispatch.
  */
 async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId = null } = {}) {
   if (interval.type !== taskSchedule.INTERVAL_TYPES.PERPETUAL
@@ -2169,10 +2183,11 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
     ignoreTaskId
   });
   if (detection.actionable) {
-    await taskSchedule.clearPerpetualPark(taskType, app.id);
     recordPerpetualTransient(taskType, app.id, null);
     metadata.perpetual = true;
-    return { skip: false };
+    // The dispatch is SPENT BY THE CALLER, once a task is certain — see the note
+    // on `spendDispatch` in the JSDoc above.
+    return { skip: false, spendDispatch: true };
   }
   if (detection.transient) {
     emitLog('debug', `Perpetual ${taskType} skip for ${app.name} (transient: ${detection.reason})`, { appId: app.id });
@@ -2192,9 +2207,111 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
   const counts = detection.total != null
     ? { open: detection.total, inFlight: detection.inFlightCount ?? 0, filtered: detection.filteredCount ?? 0 }
     : null;
+  // Terminal park — parkPerpetual zeroes the dispatch budget in the same write, so
+  // the next drain window starts fresh instead of capping early on this one's spend.
   await taskSchedule.parkPerpetual(taskType, app.id, { reason: detection.reason, actionableCount: detection.count, counts });
   emitLog('info', `Perpetual ${taskType} parked for ${app.name}: ${detection.reason}`, { appId: app.id });
   return { skip: true };
+}
+
+/**
+ * The ONE consecutive-dispatch cap for every perpetual drain, checked at the
+ * choke point all four spawn engines funnel through.
+ *
+ * Every perpetual drain re-issues itself the moment its run completes, so
+ * "keeps finding work" and "is stuck in a loop" look identical one cycle at a
+ * time. The bound is per type (`interval.drainDispatchCap`, from
+ * DEFAULT_TASK_INTERVALS) rather than global because the right number differs by
+ * an order of magnitude: the reconcile scans finish a handful of branches a day
+ * and cap at 5, while a healthy claim-issue drain should keep going all night —
+ * so an absent/null cap means UNBOUNDED and leaves that drain's behavior alone.
+ *
+ * Runs BEFORE the work detector and the reconcile scans, so a capped drain parks
+ * without paying for a `gh`/`git` scan it is going to discard. That also means the
+ * cap now preempts the reconcile gate's `no-progress` brake once the budget is
+ * spent; both are terminal parks on the same recheck cadence, so the only
+ * difference is which reason is recorded.
+ *
+ * @returns {Promise<{skip:boolean}>}
+ */
+export async function applyPerpetualDrainCap(app, taskType, interval, taskSchedule) {
+  if (interval.type !== taskSchedule.INTERVAL_TYPES.PERPETUAL) return { skip: false };
+  // Coerce before validating: this key is not on the schedule route's allowlist, so
+  // the only way it arrives non-numeric is a hand-edited schedule.json, where `"5"`
+  // is the likeliest shape and reading it as "no cap" would silently unbound the
+  // runaway guard. Anything that still isn't a positive finite number — absent,
+  // null, `""`, `"soon"`, 0, negative — means UNBOUNDED, i.e. exactly the behavior
+  // of a type that never configured the key.
+  const cap = Number(interval.drainDispatchCap ?? NaN);
+  if (!Number.isFinite(cap) || cap <= 0) return { skip: false };
+  const { dispatchCount } = await taskSchedule.getPerpetualDrainState(taskType, app.id);
+  if (dispatchCount < cap) return { skip: false };
+  // One write lands the park, the cleared signature, and the zeroed budget — a
+  // terminal park must never leave a stale count for the next window.
+  await taskSchedule.parkPerpetual(taskType, app.id, { reason: 'drain-cap', signature: null });
+  emitLog('info', `Perpetual ${taskType} parked for ${app.name}: ${dispatchCount} consecutive dispatches reached the drain cap of ${cap} — will re-drive on next recheck`, { appId: app.id });
+  return { skip: true };
+}
+
+/**
+ * `, N <noun> (reason, reason)` for a park/dispatch log line — or `''` when the set
+ * is empty, so a caller can concatenate it unconditionally. The reconcile park log
+ * reports four such sets (held-back worktrees, toggle-gated branches, live-owned
+ * branches, superseded branches) and every one of them must stay visible: a set
+ * that silently reads as "nothing" is how a lingering worktree once hid behind
+ * "cleaned 0" for weeks.
+ * @param {object[]|undefined} items
+ * @param {string} noun - phrase following the count
+ * @param {(item:object)=>string} [describe] - per-item detail, deduped in parens
+ */
+const countSuffix = (items, noun, describe) => {
+  const list = items || [];
+  if (!list.length) return '';
+  const detail = describe ? ` (${[...new Set(list.map(describe))].join(', ')})` : '';
+  return `, ${list.length} ${noun}${detail}`;
+};
+
+/**
+ * Shared convergence gate for the reconcile perpetual drains (branch + issue).
+ * Both have the same shape — a deterministic scan produced a non-empty actionable
+ * set and now has to decide whether driving it AGAIN is progress or a loop — so
+ * both get the same brake:
+ *
+ *   `no-progress` — the set is byte-identical to the one the last dispatch was
+ *   handed, so another identical coordinator would do exactly what the last one
+ *   already failed to accomplish.
+ *
+ * The second brake — `drain-cap`, for a set that keeps CHANGING but never empties,
+ * which this one cannot see because each cycle looks like honest progress — is NOT
+ * here: it lives in `applyPerpetualDrainCap` at the shared choke point, so every
+ * perpetual drain gets it rather than only these two (#3848). Having it in both
+ * places was two implementations of one rule.
+ *
+ * The park clears the signature and the counter, so the next recheck starts a
+ * clean window and nothing is dropped — the work is still there to be found.
+ *
+ * @param {object} taskSchedule - the taskSchedule module (injected, as the callers do)
+ * @param {string} taskType
+ * @param {{id:string, name:string}} app
+ * @param {{ signature:string, actionableCount:number, label:string, unit:string }} ctx
+ *   `label` prefixes the log lines (emoji + type); `unit` names the items ("branch(es)").
+ * @returns {Promise<boolean>} true to dispatch; false when the drain was parked
+ */
+export async function resolveReconcileDrainGate(taskSchedule, taskType, app, { signature, actionableCount, label, unit }) {
+  const { signature: lastSignature } = await taskSchedule.getPerpetualDrainState(taskType, app.id);
+  if (signature === lastSignature) {
+    // The park fields, the cleared signature, and the zeroed dispatch budget land
+    // in ONE write (the budget by parkPerpetual's default), so no terminal park
+    // can leave a stale count behind for the next drain window to trip over.
+    await taskSchedule.parkPerpetual(taskType, app.id, { reason: 'no-progress', actionableCount, signature: null });
+    emitLog('info', `${label} parked for ${app.name}: ${actionableCount} ${unit} unchanged since last run (no progress — will re-drive on next recheck)`, { appId: app.id });
+    return false;
+  }
+
+  // Progress within budget — resume the drain, record the signature, and spend one
+  // dispatch, so the drain runs back-to-back without the post-completion cooldown.
+  await taskSchedule.recordPerpetualDispatch(taskType, app.id, signature);
+  return true;
 }
 
 /**
@@ -2254,53 +2371,50 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   // human still has to reap, so name them rather than letting them vanish into a
   // quiet park — the invisibility is the same failure mode as a lingering worktree
   // reported as "cleaned 0".
-  const supersededCount = result.superseded?.length || 0;
-  const supersededSuffix = supersededCount
-    ? `, ${supersededCount} branch(es) already verified superseded and awaiting human reap`
-    : '';
+  const supersededSuffix = countSuffix(result.superseded, 'branch(es) already verified superseded and awaiting human reap');
+  // Branches somebody is actively working in (a running CoS agent, a live human
+  // /claim, a locked worktree) are classified WIP and never reach `inFlight` — the
+  // reconcile is DONE when they are all that's left, not stuck. Named in the park
+  // log so "nothing actionable" doesn't read as "no branches exist".
+  const heldLive = (result.wip || []).filter((b) => b.liveOwnerReason);
+  const heldLiveSuffix = countSuffix(heldLive, 'branch(es) left to their live owners', (b) => b.liveOwnerReason);
   const actionable = filterActionable(result.inFlight, actions);
   if (actionable.length === 0) {
-    // Definitive idle: nothing in-flight to drive. Park on the recheck cadence
-    // and clear the progress signature so a fresh set later dispatches.
-    await taskSchedule.parkPerpetual(taskType, app.id, { reason: 'no-in-flight-branches', actionableCount: 0, signature: null });
+    // Definitive idle: nothing in-flight to drive. Park on the recheck cadence,
+    // clearing the progress signature so a fresh set later dispatches and zeroing the
+    // dispatch budget — this drain converged, so the next one gets a full one.
+    const reason = heldLive.length ? 'branches-held-by-live-owners' : 'no-in-flight-branches';
+    await taskSchedule.parkPerpetual(taskType, app.id, { reason, actionableCount: 0, signature: null });
     // Surface merged branches held back by a protection guard so a lingering
     // worktree isn't an invisible "cleaned 0".
-    const heldBack = (result.skipped || []).filter((s) => s.reason?.startsWith('worktree-'));
-    const heldSuffix = heldBack.length
-      ? `, ${heldBack.length} merged branch(es) held back (${[...new Set(heldBack.map((s) => s.reason))].join(', ')})`
-      : '';
+    const heldSuffix = countSuffix(
+      (result.skipped || []).filter((s) => s.reason?.startsWith('worktree-')),
+      'merged branch(es) held back', (s) => s.reason
+    );
     // In-flight branches that exist but were filtered out by a disabled action
     // toggle are the OTHER way "nothing in-flight" can lie — say so, or the user
     // sees a park while real branches sit there (the same invisibility that hid
     // the abandoned-worktree case).
-    const gatedOff = result.inFlight.length;
-    const gatedSuffix = gatedOff
-      ? `, ${gatedOff} in-flight branch(es) skipped by disabled action toggles (${[...new Set(result.inFlight.map((b) => b.state))].join(', ')})`
-      : '';
-    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing actionable (cleaned ${result.cleaned.length}${heldSuffix}${gatedSuffix}${supersededSuffix})`, { appId: app.id });
+    const gatedSuffix = countSuffix(result.inFlight, 'in-flight branch(es) skipped by disabled action toggles', (b) => b.state);
+    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: nothing actionable (cleaned ${result.cleaned.length}${heldSuffix}${gatedSuffix}${heldLiveSuffix}${supersededSuffix})`, { appId: app.id });
     return { skip: true };
   }
-  // Convergence guard — kills the back-to-back re-dispatch loop WITHOUT stalling
-  // slow PRs. Signature UNCHANGED → park + CLEAR the signature so the next
-  // recheck re-drives; CHANGED → progress, keep draining.
-  const signature = actionableSignature(actionable);
-  const lastSignature = await taskSchedule.getPerpetualSignature(taskType, app.id);
-  if (signature === lastSignature) {
-    await taskSchedule.parkPerpetual(taskType, app.id, { reason: 'no-progress', actionableCount: actionable.length, signature: null });
-    emitLog('info', `🔀 branch-reconcile parked for ${app.name}: ${actionable.length} branch(es) unchanged since last run (no progress — will re-drive on next recheck)`, { appId: app.id });
-    return { skip: true };
-  }
-  // New or advanced actionable set — drive it. Resume the drain, record the
-  // signature, skip the post-completion cooldown so progress drains back-to-back.
-  await taskSchedule.clearPerpetualPark(taskType, app.id);
-  await taskSchedule.setPerpetualSignature(taskType, app.id, signature);
+  // Convergence guards — no-progress, then the consecutive-dispatch cap. See
+  // resolveReconcileDrainGate for why one brake isn't enough.
+  const dispatch = await resolveReconcileDrainGate(taskSchedule, taskType, app, {
+    signature: actionableSignature(actionable),
+    actionableCount: actionable.length,
+    label: '🔀 branch-reconcile',
+    unit: 'branch(es)'
+  });
+  if (!dispatch) return { skip: true };
   metadata.perpetual = true;
   const supersededBlock = formatSupersededForPrompt(result.superseded || []);
   const block = [
     formatInFlightForPrompt(actionable, { defaultBranch: result.defaultBranch, actions }),
     supersededBlock
   ].filter(Boolean).join('\n');
-  emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)${supersededSuffix}`, { appId: app.id, analysisType: taskType });
+  emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)${heldLiveSuffix}${supersededSuffix}`, { appId: app.id, analysisType: taskType });
   return { skip: false, block };
 }
 
@@ -2342,16 +2456,14 @@ async function resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule)
     emitLog('info', `🧟 issue-reconcile parked for ${app.name}: no zombie issues`, { appId: app.id });
     return { skip: true };
   }
-  // Convergence guard — identical to branch-reconcile's.
-  const signature = zombieSignature(result.zombies);
-  const lastSignature = await taskSchedule.getPerpetualSignature(taskType, app.id);
-  if (signature === lastSignature) {
-    await taskSchedule.parkPerpetual(taskType, app.id, { reason: 'no-progress', actionableCount: result.zombies.length, signature: null });
-    emitLog('info', `🧟 issue-reconcile parked for ${app.name}: ${result.zombies.length} zombie issue(s) unchanged since last run (no progress — will re-drive on next recheck)`, { appId: app.id });
-    return { skip: true };
-  }
-  await taskSchedule.clearPerpetualPark(taskType, app.id);
-  await taskSchedule.setPerpetualSignature(taskType, app.id, signature);
+  // Convergence guards — identical to branch-reconcile's (shared helper).
+  const dispatch = await resolveReconcileDrainGate(taskSchedule, taskType, app, {
+    signature: zombieSignature(result.zombies),
+    actionableCount: result.zombies.length,
+    label: '🧟 issue-reconcile',
+    unit: 'zombie issue(s)'
+  });
+  if (!dispatch) return { skip: true };
   metadata.perpetual = true;
   const block = formatZombiesForPrompt(result.zombies, {
     fullName: result.fullName, forge: result.forge, autoClose,
@@ -2615,6 +2727,12 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // gating, and the forge-specific author-filter directive below.
   const promptTaskType = await resolveClaimWorkRouting(app, taskType, metadata, taskSchedule);
 
+  // Consecutive-dispatch cap for EVERY perpetual drain (#3848). First, because a
+  // capped drain must not pay for a work-detector probe or a reconcile git/gh scan
+  // it is only going to discard.
+  const drainCap = await applyPerpetualDrainCap(app, taskType, interval, taskSchedule);
+  if (drainCap.skip) return null;
+
   // Perpetual (drain-until-done) gate — probes for actionable work before
   // building the prompt or burning an agent (branch-/issue-reconcile self-gate
   // in their own blocks, so this excludes them).
@@ -2736,6 +2854,14 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     }
     metadata[key] = value;
   }
+  // Every gate has now passed and a task is certain, so the perpetual drain can
+  // finally be charged for this hop (and its park cleared). Sits beside
+  // `updateAppActivity` for the same reason that call does: both are "a task was
+  // really produced" side effects, and every `return null` above must skip them.
+  // The reconcile drains spend theirs inside their own block, which no later gate
+  // can skip (their types are outside PLAN_PICK_TASK_TYPES / pr-watcher /
+  // reference-watch), so they are already charged only on real dispatches.
+  if (perpetualGate.spendDispatch) await taskSchedule.recordPerpetualDispatch(taskType, app.id, null);
   await updateAppActivity(app.id, { lastImprovementType: taskType });
   emitLog('info', `Generating improvement task for ${app.name}: ${taskType}`, { appId: app.id, analysisType: taskType });
 

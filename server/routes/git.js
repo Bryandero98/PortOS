@@ -6,6 +6,7 @@ import * as appsService from '../services/apps.js';
 import { getAgents } from '../services/cosAgentLifecycle.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { isWithinAllowedRoots } from '../lib/workspaceRoots.js';
+import { validateRequest, submoduleStatusQuerySchema, submoduleUpdateSchema } from '../lib/validation.js';
 
 /**
  * Assert that a caller-supplied workspace path exists, is a directory, and
@@ -51,29 +52,23 @@ async function getActiveAgentBranches() {
 
 const router = Router();
 
-// GET /api/git/submodules/status - Get all submodule statuses
+// GET /api/git/submodules/status?repoPath=… - Submodule statuses for a repo,
+// plus the branch a pointer bump would commit to (defaults to the PortOS
+// checkout when repoPath is omitted).
 router.get('/submodules/status', asyncHandler(async (req, res) => {
-  const submodules = await git.getSubmodules();
-  res.json(submodules);
+  const { repoPath } = validateRequest(submoduleStatusQuerySchema, req.query);
+  if (repoPath) assertAllowedWorkspace(repoPath);
+  res.json(await git.getSubmoduleOverview(repoPath));
 }));
 
 // POST /api/git/submodules/update - Update a specific submodule
 router.post('/submodules/update', asyncHandler(async (req, res) => {
-  const rawPath = req.body?.path;
-  if (!rawPath || typeof rawPath !== 'string') {
-    throw new ServerError('path must be a non-empty string', { status: 400, code: 'VALIDATION_ERROR' });
-  }
-  const path = rawPath.trim();
-  if (!path) {
-    throw new ServerError('path must be a non-empty string', { status: 400, code: 'VALIDATION_ERROR' });
-  }
-  // Validate that this is a known submodule path (cheap check, no remote fetches)
-  const knownPaths = await git.getSubmodulePaths();
-  if (!knownPaths.includes(path)) {
-    throw new ServerError(`Unknown submodule path: ${path}`, { status: 400, code: 'VALIDATION_ERROR' });
-  }
-  const newCommit = await git.updateSubmodule(path);
-  res.json({ success: true, newCommit });
+  const { path, repoPath, commit } = validateRequest(submoduleUpdateSchema, req.body);
+  if (repoPath) assertAllowedWorkspace(repoPath);
+  // The service owns the "is this a real submodule of that repo?" check and
+  // throws a 400 ServerError — re-listing them here would just spawn git twice.
+  const result = await git.updateSubmodule(path, { repoPath, commit });
+  res.json({ success: true, ...result });
 }));
 
 // GET /api/git/:appId - Get git info for an app

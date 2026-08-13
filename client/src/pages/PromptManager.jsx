@@ -16,6 +16,8 @@ import useFieldDraft from '../hooks/useFieldDraft';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 import { FormField } from '../components/ui/FormField';
 import Modal from '../components/ui/Modal';
+import InlineConfirmRow from '../components/ui/InlineConfirmRow';
+import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import {
   getPrompts, getPrompt, createPrompt, savePrompt, deletePrompt, previewPrompt, getPromptUsage,
   getPromptVariables, createPromptVariable, savePromptVariable, deletePromptVariable,
@@ -49,8 +51,10 @@ export default function PromptManager() {
   };
   const selectedStage = searchParams.get('stage');
   const selectedVar = searchParams.get('var');
+  const selectedJobSkill = searchParams.get('skill');
   const setSelectedStage = (name) => setParam('stage', name);
   const setSelectedVar = (key) => setParam('var', key);
+  const setSelectedJobSkill = (name) => setParam('skill', name);
   const [stages, setStages] = useState({});
   // The CURATED system-stage keys. Served by GET /api/prompts
   // (`server/lib/promptSystemStages.js`) rather than mirrored client-side, so
@@ -94,17 +98,42 @@ export default function PromptManager() {
     template: ''
   });
 
-  // Job skills
+  // Job skills (selection is URL-driven — see selectedJobSkill above)
   const [jobSkills, setJobSkills] = useState([]);
-  const [selectedJobSkill, setSelectedJobSkill] = useState(null);
   const [jobSkillContent, setJobSkillContent] = useState('');
+  // The last content the server confirmed (loaded or saved). Kept as a full copy
+  // rather than a boolean flag so typing an edit and undoing it back to the
+  // original stops counting as dirty — a stale flag would nag on a no-op edit.
+  const [savedJobSkillContent, setSavedJobSkillContent] = useState('');
+  // The skill the user clicked while holding unsaved edits, awaiting confirmation.
+  const [pendingJobSkill, setPendingJobSkill] = useState(null);
   const [jobSkillMeta, setJobSkillMeta] = useState({});
   const [jobSkillPreview, setJobSkillPreview] = useState('');
+  const isJobSkillDirty = Boolean(selectedJobSkill) && jobSkillContent !== savedJobSkillContent;
+  // `saveJobSkill` resumes after an await holding the values its closure captured
+  // at click time, so it reads the live selection/text through these refs to tell
+  // "still the same editor" from "the user moved on mid-flight".
+  const jobSkillLiveRef = useRef({ selected: selectedJobSkill, content: jobSkillContent });
+  jobSkillLiveRef.current = { selected: selectedJobSkill, content: jobSkillContent };
+  // A clean editor has nothing to discard, so an armed row disarms itself the
+  // moment the edit is undone or saved — leaving the id parked would re-arm that
+  // row out of nowhere the next time the user typed.
+  useEffect(() => {
+    if (!isJobSkillDirty) setPendingJobSkill(null);
+  }, [isJobSkillDirty]);
 
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  // Variables delete inline-confirms in the row itself (#3935) — the trash icon
+  // arms the row instead of firing DELETE on the first click.
+  const {
+    isConfirming: isConfirmingVar,
+    requestDelete: requestVarDelete,
+    cancelDelete: cancelVarDelete,
+    confirmDelete: confirmVarDelete,
+  } = useConfirmDelete();
 
   useEffect(() => {
     loadData();
@@ -280,25 +309,93 @@ export default function PromptManager() {
     await loadData();
   };
 
-  // Job skill functions
-  const loadJobSkill = async (name) => {
-    setSelectedJobSkill(name);
+  // Fetch the URL-selected job skill's template + meta. Keyed on selectedJobSkill
+  // so a deep link / reload / tab switch restores the open editor; a cleared
+  // param resets it. Mirrors the `selectedStage` effect above.
+  // Content/meta/preview are cleared up front rather than on the way out, so an
+  // in-flight fetch (or one that 404s on a stale deep link) can never leave the
+  // PREVIOUS skill's template rendered under the newly selected skill's heading.
+  useEffect(() => {
     setJobSkillPreview('');
-    const res = await getJobSkill(name, { silent: true }).catch(() => ({}));
-    setJobSkillContent(res.content || '');
-    setJobSkillMeta({ jobName: res.jobName, jobId: res.jobId, category: res.category, interval: res.interval });
-  };
+    setJobSkillContent('');
+    setSavedJobSkillContent('');
+    setPendingJobSkill(null);
+    setJobSkillMeta({});
+    if (!selectedJobSkill) return;
+    let cancelled = false;
+    getJobSkill(selectedJobSkill, { silent: true })
+      .then((res) => {
+        if (cancelled || !res) return;
+        setJobSkillContent(res.content || '');
+        setSavedJobSkillContent(res.content || '');
+        setJobSkillMeta({ jobName: res.jobName, jobId: res.jobId, category: res.category, interval: res.interval });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [selectedJobSkill]);
 
+  // A failed save must say so: the button re-enabling on its own reads as
+  // "saved" and the edit is silently lost. `silent: true` + an explicit toast
+  // keeps the notification to one layer (see client/src/CLAUDE.md).
   const saveJobSkill = async () => {
     setSaving(true);
-    // Swallow errors (matches the prior fire-and-forget PUT) but always clear
-    // the saving flag so a failure can't leave the Save button stuck disabled.
-    await apiSaveJobSkill(selectedJobSkill, jobSkillContent, { silent: true }).catch(() => {});
+    // Snapshot what we actually sent — the textarea may change while the PATCH
+    // is in flight, and only the persisted text may become the clean baseline.
+    // The skill is snapshotted too: if the editor has moved on by the time the
+    // PUT resolves, `sent` belongs to the PREVIOUS skill and adopting it as the
+    // baseline would flag the freshly loaded one as dirty.
+    const sent = jobSkillContent;
+    const sentFor = selectedJobSkill;
+    const ok = await apiSaveJobSkill(sentFor, sent, { silent: true })
+      .then(() => true)
+      .catch((err) => { toast.error(`Failed to save job skill: ${err.message || 'Unknown error'}`); return false; });
     setSaving(false);
+    if (!ok) return;
+    const live = jobSkillLiveRef.current;
+    if (sentFor === live.selected) {
+      setSavedJobSkillContent(sent);
+      // Saving answers the pending discard prompt — there is nothing left to
+      // lose, unless the user kept typing while the PUT was open.
+      if (sent === live.content) setPendingJobSkill(null);
+    }
+    toast.success('Job skill saved');
+  };
+
+  // Switching skills replaces the editor's content, so unsaved edits must be
+  // confirmed away first (#3939). The clicked skill parks in `pendingJobSkill`
+  // and an inline confirm row takes over its list slot — no window.confirm.
+  const requestJobSkill = (name) => {
+    if (name === selectedJobSkill) {
+      // Re-clicking the open skill is how a user backs out of the prompt from
+      // the list side; leaving it armed would strand the row mid-question.
+      setPendingJobSkill(null);
+      return;
+    }
+    if (isJobSkillDirty) {
+      setPendingJobSkill(name);
+      return;
+    }
+    switchJobSkill(name);
+  };
+
+  // Content is cleared in the same tick as the selection, not left to the
+  // `selectedJobSkill` effect — otherwise the frame between the two renders the
+  // OUTGOING skill's text and dirty badges under the incoming skill's row.
+  const switchJobSkill = (name) => {
+    setPendingJobSkill(null);
+    setJobSkillContent('');
+    setSavedJobSkillContent('');
+    setSelectedJobSkill(name);
   };
 
   const previewJobSkill = async () => {
-    const res = await apiPreviewJobSkill(selectedJobSkill, { silent: true }).catch(() => ({}));
+    const previewFor = selectedJobSkill;
+    const res = await apiPreviewJobSkill(previewFor, { silent: true })
+      .catch((err) => { toast.error(`Failed to preview: ${err.message || 'Unknown error'}`); return null; });
+    if (!res) return;
+    // A preview that lands after the user moved on belongs to the previous
+    // skill — rendering it under the new one's heading would misattribute it.
+    if (previewFor !== jobSkillLiveRef.current.selected) return;
     setJobSkillPreview(res.preview || '');
   };
 
@@ -682,29 +779,42 @@ export default function PromptManager() {
             </div>
             <div className="space-y-1">
               {Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => (
-                <div
-                  key={key}
-                  className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm ${
-                    selectedVar === key
-                      ? 'bg-port-accent/20 text-port-accent'
-                      : 'text-gray-300 hover:bg-port-border'
-                  }`}
-                >
-                  <button
-                    onClick={() => setSelectedVar(key)}
-                    className="flex-1 text-left"
+                isConfirmingVar(key) ? (
+                  <InlineConfirmRow
+                    key={key}
+                    className="rounded-lg"
+                    question={`Delete "${v.name || key}"?`}
+                    confirmText="Delete"
+                    aria-label={`Confirm delete variable ${v.name || key}`}
+                    autoFocus
+                    onConfirm={() => confirmVarDelete(() => deleteVariable(key))}
+                    onCancel={cancelVarDelete}
+                  />
+                ) : (
+                  <div
+                    key={key}
+                    className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm ${
+                      selectedVar === key
+                        ? 'bg-port-accent/20 text-port-accent'
+                        : 'text-gray-300 hover:bg-port-border'
+                    }`}
                   >
-                    <div className="font-medium">{v.name || key}</div>
-                    <div className="text-xs text-gray-500">{v.category || 'uncategorized'}</div>
-                  </button>
-                  <button
-                    onClick={() => deleteVariable(key)}
-                    aria-label="Delete variable"
-                    className="p-1 text-gray-500 hover:text-port-error"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
+                    <button
+                      onClick={() => setSelectedVar(key)}
+                      className="flex-1 text-left"
+                    >
+                      <div className="font-medium">{v.name || key}</div>
+                      <div className="text-xs text-gray-500">{v.category || 'uncategorized'}</div>
+                    </button>
+                    <button
+                      onClick={() => requestVarDelete(key)}
+                      aria-label={`Delete variable ${v.name || key}`}
+                      className="p-1 text-gray-500 hover:text-port-error"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )
               ))}
             </div>
           </div>
@@ -796,25 +906,47 @@ export default function PromptManager() {
             </div>
             <div className="space-y-1">
               {jobSkills.map((skill) => (
-                <button
-                  key={skill.name}
-                  onClick={() => loadJobSkill(skill.name)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm ${
-                    selectedJobSkill === skill.name
-                      ? 'bg-port-accent/20 text-port-accent'
-                      : 'text-gray-300 hover:bg-port-border'
-                  }`}
-                >
-                  <div className="flex items-center gap-1">
-                    <span className="font-medium">{skill.name}</span>
-                    {skill.hasTemplate && (
-                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-success/20 text-port-success rounded uppercase font-semibold">
-                        Active
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-gray-500">{skill.jobId}</div>
-                </button>
+                // The dirty check is part of the render condition, not just of
+                // arming: undoing the edit back to the saved text while the row
+                // is armed leaves nothing to discard, so the question must go.
+                (pendingJobSkill === skill.name && isJobSkillDirty) ? (
+                  <InlineConfirmRow
+                    key={skill.name}
+                    className="rounded-lg"
+                    question={`Discard unsaved changes to "${jobSkillMeta.jobName || selectedJobSkill}"?`}
+                    confirmText="Discard"
+                    cancelText="Keep editing"
+                    aria-label={`Confirm discarding unsaved changes to ${jobSkillMeta.jobName || selectedJobSkill}`}
+                    autoFocus
+                    onConfirm={() => switchJobSkill(skill.name)}
+                    onCancel={() => setPendingJobSkill(null)}
+                  />
+                ) : (
+                  <button
+                    key={skill.name}
+                    onClick={() => requestJobSkill(skill.name)}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm ${
+                      selectedJobSkill === skill.name
+                        ? 'bg-port-accent/20 text-port-accent'
+                        : 'text-gray-300 hover:bg-port-border'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1">
+                      <span className="font-medium">{skill.name}</span>
+                      {skill.hasTemplate && (
+                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-success/20 text-port-success rounded uppercase font-semibold">
+                          Active
+                        </span>
+                      )}
+                      {selectedJobSkill === skill.name && isJobSkillDirty && (
+                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-warning/20 text-port-warning rounded uppercase font-semibold">
+                          Unsaved
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500">{skill.jobId}</div>
+                  </button>
+                )
               ))}
               {jobSkills.length === 0 && (
                 <div className="text-sm text-gray-500 px-3 py-2">No job skill templates found</div>
@@ -834,6 +966,7 @@ export default function PromptManager() {
                         {jobSkillMeta.category && <span>Category: {jobSkillMeta.category}</span>}
                         {jobSkillMeta.interval && <span>Interval: {jobSkillMeta.interval}</span>}
                         {jobSkillMeta.jobId && <span>ID: {jobSkillMeta.jobId}</span>}
+                        {isJobSkillDirty && <span className="text-port-warning">Unsaved changes</span>}
                       </div>
                     </div>
                     <div className="flex gap-2">

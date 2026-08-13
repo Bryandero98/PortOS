@@ -237,6 +237,21 @@ describe('analyzeAgentFailure — provenance origin (#2642)', () => {
     expect(generic.origin).toBe('output-scan');
   });
 
+  // A spent agy subscription used to match no usage-limit alternative at all
+  // ("quota reached" is not "quota exceeded", "your limits" is not "usage
+  // limit"), so it stayed `unknown` and agy was never benched — every
+  // subsequent dequeue re-picked the dead provider.
+  it('classifies and promotes the Antigravity spent-quota banner', () => {
+    const analysis = analyzeAgentFailure(
+      withLead('⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h51m14s.'),
+      { id: 't' },
+      'x'
+    );
+    expect(analysis.category).toBe('usage-limit');
+    expect(analysis.origin).toBe('provider');
+    expect(analysis.requiresFallback).toBe(true);
+  });
+
   it('stamps output-scan on model-not-supported (indistinguishable from a test asserting the phrase)', () => {
     const analysis = analyzeAgentFailure(withLead("The 'gpt-5' model is not supported when using Codex with a ChatGPT account."), { id: 't' }, 'gpt-5');
     expect(analysis.category).toBe('model-not-supported');

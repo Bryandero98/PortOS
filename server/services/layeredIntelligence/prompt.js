@@ -15,7 +15,7 @@ import { extractSlugFromBody } from './dedup.js';
 // Keeping them in one named set — rather than accreting `&& k !== 'x'` clauses on the
 // filter — documents WHY these keys are special and gives the next dedicated-block
 // signal a single edit point.
-const BESPOKE_SOURCE_BLOCK_KEYS = new Set(['plannedWork', 'scopeGuidance']);
+const BESPOKE_SOURCE_BLOCK_KEYS = new Set(['plannedWork', 'scopeGuidance', 'churnSignals']);
 
 /**
  * Build the JSON-only reasoning prompt for one app. Deterministic: given the
@@ -115,6 +115,14 @@ export function buildPrompt({ app, config, sources = {}, openIssues = [], isPort
     ? `\n### liScopeAwareness\n${sources.scopeGuidance.trim()}\n\nThese are per-task-type completion rates for THIS install — how reliably each KIND of work tends to get finished, not a per-proposal record (your proposals don't map 1:1 onto these types). Use it as directional context: a proposal whose implementation resembles a low-completion type deserves extra scrutiny or a narrower scope; high-completion kinds are safer bets. A low rate on self-improve:layered-intelligence is LI's OWN reasoning-run rate — a direct signal to propose conservatively. Where the liProposalExecution block below covers a domain, prefer it: it is a direct per-proposal record, whereas these buckets are only directional.\n`
     : '';
 
+  // Churn awareness: these are instance-local measurements from PortOS's own
+  // learning ring, not user-approved tracker work. Keep the signal visible to
+  // the PortOS reasoner while making the filing decision explicit: investigate,
+  // scope a concrete planned fix, and otherwise return proposal: null.
+  const churnSignalsBlock = (isPortos && typeof sources.churnSignals === 'string' && sources.churnSignals.trim())
+    ? `\n### liChurnSignals\n${sources.churnSignals.trim()}\n\nTreat these as evidence for investigation, not an automatic filing instruction. If you can establish a reproducible PortOS defect and describe a concrete fix that belongs in planned work, propose that fix; if the signal is transient, expected, already addressed, or not specific enough to scope, return proposal: null.\n`
+    : '';
+
   // Per-proposal-domain execution record (#2765): unlike liScopeAwareness above —
   // which borrows install-wide per-task-TYPE rates a proposal only loosely maps onto —
   // this keys on how LI's OWN proposals in each domain actually fared once handed off
@@ -167,7 +175,7 @@ ${openList}
 
 Gathered sources:
 ${sourceBlocks || (plannedWorkBlock ? '(no other sources available — you may propose an app-data-gap to add telemetry)' : '(no sources available — you may propose an app-data-gap to add telemetry)')}
-${plannedWorkBlock}${outcomesBlock}${selfEvalBlock}${deliveryThrottleBlock}${scopeGuidanceBlock}${proposalExecutionBlock}${crossReferenceBlock}${playbookBlock}
+${plannedWorkBlock}${outcomesBlock}${selfEvalBlock}${deliveryThrottleBlock}${scopeGuidanceBlock}${churnSignalsBlock}${proposalExecutionBlock}${crossReferenceBlock}${playbookBlock}
 Respond with JSON only (no markdown fences):
 {
   "analysis": "brief reasoning summary",

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { getAiAssignments, updateAiAssignment } from '../services/aiAssignments.js';
+import { saveSubscriptionCosts } from '../services/subscriptionCosts.js';
 import {
   setCodexParallelLimit,
   CODEX_PARALLEL_MIN,
@@ -10,7 +11,7 @@ import {
 } from '../services/mediaJobQueue/index.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -252,6 +253,14 @@ router.put('/', asyncHandler(async (req, res) => {
   if (req.body.layeredIntelligence) {
     validateRequest(layeredIntelligenceSettingsSchema.partial(), req.body.layeredIntelligence);
   }
+  // Subscription plan prices — the same schema PUT /api/usage/subscriptions
+  // enforces, so a legacy client or restore bundle can't write a junk family
+  // key or an over-cap price through the generic settings endpoint. Without it
+  // the value persists, reads back as "not priced", and is silently deleted by
+  // the next save from the usage page.
+  if (req.body?.subscriptionCosts !== undefined) {
+    validateRequest(subscriptionCostsMapSchema, req.body.subscriptionCosts);
+  }
   // User-defined catalog types moved out of settings.json into PostgreSQL
   // (`catalog_user_types`, #1001). The `/api/catalog/types` routes are the only
   // write path; a `catalogUserTypes` key in a PUT /api/settings body (legacy
@@ -264,12 +273,21 @@ router.put('/', asyncHandler(async (req, res) => {
   // would bypass the current-password proof the /api/auth/password routes
   // require. Secrets are write-only through their dedicated routes
   // (/api/auth/password, /api/github/secrets, etc.).
-  const { secrets: _ignoredSecrets, catalogUserTypes: _ignoredTypes, ...settingsPatch } = req.body || {};
+  // subscriptionCosts is excluded from the generic shallow spread below and
+  // routed through the same per-family merge PUT /api/usage/subscriptions
+  // uses (saveSubscriptionCosts) — a shallow `{ ...current, ...settingsPatch }`
+  // would replace the whole map, silently dropping any family the incoming
+  // patch didn't mention.
+  const { secrets: _ignoredSecrets, catalogUserTypes: _ignoredTypes, subscriptionCosts: subscriptionCostsPatch, ...settingsPatch } = req.body || {};
   // updateSettingsWith (not updateSettings) so we can re-inject persisted
   // write-only tokens the incoming patch omits, against the freshest snapshot
   // inside the write queue (see preserveExternallyOwnedKeys).
-  const merged = await updateSettingsWith((current) =>
+  let merged = await updateSettingsWith((current) =>
     preserveExternallyOwnedKeys({ ...current, ...settingsPatch }, current));
+  if (subscriptionCostsPatch !== undefined) {
+    const costs = await saveSubscriptionCosts(subscriptionCostsPatch);
+    merged = { ...merged, subscriptionCosts: costs };
+  }
   // The queue caches codex.parallelLimit in-process; sync it from the
   // merged value so a save takes effect without a restart and without
   // re-reading the file.

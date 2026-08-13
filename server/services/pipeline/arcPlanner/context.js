@@ -506,6 +506,41 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
   return tree;
 }
 
+// The episode leaf the arc-verify prompt scores. EXPORTED because the prompt's
+// checklist and this shape are two independent lists that have to agree, and
+// nothing but a test enforces it — a check that names a field the leaf drops
+// becomes a finding no resolver can ever close, and the foundation gate's
+// structure arm reverts whenever `verifyArc` leaves ANY blocker, so one phantom
+// finding stalls the gate forever on a plan with nothing wrong with it. That
+// happened once with `arcRole` (check #6 reported "zero pilot/finale" on every
+// pass while the data was correct). `verifyPromptContract.test.js` now asserts
+// every record field the prompt cites is rendered here.
+//
+// `synopsis` (not `beats`) matches the prompt's existing language; it is sourced
+// from idea.input, which carries the LLM's logline+synopsis.
+export const renderVerifyIssueLeaf = (iss) => ({
+  number: iss.number,
+  title: iss.title,
+  status: iss.status,
+  arcPosition: iss.arcPosition,
+  arcRole: iss.arcRole || null,
+  synopsis: (iss.stages?.idea?.input || '').trim() || null,
+});
+
+// The volume node the arc-verify prompt scores. Exported for the same contract
+// test as `renderVerifyIssueLeaf` — checks #3/#4/#7 read `endingHook`,
+// `episodeCountTarget`, and `themes` straight off this shape.
+export const renderVerifySeasonFields = (s) => ({
+  number: s.number,
+  title: s.title,
+  logline: s.logline,
+  synopsis: s.synopsis,
+  endingHook: s.endingHook,
+  episodeCountTarget: s.episodeCountTarget,
+  themes: s.themes,
+  status: s.status,
+});
+
 export async function buildVerifyContext(series, preloadedWorld, { spineOnly = false } = {}) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const [issues, base, canon] = await Promise.all([
@@ -517,32 +552,8 @@ export async function buildVerifyContext(series, preloadedWorld, { spineOnly = f
     getSeriesPlanningCanon(series),
   ]);
   const tree = groupIssuesBySeasonTree(seasons, issues, {
-    // `synopsis` key (not `beats`) so it matches the prompt's existing
-    // language; sourced from idea.input which carries the LLM's logline+synopsis.
-    // `arcRole` is required, not decorative: the verify prompt's arc-role
-    // imbalance check (#6) reports "zero pilot/finale" purely from this leaf, so
-    // omitting it made that finding unsatisfiable — a volume with a correct
-    // pilot and finale still got flagged, every pass. The foundation gate's
-    // structure arm reverts whenever verifyArc leaves any blocker, so that one
-    // permanent false positive stalled the gate on plans with nothing wrong.
-    renderLeaf: (iss) => ({
-      number: iss.number,
-      title: iss.title,
-      status: iss.status,
-      arcPosition: iss.arcPosition,
-      arcRole: iss.arcRole || null,
-      synopsis: (iss.stages?.idea?.input || '').trim() || null,
-    }),
-    seasonFields: (s) => ({
-      number: s.number,
-      title: s.title,
-      logline: s.logline,
-      synopsis: s.synopsis,
-      endingHook: s.endingHook,
-      episodeCountTarget: s.episodeCountTarget,
-      themes: s.themes,
-      status: s.status,
-    }),
+    renderLeaf: renderVerifyIssueLeaf,
+    seasonFields: renderVerifySeasonFields,
   });
   return {
     ...base,

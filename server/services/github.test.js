@@ -7,7 +7,7 @@ vi.mock('child_process', async (importOriginal) => {
 });
 
 import { spawn } from 'child_process';
-import { execGh } from './github.js';
+import { execGh, getPullRequestState } from './github.js';
 
 const makeChild = () => {
   const child = new EventEmitter();
@@ -82,5 +82,74 @@ describe('execGh', () => {
     const promise = execGh(['api', 'x'], 5000);
     child.emit('error', new Error('spawn gh ENOENT'));
     await expect(promise).rejects.toThrow(/ENOENT/);
+  });
+});
+
+// The merge-follow-up reaper turns "the forge says this PR is OPEN" into a
+// needs-manual-finish failure and "we could not ask" into leave-prior-behavior-
+// alone, so collapsing those two answers is the whole hazard this shape exists
+// to prevent (same discipline as findPullRequestForBranch, #3358).
+describe('getPullRequestState', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  const run = (prRef, drive) => {
+    const child = makeChild();
+    spawn.mockReturnValue(child);
+    const promise = getPullRequestState(prRef);
+    drive(child);
+    return promise;
+  };
+
+  it('reports a known MERGED state, upper-cased', async () => {
+    await expect(run('https://example.test/o/r/pull/7', (c) => {
+      c.stdout.emit('data', Buffer.from('{"state":"merged"}'));
+      c.emit('close', 0);
+    })).resolves.toEqual({ status: 'known', state: 'MERGED', detail: null });
+  });
+
+  it('reports a known OPEN state rather than collapsing it into "not merged"', async () => {
+    const res = await run('7', (c) => {
+      c.stdout.emit('data', Buffer.from('{"state":"OPEN"}'));
+      c.emit('close', 0);
+    });
+    expect(res).toEqual({ status: 'known', state: 'OPEN', detail: null });
+  });
+
+  it('passes the PR reference straight to `gh pr view --json state`', async () => {
+    await run('https://example.test/o/r/pull/7', (c) => {
+      c.stdout.emit('data', Buffer.from('{"state":"MERGED"}'));
+      c.emit('close', 0);
+    });
+    expect(spawn).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'view', 'https://example.test/o/r/pull/7', '--json', 'state'],
+      expect.anything()
+    );
+  });
+
+  it('reports unavailable — NOT a state — when gh fails (the firewalled-gh case)', async () => {
+    const res = await run('7', (c) => {
+      c.stderr.emit('data', Buffer.from('dial tcp: connect: bad file descriptor'));
+      c.emit('close', 1);
+    });
+    expect(res.status).toBe('unavailable');
+    expect(res.state).toBeNull();
+    expect(res.detail).toMatch(/bad file descriptor/);
+  });
+
+  it('reports unavailable when a zero-exit gh emits nothing parseable', async () => {
+    const res = await run('7', (c) => {
+      c.stdout.emit('data', Buffer.from('not json'));
+      c.emit('close', 0);
+    });
+    expect(res).toEqual({ status: 'unavailable', state: null, detail: 'gh returned unparseable output' });
+  });
+
+  it('reports unavailable without shelling out when given no reference', async () => {
+    await expect(getPullRequestState('')).resolves.toEqual({ status: 'unavailable', state: null, detail: 'no PR reference' });
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

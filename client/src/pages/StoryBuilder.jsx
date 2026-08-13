@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useId, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import { filterSelectableModels } from '../utils/providers';
@@ -20,14 +20,14 @@ import {
 import toast from '../components/ui/Toast';
 import Banner from '../components/ui/Banner';
 import { useLockToggle } from '../hooks/useLockToggle';
-import { usePipelineProgress } from '../hooks/usePipelineProgress';
+import { StoryStepRunProvider, useStoryStepRun } from '../hooks/useStoryStepRuns.jsx';
 import {
   getStoryBuilderSteps, listStorySessions, getStorySession, createStorySession,
   updateStorySession, setStoryCurrentStep, lockStoryStep, unlockStoryStep,
   generateStoryStep, refineStoryStep, setStoryIssueLock, generateStoryIssues,
-  setStorySessionSync, reconcileStorySession, storyStepProgressSseUrl,
+  setStorySessionSync, reconcileStorySession,
   getUniverse, getPipelineSeries, listPipelineIssues,
-  analyzeImport, commitImport, retryImporterIssues, IMPORTER_CONTENT_TYPES,
+  IMPORTER_CONTENT_TYPES,
   getProviders, listCatalogIngredientsByIds,
 } from '../services/api';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
@@ -35,21 +35,18 @@ import { useArcCanvasSync } from '../hooks/useArcCanvasSync';
 import { BEAT_KIND_COLORS, getBeatKindColor } from '../lib/beatColors';
 import { getCatalogType, payloadSnippet } from '../lib/catalogTypes';
 import { useCatalogTypes } from '../hooks/useCatalogTypes.jsx';
-
-// Mirror Importer.jsx's commit picker — only these arc fields are sent on commit.
-const ARC_FIELDS_TO_COMMIT = ['logline', 'summary', 'protagonistArc', 'themes', 'shape'];
+import useDrawerTab from '../hooks/useDrawerTab';
+import useStoryImportIntake from '../hooks/useStoryImportIntake';
 
 // Bible fields the embedded arc step flushes before an ArcCanvas generate/verify.
 // The Story Builder edits these on their own steps (not inside the arc step), so
 // the flush is usually a no-op — kept for API-shape parity with ArcCanvas's
 // contract. Module-level so the `useArcCanvasSync` callbacks keep a stable identity.
 const ARC_FLUSH_FIELDS = ['name', 'logline', 'premise', 'styleNotes', 'issueCountTarget', 'universeId'];
-const pickArcFields = (arc) => {
-  if (!arc) return null;
-  const out = {};
-  for (const k of ARC_FIELDS_TO_COMMIT) if (arc[k] !== undefined) out[k] = arc[k];
-  return out;
-};
+
+// Intake tabs on the index view. The active one lives in `?intake=` (via
+// useDrawerTab) rather than local state so it's shareable and reload-safe.
+const INTAKE_TABS = ['seed', 'import'];
 
 const CONTENT_TYPE_LABELS = {
   'short-story': 'Short story', novel: 'Novel', screenplay: 'Screenplay', 'comic-script': 'Comic script',
@@ -158,7 +155,14 @@ function StoryBuilderIndex() {
   // of auto-creating a fresh universe. The create schema already accepts it.
   const onrampUniverseId = searchParams.get('universeId') || undefined;
   const [sessions, setSessions] = useState([]);
-  const [mode, setMode] = useState('seed');
+  // `sessionsLoading` / `sessionsError` keep "still fetching" and "the fetch
+  // failed" distinct from "you genuinely have no saved stories" — collapsing
+  // all three into an empty array made a failed list look like a deletion
+  // (#3906). `sessionsReloadTick` re-runs the effect for the Retry button.
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState(null);
+  const [sessionsReloadTick, setSessionsReloadTick] = useState(0);
+  const [mode, setMode] = useDrawerTab('intake', 'seed', INTAKE_TABS);
   const [title, setTitle] = useState('');
   const [seedIdea, setSeedIdea] = useState('');
   const [creating, setCreating] = useState(false);
@@ -170,8 +174,21 @@ function StoryBuilderIndex() {
   const [remixIngredients, setRemixIngredients] = useState([]);
 
   useEffect(() => {
-    listStorySessions({ silent: true }).then(setSessions).catch(() => setSessions([]));
-  }, []);
+    let cancelled = false;
+    setSessionsLoading(true);
+    setSessionsError(null);
+    listStorySessions({ silent: true })
+      .then((list) => {
+        if (cancelled) return;
+        setSessions(Array.isArray(list) ? list : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSessionsError(err?.message || 'Failed to load your saved stories');
+      })
+      .finally(() => { if (!cancelled) setSessionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [sessionsReloadTick]);
 
   // Consume the remix handoff once at mount, then clear the history state so a
   // refresh doesn't re-seed (mirrors CatalogIngest's prefill-consume pattern).
@@ -216,7 +233,12 @@ function StoryBuilderIndex() {
     if (created) navigate(`/story-builder/${created.id}/idea`);
   };
 
-  const onCreated = (session) => navigate(`/story-builder/${session.id}/idea`);
+  const onCreated = useCallback((session) => navigate(`/story-builder/${session.id}/idea`), [navigate]);
+
+  // Import intake state lives HERE, not inside <ImportPanel> — the panel unmounts
+  // whenever the user flips to the "Start from an idea" tab, which used to throw
+  // away the pasted manuscript and the minute-long analysis preview (#3904).
+  const intake = useStoryImportIntake(onCreated);
 
   const tabClass = (id) => `px-4 py-2 text-sm rounded-t border-b-2 ${
     mode === id ? 'border-port-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
@@ -291,14 +313,43 @@ function StoryBuilderIndex() {
             </button>
           </div>
         ) : (
-          <ImportPanel onCreated={onCreated} />
+          <ImportPanel intake={intake} />
         )}
       </section>
 
-      {sessions.length > 0 && (
+      {/* Rendered while loading and on failure too — an empty sidebar during a
+          failed fetch reads as "my saved stories were deleted" (#3906). Only a
+          successful, genuinely-empty list hides the section. */}
+      {(sessionsLoading || sessionsError || sessions.length > 0) && (
         <section className="space-y-2">
           <h2 className="font-semibold text-gray-300">Continue a story</h2>
-          {sessions.map((s) => (
+          {sessionsLoading ? (
+            <div className="space-y-2" role="status" aria-busy="true" aria-label="Loading your stories">
+              {['w-2/3', 'w-1/2', 'w-1/3'].map((w) => (
+                <div key={w} className="bg-port-card border border-port-border rounded-lg px-4 py-3 animate-pulse">
+                  <div className={`h-4 rounded bg-port-border ${w}`} />
+                </div>
+              ))}
+            </div>
+          ) : sessionsError ? (
+            <Banner
+              tone="error"
+              icon={AlertTriangle}
+              size="md"
+              title="Couldn’t load your saved stories"
+              actions={(
+                <button
+                  type="button"
+                  onClick={() => setSessionsReloadTick((t) => t + 1)}
+                  className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white"
+                >
+                  <RefreshCw className="w-3 h-3" aria-hidden="true" /> Retry
+                </button>
+              )}
+            >
+              {sessionsError}
+            </Banner>
+          ) : sessions.map((s) => (
             <Link
               key={s.id} to={`/story-builder/${s.id}/${s.currentStep || 'idea'}`}
               className="flex items-center justify-between gap-2 bg-port-card border border-port-border rounded-lg px-4 py-3 hover:border-port-accent"
@@ -316,114 +367,19 @@ function StoryBuilderIndex() {
 
 // ── Import intake (reuses the Importer's analyze → commit) ──────────────────
 
-function ImportPanel({ onCreated }) {
-  const [universeName, setUniverseName] = useState('');
-  const [seriesName, setSeriesName] = useState('');
-  const [contentType, setContentType] = useState('comic-script');
-  const [source, setSource] = useState('');
-  const [llm, setLlm] = useState({ provider: '', model: '' });
-  const [analyzing, setAnalyzing] = useState(false);
-  const [preview, setPreview] = useState(null);
-  const [retrying, setRetrying] = useState(false);
-  const [committing, setCommitting] = useState(false);
-  // Set after a partial commit (universe/series/arc/canon persisted, issues
-  // rolled back). The retry then drops arc + seasons + canon so it only
-  // re-creates the issues — re-sending the full payload would clobber the
-  // persisted state and risk duplicate issues. Mirrors Importer.jsx.
-  const [arcAlreadyPersisted, setArcAlreadyPersisted] = useState(false);
-  // Set once commitImport fully succeeds (issues created) but createStorySession
-  // then failed — a re-click must skip commitImport entirely and resume at
-  // session creation, otherwise it re-creates the already-created issues and
-  // overwrites the arc.
-  const [committed, setCommitted] = useState(false);
-  // Any path that clears the preview (analyze, Re-analyze) is a fresh attempt,
-  // so the retry/committed state can't survive it — centralize the reset here.
-  useEffect(() => { if (!preview) { setArcAlreadyPersisted(false); setCommitted(false); } }, [preview]);
+// Presentational half of the import intake. Every field and the whole
+// analyze → commit → create-session workflow live in `useStoryImportIntake`,
+// called by the always-mounted StoryBuilderIndex and handed down as `intake` —
+// this component unmounts on every intake tab flip, so state held here would be
+// destroyed by a single click on "Start from an idea" (#3904).
+function ImportPanel({ intake }) {
+  const {
+    universeName, seriesName, contentType, source, llm,
+    analyzing, preview, retrying, committing, arcAlreadyPersisted, committed,
+    patch, analyze, retryIssues, importAndBuild,
+  } = intake;
 
   const types = IMPORTER_CONTENT_TYPES || ['short-story', 'novel', 'screenplay', 'comic-script'];
-
-  const analyze = async () => {
-    if (!universeName.trim() || !seriesName.trim() || !source.trim()) {
-      toast.error('Universe name, series name, and source text are required'); return;
-    }
-    setAnalyzing(true); setPreview(null);
-    const res = await analyzeImport(
-      {
-        universeName: universeName.trim(), seriesName: seriesName.trim(), contentType, source,
-        providerOverride: llm.provider || undefined, modelOverride: llm.model || undefined,
-      },
-      { silent: true },
-    ).catch((err) => { toast.error(err?.message || 'Analyze failed'); return null; });
-    setAnalyzing(false);
-    if (res) setPreview(res);
-  };
-
-  const retryIssues = async () => {
-    setRetrying(true);
-    const res = await retryImporterIssues(
-      {
-        contentType, source, seriesName: seriesName.trim(), arcSummary: preview?.arcPreview?.summary || '',
-        providerOverride: llm.provider || undefined, modelOverride: llm.model || undefined,
-      },
-      { silent: true },
-    ).catch((err) => { toast.error(err?.message || 'Retry failed'); return null; });
-    setRetrying(false);
-    if (res) setPreview((p) => ({ ...p, issueProposals: res.issueProposals || [], issueSplitFailed: false }));
-  };
-
-  const importAndBuild = async () => {
-    if (!preview) return;
-    const issues = preview.issueProposals || [];
-    if (issues.length === 0) { toast.error('No issues were extracted — retry the issue split or adjust the source'); return; }
-    setCommitting(true);
-    // Skip commitImport when a prior click already committed (only the later
-    // createStorySession failed) — re-running it would duplicate the
-    // already-created issues and overwrite the arc. Resume at session creation.
-    if (!committed) {
-      // On an arcAlreadyPersisted retry the server kept arc/seasons/canon from
-      // the failed commit, so resend issues only — re-sending the full payload
-      // would clobber the persisted state and risk duplicate issues.
-      const base = { universeId: preview.universe.id, seriesId: preview.series.id, issues, contentType };
-      const payload = arcAlreadyPersisted
-        ? { ...base, canonSelections: { characters: [], places: [], objects: [] }, arc: null, seasons: [] }
-        : {
-            ...base,
-            canonSelections: {
-              characters: preview.canonPreview?.characters || [],
-              places: preview.canonPreview?.places || [],
-              objects: preview.canonPreview?.objects || [],
-            },
-            arc: pickArcFields(preview.arcPreview),
-            seasons: preview.seasonsPreview || [],
-          };
-      const result = await commitImport(payload, { silent: true }).catch((err) => {
-        if (err?.code === 'IMPORTER_PARTIAL_COMMIT_ISSUES' && err?.context?.arcAlreadyPersisted) {
-          setArcAlreadyPersisted(true);
-          toast.warning('Arc + seasons saved; issues failed and were rolled back. Click again to re-create the issues only — the arc won\'t be re-sent.');
-          return null;
-        }
-        toast.error(err?.message || 'Import failed');
-        return null;
-      });
-      if (!result) { setCommitting(false); return; }
-      setArcAlreadyPersisted(false);
-      setCommitted(true);
-    }
-    const session = await createStorySession({
-      intakeMode: 'import',
-      title: seriesName.trim() || universeName.trim(),
-      // Seed from the extracted arc so the idea step has context and the
-      // universe-aesthetic expand has a real starter (the imported universe
-      // otherwise only has a name).
-      seedIdea: (preview.arcPreview?.summary || preview.arcPreview?.logline || '').slice(0, 4000),
-      universeId: preview.universe.id,
-      seriesId: preview.series.id,
-      // Persist the picker choice so every in-wizard operation uses it too.
-      llm: { provider: llm.provider || null, model: llm.model || null },
-    }, { silent: true }).catch((err) => { toast.error(err?.message || 'Failed to start the builder'); return null; });
-    setCommitting(false);
-    if (session) onCreated(session);
-  };
 
   const canon = preview?.canonPreview || {};
   const issueCount = preview?.issueProposals?.length || 0;
@@ -436,23 +392,23 @@ function ImportPanel({ onCreated }) {
       </p>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-xs text-gray-500">Provider/model used for this import and every later step:</span>
-        <ProviderModelPicker value={llm} onChange={setLlm} />
+        <ProviderModelPicker value={llm} onChange={(next) => patch({ llm: next })} />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label htmlFor="imp-uni" className="block text-sm text-gray-400 mb-1">Universe name</label>
-          <input id="imp-uni" type="text" value={universeName} onChange={(e) => setUniverseName(e.target.value)}
+          <input id="imp-uni" type="text" value={universeName} onChange={(e) => patch({ universeName: e.target.value })}
             placeholder="e.g. Giant" className="w-full bg-port-bg border border-port-border rounded px-3 py-2" />
         </div>
         <div>
           <label htmlFor="imp-ser" className="block text-sm text-gray-400 mb-1">Series name</label>
-          <input id="imp-ser" type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)}
+          <input id="imp-ser" type="text" value={seriesName} onChange={(e) => patch({ seriesName: e.target.value })}
             placeholder="e.g. Giant" className="w-full bg-port-bg border border-port-border rounded px-3 py-2" />
         </div>
       </div>
       <div>
         <label htmlFor="imp-type" className="block text-sm text-gray-400 mb-1">Content type</label>
-        <select id="imp-type" value={contentType} onChange={(e) => setContentType(e.target.value)}
+        <select id="imp-type" value={contentType} onChange={(e) => patch({ contentType: e.target.value })}
           className="w-full bg-port-bg border border-port-border rounded px-3 py-2">
           {types.map((t) => <option key={t} value={t}>{CONTENT_TYPE_LABELS[t] || t}</option>)}
         </select>
@@ -461,7 +417,7 @@ function ImportPanel({ onCreated }) {
         <label htmlFor="imp-src" className="block text-sm text-gray-400 mb-1">
           Source text <span className="text-gray-600">({source.length.toLocaleString()} chars)</span>
         </label>
-        <textarea id="imp-src" value={source} onChange={(e) => setSource(e.target.value)} rows={8}
+        <textarea id="imp-src" value={source} onChange={(e) => patch({ source: e.target.value })} rows={8}
           placeholder="Paste the full script / manuscript here…"
           className="w-full bg-port-bg border border-port-border rounded px-3 py-2 font-mono text-xs" />
       </div>
@@ -500,7 +456,7 @@ function ImportPanel({ onCreated }) {
               {committing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               {committed ? 'Retry starting the builder' : arcAlreadyPersisted ? 'Retry issues & start building' : 'Import & start building'}
             </button>
-            <button onClick={() => setPreview(null)} disabled={committing}
+            <button onClick={() => patch({ preview: null })} disabled={committing}
               className="text-sm text-gray-400 hover:text-white px-2">Re-analyze</button>
           </div>
         </div>
@@ -636,76 +592,6 @@ function ReaderMapView({ readerMap, tickingClock }) {
   );
 }
 
-// Kick off a step generate/refine and drive its SSE progress stream. The POST
-// returns immediately; we enable the stream only after it resolves so the run
-// is registered server-side before the EventSource connects (matches the
-// pipeline auto-run). The result content lives in the universe/series records,
-// so callers refetch via `onComplete` rather than reading a payload off the
-// frame. `op` lets a panel show the live phase on the button that triggered the
-// run while leaving sibling buttons merely disabled.
-function useStepStream(sessionId, stepId) {
-  const [starting, setStarting] = useState(false);
-  const [active, setActive] = useState(false);
-  const [phase, setPhase] = useState('');
-  const [op, setOp] = useState(null);
-  const handlersRef = useRef(null);
-  // The runId we're waiting on. useSseProgress only resets its `latest` a render
-  // AFTER `enabled` flips true, so on the subscribe render `latest` still holds
-  // the PREVIOUS run's terminal frame. Gating the terminal branches on a frame's
-  // runId stops that stale frame from firing the new run's onComplete instantly.
-  const runIdRef = useRef(null);
-  // Enable only after the kickoff POST resolves (so the run is registered
-  // server-side before the EventSource connects) — see the step runner below.
-  const { latest, closed } = usePipelineProgress(storyStepProgressSseUrl, [sessionId, stepId], { enabled: active });
-
-  const settle = useCallback(() => {
-    setActive(false); setPhase(''); setOp(null);
-    runIdRef.current = null;
-    const h = handlersRef.current; handlersRef.current = null;
-    return h;
-  }, []);
-
-  // One effect handles every end-of-run path. A terminal frame and the stream's
-  // `closed` flag arrive together on completion, so the ordered branches (and
-  // settle() flipping `active` false) ensure exactly one of onComplete/onError
-  // fires — a separate `closed` effect would double-fire on the same render. The
-  // bare-`closed` branch covers a stream that died before any terminal frame
-  // (server pruned a fast run, or the connection dropped) so the button unsticks.
-  useEffect(() => {
-    if (!active) return;
-    // Ignore frames belonging to a previous run (stale `latest` not yet reset by
-    // the SSE hook). closed is reset on every (re)subscribe, so it never lingers.
-    const mine = latest && latest.runId === runIdRef.current;
-    if (mine && typeof latest.label === 'string' && latest.label) setPhase(latest.label);
-    if (mine && latest.type === 'complete') settle()?.onComplete?.(latest);
-    else if (mine && latest.type === 'error') settle()?.onError?.(new Error(latest.error || 'Generation failed'));
-    else if (closed) settle()?.onError?.(new Error('Lost connection to the generation stream'));
-  }, [latest, closed, active, settle]);
-
-  const start = useCallback(async (nextOp, kickoff, handlers = {}) => {
-    if (starting || active) return;
-    setStarting(true); setPhase('Starting…'); setOp(nextOp);
-    const res = await kickoff().catch((err) => { handlers.onError?.(err); return null; });
-    setStarting(false);
-    if (!res) { setPhase(''); setOp(null); return; }
-    // The kickoff collided with a DIFFERENT in-flight request for this step (a
-    // different op, or a refine of a different target/note). That run persists to
-    // the same records, so binding THIS button's success handler to its terminal
-    // frame would misreport. Don't subscribe — report it and leave the run alone.
-    // (A same-work re-click returns alreadyRunning without conflict and re-attaches.)
-    if (res.conflict) {
-      setPhase(''); setOp(null);
-      handlers.onError?.(new Error('Another operation is already running for this step — try again once it finishes.'));
-      return;
-    }
-    handlersRef.current = handlers;
-    runIdRef.current = res.runId; // only frames from this run drive our handlers
-    setActive(true); // enable the SSE subscription now that the run is registered
-  }, [starting, active]);
-
-  return { start, busy: starting || active, phase, op };
-}
-
 function RefineBox({ onRefine, disabled, busy, running, phase }) {
   const [feedback, setFeedback] = useState('');
   return (
@@ -731,8 +617,8 @@ function RefineBox({ onRefine, disabled, busy, running, phase }) {
   );
 }
 
-function StepPanel({ session, universe, series, issues, stepId, locked, onChanged, onSeriesUpdate, onIssuesUpdate, onFlushPending, onUniverseCharRef }) {
-  const { start, busy, phase, op } = useStepStream(session.id, stepId);
+function StepPanel({ session, universe, series, issues, stepId, locked, onChanged, onSeriesUpdate, onIssuesUpdate, onFlushPending, onRegisterDraftFlush, onUniverseCharRef }) {
+  const { start, busy, phase, op } = useStoryStepRun(stepId);
   const arc = series?.arc || {};
   const isRunning = (which) => busy && op === which;
 
@@ -866,6 +752,7 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
               onSeriesUpdate={onSeriesUpdate}
               onIssuesUpdate={onIssuesUpdate}
               onFlushPending={onFlushPending}
+              onRegisterDraftFlush={onRegisterDraftFlush}
             />
           </div>
         ) : (
@@ -930,8 +817,12 @@ function StepCharacters({ session, universe, locked, onChanged, onUniverseCharRe
   const cast = universe?.characters || [];
   // Universe canon renders, so they resolve the universe's pin ladder (see renderPinLadder).
   const { imageCfg } = useImageRenderSettings({ record: universe, target: RENDER_TARGET.UNIVERSE_BIBLE });
-  const [refiningId, setRefiningId] = useState(null);
-  const { start: startRefine, busy: refineBusy, phase: refinePhase } = useStepStream(session.id, 'characters');
+  // Which character the in-flight refine targets rides on the RUN (`meta`), not
+  // on local state — this panel unmounts when the user clicks another step on
+  // the rail, and the run outlives it (#3905), so local state would come back
+  // empty and the spinner would land on nobody.
+  const { start: startRefine, busy: refineBusy, phase: refinePhase, meta: refineMeta } = useStoryStepRun('characters');
+  const refiningId = refineMeta?.entryId || null;
 
   // Section-local renders now carry a durable `universeRun.entryRef` tag (#1362),
   // so the server-side `appendEntryImageRef` hook persists the filename onto the
@@ -971,15 +862,14 @@ function StepCharacters({ session, universe, locked, onChanged, onUniverseCharRe
 
   const refineChar = (entryId) => {
     if (refineBusy) return;
-    setRefiningId(entryId);
     startRefine('refine',
       () => refineStoryStep(session.id, 'characters', { entryId }, { silent: true }),
       { onComplete: (frame) => {
-          setRefiningId(null);
           toast.success(frame.changes?.length ? `Refined — ${frame.changes.length} change(s)` : 'Refined');
           onChanged();
         },
-        onError: (err) => { setRefiningId(null); toast.error(err?.message || 'Refine failed'); } });
+        onError: (err) => toast.error(err?.message || 'Refine failed') },
+      { entryId });
   };
 
   return (
@@ -1129,6 +1019,15 @@ function IssuesPanel({ session, series, issues, onChanged }) {
 
 // ── Detail view: stepper + active panel ─────────────────────────────────────
 
+// Why the footer "Next >" button is (or isn't) actionable. The rail is un-gated
+// — this button is the *conventional* path, so a disabled state with no stated
+// reason reads as a bug rather than as guidance (#3908).
+function nextButtonReason({ locked, stale }) {
+  if (stale) return 'An upstream step changed — re-lock this step to advance.';
+  if (!locked) return 'Lock this step to advance to the next step.';
+  return 'Go to the next step.';
+}
+
 function StoryBuilderDetail({ storyId, stepParam }) {
   const navigate = useNavigate();
   const [steps, setSteps] = useState([]);
@@ -1141,8 +1040,18 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   const [loading, setLoading] = useState(true);
   const [syncBusy, setSyncBusy] = useState(false);
 
+  // Runs on different steps can now finish while the user is elsewhere in the
+  // wizard (#3905), so two `reload()`s can be in flight at once — and this one
+  // awaits three round trips before it writes. Without a generation stamp the
+  // SLOWER reload wins every setter it reaches last, painting the view with
+  // records fetched before the newer completion landed.
+  const reloadGenRef = useRef(0);
+
   const reload = useCallback(async () => {
+    const gen = ++reloadGenRef.current;
+    const isCurrent = () => reloadGenRef.current === gen;
     const s = await getStorySession(storyId, { silent: true }).catch(() => null);
+    if (!isCurrent()) return;
     if (!s) { setSession(null); setLoading(false); return; }
     setSession(s);
     setStaleSteps(s.staleSteps || []);
@@ -1153,10 +1062,12 @@ function StoryBuilderDetail({ storyId, stepParam }) {
       s.universeId ? getUniverse(s.universeId, { silent: true }).catch(() => null) : Promise.resolve(null),
       s.seriesId ? getPipelineSeries(s.seriesId, { silent: true }).catch(() => null) : Promise.resolve(null),
     ]);
+    if (!isCurrent()) return;
     setUniverse(u);
     setSeries(ser);
     if (s.seriesId) {
       const iss = await listPipelineIssues(s.seriesId, { silent: true }).catch(() => []);
+      if (!isCurrent()) return;
       setIssues(Array.isArray(iss) ? iss : (iss?.items || []));
     }
     setLoading(false);
@@ -1188,7 +1099,7 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   // server-confirmed setters. The flush is usually a no-op here (the bible
   // fields are edited on their own steps, not inside the arc step), so a
   // pre-flush save failure is swallowed (silent) rather than toasted.
-  const { updateSeriesFromServer, handleIssuesUpdate, flushPending } = useArcCanvasSync({
+  const { updateSeriesFromServer, handleIssuesUpdate, flushPending, registerDraftFlush } = useArcCanvasSync({
     series,
     setSeries,
     setIssues,
@@ -1212,6 +1123,9 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   const activeStep = steps[activeIdx];
   const stepState = session?.steps?.[activeStepId] || { status: 'pending', locked: false };
   const isStale = staleSteps.includes(activeStepId);
+  const nextHintId = useId();
+  const nextBlocked = !stepState.locked || isStale;
+  const nextReason = nextButtonReason({ locked: stepState.locked, stale: isStale });
 
   // Navigation is advisory, not gated: the user may start from any point and
   // work the steps out of order (e.g. start from a drafted comic script and
@@ -1228,7 +1142,15 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   }, [stepIds, session, staleSteps]);
 
   const lock = useLockToggle({
-    patchFn: (next) => (next ? lockStoryStep(storyId, activeStepId, { silent: true }) : unlockStoryStep(storyId, activeStepId, { silent: true })),
+    // Locking makes the step read-only server-side, so anything still pending
+    // on screen (dirty bible fields, an open Arc Canvas editor) must land
+    // FIRST — otherwise its save is rejected by the fresh lock and the user's
+    // last edits are silently lost (#3907). Unlocking re-opens the step and has
+    // nothing to preserve, so it skips the flush.
+    patchFn: async (next) => {
+      if (next) await flushPending();
+      return next ? lockStoryStep(storyId, activeStepId, { silent: true }) : unlockStoryStep(storyId, activeStepId, { silent: true });
+    },
     onSuccess: (_updated, next) => {
       reload();
       // "Lock & continue" should actually continue — on a successful LOCK,
@@ -1442,6 +1364,7 @@ function StoryBuilderDetail({ storyId, stepParam }) {
               onSeriesUpdate={updateSeriesFromServer}
               onIssuesUpdate={handleIssuesUpdate}
               onFlushPending={flushPending}
+              onRegisterDraftFlush={registerDraftFlush}
               onUniverseCharRef={applyUniverseCharRef}
             />
 
@@ -1464,13 +1387,25 @@ function StoryBuilderDetail({ storyId, stepParam }) {
                   </button>
                 )}
                 {activeIdx < steps.length - 1 && (
-                  <button
-                    onClick={() => goToStep(stepIds[activeIdx + 1])}
-                    disabled={!stepState.locked || isStale}
-                    className="inline-flex items-center gap-1 text-sm bg-port-accent hover:bg-port-accent/80 disabled:opacity-40 text-white px-3 py-1.5 rounded"
-                  >
-                    Next <ChevronRight className="w-4 h-4" />
-                  </button>
+                  <>
+                    {/* `aria-disabled` (not `disabled`) keeps the button focusable so
+                        keyboard/screen-reader users can reach it and hear the reason via
+                        the sr-only hint; `title` covers the mouse case. Same pattern as
+                        ExtractCanonButton.jsx. */}
+                    <button
+                      type="button"
+                      onClick={nextBlocked ? undefined : () => goToStep(stepIds[activeIdx + 1])}
+                      aria-disabled={nextBlocked || undefined}
+                      aria-describedby={nextHintId}
+                      title={nextReason}
+                      className={`inline-flex items-center gap-1 text-sm bg-port-accent text-white px-3 py-1.5 rounded ${
+                        nextBlocked ? 'opacity-40 cursor-not-allowed' : 'hover:bg-port-accent/80'
+                      }`}
+                    >
+                      Next <ChevronRight className="w-4 h-4" />
+                    </button>
+                    <span id={nextHintId} className="sr-only">{nextReason}</span>
+                  </>
                 )}
               </div>
             </div>
@@ -1484,5 +1419,12 @@ function StoryBuilderDetail({ storyId, stepParam }) {
 export default function StoryBuilder() {
   const { storyId, step } = useParams();
   if (!storyId) return <StoryBuilderIndex />;
-  return <StoryBuilderDetail storyId={storyId} stepParam={step} />;
+  // The provider sits ABOVE the detail view (which itself swaps out for a
+  // skeleton on reload and for a "not found" notice on a deleted session), so an
+  // in-flight generate/refine survives step navigation AND those swaps (#3905).
+  return (
+    <StoryStepRunProvider sessionId={storyId}>
+      <StoryBuilderDetail storyId={storyId} stepParam={step} />
+    </StoryStepRunProvider>
+  );
 }

@@ -35,8 +35,9 @@ vi.mock('./github.js', async (importActual) => ({
   checkGhHealth: (...a) => ghHealth(...a),
 }));
 
-import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, recordPerpetualTransient, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock, resolveSwarmBlock, isCooldownExemptTask, emitOnDemandEmpty, recordPerpetualTransient, buildJiraTicketTask, buildImprovementDedupSets, normalizeWorkItemRef, buildTargetWorkItemBlock, resolveTaskInputHook, resolveReconcileDrainGate, applyPerpetualDrainCap } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
+import { DEFAULT_TASK_INTERVALS } from './taskSchedule.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -482,10 +483,15 @@ describe('resolveSwarmBlock', () => {
   it('instructs the orchestrator to still write the completion sentinel after a swarm run', () => {
     // Swarm work ships via PRs with no working-tree change, so without an
     // explicit instruction the orchestrator skips the completion sentinel and
-    // the CoS task hangs as if it never finished. Phase C must name the sentinel.
+    // the CoS task hangs as if it never finished. Phase C must point at the
+    // sentinel — by reference, since the filename carries the agent id and the
+    // exact path is handed over by the Completion Workflow section.
     const block = resolveSwarmBlock('claim-issue', 3);
-    expect(block).toContain('.agent-done');
+    expect(block).toContain('completion sentinel');
     expect(block).toContain('Completion Workflow');
+    // Naming a literal `.agent-done` here would send the orchestrator to a path
+    // no poller watches.
+    expect(block).not.toMatch(/\.agent-done/);
   });
 
   it('gives every fan-out agent its own scratch subdirectory', () => {
@@ -1128,4 +1134,193 @@ describe('ignoreTaskId reaches BOTH completion-continuation generators (#3179)',
     expect(COS_SRC).toMatch(/async function dequeueNextTask\(\{ ignoreTaskId = null \} = \{\}\)/);
     expect(COS_SRC).toContain('generateIdleReviewTask(state, { ignoreTaskId })');
   });
+});
+
+/**
+ * The perpetual reconcile drains (branch- and issue-reconcile) re-issue themselves
+ * after every completed run, so their brakes are all that stands between them and
+ * a runaway. On 2026-08-12 the signature brake was missing in practice — the refill
+ * rode the on-demand lane, which reset the convergence signature on every hop —
+ * and ~40 branch-reconcile coordinators ran between 05:19 and 08:47 against the
+ * same two branches. The consecutive-dispatch cap is NOT this gate's job any more
+ * (#3848): it moved to applyPerpetualDrainCap so every perpetual drain gets it.
+ */
+describe('resolveReconcileDrainGate', () => {
+  // Stand-in for the injected taskSchedule module.
+  const fakeSchedule = ({ signature = null, dispatchCount = 0 } = {}) => ({
+    getPerpetualDrainState: vi.fn(async () => ({ signature, dispatchCount })),
+    parkPerpetual: vi.fn(async () => {}),
+    recordPerpetualDispatch: vi.fn(async () => dispatchCount + 1)
+  });
+  const app = { id: 'app-1', name: 'App One' };
+  const ctx = (over = {}) => ({
+    signature: 'a:NEEDS_PR:none', actionableCount: 1,
+    label: '🔀 branch-reconcile', unit: 'branch(es)', ...over
+  });
+
+  it('dispatches when the set advanced', async () => {
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none|b:IN_REVIEW:5', dispatchCount: 2 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx())).toBe(true);
+    expect(ts.parkPerpetual).not.toHaveBeenCalled();
+    // One write carries all three facts (park cleared, signature recorded, dispatch spent).
+    expect(ts.recordPerpetualDispatch).toHaveBeenCalledWith('branch-reconcile', 'app-1', 'a:NEEDS_PR:none');
+  });
+
+  it('parks no-progress on an unchanged set, clearing signature + counter in the park write', async () => {
+    const ts = fakeSchedule({ signature: 'a:NEEDS_PR:none', dispatchCount: 1 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx())).toBe(false);
+    expect(ts.parkPerpetual).toHaveBeenCalledWith('branch-reconcile', 'app-1', {
+      reason: 'no-progress', actionableCount: 1, signature: null
+    });
+    expect(ts.recordPerpetualDispatch).not.toHaveBeenCalled();
+  });
+
+  // Exactly one implementation of the cap survives, and it is not this one — an
+  // advanced set dispatches here no matter how much budget has been spent, because
+  // applyPerpetualDrainCap already ran (and returned) at the choke point.
+  it('no longer applies a dispatch cap of its own', async () => {
+    const ts = fakeSchedule({ signature: 'stale-sig', dispatchCount: 99 });
+    expect(await resolveReconcileDrainGate(ts, 'branch-reconcile', app, ctx({ actionableCount: 3 }))).toBe(true);
+    expect(ts.parkPerpetual).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The ONE consecutive-dispatch cap, at the choke point every spawn engine funnels
+ * through. Per type so a bound that suits the reconcile scans (a handful of
+ * branches a day) cannot throttle a healthy claim-issue drain to five issues a
+ * window — the claim drains ship with no cap at all and stay unbounded (#3848).
+ */
+describe('applyPerpetualDrainCap', () => {
+  const fakeSchedule = (dispatchCount = 0) => ({
+    INTERVAL_TYPES: { PERPETUAL: 'perpetual' },
+    getPerpetualDrainState: vi.fn(async () => ({ signature: null, dispatchCount })),
+    parkPerpetual: vi.fn(async () => {})
+  });
+  const app = { id: 'app-1', name: 'App One' };
+  const perpetual = (over = {}) => ({ type: 'perpetual', ...over });
+
+  it('parks drain-cap once the budget is spent, clearing the signature in the park write', async () => {
+    const ts = fakeSchedule(5);
+    expect(await applyPerpetualDrainCap(app, 'branch-reconcile', perpetual({ drainDispatchCap: 5 }), ts)).toEqual({ skip: true });
+    // The counter is zeroed by parkPerpetual's default — every park ends a window.
+    expect(ts.parkPerpetual).toHaveBeenCalledWith('branch-reconcile', 'app-1', {
+      reason: 'drain-cap', signature: null
+    });
+  });
+
+  it('reads a hand-edited numeric string as the cap rather than silently unbounding the guard', async () => {
+    const ts = fakeSchedule(5);
+    expect(await applyPerpetualDrainCap(app, 'branch-reconcile', perpetual({ drainDispatchCap: '5' }), ts)).toEqual({ skip: true });
+  });
+
+  it('spends exactly CAP dispatches before capping', async () => {
+    const outcomes = [];
+    for (let dispatchCount = 0; dispatchCount <= 5; dispatchCount += 1) {
+      outcomes.push((await applyPerpetualDrainCap(app, 'branch-reconcile', perpetual({ drainDispatchCap: 5 }), fakeSchedule(dispatchCount))).skip);
+    }
+    expect(outcomes).toEqual([false, false, false, false, false, true]);
+  });
+
+  // The whole reason the cap is per-type: an uncapped claim drain must keep going.
+  it('never parks a perpetual type with no cap configured, however many hops it has taken', async () => {
+    for (const drainDispatchCap of [undefined, null, '', 'nope', 0, -1]) {
+      const ts = fakeSchedule(500);
+      expect(await applyPerpetualDrainCap(app, 'claim-issue', perpetual({ drainDispatchCap }), ts)).toEqual({ skip: false });
+      expect(ts.parkPerpetual).not.toHaveBeenCalled();
+      // Unbounded types must not even pay for the state read.
+      expect(ts.getPerpetualDrainState).not.toHaveBeenCalled();
+    }
+  });
+
+  it('ignores non-perpetual intervals entirely', async () => {
+    const ts = fakeSchedule(500);
+    expect(await applyPerpetualDrainCap(app, 'branch-reconcile', { type: 'daily', drainDispatchCap: 5 }, ts)).toEqual({ skip: false });
+    expect(ts.getPerpetualDrainState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The cap is checked ONCE, at the single point all four spawn engines funnel
+ * through, and BEFORE the detectors/scans it would only discard the results of.
+ */
+describe('the drain cap has exactly one implementation, at the choke point', () => {
+  it('generateManagedAppImprovementTaskForType applies it ahead of the work gate and the reconcile scans', () => {
+    const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
+    const capIdx = body.indexOf('applyPerpetualDrainCap(app, taskType, interval, taskSchedule)');
+    expect(capIdx, 'the choke point must apply the per-type drain cap').toBeGreaterThan(-1);
+    expect(capIdx).toBeLessThan(body.indexOf('applyPerpetualWorkGate('));
+    expect(capIdx).toBeLessThan(body.indexOf('resolveBranchReconcileBlock('));
+    expect(capIdx).toBeLessThan(body.indexOf('resolveIssueReconcileBlock('));
+  });
+
+  it('no second cap implementation reads PERPETUAL_DRAIN_DISPATCH_CAP or re-parks drain-cap', () => {
+    // The reconcile gate used to carry its own copy; the constant now only names
+    // the DEFAULT_TASK_INTERVALS value for the two reconcile types.
+    expect(GEN_SRC).not.toContain('PERPETUAL_DRAIN_DISPATCH_CAP');
+    expect(GEN_SRC.match(/reason: 'drain-cap'/g) || []).toHaveLength(1);
+  });
+
+  it("the reconcile types ship a cap and the claim drains deliberately do not", () => {
+    for (const taskType of ['branch-reconcile', 'issue-reconcile']) {
+      expect(DEFAULT_TASK_INTERVALS[taskType].drainDispatchCap).toBe(5);
+    }
+    for (const taskType of ['claim-issue', 'claim-work', 'plan-task']) {
+      expect(DEFAULT_TASK_INTERVALS[taskType].drainDispatchCap).toBeUndefined();
+    }
+  });
+
+  // The counter must move for the non-reconcile drains or their cap could never
+  // fire — but it must move ONLY when a task is really produced. Gates that run
+  // after the work gate can still return null (applyPlanIdMetadata skips plan-task
+  // when every unchecked item is in-flight), so charging the budget inside the gate
+  // would exhaust a capped drain on evaluations alone.
+  it('the work gate defers its dispatch spend to the caller, which charges it only once a task is certain', () => {
+    const start = GEN_SRC.indexOf('async function applyPerpetualWorkGate');
+    const gate = GEN_SRC.slice(start, GEN_SRC.indexOf('\n}', start));
+    expect(gate).toContain('spendDispatch: true');
+    expect(gate, 'the gate must not charge the budget itself').not.toContain('recordPerpetualDispatch');
+
+    const genStart = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    const body = GEN_SRC.slice(genStart, GEN_SRC.indexOf('return task;', genStart));
+    const spendIdx = body.indexOf('if (perpetualGate.spendDispatch) await taskSchedule.recordPerpetualDispatch(taskType, app.id, null)');
+    expect(spendIdx, 'the choke point must spend the deferred dispatch').toBeGreaterThan(-1);
+    // Every `return null` gate must precede it — planId is the last one.
+    expect(body.indexOf('planMeta.skipReason')).toBeLessThan(spendIdx);
+  });
+});
+
+/**
+ * The loop's root cause: the drain's completion refill re-issues itself through the
+ * on-demand lane, and BOTH on-demand engines treated every request as a human "Run"
+ * — resetting the park, the convergence signature, and the dispatch counter, i.e.
+ * every brake the drain has. Either engine may drain a given request, so both must
+ * gate the reset on origin.
+ */
+describe('automated drain refills do not clear their own convergence brakes', () => {
+  it('the refill stamps origin: refill', () => {
+    expect(COS_SRC).toMatch(/triggerOnDemandTask\(plan\.taskType, plan\.appId, \{\s*emit: false, origin: taskScheduleMod\.ON_DEMAND_ORIGINS\.REFILL\s*\}\)/);
+  });
+
+  // The origin check lives in taskSchedule.applyOnDemandRunResets (behaviorally
+  // tested there), so what matters HERE is that no engine reaches around it: an
+  // engine calling the reset primitives directly is the exact regression, since
+  // that is the shape the loop had.
+  for (const [engine, src] of [['cos.dequeueNextTask', () => COS_SRC], ['cosTaskGenerator.spawnPriority0OnDemand', () => GEN_SRC]]) {
+    it(`${engine} resets on-demand state only through applyOnDemandRunResets`, () => {
+      const text = src();
+      expect(text).toMatch(/const userInitiated = await task[Ss]chedule(Mod)?\.applyOnDemandRunResets\(request, targetApp\?\.id \?\? null\)/);
+      for (const fn of ['resetPerpetualForManualRun', 'clearTaskTypeFailurePark']) {
+        const direct = text.split('\n').filter((l) => l.includes(`.${fn}(request.taskType`));
+        expect(direct, `${engine} must not call ${fn} directly — go through applyOnDemandRunResets`).toEqual([]);
+      }
+    });
+
+    // A refill that toasts "nothing to do" turns a healthy overnight drain into a
+    // pile of notifications nobody asked for.
+    it(`${engine} only reports an empty result for a user-initiated request`, () => {
+      expect(src()).toMatch(/\}\s*else if \(!task && userInitiated\) \{/);
+    });
+  }
 });

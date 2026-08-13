@@ -14,6 +14,8 @@ import {
   createWorkActivityTracker,
   createGenerationActivityTracker,
   createSelfClearingSignalGate,
+  SELF_CLEARING_RESUBMIT_INTERVAL_MS,
+  SELF_CLEARING_RESUBMIT_ECHO_MS,
   MERGE_QUEUE_IDLE_TIMEOUT_MS,
   isMergeQueueSignal,
   createMergeQueueTracker,
@@ -54,6 +56,7 @@ import {
   createInputReadyTracker,
   AGY_INPUT_READY_PATTERN,
 } from './tuiHandshake.js';
+import { detectImmediateFallbackSignal } from './aiToolkit/errorDetection.js';
 import { CODEX_CONFIGURED_DEFAULT } from './providerModels.js';
 import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
@@ -253,10 +256,16 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(tracker.active).toBe(true);
   });
 
-  it('createGenerationActivityTracker latches on the esc-to-cancel footer', () => {
+  // `esc to cancel` is agy's in-flight footer AND its slash-command-palette
+  // footer, down to the trailing status line — so it proves nothing. Verbatim
+  // from agent-03904eb1, which was parked on the eligibility banner when a
+  // `/usage` scrape opened the palette in its session: reading this as recovery
+  // disarmed the retry and the fail-over, and the run idle-reaped into a bogus
+  // `idle-no-changes`.
+  it('createGenerationActivityTracker ignores the ambiguous esc-to-cancel footer', () => {
     const tracker = createGenerationActivityTracker();
-    tracker.observe('esc to cancelGemini 3.6 Flash   high');
-    expect(tracker.active).toBe(true);
+    tracker.observe('  ↑/↓ Navigate · enter Select · tab Complete\nesc to cancelGemini 3.6 Flash · medium');
+    expect(tracker.active).toBe(false);
   });
 
   it('createGenerationActivityTracker also admits the Claude/Codex elapsed counter', () => {
@@ -293,9 +302,9 @@ describe('tuiHandshake — paste timing constants', () => {
   // The sibling trackers each had to learn this after review found the miss.
   it('createGenerationActivityTracker matches chrome split across PTY chunks', () => {
     const tracker = createGenerationActivityTracker();
-    tracker.observe('esc to ');
+    tracker.observe('Generat');
     expect(tracker.active).toBe(false);
-    tracker.observe('cancel');
+    tracker.observe('ing…');
     expect(tracker.active).toBe(true);
   });
 
@@ -311,7 +320,7 @@ describe('tuiHandshake — paste timing constants', () => {
 
   it('createGenerationActivityTracker matches chrome mid-way through a large chunk', () => {
     const tracker = createGenerationActivityTracker();
-    tracker.observe(`${'a'.repeat(300)}esc to cancel${'b'.repeat(300)}`);
+    tracker.observe(`${'a'.repeat(300)}Generating…${'b'.repeat(300)}`);
     expect(tracker.active).toBe(true);
   });
 
@@ -344,7 +353,7 @@ describe('tuiHandshake — paste timing constants', () => {
     it('closes on the first sign of generation instead of holding to the deadline', () => {
       const gate = createSelfClearingSignalGate();
       gate.arm(BANNER, 1000);
-      expect(gate.observe('Generating...')).toBe(true);
+      expect(gate.observe('Generating...', 2000)).toBe(true);
       expect(gate.armed).toBe(false);
       // Nothing left to fail over with — the run continues.
       expect(gate.takeExpired(61000)).toBeNull();
@@ -356,18 +365,36 @@ describe('tuiHandshake — paste timing constants', () => {
     it('does not re-arm on a stale banner match after the provider recovered', () => {
       const gate = createSelfClearingSignalGate();
       gate.arm(BANNER, 1000);
-      gate.observe('Generating...');
+      gate.observe('Generating...', 2000);
       expect(gate.recovered).toBe(true);
       expect(gate.arm(BANNER, 2000)).toBe(false);
       expect(gate.takeExpired(120000)).toBeNull();
     });
 
+    // Replays agent-03904eb1 (2026-08-12), the run that made this whole file's
+    // fail-over unreachable: parked on the eligibility banner, a `/usage` scrape
+    // opened agy's slash-command palette in its session, and the palette's
+    // `esc to cancel` footer read as recovery. The gate latched, which disarms
+    // BOTH the re-submission and the fail-over, so the run sat silent until the
+    // idle reaper finalized it as a bogus `idle-no-changes` — the "agy hangs on
+    // Verifying your account" report. Palette chrome must leave the window open.
+    it('does not accept slash-command-palette chrome as recovery', () => {
+      const gate = createSelfClearingSignalGate();
+      gate.arm(BANNER, 1000);
+      // Verbatim shapes from that transcript, ANSI-stripped.
+      expect(gate.observe('/\n> /add-dir             Add a directory to the workspace', 2000)).toBe(false);
+      expect(gate.observe('  ↑/↓ Navigate · enter Select · tab Complete\nesc to cancelu', 3000)).toBe(false);
+      expect(gate.observe('esc to cancelGemini 3.6 Flash · medium', 4000)).toBe(false);
+      expect(gate.armed).toBe(true);
+      expect(gate.takeExpired(61001)).toBe(BANNER);
+    });
+
     it('does not treat pre-arm output as evidence of recovery', () => {
       const gate = createSelfClearingSignalGate();
-      expect(gate.observe('Generating...')).toBe(false);
+      expect(gate.observe('Generating...', 500)).toBe(false);
       gate.arm(BANNER, 1000);
       // Only the banner screen repaints from here — still stuck.
-      gate.observe('> ? for shortcuts');
+      gate.observe('> ? for shortcuts', 2000);
       expect(gate.takeExpired(61001)).toBe(BANNER);
     });
 
@@ -386,7 +413,7 @@ describe('tuiHandshake — paste timing constants', () => {
     it('force-expiry still returns null once the provider recovered', () => {
       const gate = createSelfClearingSignalGate();
       gate.arm(BANNER, 1000);
-      gate.observe('Generating...');
+      gate.observe('Generating...', 2000);
       expect(gate.takeExpired()).toBeNull();
     });
 
@@ -395,6 +422,96 @@ describe('tuiHandshake — paste timing constants', () => {
       gate.arm({ message: 'slow warmup', graceMs: 5000 }, 0);
       expect(gate.takeExpired(4999)).toBeNull();
       expect(gate.takeExpired(5000)).toMatchObject({ graceMs: 5000 });
+    });
+
+    // The window has to be ACTIVE: agy's banner is the REJECTION of the
+    // submission (composer emptied, session back at its idle footer), so nothing
+    // is in flight and no amount of waiting produces generation chrome. Without a
+    // re-submission the window's only reachable outcome is expiry.
+    describe('re-submission cadence', () => {
+      const I = SELF_CLEARING_RESUBMIT_INTERVAL_MS;
+
+      it('asks for a re-submission once per interval, numbering the attempts', () => {
+        const gate = createSelfClearingSignalGate();
+        gate.arm(BANNER, 0);
+        // Not immediately: the banner paints a second after the submit-Enter, and
+        // re-pasting into a TUI still settling concatenates two prompts.
+        expect(gate.takeResubmit(0)).toBe(0);
+        expect(gate.takeResubmit(I - 1)).toBe(0);
+        expect(gate.takeResubmit(I)).toBe(1);
+        expect(gate.takeResubmit(I)).toBe(0);
+        expect(gate.takeResubmit(2 * I)).toBe(2);
+      });
+
+      it('never asks before the window opens or after the provider recovered', () => {
+        const gate = createSelfClearingSignalGate();
+        expect(gate.takeResubmit(I)).toBe(0);
+        gate.arm(BANNER, 0);
+        gate.observe('Generating...', I);
+        expect(gate.takeResubmit(2 * I)).toBe(0);
+      });
+
+      // A retry landing after takeExpired would paste into a session the
+      // fail-over is already tearing down.
+      it('stops asking at the deadline', () => {
+        const gate = createSelfClearingSignalGate();
+        gate.arm(BANNER, 0);
+        expect(gate.takeResubmit(BANNER.graceMs - 1)).toBe(1);
+        expect(gate.takeResubmit(BANNER.graceMs)).toBe(0);
+      });
+
+      it('numbers attempts per window, not per gate', () => {
+        const gate = createSelfClearingSignalGate();
+        gate.arm(BANNER, 0);
+        expect(gate.takeResubmit(I)).toBe(1);
+        gate.takeExpired(BANNER.graceMs);
+        gate.arm(BANNER, BANNER.graceMs);
+        expect(gate.takeResubmit(BANNER.graceMs + I)).toBe(1);
+      });
+
+      // The tracker matches a single chunk, which is only safe while the stream
+      // can't contain the prompt. Re-pasting puts it back, so a task whose text
+      // quotes in-flight chrome (a task about THIS failure mode does) would latch
+      // a bogus recovery — worse than expiring, because a recovered gate neither
+      // retries nor fails over and the run idle-reaps into a false success.
+      it('discounts the echo of the prompt it just re-pasted', () => {
+        const gate = createSelfClearingSignalGate();
+        gate.arm(BANNER, 0);
+        gate.takeResubmit(I);
+        expect(gate.observe('Investigate why the TUI shows `Generating…` forever', I + 10)).toBe(false);
+        expect(gate.armed).toBe(true);
+        // Real chrome repaints continuously, so the next chunk past the echo
+        // window still latches.
+        expect(gate.observe('Generating…', I + SELF_CLEARING_RESUBMIT_ECHO_MS)).toBe(true);
+      });
+
+      it('only discounts the echo window, not everything after a re-submission', () => {
+        const gate = createSelfClearingSignalGate();
+        gate.arm(BANNER, 0);
+        gate.takeResubmit(I);
+        expect(gate.observe('Generating...', I + SELF_CLEARING_RESUBMIT_ECHO_MS + 1)).toBe(true);
+      });
+
+      // Nothing has been re-pasted before the first attempt, so nothing in the
+      // stream is our echo and a recovery counts immediately.
+      it('does not suppress anything before the first re-submission', () => {
+        const gate = createSelfClearingSignalGate();
+        gate.arm(BANNER, 0);
+        expect(gate.observe('Generating...', 10)).toBe(true);
+      });
+
+      // Cross-file invariant between the signal that sets the window and the gate
+      // that spends it. Too short and the window is back to being a pause in
+      // front of a fail-over; past the idle timeout and the reaper finalizes the
+      // deliberately-silent session first — as an `idle-complete` SUCCESS that
+      // scrapes the banner as the answer, since agy renders no work counter.
+      it("sizes agy's eligibility window for several retries, still inside the idle timeout", () => {
+        const signal = detectImmediateFallbackSignal(
+          "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
+        );
+        expect(signal.graceMs).toBeGreaterThanOrEqual(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
+        expect(signal.graceMs).toBeLessThan(DEFAULT_TUI_IDLE_TIMEOUT_MS);
+      });
     });
   });
 

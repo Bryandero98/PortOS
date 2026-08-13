@@ -18,6 +18,7 @@ import { FormField } from '../../ui/FormField';
 import { ENRICHMENT_CATEGORIES } from '../constants';
 import ListEnrichment from '../ListEnrichment';
 import ScaleInput from '../ScaleInput';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 export default function EnrichTab({ onRefresh }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -362,6 +363,7 @@ export default function EnrichTab({ onRefresh }) {
             <div className="mb-6">
               {currentQuestion.questionType === 'scale' ? (
                 <ScaleInput
+                  groupLabel={currentQuestion.question}
                   labels={currentQuestion.labels}
                   value={scaleValue}
                   onChange={setScaleValue}
@@ -450,7 +452,7 @@ export default function EnrichTab({ onRefresh }) {
 
         {progress?.lastSession && (
           <p className="text-sm text-gray-500 mt-3">
-            Last session: {new Date(progress.lastSession).toLocaleDateString()}
+            Last session: {formatDateNumeric(progress.lastSession)}
           </p>
         )}
       </div>

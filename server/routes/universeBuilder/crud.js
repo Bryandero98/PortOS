@@ -10,7 +10,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../../lib/errorHandler.js';
-import { validateRequest, llmSchema, isPaginationRequested, paginateArray, recordRenderPinFields } from '../../lib/validation.js';
+import { validateRequest, llmSchema, isPaginationRequested, paginateArray } from '../../lib/validation.js';
+import { recordRenderPinFields } from '../../lib/sharedSchemas.js';
 import { pruneStaleReferenceSheets } from '../../lib/storyBible.js';
 import * as svc from '../../services/universeBuilder.js';
 import { findSameNameUniverses } from '../../services/duplicateDetection.js';

@@ -136,10 +136,11 @@ See `PORTS.md` for the full port allocation guide.
 ### Vite Dev Server (React/Vue UI)
 
 ```javascript
+// requires `const path = require('path');` at the top of the ecosystem file
 {
   name: 'myapp-client',
-  script: 'node_modules/.bin/vite',
-  cwd: `${__dirname}/client`,
+  script: path.join(__dirname, 'client', 'node_modules', 'vite', 'bin', 'vite.js'),
+  cwd: path.join(__dirname, 'client'),
   args: '--host 0.0.0.0 --port 5571',
   env: {
     NODE_ENV: 'development'
@@ -147,6 +148,15 @@ See `PORTS.md` for the full port allocation guide.
   watch: false
 }
 ```
+
+Point `script` at `vite/bin/vite.js` rather than the `node_modules/.bin/vite`
+shim. PM2 resolves a relative `script` against its own working directory, not
+`cwd`, so the relative `.bin` path only resolves by accident — and the `.bin`
+entry itself varies by platform and package manager (a symlink on Unix, a
+`.cmd`/`.ps1` wrapper on Windows, sometimes a generated shell script), none of
+which the Node interpreter launches uniformly. The real module path sidesteps
+both problems. The absolute `path.join` form is what PortOS's own `portos-ui`
+app uses in `ecosystem.config.cjs`.
 
 ### Background Daemon
 
@@ -237,6 +247,8 @@ pm2 logs myapp-server
 Here's a complete ecosystem file for a typical monorepo:
 
 ```javascript
+const path = require('path');
+
 module.exports = {
   apps: [
     {
@@ -254,8 +266,8 @@ module.exports = {
     },
     {
       name: 'myapp-client',
-      script: 'node_modules/.bin/vite',
-      cwd: `${__dirname}/client`,
+      script: path.join(__dirname, 'client', 'node_modules', 'vite', 'bin', 'vite.js'),
+      cwd: path.join(__dirname, 'client'),
       args: '--host 0.0.0.0 --port 5571',
       env: {
         NODE_ENV: 'development'

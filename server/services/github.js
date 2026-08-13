@@ -562,3 +562,36 @@ export async function findPullRequestForBranch(branch, { cwd = null, env = null 
   if (!pr) return { status: 'none', number: null, url: null, detail: null };
   return { status: 'found', number: pr.number ?? null, url: pr.url || null, detail: pr.state || null };
 }
+
+/**
+ * Read ONE pull request's state. Same two-not-three-answers discipline as
+ * `findPullRequestForBranch`: `known` carries a real forge answer, `unavailable`
+ * means we could not ask (gh firewalled, PR deleted, unparseable output). A
+ * caller must never read `unavailable` as "not merged" — the whole point is to
+ * distinguish "the forge says OPEN" from "we never got to ask", because the
+ * merge-follow-up reaper turns the first into a needs-manual-finish failure and
+ * the second must leave prior behavior alone.
+ *
+ * GitHub only. PortOS opens GitLab MRs too, and `gh pr view` against a GitLab
+ * URL answers nothing useful — callers classify the host first and skip this.
+ *
+ * @param {string} prRef - PR url or number (anything `gh pr view` accepts)
+ * @param {{ cwd?: string, env?: object|null }} [opts] - repo dir gh resolves the
+ *   remote from, and the env overlay to run under (see `resolveForgeForRepo`).
+ * @returns {Promise<{ status: 'known'|'unavailable', state: string|null, detail: string|null }>}
+ *   `state` is upper-cased (`MERGED` / `OPEN` / `CLOSED`) when status is `known`.
+ */
+export async function getPullRequestState(prRef, { cwd = null, env = null } = {}) {
+  if (!prRef) return { status: 'unavailable', state: null, detail: 'no PR reference' };
+  const raw = await execGh(
+    ['pr', 'view', String(prRef), '--json', 'state'],
+    DEFAULT_EXEC_GH_TIMEOUT_MS,
+    { cwd, env }
+  ).catch(err => err);
+  if (raw instanceof Error) return { status: 'unavailable', state: null, detail: raw.message };
+  const parsed = safeJSONParse(raw, null);
+  const state = typeof parsed?.state === 'string' ? parsed.state.toUpperCase() : null;
+  // A zero-exit gh that emitted nothing parseable told us nothing.
+  if (!state) return { status: 'unavailable', state: null, detail: 'gh returned unparseable output' };
+  return { status: 'known', state, detail: null };
+}

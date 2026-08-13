@@ -6,6 +6,7 @@ import { useAppOverrideActions } from '../../../hooks/useAppOverrideActions';
 import { describeCron } from '../../../utils/cronHelpers';
 import ScheduleEditor from './workflow/ScheduleEditor';
 import PerAppOverrideList from './schedule/PerAppOverrideList';
+import { formatWeekdayShort, formatWeekdayTime, formatTimeOfDay } from '../../../utils/formatters';
 
 const TRACK_COLORS = {
   cron: { marker: 'bg-purple-400', text: 'text-purple-300', wash: 'bg-purple-500/10' },
@@ -38,11 +39,9 @@ function describeSchedule(node) {
 }
 
 function formatPoint(iso, hours, timezone) {
-  const date = new Date(iso);
-  const options = { hour: 'numeric', minute: '2-digit', timeZone: timezone };
   return hours === 168
-    ? date.toLocaleString([], { ...options, weekday: 'short' })
-    : date.toLocaleTimeString([], options);
+    ? formatWeekdayTime(iso, { timeZone: timezone })
+    : formatTimeOfDay(iso, { timeZone: timezone });
 }
 
 function relativeTime(iso) {
@@ -61,7 +60,7 @@ function dueNowMeta(occurrence, node, timezone) {
   const reason = occurrence.reason || '';
   if (reason.startsWith('cron-catch-up')) {
     const slot = occurrence.missedSlot
-      ? new Date(occurrence.missedSlot).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: timezone })
+      ? formatWeekdayTime(occurrence.missedSlot, { timeZone: timezone })
       : null;
     return { badge: 'catch-up', detail: slot ? `Catch-up for the missed ${slot} slot` : 'Catch-up for a missed slot' };
   }
@@ -87,7 +86,7 @@ function Axis({ timeline, hours, timezone }) {
         const at = new Date(start + ((end - start) * index) / divisions);
         return (
           <div key={index} className="absolute bottom-1 -translate-x-1/2 whitespace-nowrap" style={{ left: `${(index / divisions) * 100}%` }}>
-            {index === 0 ? 'Now' : hours === 168 ? at.toLocaleDateString([], { weekday: 'short', timeZone: timezone }) : `+${index * 3}h`}
+            {index === 0 ? 'Now' : hours === 168 ? formatWeekdayShort(at, { timeZone: timezone }) : `+${index * 3}h`}
           </div>
         );
       })}

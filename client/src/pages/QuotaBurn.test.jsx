@@ -10,7 +10,19 @@ vi.mock('../services/api', () => ({
   getQuotaBurnCatalog: vi.fn(),
   saveQuotaBurn: vi.fn(),
   runQuotaBurn: vi.fn(),
+  rearmQuotaBurn: vi.fn(),
 }));
+
+const toastError = vi.fn();
+vi.mock('../components/ui/Toast', () => {
+  // The page calls the default export BOTH as a function (neutral messages) and
+  // through `.success` / `.error`, so the mock has to be callable too.
+  const toast = (...a) => toast.message(...a);
+  toast.message = vi.fn();
+  toast.success = vi.fn();
+  toast.error = (...a) => toastError(...a);
+  return { default: toast };
+});
 
 import * as api from '../services/api';
 
@@ -74,12 +86,18 @@ const renderPage = (path = '/devtools/quota-burn') => render(
   </MemoryRouter>,
 );
 
+// Mirrors UNSAVED_PATCH_KEY in the page — the session-scoped stash holding a
+// patch the server never accepted.
+const STASH_KEY = 'quotaBurn:unsavedPatch';
+
 beforeEach(() => {
   vi.clearAllMocks();
+  globalThis.sessionStorage.clear();
   api.getQuotaBurn.mockResolvedValue({ config, status });
   api.getQuotaBurnCatalog.mockResolvedValue(catalog);
   api.saveQuotaBurn.mockResolvedValue({ config });
   api.runQuotaBurn.mockResolvedValue({ result: { dispatched: false, reason: 'nothing to burn' } });
+  api.rearmQuotaBurn.mockResolvedValue({ config, status });
 });
 
 describe('QuotaBurn page', () => {
@@ -276,6 +294,140 @@ describe('QuotaBurn page', () => {
     await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalled());
     const [patch] = api.saveQuotaBurn.mock.calls.at(-1);
     expect(patch.families.grok.jobs[0]).not.toHaveProperty('pending');
+    expect(patch.families.grok.jobs[0]).not.toHaveProperty('ranAt');
+  });
+});
+
+/**
+ * `run once` — a plan is a rotation the runner walks lap after lap, which is
+ * wrong for work that only needs doing once.
+ */
+describe('QuotaBurn run-once steps', () => {
+  const ranAt = new Date(Date.now() - 3_600_000).toISOString();
+  // A spent step: `runOnce` on the config side, `ranAt` on the status side.
+  const spent = {
+    config: {
+      ...config,
+      families: { ...config.families, grok: { ...config.families.grok, jobs: [{ ...config.families.grok.jobs[0], runOnce: true }] } },
+    },
+    status: {
+      ...status,
+      families: [{ ...status.families[0], jobs: [{ id: 'j1', ranAt, pending: null }] }, status.families[1]],
+    },
+  };
+
+  it('saves the run-once choice as part of the job', async () => {
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.click(await screen.findByLabelText('Run once'));
+    await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalled());
+    expect(api.saveQuotaBurn.mock.calls.at(-1)[0].families.grok.jobs[0].runOnce).toBe(true);
+  });
+
+  it('reports a spent step as ran rather than idle', async () => {
+    // The server stops probing a spent step, so without this the row's only
+    // self-description would be the absence of a pending line.
+    api.getQuotaBurn.mockResolvedValue(spent);
+    renderPage('/devtools/quota-burn/grok');
+    expect(await screen.findByText(/Ran once/)).toBeInTheDocument();
+    expect(screen.getByText(/1 ran once/)).toBeInTheDocument();
+  });
+
+  it('re-arms one step without dispatching anything', async () => {
+    api.getQuotaBurn.mockResolvedValue(spent);
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.click(await screen.findByRole('button', { name: /Re-arm$/ }));
+    await waitFor(() => expect(api.rearmQuotaBurn).toHaveBeenCalledWith('grok', 'j1', { silent: true }));
+    // Re-arming makes a step ELIGIBLE; the next cycle's gates still decide.
+    expect(api.runQuotaBurn).not.toHaveBeenCalled();
+  });
+
+  it('re-arms a whole one-shot series in one click', async () => {
+    // The case this exists for: a plan configured as a series the user wants to
+    // run again as a series.
+    api.getQuotaBurn.mockResolvedValue(spent);
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.click(await screen.findByRole('button', { name: /Re-arm all/ }));
+    await waitFor(() => expect(api.rearmQuotaBurn).toHaveBeenCalledWith('grok', null, { silent: true }));
+  });
+
+  it('offers no re-arm control while nothing has run', async () => {
+    renderPage('/devtools/quota-burn/grok');
+    await screen.findByText(/Ready — 4 bible entries/);
+    expect(screen.queryByRole('button', { name: /Re-arm/ })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The catalog is the page's second read, and it fails independently of the
+ * plan: the plan renders perfectly while every choice the form offers is empty.
+ * Swallowing that failure left the preset picker gone, "Add job" disabled, and
+ * every dropdown blank with nothing saying why — and editing a step against an
+ * empty job-type list saves `jobType: ""`, which the strict PUT rejects.
+ */
+describe('QuotaBurn catalog failure', () => {
+  it('names a failed catalog read instead of silently emptying the form', async () => {
+    api.getQuotaBurnCatalog.mockRejectedValueOnce(new Error('Catalog request failed'));
+    renderPage('/devtools/quota-burn/grok');
+
+    expect(await screen.findByText('Job choices could not be loaded')).toBeInTheDocument();
+    expect(screen.getByText(/Catalog request failed/)).toBeInTheDocument();
+    // The controls the catalog feeds are gone or inert — the banner is the only
+    // thing on screen that explains either.
+    expect(screen.queryByLabelText(/Add a preset job/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Add job/ })).toBeDisabled();
+    // The plan itself still rendered: a catalog failure is not a page failure.
+    expect(screen.getByText(/62% left/)).toBeInTheDocument();
+  });
+
+  it('re-fetches the catalog from the banner without a page reload', async () => {
+    const user = userEvent.setup();
+    api.getQuotaBurnCatalog.mockRejectedValueOnce(new Error('Catalog request failed'));
+    renderPage('/devtools/quota-burn/grok');
+
+    await user.click(await screen.findByRole('button', { name: 'Retry catalog load' }));
+    await waitFor(() => expect(api.getQuotaBurnCatalog).toHaveBeenCalledTimes(2));
+    // The success clears the banner AND restores the controls it was standing in for.
+    await waitFor(() => expect(screen.queryByText('Job choices could not be loaded')).not.toBeInTheDocument());
+    expect(screen.getByLabelText(/Add a preset job/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Add job/ })).toBeEnabled();
+  });
+
+  it('treats a catalog that answered with no job types as its own failure', async () => {
+    // Same symptom as a thrown read — every dropdown empty — but a different
+    // cause, so it must not be reported as a successful load.
+    api.getQuotaBurnCatalog.mockResolvedValueOnce({ ...catalog, jobTypes: [] });
+    renderPage('/devtools/quota-burn/grok');
+    expect(await screen.findByText(/The server returned no job types\./)).toBeInTheDocument();
+  });
+
+  it('survives a partial catalog payload whose lists are null', async () => {
+    // A spread over the empty default lets an explicit `null` through, and every
+    // consumer reads `.length` on these lists — so an older peer or a partial
+    // response would take the whole page down with a TypeError instead of
+    // reporting an unusable catalog.
+    api.getQuotaBurnCatalog.mockResolvedValueOnce({ jobTypes: null, apps: null, universes: null, imageModes: null });
+    renderPage('/devtools/quota-burn/grok');
+    expect(await screen.findByText(/The server returned no job types\./)).toBeInTheDocument();
+    expect(screen.getByText(/62% left/)).toBeInTheDocument();
+  });
+
+  it('announces the banner to assistive tech rather than only drawing it', async () => {
+    // It appears after the card is already on screen — the read resolves late,
+    // and a retry can put it back — so nothing announces it without a live region.
+    api.getQuotaBurnCatalog.mockRejectedValueOnce(new Error('Catalog request failed'));
+    renderPage('/devtools/quota-burn/grok');
+    const banner = await screen.findByRole('status');
+    expect(banner).toHaveAttribute('aria-live', 'polite');
+    expect(banner).toHaveTextContent('Job choices could not be loaded');
+  });
+
+  it('says nothing about the catalog when it loaded', async () => {
+    renderPage('/devtools/quota-burn/grok');
+    await screen.findByLabelText(/Add a preset job/);
+    expect(screen.queryByText('Job choices could not be loaded')).not.toBeInTheDocument();
   });
 });
 
@@ -386,6 +538,190 @@ describe('QuotaBurn save races', () => {
     unmount();
     await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalledTimes(1));
     expect(api.saveQuotaBurn.mock.calls[0][0].families.grok.jobs[0].label).toContain('Q');
+  });
+
+  it('reports a failed unmount flush and stashes the patch for the next visit', async () => {
+    // The page is gone, so no header indicator is left to say the save failed:
+    // swallowing it turned "Saving changes…" into permanently lost edits.
+    api.saveQuotaBurn.mockRejectedValue(new Error('Network request failed'));
+    const user = userEvent.setup();
+    const { unmount } = renderPage('/devtools/quota-burn/grok');
+    await user.type(await screen.findByLabelText('Name for step 1'), 'Q');
+    unmount();
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/could not be saved/i)));
+    const stashed = JSON.parse(globalThis.sessionStorage.getItem(STASH_KEY));
+    expect(stashed.families.grok.jobs[0].label).toContain('Q');
+  });
+
+  it('restores a stashed patch on the next visit and re-saves it', async () => {
+    globalThis.sessionStorage.setItem(STASH_KEY, JSON.stringify({ checkIntervalMinutes: 45 }));
+    renderPage();
+
+    // Back on screen AND re-armed for a PUT — a restore that only re-rendered
+    // the value would leave the server holding the pre-edit plan until the
+    // user retyped the field.
+    expect(await screen.findByDisplayValue('45')).toBeInTheDocument();
+    await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalledTimes(1));
+    expect(api.saveQuotaBurn.mock.calls[0][0].checkIntervalMinutes).toBe(45);
+    expect(globalThis.sessionStorage.getItem(STASH_KEY)).toBeNull();
+  });
+
+  it('keeps a stashed patch when the visit could not read a plan', async () => {
+    // Replaying the patch onto a page with no config would render a plan with
+    // no families; the recovery belongs on the next visit that gets one.
+    api.getQuotaBurn.mockRejectedValue(new Error('Network request failed'));
+    globalThis.sessionStorage.setItem(STASH_KEY, JSON.stringify({ checkIntervalMinutes: 45 }));
+    renderPage();
+
+    expect(await screen.findByText('Quota burn is unavailable')).toBeInTheDocument();
+    expect(globalThis.sessionStorage.getItem(STASH_KEY)).not.toBeNull();
+    expect(api.saveQuotaBurn).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stash that is not a patch object', async () => {
+    // A hand-edited or older-build entry must not be replayed — the PUT body is
+    // an object, and anything else 400s the save the restore should rescue.
+    globalThis.sessionStorage.setItem(STASH_KEY, '"not-a-patch"');
+    renderPage();
+
+    expect(await screen.findByText(/62% left/)).toBeInTheDocument();
+    await sleep(100);
+    expect(api.saveQuotaBurn).not.toHaveBeenCalled();
+  });
+
+  it('ignores an empty stash rather than announcing a restore of nothing', async () => {
+    globalThis.sessionStorage.setItem(STASH_KEY, '{}');
+    renderPage();
+
+    expect(await screen.findByText(/62% left/)).toBeInTheDocument();
+    await sleep(100);
+    expect(api.saveQuotaBurn).not.toHaveBeenCalled();
+  });
+
+  it('names why the first load failed and recovers from the Retry button', async () => {
+    // A failed first read used to leave a bare "the server did not return a
+    // plan" with the header — and its Refresh — unrendered, so the only way
+    // out was reloading the browser tab.
+    const user = userEvent.setup();
+    api.getQuotaBurn.mockRejectedValueOnce(new Error('Network request failed'));
+    renderPage();
+
+    expect(await screen.findByText('Quota burn is unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Network request failed')).toBeInTheDocument();
+
+    // Retry re-reads, and the success clears both the banner and the error.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/62% left/)).toBeInTheDocument();
+    expect(screen.queryByText('Quota burn is unavailable')).not.toBeInTheDocument();
+    expect(screen.queryByText('Network request failed')).not.toBeInTheDocument();
+  });
+
+  it('keeps the plan on screen while Refresh quota re-reads, and names a refresh that failed', async () => {
+    // The refresh used to run through the same `loading` flag as the first read,
+    // so a 10-20s PTY quota scrape replaced every card and control with a
+    // full-page spinner — and a scrape that then FAILED put the stale numbers
+    // back with nothing saying they were stale.
+    const user = userEvent.setup();
+    let rejectRefresh;
+    api.getQuotaBurn.mockImplementationOnce(() => Promise.resolve({ config, status }));
+    api.getQuotaBurn.mockImplementationOnce(() => new Promise((_, reject) => { rejectRefresh = reject; }));
+    renderPage();
+
+    expect(await screen.findByText(/62% left/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Refresh quota/ }));
+
+    // Mid-refresh: the button reports it, the page still shows the plan.
+    expect(await screen.findByRole('button', { name: /Refreshing…/ })).toBeDisabled();
+    expect(screen.getByText(/62% left/)).toBeInTheDocument();
+    expect(screen.queryByText(/Loading burn plan/)).not.toBeInTheDocument();
+
+    rejectRefresh(new Error('Quota scrape timed out'));
+    // The banner names the cause — and it is the ONLY surface that reports it,
+    // so the same failure is never announced twice.
+    expect(await screen.findByText(/Quota scrape timed out/)).toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
+    // The failure does not tear the page down, and the button is usable again.
+    expect(screen.getByText(/62% left/)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Refresh quota/ })).toBeEnabled();
+  });
+
+  it('clears the failed-refresh banner on the next successful read', async () => {
+    const user = userEvent.setup();
+    api.getQuotaBurn.mockResolvedValueOnce({ config, status });
+    api.getQuotaBurn.mockRejectedValueOnce(new Error('Quota scrape timed out'));
+    renderPage();
+
+    expect(await screen.findByText(/62% left/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Refresh quota/ }));
+    expect(await screen.findByText(/Quota scrape timed out/)).toBeInTheDocument();
+
+    // The banner's own Retry re-reads; the success takes the banner away and
+    // leaves the plan exactly where it was.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/Quota scrape timed out/)).not.toBeInTheDocument());
+    expect(screen.getByText(/62% left/)).toBeInTheDocument();
+  });
+
+  it('surfaces a background poll that failed, and clears it on the next poll that lands', async () => {
+    // A poll failure is the one read nobody asked for — with nothing on screen
+    // changing, a stalled scrape looked identical to one that kept answering
+    // with the same numbers.
+    const pendingStatus = {
+      ...status,
+      families: [{ ...status.families[0], pending: true }, status.families[1]],
+    };
+    api.getQuotaBurn.mockResolvedValueOnce({ config, status: pendingStatus });
+    api.getQuotaBurn.mockRejectedValueOnce(new Error('Provider CLI is not responding'));
+    renderPage();
+
+    expect(await screen.findByText(/reading quota…/)).toBeInTheDocument();
+    expect(await screen.findByText(/Provider CLI is not responding/, undefined, { timeout: 8000 })).toBeInTheDocument();
+    // The plan stays on screen: a failed poll must not blank it.
+    expect(screen.getByLabelText(/Run the quota-burn loop automatically/)).toBeInTheDocument();
+
+    // The default mock resolves, so the following poll clears the banner and
+    // fills the reading in.
+    expect(await screen.findByText(/62% left/, undefined, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.queryByText(/Provider CLI is not responding/)).not.toBeInTheDocument();
+    // Two 4s poll intervals have to elapse, so the default 5s cap is too tight.
+  }, 20000);
+
+  it('does not also toast when the failure is already named by the banner', async () => {
+    // With no plan on screen the banner owns the error surface — a toast on top
+    // of it would report the same failure twice.
+    const user = userEvent.setup();
+    api.getQuotaBurn.mockRejectedValueOnce(new Error('Network request failed'));
+    api.getQuotaBurn.mockRejectedValueOnce(new Error('Network request failed'));
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(api.getQuotaBurn).toHaveBeenCalledTimes(2));
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('still offers a retry when the server answers without a plan', async () => {
+    // No error to name — but the page is just as stuck, so the way out has to
+    // be the same one.
+    api.getQuotaBurn.mockResolvedValueOnce({ config: null, status: null });
+    renderPage();
+    expect(await screen.findByText('The server did not return a plan.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('stops blaming the network once the read succeeds with nothing', async () => {
+    // Both a thrown read and an empty one are falsy, so an early return keyed
+    // on falsiness would leave the first attempt's network error on screen
+    // describing what is now a server that simply answered with no plan.
+    const user = userEvent.setup();
+    api.getQuotaBurn.mockRejectedValueOnce(new Error('Network request failed'));
+    api.getQuotaBurn.mockResolvedValueOnce(null);
+    renderPage();
+
+    expect(await screen.findByText('Network request failed')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('The server did not return a plan.')).toBeInTheDocument();
+    expect(screen.queryByText('Network request failed')).not.toBeInTheDocument();
   });
 
   it('does not commit 0 when a number field is cleared to be retyped', async () => {

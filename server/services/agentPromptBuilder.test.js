@@ -2338,3 +2338,165 @@ describe('getAppWorkspace — tilde expansion (#3180)', () => {
     expect(await getAppWorkspace('abs-app')).toBe('/srv/repos/abs-app');
   });
 });
+
+// #3866 — getClaudeMdContext used to splice only the global + workspace-root
+// CLAUDE.md, so a subtree rule (including a data-loss guard) never reached an
+// API-provider agent. These pin the nested walk and its bounds.
+describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
+  let workspace;
+
+  const writeClaudeMd = (relDir, body) => {
+    const dir = relDir ? join(workspace, relDir) : workspace;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'CLAUDE.md'), body);
+  };
+
+  beforeAll(() => {
+    workspace = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-nested-claudemd-'));
+    writeClaudeMd('', '# Root rules\nAnchor every backup exclude.');
+    writeClaudeMd('server', '# Server rules\nSchema parity when adding fields.');
+    writeClaudeMd('client/src/components/dashboard', '# Dashboard rules\nRegister the widget.');
+    // Ignored trees: each carries a CLAUDE.md that must NOT be spliced.
+    writeClaudeMd('node_modules/some-dep', '# Vendored dep rules');
+    writeClaudeMd('data/cos/worktrees/claim-issue-1', '# Runtime worktree rules');
+    // Submodule / vendored checkout — recognized by its own `.git`, not by path.
+    writeClaudeMd('lib/slashdo', '# Submodule rules');
+    writeFileSync(join(workspace, 'lib/slashdo/.git'), 'gitdir: ../../.git/modules/slashdo\n');
+    writeClaudeMd('.hidden', '# Dot dir rules');
+    // Past the depth cap (depth 6): a/b/c/d/e/f/CLAUDE.md.
+    writeClaudeMd('a/b/c/d/e/f', '# Too deep rules');
+  });
+
+  afterAll(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it('splices nested files after the root one, each labeled with its repo-relative path', async () => {
+    const section = await getClaudeMdContext(workspace);
+
+    expect(section).toContain('### Project Instructions\n');
+    expect(section).toContain('Anchor every backup exclude.');
+    // The whole point of the issue: subtree content reaches the prompt.
+    expect(section).toContain('### Project Instructions (server/CLAUDE.md)');
+    expect(section).toContain('Schema parity when adding fields.');
+    expect(section).toContain('### Project Instructions (client/src/components/dashboard/CLAUDE.md)');
+    expect(section).toContain('Register the widget.');
+
+    // Root stays first so precedence still reads root-then-specific, and the
+    // nested pair is ordered lexicographically by path (client before server)
+    // so prompt caching stays stable across builds.
+    const rootAt = section.indexOf('Anchor every backup exclude.');
+    const dashboardAt = section.indexOf('Register the widget.');
+    const serverAt = section.indexOf('Schema parity when adding fields.');
+    expect(rootAt).toBeLessThan(dashboardAt);
+    expect(dashboardAt).toBeLessThan(serverAt);
+  });
+
+  it('skips vendored, runtime, submodule, dot, and over-depth trees', async () => {
+    const section = await getClaudeMdContext(workspace);
+
+    expect(section).not.toContain('Vendored dep rules');
+    expect(section).not.toContain('Runtime worktree rules');
+    expect(section).not.toContain('Submodule rules');
+    expect(section).not.toContain('Dot dir rules');
+    expect(section).not.toContain('Too deep rules');
+  });
+
+  it('recognizes a submodule by its own .git, not by a hardcoded path', async () => {
+    // `lib/slashdo` above is skipped only because it carries a `.git`. A sibling
+    // under the same parent, with no `.git`, must still be spliced — otherwise
+    // the skip is really matching `lib/` and the structural check is vacuous.
+    writeClaudeMd('lib/inhouse', '# In-house lib rules');
+    const section = await getClaudeMdContext(workspace);
+    expect(section).toContain('### Project Instructions (lib/inhouse/CLAUDE.md)');
+    expect(section).toContain('In-house lib rules');
+    expect(section).not.toContain('Submodule rules');
+    rmSync(join(workspace, 'lib/inhouse'), { recursive: true, force: true });
+  });
+
+  it('caps the number of nested files spliced', async () => {
+    const capped = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-nested-claudemd-cap-'));
+    mkdirSync(capped, { recursive: true });
+    writeFileSync(join(capped, 'CLAUDE.md'), '# Root of capped workspace');
+    // 12 nested files > the 10-file cap. Zero-padded so lexicographic order
+    // matches numeric order and the assertions below are unambiguous.
+    for (let i = 1; i <= 12; i++) {
+      const dir = join(capped, `pkg-${String(i).padStart(2, '0')}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'CLAUDE.md'), `# Nested rule ${String(i).padStart(2, '0')}`);
+    }
+
+    const section = await getClaudeMdContext(capped);
+    const spliced = section.match(/### Project Instructions \(/g) || [];
+    expect(spliced).toHaveLength(10);
+    // Non-vacuous: the survivors are the first 10 by path, and the overflow is
+    // dropped rather than truncated mid-file.
+    expect(section).toContain('# Nested rule 10');
+    expect(section).not.toContain('# Nested rule 11');
+    expect(section).not.toContain('# Nested rule 12');
+
+    rmSync(capped, { recursive: true, force: true });
+  });
+
+  it('returns null for a workspace with no CLAUDE.md at any level', async () => {
+    const empty = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-nested-claudemd-empty-'));
+    mkdirSync(join(empty, 'sub'), { recursive: true });
+    expect(await getClaudeMdContext(empty)).toBeNull();
+    rmSync(empty, { recursive: true, force: true });
+  });
+});
+
+describe('TUI reviewLoopFollowUp completion instructions', () => {
+  it('appends .agent-done sentinel instructions for TUI agents on follow-up tasks', async () => {
+    const task = {
+      id: 'task-flw-1',
+      description: 'Follow-up merge PR',
+      metadata: {
+        useWorktree: true,
+        openPR: false,
+        reviewLoopFollowUp: true,
+        reviewLoopMergeOnly: true,
+        reviewLoopPRUrl: 'https://github.com/org/repo/pull/42',
+        reviewLoopPRBranch: 'cos/task-orig/agent-1',
+        providerId: 'antigravity-tui',
+        providerCommand: 'agy',
+      }
+    };
+    const worktreeInfo = { worktreePath: '/tmp/wt-1', branchName: 'cos/task-orig/agent-1' };
+    const prompt = await buildLightContextPrompt(task, '/repo', worktreeInfo, (v) => v === true || v === 'true', {
+      isTui: true,
+      providerId: 'antigravity-tui',
+      providerCommand: 'agy',
+    });
+    expect(prompt).toContain('## Completion Handoff');
+    expect(prompt).toContain('cat > "/tmp/wt-1/.agent-done"');
+    expect(prompt).toContain('## Summary');
+  });
+
+  // Agents that never take a worktree (issue-filing / reasoning task types run
+  // with `useWorktree: false`) all write into the SAME primary checkout. A shared
+  // `.agent-done` there lets two concurrent runs overwrite each other's summary,
+  // and lets whichever poll ticks first finalize the other agent's run on a
+  // sentinel it never wrote — so the filename carries the agent id.
+  it('names the completion sentinel per agent instance so worktree-less runs cannot collide', async () => {
+    const worktreelessTask = (id) => ({
+      id,
+      description: 'File an issue',
+      metadata: { useWorktree: false, openPR: false, discardWorktree: true, providerId: 'claude-code-tui', providerCommand: 'claude' }
+    });
+    const build = (taskId, agentId) => buildLightContextPrompt(
+      worktreelessTask(taskId), '/repo', null, (v) => v === true || v === 'true',
+      { isTui: true, providerId: 'claude-code-tui', providerCommand: 'claude', agentId }
+    );
+
+    const first = await build('task-a', 'agent-aaa111');
+    const second = await build('task-b', 'agent-bbb222');
+
+    expect(first).toContain('/repo/.agent-done-agent-aaa111');
+    expect(second).toContain('/repo/.agent-done-agent-bbb222');
+    expect(first).not.toContain('/repo/.agent-done-agent-bbb222');
+    // No instruction may still point at the shared filename.
+    expect(first).not.toMatch(/\.agent-done(?![-\w])/);
+  });
+});
+

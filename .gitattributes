@@ -1,1 +1,17 @@
 *.sh text eol=lf
+
+# Changelog fragments are one file per branch (see scripts/changelogFragments.js),
+# so two branches normally touch two different paths and never conflict. `union`
+# covers the residual case: two branches whose names share a last segment derive
+# the same slug and write the same fragment, where keeping both bullets is the
+# right answer. A fragment is short-lived — created on a branch, deleted at
+# collection — so it has no cross-release failure mode.
+#
+# Deliberately NOT applied to .changelog/NEXT.md. It looks like the same
+# append-only shape, but `/do:release` renames NEXT.md to v{version}.md and
+# starts a fresh one, and git does not pair that rename (the path still exists
+# on main). A branch that outlives a release is then a plain modify/modify, and
+# union resolves it by keeping BOTH sides — silently reviving the entire
+# previous release's entries into the next release's notes, with no conflict and
+# no warning. A loud conflict there is the correct outcome.
+.changelog/next/*.md merge=union

@@ -2,8 +2,10 @@ import toast from '../components/ui/Toast';
 
 export const API_BASE = '/api'; // exported for sub-modules that use fetch() directly
 
-// Stable ID for the PortOS baseline app (mirrors server PORTOS_APP_ID)
-export const PORTOS_APP_ID = 'portos-default';
+// Stable ID for the PortOS baseline app (mirrors server PORTOS_APP_ID). Defined
+// in the dependency-free lib/appIdentity.js and re-exported here so callers that
+// only need the id don't drag this module's React import along with it.
+export { PORTOS_APP_ID } from '../lib/appIdentity.js';
 
 // Bounce to /login when the auth gate (server: lib/authGate.js) rejects a
 // request with 401 + AUTH_REQUIRED. Shared by request() AND the streaming-fetch

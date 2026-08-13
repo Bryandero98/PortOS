@@ -297,6 +297,9 @@ export default function ListEnrichment({
           {analysis.itemAnalysis?.length > 0 && (
             <div className="bg-port-card rounded-lg border border-port-border overflow-hidden">
               <button
+                type="button"
+                aria-expanded={showItemAnalysis}
+                aria-controls="item-analysis-panel"
                 onClick={() => setShowItemAnalysis(!showItemAnalysis)}
                 className="w-full p-4 flex items-center justify-between hover:bg-port-border/30 transition-colors"
               >
@@ -308,7 +311,7 @@ export default function ListEnrichment({
               </button>
 
               {showItemAnalysis && (
-                <div className="p-4 pt-0 space-y-3">
+                <div id="item-analysis-panel" className="p-4 pt-0 space-y-3">
                   {analysis.itemAnalysis.map((item, i) => (
                     <div key={i} className="p-3 bg-port-bg rounded-lg">
                       <div className="font-medium text-white mb-1">{item.title}</div>
@@ -324,6 +327,9 @@ export default function ListEnrichment({
           {analysis.patterns?.length > 0 && (
             <div className="bg-port-card rounded-lg border border-port-border overflow-hidden">
               <button
+                type="button"
+                aria-expanded={showPatterns}
+                aria-controls="patterns-panel"
                 onClick={() => setShowPatterns(!showPatterns)}
                 className="w-full p-4 flex items-center justify-between hover:bg-port-border/30 transition-colors"
               >
@@ -335,7 +341,7 @@ export default function ListEnrichment({
               </button>
 
               {showPatterns && (
-                <div className="p-4 pt-0">
+                <div id="patterns-panel" className="p-4 pt-0">
                   <ul className="space-y-2">
                     {analysis.patterns.map((pattern, i) => (
                       <li key={i} className="flex items-start gap-2 text-gray-300">
@@ -353,6 +359,9 @@ export default function ListEnrichment({
           {analysis.personalityInsights && (
             <div className="bg-port-card rounded-lg border border-port-border overflow-hidden">
               <button
+                type="button"
+                aria-expanded={showInsights}
+                aria-controls="insights-panel"
                 onClick={() => setShowInsights(!showInsights)}
                 className="w-full p-4 flex items-center justify-between hover:bg-port-border/30 transition-colors"
               >
@@ -364,7 +373,7 @@ export default function ListEnrichment({
               </button>
 
               {showInsights && (
-                <div className="p-4 pt-0 space-y-3">
+                <div id="insights-panel" className="p-4 pt-0 space-y-3">
                   {Object.entries(analysis.personalityInsights).map(([key, value]) => (
                     <div key={key} className="p-3 bg-port-bg rounded-lg">
                       <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">

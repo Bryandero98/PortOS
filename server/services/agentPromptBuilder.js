@@ -7,7 +7,7 @@
  */
 
 import { join, basename } from 'path';
-import { stat } from 'fs/promises';
+import { readdir, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { getMemorySection } from './memoryRetriever.js';
 import { getDigitalTwinForPrompt } from './digital-twin.js';
@@ -19,6 +19,7 @@ import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.j
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewerConfig, reviewerEffortArgs, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
+import { doneSentinelName } from '../lib/agentSentinel.js';
 import { canTypeSlashCommands, resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { detectForgeCli } from '../lib/gitForge.js';
@@ -31,6 +32,16 @@ import { getCodeReviewDefaults } from './codeReview.js';
 const ROOT_DIR = PATHS.root;
 const AGENTS_DIR = PATHS.cosAgents;
 const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
+
+/**
+ * Absolute path of the completion sentinel this run must write. The spawners'
+ * pollers resolve the same per-instance filename from the same helper (see
+ * `doneSentinelName`), so the path in the prompt and the path PortOS watches
+ * cannot drift apart.
+ */
+function resolveSentinelPath(worktreeInfo, workspaceDir, agentId) {
+  return `${worktreeInfo?.worktreePath || workspaceDir}/${doneSentinelName(agentId)}`;
+}
 
 // Appended to every agent briefing. PortOS shares ONE pm2 daemon across many
 // apps; an agent restarting "the server" once ran `pm2 kill` and took the whole
@@ -113,9 +124,84 @@ export async function loadSkillTemplate(skillName) {
   return content;
 }
 
+// Nested-CLAUDE.md discovery bounds (#3866). On-demand nested memory files are a
+// Claude Code feature — an API-provider agent reads nothing natively, so PortOS
+// has to splice them in itself or a subtree rule (including a data-loss guard)
+// never reaches that class of agent. The walk is bounded on three axes so a repo
+// that grows nested files can't silently balloon every agent prompt or turn one
+// prompt build into a full-tree crawl.
+const NESTED_CLAUDE_MD_MAX_DEPTH = 5;
+const NESTED_CLAUDE_MD_MAX_FILES = 10;
+const NESTED_CLAUDE_MD_MAX_DIRS = 2000;
+// Dot-directories are skipped wholesale (covers `.git`), so these are the
+// non-dot trees that are either vendored, generated, or runtime state. The list
+// is deliberately polyglot: an agent workspace is any app PortOS manages, not
+// just this repo, so a Rust `target/` or a Go `vendor/` would otherwise burn the
+// directory budget on generated files.
+const NESTED_CLAUDE_MD_SKIP_DIRS = new Set([
+  'node_modules', 'data', 'data.reference', 'dist', 'build', 'coverage',
+  'out', 'obj', 'bin', 'target', 'vendor', 'tmp', 'venv', 'Pods', '__pycache__',
+]);
+
+/**
+ * Collect workspace-relative paths of nested `CLAUDE.md` files (the root one is
+ * excluded — its caller reads it separately and must keep it first). Depth-first
+ * in lexicographic order, so the result is deterministic and prompt caching stays
+ * stable across builds.
+ * @param {string} workspaceDir
+ * @returns {Promise<string[]>} repo-relative paths, e.g. `['server/CLAUDE.md']`
+ */
+async function findNestedClaudeMdFiles(workspaceDir) {
+  const found = [];
+  let dirsVisited = 0;
+
+  const walk = async (dir, relDir, depth) => {
+    if (found.length >= NESTED_CLAUDE_MD_MAX_FILES) return;
+    if (depth > NESTED_CLAUDE_MD_MAX_DEPTH) return;
+    if (dirsVisited >= NESTED_CLAUDE_MD_MAX_DIRS) return;
+    dirsVisited += 1;
+
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+    if (!entries) return;
+    // A nested directory carrying its own `.git` is a submodule or vendored
+    // checkout (`lib/slashdo` here) — its CLAUDE.md is that project's
+    // instructions, not this workspace's. Detected structurally rather than by
+    // an allowlist of paths, which would silently stop matching the moment the
+    // workspace root is something other than this repo's root.
+    if (depth > 0 && entries.some((entry) => entry.name === '.git')) return;
+    const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+    const subdirs = [];
+    for (const entry of sorted) {
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.')) continue;
+        if (NESTED_CLAUDE_MD_SKIP_DIRS.has(entry.name)) continue;
+        subdirs.push({ path: join(dir, entry.name), rel });
+        // Symlinked directories are deliberately NOT followed — a link back up
+        // the tree would loop, and the depth cap alone wouldn't make the result
+        // meaningful. A symlinked CLAUDE.md *file* is still read (below).
+      } else if (entry.name === 'CLAUDE.md' && relDir) {
+        found.push(rel);
+        if (found.length >= NESTED_CLAUDE_MD_MAX_FILES) return;
+      }
+    }
+
+    for (const sub of subdirs) {
+      if (found.length >= NESTED_CLAUDE_MD_MAX_FILES) return;
+      await walk(sub.path, sub.rel, depth + 1);
+    }
+  };
+
+  await walk(workspaceDir, '', 0);
+  return found;
+}
+
 /**
  * Read CLAUDE.md files for agent context.
- * Reads both global (~/.claude/CLAUDE.md) and project-specific (./CLAUDE.md).
+ * Reads the global (`~/.claude/CLAUDE.md`), the workspace-root `CLAUDE.md`, and
+ * every nested `CLAUDE.md` under the workspace (#3866) — nested last, each as its
+ * own labeled section, so precedence still reads root-then-specific.
  */
 export async function getClaudeMdContext(workspaceDir) {
   const contexts = [];
@@ -132,6 +218,15 @@ export async function getClaudeMdContext(workspaceDir) {
   const projectContent = await tryReadFile(projectPath);
   if (projectContent?.trim()) {
     contexts.push({ type: 'Project Instructions', path: projectPath, content: projectContent.trim() });
+  }
+
+  // Nested per-directory instructions, appended after the root file.
+  for (const rel of await findNestedClaudeMdFiles(workspaceDir)) {
+    const nestedPath = join(workspaceDir, rel);
+    const nestedContent = await tryReadFile(nestedPath);
+    if (nestedContent?.trim()) {
+      contexts.push({ type: `Project Instructions (${rel})`, path: nestedPath, content: nestedContent.trim() });
+    }
   }
 
   if (contexts.length === 0) {
@@ -1220,6 +1315,10 @@ export function buildActionOutputCompletionSection({ isTui = false, sentinelPath
  * @param {string} [options.providerCommand] - Provider launch command (e.g.
  *   `'claude'`, `'codex'`, `'opencode'`) — the primary signal, so a
  *   path-configured or renamed binary is recognised.
+ * @param {string} [options.agentId] - The spawning agent's id. Scopes the
+ *   completion sentinel filename to this run (`.agent-done-<agentId>`) so two
+ *   worktree-less agents sharing the primary checkout can't overwrite — or
+ *   finalize on — each other's done-signal. Omitted → the legacy shared name.
  * @param {boolean} [options.leanMode] - Ollama-backed Claude session launched with
  *   `--bare` (see `applyLeanClaudeArgs`): the completion workflow drops slashdo
  *   commands (bare mode skips command discovery) in favor of plain `git`/`gh`.
@@ -1238,6 +1337,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   const providerType = options.providerType || PROVIDER_TYPES.API;
   const providerId = options.providerId || null;
   const providerCommand = options.providerCommand || null;
+  const agentId = options.agentId || null;
   const isTui = providerType === PROVIDER_TYPES.TUI;
   const leanMode = options.leanMode === true;
 
@@ -1280,7 +1380,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
     : null;
 
   if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
-    const lightOptions = { isTui, providerId, providerCommand, leanMode, defaultReviewers, codeReviewDefaults, localAgentLoopBody };
+    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody };
     return options.split === true
       ? buildLightContextPromptParts(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions)
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);
@@ -1405,7 +1505,7 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   // the session, so the prompt does NOT ask the agent to `/quit` (it's a UI
   // command the agent can't invoke). See `buildTuiCompletionSection` below.)
   const tuiCompletionCommand = willOpenPR ? '/do:pr' : '/do:push';
-  const sentinelPath = `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`;
+  const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
   // A discard task's completion is the sentinel-only contract (no push/PR/merge),
   // and this applies to every provider type — so it wins over the isTui fork and
   // over the fallback template's commit/push instructions below.
@@ -1477,6 +1577,17 @@ After your task completes, the system will spawn a follow-up agent that runs the
     // top of buildAgentPrompt under the same reviewLoopFollowUp guard — reuse it
     // rather than re-reading the lib a second time.
     reviewLoopFollowUpSection = buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: true, rprBody, localAgentLoopBody });
+    if (isTui) {
+      const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
+      const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
+      const sentinelTail = branchName ? `   ## Branch\n   ${branchName}` : '   ## Branch\n   <branch name>';
+      reviewLoopFollowUpSection += '\n\n' + [
+        '## Completion Handoff',
+        'When finished with the follow-up steps above, write the completion sentinel to signal PortOS that you are done:',
+        '',
+        ...buildSentinelWriteSteps(1, sentinelPath, sentinelTail)
+      ].join('\n');
+    }
   }
 
   // Build JIRA context section if applicable
@@ -1691,7 +1802,7 @@ export function buildLightContextPromptParts(task, workspaceDir, worktreeInfo, i
 
 const BEGIN_WORKING_LINE = 'Begin working on the task now.';
 
-function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null } = {}) {
+function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null } = {}) {
   // Idempotent with the reconcile in buildAgentPrompt; also protects the
   // directly-exported buildLightContextPrompt/Parts entry points.
   task = reconcileSplitContext(task);
@@ -1836,24 +1947,35 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   if (noCodeOutput) {
     sections.push(buildActionOutputCompletionSection({
       isTui,
-      sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`,
+      sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (discardWorktree) {
     // Reasoning-only task: the sentinel payload (shape set by the task-type
     // output hook) is the sole output; the worktree is discarded on exit. Wins
     // over the isTui / CLI push-and-PR completion workflows below.
-    sections.push(buildProgrammaticOutputCompletionSection(`${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`));
+    sections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
   } else if (isReadOnly) {
     sections.push(buildReadOnlyCompletionSection({
       isTui,
-      sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`,
+      sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReviewLoopFollowUp) {
     sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody }));
+    if (isTui) {
+      const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
+      const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
+      const sentinelTail = branchName ? `   ## Branch\n   ${branchName}` : '   ## Branch\n   <branch name>';
+      sections.push([
+        '## Completion Handoff',
+        'When finished with the follow-up steps above, write the completion sentinel to signal PortOS that you are done:',
+        '',
+        ...buildSentinelWriteSteps(1, sentinelPath, sentinelTail)
+      ].join('\n'));
+    }
   } else if (isTui) {
     sections.push(buildTuiCompletionSection({
       willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree,
-      sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`,
+      sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
@@ -1943,6 +2065,49 @@ function buildPostPRMergeSteps(startStep, { prCompletion = PR_COMPLETIONS.REVIEW
 }
 
 /**
+ * Resolve the review-loop invocation shared by buildTuiCompletionSection and
+ * buildCliCompletionSection: the normalized reviewer usernames, the
+ * `--review-with ...` argument text, and the effort-pin note. Both callers
+ * used to re-derive this identical trio from the same 8-field reviewer-config
+ * bundle independently.
+ */
+function resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies }) {
+  const reviewUsernames = normalizeReviewUsernames(usernames);
+  const reviewArgs = willOpenPR
+    ? (runsReviewLoop ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels }) : '--review-with none')
+    : '';
+  // Effort pins can't ride `--review-with` (no suffix for them in slashdo's
+  // grammar), so they're stated as an instruction on the invocation instead.
+  const effortNote = willOpenPR && runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
+  return { reviewUsernames, reviewArgs, effortNote };
+}
+
+/**
+ * The `.agent-done` sentinel-write instruction block shared by
+ * buildTuiCompletionSection and buildManualTuiCompletionSection: the "write a
+ * short summary, then stop" instruction plus the fenced heredoc template.
+ * Returns the lines to splice into the caller's own line array — output must
+ * stay byte-identical since this is agent-facing prompt text.
+ */
+function buildSentinelWriteSteps(stepNumber, sentinelPath, sentinelTail) {
+  return [
+    `${stepNumber}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS polls it every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
+    '',
+    '   ```bash',
+    `   cat > "${sentinelPath}" <<'EOF'`,
+    '   ## Summary',
+    '   <one-sentence statement of what was accomplished>',
+    '',
+    '   ## Changes',
+    '   - <key file or area>: <what changed and why>',
+    '',
+    sentinelTail,
+    '   EOF',
+    '   ```'
+  ];
+}
+
+/**
  * TUI completion-workflow block. The TUI owns its own commit → push → PR
  * pipeline via slashdo commands and signals "done" with a sentinel file.
  *
@@ -1964,13 +2129,10 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
     return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen });
   }
   const cmd = willOpenPR ? '/do:pr' : '/do:push';
-  const reviewUsernames = normalizeReviewUsernames(usernames);
   // `/do:pr` may inherit a saved `review-with` default. Explicitly opt out
   // when the task's Review Loop control is off so that default cannot start a
   // Copilot (or other external) review unexpectedly.
-  const reviewArgs = willOpenPR
-    ? (runsReviewLoop ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels }) : '--review-with none')
-    : '';
+  const { reviewUsernames, reviewArgs, effortNote } = resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies });
   // A saved slashdo `merge: true` default would otherwise merge a PR that must
   // stay open — dropping our own merge steps isn't enough, `/do:pr` has to be
   // told not to merge (see lib/prDisposition.js).
@@ -1983,9 +2145,6 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
         ? ' — `/do:pr` runs the Copilot review loop after the PR opens.'
         : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order after the PR opens.`)
     : (willOpenPR ? ' — external review is disabled for this task.' : '');
-  // Effort pins can't ride `--review-with` (no suffix for them in slashdo's
-  // grammar), so they're stated as an instruction on the invocation instead.
-  const effortNote = willOpenPR && runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
   // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
   // above), so `/simplify` — a Claude Code built-in — is invokable here.
   const simplifyStep = simplifyEnabled ? '1. `/simplify`' : '1. (simplify disabled — skip)';
@@ -2006,19 +2165,7 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
     `2. \`${cmd}${reviewerArg}\`${reviewSuffix}`,
     ...(effortNote ? [`   ${effortNote}`] : []),
     ...merge.lines,
-    `${sentinelStep}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS polls it every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
-    '',
-    '   ```bash',
-    `   cat > "${sentinelPath}" <<'EOF'`,
-    '   ## Summary',
-    '   <one-sentence statement of what was accomplished>',
-    '',
-    '   ## Changes',
-    '   - <key file or area>: <what changed and why>',
-    '',
-    sentinelTail,
-    '   EOF',
-    '   ```'
+    ...buildSentinelWriteSteps(sentinelStep, sentinelPath, sentinelTail)
   ].join('\n');
 }
 
@@ -2068,21 +2215,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
     lines.push(`${step++}. Do NOT push this worktree branch yourself. PortOS will merge it back after completion.`);
   }
 
-  lines.push(
-    `${step}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS polls it every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
-    '',
-    '   ```bash',
-    `   cat > "${sentinelPath}" <<'EOF'`,
-    '   ## Summary',
-    '   <one-sentence statement of what was accomplished>',
-    '',
-    '   ## Changes',
-    '   - <key file or area>: <what changed and why>',
-    '',
-    sentinelTail,
-    '   EOF',
-    '   ```',
-  );
+  lines.push(...buildSentinelWriteSteps(step, sentinelPath, sentinelTail));
 
   return lines.join('\n');
 }
@@ -2100,16 +2233,13 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
 function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
-  const reviewUsernames = normalizeReviewUsernames(usernames);
   if (hasSlashdo && worktreeInfo && willOpenPR) {
     const lines = ['## Completion', 'When finished, run these in order:'];
     let step = 1;
     if (simplifyEnabled) {
       lines.push(`${step++}. \`/simplify\` — review the changed code for reuse, quality, and efficiency, and fix any findings.`);
     }
-    const reviewArgs = runsReviewLoop
-      ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels })
-      : '--review-with none';
+    const { reviewUsernames, reviewArgs, effortNote } = resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies });
     // `--no-merge` overrides a saved slashdo `merge: true` default, which would
     // otherwise merge a PR this task must leave open (see lib/prDisposition.js).
     const reviewerArg = (reviewArgs ? ` ${reviewArgs}` : '') + ((leavePrOpen || policyLeavesOpen) ? ' --no-merge' : '');
@@ -2121,7 +2251,6 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
     lines.push(`${step++}. \`/do:pr${reviewerArg}\` — commits your changes, pushes the branch, and opens a pull request against the default branch ${completionNote}`);
     // Effort pins have no `--review-with` suffix to ride, so they're stated as an
     // instruction on the invocation instead (see buildReviewerEffortNote).
-    const effortNote = runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
     if (effortNote) lines.push(`   ${effortNote}`);
     // Merge steps follow — review-gated with a loop, CI-gated without one — unless
     // this PR is a human's to land (JIRA-tracked; see lib/prDisposition.js).

@@ -115,6 +115,25 @@ const ERROR_HEADINGS = {
   repo_not_found: 'Model repo not found',
 };
 
+// Labels for the connected-status pill when no model name is reported.
+// Deliberately worded differently from `modeLabel()` (imageGenBackends.js) —
+// do not unify the two.
+//
+// Null-prototype for the same reason as `RECORD_KIND_LISTERS` in peerSync.js:
+// the ternary chain this replaced compared `status.mode` only against the
+// IMAGE_GEN_MODE values and fell through to 'external SD API' for everything
+// else. A plain literal would instead resolve an inherited Object.prototype
+// member for a mode named 'toString'/'constructor'/'valueOf', making the
+// `|| 'external SD API'` fallback unreachable and rendering a function as a
+// React child. Keeps an unrecognized mode behaving exactly as it did before.
+const CONNECTED_MODE_LABELS = {
+  __proto__: null,
+  [IMAGE_GEN_MODE.LOCAL]: 'mflux/local',
+  [IMAGE_GEN_MODE.CODEX]: 'codex CLI',
+  [IMAGE_GEN_MODE.GROK]: 'grok CLI',
+  [IMAGE_GEN_MODE.AGY]: 'agy CLI',
+};
+
 export default function ImageGen() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1124,7 +1143,7 @@ export default function ImageGen() {
                 : 'border-port-error/40 bg-port-error/10 text-port-error'
             }`}>
               {status.connected ? (
-                <><span className="w-2 h-2 rounded-full bg-port-success" /> {status.model || (status.mode === IMAGE_GEN_MODE.LOCAL ? 'mflux/local' : status.mode === IMAGE_GEN_MODE.CODEX ? 'codex CLI' : status.mode === IMAGE_GEN_MODE.GROK ? 'grok CLI' : status.mode === IMAGE_GEN_MODE.AGY ? 'agy CLI' : 'external SD API')}</>
+                <><span className="w-2 h-2 rounded-full bg-port-success" /> {status.model || CONNECTED_MODE_LABELS[status.mode] || 'external SD API'}</>
               ) : (
                 <>
                   <AlertTriangle className="w-3 h-3" />

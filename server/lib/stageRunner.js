@@ -22,6 +22,7 @@ import { extractCodexAssistant } from './codexAssistantExtract.js';
 import { getActiveProvider, getProviderById } from '../services/providers.js';
 import { commandBasename, isCodexProvider } from './providerModels.js';
 import { buildPrompt, getStage } from '../services/promptService.js';
+import { stagePinsIgnored } from './stagePinPolicy.js';
 import { createRun, patchRunMetadata } from '../services/runner.js';
 import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
 
@@ -36,6 +37,35 @@ const TIER_TO_MODEL_KEY = Object.freeze({
 });
 
 const isTierName = (m) => typeof m === 'string' && m in TIER_TO_MODEL_KEY;
+
+// Every stage-config field that names a ROUTE. `withStagePinsIgnored`
+// (lib/stagePinPolicy.js) strips exactly these so a run told to use ONE
+// provider/model actually does — see that module for why the switch is an
+// async-context flag. Enumerated HERE, once: the resolvers below then need no
+// per-pin conditionals, and adding a routing pin to the stage schema means
+// adding it to this list and nowhere else.
+const ROUTING_PIN_FIELDS = Object.freeze(['provider', 'effort', 'judgeProvider', 'judgeModel']);
+
+// The stage as the resolvers below should see it. Identity unless the current
+// run asked to ignore pins, in which case the routing fields above are dropped.
+//
+// Two fields deliberately SURVIVE:
+//   - a `model` TIER (default/quick/coding/heavy) — a per-provider mapping, not
+//     a pin. It already loses to `modelDefault`, and it is the right fallback
+//     for a run that forced a provider without naming a model. Only an explicit
+//     model id is dropped.
+//   - `timeout` — it encodes how long the stage's WORK takes (a whole-manuscript
+//     editorial pass vs a one-line classification), not which provider runs it.
+//     Dropping it to the provider default would abort the long stages, not
+//     rescue them; a timeout genuinely too tight for a forced local model is a
+//     stage-config edit, not a run option.
+export function effectiveStage(stage) {
+  if (!stage || !stagePinsIgnored()) return stage;
+  const stripped = { ...stage };
+  for (const field of ROUTING_PIN_FIELDS) delete stripped[field];
+  if (stripped.model && !isTierName(stripped.model)) delete stripped.model;
+  return stripped;
+}
 
 // First-element fallback when defaultModel is unset on a provider that
 // exposes a `models` array (some toolkit-configured providers ship a model
@@ -105,6 +135,9 @@ export function resolveModel(provider, modelHint) {
 //   3. modelDefault         — the run-level soft default (Series Autopilot's run model)
 //   4. stage.model tier     — the stage's default tier mapping (default/quick/coding/heavy)
 //   5. provider default     — resolveModel's own fallback
+//
+// Takes an `effectiveStage`-masked stage, so step 2 is already gone for a run
+// that forced one model across every stage.
 function resolveModelHint(stage, options = {}) {
   const stageModel = stage?.model;
   const stagePin = stageModel && !isTierName(stageModel) ? stageModel : null;
@@ -128,6 +161,9 @@ function resolveModelHint(stage, options = {}) {
 // The result is safe to pass unconditionally: `runPromptThroughProvider` clamps
 // it to the provider's (and, for Antigravity, the model's) ladder and drops it
 // entirely for a provider with no effort control.
+//
+// Takes an `effectiveStage`-masked stage, so step 2 is already gone for a run
+// that forced one route across every stage.
 export function resolveEffortHint(stage, options = {}) {
   return options.effortOverride || stage?.effort || options.effortDefault || null;
 }
@@ -225,7 +261,7 @@ export function effectiveContextWindow(provider, model) {
  * to a different (possibly smaller-window) provider is not reflected here.
  */
 export async function resolveStageContext(stageName, options = {}) {
-  const stage = getStage(stageName);
+  const stage = effectiveStage(getStage(stageName));
   const provider = await resolveProviderForStage(stage, options);
   const requestedModel = resolveModel(provider, resolveModelHint(stage, options));
   const model = resolveEffectiveModel(provider, requestedModel);
@@ -246,6 +282,11 @@ export async function resolveStageContext(stageName, options = {}) {
 //      if it's unavailable we fall through to the active provider rather than
 //      throwing, because it was never a per-call demand.
 //   4. The active provider — the system-wide fallback.
+//
+// Takes an `effectiveStage`-masked stage, so step 2 is already gone for a run
+// that forced one provider across every stage. Because the pin is *stripped*
+// rather than demoted, such a run also stops throwing STAGE_PROVIDER_UNAVAILABLE
+// for a stage pinned to a provider that no longer exists.
 async function resolveProviderForStage(stage, { providerOverride, providerDefault } = {}) {
   if (providerOverride) {
     const pinned = await getProviderById(providerOverride).catch(() => null);
@@ -296,6 +337,15 @@ export async function resolveJudgeForStage(stage, options = {}) {
   // An explicit per-call `providerOverride` is a deliberate "judge with THIS
   // provider right now" demand — it beats a stage-level judge pin (mirrors how
   // resolveProviderForStage lets providerOverride beat stage.provider).
+  //
+  // The stage is masked first because this one is CALLER-supplied (pipelineJudge
+  // / foundationJudge / seriesGenerate hand us a writer stage they read
+  // themselves) rather than read from `getStage` here. A run that forced one
+  // route loses the stage judge pin with it and falls through to the writer
+  // resolution below — note that this collapses the writer/judge split for that
+  // stage unless the run configured its own judge route, which sets
+  // `providerOverride` and short-circuits above.
+  stage = effectiveStage(stage);
   if (!options.providerOverride && stage?.judgeProvider) {
     const pinned = await getProviderById(stage.judgeProvider).catch(() => null);
     if (pinned?.enabled) {
@@ -432,7 +482,7 @@ export function extractJson(text, { promptToStrip } = {}) {
  *     'writers-room-evaluate') so /runs is filterable
  */
 export async function runStagedLLM(stageName, variables, options = {}) {
-  const stage = getStage(stageName);
+  const stage = effectiveStage(getStage(stageName));
   const prompt = await buildPrompt(stageName, variables);
   return executeStagePrompt({ stage, label: stageName, prompt, options });
 }
@@ -465,6 +515,11 @@ export async function runInlineLLM(prompt, options = {}) {
  * prompt body is still caller-supplied (no stage template is rendered). With a
  * falsy `stageName` this is identical to `runInlineLLM` (active/overridden provider).
  *
+ * That routing guarantee is only as strong as the stage pin behind it: a run
+ * inside `withStagePinsIgnored` has asked for ONE provider everywhere, so this
+ * follows the run's provider rather than the stage's. The Autopilot Options copy
+ * warns at the checkbox; see lib/stagePinPolicy.js.
+ *
  * Same options as runStagedLLM (providerOverride / modelOverride /
  * timeoutOverride / returnsJson / source).
  */
@@ -472,7 +527,7 @@ export async function runStageScopedInlineLLM(stageName, prompt, options = {}) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     throw new ServerError('runStageScopedInlineLLM requires a non-empty prompt', { status: 400, code: 'INLINE_PROMPT_REQUIRED' });
   }
-  const stage = stageName ? getStage(stageName) : null;
+  const stage = stageName ? effectiveStage(getStage(stageName)) : null;
   return executeStagePrompt({ stage, label: options.source || stageName || 'inline-llm', prompt, options });
 }
 

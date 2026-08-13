@@ -6,6 +6,7 @@ import EventDetail from './EventDetail';
 import ChronotypeOverlay from './ChronotypeOverlay';
 import { buildSubcalendarColorMap } from './calendarUtils';
 import BrailleSpinner from '../BrailleSpinner';
+import { formatMonthDay, formatWeekdayShort, formatDateShort } from '../../utils/formatters';
 
 const START_HOUR = 6;
 const END_HOUR = 23;
@@ -173,7 +174,7 @@ export default function WeekView({ accounts }) {
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const nowTop = ((nowMinutes - START_MINUTES) / 60) * PX_PER_HOUR;
 
-  const weekLabel = `${weekDays[0].toLocaleDateString([], { month: 'short', day: 'numeric' })} - ${weekDays[6].toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`;
+  const weekLabel = `${formatMonthDay(weekDays[0])} - ${formatDateShort(weekDays[6])}`;
 
   return (
     <div className="space-y-4">
@@ -209,7 +210,7 @@ export default function WeekView({ accounts }) {
                   key={i}
                   className={`flex-1 text-center py-2 text-xs font-medium border-l border-port-border ${isToday ? 'text-port-accent' : 'text-gray-400'}`}
                 >
-                  <div>{day.toLocaleDateString([], { weekday: 'short' })}</div>
+                  <div>{formatWeekdayShort(day)}</div>
                   <div className={`text-lg ${isToday ? 'bg-port-accent text-white rounded-full w-8 h-8 flex items-center justify-center mx-auto' : ''}`}>
                     {day.getDate()}
                   </div>

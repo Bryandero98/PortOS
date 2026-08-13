@@ -45,10 +45,13 @@ vi.mock('./taskSchedule.js', () => ({
   getTaskInterval: vi.fn(async () => ({ type: 'weekly', taskMetadata: { readOnly: false } })),
   stripManagedAgentOptionsFromOverride: vi.fn((_type, meta) => meta),
   recordExecution: vi.fn(async () => {}),
-  clearPerpetualPark: vi.fn(async () => {}),
   parkPerpetual: vi.fn(async () => {}),
-  getPerpetualSignature: vi.fn(async () => null),
-  setPerpetualSignature: vi.fn(async () => {}),
+  // This is a FULL-REPLACEMENT mock (no importActual spread), so it is the entire
+  // taskSchedule surface this suite sees — it has to track the real module's drain
+  // API or a future test here that reaches the reconcile gate gets
+  // "not a function" instead of a stub.
+  getPerpetualDrainState: vi.fn(async () => ({ signature: null, dispatchCount: 0 })),
+  recordPerpetualDispatch: vi.fn(async () => 1),
 }));
 
 vi.mock('./appActivity.js', async (importActual) => ({

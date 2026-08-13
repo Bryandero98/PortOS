@@ -10,7 +10,8 @@ const api = vi.hoisted(() => ({
   updateSong: vi.fn(),
 }));
 vi.mock('../services/api', () => api);
-vi.mock('../components/ui/Toast', () => ({ default: { error: vi.fn(), success: vi.fn() } }));
+const toast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+vi.mock('../components/ui/Toast', () => ({ default: toast }));
 
 import SongBook from './SongBook.jsx';
 
@@ -46,6 +47,8 @@ describe('SongBook index', () => {
     api.updateSong.mockReset();
     api.deleteSong.mockReset();
     api.createSong.mockReset();
+    toast.error.mockReset();
+    toast.success.mockReset();
   });
 
   it('renders the loaded songs', async () => {
@@ -90,5 +93,32 @@ describe('SongBook index', () => {
     renderPage();
     expect(await screen.findByText('No songs yet')).toBeTruthy();
     expect(screen.getByText('Import a song')).toBeTruthy();
+  });
+
+  // A failed fetch must not collapse into the fetched-and-empty state (#3899).
+  it('renders a retryable error banner instead of the empty state when the load fails', async () => {
+    api.listSongs.mockRejectedValue(new Error('Network down'));
+    renderPage();
+    expect(await screen.findByText("Couldn't load your songs")).toBeTruthy();
+    expect(screen.queryByText('No songs yet')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
+  it('re-fetches and clears the error banner when Retry is clicked', async () => {
+    api.listSongs.mockRejectedValueOnce(new Error('Network down'))
+      .mockResolvedValueOnce({ songs: [song('s1', 'Example Song')] });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Example Song')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("Couldn't load your songs")).toBeNull());
+    expect(api.listSongs).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not double-toast on a failed load — the banner owns the error UI', async () => {
+    api.listSongs.mockRejectedValue(new Error('Network down'));
+    renderPage();
+    await screen.findByText("Couldn't load your songs");
+    expect(api.listSongs).toHaveBeenCalledWith({ silent: true });
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });

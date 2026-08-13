@@ -3,6 +3,7 @@ import { Brain, RefreshCw, AlertCircle } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
 import { filterSelectableModels } from '../../utils/providers';
+import { formatDateNumeric } from '../../utils/formatters';
 
 const BIG_FIVE_LABELS = {
   O: { name: 'Openness', low: 'Practical', high: 'Curious' },
@@ -115,7 +116,9 @@ export default function PersonalityMap({ traits, confidence, providers, onAnalyz
             No personality traits analyzed yet. Run an analysis to extract Big Five traits from your documents.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <label htmlFor="personality-model-select" className="sr-only">AI Provider &amp; Model</label>
             <select
+              id="personality-model-select"
               value={selectedProvider ? `${selectedProvider.providerId}:${selectedProvider.model}` : ''}
               onChange={(e) => {
                 const [providerId, model] = e.target.value.split(':');
@@ -290,7 +293,7 @@ export default function PersonalityMap({ traits, confidence, providers, onAnalyz
                   <span className="text-sm text-gray-400">Last analyzed</span>
                   <span className="text-sm text-white">
                     {traits.lastAnalyzed
-                      ? new Date(traits.lastAnalyzed).toLocaleDateString()
+                      ? formatDateNumeric(traits.lastAnalyzed)
                       : 'Never'}
                   </span>
                 </div>

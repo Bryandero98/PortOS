@@ -23,6 +23,7 @@ import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
 import {
   applyHistoricalUsageCorrections,
   buildUsageReport,
+  getFirstActivityDay,
   getUsage,
   getUsageSummary,
   loadUsage,
@@ -284,6 +285,31 @@ describe('usage.js — streak calculations', () => {
       await loadUsage();
       const usage = getUsage();
       expect(usage.totalSessions).toBe(99);
+    });
+  });
+
+  describe('getFirstActivityDay', () => {
+    it('returns the earliest recorded day', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({ [daysAgo(2)]: { sessions: 1 }, [daysAgo(9)]: { sessions: 1 } }));
+      await loadUsage();
+      expect(getFirstActivityDay()).toBe(daysAgo(9));
+    });
+
+    // A rolled-up month only knows its month, so it contributes its first day —
+    // the subscription-savings window would otherwise start after usage that
+    // predates the daily retention boundary.
+    it('falls back to a rolled-up month when it predates every day bucket', async () => {
+      readJSONFile.mockResolvedValueOnce(
+        makeUsage({ [daysAgo(1)]: { sessions: 1 } }, { monthlyActivity: { '2024-03': { sessions: 5 } } })
+      );
+      await loadUsage();
+      expect(getFirstActivityDay()).toBe('2024-03-01');
+    });
+
+    it('is null with no recorded history', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+      expect(getFirstActivityDay()).toBeNull();
     });
   });
 

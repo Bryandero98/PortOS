@@ -28,7 +28,9 @@ import {
 import toast from '../ui/Toast';
 import ProseEditor from '../ui/ProseEditor';
 import Drawer from '../Drawer';
+import UnsavedChangesConfirm from '../ui/UnsavedChangesConfirm';
 import useMounted from '../../hooks/useMounted';
+import useUnsavedChangesGuard from '../../hooks/useUnsavedChangesGuard';
 import useClickOutside from '../../hooks/useClickOutside';
 import {
   saveWritersRoomDraft,
@@ -61,6 +63,7 @@ import useImageGenQueue from '../../hooks/useImageGenQueue';
 import useLiveSuggest from '../../hooks/useLiveSuggest';
 import useSidebarResize from '../../hooks/useSidebarResize';
 import useTokenPopover from '../../hooks/useTokenPopover';
+import { modKey } from '../../utils/platform';
 
 const ANALYSIS_KIND = { SCRIPT: 'script', CHARACTERS: 'characters', PLACES: 'places', OBJECTS: 'objects', EVALUATE: 'evaluate', FORMAT: 'format' };
 const DRAWER = { VERSIONS: 'versions', HISTORY: 'history', POLISH: 'polish', VOICE: 'voice' };
@@ -327,14 +330,16 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // Warn on tab close/navigation away while there are unsaved draft edits —
-  // otherwise the body reset in the effect above silently discards them.
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const onBeforeUnload = (e) => { e.preventDefault(); };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [dirty]);
+  // Guard unsaved draft edits at BOTH exit doors (#3958/#3995) — tab
+  // close/reload, and any in-app navigation (sidebar link, ⌘K, voice
+  // `ui_navigate`, browser Back) — otherwise the body reset in the effect above
+  // silently discards them. The confirm renders below the header banners.
+  const routeGuard = useUnsavedChangesGuard(dirty);
+  const { proceed: proceedExit } = routeGuard;
+  const discardAndExit = useCallback(() => {
+    setBody(savedBody);
+    proceedExit();
+  }, [proceedExit, savedBody]);
 
   useClickOutside(overflowRef, overflowOpen, () => setOverflowOpen(false));
 
@@ -788,7 +793,7 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
           className={`flex items-center gap-1 px-3 py-1 min-h-[44px] sm:min-h-0 text-xs rounded ${
             dirty && !saving ? 'bg-port-accent text-white hover:bg-port-accent/80' : 'bg-port-bg text-gray-500'
           }`}
-          title={dirty ? 'Save (Ctrl/Cmd+S)' : 'Up to date'}
+          title={dirty ? `Save (${modKey}+S)` : 'Up to date'}
         >
           <Save size={12} /> {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
         </button>
@@ -854,6 +859,16 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
           )}
         </div>
       </div>
+
+      {/* A save in flight is about to settle the draft clean, and the guard
+          releases the parked navigation on its own — no confirm to flash. */}
+      <UnsavedChangesConfirm
+        guard={routeGuard}
+        when={!saving}
+        question="Discard your unsaved changes to this work?"
+        label={`Discard unsaved changes to ${title || 'this work'}`}
+        onDiscard={discardAndExit}
+      />
 
       {runningKind && (
         <AnalysisRunBanner

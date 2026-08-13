@@ -5,7 +5,7 @@ import toast from '../../ui/Toast';
 import Banner from '../../ui/Banner';
 import * as api from '../../../services/api';
 import { MEMORY_TYPES, MEMORY_TYPE_COLORS } from '../constants';
-import { getAppName } from '../../../utils/formatters';
+import { getAppName, formatDateNumeric } from '../../../utils/formatters';
 import MemoryTimeline from './MemoryTimeline';
 // Lazy: MemoryGraph pulls the three.js stack; load it only when rendered.
 const MemoryGraph = lazy(() => import('./MemoryGraph'));
@@ -285,7 +285,7 @@ export default function MemoryTab({ apps = [] }) {
                     </div>
                   )}
                   <div className="text-xs text-gray-500 mt-2 flex flex-wrap gap-2">
-                    <span>{new Date(memory.createdAt).toLocaleDateString()}</span>
+                    <span>{formatDateNumeric(memory.createdAt)}</span>
                     {getAppName(memory.sourceAppId, apps) && (
                       <>
                         <span>*</span>
@@ -426,7 +426,7 @@ export default function MemoryTab({ apps = [] }) {
                       </div>
                     )}
                     <div className="text-xs text-gray-500 mt-2 flex flex-wrap items-center gap-2">
-                      <span>{new Date(memory.createdAt).toLocaleDateString()}</span>
+                      <span>{formatDateNumeric(memory.createdAt)}</span>
                       <span>*</span>
                       <span>importance: {((memory.importance || 0.5) * 100).toFixed(0)}%</span>
                       {getAppName(memory.sourceAppId, apps) && (

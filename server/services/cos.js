@@ -15,17 +15,16 @@
  * - cosHealthMonitor.js  — daemon health checks (PM2/memory, auto-restart)
  */
 
-import { readFile, writeFile, readdir, rm } from 'fs/promises';
+import { readFile, writeFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { v4 as uuidv4 } from '../lib/uuid.js';
 import { getActiveProvider } from './providers.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { isRetryHeld, isStaleRetryHold } from '../lib/taskRetryHold.js';
 import { isAppOnCooldown, markAppReviewCooldown, bindAppReviewAgent, clearStaleActiveAgents } from './appActivity.js';
 import { getActiveApps } from './apps.js';
 import { getPerformanceSummary, checkAndRehabilitateSkippedTasks, getLearningInsights } from './taskLearning.js';
-import { schedule as scheduleEvent, cancel as cancelEvent, getStats as getSchedulerStats } from './eventScheduler.js';
+import { schedule as scheduleEvent, cancel as cancelEvent } from './eventScheduler.js';
 import { generateProactiveTasks as generateMissionTasks } from './missions.js';
 import { recordJobExecution } from './autonomousJobs.js';
 import { atomicWrite, safeJSONParse, sleep } from '../lib/fileUtils.js';
@@ -39,7 +38,7 @@ import { getDomainBudgetStatus } from './domainUsage.js';
 import { useRunner } from './agentState.js';
 
 // Shared state management (extracted to avoid circular deps)
-import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, canQueueImprovementTasks, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
+import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, canQueueImprovementTasks, SCRIPTS_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
 
 // Events and logging (canonical source: cosEvents.js)
 import { cosEvents, emitLog } from './cosEvents.js';
@@ -74,11 +73,12 @@ export { runHealthCheck, getHealthStatus };
 // backward compat with `import * as cos` and the cos route handlers. The store
 // emits `tasks:changed`; init() below turns that into tryImmediateSpawn /
 // dequeueNextTask so the spawn-side logic stays here, not in the store.
-import { firstLine, PRIORITY_VALUES, getUserTasks, getCosTasks, getAllTasks, getTasks, getTaskById, addTask, updateTask, reviveBlockedTask, deleteTask, reorderTasks, approveTask, challengeTask, resolveTaskChallenge, resolveTaskChallengeWithRecheck, sweepResolvedFailureTasks } from './cosTaskStore.js';
+import { firstLine, getUserTasks, getCosTasks, getAllTasks, getTasks, getTaskById, addTask, updateTask, reviveBlockedTask, deleteTask, reorderTasks, approveTask, challengeTask, resolveTaskChallenge, resolveTaskChallengeWithRecheck, sweepResolvedFailureTasks } from './cosTaskStore.js';
 export { firstLine, getUserTasks, getCosTasks, getAllTasks, getTasks, getTaskById, addTask, updateTask, reviveBlockedTask, deleteTask, reorderTasks, approveTask, challengeTask, resolveTaskChallenge, resolveTaskChallengeWithRecheck, sweepResolvedFailureTasks };
 import { ensureInstanceId } from './instances.js';
 import { isHeldByOther, buildRenewal, buildClaim, getClaimOwner } from './cosTaskClaim.js';
 import { retryTasksResolvedByInvestigation } from './investigationRetry.js';
+import { notifyIfPrLeftOrphaned } from './orphanedPrNotifier.js';
 
 const AGENT_ARCHIVE_RETENTION_DAYS = 90;
 const RESUME_DEQUEUE_DELAY_MS = 500;
@@ -171,13 +171,9 @@ export async function getStatus() {
   };
 }
 
-/**
- * Get current configuration
- */
-export async function getConfig() {
-  const state = await loadState();
-  return state.config;
-}
+// Get current configuration (moved to cosState.js to break an import cycle;
+// re-exported here for backward compat with `import * as cos`).
+export { getConfig } from './cosState.js';
 
 /**
  * Update configuration
@@ -881,18 +877,15 @@ async function spawnDequeuePriority0OnDemand(ctx) {
 
     await taskScheduleMod.clearOnDemandRequest(request.id);
 
+    // A HUMAN "Run" re-checks live state (park + convergence signature + dispatch
+    // budget all cleared); an automated refill re-issue inherits them, or the drain
+    // has no brakes left. The origin check lives inside applyOnDemandRunResets so
+    // this engine and its two siblings can't drift on it.
+    const userInitiated = await taskScheduleMod.applyOnDemandRunResets(request, targetApp?.id ?? null);
+    const lane = userInitiated ? '' : ' (drain refill)';
+
     if (targetApp) {
-      emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}`, { requestId: request.id, appId: targetApp.id });
-      // A user-initiated "Run" must re-check live state, never honor a stale
-      // park or convergence signature — resetting both up front guarantees the
-      // detector/reconcile below runs fresh and dispatches on live state (and,
-      // if still idle, re-stamps a park reflecting THIS check).
-      await taskScheduleMod.resetPerpetualForManualRun(request.taskType, targetApp.id);
-      // A manual "Run" also unparks a failure-parked type (#2616) — clear this
-      // app's consecutive-failure ledger. (Mirrors the sibling
-      // spawnPriority0OnDemand engine in cosTaskGenerator.js; either engine may
-      // drain a given on-demand request, so both must unpark.)
-      await taskScheduleMod.clearTaskTypeFailurePark(request.taskType, targetApp.id);
+      emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}${lane}`, { requestId: request.id, appId: targetApp.id });
       // Advance the cooldown eagerly (deduped per app per cycle), but defer
       // binding the active agent until a task is produced — a null result
       // here must not strand `activeAgentId` (issue #978).
@@ -906,11 +899,7 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
       }
     } else {
-      emitLog('info', `Processing on-demand improvement: ${request.taskType}`, { requestId: request.id });
-      // Same fresh-check guarantee as the app-scoped branch above.
-      await taskScheduleMod.resetPerpetualForManualRun(request.taskType);
-      // Manual re-run unparks a failure-parked type (global scope) — #2616.
-      await taskScheduleMod.clearTaskTypeFailurePark(request.taskType);
+      emitLog('info', `Processing on-demand improvement: ${request.taskType}${lane}`, { requestId: request.id });
       await taskScheduleMod.recordExecution(`task:${request.taskType}`);
       await withStateLock(async () => {
         const s = await loadState();
@@ -947,12 +936,16 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         capacity.trackSpawn(revived);
         emitLog('info', `🔁 On-demand ${request.taskType} revived blocked task ${persisted.id}`, { taskId: persisted.id });
       }
-    } else if (!task) {
+    } else if (!task && userInitiated) {
       // Explicit user "Run" produced no task — surface WHY (parked / transient /
       // idle) so the trigger isn't a silent no-op. Shared with the sibling
       // spawnPriority0OnDemand engine so a request drained by either path gets
       // the same feedback. Because we reset the park BEFORE the fresh detection
       // above, the outcome classification reflects THIS check.
+      //
+      // `userInitiated` only: a drain refill ends by converging (that's the point),
+      // and nobody is waiting on it, so toasting "nothing to do" for every automated
+      // hop would turn a healthy overnight drain into a pile of notifications.
       await emitOnDemandEmpty({ taskScheduleMod, request, targetApp, taskConfig: taskSchedule.tasks[request.taskType] });
     }
   }
@@ -1347,7 +1340,25 @@ async function refillPerpetualForCompletedAgent(agent) {
     // the still-`in_progress` completing task; letting triggerOnDemandTask emit
     // its event would fire a redundant SECOND dequeue of the same request.
     if (!isImprovementEnabled(state)) return;
-    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId, { emit: false });
+    // A PARK STOPS A REFILL (#3848). Park elapse used to be read only by the
+    // SCHEDULED lane, so a drain that parked itself (idle detector, no-progress,
+    // drain cap) could still be re-issued here on the very next completion — the
+    // park meant nothing on the one lane that does the re-dispatching, and the
+    // work-detector re-deciding was the only brake left. A human "Run Now" is
+    // unaffected: applyOnDemandRunResets clears the park first for a USER-origin
+    // request, and only a refill reaches this line with the park intact.
+    if (await taskScheduleMod.isPerpetualParkActive(plan.taskType, plan.appId)) {
+      emitLog('debug', `Perpetual refill for ${plan.taskType} skipped: parked until its recheck cadence`, { appId: plan.appId });
+      return;
+    }
+    // `origin: 'refill'` — this re-issue borrows the on-demand LANE but is not a
+    // human pressing Run, so the drain engines must leave the park, the
+    // convergence signature, and the dispatch counter intact. Without it the
+    // refill wipes its own convergence state on every hop and the drain never
+    // parks while one actionable item remains.
+    await taskScheduleMod.triggerOnDemandTask(plan.taskType, plan.appId, {
+      emit: false, origin: taskScheduleMod.ON_DEMAND_ORIGINS.REFILL
+    });
     return;
   }
 
@@ -1479,6 +1490,17 @@ export async function init() {
       setImmediate(() => retryTasksResolvedByInvestigation(data.task)
         .catch(err => console.error(`❌ Auto-retry after investigation ${data.task?.id} failed: ${err.message}`)));
     }
+  });
+
+  // A task that was going to MERGE a pull request just got blocked — surface the
+  // PR it left orphaned. Registered separately from the dequeue listener above
+  // because it must fire on a transition that listener has no branch for
+  // (→ blocked), and it is not gated on `isDaemonRunning()`: a block that lands
+  // as the daemon stops still strands its PR. See orphanedPrNotifier.js for why
+  // nothing else ever recovers these.
+  cosEvents.on('tasks:changed', (data) => {
+    notifyIfPrLeftOrphaned(data)
+      .catch(err => console.error(`❌ Orphaned-PR check failed for task ${data?.task?.id}: ${err.message}`));
   });
 
   cosEvents.on('tasks:user:added', () => {

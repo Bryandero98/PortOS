@@ -118,6 +118,13 @@ function unescapeNewlines(value) {
       // Fall through to legacy behavior if parsing fails
     }
   }
+  // Self-heal task files a pre-fix install already wrote, where a nullish value
+  // was persisted as the bare word `null` and read back as a TRUTHY string (see
+  // generateTasksMarkdown for what that broke). A genuine string `"null"` now
+  // round-trips through the JSON sentinel, so an unsentineled bare
+  // `null`/`undefined` is unambiguously the nullish value.
+  if (value === 'null') return null;
+  if (value === 'undefined') return undefined;
   // Legacy fallback for backwards compatibility with pre-sentinel data only.
   // New values with special characters always use the sentinel prefix (see escapeNewlines),
   // so this branch only runs on historical data that was escaped with the old method.
@@ -138,8 +145,10 @@ function escapeNewlines(value) {
     return JSON_SENTINEL + JSON.stringify(value);
   }
   if (typeof value !== 'string') return String(value);
-  // Only use JSON encoding if the value contains characters that need escaping
-  if (value.includes('\n') || value.includes('\\')) {
+  // Only use JSON encoding if the value contains characters that need escaping,
+  // or would collide with the bare `null`/`undefined` unescapeNewlines reads
+  // back as the nullish value.
+  if (value.includes('\n') || value.includes('\\') || value === 'null' || value === 'undefined') {
     return JSON_SENTINEL + JSON.stringify(value);
   }
   return value;
@@ -311,7 +320,18 @@ export function generateTasksMarkdown(tasks, includeApprovalFlags = false) {
       // Pass the raw value — escapeNewlines JSON-encodes arrays/objects itself;
       // pre-stringifying here would flatten them to "a,b" or "[object Object]"
       // before it ever sees the array/object shape.
+      //
+      // Nullish values are DROPPED rather than written. `String(null)` used to
+      // put the bare word `null` in the file, which re-parsed as the TRUTHY
+      // string `'null'` — so a review-loop follow-up carrying `app: null` came
+      // back as an app id of `'null'`, got blocked with `app-unresolved` before
+      // it started, and the PR it existed to merge was orphaned. Producers
+      // legitimately build metadata with `?? null` placeholders
+      // (spawnReviewLoopFollowUp's `app`, `reviewLoopPRNumber`, …), so this is
+      // the one place that can stop that habit from corrupting task state. An
+      // absent key already means "not set" to every reader.
       for (const [key, value] of Object.entries(task.metadata)) {
+        if (value === null || value === undefined) continue;
         const escapedValue = escapeNewlines(value);
         lines.push(`  - ${key}: ${escapedValue}`);
       }

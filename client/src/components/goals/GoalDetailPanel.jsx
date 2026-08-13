@@ -16,6 +16,7 @@ import GoalCheckIns from './GoalCheckIns';
 import GoalProgressLog from './GoalProgressLog';
 import GoalLinkedActivities from './GoalLinkedActivities';
 import GoalLinkedCalendars from './GoalLinkedCalendars';
+import { formatDateNumeric } from '../../utils/formatters';
 
 // Re-exported for backward compatibility — GoalsListView/GoalsTreeView/GoalProgressWidget
 // import these from GoalDetailPanel. Source of truth is ./goalConstants.
@@ -201,7 +202,7 @@ export default function GoalDetailPanel({ goal, allGoals, onClose, onRefresh }) 
           {goal.targetDate && (
             <div className="flex items-center gap-1.5 text-xs text-gray-400">
               <Calendar className="w-3.5 h-3.5" />
-              <span>Target: {new Date(goal.targetDate + 'T00:00:00').toLocaleDateString()}</span>
+              <span>Target: {formatDateNumeric(goal.targetDate)}</span>
             </div>
           )}
 

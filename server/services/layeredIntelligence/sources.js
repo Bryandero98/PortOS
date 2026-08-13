@@ -15,6 +15,7 @@ import { fetchPublicText } from '../../lib/safeUrlFetch.js';
 import { validateCommand } from '../../lib/commandSecurity.js';
 import { getSettings } from '../settings.js';
 import { computeWindowedStats } from '../taskLearning/store.js';
+import { computeChurn, summarizeRecentRuns, SHORT_LIVED_MS } from '../agentChurn.js';
 import {
   PLANNED_WORK_LABEL, PLANNED_WORK_NONE, PLANNED_WORK_UNAVAILABLE_PREFIX,
   PLANNED_WORK_MAX_ITEMS, PLANNED_WORK_MAX_CHARS, LI_TASK_TYPE,
@@ -229,6 +230,39 @@ export function renderCosMetricsSource({ metricsByType = {}, delivery = null } =
   return JSON.stringify(payload).slice(0, COS_METRICS_MAX_CHARS);
 }
 
+const CHURN_SIGNAL_MAX_ITEMS = 8;
+const CHURN_SIGNAL_MAX_CHARS = 4000;
+
+/**
+ * Render the active churn signals for the PortOS install. These are local
+ * diagnostic measurements, not tracker work: the reasoner must investigate
+ * them and decide whether a concrete planned fix is justified. Pure.
+ */
+export function renderChurnSignals(metricsByType, { maxItems = CHURN_SIGNAL_MAX_ITEMS } = {}) {
+  const signals = Object.entries(metricsByType || {})
+    .filter(([, metrics]) => metrics?.churn && typeof metrics.churn === 'object')
+    .slice(0, Math.max(0, maxItems));
+  if (!signals.length) return '';
+
+  const lines = [
+    'Instance-local CoS churn signals (deterministic telemetry; not tracker issues):',
+    'These measurements describe this PortOS install only. Investigate whether each signal is a reproducible defect with a concrete planned fix; do not file a proposal merely because a signal exists. Return proposal: null when the evidence does not support actionable work.'
+  ];
+  for (const [type, metrics] of signals) {
+    const churn = metrics.churn;
+    const label = String(type).replace(/\s+/g, ' ').slice(0, 160);
+    const timing = churn.shortLivedSampleSize > 0
+      ? `${churn.shortLivedCount}/${churn.shortLivedSampleSize} timed runs under ${SHORT_LIVED_MS}ms`
+      : 'completion spacing only (no per-run durations)';
+    lines.push(`- ${label}: signal=${churn.signal}; completions=${churn.windowCompleted}; windowMs=${churn.windowMs}; ${timing}; medianDurationMs=${churn.medianDurationMs ?? 'unavailable'}; medianGapMs=${churn.medianGapMs ?? 'unavailable'}`);
+  }
+  const total = Object.values(metricsByType || {})
+    .filter(metrics => metrics?.churn && typeof metrics.churn === 'object')
+    .length;
+  if (total > signals.length) lines.push(`- ${total - signals.length} additional churn signal(s) omitted from this prompt for brevity.`);
+  return lines.join('\n').slice(0, CHURN_SIGNAL_MAX_CHARS);
+}
+
 /**
  * Gather the enabled Layer-1 sources for one app into a `{ key: string }` map.
  * Deterministic reads only (files + CoS metric JSON + tracker lists); NO LLM calls.
@@ -298,15 +332,38 @@ export async function gatherSources(app, config, { cosPath = PATHS.cos, trustShe
     // still have approved-but-undelivered proposals worth surfacing. When both halves
     // are empty renderCosMetricsSource returns '' and the source is omitted as before.
     const summary = {};
+    const DAY_MS = 24 * 60 * 60 * 1000;
     for (const [type, m] of Object.entries(learning?.byTaskType || {})) {
       const windowed = computeWindowedStats(m?.recentOutcomes);
-      summary[type] = {
+      // 24h burst stats (duration + count) plus the deterministic churn signal
+      // below so a future PortOS LI run can judge whether the local evidence
+      // supports a concrete planned fix.
+      const burst = summarizeRecentRuns(m?.recentOutcomes, { windowMs: DAY_MS });
+      const entry = {
         lifetimeSuccessRate: typeof m?.successRate === 'number' ? m.successRate : null,
         lifetimeCompleted: m?.completed || 0,
         recentSuccessRate: windowed.windowedSuccessRate,
         recentCompleted: windowed.windowedCompleted,
-        avgDurationMs: m?.avgDurationMs || 0
+        avgDurationMs: m?.avgDurationMs || 0,
+        recent24hCompleted: burst.windowCompleted,
+        recent24hShortLived: burst.shortLivedCount,
+        recent24hMedianDurationMs: burst.medianDurationMs,
+        shortLivedMs: SHORT_LIVED_MS
       };
+      const churn = isPortos ? computeChurn(m?.recentOutcomes) : null;
+      if (churn?.flagged) {
+        entry.churn = {
+          signal: churn.reason,
+          windowMs: churn.windowMs,
+          windowCompleted: churn.windowCompleted,
+          shortLivedCount: churn.shortLivedCount,
+          shortLivedSampleSize: churn.shortLivedSampleSize,
+          shortLivedRatio: churn.shortLivedRatio,
+          medianDurationMs: churn.medianDurationMs,
+          medianGapMs: churn.medianGapMs
+        };
+      }
+      summary[type] = entry;
     }
     // No delivery block yet: the approval → delivery numbers come from the app's
     // outcome records, which the hook only has AFTER it has reconciled them against
@@ -329,6 +386,8 @@ export async function gatherSources(app, config, { cosPath = PATHS.cos, trustShe
     if (isPortos) {
       const scopeGuidance = computeScopeAwareness({ metricsByType: summary });
       if (scopeGuidance) out.scopeGuidance = scopeGuidance;
+      const churnSignals = renderChurnSignals(summary);
+      if (churnSignals) out.churnSignals = churnSignals;
     }
   }
   for (const custom of src.custom || []) {

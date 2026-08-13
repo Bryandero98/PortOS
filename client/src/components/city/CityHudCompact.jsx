@@ -9,6 +9,7 @@ import CityFilterBar from './CityFilterBar';
 import CityFocusPanel from './CityFocusPanel';
 import { CITY_PANE_IDS, CITY_INTEL_PANE_IDS, CITY_PANE_LABELS } from './cityPanes';
 import { birthDateCta } from '../../utils/characterXp';
+import { formatClockTime } from '../../utils/formatters';
 
 // A 44×44 dock control. `active`/`aria-pressed` mark a toggled disclosure launcher;
 // omit `active` for one-shot actions (photo, history) that just fire a callback.
@@ -159,7 +160,7 @@ export default function CityHudCompact({
         >
           <span className={`w-2 h-2 rounded-full ${vitals.sentinel.dot} shadow-[0_0_4px_currentColor]`} />
           <span className="font-pixel text-cyan-400 text-sm tracking-wider" style={{ textShadow: '0 0 8px rgba(6,182,212,0.5)' }}>
-            {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {formatClockTime(time, { seconds: false })}
           </span>
           <span className="font-pixel text-[9px] text-cyan-500 tracking-wide">{vitals.activeApps}/{vitals.totalApps}</span>
         </button>

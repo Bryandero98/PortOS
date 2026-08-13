@@ -13,10 +13,11 @@
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router';
-import { ListMusic, Plus, Trash2, Download, Search, X } from 'lucide-react';
+import { ListMusic, Plus, Trash2, Download, Search, X, AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import PageHeader from '../components/PageHeader';
 import EmptyState from '../components/EmptyState';
+import Banner from '../components/ui/Banner';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import { timeAgo } from '../utils/formatters';
 import { useAsyncAction } from '../hooks/useAsyncAction';
@@ -43,17 +44,36 @@ export default function SongBook() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  const [songs, setSongs] = useState([]);
+  // null = not fetched (or the fetch failed), [] = fetched-and-empty. A failed
+  // load must NOT collapse into the same state as an empty repertoire, or the
+  // page tells the user their songs are gone (issue #3899).
+  const [songs, setSongs] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  // Bump to re-run the load effect (the Retry button on the error banner).
+  const [retryKey, setRetryKey] = useState(0);
   const [title, setTitle] = useState('');
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    // The banner below owns the error UI, so the request stays silent — one
+    // error layer only (client/src/CLAUDE.md "custom catch ⇒ silent: true").
     listSongs({ silent: true })
-      .then((data) => setSongs(Array.isArray(data?.songs) ? data.songs : []))
-      .catch((err) => toast.error(err?.message || 'Failed to load songs'))
-      .finally(() => setLoading(false));
-  }, []);
+      .then((data) => {
+        if (cancelled) return;
+        setSongs(Array.isArray(data?.songs) ? data.songs : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSongs(null);
+        setLoadError(err?.message || 'Failed to load songs');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [retryKey]);
 
   const [create, creating] = useAsyncAction(async () => {
     const name = title.trim();
@@ -66,7 +86,7 @@ export default function SongBook() {
 
   const onDelete = useCallback((song) => confirmDelete(() =>
     deleteSong(song.id, { silent: true })
-      .then(() => setSongs((prev) => prev.filter((s) => s.id !== song.id)))
+      .then(() => setSongs((prev) => (prev || []).filter((s) => s.id !== song.id)))
       .catch((err) => toast.error(err?.message || 'Failed to delete song')),
   ), [confirmDelete]);
 
@@ -75,13 +95,13 @@ export default function SongBook() {
   // helper owns the error toast (single layer).
   const onStageChange = useCallback((id, stage) => {
     updateSong(id, { stage })
-      .then((updated) => setSongs((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s))))
+      .then((updated) => setSongs((prev) => (prev || []).map((s) => (s.id === id ? { ...s, ...updated } : s))))
       .catch(() => {});
   }, []);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return songs.filter((s) => {
+    return (songs || []).filter((s) => {
       if (stageFilter && s.stage !== stageFilter) return false;
       if (instrumentFilter && s.instrument !== instrumentFilter) return false;
       if (tagFilter && !(Array.isArray(s.tags) && s.tags.includes(tagFilter))) return false;
@@ -183,8 +203,26 @@ export default function SongBook() {
       {/* Grid */}
       {loading ? (
         <p className="text-sm text-gray-500">Loading songs…</p>
+      ) : loadError ? (
+        <Banner
+          tone="error"
+          size="md"
+          icon={AlertTriangle}
+          title="Couldn't load your songs"
+          actions={(
+            <button
+              type="button"
+              onClick={() => setRetryKey((k) => k + 1)}
+              className="px-3 py-1.5 rounded-lg text-xs bg-port-error/20 hover:bg-port-error/30 text-port-error"
+            >
+              Retry
+            </button>
+          )}
+        >
+          {loadError} — your repertoire is still there; this is a fetch failure, not an empty SongBook.
+        </Banner>
       ) : filtered.length === 0 ? (
-        songs.length === 0 ? (
+        songs?.length === 0 ? (
           <EmptyState
             icon={ListMusic}
             title="No songs yet"

@@ -193,6 +193,10 @@ const autopilotStartSchema = z.object({
   // sampled eligible provider/model/effort for each step and role. Explicit
   // run choices and exact stage pins still win.
   autoSelectModels: z.boolean().optional(),
+  // Force this run's provider/model/effort onto EVERY stage, ignoring the
+  // per-stage pins from the Prompts page (see lib/stagePinPolicy.js). Falls back
+  // to the persisted pipelineEditorialChecks.overrideStagePins setting, then off.
+  overrideStagePins: z.boolean().optional(),
 });
 
 const modelOutcomeSchema = z.object({

@@ -11,6 +11,7 @@ import { pushFocus, popFocus, currentFocusId } from '../../../lib/brainGraphFocu
 import EntityCombobox from '../../EntityCombobox';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import BrailleSpinner from '../../BrailleSpinner';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 const EDGE_COLORS = {
   similar: '#3b82f6',
@@ -708,7 +709,7 @@ export default function BrainGraph() {
                   </div>
                 )}
                 <div className="text-xs text-gray-500 flex flex-wrap gap-3">
-                  {fullRecord.createdAt && <span>Created: {new Date(fullRecord.createdAt).toLocaleDateString()}</span>}
+                  {fullRecord.createdAt && <span>Created: {formatDateNumeric(fullRecord.createdAt)}</span>}
                   {fullRecord.nextAction && <span>Next: {fullRecord.nextAction}</span>}
                   {fullRecord.horizon && <span>Horizon: {fullRecord.horizon}</span>}
                   {fullRecord.targetDate && <span>Target: {fullRecord.targetDate}</span>}

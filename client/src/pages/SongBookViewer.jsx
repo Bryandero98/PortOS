@@ -21,6 +21,11 @@
  *   select and live preview. Saves are explicit (single PATCH). The whole
  *   `content` object is always sent — the server fills nested content
  *   defaults, so `{ content: { text } }` alone would reset format to 'tab'.
+ *   Because the draft only reaches the server on Save, every exit out of edit
+ *   mode goes through an unsaved-changes guard rather than dropping the draft
+ *   silently — the View toggle in-page (#3902), and every route exit (the
+ *   "All songs" link, a sidebar link, ⌘K, voice nav, Back, tab close) via
+ *   useUnsavedChangesGuard (#3958).
  *
  * Keyboard (play mode): space play/pause, +/- speed, [ ] transpose, 0 top.
  * For a drum chart the same keys drive the kit transport instead: space
@@ -39,6 +44,7 @@ import toast from '../components/ui/Toast';
 import FilePickerButton from '../components/ui/FilePickerButton';
 import PageHeader from '../components/PageHeader';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
+import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import AutoSizeTextarea from '../components/ui/AutoSizeTextarea';
 import TabPills from '../components/ui/TabPills';
 import TabSheetView from '../components/songbook/TabSheetView';
@@ -57,6 +63,7 @@ import useKeyboardShortcuts from '../hooks/useKeyboardShortcuts';
 import useAutoscroll from '../hooks/useAutoscroll';
 import useDrumPlayer from '../hooks/useDrumPlayer';
 import useWakeLock from '../hooks/useWakeLock';
+import useUnsavedChangesGuard from '../hooks/useUnsavedChangesGuard';
 import { transposeText } from '../lib/tabNotation.js';
 import { VOICING_INSTRUMENTS, toVoicingInstrument } from '../lib/chordShapes.js';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
@@ -93,6 +100,26 @@ const toDraft = (song) => ({
 });
 
 const parseTags = (raw) => raw.split(',').map((t) => t.trim()).filter(Boolean);
+
+// Draft-vs-saved comparison for the unsaved-changes guard. It compares what a
+// SAVE would send, not the raw form text — otherwise edits the save normalizes
+// away read as unsaved work and prompt for nothing. Each field is normalized
+// exactly as `save` normalizes it: trimmed strings, `parseTags` for the tag
+// input ('a,b' and 'a, b,' both save as ['a','b']), and a numeric capo (the
+// number input hands back a STRING, and an emptied field clamps to 0).
+// `notes`/`text` go to the server verbatim, so they compare verbatim.
+const TRIMMED_DRAFT_FIELDS = ['title', 'artist', 'key', 'tuning', 'sourceUrl'];
+const normalizeDraftField = (draft, k) => {
+  if (k === 'capo') return Number(draft.capo || 0);
+  // Joined on a comma — the one character parseTags strips from every tag, so
+  // two different tag lists can never normalize to the same string.
+  if (k === 'tags') return parseTags(draft.tags).join(',');
+  if (TRIMMED_DRAFT_FIELDS.includes(k)) return (draft[k] || '').trim();
+  return draft[k];
+};
+const draftsEqual = (a, b) => Object.keys(a).every(
+  (k) => normalizeDraftField(a, k) === normalizeDraftField(b, k),
+);
 
 // Instrument-view toggle tabs (chord-diagram rendering — never mutates the record).
 const VIEW_TABS = VOICING_INSTRUMENTS.map((viewId) => ({ id: viewId, label: instrumentLabel(viewId) }));
@@ -131,6 +158,7 @@ export default function SongBookViewer() {
   const [retryKey, setRetryKey] = useState(0);
   const [draft, setDraft] = useState(null);
   // null = not fetched yet, [] = fetched-and-empty (sentinel convention).
+  // 'failed' = presence lookup errored (presence unknown, list still shown).
   const [attachments, setAttachments] = useState(null);
   // Once any attachment mutation has run, the (slow) initial list response is
   // stale — it must not clobber the optimistic upload/delete state.
@@ -313,6 +341,47 @@ export default function SongBookViewer() {
     return updated;
   }, { errorMessage: 'Failed to save song' });
 
+  // --- Unsaved-edit guard (#3902, #3958)
+  // The editor holds everything in `draft` until an explicit Save, so leaving
+  // edit mode would drop sheet text and practice notes silently. `pendingExit`
+  // holds a deferred IN-PAGE exit (the View toggle) while the inline discard
+  // confirm is up; `routeGuard` below parks anything that leaves the route.
+  const isDirty = useMemo(
+    () => !!song && !!draft && !draftsEqual(draft, toDraft(song)),
+    [song, draft],
+  );
+  const [pendingExit, setPendingExit] = useState(null);
+  // Once the draft settles — the user hit Save with an exit armed, or typed the
+  // value back to what's stored — the exit they asked for RUNS rather than being
+  // dropped. Dropping it would swallow the click: the confirm hides with the
+  // draft clean and nothing ever navigates. (Discard clears `pendingExit`
+  // itself before resetting the draft, so it can't double-fire here.)
+  useEffect(() => {
+    if (isDirty || !pendingExit) return;
+    setPendingExit(null);
+    pendingExit();
+  }, [isDirty, pendingExit]);
+  // Store the exit as a value, not as a state updater (setState(fn) would CALL it).
+  const requestExit = useCallback((run) => {
+    if (isDirty) setPendingExit(() => run);
+    else run();
+  }, [isDirty]);
+  // Everything that leaves this ROUTE — the "All songs" link, a sidebar link, a
+  // ⌘K palette jump, a voice `ui_navigate`, the browser Back button — plus tab
+  // close / reload (#3958). `requestExit` above still covers the one exit that
+  // isn't a navigation: the View toggle, which only flips the `?mode` param.
+  const routeGuard = useUnsavedChangesGuard(isDirty);
+  const discardAndExit = useCallback(() => {
+    setDraft(song ? toDraft(song) : null);
+    setPendingExit(null);
+    pendingExit?.();
+    routeGuard.proceed();
+  }, [pendingExit, routeGuard, song]);
+  const keepEditing = useCallback(() => {
+    setPendingExit(null);
+    routeGuard.reset();
+  }, [routeGuard]);
+
   const onDeleteSong = useCallback(() => confirmDelete(() =>
     deleteSong(id, { silent: true })
       .then(() => navigate('/songbook'))
@@ -326,11 +395,24 @@ export default function SongBookViewer() {
         toast.error(`"${file.name}" exceeds the ${formatBytes(JSON_UPLOAD_MAX_FILE_SIZE)} limit`);
         continue;
       }
-      const data = await readFileAsBase64(file);
-      const res = await uploadSongAttachment(id, { filename: file.name, data }, { silent: true });
+      // Per-file failure isolation (#3901): a rejected read/upload must not
+      // abort the rest of a multi-file selection. Catch here (rather than
+      // letting it bubble to useAsyncAction's single generic toast) so the
+      // toast names the file that failed and the loop keeps going.
+      const res = await readFileAsBase64(file)
+        .then((data) => uploadSongAttachment(id, { filename: file.name, data }, { silent: true }))
+        .catch((err) => {
+          toast.error(`Failed to upload "${file.name}": ${err?.message || 'Upload failed'}`);
+          return null;
+        });
       if (res?.attachment) {
         attachmentsMutatedRef.current = true;
-        setAttachments((prev) => [...(prev || []), { ...res.attachment, present: true }]);
+        // `prev` may be the 'failed' sentinel — spreading a string would yield
+        // six single-character entries, so fall back to the synced list (#3900).
+        setAttachments((prev) => [
+          ...(Array.isArray(prev) ? prev : (song?.attachments || [])),
+          { ...res.attachment, present: true },
+        ]);
       }
     }
   }, { errorMessage: 'Upload failed' });
@@ -340,10 +422,18 @@ export default function SongBookViewer() {
       .then((res) => {
         attachmentsMutatedRef.current = true;
         // Server returns the updated meta list; carry over local present flags.
-        setAttachments((prev) => (res?.attachments || []).map((meta) => ({
-          ...meta,
-          present: prev?.find((a) => a.filename === meta.filename)?.present ?? false,
-        })));
+        // `prev` is the 'failed' sentinel when the presence lookup errored, and
+        // `.find()` on that string throws (#3900). Presence carries over only
+        // where it is an explicitly-known boolean — an entry we never resolved
+        // (failed lookup, or a synced entry appended after one) stays unknown
+        // so it renders as a link, not a false "not on this machine".
+        setAttachments((prev) => {
+          const known = Array.isArray(prev) ? prev : [];
+          return (res?.attachments || []).map((meta) => {
+            const prior = known.find((a) => a.filename === meta.filename)?.present;
+            return typeof prior === 'boolean' ? { ...meta, present: prior } : { ...meta };
+          });
+        });
       })
       .catch((err) => toast.error(err?.message || 'Failed to delete attachment')),
   ), [confirmDelete, id]);
@@ -415,7 +505,7 @@ export default function SongBookViewer() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMode('play')}
+                  onClick={() => requestExit(() => setMode('play'))}
                   className={btnClass}
                 >
                   <Eye size={15} />
@@ -456,6 +546,28 @@ export default function SongBookViewer() {
           </>
         )}
       />
+
+      {/* Unsaved-edit guard — a full-width band under the header, so the
+          deferred exit is confirmed where the user just clicked. It hides
+          while a save is in flight: discarding then would reset the draft
+          under a PATCH that is still persisting those very edits. A failed
+          save leaves the draft dirty, so the band comes back — and a save that
+          succeeds settles the draft, which releases the parked exit (whether
+          it was an in-page one or a router navigation) on its own. */}
+      {(pendingExit || routeGuard.blocked) && !saving && (
+        <InlineConfirmRow
+          className="shrink-0"
+          variant="separator"
+          tone="warning"
+          question="Discard your unsaved changes to this song?"
+          confirmText="Discard"
+          cancelText="Keep editing"
+          onConfirm={discardAndExit}
+          onCancel={keepEditing}
+          autoFocus
+          aria-label={`Discard unsaved changes to ${song.title}`}
+        />
+      )}
 
       {editing ? (
         /* ============================== EDIT MODE ============================== */

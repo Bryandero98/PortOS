@@ -312,7 +312,9 @@ export default function OverviewTab({ app, onRefresh }) {
           <Image size={14} />
           {detectingIcon ? 'Scanning...' : 'Detect Icon'}
         </button>
-        {!NON_PM2_TYPES.has(app.type) && (
+        {/* PortOS's own ecosystem.config.cjs is the canonical PORTS source —
+            it is never regenerated from an LLM analysis (the server refuses too). */}
+        {!NON_PM2_TYPES.has(app.type) && app.id !== api.PORTOS_APP_ID && (
           <button
             onClick={handleStandardize}
             disabled={isOperating}

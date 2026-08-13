@@ -16,8 +16,7 @@ const DETECTION_STEPS_PM2 = [
   { id: 'config', label: 'Checking configs' },
   { id: 'pm2', label: 'Checking PM2' },
   { id: 'readme', label: 'Reading README' },
-  { id: 'icon', label: 'Detecting app icon' },
-  { id: 'standardize', label: 'Standardizing PM2 config' }
+  { id: 'icon', label: 'Detecting app icon' }
 ];
 
 const DETECTION_STEPS_NON_PM2 = [
@@ -28,6 +27,40 @@ const DETECTION_STEPS_NON_PM2 = [
   { id: 'readme', label: 'Reading README' },
   { id: 'icon', label: 'Detecting app icon' }
 ];
+
+// The steps `runStandardizeFlow` emits. Standardization is its own flow, not a
+// detection step — see handleStandardize for why it stays out of that sequence.
+const STANDARDIZE_STEPS = [
+  { id: 'analyze', label: 'Analyzing configuration' },
+  { id: 'backup', label: 'Creating git backup' },
+  { id: 'apply', label: 'Writing ecosystem.config.cjs' }
+];
+
+const stepIconFor = (step) => {
+  if (!step) return <Circle size={16} className="text-gray-600" />;
+  if (step.status === 'running') return <Loader size={16} className="text-port-accent animate-spin" />;
+  if (step.status === 'done') return <CheckCircle size={16} className="text-port-success" />;
+  if (step.status === 'error') return <AlertCircle size={16} className="text-port-error" />;
+  if (step.status === 'skipped') return <Circle size={16} className="text-gray-500" />;
+  return <Circle size={16} className="text-gray-600" />;
+};
+
+/** Progress rows for a step sequence — shared by detection and standardization. */
+const StepRows = ({ defs, state }) => defs.map(({ id, label }) => {
+  const step = state[id];
+  return (
+    <div key={id} className="flex items-center gap-2 text-sm">
+      {stepIconFor(step)}
+      <span className={step?.status === 'running' ? 'text-port-accent' :
+        step?.status === 'done' ? 'text-white' : 'text-gray-500'}>
+        {label}
+      </span>
+      {step?.data?.message && (
+        <span className="text-gray-500 text-xs ml-2 truncate">{step.data.message}</span>
+      )}
+    </div>
+  );
+});
 
 export default function CreateApp() {
   const navigate = useNavigate();
@@ -64,7 +97,9 @@ export default function CreateApp() {
 
   // Standardization state
   const [standardizing, setStandardizing] = useState(false);
+  const [standardizeSteps, setStandardizeSteps] = useState({});
   const [standardizeResult, setStandardizeResult] = useState(null);
+  const [standardizeError, setStandardizeError] = useState(null);
   const [activeProvider, setActiveProvider] = useState(null);
 
   // Fetch active provider and default directory on mount
@@ -128,10 +163,7 @@ export default function CreateApp() {
 
     // Standardization socket events
     socketRef.current.on('standardize:step', ({ step, status, data }) => {
-      // Map standardize steps to our step display
-      const stepMap = { analyze: 'standardize', backup: 'standardize', apply: 'standardize' };
-      const displayStep = stepMap[step] || 'standardize';
-      setSteps(prev => ({ ...prev, [displayStep]: { status: status === 'done' ? 'running' : status, data } }));
+      setStandardizeSteps(prev => ({ ...prev, [step]: { status, data } }));
       setDetectionLog(prev => [...prev, { step: `standardize:${step}`, status, ...data }]);
     });
 
@@ -139,10 +171,9 @@ export default function CreateApp() {
       setStandardizing(false);
       if (success && result) {
         setStandardizeResult(result);
-        setSteps(prev => ({ ...prev, standardize: { status: 'done', data: { message: 'PM2 config standardized' } } }));
         toast.success(`PM2 config standardized${result.backupBranch ? ` (backup: ${result.backupBranch})` : ''}`);
       } else {
-        setSteps(prev => ({ ...prev, standardize: { status: 'error', data: { message: err || 'Standardization failed' } } }));
+        setStandardizeError(err || 'Standardization failed');
         if (err) toast.error(`Standardization failed: ${err}`);
       }
     });
@@ -154,14 +185,23 @@ export default function CreateApp() {
 
   const isNonPm2 = NON_PM2_TYPES.has(appType);
 
-  // Auto-trigger standardization after detection completes (skip for non-PM2 apps)
-  useEffect(() => {
-    if (detected && activeProvider && repoPath && !standardizing && !standardizeResult && !isNonPm2) {
-      setStandardizing(true);
-      setSteps(prev => ({ ...prev, standardize: { status: 'running', data: { message: 'Analyzing configuration...' } } }));
-      socketRef.current?.emit('standardize:start', { repoPath, providerId: activeProvider.id });
-    }
-  }, [detected, activeProvider, repoPath, standardizing, standardizeResult, isNonPm2]);
+  const clearStandardize = () => {
+    setStandardizing(false);
+    setStandardizeSteps({});
+    setStandardizeResult(null);
+    setStandardizeError(null);
+  };
+
+  // Standardization is opt-in: the user asks for it here. It used to fire on its
+  // own the moment detection finished, which wrote an `ecosystem.config.cjs` into
+  // any imported directory — including apps PortOS won't run under PM2 at all —
+  // before the app record was even saved.
+  const handleStandardize = () => {
+    if (!activeProvider) return;
+    clearStandardize();
+    setStandardizing(true);
+    socketRef.current?.emit('standardize:start', { repoPath, providerId: activeProvider.id });
+  };
 
   // Start streaming detection
   const handleImport = () => {
@@ -173,8 +213,7 @@ export default function CreateApp() {
     setDetectionLog([]);
     setDetected(false);
     setPm2Status(null);
-    setStandardizing(false);
-    setStandardizeResult(null);
+    clearStandardize();
 
     socketRef.current.emit('detect:start', { path: repoPath });
   };
@@ -231,18 +270,7 @@ export default function CreateApp() {
     setIcon('package');
     setAppIconPath(null);
     setError(null);
-    setStandardizing(false);
-    setStandardizeResult(null);
-  };
-
-  const getStepIcon = (stepId) => {
-    const step = steps[stepId];
-    if (!step) return <Circle size={16} className="text-gray-600" />;
-    if (step.status === 'running') return <Loader size={16} className="text-port-accent animate-spin" />;
-    if (step.status === 'done') return <CheckCircle size={16} className="text-port-success" />;
-    if (step.status === 'error') return <AlertCircle size={16} className="text-port-error" />;
-    if (step.status === 'skipped') return <Circle size={16} className="text-gray-500" />;
-    return <Circle size={16} className="text-gray-600" />;
+    clearStandardize();
   };
 
   // The status rail only has something to show once detection has started or
@@ -447,20 +475,7 @@ export default function CreateApp() {
             {detecting && (
               <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
                 <h3 className="text-xs font-medium uppercase tracking-wide text-gray-500">Detecting</h3>
-                {(isNonPm2 ? DETECTION_STEPS_NON_PM2 : DETECTION_STEPS_PM2).map(({ id, label }) => (
-                  <div key={id} className="flex items-center gap-2 text-sm">
-                    {getStepIcon(id)}
-                    <span className={steps[id]?.status === 'running' ? 'text-port-accent' :
-                      steps[id]?.status === 'done' ? 'text-white' : 'text-gray-500'}>
-                      {label}
-                    </span>
-                    {steps[id]?.data?.message && (
-                      <span className="text-gray-500 text-xs ml-2 truncate">
-                        {steps[id].data.message}
-                      </span>
-                    )}
-                  </div>
-                ))}
+                <StepRows defs={isNonPm2 ? DETECTION_STEPS_NON_PM2 : DETECTION_STEPS_PM2} state={steps} />
               </div>
             )}
 
@@ -488,11 +503,49 @@ export default function CreateApp() {
               </Banner>
             )}
 
+            {/* Standardize PM2 config — opt-in, because it rewrites the repo */}
+            {detected && !isNonPm2 && !standardizeResult && (
+              <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
+                <h3 className="text-xs font-medium uppercase tracking-wide text-gray-500">Optional</h3>
+                <p className="text-sm text-white flex items-center gap-2">
+                  <Wrench size={14} aria-hidden="true" /> Standardize PM2 config
+                </p>
+                <p className="text-xs text-gray-500">
+                  Writes an <code className="bg-port-bg px-1 rounded">ecosystem.config.cjs</code> into this
+                  project and moves its ports there (a git backup branch is created first). Only do this for
+                  apps you want PortOS to run under PM2 — skip it for Docker stacks, static sites, or anything
+                  you start another way. You can run it later from the Apps list.
+                </p>
+                {standardizing ? (
+                  <div className="space-y-2">
+                    <StepRows defs={STANDARDIZE_STEPS} state={standardizeSteps} />
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStandardize}
+                    disabled={!activeProvider}
+                    className="w-full px-4 py-2 bg-port-border hover:bg-port-border/80 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
+                  >
+                    Standardize PM2 config
+                  </button>
+                )}
+                {!activeProvider && (
+                  <Banner tone="warning" icon={AlertCircle}>
+                    Needs an LLM provider — none is configured.
+                  </Banner>
+                )}
+                {standardizeError && (
+                  <Banner tone="error" icon={AlertCircle}>{standardizeError}</Banner>
+                )}
+              </div>
+            )}
+
             {/* Standardization Result */}
             {standardizeResult && (
               <Banner tone="success" size="md">
                 <p className="font-medium flex items-center gap-2">
-                  <Wrench size={14} /> PM2 Config Standardized
+                  <Wrench size={14} aria-hidden="true" /> PM2 Config Standardized
                 </p>
                 {standardizeResult.backupBranch && (
                   <p className="text-xs text-gray-400 mt-1">
@@ -505,15 +558,6 @@ export default function CreateApp() {
                   </p>
                 )}
               </Banner>
-            )}
-
-            {/* No Provider Warning */}
-            {detected && !activeProvider && !standardizing && !standardizeResult && !isNonPm2 && (
-              <div className="p-3 bg-port-border/50 border border-port-border rounded-lg">
-                <p className="text-xs text-gray-400">
-                  <span className="text-port-warning">⚠</span> No LLM provider configured. PM2 standardization skipped.
-                </p>
-              </div>
             )}
 
             {/* Detection Log */}

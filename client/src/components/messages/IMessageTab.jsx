@@ -7,7 +7,7 @@ import {
 import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';
-import { formatClockTime, timeAgo } from '../../utils/formatters';
+import { formatClockTime, timeAgo, formatDateNumeric } from '../../utils/formatters';
 
 // Comms → Messages → iMessage (#2413). Browse / manage PortOS-side activity
 // ingested from macOS chat.db. Deletes and blocklists never write Apple's Messages database.
@@ -610,7 +610,7 @@ export default function IMessageTab() {
         </span>
         {stats?.earliestAt && (
           <span className="rounded border border-port-border bg-port-card px-2 py-1">
-            {new Date(stats.earliestAt).toLocaleDateString()} → {stats.latestAt ? new Date(stats.latestAt).toLocaleDateString() : '—'}
+            {formatDateNumeric(stats.earliestAt)} → {formatDateNumeric(stats.latestAt, '—')}
           </span>
         )}
         {hasMore && (

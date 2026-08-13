@@ -7,14 +7,16 @@ PortOS uses a contiguous port allocation scheme to make it easy to understand wh
 ### Convention
 
 1. **Contiguous Ranges**: Each app should use a contiguous block of ports
-2. **Labeled Ports**: Define all ports in the top-level `PORTS` object in `ecosystem.config.cjs` (mirrored — manually kept in sync — in `server/lib/ports.js`, since the ESM server can't `require()` the CommonJS config); the per-process label map lives in `server/services/apps.js`
+2. **Labeled Ports**: Define all ports in the top-level `PORTS` object in `ecosystem.config.cjs` (mirrored — manually kept in sync — in `server/lib/ports.js`, since the ESM server can't `require()` the CommonJS config); the per-process label map lives in `server/services/apps.js`. The mirror carries every port literal, including both PostgreSQL ports; the config's mode-dependent `POSTGRES` (resolved from `PGMODE` at load time) is exposed in the mirror as `resolvePostgresPort(pgMode)` over the `POSTGRES_NATIVE` / `POSTGRES_DOCKER` literals, so `server/lib/ports.js` stays free of filesystem reads. `server/lib/ports.test.js` fails if the two drift apart
 3. **No Gaps**: Avoid leaving gaps between port allocations within an app
 
 ### Port Labels
 
 Common port labels:
 - `api` - REST API server
+- `api-local` - Loopback-only HTTP mirror of an API that is served over HTTPS
 - `ui` - Web UI / frontend
+- `devUi` - Vite dev server for a UI that production serves from its API process
 - `cdp` - Chrome DevTools Protocol
 - `health` - Health check endpoint
 - `ws` - WebSocket server
@@ -24,7 +26,7 @@ Common port labels:
 | Port | Process | Label | Description |
 |------|---------|-------|-------------|
 | 5553 | portos-server | api-local | Loopback-only HTTP mirror of the API (only listens when HTTPS is active on 5555). Lets `http://localhost:5553` work without cert warnings. Override with `PORTOS_HTTP_PORT`. |
-| 5554 | portos-ui | ui | Vite dev server (React UI) — only present in `npm run dev`; `npm start` serves the built client from :5555 directly. |
+| 5554 | portos-ui | devUi | Vite dev server (React UI) — only present in `npm run dev`; `npm start` serves the built client from :5555 directly. |
 | 5555 | portos-server | api | Main API server — **always the user-facing port**. Switches between HTTP and HTTPS based on whether `data/certs/{cert,key}.pem` exists. |
 | 5556 | portos-browser | cdp | Chrome DevTools Protocol |
 | 5557 | portos-browser | health | Browser health check API |
@@ -115,9 +117,11 @@ PortOS automatically detects ports from env vars:
 
 | Range | Purpose |
 |-------|---------|
-| 5554-5560 | PortOS core services |
-| 5561-5569 | Reserved for PortOS extensions |
+| 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and `portos-db` on `:5561`) |
+| 5562-5569 | Reserved for PortOS extensions |
 | 5570-5599 | User applications |
+
+PostgreSQL in native mode listens on the system default `:5432`, outside these ranges.
 
 ## Viewing Port Usage
 
