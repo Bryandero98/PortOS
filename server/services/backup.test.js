@@ -9,9 +9,13 @@
  * - dumpPostgres — status classification (ok / skipped / failed) so the
  *   caller can distinguish "no PG configured" from "configured but the dump
  *   failed", including the empty-dump verification path.
+ * - getState / saveState — the persisted backup-state read-merge-write cycle:
+ *   default-state recovery when state.json is missing or corrupted, patch
+ *   merging, and the createFileWriteQueue serialization that keeps two
+ *   concurrent saveState() callers from clobbering each other's fields.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock the DB health check and child_process.spawn before importing backup.js
 vi.mock('../lib/db.js', () => ({
@@ -728,5 +732,149 @@ describe('restoreSnapshot subdirFilter guard', () => {
       if (previous === undefined) delete process.env.PORTOS_RSYNC;
       else process.env.PORTOS_RSYNC = previous;
     }
+  });
+});
+
+// getState / saveState — the persisted `data/backup/state.json` read-merge-write
+// cycle (issue #3916). Runs against a real temp dir with `PATHS.data` re-pointed,
+// so the assertions cover the ACTUAL bytes on disk (real readJSONFile +
+// atomicWrite), not a mocked persistence layer.
+describe('getState and saveState', () => {
+  let tmpRoot;
+  let backup;
+  let writeLog;
+
+  beforeEach(async () => {
+    // Same spy hygiene as the generateManifest suite: earlier suites leave
+    // persistent fs spies installed, and these tests hit the real filesystem.
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    const realFs = await vi.importActual('fs/promises');
+    fs.stat.mockImplementation(realFs.stat);
+    fs.readFile.mockImplementation(realFs.readFile);
+    vi.resetModules();
+
+    const { mkdtemp } = await import('fs/promises');
+    const { tmpdir } = await import('os');
+    const { join } = await import('path');
+    tmpRoot = await mkdtemp(join(tmpdir(), 'portos-backup-state-'));
+    writeLog = [];
+
+    // `vi.doMock` is NOT hoisted, so the factory can close over `tmpRoot` and
+    // `writeLog`. Only PATHS.data and atomicWrite are overridden — readJSONFile,
+    // ensureDir and the rest stay real.
+    vi.doMock('../lib/fileUtils.js', async (importOriginal) => {
+      const actual = await importOriginal();
+      return {
+        ...actual,
+        PATHS: { ...actual.PATHS, data: tmpRoot },
+        // Bracket the real write with log markers and a delay, so an unqueued
+        // read-merge-write would visibly interleave (start/start/end/end).
+        atomicWrite: async (filePath, data) => {
+          writeLog.push(`start:${data?.status}`);
+          await new Promise((r) => setTimeout(r, 10));
+          const result = await actual.atomicWrite(filePath, data);
+          writeLog.push(`end:${data?.status}`);
+          return result;
+        }
+      };
+    });
+    backup = await import('./backup.js');
+  });
+
+  afterEach(async () => {
+    vi.doUnmock('../lib/fileUtils.js');
+    vi.resetModules();
+    const { rm } = await import('fs/promises');
+    if (tmpRoot) await rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  // Read the raw persisted state file (no service helpers) so the assertions
+  // describe what a *restore* or another process would actually see.
+  async function readStateFile() {
+    const { readFile } = await import('fs/promises');
+    const { join } = await import('path');
+    return JSON.parse(await readFile(join(tmpRoot, 'backup', 'state.json'), 'utf-8'));
+  }
+
+  const DEFAULTS = {
+    lastRun: null,
+    status: 'never',
+    lastSnapshotId: null,
+    filesChanged: 0,
+    pgBackup: null,
+    error: null
+  };
+
+  it('returns the default state when state.json does not exist', async () => {
+    expect(await backup.getState()).toEqual(DEFAULTS);
+  });
+
+  it('returns the default state when state.json holds invalid JSON', async () => {
+    const { mkdir, writeFile } = await import('fs/promises');
+    const { join } = await import('path');
+    await mkdir(join(tmpRoot, 'backup'), { recursive: true });
+    // Truncated mid-object — the shape a crash during a non-atomic write leaves.
+    await writeFile(join(tmpRoot, 'backup', 'state.json'), '{"status":"ok","filesChanged":');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await backup.getState()).toEqual(DEFAULTS);
+  });
+
+  it('merges a patch into existing state and persists it to disk', async () => {
+    await backup.saveState({ lastRun: '2026-01-01T00:00:00Z', status: 'ok', filesChanged: 7 });
+    const updated = await backup.saveState({ status: 'degraded', error: 'pg dump failed' });
+
+    // The second patch must not drop the first patch's untouched fields.
+    expect(updated).toEqual({
+      ...DEFAULTS,
+      lastRun: '2026-01-01T00:00:00Z',
+      status: 'degraded',
+      filesChanged: 7,
+      error: 'pg dump failed'
+    });
+    expect(await readStateFile()).toEqual(updated);
+    // A fresh read of the file agrees with the returned value.
+    expect(await backup.getState()).toEqual(updated);
+  });
+
+  it('serializes concurrent saveState calls so neither patch is clobbered', async () => {
+    const [first, second] = await Promise.all([
+      backup.saveState({ status: 'running', filesChanged: 10 }),
+      backup.saveState({ status: 'ok', lastSnapshotId: 'snap-2' })
+    ]);
+
+    // Queue order is call order: the first write sees only its own patch...
+    expect(first).toEqual({ ...DEFAULTS, status: 'running', filesChanged: 10 });
+    // ...and the second reads the FIRST one's committed image, not the pre-image.
+    expect(second).toEqual({
+      ...DEFAULTS,
+      status: 'ok',
+      filesChanged: 10,
+      lastSnapshotId: 'snap-2'
+    });
+
+    // No interleaving: each read-merge-write completes before the next starts.
+    expect(writeLog).toEqual(['start:running', 'end:running', 'start:ok', 'end:ok']);
+
+    // Last write wins on disk, with both patches' fields intact.
+    expect(await readStateFile()).toEqual(second);
+  });
+
+  it('keeps a rejected write from poisoning the queue for later callers', async () => {
+    const { writeFile } = await import('fs/promises');
+    const { join } = await import('path');
+    // A pre-existing FILE where the backup dir must go makes the write throw
+    // ENOTDIR, so the first saveState rejects mid-queue.
+    await writeFile(join(tmpRoot, 'backup'), 'not a directory');
+
+    await expect(backup.saveState({ status: 'running' })).rejects.toThrow();
+
+    const { rm } = await import('fs/promises');
+    await rm(join(tmpRoot, 'backup'));
+    // The queue tail must still accept work after the rejection.
+    const after = await backup.saveState({ status: 'ok' });
+    expect(after).toEqual({ ...DEFAULTS, status: 'ok' });
+    expect(await readStateFile()).toEqual(after);
   });
 });
