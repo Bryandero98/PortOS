@@ -62,6 +62,9 @@ vi.mock('../services/runner.js', () => runnerMocks);
 vi.mock('../services/shell.js', () => shellMocks);
 vi.mock('./fileUtils.js', async () => {
   const actual = await vi.importActual('./fileUtils.js');
+  // Imported here rather than relied on from the module scope: vi.mock
+  // factories are hoisted above the import list.
+  const { resolve: resolvePath } = await import('path');
   return {
     ...actual,
     ensureDir: vi.fn(async () => {}),
@@ -76,9 +79,13 @@ vi.mock('./fileUtils.js', async () => {
     // test moved on, so the baseline was never seeded and the run took the
     // timeout/fallback path instead of the response-file path. A seeded read
     // settles as a microtask, which timer advancement always drains.
-    tryReadFile: vi.fn(async (filePath, ...rest) => (
-      responseFiles.has(filePath) ? responseFiles.get(filePath) : actual.tryReadFile(filePath, ...rest)
-    )),
+    // Keys are normalized on both sides so a relative or unnormalized path
+    // from the SUT still hits the seeded entry rather than silently falling
+    // through to a real (missing-file) read.
+    tryReadFile: vi.fn(async (filePath, ...rest) => {
+      const key = resolvePath(filePath);
+      return responseFiles.has(key) ? responseFiles.get(key) : actual.tryReadFile(filePath, ...rest);
+    }),
   };
 });
 
