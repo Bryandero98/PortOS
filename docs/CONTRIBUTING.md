@@ -67,6 +67,17 @@ See [VERSIONING.md](./VERSIONING.md) for full details.
 
 > **Note:** Some older code or automation notes may still reference a `dev` branch workflow. The `main`→`release` workflow described here is the current source of truth.
 
+### Line Endings on Windows
+
+`.gitattributes` pins `eol=lf` for text files across all platforms. If you have an existing repository clone on Windows from before this setting landed, run:
+
+```bash
+git rm --cached -r .
+git reset --hard
+```
+
+to re-index files with LF line endings.
+
 ### Commit Messages
 
 Use conventional commit format:

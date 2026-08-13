@@ -125,10 +125,18 @@ describe('runCliProviderPrompt', () => {
     // completes — proves the resolved path, not the bare provider.command,
     // is what actually gets spawned.
     const { execFileSync } = await import('child_process');
-    const catPath = execFileSync('which', ['cat']).toString().trim();
+    const isWin = process.platform === 'win32';
+    const catPath = isWin
+      ? execFileSync('where', ['node']).toString().split(/\r?\n/)[0].trim()
+      : execFileSync('which', ['cat']).toString().trim();
     vi.mocked(resolveWindowsExecutable).mockReturnValueOnce(catPath);
     const result = await runCliProviderPrompt({
-      provider: { id: 'gemini-cli', type: 'cli', command: 'this-name-is-never-spawned-directly', args: [] },
+      provider: {
+        id: 'gemini-cli',
+        type: 'cli',
+        command: 'this-name-is-never-spawned-directly',
+        args: isWin ? ['-e', 'process.stdin.pipe(process.stdout)'] : [],
+      },
       prompt: 'resolved path round-trip',
     });
     expect(result.error).toBeUndefined();

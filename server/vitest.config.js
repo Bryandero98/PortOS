@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    testTimeout: 10000,
+    testTimeout: process.platform === 'win32' ? 30000 : 10000,
     // Print worker console output directly instead of forwarding it to the main
     // thread over RPC. This codebase logs heavily from fire-and-forget callbacks
     // (the documented `.catch(() => console.log(...))` pattern, PTY/timer hooks,
