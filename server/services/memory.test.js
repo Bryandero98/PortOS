@@ -1061,7 +1061,7 @@ describe('memory service', () => {
       const mockMemory = { id: 'm1', content: 'test', type: 'fact', tags: ['t1'], sourceAppId: 'app1' };
       readJSONFile.mockImplementation((path, def) => {
         if (path.includes('index.json')) return Promise.resolve(mockIndex);
-        if (path.includes('m1/memory.json')) return Promise.resolve(mockMemory);
+        if (/[\\/]m1[\\/]memory\.json$/.test(path)) return Promise.resolve(mockMemory);
         return Promise.resolve(def);
       });
       memoryBM25.rebuildIndex.mockResolvedValue({ indexed: 1 });
@@ -1512,8 +1512,8 @@ describe('memory service', () => {
       readJSONFile.mockImplementation((path, def) => {
         if (path.includes('index.json')) return Promise.resolve(mockIndex);
         if (path.includes('embeddings.json')) return Promise.resolve({ model: null, dimension: 0, vectors: {} });
-        if (path.includes('m1/memory.json')) return Promise.resolve(mockMem1);
-        if (path.includes('m2/memory.json')) return Promise.resolve(mockMem2);
+        if (/[\\/]m1[\\/]memory\.json$/.test(path)) return Promise.resolve(mockMem1);
+        if (/[\\/]m2[\\/]memory\.json$/.test(path)) return Promise.resolve(mockMem2);
         return Promise.resolve(def);
       });
 
@@ -1535,7 +1535,7 @@ describe('memory service', () => {
       readJSONFile.mockImplementation((path, def) => {
         if (path.includes('index.json')) return Promise.resolve(mockIndex);
         if (path.includes('embeddings.json')) return Promise.resolve({ model: null, dimension: 0, vectors: {} });
-        if (path.includes('m1/memory.json')) return Promise.resolve({ id: 'm1', relatedMemories: [] });
+        if (/[\\/]m1[\\/]memory\.json$/.test(path)) return Promise.resolve({ id: 'm1', relatedMemories: [] });
         return Promise.resolve(def);
       });
 
