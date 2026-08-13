@@ -77,6 +77,70 @@ describe('ConfigTab handleSave', () => {
   });
 });
 
+describe('Default Avatar Style dropdown', () => {
+  it('disables default avatar style dropdown when not editing', async () => {
+    render(<ConfigTab config={{ ...config, avatarStyle: 'svg' }} onUpdate={vi.fn()} onEvaluate={vi.fn()} avatarStyle="svg" setAvatarStyle={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Default Avatar Style' })).toBeDisabled());
+
+    const select = screen.getByRole('combobox', { name: 'Default Avatar Style' });
+    expect(select).toHaveValue('svg');
+  });
+
+  it('stages dropdown selection locally without triggering immediate save call', async () => {
+    render(<ConfigTab config={{ ...config, avatarStyle: 'svg' }} onUpdate={vi.fn()} onEvaluate={vi.fn()} avatarStyle="svg" setAvatarStyle={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Default Avatar Style' })).toBeDisabled());
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit/i }));
+
+    const select = screen.getByRole('combobox', { name: 'Default Avatar Style' });
+    expect(select).toBeEnabled();
+
+    fireEvent.change(select, { target: { value: 'cyber' } });
+
+    expect(select).toHaveValue('cyber');
+    expect(api.updateCosConfig).not.toHaveBeenCalled();
+  });
+
+  it('includes staged avatarStyle in updateCosConfig payload on Save click', async () => {
+    api.updateCosConfig.mockResolvedValue({ success: true });
+    const onUpdate = vi.fn();
+    render(<ConfigTab config={{ ...config, avatarStyle: 'svg' }} onUpdate={onUpdate} onEvaluate={vi.fn()} avatarStyle="svg" setAvatarStyle={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Default Avatar Style' })).toBeDisabled());
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit/i }));
+
+    const select = screen.getByRole('combobox', { name: 'Default Avatar Style' });
+    fireEvent.change(select, { target: { value: 'cyber' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Configuration updated'));
+    expect(api.updateCosConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ avatarStyle: 'cyber' }),
+      { silent: true }
+    );
+    expect(screen.getByRole('button', { name: /Edit/i })).toBeInTheDocument();
+  });
+
+  it('reverts staged avatarStyle dropdown selection when Cancel is clicked', async () => {
+    render(<ConfigTab config={{ ...config, avatarStyle: 'svg' }} onUpdate={vi.fn()} onEvaluate={vi.fn()} avatarStyle="svg" setAvatarStyle={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Default Avatar Style' })).toBeDisabled());
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit/i }));
+
+    const select = screen.getByRole('combobox', { name: 'Default Avatar Style' });
+    fireEvent.change(select, { target: { value: 'cyber' } });
+    expect(select).toHaveValue('cyber');
+
+    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+
+    expect(screen.getByRole('button', { name: /Edit/i })).toBeInTheDocument();
+    const selectAfterCancel = screen.getByRole('combobox', { name: 'Default Avatar Style' });
+    expect(selectAfterCancel).toBeDisabled();
+    expect(selectAfterCancel).toHaveValue('svg');
+  });
+});
+
 describe('ConfigTab handleLevelChange', () => {
   // Reads the non-editing value span rendered next to a ConfigRow label.
   const rowValue = (label) => within(screen.getByText(label).closest('div')).getByText;

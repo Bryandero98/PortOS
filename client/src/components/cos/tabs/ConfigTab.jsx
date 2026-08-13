@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Settings, Activity, CheckCircle, FileText } from 'lucide-react';
+import { Settings, Activity, CheckCircle, FileText, X } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
 import ConfigRow from './ConfigRow';
@@ -249,7 +249,20 @@ function DomainBudgetControl({ config, usage, onBudgetChange }) {
   );
 }
 
-export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, setAvatarStyle }) {
+const getDefaultFormData = (config, avatarStyle) => ({
+  healthCheckIntervalMs: config?.healthCheckIntervalMs || 900000,
+  maxConcurrentAgents: config?.maxConcurrentAgents || 3,
+  maxConcurrentAgentsPerProject: config?.maxConcurrentAgentsPerProject || 2,
+  maxProcessMemoryMb: config?.maxProcessMemoryMb || 2048,
+  autoStart: config?.autoStart || false,
+  improvementEnabled: config?.improvementEnabled ?? config?.selfImprovementEnabled ?? true,
+  proactiveMode: config?.proactiveMode ?? true,
+  idleReviewEnabled: config?.idleReviewEnabled ?? true,
+  immediateExecution: config?.immediateExecution ?? true,
+  avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
+});
+
+export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle }) {
   const { providers, availableModels, setSelectedProviderId: setProviderHook, setSelectedModel: setModelHook, selectedProviderId: hookProviderId, selectedModel: hookModel } = useProviderModels();
   const [embeddingProviderId, setEmbeddingProviderId] = useState(config?.embeddingProviderId || 'lmstudio');
   const [embeddingModel, setEmbeddingModel] = useState(config?.embeddingModel || '');
@@ -267,17 +280,21 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, s
   }, [config?.embeddingProviderId, config?.embeddingModel, setProviderHook, setModelHook]);
 
   const [editing, setEditing] = useState(false);
-  const [formData, setFormData] = useState({
-    healthCheckIntervalMs: config?.healthCheckIntervalMs || 900000,
-    maxConcurrentAgents: config?.maxConcurrentAgents || 3,
-    maxConcurrentAgentsPerProject: config?.maxConcurrentAgentsPerProject || 2,
-    maxProcessMemoryMb: config?.maxProcessMemoryMb || 2048,
-    autoStart: config?.autoStart || false,
-    improvementEnabled: config?.improvementEnabled ?? config?.selfImprovementEnabled ?? true,
-    proactiveMode: config?.proactiveMode ?? true,
-    idleReviewEnabled: config?.idleReviewEnabled ?? true,
-    immediateExecution: config?.immediateExecution ?? true
-  });
+  const [formData, setFormData] = useState(() => getDefaultFormData(config, avatarStyle));
+
+  useEffect(() => {
+    if (!editing) {
+      setFormData(prev => ({
+        ...prev,
+        ...getDefaultFormData(config, avatarStyle)
+      }));
+    }
+  }, [config, avatarStyle, editing]);
+
+  const handleCancel = () => {
+    setFormData(getDefaultFormData(config, avatarStyle));
+    setEditing(false);
+  };
 
   const handleLevelChange = async (params, label) => {
     // Optimistically reflect the new params via a functional update. Success toast
@@ -374,13 +391,22 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, s
               Edit
             </button>
           ) : (
-            <button
-              onClick={handleSave}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-port-success/20 hover:bg-port-success/30 text-port-success rounded-lg transition-colors"
-            >
-              <CheckCircle size={14} />
-              Save
-            </button>
+            <>
+              <button
+                onClick={handleCancel}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-gray-300 rounded-lg transition-colors"
+              >
+                <X size={14} />
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-port-success/20 hover:bg-port-success/30 text-port-success rounded-lg transition-colors"
+              >
+                <CheckCircle size={14} />
+                Save
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -489,13 +515,14 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, s
           >
             <span className="text-gray-400 cursor-help">Default Avatar Style</span>
             <select
-              value={avatarStyle}
-              onChange={async (e) => {
+              aria-label="Default Avatar Style"
+              value={formData.avatarStyle}
+              disabled={!editing}
+              onChange={(e) => {
                 const style = e.target.value;
-                await setAvatarStyle(style);
-                toast.success(`Avatar style changed to ${AVATAR_STYLE_LABELS[style] || style}`);
+                setFormData(prev => ({ ...prev, avatarStyle: style }));
               }}
-              className="bg-port-bg border border-port-border rounded px-3 py-1.5 text-white text-sm"
+              className="bg-port-bg border border-port-border rounded px-3 py-1.5 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {Object.entries(AVATAR_STYLE_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>{label}</option>
