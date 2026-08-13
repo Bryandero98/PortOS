@@ -1,0 +1,1 @@
+- StoryboardConfigTab seed randomizer button meets mobile touch target minimum.
