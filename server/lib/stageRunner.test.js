@@ -39,9 +39,11 @@ const {
   resolveStageContext,
   resolveJudgeForStage,
   resolveEffortHint,
+  effectiveStage,
   withLocalConcurrencyGate,
   LOCAL_LLM_MAX_CONCURRENCY,
 } = await import('./stageRunner.js');
+const { withStagePinsIgnored, stagePinsIgnored } = await import('./stagePinPolicy.js');
 
 const apiProvider = (extra = {}) => ({
   id: 'mock-api', name: 'Mock', type: 'api', enabled: true, defaultModel: 'm-default', ...extra,
@@ -781,5 +783,110 @@ describe('stageRunner — effort threading into the run (#3641)', () => {
     expect(buildEffortArgs(effort, { id: 'claude-cli', command: 'claude' })).toEqual(['--effort', 'high']);
     expect(buildEffortArgs(effort, { id: 'grok-cli', command: 'grok' })).toEqual([]);
     expect(buildEffortArgs(effort, { id: 'openai-api', type: 'api' })).toEqual([]);
+  });
+});
+
+// "Use one provider/model for every stage" (Series Autopilot's overrideStagePins).
+// The switch is an async-context flag rather than an option key — these assert
+// that flipping it changes exactly the four pin lookups and nothing else, and
+// that the flag does not leak outside the wrapped subtree.
+describe('stageRunner — withStagePinsIgnored', () => {
+  const onComplete = (text) => async ({ onData, onComplete: done }) => { onData(text); done({ success: true }); };
+
+  it('skips stage.provider so the run-level providerDefault wins', async () => {
+    prompts.getStage.mockReturnValue({ provider: 'stage-pinned' });
+    providers.getProviderById.mockImplementation(async (id) => apiProvider({ id }));
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await withStagePinsIgnored(true, () =>
+      runStagedLLM('s', {}, { providerDefault: 'run-default' }));
+    expect(out.providerId).toBe('run-default');
+  });
+
+  it('skips a stage.provider pin whose provider is gone instead of throwing', async () => {
+    prompts.getStage.mockReturnValue({ provider: 'pinned-but-gone' });
+    providers.getProviderById.mockResolvedValue(null);
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await withStagePinsIgnored(true, () => runStagedLLM('s', {}));
+    expect(out.providerId).toBe('mock-api');
+  });
+
+  it('skips an explicit stage.model pin so modelDefault wins', async () => {
+    prompts.getStage.mockReturnValue({ model: 'pinned-model-id' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await withStagePinsIgnored(true, () =>
+      runStagedLLM('s', {}, { modelDefault: 'run-model' }));
+    expect(out.model).toBe('run-model');
+  });
+
+  it('keeps resolving a stage TIER — a tier is a per-provider mapping, not a pin', async () => {
+    prompts.getStage.mockReturnValue({ model: 'heavy' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider({ heavyModel: 'h' }));
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await withStagePinsIgnored(true, () => runStagedLLM('s', {}));
+    expect(out.model).toBe('h');
+  });
+
+  it('drops a stage.effort pin so the run-level effortDefault reaches the runner', async () => {
+    prompts.getStage.mockReturnValue({ effort: 'low' });
+    providers.getActiveProvider.mockResolvedValue(cliProvider());
+    runner.executeCliRun.mockImplementation(async ({ onComplete: done }) => { done({ success: true }); });
+    await withStagePinsIgnored(true, () => runStagedLLM('s', {}, { effortDefault: 'high' }));
+    expect(runner.executeCliRun.mock.calls[0][0].provider.effort).toBe('high');
+  });
+
+  it('skips a stage judge pin so the judge follows the forced writer route', async () => {
+    const active = apiProvider({ id: 'run-api', defaultModel: 'run-model' });
+    providers.getActiveProvider.mockResolvedValue(active);
+    providers.getProviderById.mockImplementation(async (id) => apiProvider({ id, defaultModel: `${id}-m` }));
+    const pinned = await resolveJudgeForStage({ judgeProvider: 'judge-cli' });
+    expect(pinned.provider.id).toBe('judge-cli');
+    const out = await withStagePinsIgnored(true, () => resolveJudgeForStage({ judgeProvider: 'judge-cli' }));
+    expect(out.provider.id).toBe('run-api');
+    expect(out.model).toBe('run-model');
+  });
+
+  it('changes nothing when the flag is off', async () => {
+    prompts.getStage.mockReturnValue({ provider: 'stage-pinned' });
+    providers.getProviderById.mockImplementation(async (id) => apiProvider({ id }));
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const off = await withStagePinsIgnored(false, () =>
+      runStagedLLM('s', {}, { providerDefault: 'run-default' }));
+    expect(off.providerId).toBe('stage-pinned');
+  });
+
+  // The pin list itself, since every resolver now reads a masked stage rather
+  // than testing pins one at a time — this is the one place that says WHICH
+  // fields the switch strips and which deliberately survive.
+  it('effectiveStage strips exactly the routing pins, keeping the tier and the timeout', () => {
+    const stage = {
+      provider: 'p', model: 'pinned-model-id', effort: 'low', judgeProvider: 'jp', judgeModel: 'jm',
+      timeout: 60_000, template: 'x',
+    };
+    expect(effectiveStage(stage)).toBe(stage); // identity outside a forced run
+    const masked = withStagePinsIgnored(true, () => effectiveStage(stage));
+    expect(masked).toEqual({ timeout: 60_000, template: 'x' });
+    expect(stage.provider).toBe('p'); // the caller's stage object is not mutated
+    // A tier is a per-provider mapping, not a pin — it survives.
+    expect(withStagePinsIgnored(true, () => effectiveStage({ model: 'heavy' }))).toEqual({ model: 'heavy' });
+    expect(withStagePinsIgnored(true, () => effectiveStage(null))).toBeNull();
+  });
+
+  it('does not reach a concurrent call outside the context (async-context scoping)', async () => {
+    let insideSaw;
+    let outsideSaw;
+    await Promise.all([
+      withStagePinsIgnored(true, async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        insideSaw = stagePinsIgnored();
+      }),
+      (async () => {
+        await new Promise((r) => setTimeout(r, 1));
+        outsideSaw = stagePinsIgnored();
+      })(),
+    ]);
+    expect(insideSaw).toBe(true);
+    expect(outsideSaw).toBe(false);
   });
 });

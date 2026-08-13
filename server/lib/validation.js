@@ -611,6 +611,10 @@ export const seriesAutopilotScheduleSchema = z.object({
   // effort-capable CLIs; the runner clamps a level the chosen provider doesn't
   // offer and drops it for a provider with no effort control.
   effort: z.preprocess((v) => (v === '' ? undefined : v), z.enum(EFFORT_LEVELS).optional()),
+  // Run every stage on the provider/model above, ignoring the per-stage pins
+  // from the Prompts page. Absent falls through to the persisted
+  // pipelineEditorialChecks setting, then off.
+  overrideStagePins: z.boolean().optional(),
 }).strict();
 
 export const seriesAutopilotSettingsSchema = z.object({

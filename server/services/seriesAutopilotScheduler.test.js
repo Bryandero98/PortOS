@@ -153,6 +153,24 @@ describe('scheduled handler', () => {
     });
   });
 
+  it('forwards overrideStagePins only when the schedule ticked it', async () => {
+    const on = { seriesId: 's1', enabled: true, cron: '0 3 * * *', provider: 'codex', overrideStagePins: true };
+    const handler = await registerAndGetHandler(on);
+    getSettings.mockResolvedValue(withSchedules([on]));
+    await handler();
+    expect(startSeriesAutopilot).toHaveBeenCalledWith('s1', {
+      providerOverride: 'codex', overrideStagePins: true,
+    });
+
+    // Absent (or explicitly false) must stay OUT of the options so the run still
+    // falls through to the persisted pipelineEditorialChecks default.
+    startSeriesAutopilot.mockClear();
+    const off = { seriesId: 's1', enabled: true, cron: '0 3 * * *', provider: 'codex', overrideStagePins: false };
+    getSettings.mockResolvedValue(withSchedules([off]));
+    await handler();
+    expect(startSeriesAutopilot).toHaveBeenCalledWith('s1', { providerOverride: 'codex' });
+  });
+
   it('skips when the schedule was disabled since registration', async () => {
     const handler = await registerAndGetHandler({ seriesId: 's1', enabled: true, cron: '0 3 * * *' });
     getSettings.mockResolvedValue(withSchedules([{ seriesId: 's1', enabled: false, cron: '0 3 * * *' }]));

@@ -197,6 +197,7 @@ const sanitizeAutopilotResumeOptions = (raw) => {
   const stageLlm = sanitizeAutopilotStageLlm(raw.stageLlm);
   if (stageLlm) out.stageLlm = stageLlm;
   if (typeof raw.autoSelectModels === 'boolean') out.autoSelectModels = raw.autoSelectModels;
+  if (typeof raw.overrideStagePins === 'boolean') out.overrideStagePins = raw.overrideStagePins;
   return Object.keys(out).length ? out : null;
 };
 // Why a bounded-retry gate paused the run. Convergence gates (#1571):

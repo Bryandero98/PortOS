@@ -65,6 +65,9 @@ const DEFAULT_OBSERVER = false;
 // Evidence is collected regardless; routing stays opt-in so a series cannot
 // silently switch models merely because a sample threshold was reached.
 const DEFAULT_AUTO_SELECT_MODELS = false;
+// Force the run's route onto stages pinned on the Prompts page — mirror the
+// server default (off).
+const DEFAULT_OVERRIDE_STAGE_PINS = false;
 const AUTOPILOT_LLM_STAGES = [
   ['characterFoundation', 'Character foundation'],
   ['generateArc', 'Generate arc'],
@@ -216,6 +219,11 @@ const OPTION_SPECS = {
   },
   autoSelectModels: {
     defaultValue: DEFAULT_AUTO_SELECT_MODELS,
+    read: readBoolean,
+    persistOnEdit: true,
+  },
+  overrideStagePins: {
+    defaultValue: DEFAULT_OVERRIDE_STAGE_PINS,
     read: readBoolean,
     persistOnEdit: true,
   },
@@ -956,7 +964,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
               ) : null}
               . Stages pinned in{' '}
               <Link to="/prompts" className="text-port-accent hover:underline">Prompts</Link>{' '}
-              keep their own provider/model/effort
+              {opt.overrideStagePins ? 'are overridden for this run' : 'keep their own provider/model/effort'}
               {effectiveEffort ? '.' : (
                 <>; reasoning effort comes from the provider&apos;s config on{' '}
                   <Link to="/ai" className="text-port-accent hover:underline">AI Providers</Link>.
@@ -987,6 +995,24 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                 emptyModelOption={inheritedModel ? `Series default (${inheritedModel})` : 'Default model'}
               />
             </div>
+            <label className="flex items-center gap-2 text-xs text-gray-300 pt-1">
+              <input
+                type="checkbox"
+                checked={opt.overrideStagePins}
+                onChange={(e) => options.edit('overrideStagePins', e.target.checked)}
+              />
+              Use this provider and model for every stage (ignore Prompts stage pins)
+            </label>
+            {opt.overrideStagePins ? (
+              <p className="text-[11px] text-gray-500 pl-5">
+                Stages that pin their own provider, model id, reasoning effort or judge in{' '}
+                <Link to="/prompts" className="text-port-accent hover:underline">Prompts</Link>{' '}
+                run on this route instead, so the whole pipeline — script verification included — stays on one provider.
+                A stage pinned to a local provider to keep manuscript text off the network loses that too.
+                Stage <em>tiers</em> (quick / coding / heavy) still apply when you leave the model blank,
+                and the judge and per-stage routes below still win where you set them.
+              </p>
+            ) : null}
             <label className="flex items-center gap-2 text-xs text-gray-300 pt-1">
               <input
                 type="checkbox"
