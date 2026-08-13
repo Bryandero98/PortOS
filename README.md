@@ -360,7 +360,7 @@ PortOS/
 ├── docs/                # Documentation, ADRs, design plans, and screenshots
 ├── lib/slashdo/         # Slashdo submodule (provides /do:* slash commands)
 ├── scripts/             # Setup, migration, and maintenance scripts
-├── .changelog/          # Per-release changelogs (NEXT.md accumulates in-flight work)
+├── .changelog/          # Per-release changelogs (next/ holds in-flight entries, one file per branch)
 └── ecosystem.config.cjs # PM2 configuration + canonical PORTS map
 ```
 

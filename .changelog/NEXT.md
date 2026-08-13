@@ -1,3 +1,8 @@
+<!-- Do NOT append a new entry here on a branch — parallel agents collide and the merge conflicts.
+     Run: npm run changelog:add -- <added|changed|fixed|removed> "entry text"
+     That writes .changelog/next/<section>-<branch>.md, which merges cleanly. See .changelog/README.md.
+     npm run changelog:collect folds the fragments back into this file before a release. -->
+
 ## Added
 
 - CoS now notices when a scheduled task (the overnight branch-reconcile loop) finishes the same work over and over in short-lived agent runs. It parks a looping coordinator so it stops burning quota and keeps the per-run duration signal local for a future Layered Intelligence run to assess and, only when justified, turn into a concrete planned fix.
