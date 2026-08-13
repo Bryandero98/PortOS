@@ -262,6 +262,8 @@ ${boundaries.irritant ? `- **Pet Peeve**: ${boundaries.irritant}` : ''}
           <button
             key={s.id}
             onClick={() => setCurrentStep(index)}
+            aria-label={`Go to step ${index + 1}: ${s.title}`}
+            aria-current={index === currentStep ? 'step' : undefined}
             className={`w-3 h-3 min-w-[12px] min-h-[12px] rounded-full transition-colors ${
               index === currentStep
                 ? 'bg-port-accent'
