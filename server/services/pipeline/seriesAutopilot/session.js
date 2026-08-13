@@ -171,7 +171,12 @@ export async function fileGap(record, sId, { gapKind, issueId = null, summary, c
   if (!record.options.fileGaps || record.mode !== 'execute') return;
   const idTag = `series ${sId}${issueId ? ` issue ${issueId}` : ''}`;
   const description = `Autopilot ${gapKind} gap — ${idTag}\n\n${summary}`;
-  const result = await cosTaskStore.addTask({ description, context }, 'user')
+  const result = await cosTaskStore.addTask({
+    description,
+    context,
+    autopilotGapSeriesId: sId,
+    autopilotGapKind: gapKind,
+  }, 'user')
     .catch((err) => { console.log(`⚠️ autopilot: fileGap (${gapKind}) failed: ${err.message}`); return null; });
   if (result && !result.duplicate) {
     broadcast(sId, { type: 'gap:filed', gapKind, issueId, taskId: result.id });
@@ -194,6 +199,58 @@ export async function fileGap(record, sId, { gapKind, issueId = null, summary, c
 // unrelated notifications. Best-effort.
 export async function clearPauseNotice(sId) {
   await removeByMetadata('autopilotPauseSeriesId', sId).catch(() => {});
+}
+
+// The gap task's counterpart to clearPauseNotice: retire any gap task still
+// QUEUED for this series when a fresh execute run starts.
+//
+// A gap task is a snapshot of one pause ("needs human review of the residual
+// findings before it can continue"). Once a run is moving again that premise is
+// void, but nothing used to retire the task — so CoS kept dispatching agents
+// against findings the run had already repaired. On this install that burned ten
+// agent sessions across two series, each re-fixing what the previous one fixed.
+//
+// Worse than waste: the resumed run OWNS the fields those findings name (the
+// foundation gate repairs worldbuilding/character/craft itself, and the arc gate
+// rewrites `arc.summary` + `season.synopsis`), so an agent hand-editing them
+// concurrently clobbers the run's own repair.
+//
+// Self-correcting by construction: the gate re-judges from live content on the
+// way past, and re-files a gap with FRESH findings if it still fails. Clearing
+// early can only drop a task whose findings are about to be re-derived.
+//
+// Scoped to `pending` on purpose — an `in_progress` task has an agent attached,
+// and flipping it mid-run would strand that agent and re-open the dedup slot.
+// Status flip, never deletion, so the retirement federates (the #2619 precedent
+// in cosTaskStore.sweepResolvedFailureTasks). Best-effort: this must never
+// abort a run.
+export async function clearGapTasks(sId) {
+  const { tasks = [] } = await cosTaskStore.getUserTasks().catch(() => ({ tasks: [] }));
+  // Legacy gap tasks (filed before `autopilotGapSeriesId` existed — every
+  // install upgrading into this has some) carry no metadata handle, so fall back
+  // to the first line, which fileGap builds deterministically above.
+  const isGapFor = (t) => {
+    if (t.metadata?.autopilotGapSeriesId) return t.metadata.autopilotGapSeriesId === sId;
+    const line = cosTaskStore.firstLine(t.description);
+    return line.startsWith('Autopilot ') && line.includes(` gap — series ${sId}`);
+  };
+  const stale = tasks.filter((t) => t.status === 'pending' && isGapFor(t));
+  let retired = 0;
+  for (const task of stale) {
+    const updated = await cosTaskStore.updateTask(task.id, {
+      status: 'completed',
+      metadata: {
+        resolution: 'auto-expired',
+        autoExpiredReason: 'autopilot-resumed',
+        autoExpiredAt: new Date().toISOString(),
+      },
+    }, 'user').catch(() => null);
+    if (updated && !updated.error) retired++;
+  }
+  if (retired > 0) {
+    console.log(`🧹 autopilot: retired ${retired} stale gap task(s) for ${sId.slice(0, 12)} on resume`);
+  }
+  return retired;
 }
 
 export async function notifyPause(record, sId, { reason, pauseKind = null, currentStep = null }) {

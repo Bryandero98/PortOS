@@ -326,6 +326,12 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // speech layer can announce its completion (see voice/proactiveTriggers.js).
     if (taskData.voiceDispatch === true) metadata.voiceDispatch = true;
     if (taskData.isRecovery === true) metadata.isRecovery = true;
+    // Series Autopilot gap tasks (seriesAutopilot/session.js `fileGap`) carry the
+    // series they were filed for so a later run can retire the ones it has moved
+    // past. Without this the only handle is the description prefix, which is
+    // stable by construction but a fragile thing to key a status flip on.
+    if (taskData.autopilotGapSeriesId) metadata.autopilotGapSeriesId = taskData.autopilotGapSeriesId;
+    if (taskData.autopilotGapKind) metadata.autopilotGapKind = taskData.autopilotGapKind;
     // Investigation-task guards (#2615): the durable fingerprint dedupes repeat
     // failures of the same cause; the marker blocks investigations-of-investigations;
     // affectedTasks names every task blocked on the cause (later dedup hits union in).

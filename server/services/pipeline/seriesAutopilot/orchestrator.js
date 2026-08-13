@@ -27,7 +27,7 @@ import { getModelPerformanceReport } from './modelPerformance.js';
 import { runSelfImproveDiagnosis } from './selfImprove.js';
 import { observerEnabled, runObserverPass, summarizeObserver } from './observer.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
-import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup, roleLlm } from './session.js';
+import { broadcast, broadcastStart, persistMarker, clearPauseNotice, clearGapTasks, notifyPause, fileGap, scheduleCleanup, roleLlm } from './session.js';
 import { resolveNextStep } from './stepResolver.js';
 import { editorialSubsetIds } from './editorialSteps.js';
 import { dispatchStep } from './dispatch.js';
@@ -349,6 +349,11 @@ export async function startSeriesAutopilot(sId, options = {}) {
       // A resume is a fresh start: drop any stale pause banner up front so a run
       // that completes/errors without re-pausing doesn't leave a dead resume link.
       await clearPauseNotice(sId);
+      // Same reasoning for the CoS gap task the pause filed — and higher stakes:
+      // a queued gap task dispatches an agent to hand-edit the very fields this
+      // run is about to repair itself. Re-filed with fresh findings if the gate
+      // still fails.
+      await clearGapTasks(sId).catch(() => {});
       if (runOptions.includeVisual && !VISUAL_DRAFT_ENABLED) {
         broadcast(sId, { type: 'note', message: 'Draft visual rendering is not enabled in this build — running to text-ready + editorial review.' });
       }

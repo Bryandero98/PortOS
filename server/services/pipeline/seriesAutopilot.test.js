@@ -137,7 +137,18 @@ vi.mock('./visualStages.js', () => visualSpies);
 
 let nextTaskId = 0;
 const addTask = vi.fn(async () => ({ id: `task-gap-${++nextTaskId}` }));
-vi.mock('../cosTaskStore.js', () => ({ addTask }));
+// Backing store for the gap-task retirement path (clearGapTasks). Tests seed
+// `userTasks` with whatever the queue should already hold when a run starts.
+let userTasks = [];
+const getUserTasks = vi.fn(async () => ({ tasks: userTasks }));
+const updateTask = vi.fn(async (taskId, updates) => {
+  const task = userTasks.find(t => t.id === taskId);
+  if (!task) return { error: 'Task not found' };
+  Object.assign(task, updates, { metadata: { ...task.metadata, ...updates.metadata } });
+  return task;
+});
+const firstLine = (s) => (s || '').split('\n').map(l => l.trim()).find(l => l) || '';
+vi.mock('../cosTaskStore.js', () => ({ addTask, getUserTasks, updateTask, firstLine }));
 
 let scriptVerifyFindings = [];
 const verifyComicScript = vi.fn(async () => ({ issues: scriptVerifyFindings }));
@@ -271,6 +282,7 @@ beforeEach(() => {
   editorialChecksPerCheck = [];
   editorialChecksFindings = [];
   nextTaskId = 0;
+  userTasks = [];
   modelRecommendations = {};
   autopilot.__testing.runs.clear();
   vi.clearAllMocks();
@@ -4113,6 +4125,61 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.scope).toBe('textStages');
     expect(last?.reason).toMatch(/comicScript/);
+  });
+
+  it('tags a filed gap task with the series so a later run can find it', async () => {
+    const { seriesId } = await seedComplete({ script: 'just prose, no comic pages here' });
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    const tagged = addTask.mock.calls.map((c) => c[0]).find((t) => /script-unparseable/.test(t.description));
+    expect(tagged.autopilotGapSeriesId).toBe(seriesId);
+    expect(tagged.autopilotGapKind).toBe('script-unparseable');
+  });
+
+  it('retires a PENDING gap task for this series when a new run starts', async () => {
+    const { seriesId } = await seedComplete();
+    userTasks = [{
+      id: 'task-stale', status: 'pending',
+      description: `Autopilot foundationGate-stalled gap — series ${seriesId}\n\npaused`,
+      metadata: { autopilotGapSeriesId: seriesId },
+    }];
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(userTasks[0].status).toBe('completed');
+    expect(userTasks[0].metadata.resolution).toBe('auto-expired');
+    expect(userTasks[0].metadata.autoExpiredReason).toBe('autopilot-resumed');
+  });
+
+  it('retires a legacy gap task that predates the autopilotGapSeriesId tag', async () => {
+    const { seriesId } = await seedComplete();
+    userTasks = [{
+      id: 'task-legacy', status: 'pending',
+      description: `Autopilot foundationGate-stalled gap — series ${seriesId}\n\npaused`,
+      metadata: {},
+    }];
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(userTasks[0].status).toBe('completed');
+  });
+
+  it('leaves in-progress gap tasks and other series alone', async () => {
+    const { seriesId } = await seedComplete();
+    userTasks = [
+      {
+        id: 'task-running', status: 'in_progress',
+        description: `Autopilot foundationGate-stalled gap — series ${seriesId}\n\npaused`,
+        metadata: { autopilotGapSeriesId: seriesId },
+      },
+      {
+        id: 'task-other', status: 'pending',
+        description: 'Autopilot foundationGate-stalled gap — series ser-somebody-else\n\npaused',
+        metadata: { autopilotGapSeriesId: 'ser-somebody-else' },
+      },
+      { id: 'task-unrelated', status: 'pending', description: 'Fix the login page', metadata: {} },
+    ];
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(userTasks.map((t) => t.status)).toEqual(['in_progress', 'pending', 'pending']);
   });
 
   it('does not file gap tasks when fileGaps is off', async () => {
