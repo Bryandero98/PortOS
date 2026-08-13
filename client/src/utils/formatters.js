@@ -633,7 +633,7 @@ export function formatCooldown(ms) {
  * @param {string|null|undefined} sizeStr - Human-readable size string
  * @returns {number|null} Size in GB, or null when unparseable
  */
-export function parseSizeGb(sizeStr) {
+function parseSizeGb(sizeStr) {
   const match = /([\d.]+)\s*(TB|GB|MB|KB)/i.exec(String(sizeStr || ''));
   if (!match) return null;
   const val = parseFloat(match[1]);
