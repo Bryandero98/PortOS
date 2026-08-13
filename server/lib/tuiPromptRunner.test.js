@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 
 // executeTuiRun validates that a requested workspace actually exists before
 // spawning (#3180 — a bad repoPath used to silently run in the PortOS root), so
@@ -14,10 +14,13 @@ const TEST_WORKSPACE = process.cwd();
 // real run directories the SUT never needs in these tests). Mocks live
 // inside vi.hoisted so the vi.mock factories (which are themselves hoisted
 // to the top of the file) can reference them.
-const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef } = vi.hoisted(() => ({
+const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef, responseFiles } = vi.hoisted(() => ({
   ptyInstances: [],
   ptySpawnMock: vi.fn(),
   runsTmpDirRef: { current: null },
+  // Absolute response-file path → contents, for the runs driven under fake
+  // timers (see the fileUtils mock below).
+  responseFiles: new Map(),
   runnerMocks: {
     finalizeRunRecord: vi.fn(),
     emitRunStarted: vi.fn(),
@@ -58,7 +61,24 @@ vi.mock('../services/runner.js', () => runnerMocks);
 vi.mock('../services/shell.js', () => shellMocks);
 vi.mock('./fileUtils.js', async () => {
   const actual = await vi.importActual('./fileUtils.js');
-  return { ...actual, ensureDir: vi.fn(async () => {}) };
+  return {
+    ...actual,
+    ensureDir: vi.fn(async () => {}),
+    // Response-file reads resolve from `responseFiles` when the test seeded
+    // that path, and fall through to the real read otherwise (the
+    // resolveTuiResponseText suite below drives real temp files directly).
+    //
+    // Why in-memory (#3874): executeTuiRun's size-stability window is polled
+    // on a 1s interval that these suites drive with fake timers, but a REAL
+    // `readFile` resolves on the libuv threadpool — advancing fake timers
+    // does not wait for it. Under load a poll's read could land after the
+    // test moved on, so the baseline was never seeded and the run took the
+    // timeout/fallback path instead of the response-file path. A seeded read
+    // settles as a microtask, which timer advancement always drains.
+    tryReadFile: vi.fn(async (filePath, ...rest) => (
+      responseFiles.has(filePath) ? responseFiles.get(filePath) : actual.tryReadFile(filePath, ...rest)
+    )),
+  };
 });
 
 import { cleanTuiResponse, resolveTuiResponseText, executeTuiRun } from './tuiPromptRunner.js';
@@ -81,7 +101,15 @@ const makeFakePty = () => {
   return fake;
 };
 
-const flushAsync = () => new Promise((resolve) => setImmediate(resolve));
+const flushAsync = () => new Promise((res) => setImmediate(res));
+
+// Stands in for "the model wrote its complete response to the file the runner
+// directed it to" — same absolute path executeTuiRun derives (getRunsPath() →
+// runId → tui-response.txt), served from memory so the read is deterministic
+// under fake timers.
+const seedResponseFile = (runId, text) => {
+  responseFiles.set(resolve(runsTmpDirRef.current, runId, 'tui-response.txt'), text);
+};
 
 // Targeted coverage for the cleanTuiResponse helper — it shapes what every
 // TUI-provider caller sees as the model response (paste-marker removal,
@@ -266,6 +294,7 @@ describe('resolveTuiResponseText', () => {
 describe('executeTuiRun', () => {
   beforeEach(async () => {
     runsTmpDirRef.current = await mkdtemp(join(tmpdir(), 'tui-runner-test-'));
+    responseFiles.clear();
     ptyInstances.length = 0;
     ptySpawnMock.mockReset();
     ptySpawnMock.mockImplementation(() => makeFakePty());
@@ -531,9 +560,7 @@ describe('executeTuiRun', () => {
       await flushAsync();
       expect(runnerMocks.finalizeRunRecord).not.toHaveBeenCalled();
 
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), '{"repaired":true}');
+      seedResponseFile(runId, '{"repaired":true}');
       await vi.advanceTimersByTimeAsync(1100);
       await vi.advanceTimersByTimeAsync(1100);
       await flushAsync();
@@ -614,9 +641,7 @@ describe('executeTuiRun', () => {
 
       // The model writes its COMPLETE response to the file the runner directed
       // it to (and, like Claude Code's TUI, does NOT exit afterward).
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), '{"issues":[]}');
+      seedResponseFile(runId, '{"issues":[]}');
 
       // First tick seeds the size-stability baseline; the second confirms it.
       await vi.advanceTimersByTimeAsync(1100);
@@ -653,9 +678,7 @@ describe('executeTuiRun', () => {
       await vi.advanceTimersByTimeAsync(2000); // ready-watch pastes → response-file watcher starts
       await vi.advanceTimersByTimeAsync(4000); // enter submitted; still zero post-paste output
 
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), 'silent result body');
+      seedResponseFile(runId, 'silent result body');
 
       await vi.advanceTimersByTimeAsync(1100); // poll 1: seed baseline
       await vi.advanceTimersByTimeAsync(1100); // poll 2: stable → complete
@@ -681,9 +704,7 @@ describe('executeTuiRun', () => {
       // The model finished and wrote its file, but the TUI never exited and the
       // idle watcher was never armed (no post-paste chunk) — so only the hard
       // timeout remains to terminate the run. It must NOT throw the result away.
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), 'the completed review body');
+      seedResponseFile(runId, 'the completed review body');
 
       const promise = executeTuiRun({ runId, provider, prompt: 'a prompt long enough to clear the guard', workspacePath: TEST_WORKSPACE, timeout: 500 });
       await flushAsync();
@@ -1015,9 +1036,7 @@ describe('executeTuiRun', () => {
       await vi.advanceTimersByTimeAsync(2000); // paste → response-file watcher armed
       await vi.advanceTimersByTimeAsync(4000); // enter
 
-      const runDir = join(runsTmpDirRef.current, runId);
-      await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, 'tui-response.txt'), 'the finished review body');
+      seedResponseFile(runId, 'the finished review body');
       // Poll 1 only seeds the size-stability baseline — the run is NOT finalized
       // yet even though the complete answer is already on disk.
       await vi.advanceTimersByTimeAsync(1100);
