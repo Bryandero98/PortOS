@@ -39,6 +39,8 @@ const {
   removeWorktree,
   adoptWorktree,
 } = await import('./worktreeManager.js');
+const { isPathInsideDir } = await import('../lib/fileUtils.js');
+const { win32 } = await import('path');
 const { existsSync } = await import('fs');
 const { PATHS } = await import('../lib/fileUtils.js');
 
@@ -391,11 +393,44 @@ describe('Broken Worktree Detection', () => {
   });
 });
 
+// Git reports POSIX separators on every platform, while PATHS.worktrees is
+// backslash-separated on Windows — so a bare `startsWith` matched nothing there:
+// `cleanupOrphanedWorktrees` skipped every CoS worktree and `reapMergedWorktrees`
+// filed them all as `unmanaged-location`, which is why the daily line read
+// "reaped 0 merged + 0 orphaned" on a Windows install with orphans on disk.
+// These pin the properties the module RELIES ON from the shared helpers, so a
+// change to either one surfaces here rather than as silent dead cleanup.
+describe('git-vs-PortOS path comparison', () => {
+  it('matches a git-reported POSIX path against a Windows worktrees dir', () => {
+    // win32-only: `resolvePath` folds `/` to `\` on Windows, which is what makes
+    // the mixed-separator comparison work. On POSIX a backslash is a legal
+    // filename character, so this case can't arise and isn't asserted.
+    if (process.platform !== 'win32') return;
+    expect(isPathInsideDir('H:\\repo\\data\\cos\\worktrees', 'H:/repo/data/cos/worktrees/agent-abc')).toBe(true);
+  });
+
+  it('does not match a sibling directory that merely shares a prefix', () => {
+    expect(isPathInsideDir('/repo/data/cos/worktrees', '/repo/data/cos/worktrees-old/agent-abc')).toBe(false);
+  });
+
+  it('does not treat the directory itself as being under itself', () => {
+    expect(isPathInsideDir('/repo/data/cos/worktrees', '/repo/data/cos/worktrees')).toBe(false);
+  });
+
+  it('reads the agent id off either separator', () => {
+    expect(win32.basename('H:/repo/data/cos/worktrees/agent-abc')).toBe('agent-abc');
+    expect(win32.basename('H:\\repo\\data\\cos\\worktrees\\agent-abc')).toBe('agent-abc');
+  });
+});
+
 describe('Orphaned Worktree Detection', () => {
   function findOrphanedWorktrees(worktrees, worktreesDir, activeAgentIds) {
     return worktrees.filter(wt => {
-      if (!wt.path.startsWith(worktreesDir)) return false;
-      const agentId = wt.path.split('/').pop();
+      // The real helpers, not a local re-implementation: a mirrored copy here is
+      // exactly what let the Windows separator bug live in the shipped path
+      // while this suite stayed green.
+      if (!isPathInsideDir(worktreesDir, wt.path)) return false;
+      const agentId = win32.basename(wt.path);
       // Mirror the real cleanup guard: human-driven `/claim` worktrees are
       // never CoS orphans.
       if (isHumanClaimWorktree(agentId)) return false;
@@ -528,6 +563,21 @@ describe('isGitLockError (worktree add lock detection, #2193)', () => {
     expect(isGitLockError('')).toBe(false);
     expect(isGitLockError(undefined)).toBe(false);
   });
+
+  // A per-file checkout failure is NOT lock contention. It reads "unable to
+  // create", but it only happens after git has written most of the tree — so
+  // retrying it costs a full checkout per attempt. With the 10-minute add
+  // timeout that is 4 × 10 min of head-of-line blocking on the per-repo queue,
+  // for an error that never clears. This is the Windows AV-filter failure mode
+  // the long timeout exists to tolerate, so the two must not compound.
+  it('does NOT flag a per-file checkout failure as lock contention', () => {
+    expect(isGitLockError('error: unable to create file some/deep/path.js: Permission denied')).toBe(false);
+    expect(isGitLockError('error: unable to create symlink foo/bar: Operation not permitted')).toBe(false);
+  });
+
+  it('still flags a genuine lock-FILE creation failure', () => {
+    expect(isGitLockError("fatal: Unable to create '/repo/.git/config.lock': File exists")).toBe(true);
+  });
 });
 
 describe('addWorktreeWithRetry (lock-contention retry, #2193)', () => {
@@ -542,6 +592,21 @@ describe('addWorktreeWithRetry (lock-contention retry, #2193)', () => {
   it('resolves without retrying on first-attempt success', async () => {
     execGitMock.mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
     await addWorktreeWithRetry(['worktree', 'add', '/wt', 'main'], '/repo');
+    expect(execGitMock).toHaveBeenCalledTimes(1);
+  });
+
+  // See WORKTREE_ADD_TIMEOUT_MS for why 30s was not enough.
+  it('gives the add far more than execGit\'s 30s default, since it writes a full checkout', async () => {
+    execGitMock.mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+    await addWorktreeWithRetry(['worktree', 'add', '/wt', 'main'], '/repo');
+    const [, , options] = execGitMock.mock.calls[0];
+    expect(options?.timeout).toBeGreaterThanOrEqual(5 * 60 * 1000);
+  });
+
+  it('does NOT retry a timeout — git is still running and would collide with itself', async () => {
+    execGitMock.mockRejectedValueOnce(new Error('git command timed out after 600s: git worktree add -b cos/t/a /wt origin/main'));
+    await expect(addWorktreeWithRetry(['worktree', 'add', '-b', 'cos/t/a', '/wt', 'origin/main'], '/repo'))
+      .rejects.toThrow(/timed out/);
     expect(execGitMock).toHaveBeenCalledTimes(1);
   });
 
@@ -774,7 +839,13 @@ describe('adoptWorktree — resuming an interrupted run in its own worktree', ()
   it('moves the dead run’s tree to the retrying agent’s directory', async () => {
     const result = await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
 
-    expect(execGitMock).toHaveBeenCalledWith(['worktree', 'move', DEAD_TREE, NEW_TREE], '/repo');
+    // Third arg is the long add/move timeout — a move relocates a whole checkout,
+    // so it needs the same headroom as the add it shares a wrapper with.
+    expect(execGitMock).toHaveBeenCalledWith(
+      ['worktree', 'move', DEAD_TREE, NEW_TREE],
+      '/repo',
+      expect.objectContaining({ timeout: expect.any(Number) })
+    );
     expect(result).toMatchObject({
       worktreePath: NEW_TREE, branchName: 'cos/task-1/agent-dead',
       existingBranch: true, adopted: true

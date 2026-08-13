@@ -1,0 +1,3 @@
+- Windows: the update script aborted before building the client and restarting, because Node refuses to spawn npm.cmd without a shell (EINVAL) — leaving the UI permanently reporting a stale client build
+- Windows: git worktree add for CoS agents timed out at 30s on a full checkout, blocking tasks with worktree-failed while git actually completed the worktree
+- Windows: orphaned and merged CoS worktrees were never cleaned up, because git reports POSIX paths while PortOS built Windows ones

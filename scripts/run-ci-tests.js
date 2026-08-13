@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'child_process';
+import { prepareCliSpawn } from '../server/lib/bufferedSpawn.js';
 
 const scope = process.argv[2];
 if (!['server', 'client'].includes(scope)) {
@@ -40,12 +41,15 @@ if (mode === 'files' && selectedFiles.length === 0) {
   process.exit(0);
 }
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const run = (extraArgs, label) => {
   const args = ['run', 'test:ci', '--prefix', scope];
   if (extraArgs.length > 0) args.push('--', ...extraArgs);
   console.log(`Running ${scope} ${label}${extraArgs.length ? ` (${extraArgs.length} selector argument(s))` : ''}.`);
-  const result = spawnSync(npmCommand, args, {
+  // Wrapped, not a bare `npm.cmd`: Node refuses to spawn a `.cmd` under
+  // `shell:false` and throws EINVAL, so this script could never run on a
+  // Windows checkout. See server/lib/bufferedSpawn.js.
+  const { command, args: spawnArgs } = prepareCliSpawn('npm', args);
+  const result = spawnSync(command, spawnArgs, {
     stdio: 'inherit',
     env: process.env,
   });

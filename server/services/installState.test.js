@@ -39,10 +39,18 @@ const ROOT = '/repo';
 
 // Build a statMtime mock from a { pathSuffix: mtimeMs } map. A path not present
 // in the map resolves to null (absent), mirroring the real helper.
+//
+// The incoming path is separator-normalized because the real statMtime receives
+// paths built with `join` — on Windows those arrive as `\repo\client\dist\…` and
+// never match a `'client/dist/index.html'` suffix. Unnormalized, every
+// stale-build test saw "no bundle" and asserted against `null`, so the whole
+// staleBuild signal was untested on the platform whose false alarm prompted it.
+// Only the incoming path needs it; every key below is a POSIX literal.
 function makeStat(map) {
   return async (path) => {
+    const posixPath = String(path).replace(/\\/g, '/');
     for (const [suffix, mtime] of Object.entries(map)) {
-      if (path.endsWith(suffix)) return mtime;
+      if (posixPath.endsWith(suffix)) return mtime;
     }
     return null;
   };

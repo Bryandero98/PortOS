@@ -21,11 +21,9 @@ import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { prepareCliSpawn } from '../server/lib/bufferedSpawn.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-/** npm's Windows shim. Shared so callers don't re-derive it. */
-export const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 /**
  * Every directory npm can install into with that directory as the local prefix:
@@ -96,7 +94,16 @@ export function rebuildTrusted(dir, label, { spawn = execFileSync } = {}) {
   let ok = true;
   for (const { pkgs, fatal } of groups) {
     try {
-      spawn(NPM, ['rebuild', ...pkgs], { cwd: dir, stdio: 'inherit', windowsHide: true });
+      // Through prepareCliSpawn: on Windows `npm` is a `.cmd` shim, and Node's
+      // CVE-2024-27980 patch REFUSES a `.cmd` target under `shell:false` with
+      // `spawnSync npm.cmd EINVAL`. Since the node-pty group is fatal, that
+      // throw exited this script 1, and `update.ps1` exits on a non-zero
+      // trusted-rebuilds — so every Windows update aborted before the client
+      // build and the pm2 restart, leaving the UI permanently reporting a stale
+      // client build. See server/lib/bufferedSpawn.js for why the fix is a
+      // `cmd.exe /c` wrap and not `shell:true` (which does not escape args).
+      const { command, args } = prepareCliSpawn('npm', ['rebuild', ...pkgs]);
+      spawn(command, args, { cwd: dir, stdio: 'inherit', windowsHide: true });
     } catch (err) {
       console.error(`⚠️  npm rebuild ${pkgs.join(' ')} failed for ${label}: ${err.message ?? err}`);
       if (fatal) ok = false;

@@ -11,14 +11,24 @@
 
 import { existsSync, realpathSync } from 'fs';
 import { readdir, rm, stat } from 'fs/promises';
-import { join } from 'path';
-import { ensureDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
+import { join, win32 } from 'path';
+import { ensureDir, isPathInsideDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, doneSentinelName } from '../lib/agentSentinel.js';
 import { execGit } from '../lib/execGit.js';
 import { createKeyCachedQueue } from '../lib/createKeyCachedQueue.js';
 import { ensureInstanceId } from './instances.js';
 
 const WORKTREES_DIR = PATHS.worktrees;
+// `git worktree list --porcelain` reports POSIX separators on every platform —
+// `H:/repo/data/cos/worktrees/agent-x` — while WORKTREES_DIR is built with
+// `join` and is backslash-separated on Windows. So a git-reported path is never
+// compared with a bare `startsWith`/`split('/')`: `isPathInsideDir` resolves
+// both sides first (and rejects a sibling like `worktrees-old`), and
+// `win32.basename` treats either separator as one. Before this, every CoS
+// worktree failed the containment check on Windows — `cleanupOrphanedWorktrees`
+// skipped them all and `reapMergedWorktrees` filed them as `unmanaged-location`,
+// so the daily line read "reaped 0 merged + 0 orphaned" with orphans on disk.
+const worktreeAgentId = (worktreePath) => win32.basename(worktreePath || '');
 // Lockfiles that npm/yarn/pnpm modify as a side-effect — safe to discard during worktree cleanup
 const AUTO_GENERATED_LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'];
 // Cap the dirty paths named in a "worktree preserved" warning — the message ends
@@ -35,6 +45,17 @@ const DIRT_PATHS_IN_WARNING = 5;
 const WORKTREE_ADD_MAX_ATTEMPTS = 4;
 const WORKTREE_ADD_RETRY_DELAY_MS = 250;
 
+// `git worktree add` materializes a FULL checkout, so it is nothing like the
+// metadata reads execGit's 30s default was sized for: ~5.8k files here, and on
+// Windows every one of them is written through the AV filter driver, which puts
+// a cold add well past 30s. Worse, the timeout doesn't stop git — the checkout
+// keeps running and lands — so PortOS blocks the task with `worktree-failed`
+// while the worktree and branch it just gave up on exist on disk, which then
+// defeats the orphan-branch cleanup ("Cannot delete branch … checked out at …").
+// Ten minutes is far above any healthy add and still bounded. Applies to
+// `worktree move` too — it routes through this same wrapper.
+const WORKTREE_ADD_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * True when a git error message indicates lock/contention on the worktree or
  * index lock (as opposed to a genuine, non-retryable failure like a bad ref,
@@ -45,9 +66,20 @@ const WORKTREE_ADD_RETRY_DELAY_MS = 250;
  * (caught by `index.lock`), whereas `a branch named 'X' already exists` and
  * `'<path>' already exists` are permanent. Exported for unit testing against
  * real git lock-error wording.
+ *
+ * The "unable to create" alternative is anchored to a quoted `.lock` path on
+ * purpose. A bare `unable to create` also matches git's PER-FILE checkout
+ * failure, `error: unable to create file <path>: Permission denied` — exactly
+ * what a Windows AV filter driver produces mid-checkout. That is not lock
+ * contention and does not clear on retry, but it IS reached only after git has
+ * written most of the tree, so matching it spent the whole retry budget on
+ * repeated full checkouts: with WORKTREE_ADD_TIMEOUT_MS that is 4 × 10 min of
+ * head-of-line blocking on the per-repo queue for a permanent failure. The
+ * retry budget is sized for bookkeeping-lock failures, which fail in
+ * milliseconds.
  */
 export function isGitLockError(message) {
-  return /index\.lock|cannot lock|could not lock|unable to (?:create|write|lock)|already locked|another git process/i.test(message || '');
+  return /index\.lock|cannot lock|could not lock|unable to create '[^']*\.lock'|unable to (?:write|lock)|already locked|another git process/i.test(message || '');
 }
 
 /**
@@ -65,7 +97,7 @@ export function isGitLockError(message) {
  * (#2193) — the branch is exactly the orphan it needs to delete.
  */
 export function addWorktreeWithRetry(args, repo, attempt = 1, firstError = null) {
-  return execGit(args, repo).catch((err) => {
+  return execGit(args, repo, { timeout: WORKTREE_ADD_TIMEOUT_MS }).catch((err) => {
     const originalError = firstError || err;
     if (attempt >= WORKTREE_ADD_MAX_ATTEMPTS || !isGitLockError(err.message)) {
       err.firstAttemptError = originalError;
@@ -862,9 +894,9 @@ export async function cleanupOrphanedWorktrees(sourceWorkspace, activeAgentIds) 
 
   for (const wt of worktrees) {
     // Only clean up worktrees under our managed directory
-    if (!wt.path.startsWith(WORKTREES_DIR)) continue;
+    if (!isPathInsideDir(WORKTREES_DIR, wt.path)) continue;
 
-    const agentId = wt.path.split('/').pop();
+    const agentId = worktreeAgentId(wt.path);
     handledAgentIds.add(agentId);
     // Never reap human-driven `/claim` worktrees (`claim-<slug>`) — they belong
     // to the `/claim` command's own Phase 7 cleanup, not CoS. See isHumanClaimWorktree.
@@ -957,13 +989,13 @@ export async function reapMergedWorktrees(sourceWorkspace, {
     if (!branchName) { skipped.push({ path: wt.path, reason: 'no-branch' }); continue; }
     if (protectedBranches.has(branchName) || branchName === currentBranch) { skipped.push({ path: wt.path, reason: 'protected' }); continue; }
 
-    const agentId = wt.path.split('/').pop();
+    const agentId = worktreeAgentId(wt.path);
     // Human `/claim` worktrees self-clean in the claim flow's Phase 7 — never reap them here.
     if (isHumanClaimWorktree(agentId)) { skipped.push({ path: wt.path, reason: 'human-claim' }); continue; }
     if (activeAgentIds.has(agentId)) { skipped.push({ path: wt.path, reason: 'active-agent' }); continue; }
 
-    const isCosTree = wt.path.startsWith(WORKTREES_DIR);
-    const isClaudeTree = wt.path.startsWith(claudeTreesRoot);
+    const isCosTree = isPathInsideDir(WORKTREES_DIR, wt.path);
+    const isClaudeTree = isPathInsideDir(claudeTreesRoot, wt.path);
     if (!isCosTree && !isClaudeTree) { skipped.push({ path: wt.path, reason: 'unmanaged-location' }); continue; }
     if (isClaudeTree && !includeClaudeTrees) { skipped.push({ path: wt.path, reason: 'claude-tree-excluded' }); continue; }
     if (wt.locked) { skipped.push({ path: wt.path, reason: 'locked' }); continue; }
