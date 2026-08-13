@@ -1244,6 +1244,21 @@ export const videoDownloadSchema = z.object({
   url: z.string().url().max(2048)
 });
 
+// Git submodules. `repoPath` is the repo ROOT (omitted = the PortOS checkout,
+// and it is separately checked against the workspace allowlist); `path` is the
+// repo-relative submodule path, matching `git submodule status` output.
+const optionalRepoPath = z.string().trim().min(1).max(4096).nullish();
+
+export const submoduleStatusQuerySchema = z.object({
+  repoPath: optionalRepoPath
+});
+
+export const submoduleUpdateSchema = z.object({
+  path: z.string().trim().min(1).max(4096),
+  repoPath: optionalRepoPath,
+  commit: z.boolean().optional().default(false)
+});
+
 // =============================================================================
 // TRANSITIONAL RE-EXPORTS (issue #1151 split)
 // =============================================================================

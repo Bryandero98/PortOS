@@ -21,6 +21,7 @@ import IssuesTab from './tabs/IssuesTab';
 import JiraTab from './tabs/JiraTab';
 import ProcessesTab from './tabs/ProcessesTab';
 import ReferencesTab from './tabs/ReferencesTab';
+import SubmodulesTab from './tabs/SubmodulesTab';
 import DatadogTab from './tabs/DatadogTab';
 import UpdateTab from './tabs/UpdateTab';
 
@@ -209,12 +210,8 @@ export default function AppDetailView() {
   };
 
   const visibleTabs = useMemo(() =>
-    APP_DETAIL_TABS.filter(t => {
-      if (t.id === 'update') return app?.id === api.PORTOS_APP_ID;
-      if (t.id === 'datadog') return app?.datadog?.enabled;
-      return true;
-    }),
-    [app?.id, app?.datadog?.enabled]
+    APP_DETAIL_TABS.filter(t => (t.visibleWhen ? t.visibleWhen(app) : true)),
+    [app]
   );
 
   if (loading) {
@@ -260,6 +257,8 @@ export default function AppDetailView() {
         return <ProcessesTab appId={app.id} pm2ProcessNames={app.pm2ProcessNames} />;
       case 'references':
         return <ReferencesTab appId={appId} appName={app.name} />;
+      case 'submodules':
+        return <SubmodulesTab repoPath={app.repoPath} />;
       case 'update':
         if (app.id !== api.PORTOS_APP_ID) {
           return (

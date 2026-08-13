@@ -6,7 +6,7 @@ PortOS is a local-first operating system for a developer's machines, work, and p
 
 - **Dashboard, Apps, and Templates** — Register projects, inspect process health, launch or stop services, and scaffold a new app. See [App Wizard](./app-wizard.md).
 - **Shell, processes, logs, and system health** — Work with terminal sessions, PM2 processes, action history, and host-level operational signals from the browser.
-- **GitHub, JIRA, DataDog, Submodules, and Loops** — Bring project status, issue planning, observability, repository maintenance, and recurring work into DevTools. See [JIRA Sprint Manager](./jira-sprint-manager.md).
+- **GitHub, JIRA, DataDog, and Loops** — Bring project status, issue planning, observability, and recurring work into DevTools. See [JIRA Sprint Manager](./jira-sprint-manager.md). Repository maintenance that is inherently per-repo (git branches, submodules) lives on the app's own detail page instead.
 - **Browser control** — Connect a managed Chrome instance for automated or assisted browser work. See [Browser Management](./browser.md).
 - **Settings, providers, local models, and usage** — Configure CLI/API/local AI providers, choose models, inspect quota and usage information, and manage local model runtimes.
 
