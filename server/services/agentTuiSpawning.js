@@ -861,7 +861,7 @@ export async function spawnTuiAgent({
   // `merged` starts false and only a `known` MERGED answer flips it: a gh we
   // could not run (firewalled, offline) is NOT evidence of anything and must
   // leave the pre-existing verdicts untouched. GitHub only — `gh pr view`
-  // against a GitLab MR answers nothing, so those follow-ups keep prior behavior.
+  // against a GitLab MR or an unresolved host answers nothing, so those follow-ups keep prior behavior.
   const prFollowUpRef = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp)
     && detectForgeCli(task.metadata?.reviewLoopPRHost) === 'gh'
     ? (task.metadata?.reviewLoopPRUrl || task.metadata?.reviewLoopPRNumber || null)

@@ -56,10 +56,11 @@ describe('detectForgeCli', () => {
     expect(detectForgeCli('GitLab.Internal.Co')).toBe('glab');
   });
 
-  it('defaults to gh for unknown or empty hosts', () => {
+  it('defaults to gh for unknown non-empty hosts, returns unknown for falsy hosts', () => {
     expect(detectForgeCli('bitbucket.org')).toBe('gh');
-    expect(detectForgeCli(null)).toBe('gh');
-    expect(detectForgeCli('')).toBe('gh');
+    expect(detectForgeCli(null)).toBe('unknown');
+    expect(detectForgeCli(undefined)).toBe('unknown');
+    expect(detectForgeCli('')).toBe('unknown');
   });
 });
 

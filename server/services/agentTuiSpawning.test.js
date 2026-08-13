@@ -97,8 +97,14 @@ vi.mock('./agentState.js', async (importOriginal) => ({
 // only `git.js` would leave the probe shelling out to real git. Sharing the spy
 // keeps every `vi.mocked(gitService.execGit)` override in this file authoritative
 // for the probe too.
-const { execGitMock } = vi.hoisted(() => ({ execGitMock: vi.fn() }));
+const { execGitMock, getPullRequestStateMock } = vi.hoisted(() => ({
+  execGitMock: vi.fn(),
+  getPullRequestStateMock: vi.fn().mockResolvedValue({ status: 'known', state: 'OPEN' }),
+}));
 vi.mock('../lib/execGit.js', () => ({ execGit: execGitMock }));
+vi.mock('./github.js', () => ({
+  getPullRequestState: (...args) => getPullRequestStateMock(...args),
+}));
 
 vi.mock('./git.js', () => ({
   // Default: worktree has changes so idle-complete succeeds. Tests that want
@@ -2450,6 +2456,68 @@ describe('spawnTuiAgent runtime', () => {
           error: 'Failed to start TUI session: posix_spawnp failed',
         })
       );
+    });
+
+    it('skips PR state polling when review-loop follow-up has an unresolved PR host (#4007)', async () => {
+      runSpawn({
+        task: {
+          id: 'task-4007',
+          description: 'do the thing',
+          metadata: {
+            reviewLoopFollowUp: 'true',
+            reviewLoopPRHost: null,
+            reviewLoopPRUrl: 'https://unknown-forge.example.com/owner/repo/pull/4007',
+          },
+        },
+      });
+
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('Codex booting...\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('do the thing\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(3600);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(800);
+      await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(16000);
+      await flushMicrotasks();
+
+      expect(getPullRequestStateMock).not.toHaveBeenCalled();
+    });
+
+    it('polls PR state when review-loop follow-up has a resolved github PR host (#4007)', async () => {
+      runSpawn({
+        task: {
+          id: 'task-4007-gh',
+          description: 'do the thing',
+          metadata: {
+            reviewLoopFollowUp: 'true',
+            reviewLoopPRHost: 'github.com',
+            reviewLoopPRUrl: 'https://github.com/owner/repo/pull/4007',
+          },
+        },
+      });
+
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('Codex booting...\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('do the thing\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(3600);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(800);
+      await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(16000);
+      await flushMicrotasks();
+
+      expect(getPullRequestStateMock).toHaveBeenCalledWith('https://github.com/owner/repo/pull/4007', expect.anything());
     });
   });
 });
