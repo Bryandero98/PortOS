@@ -11,7 +11,17 @@ const api = vi.hoisted(() => ({
   createProvider: vi.fn(),
 }));
 
+const toast = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  warning: vi.fn(),
+}));
+
 vi.mock('../services/api', () => api);
+vi.mock('../components/ui/Toast', () => ({
+  default: toast,
+}));
 vi.mock('../services/socket', () => ({
   default: {
     on: vi.fn(),
@@ -135,5 +145,6 @@ describe('handleAddSample error handling', () => {
 
     const reEnabledAddBtn = await screen.findByRole('button', { name: 'Add' });
     expect(reEnabledAddBtn).not.toBeDisabled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Failed to add provider: Failed to create provider'));
   });
 });

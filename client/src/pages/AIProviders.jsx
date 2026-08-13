@@ -229,7 +229,8 @@ export default function AIProviders() {
       loadData();
       toast.success(`Added ${provider.name}`);
     } catch (err) {
-      toast.error(`Failed to add provider: ${err?.message || err}`);
+      const message = err?.message || err?.error || (typeof err === 'string' ? err : 'An unknown error occurred');
+      toast.error(`Failed to add provider: ${message}`);
     } finally {
       setAddingSample(prev => ({ ...prev, [provider.id]: false }));
     }
