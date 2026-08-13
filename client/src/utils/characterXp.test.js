@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import * as characterXp from './characterXp';
 import {
-  XP_THRESHOLDS,
-  MAX_LEVEL,
   levelFromXP,
-  computeXpView,
   computeAgeView,
   diffXp,
   birthDateCta,
 } from './characterXp';
+
+// The curve is module-local (#3895); these mirror server/services/character.js
+// `LEGACY_XP_THRESHOLDS` so a curve change fails here instead of silently drifting.
+const TOP_THRESHOLD = 355_000;
+const TOP_LEVEL = 20;
 
 describe('levelFromXP', () => {
   it('maps XP to the right level at and above each threshold', () => {
@@ -18,9 +21,10 @@ describe('levelFromXP', () => {
     expect(levelFromXP(900)).toBe(3);
   });
 
-  it('caps at MAX_LEVEL for very high XP', () => {
-    expect(levelFromXP(XP_THRESHOLDS[MAX_LEVEL - 1])).toBe(MAX_LEVEL);
-    expect(levelFromXP(10_000_000)).toBe(MAX_LEVEL);
+  it('saturates at the top of the curve for very high XP', () => {
+    expect(levelFromXP(TOP_THRESHOLD - 1)).toBe(TOP_LEVEL - 1);
+    expect(levelFromXP(TOP_THRESHOLD)).toBe(TOP_LEVEL);
+    expect(levelFromXP(10_000_000)).toBe(TOP_LEVEL);
   });
 
   it('clamps negative / NaN XP to level 1', () => {
@@ -30,71 +34,12 @@ describe('levelFromXP', () => {
   });
 });
 
-describe('computeXpView', () => {
-  it('computes progress mid-level', () => {
-    // Level 2 spans [300, 900) — 600 XP wide. At 600 XP we're 300 into 600.
-    const vm = computeXpView({ xp: 600, level: 2 });
-    expect(vm.level).toBe(2);
-    expect(vm.xpIntoLevel).toBe(300);
-    expect(vm.xpForNextLevel).toBe(600);
-    expect(vm.progress).toBeCloseTo(0.5);
-    expect(vm.xpToNext).toBe(300);
-    expect(vm.atMax).toBe(false);
-  });
-
-  it('is 0 progress exactly at a level floor (inclusive boundary)', () => {
-    const vm = computeXpView({ xp: 300, level: 2 });
-    expect(vm.level).toBe(2);
-    expect(vm.xpIntoLevel).toBe(0);
-    expect(vm.progress).toBe(0);
-  });
-
-  it('approaches 1 just below the next threshold without reaching it', () => {
-    const vm = computeXpView({ xp: 899, level: 2 });
-    expect(vm.progress).toBeGreaterThan(0.99);
-    expect(vm.progress).toBeLessThan(1);
-  });
-
-  it('at max level: atMax true, progress pinned to 1, no NaN', () => {
-    const maxXp = XP_THRESHOLDS[MAX_LEVEL - 1] + 50_000;
-    const vm = computeXpView({ xp: maxXp, level: MAX_LEVEL });
-    expect(vm.level).toBe(MAX_LEVEL);
-    expect(vm.atMax).toBe(true);
-    expect(vm.progress).toBe(1);
-    expect(vm.xpForNextLevel).toBe(0);
-    expect(vm.xpToNext).toBe(0);
-    expect(Number.isNaN(vm.progress)).toBe(false);
-  });
-
-  it('returns a sane zero view for null / missing character', () => {
-    for (const input of [null, undefined, {}]) {
-      const vm = computeXpView(input);
-      expect(vm.xp).toBe(0);
-      expect(vm.level).toBe(1);
-      expect(vm.progress).toBe(0);
-      expect(vm.atMax).toBe(false);
-      expect(vm.hp).toBeNull();
-      expect(vm.maxHp).toBeNull();
-      expect(Number.isNaN(vm.progress)).toBe(false);
-    }
-  });
-
-  it('derives level from xp when the level field is absent / invalid', () => {
-    const vm = computeXpView({ xp: 1000 }); // no level field → derive (level 3)
-    expect(vm.level).toBe(3);
-  });
-
-  it('carries hp / maxHp through when present', () => {
-    const vm = computeXpView({ xp: 0, level: 1, hp: 12, maxHp: 15 });
-    expect(vm.hp).toBe(12);
-    expect(vm.maxHp).toBe(15);
-  });
-
-  it('distinguishes absent xp (zero view) from a legitimate zero xp', () => {
-    expect(computeXpView({}).xp).toBe(0);
-    expect(computeXpView({ xp: 0, level: 1 }).xp).toBe(0);
-    // both render as zero, but neither throws or NaNs
-    expect(computeXpView({ xp: 0, level: 1 }).progress).toBe(0);
+describe('removed legacy XP helpers (#3895)', () => {
+  it('no longer exports the XP-threshold view helpers', () => {
+    // Dead progression math removed; the module must not grow them back as public API.
+    expect(characterXp.computeXpView).toBeUndefined();
+    expect(characterXp.XP_THRESHOLDS).toBeUndefined();
+    expect(characterXp.MAX_LEVEL).toBeUndefined();
   });
 });
 
