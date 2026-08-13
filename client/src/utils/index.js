@@ -29,7 +29,7 @@ export * from './providers.js';
 export * from './layeredIntelligenceReasons.js';
 
 // === Module loading / resilience ===
-export * from './lazyWithReload.js';
+export { lazyWithReload } from './lazyWithReload.js';
 export * from './staleChunkReload.js';
 
 // === File handling ===
