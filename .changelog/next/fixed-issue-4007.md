@@ -1,0 +1,1 @@
+- detectForgeCli defaults to unknown on an unresolved PR host (#4007)
