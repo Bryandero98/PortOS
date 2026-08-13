@@ -1362,7 +1362,7 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/## Pipeline Context/);
       expect(prompt).toMatch(/Stage 2 of 3: "prose"/);
       expect(prompt).toMatch(/Previous stage: "idea"/);
-      expect(prompt).toMatch(/agent-prev-1\/output\.txt/);
+      expect(prompt).toMatch(/agent-prev-1[\\/]output\.txt/);
     });
   });
 });
@@ -2499,4 +2499,3 @@ describe('TUI reviewLoopFollowUp completion instructions', () => {
     expect(first).not.toMatch(/\.agent-done(?![-\w])/);
   });
 });
-
