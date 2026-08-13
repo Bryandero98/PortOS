@@ -23,8 +23,8 @@ export default function FamilyCard({
   // Pending counts and `run once` completions stay on the STATUS side and are
   // passed to JobRow as their own props — merging them into the job objects
   // would mean stripping them back off before every save (the PUT schema is
-  // strict). Matched by id so a reorder mid-save can't mis-pair them.
-  // Indexed once, not scanned per lookup: this component re-renders on every
+  // strict). Keyed by id, so a reorder mid-save can't mis-pair them, and indexed
+  // once rather than scanned per lookup: this component re-renders on every
   // keystroke (the page holds `config` in state and saves on a trailing
   // debounce), and a linear `find` ran three times per job — the count below
   // plus both props on every row.

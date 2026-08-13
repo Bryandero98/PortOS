@@ -139,7 +139,10 @@ completion continuation walks it one agent at a time and it stops of its own
 accord instead of looping.
 
 - **The ledger is `data/cos/quota-burn-completions.json`**, `<familyId>:<jobId>`
-  → the ISO instant it ran, capped at 200 entries (newest kept). It is a
+  → the ISO instant it ran, capped (newest kept) at **twice** the keys a
+  maxed-out plan can hold — derived from `QUOTA_BURN_FAMILIES` and
+  `jobsPerFamily.max`, so pruning can only evict a job already deleted from the
+  plan, never a live one. It is a
   separate file rather than a flag on the job because a config PUT **replaces**
   a family's `jobs` array — that is how every reorder and edit saves — so a flag
   on the job would be reset by an unrelated edit, and by the client's optimistic
