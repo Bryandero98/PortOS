@@ -3,63 +3,28 @@
 // by diffing two successive snapshots. No React imports so the math is unit-testable.
 //
 // As of #2673 the badge shows an **age-based level** (`computeAgeView`) — level = years lived
-// — with a progress bar toward the next birthday. The legacy XP-threshold helpers below
-// (`levelFromXP`, `computeXpView`, `XP_THRESHOLDS`) are retained for `cityArtifacts` and the
-// D&D-style `/character` page; the badge no longer uses them.
+// — with a progress bar toward the next birthday. The only surviving XP-threshold helper is
+// `levelFromXP`, used by `cityArtifacts` to unlock level artifacts when a character has XP but
+// no usable birth date; the badge no longer uses it.
 
-// MIRRORS the server constant `XP_THRESHOLDS` in server/services/character.js — index i
+// MIRRORS the server constant `LEGACY_XP_THRESHOLDS` in server/services/character.js — index i
 // is the cumulative XP required to reach level i+1. Keep these two arrays in sync: if the
-// server's level curve changes, update this copy (and the test) in the same change.
-export const XP_THRESHOLDS = [
+// server's level curve changes, update this copy (and the test) in the same change. Module-local
+// on purpose: `levelFromXP` is the only supported way to read the curve (#3895).
+const XP_THRESHOLDS = [
   0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000,
   85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000,
 ];
 
-export const MAX_LEVEL = XP_THRESHOLDS.length;
-
 // Level for a given total XP, mirroring server `getLevelFromXP`. Clamps negative/NaN xp
-// to level 1 so a missing/garbage value can't produce a negative or NaN level.
+// to level 1 so a missing/garbage value can't produce a negative or NaN level, and saturates
+// at the top of the curve (level 20) for arbitrarily large XP.
 export function levelFromXP(xp) {
   const safeXp = Number.isFinite(xp) ? xp : 0;
   for (let i = XP_THRESHOLDS.length - 1; i >= 0; i--) {
     if (safeXp >= XP_THRESHOLDS[i]) return i + 1;
   }
   return 1;
-}
-
-// Derived view-model for the XP badge. Tolerates a missing/null character (returns a sane
-// level-1 zero view). `progress` is 0..1 within the current level; at max level it pins to
-// 1 with `atMax: true` and never produces NaN (no "next threshold" to divide by).
-export function computeXpView(character) {
-  const rawXp = character?.xp;
-  const xp = Number.isFinite(rawXp) ? Math.max(0, rawXp) : 0;
-  // Trust the server's stored level when present and consistent; otherwise derive it so a
-  // legacy/absent level field still yields a correct badge.
-  const level = Number.isFinite(character?.level) && character.level >= 1
-    ? Math.min(MAX_LEVEL, Math.floor(character.level))
-    : levelFromXP(xp);
-
-  const atMax = level >= MAX_LEVEL;
-  const levelFloor = XP_THRESHOLDS[level - 1] ?? 0;
-  const nextThreshold = atMax ? null : XP_THRESHOLDS[level];
-
-  const xpIntoLevel = Math.max(0, xp - levelFloor);
-  const xpForNextLevel = atMax ? 0 : nextThreshold - levelFloor;
-  const progress = atMax
-    ? 1
-    : (xpForNextLevel > 0 ? Math.min(1, Math.max(0, xpIntoLevel / xpForNextLevel)) : 0);
-
-  return {
-    xp,
-    level,
-    xpIntoLevel,
-    xpForNextLevel,
-    xpToNext: atMax ? 0 : Math.max(0, nextThreshold - xp),
-    progress,
-    atMax,
-    hp: Number.isFinite(character?.hp) ? character.hp : null,
-    maxHp: Number.isFinite(character?.maxHp) ? character.maxHp : null,
-  };
 }
 
 // Age-based level view-model for the CyberCity badge (#2673, epic #2672). The Character's

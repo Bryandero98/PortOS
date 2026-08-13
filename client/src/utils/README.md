@@ -60,7 +60,7 @@ grep -i "what you want to do" client/src/utils/README.md
 
 | Module | Purpose |
 |---|---|
-| `characterXp` | Character HUD badge math: `computeAgeView` (age-based level + progress to next birthday), plus legacy XP helpers `levelFromXP`, `computeXpView`, `diffXp` and the XP threshold table. |
+| `characterXp` | Character HUD badge math: `computeAgeView` (age-based level + progress to next birthday), `diffXp` (XP-gain / birthday burst diff), `birthDateCta` (missing-birth-date call to action), plus the legacy `levelFromXP` XP-curve lookup used by `cityArtifacts`. |
 
 ## CyberCity — scene compute helpers
 
