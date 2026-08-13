@@ -172,6 +172,12 @@ describe('allowedTransitionsFor — client action gating (issue #2417)', () => {
     expect(allowed).toContain('not_found');
   });
 
+  it('lets awaiting_processing transition to found and human_task_queued (#4020)', () => {
+    const allowed = allowedTransitionsFor('awaiting_processing');
+    expect(allowed).toContain('found');
+    expect(allowed).toContain('human_task_queued');
+  });
+
   it('returns only the any-state target for an unknown state', () => {
     expect(allowedTransitionsFor('bogus')).toEqual(['human_task_queued']);
   });

@@ -396,16 +396,20 @@ export function planOptOutActions(casesWithBroker = []) {
 
 // ─── Verification pass ──────────────────────────────────────────────────────
 
+export const DEFAULT_MAX_VERIFICATION_RECHECKS = 3;
+
 /**
  * Poll the synced inbox for a broker confirmation for each `submitted` case and
  * advance it to `verification_pending` (anti-phishing gated). Then a verifying
  * re-scan of `verification_pending`/`awaiting_processing` cases decides
  * `confirmed_removed` (not_found) — the ONLY path to that state — leaving a
- * still-listed case in place. Deps injectable (no network in tests).
+ * still-listed case in place or transitioning it to `awaiting_processing` /
+ * `human_task_queued` (optout_unfulfilled) after max recheck attempts.
+ * Deps injectable (no network in tests).
  */
 export async function runVerificationPass({
   now = new Date(), messagesProvider = getMessages, removalProbe = probeBroker, probeDeps = {},
-  subjectId,
+  subjectId, maxVerificationRechecks = DEFAULT_MAX_VERIFICATION_RECHECKS,
 } = {}) {
   // CONSENT GATE — the verification pass re-probes brokers for the subject, so
   // it is gated exactly like the submission pass.
@@ -414,6 +418,7 @@ export async function runVerificationPass({
   const cases = await listBrokerCases({ subjectId: resolvedSubjectId });
   const advanced = [];
   const confirmed = [];
+  const unfulfilled = [];
   // 1. submitted → verification_pending when a trusted confirmation email exists.
   const submitted = cases.filter((c) => c.state === 'submitted');
   if (submitted.length) {
@@ -445,14 +450,33 @@ export async function runVerificationPass({
       // opt-out-owned states, so probeBroker classifies the CURRENT listing
       // without touching the case. `not_found` is the ONLY path to confirmed.
       const probed = await removalProbe(broker, vectors, probeDeps).catch(() => null);
-      if (probed && !probed.skipped && probed.verdict === 'not_found') {
-        await transitionCase(c.id, 'confirmed_removed', { viaRescan: true, evidence: { ...(c.evidence || {}), verifiedRemovedAt: now.toISOString() }, now });
-        confirmed.push({ caseId: c.id, brokerId: c.brokerId });
+      if (probed && !probed.skipped) {
+        if (probed.verdict === 'not_found') {
+          await transitionCase(c.id, 'confirmed_removed', { viaRescan: true, evidence: { ...(c.evidence || {}), verifiedRemovedAt: now.toISOString() }, now });
+          confirmed.push({ caseId: c.id, brokerId: c.brokerId });
+        } else {
+          // Still listed (verdict === 'found' or similar). Track recheck count.
+          const currentRechecks = c.evidence?.verificationRechecks ?? c.evidence?.recheckCount ?? 0;
+          const rechecks = currentRechecks + 1;
+          if (rechecks >= maxVerificationRechecks) {
+            await transitionCase(c.id, 'human_task_queued', {
+              reason: 'optout_unfulfilled',
+              evidence: { ...(c.evidence || {}), verificationRechecks: rechecks, unfulfilledAt: now.toISOString() },
+              now,
+            });
+            unfulfilled.push({ caseId: c.id, brokerId: c.brokerId });
+          } else {
+            await transitionCase(c.id, 'awaiting_processing', {
+              evidence: { ...(c.evidence || {}), verificationRechecks: rechecks },
+              now,
+            });
+          }
+        }
       }
     }
   }
-  console.log(`✅ Verification pass: ${advanced.length} advanced, ${confirmed.length} confirmed removed`);
-  return { advanced, confirmed };
+  console.log(`✅ Verification pass: ${advanced.length} advanced, ${confirmed.length} confirmed removed, ${unfulfilled.length} unfulfilled → human task`);
+  return { advanced, confirmed, unfulfilled };
 }
 
 // ─── Main run loop ──────────────────────────────────────────────────────────
