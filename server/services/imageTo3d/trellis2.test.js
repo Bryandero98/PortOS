@@ -112,7 +112,7 @@ describe('buildInstallSteps', () => {
     // A prior install cloned the top-level repo but failed inside setup.sh (the
     // #2952 case). Re-cloning into the non-empty root would abort, so resume must
     // begin at the idempotent setup.sh.
-    const gitDir = `${trellis2Root(BASE)}/.git`;
+    const gitDir = join(trellis2Root(BASE), '.git');
     const steps = buildInstallSteps(BASE, { exists: (p) => p === gitDir });
     expect(steps.map((s) => s.stage)).toEqual(['setup']);
     expect(steps[0]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
@@ -868,7 +868,7 @@ describe('installTrellis2', () => {
     // existing root; it must go straight to the idempotent setup.sh.
     const child = makeChild();
     const spawnImpl = vi.fn(() => child);
-    const gitDir = `${trellis2Root(BASE)}/.git`;
+    const gitDir = join(trellis2Root(BASE), '.git');
     const { promise } = installTrellis2({
       base: BASE, spawnImpl, exists: (p) => p === gitDir, sleep: () => Promise.resolve(),
     });
