@@ -41,16 +41,20 @@ describe('PORTS mirror of ecosystem.config.cjs', () => {
     expect([PORTS.POSTGRES_NATIVE, PORTS.POSTGRES_DOCKER]).toContain(ECOSYSTEM_PORTS.POSTGRES);
   });
 
-  it('keeps the native PostgreSQL literal in sync with the config source', () => {
-    // The native port only appears inside the config's PGMODE ternary, so there is
-    // no exported constant to compare against — assert against the source line.
-    // Compare whole numeric literals, not substrings: a config renumbered to 15432
-    // or 54321 still *contains* "5432", so a substring check would pass on drift.
+  it('keeps both PostgreSQL literals, and their PGMODE branches, in sync with the config source', () => {
+    // The native port only appears inside the config's `pgMode === 'native' ? a : b`
+    // ternary, so there is no exported constant to compare against — assert against
+    // the config source instead. Two traps this deliberately avoids:
+    //   * a substring check passes on a renumber to 15432 or 54321, which still
+    //     *contains* "5432", so match whole numeric literals;
+    //   * an unordered compare passes on a swapped ternary (native getting the
+    //     Docker port), which inverts every mode resolution, so match positionally.
     const source = readFileSync(ecosystemPath, 'utf8');
-    const postgresLine = source.split('\n').find((line) => /^\s*POSTGRES:/.test(line));
-    expect(postgresLine).toBeTruthy();
-    const literals = (postgresLine.replace(/\/\/.*$/, '').match(/\d+/g) || []).map(Number);
-    expect(new Set(literals)).toEqual(new Set([PORTS.POSTGRES_NATIVE, PORTS.POSTGRES_DOCKER]));
+    const entry = source.slice(source.indexOf('POSTGRES:')).replace(/\/\/[^\n]*/g, '');
+    const branches = entry.match(/pgMode\s*===\s*'native'\s*\?\s*(\d+)\s*:\s*(\d+)/);
+    expect(branches).toBeTruthy();
+    expect(Number(branches[1])).toBe(PORTS.POSTGRES_NATIVE);
+    expect(Number(branches[2])).toBe(PORTS.POSTGRES_DOCKER);
   });
 });
 
