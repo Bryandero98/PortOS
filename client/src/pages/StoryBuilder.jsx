@@ -1442,8 +1442,8 @@ function StoryBuilderDetail({ storyId, stepParam }) {
                       aria-disabled={nextBlocked || undefined}
                       aria-describedby={nextHintId}
                       title={nextReason}
-                      className={`inline-flex items-center gap-1 text-sm bg-port-accent hover:bg-port-accent/80 text-white px-3 py-1.5 rounded ${
-                        nextBlocked ? 'opacity-40 cursor-not-allowed' : ''
+                      className={`inline-flex items-center gap-1 text-sm bg-port-accent text-white px-3 py-1.5 rounded ${
+                        nextBlocked ? 'opacity-40 cursor-not-allowed' : 'hover:bg-port-accent/80'
                       }`}
                     >
                       Next <ChevronRight className="w-4 h-4" />
