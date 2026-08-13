@@ -38,6 +38,7 @@ vi.mock('./memoryBackend.js', () => ({
 
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
+import { hostname } from 'os';
 import { spawn } from 'child_process';
 // Partial mock: only override spawn. Preserve execFile et al. because
 // backup.js transitively imports fileUtils.js, which promisifies execFile.
@@ -56,7 +57,17 @@ vi.mock('fs/promises', async (importOriginal) => {
 
 import { checkHealth, getServerMajorVersion } from '../lib/db.js';
 import { getBackendName } from './memoryBackend.js';
+import { join } from 'path';
+import { PATHS } from '../lib/fileUtils.js';
 import * as fs from 'fs/promises';
+// Partial mock of the settings service: only reloadSettings is overridden, so a
+// live restore can be asserted to re-sync the settings caches without actually
+// touching the developer's settings.json or emitting socket events.
+vi.mock('./settings.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  reloadSettings: vi.fn(async () => {}),
+}));
+import { reloadSettings } from './settings.js';
 import { DEFAULT_EXCLUDES, computeEffectiveExcludes, listSnapshots, restoreSnapshot } from './backup.js';
 
 // Helper: build a fake child process whose close/error we can drive.
@@ -1033,6 +1044,9 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
       // Asserted as an exact array (not arrayContaining): the ORDER matters to
       // rsync — `--exclude=*` must come last, after both includes, or the
       // targeted restore silently degrades into a full-tree restore.
+      // `--itemize-changes` legitimately appears twice: runRsync always prepends
+      // it, and restoreSnapshot seeds its own flag list with it. Harmless to
+      // rsync, and pinned here so a future de-dup is a deliberate change.
       expect(spawn.mock.calls[0][1]).toEqual([
         '--archive',
         '--itemize-changes',
