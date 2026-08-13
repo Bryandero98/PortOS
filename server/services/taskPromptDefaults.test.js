@@ -252,15 +252,17 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // append sends every agent down the legacy path. These prompts run against
   // MANAGED apps too, so they must NOT hardcode `npm run changelog:add` — that
   // script does not exist in most repos.
+  // Versions are NOT re-pinned here: the snapshot test above already pins every
+  // PROMPT_VERSIONS value, so a content test that also asserts one just has to be
+  // edited by every unrelated bump.
   it.each([
-    ['documentation', 5],
-    ['plan-task', 13],
-    ['claim-issue', 10],
-    ['claim-issue-gitlab', 9],
-    ['claim-issue-jira', 7],
-  ])('%s v%d defers to the repo\'s documented changelog convention, preserving the outgoing default', (key, version) => {
+    'documentation',
+    'plan-task',
+    'claim-issue',
+    'claim-issue-gitlab',
+    'claim-issue-jira',
+  ])('%s defers to the repo\'s documented changelog convention, preserving the outgoing default', (key) => {
     const current = DEFAULT_TASK_PROMPTS[key];
-    expect(PROMPT_VERSIONS[key]).toBe(version);
     expect(current).toContain('per-branch fragment');
     // Repo-agnostic: no PortOS-only helper script in a prompt that runs
     // against managed apps.
@@ -277,32 +279,31 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // release-check READS the changelog rather than writing it, so its fix is the
   // mirror image: an unreleased set that lives in uncollected fragments must not
   // read as "not enough work accumulated for a release".
-  it('release-check v7 counts uncollected changelog fragments, preserving the v6 default', () => {
+  it('release-check counts uncollected changelog fragments, preserving the outgoing default', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
-    expect(PROMPT_VERSIONS['release-check']).toBe(7);
     expect(current).toContain('changelog:preview');
     expect(current).toContain('assembled');
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
-    const v6 = previous[previous.length - 1];
-    expect(v6).not.toContain('changelog:preview');
-    expect(v6).not.toBe(current);
+    const outgoing = previous[previous.length - 1];
+    expect(outgoing).not.toContain('changelog:preview');
+    expect(outgoing).not.toBe(current);
   });
 
   // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it
   // edits PortOS's own bundled catalog), so it may — and should — name the
   // fragment helper directly instead of describing the convention.
-  it('refresh-local-llm-catalog v2 uses the changelog:add fragment helper, preserving the v1 default', () => {
+  it('refresh-local-llm-catalog uses the changelog:add fragment helper, preserving the outgoing default', () => {
     const current = DEFAULT_TASK_PROMPTS['refresh-local-llm-catalog'];
-    expect(PROMPT_VERSIONS['refresh-local-llm-catalog']).toBe(2);
     expect(current).toContain('npm run changelog:add -- changed');
-    expect(current).toContain('Do NOT\n   append to `.changelog/NEXT.md` by hand');
+    // Line-wrap-insensitive — the prompt body is hard-wrapped.
+    expect(current).toMatch(/Do NOT\s+append to `\.changelog\/NEXT\.md` by hand/);
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['refresh-local-llm-catalog'];
-    const v1 = previous[previous.length - 1];
-    expect(v1).not.toContain('changelog:add');
-    expect(v1).toContain('Add a one-line entry to `{repoPath}/.changelog/NEXT.md`');
-    expect(v1).not.toBe(current);
+    const outgoing = previous[previous.length - 1];
+    expect(outgoing).not.toContain('changelog:add');
+    expect(outgoing).toContain('Add a one-line entry to `{repoPath}/.changelog/NEXT.md`');
+    expect(outgoing).not.toBe(current);
   });
 
   // branch-reconcile v2: "PR opened" is a completed STEP, not a completed
