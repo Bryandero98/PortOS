@@ -6,6 +6,7 @@ import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, merge
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
+import Banner from '../components/ui/Banner';
 import {
   formatDurationMs,
   formatContextLength,
@@ -42,6 +43,7 @@ export default function AIProviders() {
   const [recovering, setRecovering] = useState({});
   const [activeProviderId, setActiveProviderId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState(null);
   const [testResults, setTestResults] = useState({});
@@ -90,14 +92,25 @@ export default function AIProviders() {
 
   const loadData = async () => {
     setLoading(true);
+    setLoadError(false);
+    let providersFailed = false;
     const [providersData, appsData, runsData, statusData] = await Promise.all([
-      api.getProviders().catch(() => ({ providers: [], activeProvider: null })),
+      api.getProviders().catch(() => {
+        providersFailed = true;
+        return null;
+      }),
       api.getApps().catch(() => []),
       api.getRuns(20).catch(() => ({ runs: [] })),
       api.getProviderStatuses().catch(() => ({ providers: {} }))
     ]);
-    setProviders(providersData.providers || []);
-    setActiveProviderId(providersData.activeProvider);
+    if (providersFailed || !providersData) {
+      setLoadError(true);
+      setProviders([]);
+    } else {
+      setLoadError(false);
+      setProviders(providersData.providers || []);
+      setActiveProviderId(providersData.activeProvider);
+    }
     setApps(appsData);
     setRuns(runsData.runs || []);
     setStatuses(statusData.providers || {});
@@ -436,217 +449,238 @@ export default function AIProviders() {
 
       {/* Provider List */}
       <div className="grid gap-4">
-        {(() => {
-          const idx = providers.findIndex(p => p.id === activeProviderId);
-          if (idx <= 0) return providers;
-          return [providers[idx], ...providers.slice(0, idx), ...providers.slice(idx + 1)];
-        })().map(provider => (
-          <div
-            key={provider.id}
-            className={`bg-port-card border rounded-xl p-4 ${
-              provider.id === activeProviderId ? 'border-port-accent' : 'border-port-border'
-            }`}
+        {loadError ? (
+          <Banner
+            tone="error"
+            size="md"
+            title="Failed to load AI providers"
+            actions={(
+              <button
+                type="button"
+                onClick={loadData}
+                className="px-3 py-1.5 rounded-lg text-xs bg-port-error/20 hover:bg-port-error/30 text-port-error font-medium transition-colors"
+              >
+                Retry
+              </button>
+            )}
           >
-            <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-lg font-semibold text-white">{provider.name}</h3>
-                  <span className={`text-xs px-2 py-0.5 rounded ${providerTypeClass(provider.type)}`}>
-                    {provider.type.toUpperCase()}
-                  </span>
-                  {provider.id === activeProviderId && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-port-accent/20 text-port-accent">
-                      DEFAULT
-                    </span>
-                  )}
-                  {!provider.enabled && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">
-                      DISABLED
-                    </span>
-                  )}
-                  {/* Runtime availability is independent of the `enabled` toggle: an
-                      enabled provider can still be benched after a failure (usage
-                      limit, model-not-found, auth) and skipped in favor of a fallback. */}
-                  {provider.enabled && statuses[provider.id]?.available === false && (
-                    <span
-                      className="text-xs px-2 py-0.5 rounded bg-port-error/20 text-port-error"
-                      title={statuses[provider.id]?.message || ''}
-                    >
-                      UNAVAILABLE{statuses[provider.id]?.reason ? ` · ${statuses[provider.id].reason}` : ''}
-                    </span>
-                  )}
-                </div>
+            Could not connect to the server to fetch provider configuration.
+          </Banner>
+        ) : (
+          <>
+            {(() => {
+              const idx = providers.findIndex(p => p.id === activeProviderId);
+              if (idx <= 0) return providers;
+              return [providers[idx], ...providers.slice(0, idx), ...providers.slice(idx + 1)];
+            })().map(provider => (
+              <div
+                key={provider.id}
+                className={`bg-port-card border rounded-xl p-4 ${
+                  provider.id === activeProviderId ? 'border-port-accent' : 'border-port-border'
+                }`}
+              >
+                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-lg font-semibold text-white">{provider.name}</h3>
+                      <span className={`text-xs px-2 py-0.5 rounded ${providerTypeClass(provider.type)}`}>
+                        {provider.type.toUpperCase()}
+                      </span>
+                      {provider.id === activeProviderId && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-port-accent/20 text-port-accent">
+                          DEFAULT
+                        </span>
+                      )}
+                      {!provider.enabled && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">
+                          DISABLED
+                        </span>
+                      )}
+                      {/* Runtime availability is independent of the `enabled` toggle: an
+                          enabled provider can still be benched after a failure (usage
+                          limit, model-not-found, auth) and skipped in favor of a fallback. */}
+                      {provider.enabled && statuses[provider.id]?.available === false && (
+                        <span
+                          className="text-xs px-2 py-0.5 rounded bg-port-error/20 text-port-error"
+                          title={statuses[provider.id]?.message || ''}
+                        >
+                          UNAVAILABLE{statuses[provider.id]?.reason ? ` · ${statuses[provider.id].reason}` : ''}
+                        </span>
+                      )}
+                    </div>
 
-                {provider.enabled && statuses[provider.id]?.available === false && (
-                  <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">
-                    <p className="break-words">
-                      <span className="font-semibold">Benched ({statuses[provider.id]?.reason || 'unknown'})</span>
-                      {statuses[provider.id]?.timeUntilRecovery ? ` — auto-retries in ${statuses[provider.id].timeUntilRecovery}` : ''}
-                      . Calls route to the fallback until then.
-                    </p>
-                    {statuses[provider.id]?.message && (
-                      <p className="break-words text-port-error/80">Why: {statuses[provider.id].message}</p>
+                    {provider.enabled && statuses[provider.id]?.available === false && (
+                      <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">
+                        <p className="break-words">
+                          <span className="font-semibold">Benched ({statuses[provider.id]?.reason || 'unknown'})</span>
+                          {statuses[provider.id]?.timeUntilRecovery ? ` — auto-retries in ${statuses[provider.id].timeUntilRecovery}` : ''}
+                          . Calls route to the fallback until then.
+                        </p>
+                        {statuses[provider.id]?.message && (
+                          <p className="break-words text-port-error/80">Why: {statuses[provider.id].message}</p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRecover(provider.id)}
+                          disabled={recovering[provider.id]}
+                          className="mt-1 px-2 py-0.5 rounded bg-port-error/20 hover:bg-port-error/30 disabled:opacity-50 text-port-error"
+                        >
+                          {recovering[provider.id] ? 'Clearing…' : 'Recover now'}
+                        </button>
+                      </div>
                     )}
+
+                    <div className="mt-2 text-sm text-gray-400 space-y-1">
+                      {isProcessProvider(provider) && (
+                        <p className="break-words">Command: <code className="text-gray-300 break-all">{provider.command} {provider.args?.join(' ')}</code></p>
+                      )}
+                      {isApiProvider(provider) && (
+                        <p className="break-words">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
+                      )}
+                      {/* API-type providers auth solely via the stored apiKey (sent as a
+                          Bearer header) — surface its state here so "where does the key
+                          go?" is answered from the card, not by spelunking the form. */}
+                      {isApiProvider(provider) && (
+                        provider.hasApiKey ? (
+                          <p className="text-xs">API key: <span className="text-port-success">set</span></p>
+                        ) : isLocalEndpoint(provider.endpoint) ? (
+                          <p className="text-xs">API key: <span className="text-gray-500">none (local endpoint)</span></p>
+                        ) : (
+                          <p className="text-xs">API key: <span className="text-port-warning">not set — Edit this provider to paste one</span></p>
+                        )
+                      )}
+                      {provider.models?.length > 0 && (
+                        <p>Models: {provider.models.slice(0, 3).join(', ')}{provider.models.length > 3 ? ` +${provider.models.length - 3}` : ''}</p>
+                      )}
+                      {provider.defaultModel && (
+                        <p className="break-words">Default: <code className="text-gray-300 break-all">{provider.defaultModel}</code></p>
+                      )}
+                      {(() => {
+                        const windowLabel = formatContextLength(effectiveModelContextWindow(provider, provider.defaultModel));
+                        return windowLabel ? (
+                          <p className="text-xs">
+                            Context: <span className="text-gray-300">{windowLabel}</span>
+                            {provider.contextWindow ? <span className="text-gray-500"> override</span> : null}
+                          </p>
+                        ) : null;
+                      })()}
+                      {(provider.lightModel || provider.mediumModel || provider.heavyModel) && (
+                        <p className="text-xs">
+                          Tiers:
+                          {provider.lightModel && <span className="ml-1 text-port-success">{provider.lightModel}</span>}
+                          {provider.mediumModel && <span className="ml-1 text-port-warning">{provider.mediumModel}</span>}
+                          {provider.heavyModel && <span className="ml-1 text-port-error">{provider.heavyModel}</span>}
+                        </p>
+                      )}
+                      {provider.headlessArgs?.length > 0 && (
+                        <p className="text-xs break-words">
+                          Headless: <code className="text-gray-300 break-all">{provider.headlessArgs.join(' ')}</code>
+                        </p>
+                      )}
+                      {isTuiProvider(provider) && (
+                        <p className="text-xs break-words">
+                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, idle complete <span className="text-gray-300">{provider.tuiIdleTimeoutMs || 180000}ms</span>
+                        </p>
+                      )}
+                      {provider.fallbackProvider && (
+                        <p className="text-xs">
+                          Fallback: <span className="text-port-accent">{providers.find(p => p.id === provider.fallbackProvider)?.name || provider.fallbackProvider}</span>
+                          {provider.fallbackModel && <span className="ml-1 text-gray-300">({provider.fallbackModel})</span>}
+                        </p>
+                      )}
+                      {provider.envVars && Object.keys(provider.envVars).length > 0 && (
+                        <div className="text-xs mt-1">
+                          <span className="text-gray-400">Env:</span>
+                          {Object.entries(provider.envVars).map(([k, v]) => (
+                            <div key={k}>
+                              <code className="ml-1 text-orange-400">
+                                {k}={provider.secretEnvVars?.includes(k) ? '***' : v}
+                              </code>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
+
+                    {testResults[provider.id] && !testResults[provider.id].testing && (
+                      <div className={`mt-2 text-sm ${testResults[provider.id].success ? 'text-port-success' : 'text-port-error'}`}>
+                        {testResults[provider.id].success
+                          ? `✓ Available${testResults[provider.id].version ? ` (${testResults[provider.id].version})` : ''}`
+                          : `✗ ${testResults[provider.id].error}`
+                        }
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
-                      type="button"
-                      onClick={() => handleRecover(provider.id)}
-                      disabled={recovering[provider.id]}
-                      className="mt-1 px-2 py-0.5 rounded bg-port-error/20 hover:bg-port-error/30 disabled:opacity-50 text-port-error"
+                      onClick={() => handleTest(provider.id)}
+                      disabled={testResults[provider.id]?.testing}
+                      className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50"
                     >
-                      {recovering[provider.id] ? 'Clearing…' : 'Recover now'}
+                      {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
+                    </button>
+
+                    {supportsModelRefresh(provider) && (
+                      <button
+                        onClick={() => handleRefreshModels(provider.id)}
+                        disabled={refreshing[provider.id]}
+                        className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Refresh available models"
+                      >
+                        {refreshing[provider.id] ? 'Refreshing...' : 'Refresh Models'}
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => handleToggleEnabled(provider)}
+                      className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                        provider.enabled
+                          ? 'bg-port-warning/20 text-port-warning hover:bg-port-warning/30'
+                          : 'bg-port-success/20 text-port-success hover:bg-port-success/30'
+                      }`}
+                    >
+                      {provider.enabled ? 'Disable' : 'Enable'}
+                    </button>
+
+                    {provider.id !== activeProviderId && provider.enabled && (
+                      <button
+                        onClick={() => handleSetActive(provider.id)}
+                        className="px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"
+                      >
+                        Set Default
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => { setEditingProvider(provider); setShowForm(true); }}
+                      className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors"
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      onClick={() => handleDelete(provider.id)}
+                      className="px-3 py-1.5 text-sm bg-port-error/20 text-port-error hover:bg-port-error/30 rounded transition-colors"
+                    >
+                      Delete
                     </button>
                   </div>
-                )}
-
-                <div className="mt-2 text-sm text-gray-400 space-y-1">
-                  {isProcessProvider(provider) && (
-                    <p className="break-words">Command: <code className="text-gray-300 break-all">{provider.command} {provider.args?.join(' ')}</code></p>
-                  )}
-                  {isApiProvider(provider) && (
-                    <p className="break-words">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
-                  )}
-                  {/* API-type providers auth solely via the stored apiKey (sent as a
-                      Bearer header) — surface its state here so "where does the key
-                      go?" is answered from the card, not by spelunking the form. */}
-                  {isApiProvider(provider) && (
-                    provider.hasApiKey ? (
-                      <p className="text-xs">API key: <span className="text-port-success">set</span></p>
-                    ) : isLocalEndpoint(provider.endpoint) ? (
-                      <p className="text-xs">API key: <span className="text-gray-500">none (local endpoint)</span></p>
-                    ) : (
-                      <p className="text-xs">API key: <span className="text-port-warning">not set — Edit this provider to paste one</span></p>
-                    )
-                  )}
-                  {provider.models?.length > 0 && (
-                    <p>Models: {provider.models.slice(0, 3).join(', ')}{provider.models.length > 3 ? ` +${provider.models.length - 3}` : ''}</p>
-                  )}
-                  {provider.defaultModel && (
-                    <p className="break-words">Default: <code className="text-gray-300 break-all">{provider.defaultModel}</code></p>
-                  )}
-                  {(() => {
-                    const windowLabel = formatContextLength(effectiveModelContextWindow(provider, provider.defaultModel));
-                    return windowLabel ? (
-                      <p className="text-xs">
-                        Context: <span className="text-gray-300">{windowLabel}</span>
-                        {provider.contextWindow ? <span className="text-gray-500"> override</span> : null}
-                      </p>
-                    ) : null;
-                  })()}
-                  {(provider.lightModel || provider.mediumModel || provider.heavyModel) && (
-                    <p className="text-xs">
-                      Tiers:
-                      {provider.lightModel && <span className="ml-1 text-port-success">{provider.lightModel}</span>}
-                      {provider.mediumModel && <span className="ml-1 text-port-warning">{provider.mediumModel}</span>}
-                      {provider.heavyModel && <span className="ml-1 text-port-error">{provider.heavyModel}</span>}
-                    </p>
-                  )}
-                  {provider.headlessArgs?.length > 0 && (
-                    <p className="text-xs break-words">
-                      Headless: <code className="text-gray-300 break-all">{provider.headlessArgs.join(' ')}</code>
-                    </p>
-                  )}
-                  {isTuiProvider(provider) && (
-                    <p className="text-xs break-words">
-                      TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, idle complete <span className="text-gray-300">{provider.tuiIdleTimeoutMs || 180000}ms</span>
-                    </p>
-                  )}
-                  {provider.fallbackProvider && (
-                    <p className="text-xs">
-                      Fallback: <span className="text-port-accent">{providers.find(p => p.id === provider.fallbackProvider)?.name || provider.fallbackProvider}</span>
-                      {provider.fallbackModel && <span className="ml-1 text-gray-300">({provider.fallbackModel})</span>}
-                    </p>
-                  )}
-                  {provider.envVars && Object.keys(provider.envVars).length > 0 && (
-                    <div className="text-xs mt-1">
-                      <span className="text-gray-400">Env:</span>
-                      {Object.entries(provider.envVars).map(([k, v]) => (
-                        <div key={k}>
-                          <code className="ml-1 text-orange-400">
-                            {k}={provider.secretEnvVars?.includes(k) ? '***' : v}
-                          </code>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
-
-                {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
-
-                {testResults[provider.id] && !testResults[provider.id].testing && (
-                  <div className={`mt-2 text-sm ${testResults[provider.id].success ? 'text-port-success' : 'text-port-error'}`}>
-                    {testResults[provider.id].success
-                      ? `✓ Available${testResults[provider.id].version ? ` (${testResults[provider.id].version})` : ''}`
-                      : `✗ ${testResults[provider.id].error}`
-                    }
-                  </div>
-                )}
               </div>
+            ))}
 
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => handleTest(provider.id)}
-                  disabled={testResults[provider.id]?.testing}
-                  className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50"
-                >
-                  {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
-                </button>
-
-                {supportsModelRefresh(provider) && (
-                  <button
-                    onClick={() => handleRefreshModels(provider.id)}
-                    disabled={refreshing[provider.id]}
-                    className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Refresh available models"
-                  >
-                    {refreshing[provider.id] ? 'Refreshing...' : 'Refresh Models'}
-                  </button>
-                )}
-
-                <button
-                  onClick={() => handleToggleEnabled(provider)}
-                  className={`px-3 py-1.5 text-sm rounded transition-colors ${
-                    provider.enabled
-                      ? 'bg-port-warning/20 text-port-warning hover:bg-port-warning/30'
-                      : 'bg-port-success/20 text-port-success hover:bg-port-success/30'
-                  }`}
-                >
-                  {provider.enabled ? 'Disable' : 'Enable'}
-                </button>
-
-                {provider.id !== activeProviderId && provider.enabled && (
-                  <button
-                    onClick={() => handleSetActive(provider.id)}
-                    className="px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"
-                  >
-                    Set Default
-                  </button>
-                )}
-
-                <button
-                  onClick={() => { setEditingProvider(provider); setShowForm(true); }}
-                  className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors"
-                >
-                  Edit
-                </button>
-
-                <button
-                  onClick={() => handleDelete(provider.id)}
-                  className="px-3 py-1.5 text-sm bg-port-error/20 text-port-error hover:bg-port-error/30 rounded transition-colors"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {providers.length === 0 && (
-          <EmptyState
-            title="No providers configured"
-            message="Configure at least one API provider to enable autonomous CoS, voice, and AI-assisted features across PortOS."
-            actionLabel="Add Provider"
-            onAction={() => { setEditingProvider(null); setShowForm(true); }}
-          />
+            {providers.length === 0 && (
+              <EmptyState
+                title="No providers configured"
+                message="Configure at least one API provider to enable autonomous CoS, voice, and AI-assisted features across PortOS."
+                actionLabel="Add Provider"
+                onAction={() => { setEditingProvider(null); setShowForm(true); }}
+              />
+            )}
+          </>
         )}
       </div>
 
