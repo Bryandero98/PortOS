@@ -36,7 +36,7 @@ export const PROMPT_VERSIONS = {
   'ui-bugs': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
   'mobile-responsive': 2, // v2: generic {appName} app-UI body (older default hardcoded "PortOS" + http://localhost:5555)
   'ux': 1, // v1: walk the running UI with Playwright MCP against a 7-item named UX checklist and file ONE tracker item per finding via {trackerInstructions} — read-only on source, no branches/PRs. Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed).
-  'release-check': 7, // v7: Step 1 also reads the UNCOLLECTED changelog fragments (`npm run changelog:preview` / the fragment dir) and counts substantive entries across the assembled notes — reading only the staged `.changelog/NEXT.md` under-counts a release whose entries are still per-branch fragments, so a ready release reported as "not enough work". v6: generic {appName} body (older defaults hardcoded "PortOS")
+  'release-check': 7, // v7: Step 1 also reads the UNCOLLECTED changelog fragments (the fragment dir, plus whatever preview command that repo documents — release-check is a generic {appName} prompt, so it never names a PortOS script to run) and counts substantive entries across the assembled notes — reading only the staged `.changelog/NEXT.md` under-counts a release whose entries are still per-branch fragments, so a ready release reported as "not enough work". v6: generic {appName} body (older defaults hardcoded "PortOS")
 };
 
 // Audit anchor for reference-watch's read/write coupling.

@@ -1261,7 +1261,7 @@ If no documentation specifies a release flow, fall back to: source=dev, target=m
 
 Using the changelog location discovered in Step 0:
 - Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
-- **Also read the entries not yet folded into that file.** Repos that collect per-branch fragments (e.g. \`.changelog/next/\`, so parallel agents don't conflict on a shared file) keep unreleased entries there until the release collects them, so the staged file alone under-counts the work. Use the preview command the repo's changelog README documents (in PortOS: \`npm run changelog:preview\`) to get the assembled unreleased notes in one call, or list the fragment directory directly.
+- **Also read the entries not yet folded into that file.** Repos that collect per-branch fragments (e.g. \`.changelog/next/\`, so parallel agents don't conflict on a shared file) keep unreleased entries there until the release collects them, so the staged file alone under-counts the work. Read the fragment directory directly, and if the repo's changelog README documents a preview/collect command, use that to assemble the unreleased notes in one call. Do NOT guess a command name — only run one this repo actually documents.
 - Read the current version: \`node -p "require('{repoPath}/package.json').version"\` or equivalent
 
 Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections) across the **assembled** unreleased notes — the staged file plus any uncollected fragments. If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.

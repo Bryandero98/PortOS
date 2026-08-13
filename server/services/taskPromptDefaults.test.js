@@ -281,12 +281,17 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // read as "not enough work accumulated for a release".
   it('release-check counts uncollected changelog fragments, preserving the outgoing default', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
-    expect(current).toContain('changelog:preview');
+    expect(current).toContain('per-branch fragments');
     expect(current).toContain('assembled');
+    // release-check is a generic {appName} prompt — it runs against managed apps,
+    // which have no `npm run changelog:preview`. It must send the agent to the
+    // repo's own documented command, never name a PortOS script to run.
+    expect(current).not.toContain('changelog:preview');
+    expect(current).toContain('Do NOT guess a command name');
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
     const outgoing = previous[previous.length - 1];
-    expect(outgoing).not.toContain('changelog:preview');
+    expect(outgoing).not.toContain('per-branch fragments');
     expect(outgoing).not.toBe(current);
   });
 
