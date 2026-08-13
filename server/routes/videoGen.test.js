@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import { DEFAULT_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
@@ -1554,7 +1554,7 @@ describe('videoGen routes', () => {
         expect(r.status).toBe(200);
         expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
           params: expect.objectContaining({
-            icReferencePaths: [`/mock/videos/${id}.mp4`],
+            icReferencePaths: [resolve('/mock/videos', `${id}.mp4`)],
           }),
         }));
       });
