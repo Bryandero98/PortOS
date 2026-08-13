@@ -8,12 +8,12 @@ import { useAsyncAction } from '../hooks/useAsyncAction';
 import { uuidv4 } from '../lib/uuid';
 import { undoStrokes, clampSize, DEFAULT_COLOR, DEFAULT_SIZE, MIN_SIZE, MAX_SIZE } from '../lib/sketchCanvas';
 import { getMediaSketch, saveMediaSketch, getRegenAvailability, rerenderWithAnnotations } from '../services/api';
+import { clamp } from '../utils/formatters.js';
 
 // Default denoise for an annotation re-render — high enough that the drawn marks
 // actually reshape the image (mirrors the server's REGEN_ANNOTATED_STRENGTH_DEFAULT).
 // Clamped into the backend's advertised [min, max] bounds at render time.
 const DEFAULT_ANNOTATED_STRENGTH = 0.5;
-const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
 // Blank-canvas defaults (phase 3). A storyboard sketch opens at a square 1:1
 // unless the caller passes ?w=&h= (e.g. matching the scene's aspect ratio).

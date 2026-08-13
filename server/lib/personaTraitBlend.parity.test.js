@@ -25,6 +25,7 @@ describe('personaTraitBlend — server↔client byte parity', () => {
   it('keeps the client mirror byte-for-byte identical to the server source', () => {
     const server = readFileSync(SERVER_COPY, 'utf-8');
     const client = readFileSync(CLIENT_COPY, 'utf-8');
-    expect(client).toBe(server);
+    const normalizedServer = server.replace('../../client/src/utils/formatters.js', '../utils/formatters.js');
+    expect(client).toBe(normalizedServer);
   });
 });
