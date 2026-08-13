@@ -26,12 +26,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { join as joinPath } from 'path';
+import { basename, join as joinPath } from 'path';
 import { makePathsProxy } from '../lib/mockPathsDataRoot.js';
 
 // runBackup persists state to PATHS.data/backup/state.json. Re-root PATHS at
 // a temp tree so the suite can never write into the live install's data dir.
-var TEST_DATA_ROOT; // eslint-disable-line no-var
+var TEST_DATA_ROOT;
 function testDataRoot() {
   if (!TEST_DATA_ROOT) TEST_DATA_ROOT = mkdtempSync(joinPath(tmpdir(), 'portos-backup-data-'));
   return TEST_DATA_ROOT;
@@ -1204,9 +1204,13 @@ describe('runBackup lifecycle', () => {
     ({ PATHS: { data: dataRoot } } = await import('../lib/fileUtils.js'));
   });
 
-  afterAll(async () => {
+  // Restore per-test, not in afterAll: beforeEach re-captures the variable, so
+  // an afterAll would put back whatever the LAST test saw ('file') rather than
+  // the value this suite inherited.
+  afterEach(() => {
     if (prevMemoryBackend === undefined) delete process.env.MEMORY_BACKEND;
     else process.env.MEMORY_BACKEND = prevMemoryBackend;
+    rmSync(destRoot, { recursive: true, force: true });
   });
 
   it('rsyncs, writes a manifest and state, and emits started/completed', async () => {
@@ -1249,7 +1253,7 @@ describe('runBackup lifecycle', () => {
     }
 
     // --- return value -----------------------------------------------------
-    expect(result.snapshotId).toBe(snapshotDir.split('/').pop());
+    expect(result.snapshotId).toBe(basename(snapshotDir));
     expect(result.filesChanged).toBe(2);
     expect(result.status).toBe('ok');
     expect(result.pgBackup).toEqual(SKIPPED_PG);
