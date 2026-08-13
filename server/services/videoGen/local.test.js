@@ -2191,7 +2191,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     ));
     expect(call).toBeDefined();
     const [bin, args, options] = call;
-    expect(bin).toMatch(/\.portos\/minimax-h3-mlx\/\.venv\/bin\/python3$/);
+    expect(String(bin)).toContain(join('.portos', 'minimax-h3-mlx', '.venv', 'bin', 'python3'));
     expect(args[args.indexOf('--model-repo') + 1]).toBe('pipenetwork/MiniMax-H3-MLX-8bit');
     expect(args[args.indexOf('--model-revision') + 1]).toBe('3ac52081470b0488921c3ec3ba84a39097bf2361');
     expect(args[args.indexOf('--runtime-revision') + 1]).toBe('fcd9e9b79a1d6018d91ac477c0968de1fa067e49');
