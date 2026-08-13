@@ -1736,10 +1736,10 @@ describe('taskSchedule', () => {
         expect(partial).toEqual([])
       })
 
-      // The churn detector (agentChurn.js) parks a coordinator and FILES a tracker
-      // issue off signatureRepeatCount, so a dispatch that leaves a stale count
-      // behind makes the next park increment it and over-report "same finding
-      // again". A dispatch only happens on a CHANGED set, so it resets to 1.
+      // The churn detector (agentChurn.js) parks a coordinator when a local
+      // signal fires. A dispatch that leaves a stale count behind makes the next
+      // park over-report "same finding again". A dispatch only happens on a
+      // CHANGED set, so it resets to 1.
       it('recordPerpetualDispatch resets signatureRepeatCount for the new signature', async () => {
         mockSchedule({
           tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true } },
