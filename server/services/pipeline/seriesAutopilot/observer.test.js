@@ -84,6 +84,18 @@ describe('signal retention for observer-only runs', () => {
     expect(noteSignal(run, { type: 'child:retry' })).toBe(true);
     expect(run.signals).toHaveLength(1);
   });
+
+  it('retains a resolver attempt that wrote nothing (#3843)', () => {
+    // The convergence guard counts an attempt that wrote nothing exactly like
+    // one that did, so dropping this frame paused runs on "no net progress over
+    // 2 rounds of auto-resolve" while retaining no evidence those rounds ran.
+    const run = makeRun();
+    expect(noteSignal(run, { type: 'resolve:no-change', noChangeReason: 'no-edits-returned' })).toBe(true);
+    // The retention set is still a filter, not a pass-through: the happy-path
+    // step frames it deliberately excludes stay excluded.
+    expect(noteSignal(run, { type: 'step:start' })).toBe(false);
+    expect(run.signals).toHaveLength(1);
+  });
 });
 
 describe('trigger/retention alignment', () => {

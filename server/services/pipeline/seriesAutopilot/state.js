@@ -52,8 +52,15 @@ export const AUTOPILOT_TERMINAL_TYPES = new Set(['complete', 'paused', 'canceled
 // terminal frames (`complete` / `paused` / `error`) are excluded too: the
 // diagnosis runs BEFORE them, and their content reaches it as the `outcome` +
 // `reason` arguments instead.
+// `resolve:no-change` is here for the same reason the loop emits it at all: the
+// convergence guard counts a resolver attempt that wrote nothing exactly like
+// one that did, so a pause reading "no net progress over 2 rounds of
+// auto-resolve" was handed a log with no frame for those rounds — the diagnosis
+// could see the attempts had happened only by inference. Bounded by the gate's
+// round cap, and it carries counts + an enum, so retaining it costs one small
+// frame per attempt.
 export const SIGNAL_FRAME_TYPES = Object.freeze(new Set([
-  'note', 'step:skip', 'verify:round', 'resolve:round', 'resolve:rollback', 'resolve:isolate', 'check:complete',
+  'note', 'step:skip', 'verify:round', 'resolve:round', 'resolve:no-change', 'resolve:rollback', 'resolve:isolate', 'check:complete',
   'foundation:round', 'foundation:fix', 'foundation:rollback', 'canon:repair', 'child:retry', 'child:escalate',
   'revision:cycle', 'revision:converged', 'gap:filed',
 ]));

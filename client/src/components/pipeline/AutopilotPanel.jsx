@@ -295,6 +295,28 @@ const STEP_LABELS = {
 
 const stepLabel = (kind) => STEP_LABELS[kind] || kind;
 
+// The record kinds one auto-resolve round can rewrite, in the order a reader
+// scans them: the arc first, then down to the episodes.
+const MUTATION_LABELS = [
+  ['arcFieldsEdited', 'arc field'],
+  ['volumesEdited', 'volume'],
+  ['characterArcsEdited', 'character arc'],
+  ['episodesEdited', 'episode'],
+];
+
+// Plain English for the resolver's categorical no-change reasons (the server's
+// RESOLVE_NO_CHANGE_REASONS). An unmapped value falls through to the raw token
+// rather than vanishing — a reason nobody can read still beats none at all.
+const NO_CHANGE_LABELS = {
+  'no-findings': 'there was nothing to resolve',
+  'isolated-candidate-rejected': 'the candidate was too broad to be an isolated repair',
+  'exact-edits-rejected': 'its exact text edits no longer matched the draft',
+  'edits-matched-existing': 'it re-authored text the plan already had',
+  'edits-out-of-scope': 'it answered at an altitude this gate cannot apply',
+  'edits-named-no-finding': 'its edits named none of the findings it was given',
+  'no-edits-returned': 'it proposed no edits at all',
+};
+
 // Turn an SSE frame into a one-line status string.
 function frameLabel(f) {
   if (!f) return null;
@@ -305,6 +327,21 @@ function frameLabel(f) {
     case 'step:complete': return `${stepLabel(f.kind)} done`;
     case 'step:skip': return `Skipped ${stepLabel(f.kind)}${f.reason ? ` — ${f.reason}` : ''}`;
     case 'verify:round': return `${f.scope} check — ${f.blocking} blocking of ${f.findings} finding(s)${f.errored > 0 ? ` · ⚠️ ${f.errored} errored` : ''}`;
+    // What the auto-resolve round actually wrote. An episode count alone was
+    // meaningless at the arc-spine gate (whose resolver may not touch episodes),
+    // so name every record kind that moved — and when nothing moved, say why
+    // rather than falling through to a raw `resolve:no-change` frame type.
+    case 'resolve:round':
+    case 'resolve:no-change': {
+      const wrote = MUTATION_LABELS
+        .filter(([key]) => f[key])
+        .map(([key, noun]) => `${f[key]} ${noun}(s)`);
+      const lead = `${f.scope} auto-resolve${f.retry ? ' (retry)' : ''} round ${f.round}`;
+      if (wrote.length) return `${lead} — rewrote ${wrote.join(', ')}`;
+      const why = f.noChangeReason ? ` — ${NO_CHANGE_LABELS[f.noChangeReason] || f.noChangeReason}` : '';
+      const rejected = f.rejectedExactEdits ? ` · ${f.rejectedExactEdits} exact text edit(s) rejected` : '';
+      return `${lead} — wrote nothing${why}${rejected}`;
+    }
     // An auto-resolve round that left the draft worse was undone — say so live,
     // or the round's edits appear to still be in place while the run pauses.
     // A revert is not necessarily the end of the gate: when a corrective pass is

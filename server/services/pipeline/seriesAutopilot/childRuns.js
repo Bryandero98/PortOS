@@ -86,12 +86,25 @@ async function resolveArcFindings(seriesId, record, { findings, avoid, spineOnly
   return resolved;
 }
 
-// Episode synopses one resolve pass actually rewrote, for the telemetry frames.
-// Read off the same mutation manifest the rollback is driven by, so
-// `episodesEdited` and `episodesReverted` cannot describe different sets:
-// counting every reported entry included the ones the applier SKIPPED (locked
-// stage, no matching episode, failed write) as edits.
-const editedCount = (resolved) => resolvedEpisodeEdits(resolved).length;
+// A resolver result carrying no counts (a test double, or a peer running an
+// older build) reports zeros rather than a frame with holes in it.
+const ZERO_MUTATIONS = Object.freeze({
+  arcFieldsEdited: 0, volumesEdited: 0, characterArcsEdited: 0, episodesEdited: 0,
+});
+
+// What ONE resolver call did, as every telemetry frame reports it (#3843). Each
+// attempt gets one — an applied round, a corrective retry, an isolated attempt,
+// and a pass that wrote nothing — because the stall diagnosis counts resolver
+// ATTEMPTS and used to be handed frames for only some of them. The per-record
+// counts come from the resolver, the only layer holding both the pre- and
+// post-commit state; `episodesEdited` among them is retained unchanged for
+// existing consumers, but it was never a description of an arc-SPINE resolve.
+const resolveOutcome = (resolved) => ({
+  applied: resolved?.applied !== false,
+  ...(resolved?.mutations || ZERO_MUTATIONS),
+  rejectedExactEdits: resolved?.rejectedExactEdits || 0,
+  noChangeReason: resolved?.noChangeReason || null,
+});
 
 // A resolver's provider run is only a TECHNICAL success until the next
 // independent arc verification decides whether its candidate remains in the
@@ -289,9 +302,9 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
       broadcast(seriesId, {
         type: 'resolve:isolate', scope, round, attempt: attempts,
         target: targetLabel ?? '',
-        before, after: before, kept: false, episodesEdited: 0,
+        before, after: before, kept: false,
         reason: resolved.reason || 'the resolver applied nothing',
-        rejectedExactEdits: resolved.rejectedExactEdits || 0,
+        ...resolveOutcome(resolved),
       });
       continue;
     }
@@ -330,7 +343,8 @@ async function isolateArcFindings(seriesId, record, { scope, round, spineOnly, b
     broadcast(seriesId, {
       type: 'resolve:isolate', scope, round, attempt: attempts,
       target: targetLabel ?? '',
-      before, after: verified.blocking.length, kept, episodesEdited: editedCount(resolved),
+      before, after: verified.blocking.length, kept,
+      ...resolveOutcome(resolved),
     });
   }
   return { accepted, attempts, verified: standing };
@@ -525,7 +539,7 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
           exactTextMode: retried?.patchMode === 'exact-text-v1',
         };
         broadcast(seriesId, {
-          type: 'resolve:round', scope, round, retry: true, episodesEdited: editedCount(retried),
+          type: 'resolve:round', scope, round, retry: true, ...resolveOutcome(retried),
         });
         continue;
       }
@@ -643,8 +657,7 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
       );
       seededVerify = verified;
       broadcast(seriesId, {
-        type: 'resolve:no-change', scope, round,
-        rejectedExactEdits: resolved.rejectedExactEdits || 0,
+        type: 'resolve:no-change', scope, round, ...resolveOutcome(resolved),
       });
       continue;
     }
@@ -656,7 +669,7 @@ async function runArcVerifyRounds(seriesId, record, { spineOnly = false, bank })
       exactTextMode: resolved?.patchMode === 'exact-text-v1',
     };
     broadcast(seriesId, {
-      type: 'resolve:round', scope, round, episodesEdited: editedCount(resolved),
+      type: 'resolve:round', scope, round, ...resolveOutcome(resolved),
     });
   }
   return {};
@@ -713,6 +726,10 @@ export async function runBeatContinuity(seriesId, record) {
     if (beforeResolve) return beforeResolve;
     const resolved = await resolveBeatContinuity(seriesId, { findings: blocking, ...providerOverrideOpts(record) });
     await recordDomainUsage('cos', { actions: 1 });
+    // No per-record counts here, and none missing: this resolver rewrites
+    // episode beats and nothing else, so `episodesEdited` IS the whole account
+    // of what it wrote — unlike the arc gate, whose resolver spans the arc,
+    // volumes, character arcs and episodes (#3843).
     broadcast(seriesId, {
       type: 'resolve:round', scope: 'beatContinuity', round,
       episodesEdited: Array.isArray(resolved?.episodesResolved)

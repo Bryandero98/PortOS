@@ -534,6 +534,73 @@ const SEASON_LONG_FIELDS = Object.freeze([
   ['endingHook', 'endingHookEdits', ARC_LIMITS.SEASON_ENDING_HOOK_MAX],
 ]);
 
+// ---------------------------------------------------------------------------
+// Resolve-outcome accounting (#3843). `applied` says a pass wrote SOMETHING; it
+// never said what, and the gate's telemetry reported only `episodesEdited` — a
+// count the arc-SPINE resolver can never move, because that altitude may not
+// touch episodes at all. A spine round that rewrote the arc and two volumes and
+// took the blocking set from 5 to 2 therefore reported `episodesEdited: 0`,
+// indistinguishable from a round that wrote nothing. These supply the missing
+// halves: per-record counts of what landed, and a categorical reason when
+// nothing did. Numbers and enum values only — it rides into the retained
+// diagnosis log, which must never carry manuscript text or resolver prose.
+// ---------------------------------------------------------------------------
+
+// The arc surface a resolve pass can rewrite — derived from the two lists the
+// isolated-candidate bound already keeps in step with the appliers, so a newly
+// patchable field is counted the moment it is accepted rather than after
+// someone remembers a third list. `readerMap` / `tickingClock` / `status` are
+// absent by construction: the resolver never authors them.
+const RESOLVE_ARC_FIELDS = Object.freeze([...ARC_SHORT_FIELDS, ...ARC_LONG_FIELDS.map(([direct]) => direct)]);
+
+const changedFieldCount = (next, prev, fields) => fields
+  .filter((field) => !sameStored(next?.[field], prev?.[field])).length;
+
+// Entries in `next` that match no entry in `prev` — i.e. minted or rewritten.
+// Deletion is not reachable on either list this counts (volumes ride through as
+// a sparse patch, character arcs merge in place), so added/changed is a complete
+// account of the pass's writes.
+const changedEntryCount = (next, prev) => {
+  const before = new Set((prev || []).map((entry) => JSON.stringify(entry)));
+  return (next || []).filter((entry) => !before.has(JSON.stringify(entry))).length;
+};
+
+const NO_MUTATIONS = Object.freeze({
+  arcFieldsEdited: 0, volumesEdited: 0, characterArcsEdited: 0, episodesEdited: 0,
+});
+
+/**
+ * Why a resolve pass wrote nothing, as ONE of these values. Categorical so the
+ * stall diagnosis can separate the cases it kept conflating: the resolver
+ * answered but its anchors no longer matched (`exact-edits-rejected`), it
+ * answered at an altitude this gate forbids (`edits-out-of-scope`), or it
+ * declined to propose anything at all (`no-edits-returned`) — a content-level
+ * refusal no amount of extra rounds will fix. Exported because the diagnosis
+ * prompts have to explain every value they can be handed; the contract test in
+ * `arcPlanner.test.js` fails when a value is missing from that legend.
+ */
+export const RESOLVE_NO_CHANGE_REASONS = Object.freeze([
+  'no-findings',
+  'isolated-candidate-rejected',
+  'exact-edits-rejected',
+  'edits-matched-existing',
+  'edits-out-of-scope',
+  'edits-named-no-finding',
+  'no-edits-returned',
+]);
+
+const noChangeReasonFor = (edits, rejectedExactEdits) => {
+  if (rejectedExactEdits > 0) return 'exact-edits-rejected';
+  const proposed = (edits.arc ? 1 : 0) + edits.characterArcs.length + edits.seasons.length + edits.episodes.length;
+  // Something survived selection and was applied, yet the store did not move:
+  // the resolver re-authored text the plan already held.
+  if (proposed > 0) return 'edits-matched-existing';
+  if (edits.episodesOutOfScope > 0) return 'edits-out-of-scope';
+  const dropped = (edits.arcDropped ? 1 : 0) + edits.characterArcsDropped + edits.seasonsDropped + edits.episodesDropped;
+  if (dropped > 0) return 'edits-named-no-finding';
+  return 'no-edits-returned';
+};
+
 // How many stored values a patch would actually change. Echoed fields that
 // already match the record do not count: the resolve prompt asks for `id` and
 // `number` to be repeated, so "field present" is not "field changed". Exact-text
@@ -698,7 +765,14 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     const fresh = await verifyArc(seriesId, { ...options, preloadedWorld: world });
     findings = fresh.issues || [];
     if (!findings.length) {
-      return { series, applied: false, notes: 'No findings to resolve', findings: [] };
+      return {
+        series,
+        applied: false,
+        notes: 'No findings to resolve',
+        findings: [],
+        mutations: NO_MUTATIONS,
+        noChangeReason: 'no-findings',
+      };
     }
   }
 
@@ -777,6 +851,8 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
       patchMode: exactTextMode ? 'exact-text-v1' : null,
       rejectedExactEdits: 0,
       episodesResolved: [],
+      mutations: NO_MUTATIONS,
+      noChangeReason: 'isolated-candidate-rejected',
       ...runMeta,
     };
   }
@@ -910,12 +986,28 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     console.log(`⚠️ arc-resolve: response made no applicable change after ${rejectedExactEdits} exact text edit(s) were rejected`);
   }
 
+  // What this pass actually wrote, per record kind — the whole account in one
+  // place, so a fifth record kind is added here and nowhere else. `series.*` is
+  // the state as it stood BEFORE the commit above, so these describe this call's
+  // writes and nothing else, and the two `*Changed` flags gate the counting: a
+  // pass that moved nothing needs no per-record comparison to prove it.
+  // Episodes ride the same manifest the rollback is driven by, so an edit that
+  // was skipped or failed is never counted as written.
+  const mutations = {
+    arcFieldsEdited: arcOrSeasonsChanged ? changedFieldCount(arc, series.arc, RESOLVE_ARC_FIELDS) : 0,
+    volumesEdited: arcOrSeasonsChanged ? changedEntryCount(seasons, series.seasons) : 0,
+    characterArcsEdited: characterArcsChanged ? changedEntryCount(characterArcs, updated.characterArcs) : 0,
+    episodesEdited: resolvedEpisodeEdits({ episodesResolved }).length,
+  };
+
   return {
     series: resolvedSeries,
     applied,
     patchMode: exactTextMode ? 'exact-text-v1' : null,
     rejectedExactEdits,
     episodesResolved,
+    mutations,
+    noChangeReason: applied ? null : noChangeReasonFor(edits, rejectedExactEdits),
     ...runMeta,
   };
 }
