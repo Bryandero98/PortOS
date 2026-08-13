@@ -395,10 +395,66 @@ describe('StoryBuilder — detail stepper', () => {
     });
     renderAt('/story-builder/stb-1/idea');
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
-    // Idea not locked → primary action is "Lock & continue" and Next is disabled.
+    // Idea not locked → primary action is "Lock & continue" and Next is blocked.
     expect(screen.getByText('Lock & continue')).toBeTruthy();
     const next = screen.getByRole('button', { name: /Next/i });
-    expect(next.disabled).toBe(true);
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('explains WHY Next is blocked via title + an aria-describedby hint, and ignores clicks while blocked', async () => {
+    // The step rail is un-gated, so a silently-dead "Next" reads as a bug. The
+    // reason must reach mouse (title), keyboard and screen-reader users (#3908).
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps(), staleSteps: [],
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+
+    const next = screen.getByRole('button', { name: /Next/i });
+    const reason = 'Lock this step to advance to the next step.';
+    expect(next.getAttribute('title')).toBe(reason);
+    const hint = document.getElementById(next.getAttribute('aria-describedby'));
+    expect(hint.textContent).toBe(reason);
+    // The accessible NAME is still "Next" — the reason is supplementary.
+    expect(next.textContent).toContain('Next');
+
+    // aria-disabled keeps it focusable, so the click handler must be inert.
+    fireEvent.click(next);
+    expect(api.setStoryCurrentStep).not.toHaveBeenCalled();
+  });
+
+  it('names staleness (not the lock) as the Next blocker when the locked step went stale', async () => {
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps({ idea: { locked: true } }), staleSteps: ['idea'],
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+
+    const next = screen.getByRole('button', { name: /Next/i });
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+    expect(next.getAttribute('title')).toContain('re-lock this step');
+    expect(document.getElementById(next.getAttribute('aria-describedby')).textContent)
+      .toContain('re-lock this step');
+  });
+
+  it('drops the blocked state (and advances) once the step is locked and fresh', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps({ idea: { locked: true } }), staleSteps: [],
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+
+    const next = screen.getByRole('button', { name: /Next/i });
+    expect(next.getAttribute('aria-disabled')).toBeNull();
+    expect(next.getAttribute('title')).toBe('Go to the next step.');
+
+    await act(async () => { fireEvent.click(next); });
+    await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
   });
 
   it('shows "Generate reader map" when empty and "Re-generate" once content exists', async () => {

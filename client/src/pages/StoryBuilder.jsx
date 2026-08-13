@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useId, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import { filterSelectableModels } from '../utils/providers';
@@ -1063,6 +1063,15 @@ function IssuesPanel({ session, series, issues, onChanged }) {
 
 // ── Detail view: stepper + active panel ─────────────────────────────────────
 
+// Why the footer "Next >" button is (or isn't) actionable. The rail is un-gated
+// — this button is the *conventional* path, so a disabled state with no stated
+// reason reads as a bug rather than as guidance (#3908).
+function nextButtonReason({ locked, stale }) {
+  if (stale) return 'An upstream step changed — re-lock this step to advance.';
+  if (!locked) return 'Lock this step to advance to the next step.';
+  return 'Go to the next step.';
+}
+
 function StoryBuilderDetail({ storyId, stepParam }) {
   const navigate = useNavigate();
   const [steps, setSteps] = useState([]);
@@ -1158,6 +1167,9 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   const activeStep = steps[activeIdx];
   const stepState = session?.steps?.[activeStepId] || { status: 'pending', locked: false };
   const isStale = staleSteps.includes(activeStepId);
+  const nextHintId = useId();
+  const nextBlocked = !stepState.locked || isStale;
+  const nextReason = nextButtonReason({ locked: stepState.locked, stale: isStale });
 
   // Navigation is advisory, not gated: the user may start from any point and
   // work the steps out of order (e.g. start from a drafted comic script and
@@ -1419,13 +1431,25 @@ function StoryBuilderDetail({ storyId, stepParam }) {
                   </button>
                 )}
                 {activeIdx < steps.length - 1 && (
-                  <button
-                    onClick={() => goToStep(stepIds[activeIdx + 1])}
-                    disabled={!stepState.locked || isStale}
-                    className="inline-flex items-center gap-1 text-sm bg-port-accent hover:bg-port-accent/80 disabled:opacity-40 text-white px-3 py-1.5 rounded"
-                  >
-                    Next <ChevronRight className="w-4 h-4" />
-                  </button>
+                  <>
+                    {/* `aria-disabled` (not `disabled`) keeps the button focusable so
+                        keyboard/screen-reader users can reach it and hear the reason via
+                        the sr-only hint; `title` covers the mouse case. Same pattern as
+                        ExtractCanonButton.jsx. */}
+                    <button
+                      type="button"
+                      onClick={nextBlocked ? undefined : () => goToStep(stepIds[activeIdx + 1])}
+                      aria-disabled={nextBlocked || undefined}
+                      aria-describedby={nextHintId}
+                      title={nextReason}
+                      className={`inline-flex items-center gap-1 text-sm bg-port-accent text-white px-3 py-1.5 rounded ${
+                        nextBlocked ? 'opacity-40 cursor-not-allowed' : 'hover:bg-port-accent/80'
+                      }`}
+                    >
+                      Next <ChevronRight className="w-4 h-4" />
+                    </button>
+                    <span id={nextHintId} className="sr-only">{nextReason}</span>
+                  </>
                 )}
               </div>
             </div>
