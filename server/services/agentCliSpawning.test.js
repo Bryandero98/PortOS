@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { join } from 'path';
 
 // Heavy modules needed only by spawnDirectly — mock them all before importing.
 vi.mock('./cosEvents.js', () => ({ cosEvents: { emit: vi.fn() }, emitLog: vi.fn() }));
@@ -934,7 +935,8 @@ describe('stream error containment', () => {
       const { finalizeAgent } = await import('./agentFinalization.js');
       // The sentinel is named per agent instance so two worktree-less runs
       // sharing one workspace can't be finalized on each other's signal.
-      vi.mocked(existsSync).mockImplementation((path) => path === '/tmp/.agent-done-agent-test');
+      vi.mocked(existsSync).mockImplementation((path) =>
+        path === join(minimalArgs.workspacePath, '.agent-done-agent-test'));
 
       await runToClose({ ...minimalArgs }, null);
 
