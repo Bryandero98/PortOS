@@ -197,8 +197,13 @@ export async function projectToCatalog(universeId, canonArrays, { guardToken = n
   // by design: each updateIngredient is a multi-statement write (sanitize +
   // update + revision), and firing N of them at once would trade the read
   // stampede this fix removed for a write one.
+  //
+  // Track writes applied within this call in `appliedTimestamps` so if multiple
+  // candidates reference the same ingredientId in one batch, an older entry
+  // cannot overwrite a newer entry written earlier in the same pass (#4006).
+  const appliedTimestamps = new Map(timestamps);
   for (const { ingredientId, entry } of candidates) {
-    const rowUpdatedAt = timestamps.get(ingredientId);
+    const rowUpdatedAt = appliedTimestamps.get(ingredientId);
     if (rowUpdatedAt === undefined) { stats.skipped++; continue; }   // no live row
     // LWW on updatedAt — only overwrite the catalog row when the embedded entry
     // is at-least-as-fresh. An older embedded snapshot (e.g. a concurrent
@@ -212,6 +217,7 @@ export async function projectToCatalog(universeId, canonArrays, { guardToken = n
         { name: entry.name, payload: entryToPayload(entry) },
         { source: 'sync', actor: 'canon-projection' },
       );
+      appliedTimestamps.set(ingredientId, entry.updatedAt || rowUpdatedAt);
       stats.written++;
     } catch (err) {
       console.error(`🔁 projectToCatalog: ingredient ${ingredientId} update failed: ${err.message}`);
