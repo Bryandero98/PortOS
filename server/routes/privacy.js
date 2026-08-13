@@ -207,8 +207,9 @@ router.post('/orgs', asyncHandler(async (req, res) => {
 
 // Digital Twin ↔ org cross-link (issue #2147): which social accounts are in
 // the org registry. Declared before `/orgs/:id` so the literal path wins.
-router.get('/social-account-links', asyncHandler(async (_req, res) => {
-  res.json(await getOrgsBySocialAccounts());
+router.get('/social-account-links', asyncHandler(async (req, res) => {
+  const { subjectId } = validateRequest(privacySubjectScopeQuerySchema, req.query);
+  res.json(await getOrgsBySocialAccounts({ subjectId }));
 }));
 
 router.get('/orgs/:id', asyncHandler(async (req, res) => {

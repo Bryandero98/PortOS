@@ -280,7 +280,19 @@ describe('GET /api/privacy/social-account-links', () => {
     const res = await request(makeApp()).get('/api/privacy/social-account-links');
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ socialAccountId: 'acct-1', orgId: 'o1', orgName: 'Acme Bank' }]);
-    expect(orgService.getOrgsBySocialAccounts).toHaveBeenCalled();
+    expect(orgService.getOrgsBySocialAccounts).toHaveBeenCalledWith({ subjectId: undefined });
+  });
+
+  it('passes subjectId to getOrgsBySocialAccounts when subjectId query param is provided (#4022)', async () => {
+    const res = await request(makeApp()).get(`/api/privacy/social-account-links?subjectId=${VALID_UUID}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ socialAccountId: 'acct-1', orgId: 'o1', orgName: 'Acme Bank' }]);
+    expect(orgService.getOrgsBySocialAccounts).toHaveBeenCalledWith({ subjectId: VALID_UUID });
+  });
+
+  it('rejects invalid subjectId query param (#4022)', async () => {
+    const res = await request(makeApp()).get('/api/privacy/social-account-links?subjectId=not-a-uuid');
+    expect(res.status).toBe(400);
   });
 });
 
