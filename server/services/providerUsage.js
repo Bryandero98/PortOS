@@ -439,12 +439,37 @@ export function parseGrokUsage(text, { now = Date.now(), timezone } = {}) {
   // of the newer one, so keep the LAST value seen per window (freshest frame) —
   // same repaint hazard as parseAgyUsage.
   const byWindow = new Map();
-  for (const m of str.matchAll(/(weekly|monthly) limit:\s*([\d.]+)\s*%/gi)) {
-    byWindow.set(m[1].toLowerCase(), Math.round(parseFloat(m[2])));
+
+  const matches = [...str.matchAll(/(weekly|monthly)\s+limit(?:\s*\([^)]+\))?:?/gi)];
+  for (let idx = 0; idx < matches.length; idx++) {
+    const m = matches[idx];
+    const window = m[1].toLowerCase();
+    if (!GROK_WINDOWS[window]) continue;
+
+    const startPos = m.index + m[0].length;
+    const endPos = idx + 1 < matches.length ? matches[idx + 1].index : str.length;
+    const segment = str.slice(startPos, endPos);
+    const segmentLines = segment.split('\n');
+
+    let percentUsed = null;
+    for (let l = 0; l < Math.min(segmentLines.length, 5); l++) {
+      const pct = segmentLines[l].match(/([\d.]+)\s*%/);
+      if (pct) {
+        percentUsed = Math.round(parseFloat(pct[1]));
+        break;
+      }
+    }
+
+    if (percentUsed !== null && !Number.isNaN(percentUsed)) {
+      byWindow.set(window, percentUsed);
+    }
   }
+
   if (!byWindow.size) return { limits: [] };
-  const resets = [...str.matchAll(/next reset:\s*([A-Za-z0-9 ,:]+?)(?:\s{2,}|$)/gi)];
+
+  const resets = [...str.matchAll(/(?:next reset|resets):\s*([A-Za-z0-9 ,:]+?)(?:\s{2,}|│|$|\n)/gi)];
   const resetsAt = resets.length ? parseHumanReset(resets[resets.length - 1][1], { now, timezone }) : null;
+
   const limits = [...byWindow].map(([window, percentUsed]) => ({
     key: window,
     label: GROK_WINDOWS[window].label,
@@ -576,7 +601,7 @@ const FAMILY_FETCHERS = {
   claude: fetchClaudeQuota,
   codex: () => fetchCodexQuota(),
   agy: makeTuiUsageFetcher({ id: 'agy', binary: 'agy', slashCommand: '/usage', label: 'Antigravity', parse: parseAgyUsage, name: 'Antigravity CLI', readyMarker: /Weekly Limit(?:\s+Remaining)?|Five Hour Limit(?:\s+Remaining)?|Models & Quota/i }),
-  grok: makeTuiUsageFetcher({ id: 'grok', binary: 'grok', slashCommand: '/usage show', label: 'Grok', parse: parseGrokUsage, name: 'Grok Build CLI', readyMarker: /(Weekly|Monthly) limit:/i })
+  grok: makeTuiUsageFetcher({ id: 'grok', binary: 'grok', slashCommand: '/usage show', label: 'Grok', parse: parseGrokUsage, name: 'Grok Build CLI', readyMarker: /(Weekly|Monthly) limit/i })
 };
 
 const FAMILIES = PROVIDER_FAMILIES.map((family) => ({ ...family, fetch: FAMILY_FETCHERS[family.id] }));
