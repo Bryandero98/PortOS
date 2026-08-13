@@ -239,6 +239,8 @@ export default function AIProviders() {
   };
 
   const handleAddAllSamples = async () => {
+    if (sampleProviders.length === 0) return;
+
     const succeededIds = [];
     const failedIds = [];
 
@@ -247,6 +249,7 @@ export default function AIProviders() {
         await api.createProvider(provider);
         succeededIds.push(provider.id);
       } catch (err) {
+        console.error(`Failed to add sample provider ${provider.name || provider.id}:`, err);
         failedIds.push(provider.id);
       }
     }
