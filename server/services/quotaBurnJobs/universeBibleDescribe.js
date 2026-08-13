@@ -28,32 +28,28 @@
 import { expandUniverseCharacter } from '../universeCharacterExpand.js';
 import { expandUniverseCanonEntry } from '../universeCanonEntryExpand.js';
 import { getQuotaBurnInFlight, recordQuotaBurnInFlight } from '../quotaBurnStore.js';
-import { BIBLE_FIELD, BIBLE_KEYS, BIBLE_KIND, BIBLE_KINDS } from '../../lib/storyBible.js';
+import { BIBLE_FIELD, BIBLE_KIND, BIBLE_KINDS } from '../../lib/storyBible.js';
 import { bibleEntryCompleteness, normalizeDescribeDepth } from '../../lib/universeBibleCompleteness.js';
 import { collectUniverseBacklog } from './universeBacklog.js';
 import { noProviderReason, resolveBurnProvider } from './providerPick.js';
 
 /**
- * Scope value → the canon kinds it selects, derived from `BIBLE_FIELD` rather
- * than restated, so a future canon kind reaches this job's picker for free (the
- * scope option list in the job catalog is the one place it still needs naming).
- * Order matters: `all` walks the cast first.
+ * Scope value → the canon kinds it selects. Both the keys and the kind lists are
+ * derived from `BIBLE_FIELD`, and the job catalog renders its option list from
+ * the same `BIBLE_DESCRIBE_SCOPES` — so a future canon kind (or a renamed one)
+ * reaches the picker and the form together instead of orphaning stored jobs
+ * whose `scope` no longer matches anything.
  */
 const SCOPE_KINDS = Object.freeze({
   all: BIBLE_KINDS,
   ...Object.fromEntries(BIBLE_KINDS.map((kind) => [BIBLE_FIELD[kind], [kind]])),
 });
-// Pinned so a rename of a `BIBLE_FIELD` value can't silently orphan a stored
-// job's `scope` — the catalog's option list has to move with it.
-export const DESCRIBE_SCOPES = Object.freeze(['all', ...BIBLE_KEYS]);
 
 /**
  * One in-flight key per ENTRY (ids are unique, unlike the image job's labels),
  * namespaced so a described entry never shadows the same entry's pending render.
  */
 export const describeInFlightKey = (universeId, kind, entryId) => `describe:${universeId}:${kind}:${entryId}`;
-
-const entryLabel = (entry) => entry?.name || entry?.slugline || entry?.id || '';
 
 /**
  * Every under-described entry in one universe. Unordered — `sortRows` below is

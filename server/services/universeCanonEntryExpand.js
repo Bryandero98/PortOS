@@ -21,7 +21,7 @@
 import { buildStyleClause } from './universeCanon.js';
 import { runCanonEntryExpand } from './universeCanonExpandRunner.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { BIBLE_KIND, SANITIZERS } from '../lib/storyBible.js';
+import { BIBLE_KIND, SANITIZERS, sanitizeBibleField } from '../lib/storyBible.js';
 import { BIBLE_EXPAND_FIELDS, bibleFieldIsBlank } from '../lib/universeBibleCompleteness.js';
 
 /** Kinds this module expands. Characters route to `universeCharacterExpand.js`. */
@@ -48,24 +48,20 @@ const peerForExpandPrompt = (entry) => ({
  */
 export function applyCanonEntryExpansion(kind, target, content) {
   const groups = BIBLE_EXPAND_FIELDS[kind];
-  const sanitize = SANITIZERS[kind];
-  if (!groups || !sanitize || !target || typeof target !== 'object' || !content || typeof content !== 'object') {
+  if (!groups || !SANITIZERS[kind] || !target || typeof target !== 'object' || !content || typeof content !== 'object') {
     return { merged: target, updatedFields: [] };
   }
   const merged = { ...target };
   const updatedFields = [];
+  // Places and objects have no list or structured fields — strings and enums are
+  // the whole surface, which is why this merge is a single loop where the
+  // character one needs four.
   for (const field of [...groups.strings, ...groups.enums]) {
     if (!(field in content)) continue;
     const proposed = content[field];
     if (typeof proposed !== 'string' || !proposed.trim()) continue;
     if (!bibleFieldIsBlank(target, field)) continue;
-    // `name`/`slugline` carry the record past the sanitizer's identity check —
-    // a place needs one of them or `sanitizePlace` returns null and every
-    // proposal would be discarded as unsanitizable.
-    const cleaned = sanitize(
-      { name: target.name, slugline: target.slugline, [field]: proposed },
-      { preserveTimestamps: false },
-    )?.[field];
+    const cleaned = sanitizeBibleField(kind, target, field, proposed);
     if (typeof cleaned !== 'string' || !cleaned.trim()) continue;
     merged[field] = cleaned;
     updatedFields.push(field);

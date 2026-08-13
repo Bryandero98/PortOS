@@ -24,10 +24,18 @@
  * scan, so the two are deliberately one list rather than two that agree today.
  */
 
-import { isBlank } from './storyBible.js';
+import { BIBLE_KEYS, isBlank } from './storyBible.js';
 
 /** Depth vocabulary. `core` = renderable at all; `full` = the whole sheet. */
 export const BIBLE_DESCRIBE_DEPTHS = Object.freeze(['core', 'full']);
+
+/**
+ * Which entries a describe pass covers: everything, or one canon bucket. Derived
+ * from `BIBLE_KEYS` so the job catalog's option list and the job's own scope→kind
+ * table move together — a renamed or added canon kind that reached only one of
+ * them would leave stored jobs carrying a `scope` that matches nothing.
+ */
+export const BIBLE_DESCRIBE_SCOPES = Object.freeze(['all', ...BIBLE_KEYS]);
 
 /**
  * The three slider axes, all of which must be rated for `sliders` to count as

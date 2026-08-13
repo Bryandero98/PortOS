@@ -23,7 +23,7 @@
  */
 
 import { isPlainObject, POLLUTING_KEYS } from './objects.js';
-import { BIBLE_DESCRIBE_DEPTHS } from './universeBibleCompleteness.js';
+import { BIBLE_DESCRIBE_DEPTHS, BIBLE_DESCRIBE_SCOPES } from './universeBibleCompleteness.js';
 
 /** Provider quota families a burn plan may target. Mirrors `providerUsage.js`'s card ids. */
 export const QUOTA_BURN_FAMILIES = Object.freeze(['claude', 'codex', 'agy', 'grok']);
@@ -158,7 +158,7 @@ export const QUOTA_BURN_JOB_CATALOG = Object.freeze([
     programmatic: true,
     params: Object.freeze([
       { key: 'universeId', kind: 'universe', label: 'Universe', default: 'all', emptyLabel: 'All universes', emptyValue: 'all' },
-      { key: 'scope', kind: 'enum', label: 'Entries', options: ['all', 'characters', 'places', 'objects'], default: 'all' },
+      { key: 'scope', kind: 'enum', label: 'Entries', options: BIBLE_DESCRIBE_SCOPES, default: 'all' },
       // `full` is the default because the job exists for the sheet, not the
       // one-line description: a cast member with a description and nothing else
       // still renders inconsistently from panel to panel.
