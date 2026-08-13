@@ -950,14 +950,14 @@ describe('fileUtils', () => {
     it('resolves a basename present in the gallery (first root)', () => {
       const out = resolveImageInputPath(galleryName);
       expect(out).toBeTruthy();
-      expect(out).toContain('data/images/');
+      expect(out).toContain(join('data', 'images'));
       expect(out).toContain(galleryName);
     });
 
     it('resolves a basename present only in image-refs', () => {
       const out = resolveImageInputPath(refsName);
       expect(out).toBeTruthy();
-      expect(out).toContain('data/image-refs/');
+      expect(out).toContain(join('data', 'image-refs'));
     });
 
     it('resolves a basename present only in visualTemplates', () => {
@@ -966,7 +966,7 @@ describe('fileUtils', () => {
       // into gallery or image-refs), so the resolver must land on the third
       // root and the returned path must carry that root's segment + basename —
       // a plain truthiness check would pass even on a wrong-root resolution.
-      expect(out).toContain('data/templates/');
+      expect(out).toContain(join('data', 'templates'));
       expect(out).toContain(templateName);
     });
 
@@ -980,9 +980,9 @@ describe('fileUtils', () => {
       const refsAbs = join(PATHS.imageRefs, refsName);
       const templateAbs = join(PATHS.visualTemplates, templateName);
 
-      expect(resolveImageInputPath(galleryAbs)).toContain('data/images/');
-      expect(resolveImageInputPath(refsAbs)).toContain('data/image-refs/');
-      expect(resolveImageInputPath(templateAbs)).toContain('data/templates/');
+      expect(resolveImageInputPath(galleryAbs)).toContain(join('data', 'images'));
+      expect(resolveImageInputPath(refsAbs)).toContain(join('data', 'image-refs'));
+      expect(resolveImageInputPath(templateAbs)).toContain(join('data', 'templates'));
     });
 
     it('REGRESSION: same basename in multiple roots — absolute path picks the matching root', () => {
@@ -991,8 +991,8 @@ describe('fileUtils', () => {
       // the gallery via basename fallback.
       const refsAbs = join(PATHS.imageRefs, refsName);
       const out = resolveImageInputPath(refsAbs);
-      expect(out).toContain('data/image-refs/');
-      expect(out).not.toContain('data/images/');
+      expect(out).toContain(join('data', 'image-refs'));
+      expect(out).not.toContain(join('data', 'images'));
     });
   });
 
@@ -1014,7 +1014,7 @@ describe('fileUtils', () => {
     it('resolves a basename present under the screenshots root', () => {
       const out = resolveScreenshot(shotName);
       expect(out).toBeTruthy();
-      expect(out).toContain('data/screenshots/');
+      expect(out).toContain(join('data', 'screenshots'));
       expect(out).toContain(shotName);
     });
 
