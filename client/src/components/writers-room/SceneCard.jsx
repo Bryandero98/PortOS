@@ -304,7 +304,7 @@ const SceneCard = forwardRef(function SceneCard({
           <div className="relative" ref={debugMenuRef}>
             <button
               onClick={() => setShowDebugMenu((v) => !v)}
-              className="p-1 text-gray-500 hover:text-white"
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center -my-1 text-gray-500 hover:text-white"
               aria-label="Debug this scene"
               title="Debug this scene"
             >

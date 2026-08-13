@@ -1,0 +1,1 @@
+- SceneCard debug menu button meets mobile touch target minimum.
