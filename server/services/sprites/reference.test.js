@@ -217,7 +217,7 @@ describe('startReferenceGeneration', () => {
     await startReferenceGeneration(id, { target: 'turnaround' }, { tempPath: tmp, originalname: 'concept.png' });
     const call = enqueueJob.mock.calls[0][0];
     expect(call.params.spriteRef.designReferencePath).toMatch(/^reference\/uploads\/.+concept\.png$/);
-    expect(call.params.initImagePath).toContain('/reference/uploads/');
+    expect(call.params.initImagePath).toContain(join('reference', 'uploads'));
     expect(call.params.initImageStrength).toBe(0.65);
   });
 
