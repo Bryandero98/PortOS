@@ -1,0 +1,1 @@
+- Disable Run Now action on job cards while editing

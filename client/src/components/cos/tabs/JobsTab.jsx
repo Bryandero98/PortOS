@@ -424,8 +424,12 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
         <div className="flex items-center gap-1">
           <button
             onClick={() => onTrigger(job.id)}
-            className="p-1.5 text-gray-500 hover:text-port-accent transition-colors"
-            title="Run now" aria-label="Run now"
+            disabled={editing}
+            className={`p-1.5 transition-colors text-gray-500 ${
+              editing ? 'opacity-50 cursor-not-allowed' : 'hover:text-port-accent'
+            }`}
+            title={editing ? 'Save changes before running job' : 'Run now'}
+            aria-label={editing ? 'Save changes before running job' : 'Run now'}
           >
             <Play size={14} />
           </button>
