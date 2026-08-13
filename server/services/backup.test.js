@@ -443,6 +443,9 @@ describe('restorePostgres', () => {
   let restorePostgres;
   beforeEach(async () => {
     vi.clearAllMocks();
+    // clearAllMocks does not undo stubEnv — a PGPASSWORD stub from a failed
+    // (thrown) test would otherwise leak into every test after it.
+    vi.unstubAllEnvs();
     ({ restorePostgres } = await import('./backup.js'));
   });
 
@@ -650,7 +653,6 @@ describe('restorePostgres', () => {
     // something else would still satisfy arrayContaining.
     expect(args[args.indexOf('-v') + 1]).toBe('ON_ERROR_STOP=1');
     expect(opts.env.PGPASSWORD).toBe('portos');
-    vi.unstubAllEnvs();
   });
 
   it('prefers an explicit PGPASSWORD over the portos default', async () => {
@@ -665,7 +667,6 @@ describe('restorePostgres', () => {
     proc.emit('close', 0);
     await p;
     expect(spawn.mock.calls[0][2].env.PGPASSWORD).toBe('from-env');
-    vi.unstubAllEnvs();
   });
 });
 
