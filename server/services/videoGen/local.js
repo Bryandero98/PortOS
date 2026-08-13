@@ -664,7 +664,7 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
   }
   if (!Array.isArray(model.frameOptions) || !model.frameOptions.includes(Number(numFrames))) {
     throw new ServerError(
-      `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${numFrames}.`,
+      `MiniMax H3 requires a 17n+5 frame count between 107 and 362; got ${numFrames}.`,
       { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
     );
   }
@@ -891,7 +891,7 @@ export const DEFAULT_NUM_FRAMES = 121;
 // a still regardless of how many frames carry it.
 export const IC_STILL_REFERENCE_FRAMES = 9;
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -934,6 +934,8 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     audioStartSec,
     icReferencePaths,
   });
+  width = width ?? model.defaultWidth ?? 768;
+  height = height ?? model.defaultHeight ?? 512;
   numFrames = numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   let wanModelPath = null;
   const wanRequiredWeights = [];
@@ -1040,8 +1042,17 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const jobId = providedJobId || randomUUID();
   const filename = `${jobId}.mp4`;
   const outputPath = join(PATHS.videos, filename);
-  const w = Math.floor(Number(width) / 64) * 64;
-  const h = Math.floor(Number(height) / 64) * 64;
+  // Most local runners use PortOS's shared 64px grid. H3's released canvas
+  // resolver is explicitly 32px-aligned, including its native 21:9 height of
+  // 672px; honor a model-declared step so that valid preset is not silently
+  // floored to 640px at the final execution boundary.
+  const declaredResolutionStep = Number(model.resolutionStep);
+  const resolutionStep = Number.isInteger(declaredResolutionStep)
+    && declaredResolutionStep > 0 && declaredResolutionStep <= 64
+    ? declaredResolutionStep
+    : 64;
+  const w = Math.floor(Number(width) / resolutionStep) * resolutionStep;
+  const h = Math.floor(Number(height) / resolutionStep) * resolutionStep;
   const actualSeed = seed != null && seed !== '' ? Number(seed) : Math.floor(Math.random() * 2147483647);
   let actualSteps = model.samplerLocked ? model.steps : (steps ? Number(steps) : model.steps);
   let actualGuidance = model.samplerLocked

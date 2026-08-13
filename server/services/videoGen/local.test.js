@@ -56,7 +56,8 @@ vi.mock('../../lib/mediaModels.js', () => ({
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
       revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
       supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
-      frameOptions: [124, 141, 158], fpsOptions: [24],
+      frameOptions: [107, 124, 141, 158], fpsOptions: [24],
+      defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
       steps: 8, guidance: 0, samplerLocked: true,
       termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
       requiredWeights: [{
@@ -2135,7 +2136,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
         modelId: 'minimax_h3_8bit',
 
         prompt: 'a fox watches the rain',
-        width: 512, height: 320, numFrames: 141, fps: 24,
+        width: 1536, height: 672, numFrames: 107, fps: 24,
         steps: 99, guidanceScale: 12, mode: 'text',
       });
     } finally {
@@ -2155,6 +2156,9 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(args[args.indexOf('--runtime-revision') + 1]).toBe('fcd9e9b79a1d6018d91ac477c0968de1fa067e49');
     expect(args[args.indexOf('--checkpoint-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
     expect(args[args.indexOf('--checkpoint-revision') + 1]).toBe('6818f6c32d12b210915e44ad56a4228c2608f160');
+    expect(args[args.indexOf('--width') + 1]).toBe('1536');
+    expect(args[args.indexOf('--height') + 1]).toBe('672');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('107');
     expect(args[args.indexOf('--steps') + 1]).toBe('8');
     expect(args.flatMap((arg, i) => arg === '--checkpoint-file' ? [args[i + 1]] : []))
       .toEqual(['LICENSE', 'FL2VA/vae/video/config.json']);
@@ -2168,6 +2172,26 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(options.env).not.toHaveProperty('HF_TOKEN');
     expect(options.env).not.toHaveProperty('HUGGING_FACE_HUB_TOKEN');
     expect(hfChildEnv).not.toHaveBeenCalled();
+  });
+
+  it('uses H3 native dimensions when an internal caller omits resolution', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-native-default',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
+      Array.isArray(childArgs) && childArgs.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+    ));
+    expect(args[args.indexOf('--width') + 1]).toBe('1344');
+    expect(args[args.indexOf('--height') + 1]).toBe('768');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('124');
   });
 });
 

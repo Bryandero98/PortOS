@@ -9,6 +9,9 @@
  *
  * Schema (see seed defaults below for the full picture):
  *   - video.macos[], video.windows[]: { id, name, repo?, steps, guidance, broken?, disclosure? }
+ *       Models may also declare `defaultWidth` / `defaultHeight`,
+ *       `resolutionStep`, and `resolutionOptions[]` when their native canvas
+ *       differs from the shared Video Gen presets.
  *       `disclosure` is optional provenance/licensing metadata (issue #3674):
  *       { modelCardUrl?, weightsLicense?: { name, url }, runtimeLicense?: { name, url },
  *         estimatedDownloadGb?, reviewedAt? }. Every key is optional and an
@@ -88,9 +91,28 @@ const DEFAULT_REGISTRY = {
         // at the first / last latent frame. 'image' anchors one at 'first',
         // 'fflf' anchors both.
         supportedModes: ['text', 'image', 'fflf'],
+        // The upstream model supports 4-15 seconds. H3's VAE snaps duration
+        // UP to a 17n+5 frame grid, so 4s becomes 107 frames and the port's
+        // recommended 5s default becomes 124. Keep the shortest recommended
+        // run as the default: dense attention already makes it a multi-hour
+        // render on current Apple Silicon.
         defaultFrames: 124,
-        frameOptions: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
+        frameOptions: [107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
         fpsOptions: [24],
+        // H3-Base was trained on a native 768px short edge. Its canvas resolver
+        // caps area at 768x1344 and rounds each edge to 32px; these are the
+        // exact outputs for the aspect ratios MiniMax documents.
+        defaultWidth: 1344,
+        defaultHeight: 768,
+        resolutionStep: 32,
+        resolutionOptions: [
+          { label: '1536x672 (21:9 H3 native)', w: 1536, h: 672 },
+          { label: '1344x768 (16:9 H3 default)', w: 1344, h: 768 },
+          { label: '1024x768 (4:3 H3 native)', w: 1024, h: 768 },
+          { label: '768x768 (1:1 H3 native)', w: 768, h: 768 },
+          { label: '768x1024 (3:4 H3 native)', w: 768, h: 1024 },
+          { label: '768x1344 (9:16 H3 native)', w: 768, h: 1344 },
+        ],
         memoryGb: 128,
         steps: 8,
         guidance: 0,
