@@ -6,7 +6,7 @@
  * chunk's output video file — not mode='image' with an extracted last frame.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
 
@@ -1932,7 +1932,7 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       width: 480, height: 256, numFrames: 81, fps: 20,
       steps: 99, guidanceScale: 9, mode: 'text',
     });
-    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_wan22.py')));
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_wan22.py'));
     expect(call).toBeDefined();
     const args = call[1];
     expect(args[args.indexOf('--steps') + 1]).toBe('4');
@@ -1973,7 +1973,7 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       sourceImagePath: '/mock/data/images/boat.png',
       width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
     });
-    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => String(arg).endsWith('/generate_wan22.py')))[1];
+    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => basename(String(arg)) === 'generate_wan22.py'))[1];
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
       '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
       '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
@@ -2151,7 +2151,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     // Paths are the ffmpeg-resized copies, so assert the anchors and that each
     // one directly follows its own --image rather than the literal input path.
@@ -2187,7 +2187,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     }
 
     const call = spawnMock.mock.calls.find(([, args]) => (
-      Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(call).toBeDefined();
     const [bin, args, options] = call;
@@ -2228,7 +2228,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
-      Array.isArray(childArgs) && childArgs.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(childArgs) && childArgs.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args[args.indexOf('--width') + 1]).toBe('1344');
     expect(args[args.indexOf('--height') + 1]).toBe('768');
@@ -2260,7 +2260,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     }
 
     const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
-      Array.isArray(childArgs) && childArgs.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(childArgs) && childArgs.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args[args.indexOf('--width') + 1]).toBe('768');
     expect(args[args.indexOf('--height') + 1]).toBe('512');
@@ -2297,7 +2297,7 @@ describe('MiniMax H3 user LoRAs', () => {
     await expect(h3Render('h3-lora-cold-cache')).resolves.toBeDefined();
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args).toContain('--lora');
   });
@@ -2325,7 +2325,7 @@ describe('MiniMax H3 user LoRAs', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args.flatMap((arg, i) => (
       arg === '--lora' ? [[args[i + 1], args[i + 2] === '--lora-scale' ? args[i + 3] : 'UNPAIRED']] : []
@@ -2349,7 +2349,7 @@ describe('MiniMax H3 user LoRAs', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args).not.toContain('--lora');
     expect(args).not.toContain('--lora-scale');
