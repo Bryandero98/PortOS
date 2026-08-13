@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), 'generate_minimax_h3.py');
 
-const runPython = (source) => execFileSync('python3', ['-c', source, script], {
+const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+const runPython = (source) => execFileSync(pyBin, ['-c', source, script], {
   encoding: 'utf8',
 });
 
