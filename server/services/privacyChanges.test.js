@@ -117,11 +117,37 @@ describe('declareChange', () => {
     const insertRec = client.query.mock.calls.find(([s]) => /INSERT INTO privacy_vault_records/.test(s));
     expect(insertRec[1]).toContain('enc(742 New Ave)');
     // Both flipped orgs got a forward-looking current holding on the new record.
+    const flipQuery = client.query.mock.calls.find(([s]) => /UPDATE privacy_org_holdings SET status = 'update_pending'/.test(s));
+    expect(flipQuery[0]).toContain("ANY(ARRAY['current', 'unknown', 'update_pending'])");
     const forwardInserts = client.query.mock.calls.filter(([s]) => /INSERT INTO privacy_org_holdings/.test(s));
     expect(forwardInserts).toHaveLength(2);
     // Event kind derived from the old record type when none supplied.
     const insertEvent = client.query.mock.calls.find(([s]) => /INSERT INTO privacy_change_events/.test(s));
     expect(insertEvent[1]).toContain('address_change');
+  });
+
+  it('flips holdings in unknown and update_pending status as well as current', async () => {
+    const client = mockTransaction(async (sql) => {
+      if (/FROM privacy_vault_records WHERE id = \$1 FOR UPDATE/.test(sql)) return { rows: [{ id: 'old1', type: 'address' }] };
+      if (/INSERT INTO privacy_vault_records/.test(sql)) return { rows: [] };
+      if (/UPDATE privacy_vault_records\s+SET status = 'previous'/.test(sql)) return { rows: [] };
+      if (/UPDATE privacy_org_holdings SET status = 'update_pending'/.test(sql)) {
+        return { rows: [{ org_id: 'org-current' }, { org_id: 'org-unknown' }, { org_id: 'org-pending' }] };
+      }
+      if (/INSERT INTO privacy_org_holdings/.test(sql)) return { rows: [] };
+      if (/INSERT INTO privacy_change_events/.test(sql)) return { rows: [eventRow()] };
+      throw new Error(`unexpected query: ${sql}`);
+    });
+
+    await declareChange({
+      vaultRecordId: 'old1',
+      replacement: { label: 'New home', value: '742 New Ave' },
+    });
+
+    const flipQuery = client.query.mock.calls.find(([s]) => /UPDATE privacy_org_holdings SET status = 'update_pending'/.test(s));
+    expect(flipQuery[0]).toMatch(/status = ANY\(ARRAY\['current', 'unknown', 'update_pending'\]\)/);
+    const forwardInserts = client.query.mock.calls.filter(([s]) => /INSERT INTO privacy_org_holdings/.test(s));
+    expect(forwardInserts).toHaveLength(3);
   });
 
   it('404s when the old record does not exist', async () => {
