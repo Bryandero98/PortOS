@@ -324,8 +324,10 @@ PM2 keeps PortOS running in the background and auto-restarts on reboot (with `pm
 
 ```bash
 npm run setup          # Install all dependencies (alias: npm run install:all)
-npm run dev            # Vite hot-reload on :5554, API on :5555 — open :5554 in dev
+npm run dev            # Starts PostgreSQL, launches full PM2 ecosystem, and tails logs
 ```
+
+`npm run dev` executes `scripts/dev-start.js` to initialize PostgreSQL, stop existing PM2 processes, and launch the complete PM2 process ecosystem defined in `ecosystem.config.cjs` (`portos-server`, `portos-cos`, `portos-ui`, `portos-autofixer`, `portos-autofixer-ui`, `portos-browser`) while tailing logs. The React frontend runs with Vite hot-reload on `:5554` and the API on `:5555`.
 
 `:5554` is **only** used in dev for the Vite hot-reload server; in production (`npm start` / PM2) the React build is served from `:5555` directly.
 
@@ -352,7 +354,7 @@ PortOS binds to `0.0.0.0` so you can access it from any device on your Tailscale
 
 ```
 PortOS/
-├── client/              # React + Vite frontend (Vite dev on :5554)
+├── client/              # React + Vite frontend (Vite dev server on :5554 under npm run dev)
 ├── server/              # Express API (always serves on :5555)
 ├── autofixer/           # Standalone crash-detection/repair worker
 ├── data/                # Runtime data (apps, providers, history, brain, pipeline, …)
