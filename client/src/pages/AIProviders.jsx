@@ -239,12 +239,31 @@ export default function AIProviders() {
   };
 
   const handleAddAllSamples = async () => {
+    if (sampleProviders.length === 0) return;
+
+    const succeededIds = [];
+    const failedIds = [];
+
     for (const provider of sampleProviders) {
-      await api.createProvider(provider);
+      try {
+        await api.createProvider(provider);
+        succeededIds.push(provider.id);
+      } catch (err) {
+        console.error(`Failed to add sample provider ${provider.name || provider.id}:`, err);
+        failedIds.push(provider.id);
+      }
     }
-    setSampleProviders([]);
-    loadData();
-    toast.success(`Added ${sampleProviders.length} providers`);
+
+    setSampleProviders(prev => prev.filter(p => !succeededIds.includes(p.id)));
+    await loadData();
+
+    if (failedIds.length === 0) {
+      toast.success(`Added ${succeededIds.length} provider${succeededIds.length === 1 ? '' : 's'}`);
+    } else if (succeededIds.length === 0) {
+      toast.error(`Failed to add ${failedIds.length} provider${failedIds.length === 1 ? '' : 's'}`);
+    } else {
+      toast.warning(`Added ${succeededIds.length} provider${succeededIds.length === 1 ? '' : 's'}, ${failedIds.length} failed`);
+    }
   };
 
   const selectedRunProvider = providers.find(p => p.id === activeProviderId);

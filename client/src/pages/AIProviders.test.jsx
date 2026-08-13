@@ -148,3 +148,45 @@ describe('handleAddSample error handling', () => {
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Failed to add provider: Failed to create provider'));
   });
 });
+
+describe('handleAddAllSamples partial failure handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getRuns.mockResolvedValue({ runs: [] });
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviders.mockResolvedValue({
+      providers: [],
+      activeProvider: null,
+    });
+    api.getSampleProviders.mockResolvedValue({
+      providers: [
+        { id: 'sample-1', name: 'Sample AI 1', type: 'api', enabled: true, endpoint: 'https://api.sample1.com', models: ['model-1'] },
+        { id: 'sample-2', name: 'Sample AI 2', type: 'api', enabled: true, endpoint: 'https://api.sample2.com', models: ['model-2'] },
+        { id: 'sample-3', name: 'Sample AI 3', type: 'api', enabled: true, endpoint: 'https://api.sample3.com', models: ['model-3'] },
+      ]
+    });
+  });
+
+  it('handles partial failure when adding all samples', async () => {
+    api.createProvider
+      .mockResolvedValueOnce({ id: 'sample-1' })
+      .mockRejectedValueOnce(new Error('Creation failed'))
+      .mockResolvedValueOnce({ id: 'sample-3' });
+
+    renderPage();
+
+    const loadSamplesBtn = await screen.findByRole('button', { name: 'Load Samples' });
+    fireEvent.click(loadSamplesBtn);
+
+    const addAllBtn = await screen.findByRole('button', { name: 'Add All (3)' });
+    fireEvent.click(addAllBtn);
+
+    expect(await screen.findByText('Sample AI 2')).toBeInTheDocument();
+    expect(screen.queryByText('Sample AI 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sample AI 3')).not.toBeInTheDocument();
+    expect(toast.warning).toHaveBeenCalledWith('Added 2 providers, 1 failed');
+    expect(api.getProviders).toHaveBeenCalledTimes(2);
+  });
+});
+
