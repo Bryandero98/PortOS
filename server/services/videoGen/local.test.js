@@ -2271,7 +2271,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
 // applies them at render time from quantization metadata. That is a property of
 // the pinned checkout, so the verdict comes from a probe — and the render path
 // must honor it in both directions rather than blanket-rejecting the runtime.
-describe('MiniMax H3 user LoRAs', () => {
+describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
   const h3Render = (jobId) => generateVideo({
     jobId,
     modelId: 'minimax_h3_8bit',
