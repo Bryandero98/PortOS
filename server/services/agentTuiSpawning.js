@@ -1018,6 +1018,7 @@ export async function spawnTuiAgent({
     // also the gate for the PR-claim verification (#3358): only a run that owned
     // its own PR creation can be expected to have produced one by finalize time.
     const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+    const taskReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
     const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
@@ -1070,7 +1071,7 @@ export async function spawnTuiAgent({
         openPR: agentOwnsPR ? false : taskOpenPR,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
-        skipMerge: agentOwnsPR,
+        skipMerge: taskReviewLoopFollowUp || agentOwnsPR,
         description: task.description,
         agentOutput: getOutputBuffer(),
         originalTask: task

@@ -1561,6 +1561,17 @@ After your task completes, the system will spawn a follow-up agent that runs the
     // top of buildAgentPrompt under the same reviewLoopFollowUp guard — reuse it
     // rather than re-reading the lib a second time.
     reviewLoopFollowUpSection = buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: true, rprBody, localAgentLoopBody });
+    if (isTui) {
+      const sentinelPath = `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`;
+      const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
+      const sentinelTail = branchName ? `   ## Branch\n   ${branchName}` : '   ## Branch\n   <branch name>';
+      reviewLoopFollowUpSection += '\n\n' + [
+        '## Completion Handoff',
+        'When finished with the follow-up steps above, write the completion sentinel to signal PortOS that you are done:',
+        '',
+        ...buildSentinelWriteSteps(1, sentinelPath, sentinelTail)
+      ].join('\n');
+    }
   }
 
   // Build JIRA context section if applicable
@@ -1934,6 +1945,17 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     }));
   } else if (isReviewLoopFollowUp) {
     sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody }));
+    if (isTui) {
+      const sentinelPath = `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`;
+      const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
+      const sentinelTail = branchName ? `   ## Branch\n   ${branchName}` : '   ## Branch\n   <branch name>';
+      sections.push([
+        '## Completion Handoff',
+        'When finished with the follow-up steps above, write the completion sentinel to signal PortOS that you are done:',
+        '',
+        ...buildSentinelWriteSteps(1, sentinelPath, sentinelTail)
+      ].join('\n'));
+    }
   } else if (isTui) {
     sections.push(buildTuiCompletionSection({
       willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree,
