@@ -363,6 +363,7 @@ export default function EnrichTab({ onRefresh }) {
             <div className="mb-6">
               {currentQuestion.questionType === 'scale' ? (
                 <ScaleInput
+                  groupLabel={currentQuestion.question}
                   labels={currentQuestion.labels}
                   value={scaleValue}
                   onChange={setScaleValue}

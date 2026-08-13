@@ -336,6 +336,7 @@ export default function NextActionBanner({ gaps, status, traits, onRefresh }) {
               {question.questionType === 'scale' ? (
                 <div className="mb-2">
                   <ScaleInput
+                    groupLabel={question.question}
                     labels={question.labels}
                     value={scaleValue}
                     onChange={setScaleValue}
