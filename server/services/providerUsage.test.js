@@ -499,10 +499,27 @@ describe('parseGrokUsage', () => {
   });
 
   it('parses a Monthly window and both windows when present', () => {
-    expect(parseGrokUsage('Monthly limit: 30% Next reset: Sep 1').limits[0])
+    expect(parseGrokUsage('Monthly limit: 30% Next reset: Sep 1', opts).limits[0])
       .toMatchObject({ key: 'monthly', label: 'Monthly', scope: 'month', percentUsed: 30, percentRemaining: 70 });
-    const both = parseGrokUsage('Weekly limit: 12% Monthly limit: 45% Next reset: Sep 1').limits;
+    const both = parseGrokUsage('Weekly limit: 12% Monthly limit: 45% Next reset: Sep 1', opts).limits;
     expect(both.map((l) => l.key).sort()).toEqual(['monthly', 'weekly']);
+  });
+
+  it('parses multi-line Grok 1.0 TUI panel with plan descriptor and Resets: header', () => {
+    const boxPanel = `
+      Weekly limit (SuperGrok)│
+      ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░8%│
+      Resets: August 1, 06:07│
+    `;
+    const { limits } = parseGrokUsage(boxPanel, opts);
+    expect(limits).toHaveLength(1);
+    expect(limits[0]).toMatchObject({
+      key: 'weekly',
+      label: 'Weekly',
+      percentUsed: 8,
+      percentRemaining: 92,
+      resetsAt: '2026-08-01T06:07:00.000Z',
+    });
   });
 });
 
