@@ -12,12 +12,13 @@ export const ACCEPTED_OLD_MD5 = {
   'pipeline-arc-verify.md': [
     '36aa70cdfc25d7549573a4d556e7702c',
     '83347e7d923580a3062033ab39b3c14b', // post-250 / pre-261
+    '68f6956d7e09ebdb3870d8726b1b2a7a', // post-261 / pre-263 — before the world category canon block
   ],
 };
 
 export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-overview.md': '5ed760caaf3cf88916ec28b220e2f590',
-  'pipeline-arc-verify.md': '68f6956d7e09ebdb3870d8726b1b2a7a',
+  'pipeline-arc-verify.md': '9f32e91bd33b97d30e1cbb2e697f4fc3', // post-263 world category canon
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

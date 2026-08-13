@@ -13,11 +13,14 @@
 import { makePromptReplaceMigration } from './_lib.js';
 
 export const ACCEPTED_OLD_MD5 = {
-  'pipeline-arc-verify.md': ['83347e7d923580a3062033ab39b3c14b'],
+  'pipeline-arc-verify.md': [
+    '83347e7d923580a3062033ab39b3c14b',
+    '68f6956d7e09ebdb3870d8726b1b2a7a', // post-261 / pre-263 — before the world category canon block
+  ],
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-verify.md': '68f6956d7e09ebdb3870d8726b1b2a7a',
+  'pipeline-arc-verify.md': '9f32e91bd33b97d30e1cbb2e697f4fc3', // post-263 world category canon
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
