@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TRELLIS2_REPO,
@@ -40,9 +41,11 @@ const BASE = '/tmp/portos-test-home';
 
 describe('trellis2 path resolution', () => {
   it('roots the install under the injected base', () => {
-    expect(trellis2Root(BASE)).toBe('/tmp/portos-test-home/trellis2');
-    expect(trellis2VenvPython(BASE)).toMatch(/trellis2\/\.venv\/(bin\/python3|Scripts\/python\.exe)$/);
-    expect(trellis2GenerateScript(BASE)).toBe('/tmp/portos-test-home/trellis2/generate.py');
+    expect(trellis2Root(BASE)).toBe(join(BASE, 'trellis2'));
+    expect(trellis2VenvPython(BASE)).toBe(process.platform === 'win32'
+      ? join(BASE, 'trellis2', '.venv', 'Scripts', 'python.exe')
+      : join(BASE, 'trellis2', '.venv', 'bin', 'python3'));
+    expect(trellis2GenerateScript(BASE)).toBe(join(BASE, 'trellis2', 'generate.py'));
     expect(trellis2GenerateRunnerScript()).toMatch(/trellis2GenerateRunner\.py$/);
   });
 });
