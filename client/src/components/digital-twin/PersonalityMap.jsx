@@ -116,7 +116,9 @@ export default function PersonalityMap({ traits, confidence, providers, onAnalyz
             No personality traits analyzed yet. Run an analysis to extract Big Five traits from your documents.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <label htmlFor="personality-model-select" className="sr-only">AI Provider &amp; Model</label>
             <select
+              id="personality-model-select"
               value={selectedProvider ? `${selectedProvider.providerId}:${selectedProvider.model}` : ''}
               onChange={(e) => {
                 const [providerId, model] = e.target.value.split(':');
