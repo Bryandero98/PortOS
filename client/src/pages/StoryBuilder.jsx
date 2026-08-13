@@ -158,6 +158,13 @@ function StoryBuilderIndex() {
   // of auto-creating a fresh universe. The create schema already accepts it.
   const onrampUniverseId = searchParams.get('universeId') || undefined;
   const [sessions, setSessions] = useState([]);
+  // `sessionsLoading` / `sessionsError` keep "still fetching" and "the fetch
+  // failed" distinct from "you genuinely have no saved stories" — collapsing
+  // all three into an empty array made a failed list look like a deletion
+  // (#3906). `sessionsReloadTick` re-runs the effect for the Retry button.
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState(null);
+  const [sessionsReloadTick, setSessionsReloadTick] = useState(0);
   const [mode, setMode] = useState('seed');
   const [title, setTitle] = useState('');
   const [seedIdea, setSeedIdea] = useState('');
@@ -170,8 +177,21 @@ function StoryBuilderIndex() {
   const [remixIngredients, setRemixIngredients] = useState([]);
 
   useEffect(() => {
-    listStorySessions({ silent: true }).then(setSessions).catch(() => setSessions([]));
-  }, []);
+    let cancelled = false;
+    setSessionsLoading(true);
+    setSessionsError(null);
+    listStorySessions({ silent: true })
+      .then((list) => {
+        if (cancelled) return;
+        setSessions(Array.isArray(list) ? list : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSessionsError(err?.message || 'Failed to load your saved stories');
+      })
+      .finally(() => { if (!cancelled) setSessionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [sessionsReloadTick]);
 
   // Consume the remix handoff once at mount, then clear the history state so a
   // refresh doesn't re-seed (mirrors CatalogIngest's prefill-consume pattern).
@@ -295,10 +315,39 @@ function StoryBuilderIndex() {
         )}
       </section>
 
-      {sessions.length > 0 && (
+      {/* Rendered while loading and on failure too — an empty sidebar during a
+          failed fetch reads as "my saved stories were deleted" (#3906). Only a
+          successful, genuinely-empty list hides the section. */}
+      {(sessionsLoading || sessionsError || sessions.length > 0) && (
         <section className="space-y-2">
           <h2 className="font-semibold text-gray-300">Continue a story</h2>
-          {sessions.map((s) => (
+          {sessionsLoading ? (
+            <div className="space-y-2" role="status" aria-busy="true" aria-label="Loading your stories">
+              {['w-2/3', 'w-1/2', 'w-1/3'].map((w) => (
+                <div key={w} className="bg-port-card border border-port-border rounded-lg px-4 py-3 animate-pulse">
+                  <div className={`h-4 rounded bg-port-border ${w}`} />
+                </div>
+              ))}
+            </div>
+          ) : sessionsError ? (
+            <Banner
+              tone="error"
+              icon={AlertTriangle}
+              size="md"
+              title="Couldn’t load your saved stories"
+              actions={(
+                <button
+                  type="button"
+                  onClick={() => setSessionsReloadTick((t) => t + 1)}
+                  className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white"
+                >
+                  <RefreshCw className="w-3 h-3" aria-hidden="true" /> Retry
+                </button>
+              )}
+            >
+              {sessionsError}
+            </Banner>
+          ) : sessions.map((s) => (
             <Link
               key={s.id} to={`/story-builder/${s.id}/${s.currentStep || 'idea'}`}
               className="flex items-center justify-between gap-2 bg-port-card border border-port-border rounded-lg px-4 py-3 hover:border-port-accent"
