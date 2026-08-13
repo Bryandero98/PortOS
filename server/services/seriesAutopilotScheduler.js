@@ -82,6 +82,10 @@ export function runOptionsFor(entry) {
   if (entry.provider) opts.providerOverride = entry.provider;
   if (entry.model) opts.modelOverride = entry.model;
   if (entry.effort) opts.effortOverride = entry.effort;
+  // Only forwarded when the schedule explicitly ticked it — an absent flag must
+  // stay absent so the autopilot's persisted-setting fallback still applies
+  // (forwarding `false` would pin it off for every scheduled run).
+  if (entry.overrideStagePins === true) opts.overrideStagePins = true;
   return opts;
 }
 

@@ -224,6 +224,7 @@ const autopilot = await import('./seriesAutopilot.js');
 const arcPlanner = await import('./arcPlanner.js');
 const { commitSeasonsWithRemap: realCommitSeasonsWithRemap } = await import('./arcPlanner/arcCore.js');
 const { stageContentOf } = await import('./textStages.js');
+const { stagePinsIgnored } = await import('../../lib/stagePinPolicy.js');
 const { resolveNextStep, requiredScriptStages, scriptStructurallyReady, visualReady, wantsComic } = autopilot;
 
 // A comic script string that parseComicScript turns into >=1 page/panel.
@@ -961,6 +962,19 @@ describe('resolveAutopilotAutoSelectModels (config gate)', () => {
     expect(autopilot.resolveAutopilotAutoSelectModels(
       { autoSelectModels: false },
       { pipelineEditorialChecks: { autoSelectModels: true } },
+    )).toBe(false);
+  });
+});
+
+// Persistable (unlike unlockForRun): it re-routes spend but mutates nothing,
+// and the scheduler resolves unattended runs from this same settings slice.
+describe('resolveAutopilotOverrideStagePins (config gate)', () => {
+  it('defaults off, supports a saved default, and lets a run override it', () => {
+    expect(autopilot.resolveAutopilotOverrideStagePins({}, null)).toBe(false);
+    expect(autopilot.resolveAutopilotOverrideStagePins({}, { pipelineEditorialChecks: { overrideStagePins: true } })).toBe(true);
+    expect(autopilot.resolveAutopilotOverrideStagePins(
+      { overrideStagePins: false },
+      { pipelineEditorialChecks: { overrideStagePins: true } },
     )).toBe(false);
   });
 });
@@ -1782,6 +1796,39 @@ describe('autopilot conductor', () => {
     expect(run.startPayload).toMatchObject({ type: 'start', provider: 'codex', model: 'gpt-x' });
   });
 
+  // `overrideStagePins` reaches stageRunner through an async-context flag rather
+  // than an option key, precisely so it survives every delegated hop. Assert it
+  // from INSIDE a delegated service — a wrapper that only covered the direct
+  // staged calls would pass a check on run.options and still miss the child
+  // runners this feature exists to reach.
+  it('propagates overrideStagePins into delegated services as an async-context flag', async () => {
+    const { seriesId } = await seedComplete();
+    let seenInsideDelegate = null;
+    arcSpies.verifyArc.mockImplementationOnce(async () => {
+      seenInsideDelegate = stagePinsIgnored();
+      return { issues: verifyFindings };
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { providerOverride: 'claude', overrideStagePins: true });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.options.overrideStagePins).toBe(true);
+    expect(seenInsideDelegate).toBe(true);
+    // The flag is scoped to the run's own async subtree — it must not linger.
+    expect(stagePinsIgnored()).toBe(false);
+  });
+
+  it('leaves stage pins in force for an ordinary run', async () => {
+    const { seriesId } = await seedComplete();
+    let seenInsideDelegate = null;
+    arcSpies.verifyArc.mockImplementationOnce(async () => {
+      seenInsideDelegate = stagePinsIgnored();
+      return { issues: verifyFindings };
+    });
+    await autopilot.startSeriesAutopilot(seriesId, {});
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.options.overrideStagePins).toBe(false);
+    expect(seenInsideDelegate).toBe(false);
+  });
+
   it('lets a per-run provider override beat the series-configured provider', async () => {
     const { seriesId } = await seedComplete();
     await seriesSvc.updateSeries(seriesId, { llm: { provider: 'codex', model: 'gpt-x' } });
@@ -2476,7 +2523,7 @@ describe('autopilot conductor', () => {
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.status).toBe('paused');
     expect(series.autopilot?.resumeOptions).toEqual({
-      includeVisual: false, fileGaps: true, autoSelectModels: false,
+      includeVisual: false, fileGaps: true, autoSelectModels: false, overrideStagePins: false,
     });
   });
 

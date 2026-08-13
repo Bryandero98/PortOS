@@ -303,6 +303,21 @@ export function resolveAutopilotAutoSelectModels(options = {}, settings = null) 
   return pickBool(options?.autoSelectModels, pec?.autoSelectModels, DEFAULT_AUTO_SELECT_MODELS);
 }
 
+// Force this run's route onto EVERY stage — the mechanism, and which stage
+// fields it strips, live in lib/stagePinPolicy.js + stageRunner#effectiveStage.
+// It changes only WHICH pins are consulted: the per-role and per-stage routes
+// the run already resolved (roleLlm) still decide the value.
+//
+// Defaults OFF and persistable (like autoSelectModels, unlike unlockForRun):
+// it re-routes spend but mutates nothing, and "always run everything on my one
+// provider" is exactly the preference an unattended scheduled run wants to
+// inherit. Per-run option wins, then the persisted setting, then off.
+export const DEFAULT_OVERRIDE_STAGE_PINS = false;
+export function resolveAutopilotOverrideStagePins(options = {}, settings = null) {
+  const pec = settings?.pipelineEditorialChecks || {};
+  return pickBool(options?.overrideStagePins, pec?.overrideStagePins, DEFAULT_OVERRIDE_STAGE_PINS);
+}
+
 // Which provider/model do this run's LLM calls use? An explicit per-run
 // `providerOverride`/`modelOverride` wins (the Options picker, or the scheduler
 // mapping a schedule's provider/model); otherwise the run inherits the series'
@@ -314,7 +329,8 @@ export function resolveAutopilotAutoSelectModels(options = {}, settings = null) 
 //
 // Threaded as SOFT defaults (`providerDefault`/`modelDefault`, see
 // session.js#providerOverrideOpts), so a deliberate per-stage pin on the Prompts
-// page still wins and an unavailable provider falls through instead of throwing.
+// page still wins and an unavailable provider falls through instead of throwing
+// — unless the run opted into `overrideStagePins` above.
 export function resolveAutopilotLlm(options = {}, series = null) {
   const { provider, model } = resolveSeriesLlmOverride(series, {
     overrideProvider: options?.providerOverride,

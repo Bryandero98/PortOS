@@ -143,6 +143,7 @@ export * from './opencodeConfig.js';
 export * as runners from './runners.js';
 // `stageRunner.js` defines its own `extractJson` distinct from `jsonExtract.js`.
 export * as stageRunner from './stageRunner.js';
+export * from './stagePinPolicy.js';
 export * from './tuiHandshake.js';
 export * from './tuiPromptRunner.js';
 export * from './tuiUsageScrape.js';

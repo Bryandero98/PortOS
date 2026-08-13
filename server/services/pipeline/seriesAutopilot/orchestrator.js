@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { withStagePinsIgnored } from '../../../lib/stagePinPolicy.js';
 import { getDomainMode } from '../../../lib/domainAutonomy.js';
 import { isRunCanceledError } from '../../../lib/aiToolkit/errorDetection.js';
 import { mergeSeverityWeights, resolveBlockingSet } from '../../../lib/editorial/index.js';
@@ -20,7 +21,7 @@ import {
   resolveAutopilotReadinessGate, resolveAutopilotCheckPauseThreshold, resolveAutopilotNotifyOnPause,
   resolveAutopilotProduceTeaser, resolveAutopilotRevision, resolveAutopilotLlm,
   resolveAutopilotUnlockForRun, resolveAutopilotSelfImprove, resolveAutopilotObserver,
-  resolveAutopilotAutoSelectModels,
+  resolveAutopilotAutoSelectModels, resolveAutopilotOverrideStagePins,
 } from './config.js';
 import { getModelPerformanceReport } from './modelPerformance.js';
 import { runSelfImproveDiagnosis } from './selfImprove.js';
@@ -129,6 +130,10 @@ export async function startSeriesAutopilot(sId, options = {}) {
     // signal tap retains frames from the first one.
     observer: resolveAutopilotObserver(options, settings),
     autoSelectModels,
+    // Force the run's route onto stages that carry their own Prompts-page pin
+    // (see config.js). Resolved here with the other gates so the coordinator
+    // wrap below, the start frame and a resume all read the same effective flag.
+    overrideStagePins: resolveAutopilotOverrideStagePins(options, settings),
     modelRecommendations: modelPerformance.recommendations || {},
     modelRoutesExplicit: {
       creative: creativeRouteExplicit,
@@ -239,7 +244,8 @@ export async function startSeriesAutopilot(sId, options = {}) {
 
   // Shared `start` frame for both modes. `provider`/`model`/`effort` are the
   // run's resolved soft defaults — what the panel shows as "this run calls X / Y";
-  // a stage pinned on the Prompts page still overrides them for that stage.
+  // a stage pinned on the Prompts page still overrides them for that stage
+  // unless `overrideStagePins` is on, which the frame carries alongside them.
   const startFrame = (target, extra = {}) => {
     const judge = runOptions.judgeLlm ? roleLlm(record, 'judge') : null;
     return {
@@ -253,6 +259,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         effort: judge.effortOverride ?? null,
       } : null,
       autoSelectModels: runOptions.autoSelectModels,
+      overrideStagePins: runOptions.overrideStagePins,
       ...extra,
     };
   };
@@ -315,8 +322,13 @@ export async function startSeriesAutopilot(sId, options = {}) {
   // `ordinal` (completed-step count) lives outside the try so the catch's
   // cancellation terminal can report how far the run got, exactly as the
   // cooperative between-steps cancel does.
+  //
+  // `withStagePinsIgnored` wraps the WHOLE coordinator so the flag reaches every
+  // leaf LLM call this run makes — the direct staged calls, the delegated child
+  // runners, the editorial checks, the judges — without threading an option key
+  // through a dozen intermediate services. Off (the default) it is a plain call.
   let ordinal = 0;
-  (async () => {
+  withStagePinsIgnored(runOptions.overrideStagePins, async () => {
     try {
       // DRY-RUN: enumerate the plan, no side effects.
       if (mode === 'dry-run') {
@@ -541,7 +553,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
       record.finished = true;
       scheduleCleanup(sId, record);
     }
-  })();
+  });
 
   return { runId, alreadyRunning: false, mode };
 }

@@ -128,6 +128,9 @@ export default function SeriesAutopilotSchedule({ series, providers = [], active
   const setProvider = async (provider) => persist({ ...entry, provider: provider || undefined, model: undefined, effort: undefined });
   const setModel = async (model) => persist({ ...entry, model: model || undefined });
   const setEffort = async (effort) => persist({ ...entry, effort: effort || undefined });
+  // Stored as a plain boolean; `runOptionsFor` forwards only an explicit `true`,
+  // so an unticked schedule still inherits the saved pipelineEditorialChecks default.
+  const setOverrideStagePins = async (on) => persist({ ...entry, overrideStagePins: on });
 
   const removeSchedule = async () => {
     await persist(null);
@@ -219,6 +222,15 @@ export default function SeriesAutopilotSchedule({ series, providers = [], active
                   emptyProviderOption={`Use series default (${providerLabel(series?.llm?.provider || activeProviderId)})`}
                   emptyModelOption="Default model"
                 />
+                <label className="flex items-center gap-2 text-xs text-gray-300 pt-1.5">
+                  <input
+                    type="checkbox"
+                    checked={entry?.overrideStagePins === true}
+                    disabled={saving}
+                    onChange={(e) => setOverrideStagePins(e.target.checked)}
+                  />
+                  Use it for every stage (ignore Prompts stage pins)
+                </label>
               </div>
 
               {cosMode === 'off' ? (
