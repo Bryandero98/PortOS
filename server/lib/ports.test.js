@@ -44,11 +44,13 @@ describe('PORTS mirror of ecosystem.config.cjs', () => {
   it('keeps the native PostgreSQL literal in sync with the config source', () => {
     // The native port only appears inside the config's PGMODE ternary, so there is
     // no exported constant to compare against — assert against the source line.
+    // Compare whole numeric literals, not substrings: a config renumbered to 15432
+    // or 54321 still *contains* "5432", so a substring check would pass on drift.
     const source = readFileSync(ecosystemPath, 'utf8');
     const postgresLine = source.split('\n').find((line) => /^\s*POSTGRES:/.test(line));
     expect(postgresLine).toBeTruthy();
-    expect(postgresLine).toContain(String(PORTS.POSTGRES_NATIVE));
-    expect(postgresLine).toContain(String(PORTS.POSTGRES_DOCKER));
+    const literals = (postgresLine.replace(/\/\/.*$/, '').match(/\d+/g) || []).map(Number);
+    expect(new Set(literals)).toEqual(new Set([PORTS.POSTGRES_NATIVE, PORTS.POSTGRES_DOCKER]));
   });
 });
 
