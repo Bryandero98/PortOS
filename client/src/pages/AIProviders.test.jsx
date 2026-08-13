@@ -7,9 +7,21 @@ const api = vi.hoisted(() => ({
   getApps: vi.fn(),
   getRuns: vi.fn(),
   getProviderStatuses: vi.fn(),
+  getSampleProviders: vi.fn(),
+  createProvider: vi.fn(),
+}));
+
+const toast = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  warning: vi.fn(),
 }));
 
 vi.mock('../services/api', () => api);
+vi.mock('../components/ui/Toast', () => ({
+  default: toast,
+}));
 vi.mock('../services/socket', () => ({
   default: {
     on: vi.fn(),
@@ -98,5 +110,41 @@ describe('AIProviders page load error handling', () => {
     expect(screen.queryByText('Failed to load AI providers')).not.toBeInTheDocument();
     expect(screen.queryByText('No providers configured')).not.toBeInTheDocument();
     expect(api.getProviders).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('handleAddSample error handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getRuns.mockResolvedValue({ runs: [] });
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviders.mockResolvedValue({
+      providers: [],
+      activeProvider: null,
+    });
+    api.getSampleProviders.mockResolvedValue({
+      providers: [
+        { id: 'sample-1', name: 'Sample AI', type: 'api', enabled: true, endpoint: 'https://api.sample.com', models: ['model-1'] }
+      ]
+    });
+  });
+
+  it('resets addingSample state and re-enables button if api.createProvider rejects', async () => {
+    api.createProvider.mockRejectedValue(new Error('Failed to create provider'));
+
+    renderPage();
+
+    const loadSamplesBtn = await screen.findByRole('button', { name: 'Load Samples' });
+    fireEvent.click(loadSamplesBtn);
+
+    const addBtn = await screen.findByRole('button', { name: 'Add' });
+    fireEvent.click(addBtn);
+
+    expect(api.createProvider).toHaveBeenCalledWith(expect.objectContaining({ id: 'sample-1' }));
+
+    const reEnabledAddBtn = await screen.findByRole('button', { name: 'Add' });
+    expect(reEnabledAddBtn).not.toBeDisabled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Failed to add provider: Failed to create provider'));
   });
 });
