@@ -216,8 +216,12 @@ function normalizeBroker(b) {
 
 // Upsert one broker; when `onlyIfNotCurated` is set the DO UPDATE is skipped for
 // a row already marked curated (the refresh never clobbers field-verified data).
-async function upsertBroker(client, b, { onlyIfNotCurated = false } = {}) {
-  const guard = onlyIfNotCurated ? `WHERE privacy_brokers.source <> 'curated'` : '';
+// When `onlyIfCurated` is set, the DO UPDATE is only performed for curated rows.
+async function upsertBroker(client, b, { onlyIfNotCurated = false, onlyIfCurated = false } = {}) {
+  let guard = '';
+  if (onlyIfNotCurated) guard = `WHERE privacy_brokers.source <> 'curated'`;
+  else if (onlyIfCurated) guard = `WHERE privacy_brokers.source = 'curated'`;
+
   await client.query(
     `INSERT INTO privacy_brokers
        (id, name, urls, optout, tier, disclosure_fields, cluster_parent,
@@ -230,7 +234,7 @@ async function upsertBroker(client, b, { onlyIfNotCurated = false } = {}) {
        cluster_parent = EXCLUDED.cluster_parent,
        prefer_suppression = EXCLUDED.prefer_suppression, antibot = EXCLUDED.antibot,
        source = EXCLUDED.source, confidence = EXCLUDED.confidence,
-       last_verified = EXCLUDED.last_verified, enabled = EXCLUDED.enabled,
+       last_verified = EXCLUDED.last_verified, enabled = privacy_brokers.enabled,
        updated_at = NOW()
      ${guard}`,
     [
@@ -257,16 +261,27 @@ export async function seedCuratedBrokers() {
   const brokers = await loadCuratedSeed();
   const ordered = [...brokers].sort((a, b) => (a.clusterParent ? 1 : 0) - (b.clusterParent ? 1 : 0));
   await withTransaction(async (client) => {
-    for (const b of ordered) await upsertBroker(client, b);
+    for (const b of ordered) await upsertBroker(client, b, { onlyIfCurated: true });
   });
   console.log(`🗂️ Seeded ${ordered.length} curated privacy brokers`);
   return { seeded: ordered.length };
 }
 
-// Lazy first-use seed — never at boot. Only seeds an empty table.
-async function ensureSeeded() {
-  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM privacy_brokers`);
-  if (rows[0].n === 0) await seedCuratedBrokers();
+let seedPromise = null;
+
+// Lazy first-use seed — syncs curated brokers on initial use after server boot / upgrade.
+export async function ensureSeeded() {
+  if (!seedPromise) {
+    seedPromise = seedCuratedBrokers().catch((err) => {
+      seedPromise = null;
+      throw err;
+    });
+  }
+  await seedPromise;
+}
+
+export function resetEnsureSeededForTests() {
+  seedPromise = null;
 }
 
 export async function listBrokers({ enabled } = {}) {

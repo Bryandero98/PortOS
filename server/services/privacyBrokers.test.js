@@ -22,9 +22,18 @@ const {
   parseCaRegistryCsv,
   parseBadboolList,
   listBrokerCases,
+  ensureSeeded,
+  resetEnsureSeededForTests,
 } = await import('./privacyBrokers.js');
 
 beforeEach(() => queryMock.mockReset());
+
+describe('ensureSeeded — syncing curated brokers on boot/upgrade (#4019)', () => {
+  it('calls seedCuratedBrokers on initial ensureSeeded invocation', async () => {
+    resetEnsureSeededForTests();
+    await expect(ensureSeeded()).resolves.not.toThrow();
+  });
+});
 
 describe('listBrokerCases — subject scoping (#3658)', () => {
   it('always scopes to a subject and binds the state filter as $2 (not a literal)', async () => {
