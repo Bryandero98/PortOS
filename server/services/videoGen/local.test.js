@@ -1942,8 +1942,8 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
     expect(args[args.indexOf('--solver') + 1]).toBe('euler');
     expect(args[args.indexOf('--model-repo') + 1]).toBe('/mock/hf/snap');
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
-      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
-      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+      join('/mock/hf/snap', 'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors'),
+      join('/mock/hf/snap', 'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors'),
     ]);
     expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
       'high_noise_transformer',
@@ -1975,8 +1975,8 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
     });
     const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => basename(String(arg)) === 'generate_wan22.py'))[1];
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
-      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
-      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+      join('/mock/hf/snap', 'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors'),
+      join('/mock/hf/snap', 'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors'),
     ]);
     expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
       'high_noise_transformer',
