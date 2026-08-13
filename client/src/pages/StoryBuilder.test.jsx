@@ -187,6 +187,46 @@ describe('StoryBuilder — index', () => {
     expect(screen.getByText('Import a finished work')).toBeTruthy();
   });
 
+  it('session list: shows a loading skeleton until the fetch resolves, then the sessions (#3906)', async () => {
+    let resolveList;
+    api.listStorySessions.mockReturnValue(new Promise((res) => { resolveList = res; }));
+
+    renderAt('/story-builder');
+
+    expect(await screen.findByLabelText('Loading your stories')).toBeTruthy();
+    await act(async () => { resolveList([{ id: 'stb-1', title: 'Example Story', currentStep: 'idea' }]); });
+
+    await waitFor(() => expect(screen.queryByLabelText('Loading your stories')).toBeNull());
+    expect(screen.getByText('Example Story')).toBeTruthy();
+  });
+
+  it('session list: a failed fetch shows an error banner with Retry, and Retry restores the list (#3906)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.listStorySessions.mockRejectedValueOnce(new Error('Network is down'));
+
+    renderAt('/story-builder');
+
+    // The section stays visible with the failure named — not silently blank.
+    expect(await screen.findByText('Couldn’t load your saved stories')).toBeTruthy();
+    expect(screen.getByText('Network is down')).toBeTruthy();
+    expect(screen.getByText('Continue a story')).toBeTruthy();
+
+    api.listStorySessions.mockResolvedValue([{ id: 'stb-2', title: 'Recovered Story', currentStep: 'plotArc' }]);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Retry/i })); });
+
+    await waitFor(() => expect(screen.getByText('Recovered Story')).toBeTruthy());
+    expect(screen.queryByText('Couldn’t load your saved stories')).toBeNull();
+    expect(api.listStorySessions).toHaveBeenCalledTimes(2);
+  });
+
+  it('session list: a successful but empty list hides the section entirely (#3906)', async () => {
+    api.listStorySessions.mockResolvedValue([]);
+    renderAt('/story-builder');
+    await screen.findByLabelText('Universe / story name');
+    await waitFor(() => expect(screen.queryByLabelText('Loading your stories')).toBeNull());
+    expect(screen.queryByText('Continue a story')).toBeNull();
+  });
+
   it('remix handoff: hydrates selected ingredients into chips + a prefilled seed, and forwards the ids on create', async () => {
     const { fireEvent } = await import('@testing-library/react');
     api.listCatalogIngredientsByIds.mockResolvedValue([
