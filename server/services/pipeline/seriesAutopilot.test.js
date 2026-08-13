@@ -2852,6 +2852,90 @@ describe('autopilot conductor', () => {
     expect(series.autopilot?.pauseKind).not.toBe('regression');
   });
 
+  it('reports every arc-spine resolver attempt with what it actually wrote (#3843)', async () => {
+    // The 2026-08-13 verifyArcSpine pause, replayed: 5 blockers → 2 → 2 → 2,
+    // stopping on "no net progress over 2 consecutive rounds of auto-resolve".
+    // Its retained telemetry was 4 `verify:round` frames and ONE `resolve:round`
+    // reporting `episodesEdited: 0` — so a reader could see neither that the
+    // first round's arc + volume edits are what took 5 to 2 (a spine resolver
+    // may not touch episodes at all, so that zero was expected), nor that the
+    // two rounds it paused over had attempted anything whatsoever.
+    const blockers = (n) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `spine gap ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: blockers(5) }))
+      .mockImplementationOnce(async () => ({ issues: blockers(2) }));
+    arcSpies.resolveVerifyIssues
+      .mockImplementationOnce(async () => ({
+        applied: true,
+        runId: 'arc-spine-1',
+        mutations: { arcFieldsEdited: 1, volumesEdited: 2, characterArcsEdited: 0, episodesEdited: 0 },
+      }))
+      // The two attempts the pause was counting. Both wrote nothing, for
+      // different reasons — which is exactly the distinction the gate could not
+      // report before.
+      .mockImplementationOnce(async () => ({
+        applied: false, runId: 'arc-spine-2', rejectedExactEdits: 3, noChangeReason: 'exact-edits-rejected',
+      }))
+      .mockImplementationOnce(async () => ({
+        applied: false, runId: 'arc-spine-3', noChangeReason: 'no-edits-returned',
+      }));
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // Four rounds, three resolver attempts, and an outcome frame for each one.
+    expect(frames.filter((f) => f.type === 'verify:round' && f.scope === 'arcSpine')).toHaveLength(4);
+    const attempts = frames.filter((f) => f.type === 'resolve:round' || f.type === 'resolve:no-change');
+    expect(attempts).toHaveLength(3);
+    // Round 1 wrote the spine. `episodesEdited: 0` stays for existing readers,
+    // but it is no longer the only thing the frame says.
+    expect(attempts[0]).toMatchObject({
+      type: 'resolve:round',
+      scope: 'arcSpine',
+      round: 1,
+      applied: true,
+      arcFieldsEdited: 1,
+      volumesEdited: 2,
+      episodesEdited: 0,
+      noChangeReason: null,
+    });
+    expect(attempts[1]).toMatchObject({
+      type: 'resolve:no-change',
+      round: 2,
+      applied: false,
+      arcFieldsEdited: 0,
+      volumesEdited: 0,
+      episodesEdited: 0,
+      rejectedExactEdits: 3,
+      noChangeReason: 'exact-edits-rejected',
+    });
+    expect(attempts[2]).toMatchObject({
+      type: 'resolve:no-change',
+      round: 3,
+      applied: false,
+      rejectedExactEdits: 0,
+      noChangeReason: 'no-edits-returned',
+    });
+    // Every frame stays numeric/enum — the diagnosis log must never carry
+    // manuscript text or the resolver's own prose.
+    for (const frame of attempts) {
+      expect(frame).not.toHaveProperty('notes');
+      expect(frame).not.toHaveProperty('findings');
+    }
+    // A round whose resolver wrote nothing re-uses its verification instead of
+    // billing another arc + per-volume pass.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('divergence');
+  });
+
   it('carries a rejected candidate\'s findings past its corrective retry into the next ordinary resolve', async () => {
     // The 2026-08-12 verifyArcSpine stall, replayed: 2 blockers → 1, a rewrite
     // back to 5 (reverted), the corrective retry back to 1, then straight back
