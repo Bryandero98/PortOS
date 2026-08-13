@@ -3501,6 +3501,69 @@ describe('peerSync', () => {
       // Gated before merge — bundle apply never runs.
       expect(applyCatalogRemoteChanges).not.toHaveBeenCalled();
     });
+
+    // #3926: the gate used to key on `ingredients` alone, so any bundle whose
+    // live rows sat in another block (`refs` today; `relations`/`tags`/`media`/
+    // `catalogTypes` from catalog v4–v8) slipped past it and got applied on a
+    // receiver that can't interpret the newer shape.
+    it.each([
+      ['relations', { ingredients: [], refs: [], relations: [{ fromIngredientId: 'cat-chr-1', toIngredientId: 'cat-chr-2', kind: 'ally-of', updatedAt: '2026-01-02T00:00:00Z' }] }],
+      ['tags', { ingredients: [], refs: [], tags: [{ id: 'cat-tag-1', label: 'Protagonists', parentId: null, updatedAt: '2026-01-02T00:00:00Z' }] }],
+      ['media', { ingredients: [], media: [{ ingredientId: 'cat-chr-1', mediaKey: 'img-1', mediaType: 'image', updatedAt: '2026-01-02T00:00:00Z' }] }],
+      ['refs', { ingredients: [], refs: [{ ingredientId: 'cat-chr-1', refKind: 'universe', refId: 'u1', role: 'canon-character', createdAt: '2026-01-02T00:00:00Z' }] }],
+      // A block this receiver's catalog version doesn't know about yet must
+      // gate too — that is precisely the payload the gate protects against.
+      ['an unknown future block', { ingredients: [], refs: [], someFutureBlock: [{ id: 'x1', updatedAt: '2026-01-02T00:00:00Z' }] }],
+    ])('receiver rejects a bundle whose only live rows are %s when the sender is schema-ahead on catalog', async (_label, catalogBundle) => {
+      vi.mocked(getBackendName).mockReturnValue('postgres');
+      const rejection = await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1', name: 'Foo', deleted: false, deletedAt: null },
+        assetManifest: [],
+        catalogBundle,
+        sourceInstanceId: 'peer-a',
+        portosMeta: { schemaVersions: { ...PORTOS_SCHEMA_VERSIONS, catalog: PORTOS_SCHEMA_VERSIONS.catalog + 1 }, portosVersion: '99.0.0' },
+      }).catch((err) => err);
+      expect(rejection.code).toBe('PEER_SYNC_SCHEMA_VERSION_AHEAD');
+      expect(rejection.details.ahead).toEqual([
+        { category: 'catalog', senderV: PORTOS_SCHEMA_VERSIONS.catalog + 1, receiverV: PORTOS_SCHEMA_VERSIONS.catalog },
+      ]);
+      expect(applyCatalogRemoteChanges).not.toHaveBeenCalled();
+    });
+
+    it('receiver applies an ingredient-free bundle when the sender is NOT schema-ahead', async () => {
+      // The widened gate must not turn into a blanket rejection: an
+      // equal-version sender's relations-only bundle still applies.
+      vi.mocked(getBackendName).mockReturnValue('postgres');
+      await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1', name: 'Foo', deleted: false, deletedAt: null },
+        assetManifest: [],
+        catalogBundle: { ingredients: [], refs: [], relations: [{ fromIngredientId: 'cat-chr-1', toIngredientId: 'cat-chr-2', kind: 'ally-of', updatedAt: '2026-01-02T00:00:00Z' }] },
+        sourceInstanceId: 'peer-a',
+        portosMeta: { schemaVersions: { ...PORTOS_SCHEMA_VERSIONS } },
+      });
+      expect(applyCatalogRemoteChanges).toHaveBeenCalledTimes(1);
+    });
+
+    it('receiver does NOT gate a tombstone-only bundle from a schema-ahead sender', async () => {
+      // Tombstone rows are id+deleted+deletedAt+updatedAt at every catalog
+      // version, so they stay exempt — otherwise federated catalog deletes
+      // would stall the moment one peer upgrades ahead.
+      vi.mocked(getBackendName).mockReturnValue('postgres');
+      await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1', name: 'Foo', deleted: false, deletedAt: null },
+        assetManifest: [],
+        catalogBundle: {
+          ingredients: [{ id: 'cat-chr-1', deleted: true, deletedAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-01T00:00:00Z' }],
+          relations: [{ id: 'cat-rel-1', deleted: true, deletedAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-01T00:00:00Z' }],
+        },
+        sourceInstanceId: 'peer-a',
+        portosMeta: { schemaVersions: { ...PORTOS_SCHEMA_VERSIONS, catalog: PORTOS_SCHEMA_VERSIONS.catalog + 1 }, portosVersion: '99.0.0' },
+      });
+      expect(applyCatalogRemoteChanges).toHaveBeenCalledTimes(1);
+    });
   });
 
   // -------------------------------------------------------------------------

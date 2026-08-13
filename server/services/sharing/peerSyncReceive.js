@@ -82,6 +82,22 @@ async function applyCatalogBundle(catalogBundle, portosMeta) {
   });
 }
 
+/**
+ * True when a catalog bundle carries at least one LIVE (non-tombstone) row in
+ * any of its blocks. Every block of the catalog sync envelope is an array of
+ * rows (`ingredients`, `refs`, `relations`, `tags`, `media`, `catalogTypes`,
+ * …), so we scan array-valued keys generically instead of enumerating them —
+ * a block added by a catalog schema version NEWER than this receiver still
+ * counts, which is exactly the case the version gate exists to catch. A row
+ * that isn't a plain object counts as live (conservative: gate rather than
+ * wave through something we can't classify).
+ */
+function catalogBundleHasLiveRow(catalogBundle) {
+  return Object.values(catalogBundle).some(
+    (block) => Array.isArray(block) && block.some((row) => row?.deleted !== true),
+  );
+}
+
 // --- Receiver-side push handler -----------------------------------------
 
 /**
@@ -163,15 +179,21 @@ export async function applyIncomingPush(payload) {
   if (record.deleted !== true && isPlainObject(linkedCollection) && linkedCollection.deleted !== true) {
     for (const c of RECORD_KIND_SCHEMA_CATEGORIES.mediaCollection) relevantCategories.add(c);
   }
-  // A catalog bundle ships catalog-schema-shaped ingredient rows. Gate the
-  // `catalog` category whenever the bundle carries at least one LIVE ingredient
-  // — a sender ahead on `catalog` would push forward-shaped payload an older
-  // receiver can't interpret. Tombstone-only bundles (all ingredients deleted)
-  // are id+deleted+deletedAt+updatedAt — safe at every version, so they needn't
+  // A catalog bundle ships catalog-schema-shaped rows. Gate the `catalog`
+  // category whenever the bundle carries at least one LIVE row in ANY of its
+  // blocks — a sender ahead on `catalog` would otherwise push forward-shaped
+  // payload an older receiver can't interpret. The check must NOT be keyed on
+  // `ingredients` alone: today's exporter already emits ingredient-free
+  // bundles (`refs` only), and catalog v4–v8 added `relations`, `tags`,
+  // `media` and `catalogTypes` blocks — any of which a newer sender can bundle
+  // with no ingredients at all, slipping past an ingredients-only gate and
+  // landing forward-shaped rows on an older receiver (#3926). Scanning every
+  // array-valued block rather than an enumerated key list also covers blocks
+  // introduced by a FUTURE catalog version, which an older receiver cannot
+  // name by definition. Tombstone-only bundles (every row deleted) are
+  // id+deleted+deletedAt+updatedAt — safe at every version, so they needn't
   // gate (same reasoning as the tombstone-record exemption above).
-  if (record.deleted !== true && isPlainObject(catalogBundle) &&
-      Array.isArray(catalogBundle.ingredients) &&
-      catalogBundle.ingredients.some((i) => i?.deleted !== true)) {
+  if (record.deleted !== true && isPlainObject(catalogBundle) && catalogBundleHasLiveRow(catalogBundle)) {
     for (const c of (RECORD_KIND_SCHEMA_CATEGORIES['cat-ingredient'] || ['catalog'])) relevantCategories.add(c);
   }
   // A bundled linked track (#1858) ships a live, full-shape `track` record. Gate
