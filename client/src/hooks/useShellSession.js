@@ -16,6 +16,10 @@ import toast from '../components/ui/Toast';
 // Must match MAX_TOTAL_SESSIONS in server/services/shell.js
 export const MAX_SESSIONS = 20;
 
+// recoverToSurvivor's no-op fallback, for the one caller already sitting at bare
+// /shell and content to stay there when nothing is free to adopt.
+const STAY_PUT = () => {};
+
 // Read the active theme's colors off the document and assemble the xterm palette.
 // The day/night mode comes from the `data-port-theme-mode` attribute applyTheme()
 // stamps on <html>, so this stays correct without threading React state in.
@@ -64,9 +68,19 @@ const readTerminalTheme = () => {
  *   • shell:detached — the server tells the previously-attached socket its session was
  *     taken over; we drop the dead local view rather than appear "Connected" forever.
  *
- *   • userIdleRef — set by explicit user-clear paths (Stop, kill-active) and cleared by
- *     every user-initiated start/attach. The passive-idle survivor-adoption branches
- *     skip while it's set, so a transient reconnect can't undo an explicit Stop.
+ *   • recoverToSurvivor(excludeId, onNothing) — the ONE recovery path. Every way the
+ *     displayed session can go away (it exited, another tab took it over, it was
+ *     killed externally, an attach failed, the user closed it) ends here, so a policy
+ *     change lands once instead of in five near-copies. Callers vary only in what to
+ *     do when nothing is free, which is the single knob.
+ *
+ *   • suppressAutoStartRef — set when a user close leaves nothing to hand over, and
+ *     cleared by every user-initiated start/attach. It suppresses only the paths that
+ *     SPAWN a session: without it, stopping your last shell would immediately respawn
+ *     one and make Stop a no-op. It deliberately does NOT suppress adopting an already
+ *     live free session — being handed a working shell is never the thing we're
+ *     suppressing, and sitting on "Disconnected" while one is free is precisely the
+ *     broken state these recovery paths exist to prevent.
  *
  *   • mountedRef — flipped false on unmount so a deferred (setTimeout) recovery attach
  *     short-circuits instead of claiming a session with no listener left to render it.
@@ -114,12 +128,9 @@ export function useShellSession({ isFullscreen } = {}) {
     pendingAttachRef.current = { target, generation: pendingAttachRef.current.generation + 1 };
   }, []);
   const cancelPendingAttach = useCallback(() => setPendingAttach(null), [setPendingAttach]);
-  // True when the user explicitly cleared the active session (Stop button or X on the
-  // active tab) and is intentionally sitting at /shell. The passive-idle adoption branch
-  // in handleSessions must skip while this is set, otherwise the next broadcast would
-  // immediately attach a free survivor and undo the user's explicit "leave at /shell".
-  // Cleared by any user-initiated start/attach action.
-  const userIdleRef = useRef(false);
+  // Suppresses the session-SPAWNING branches only — see the module doc comment above
+  // for why adoption of an already-live free session is deliberately left enabled.
+  const suppressAutoStartRef = useRef(false);
   const socket = useSocket();
   const { themeId, theme: activeTheme } = useThemeContext();
   const themeMode = activeTheme?.mode ?? 'night';
@@ -354,6 +365,25 @@ export function useShellSession({ isFullscreen } = {}) {
     // themselves.
   }, []);
 
+  // The single auto-pick rule: the newest session that is neither already attached to
+  // another socket — adopting one would boot that tab via shell:detached — nor an
+  // external TUI run, which is an opt-in view the user clicks into rather than a
+  // default landing session. `excludeId` drops the session that just died, which is
+  // often still listed in the snapshot we're reconciling against. The displayed
+  // session is excluded unconditionally: `attached` is recipient-relative (the server
+  // reports the session bound to THIS socket as unattached), so without it a caller
+  // that picks before clearing the view would re-attach the tab to itself.
+  const pickFreeSurvivor = useCallback((excludeId = null) => {
+    const survivor = sessionsRef.current.findLast(s => (
+      !s.attached && !s.external && s.sessionId !== excludeId && s.sessionId !== sessionIdRef.current
+    ));
+    return survivor?.sessionId ?? null;
+  }, []);
+
+  const goToShellRoot = useCallback(() => {
+    navigateRef.current('/shell', { replace: true });
+  }, []);
+
   const activateSession = useCallback((sessionId) => {
     sessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
@@ -371,7 +401,7 @@ export function useShellSession({ isFullscreen } = {}) {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
     setPendingAttach('new');
-    userIdleRef.current = false;
+    suppressAutoStartRef.current = false;
     if (termInstanceRef.current) {
       // reset() not clear(): the xterm instance is reused across every session,
       // and a full-screen TUI (a watched agent-tui claude/codex run) leaves DEC
@@ -395,7 +425,7 @@ export function useShellSession({ isFullscreen } = {}) {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
     setPendingAttach(sessionId);
-    userIdleRef.current = false;
+    suppressAutoStartRef.current = false;
     if (termInstanceRef.current) {
       // reset() not clear() — drop any DEC private modes (mouse/focus tracking,
       // alt-screen) the previously-viewed session left active so they can't
@@ -409,54 +439,80 @@ export function useShellSession({ isFullscreen } = {}) {
     socket.emit('shell:attach', claim ? { sessionId, claim: true } : { sessionId });
   }, [socket, setPendingAttach]);
 
-  const stopSession = useCallback(() => {
-    if (socket && sessionIdRef.current) {
-      socket.emit('shell:stop', { sessionId: sessionIdRef.current });
-      clearActiveSession();
-      cancelPendingAttach();
-      // Disarm the nav intent — if the cancelled request was a user-initiated tab
-      // click that had set 'push', a later automatic activation must not push a
-      // history entry the user no longer wanted.
-      pendingNavIntentRef.current = 'replace';
-      userIdleRef.current = true;
+  // The one recovery path — see the module doc comment. Hands the user the next free
+  // shell, or runs `onNothing` (default: fall back to bare /shell) when there is none.
+  const recoverToSurvivor = useCallback((excludeId = null, onNothing = goToShellRoot) => {
+    const survivor = pickFreeSurvivor(excludeId);
+    if (!survivor) {
+      onNothing();
+      return;
+    }
+    // claim:true — an auto-pick must never boot another tab off a session it is
+    // already driving, however the broadcast race falls out.
+    attachToSession(survivor, { claim: true });
+  }, [pickFreeSurvivor, attachToSession, goToShellRoot]);
+
+  // The session the user is looking at just went away by their own action (Stop
+  // button, or X on the active tab). Reading "Disconnected" at bare /shell while other
+  // live sessions sit one click away in the tab strip is the broken state this avoids.
+  const closeActiveSession = useCallback(() => {
+    const closedId = sessionIdRef.current;
+    clearActiveSession();
+    cancelPendingAttach();
+    // Disarm the nav intent — if the cancelled request was a user-initiated tab
+    // click that had set 'push', a later automatic activation must not push a
+    // history entry the user no longer wanted.
+    pendingNavIntentRef.current = 'replace';
+    recoverToSurvivor(closedId, () => {
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
       }
-      navigateRef.current('/shell', { replace: true });
-    }
-  }, [socket, clearActiveSession, cancelPendingAttach]);
+      // Nothing to hand over, so don't spawn a replacement either — that would make
+      // Stop a no-op. Adoption stays armed, so a session freed later still lands.
+      suppressAutoStartRef.current = true;
+      goToShellRoot();
+    });
+  }, [clearActiveSession, cancelPendingAttach, recoverToSurvivor, goToShellRoot]);
+
+  const stopSession = useCallback(() => {
+    if (!socket || !sessionIdRef.current) return;
+    socket.emit('shell:stop', { sessionId: sessionIdRef.current });
+    closeActiveSession();
+  }, [socket, closeActiveSession]);
 
   const killOtherSession = useCallback((sessionId) => {
     if (!socket) return;
     socket.emit('shell:stop', { sessionId });
-    if (sessionId === sessionIdRef.current) {
-      clearActiveSession();
-      cancelPendingAttach();
-      pendingNavIntentRef.current = 'replace';
-      userIdleRef.current = true;
-      if (termInstanceRef.current) {
-        termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
-      }
-      navigateRef.current('/shell', { replace: true });
-    }
-  }, [socket, clearActiveSession, cancelPendingAttach]);
+    if (sessionId === sessionIdRef.current) closeActiveSession();
+  }, [socket, closeActiveSession]);
 
   // Restart = kill the current session, then start a fresh one after a short delay
-  // (gives the server time to tear down the old PTY). The deferred startSession must
-  // respect both staleness and unmount: stopSession() bumps the pending generation,
-  // so capture it and abort the delayed start if the user switched sessions (which
-  // bumps the generation again) or navigated away within the 1s window. Without the
-  // generation guard, a tab click inside the window would fire startSession() and
-  // clobber the in-flight switch.
+  // (gives the server time to tear down the old PTY). Deliberately NOT built on
+  // stopSession: the user asked for a replacement shell here, not for the next one
+  // in the strip, so this must not run the survivor-adoption path.
+  //
+  // Reserving the pending slot as 'new' up front does three jobs across the delay
+  // window: it blocks input to the dead PTY, it stops the shell:sessions broadcast
+  // that follows the stop from adopting a survivor into the gap, and its generation
+  // is the staleness guard — a user action inside the window (tab click, New) bumps
+  // it and aborts our delayed start rather than letting it clobber their switch.
   const restartSession = useCallback(() => {
-    stopSession();
+    if (!socket || !sessionIdRef.current) return;
+    socket.emit('shell:stop', { sessionId: sessionIdRef.current });
+    clearActiveSession();
+    pendingNavIntentRef.current = 'replace';
+    setPendingAttach('new');
+    if (termInstanceRef.current) {
+      termInstanceRef.current.writeln('\r\n\x1b[33m[Restarting session...]\x1b[0m');
+    }
+    goToShellRoot();
     const gen = pendingAttachRef.current.generation;
     setTimeout(() => {
       if (!mountedRef.current) return;
       if (pendingAttachRef.current.generation !== gen) return;
       startSession();
     }, 1000);
-  }, [stopSession, startSession]);
+  }, [socket, clearActiveSession, setPendingAttach, startSession, goToShellRoot]);
 
   const switchToSession = useCallback((sessionId, { fromUrl = false } = {}) => {
     // Compare against the in-flight attach target if there is one, falling back to the
@@ -496,14 +552,6 @@ export function useShellSession({ isFullscreen } = {}) {
     const handleSessions = (sessionList) => {
       sessionsRef.current = sessionList;
       setSessions(sessionList);
-      // Auto-pick helper: skip sessions already attached to another socket so we don't
-      // steal them via the shell:detached takeover. Also skip external TUI runs —
-      // those are opt-in views the user clicks into, never the default landing
-      // session. Manual tab clicks bypass this.
-      const pickUnattachedSurvivor = (list) => {
-        const free = list.filter(s => !s.attached && !s.external);
-        return free.length > 0 ? free[free.length - 1] : null;
-      };
       // On first load, auto-attach to existing session or create new
       if (!hasInitializedRef.current) {
         hasInitializedRef.current = true;
@@ -519,29 +567,24 @@ export function useShellSession({ isFullscreen } = {}) {
           // URL points at a live session — attach to that one (deep-link intent
           // overrides the "don't steal" guard; the prior tab gets shell:detached).
           attachToSession(urlSid);
-        } else if (sessionList.length > 0 && !sessionIdRef.current && !userIdleRef.current) {
-          // Attach to most recent existing session that isn't already driving another tab.
-          // Skipped when the user is intentionally idle — handleConnect resets
-          // hasInitializedRef so this branch runs on every reconnect, and a transient
-          // disconnect shouldn't re-adopt a session the user explicitly stopped.
-          const survivor = pickUnattachedSurvivor(sessionList);
-          if (survivor) {
-            attachToSession(survivor.sessionId, { claim: true });
-          } else if (sessionList.filter(s => !s.external).length < MAX_SESSIONS) {
-            // Every live session is attached elsewhere but we have capacity. The user
-            // landed here (probably via a now-dead deep link) intending to get a
-            // shell — start a fresh one rather than leaving them at bare /shell.
+        } else if (sessionList.length > 0 && !sessionIdRef.current) {
+          // Attach to the most recent existing session that isn't already driving
+          // another tab. handleConnect resets hasInitializedRef, so this also runs on
+          // every reconnect — adoption is safe there, spawning is not.
+          recoverToSurvivor(null, () => {
+            // Every live session is attached elsewhere. If the user hasn't just closed
+            // one, they landed here (probably via a now-dead deep link) intending to
+            // get a shell — start a fresh one rather than leaving them at bare /shell.
             // Capacity counts only interactive shells: external TUI runs are exempt
             // from the cap server-side, so they must not block a new shell here.
-            startSession();
-          } else {
-            // At session cap with all attached elsewhere — nothing safe to do here.
-            navigateRef.current('/shell', { replace: true });
-          }
-        } else if (sessionList.length === 0 && !userIdleRef.current) {
-          // Auto-start on empty list — skipped when the user is intentionally idle so
-          // a transient reconnect (which resets hasInitializedRef and re-enters this
-          // branch) doesn't spawn a new session over an explicit Stop.
+            const atCap = sessionList.filter(s => !s.external).length >= MAX_SESSIONS;
+            if (suppressAutoStartRef.current || atCap) goToShellRoot();
+            else startSession();
+          });
+        } else if (sessionList.length === 0 && !suppressAutoStartRef.current) {
+          // Auto-start on empty list — skipped after a user close so a transient
+          // reconnect (which resets hasInitializedRef and re-enters this branch)
+          // doesn't spawn a new session over an explicit Stop.
           startSession();
         }
         return;
@@ -558,23 +601,16 @@ export function useShellSession({ isFullscreen } = {}) {
         }
         // Let any user-initiated pending attach complete instead of overriding it.
         if (pendingAttachRef.current.target) return;
-        const survivor = pickUnattachedSurvivor(sessionList);
-        if (survivor) {
-          attachToSession(survivor.sessionId, { claim: true });
-        } else {
-          navigateRef.current('/shell', { replace: true });
-        }
+        recoverToSurvivor(displayed);
         return;
       }
-      // Tab is sitting on bare /shell with no displayed session (e.g. arrived when
-      // every live session was already attached elsewhere). If another tab later
-      // disconnects and frees one of those sessions, adopt it so the user doesn't have
-      // to manually click to recover. Gated on (1) no in-flight start/attach so we
-      // don't race a user-initiated request, and (2) `!userIdleRef.current` so we
-      // don't undo an explicit Stop/kill-active: the user just chose to be at /shell.
-      if (!displayed && !pendingAttachRef.current.target && !userIdleRef.current) {
-        const survivor = pickUnattachedSurvivor(sessionList);
-        if (survivor) attachToSession(survivor.sessionId, { claim: true });
+      // Tab is sitting on bare /shell with no displayed session — it arrived when every
+      // live session was attached elsewhere, or the user closed their last free one. If
+      // another tab later disconnects and frees a session, adopt it so the user doesn't
+      // have to click to recover. Gated only on there being no in-flight start/attach to
+      // race; STAY_PUT because bare /shell is already where we are.
+      if (!displayed && !pendingAttachRef.current.target) {
+        recoverToSurvivor(null, STAY_PUT);
       }
     };
 
@@ -635,36 +671,20 @@ export function useShellSession({ isFullscreen } = {}) {
     };
 
     const handleShellExit = ({ sessionId: sid, code }) => {
-      if (sid === sessionIdRef.current) {
-        clearActiveSession();
-        if (termInstanceRef.current) {
-          termInstanceRef.current.writeln(`\r\n\x1b[33m[Shell exited with code ${code}]\x1b[0m`);
-        }
-        // If the user has an in-flight start/attach to a different session, let it
-        // complete instead of overriding it with our fallback. The handleShellAttached
-        // response will install the new session and the user's intent wins.
-        if (pendingAttachRef.current.target) return;
-        // Auto-attach to a survivor not already driving another tab (don't steal,
-        // and don't auto-adopt a TUI-run view).
-        const free = sessionsRef.current.filter(s => s.sessionId !== sid && !s.attached && !s.external);
-        if (free.length > 0) {
-          // Claim pending immediately so the shell:sessions broadcast that follows
-          // shell:exit doesn't race the timeout — the bare-/shell adoption branch
-          // sees pendingAttachRef set and skips. Capture generation so a user action
-          // during the 100ms window aborts our delayed attach. claim:true protects
-          // against multi-tab adopt races.
-          const target = free[free.length - 1].sessionId;
-          setPendingAttach(target);
-          const gen = pendingAttachRef.current.generation;
-          setTimeout(() => {
-            if (!mountedRef.current) return;
-            if (pendingAttachRef.current.generation !== gen) return;
-            attachToSession(target, { claim: true });
-          }, 100);
-        } else {
-          navigateRef.current('/shell', { replace: true });
-        }
+      if (sid !== sessionIdRef.current) return;
+      clearActiveSession();
+      if (termInstanceRef.current) {
+        termInstanceRef.current.writeln(`\r\n\x1b[33m[Shell exited with code ${code}]\x1b[0m`);
       }
+      // If the user has an in-flight start/attach to a different session, let it
+      // complete instead of overriding it with our fallback. The handleShellAttached
+      // response will install the new session and the user's intent wins.
+      if (pendingAttachRef.current.target) return;
+      // Recovering synchronously (rather than behind a timer) is what keeps the
+      // shell:sessions broadcast that follows shell:exit from adopting a different
+      // survivor into the gap — attachToSession sets the pending target before the
+      // broadcast can arrive, and the adoption branch skips while it's set.
+      recoverToSurvivor(sid);
     };
 
     const handleShellDetached = ({ sessionId: sid, reason }) => {
@@ -680,11 +700,13 @@ export function useShellSession({ isFullscreen } = {}) {
           : 'Session detached';
         termInstanceRef.current.writeln(`\r\n\x1b[33m[${note}]\x1b[0m`);
       }
-      // If the user already has an attach in flight to a different session, don't
-      // navigate to bare /shell — let the pending request complete (its
-      // handleShellAttached will navigate appropriately).
+      // If the user already has an attach in flight to a different session, let the
+      // pending request complete (its handleShellAttached will navigate appropriately).
       if (pendingAttachRef.current.target) return;
-      navigateRef.current('/shell', { replace: true });
+      // Recover explicitly rather than relying on the shell:sessions broadcast the
+      // server happens to send after a takeover: this is the path the user is least
+      // responsible for, so it must not be the one whose recovery is incidental.
+      recoverToSurvivor(sid);
     };
 
     const handleShellError = ({ error, sessionId: errSid }) => {
@@ -725,25 +747,13 @@ export function useShellSession({ isFullscreen } = {}) {
         // No previously-displayed session to restore (e.g. initial deep-link attach
         // failed before any session was active). Fall back to a free survivor so the
         // user isn't stranded on /shell/<dead-id> with only the error message visible.
-        const free = live.filter(s => !s.attached && s.sessionId !== failedTarget && !s.external);
-        if (free.length > 0) {
-          attachToSession(free[free.length - 1].sessionId, { claim: true });
-        } else if (urlSessionIdRef.current) {
-          navigateRef.current('/shell', { replace: true });
-        }
+        recoverToSurvivor(failedTarget);
         return;
       }
       if (!live.some(s => s.sessionId === active)) {
-        // The session we were displaying is also gone. Fall back to a survivor that
-        // isn't already attached elsewhere; claim:true protects against multi-tab
-        // adopt races. activateSession will update the URL on success.
+        // The session we were displaying is also gone — recover the same way.
         clearActiveSession();
-        const free = live.filter(s => !s.attached && s.sessionId !== failedTarget && !s.external);
-        if (free.length > 0) {
-          attachToSession(free[free.length - 1].sessionId, { claim: true });
-        } else {
-          navigateRef.current('/shell', { replace: true });
-        }
+        recoverToSurvivor(failedTarget);
         return;
       }
       // Active session is still alive. Distinguish a switch failure (re-attach so the
@@ -806,7 +816,7 @@ export function useShellSession({ isFullscreen } = {}) {
       // Don't kill session on unmount — it persists server-side
       sessionIdRef.current = null;
     };
-  }, [socket, startSession, attachToSession, activateSession, clearActiveSession, cancelPendingAttach, setPendingAttach]);
+  }, [socket, startSession, attachToSession, activateSession, clearActiveSession, cancelPendingAttach, setPendingAttach, recoverToSurvivor, goToShellRoot]);
 
   // React to URL changes after init (browser back/forward, manual URL paste, sidebar click).
   // fromUrl: true keeps the next activateSession in 'replace' mode — the browser already
@@ -825,14 +835,13 @@ export function useShellSession({ isFullscreen } = {}) {
       return;
     }
     // No active session, no live target for the URL. Clear the stale id from the
-    // address bar — but only when there's nothing in flight (a pending attach will
-    // navigate via activateSession on success) and the user isn't intentionally idle
-    // (then bare /shell is what they want). handleSessions handles survivor adoption
-    // and the deep-link new-session fallback when initial-load runs.
-    if (urlSessionId && !pendingAttachRef.current.target && !userIdleRef.current) {
-      navigateRef.current('/shell', { replace: true });
+    // address bar — but only when there's nothing in flight, since a pending attach
+    // will navigate via activateSession on success. handleSessions handles survivor
+    // adoption and the deep-link new-session fallback when initial-load runs.
+    if (urlSessionId && !pendingAttachRef.current.target) {
+      goToShellRoot();
     }
-  }, [urlSessionId, switchToSession]);
+  }, [urlSessionId, switchToSession, goToShellRoot]);
 
   // External TUI runs (editorial review, pipeline stages, etc.) are surfaced as
   // opt-in, fully-interactive tabs — you can watch and step in. They're labelled
