@@ -661,7 +661,7 @@ function RefineBox({ onRefine, disabled, busy, running, phase }) {
   );
 }
 
-function StepPanel({ session, universe, series, issues, stepId, locked, onChanged, onSeriesUpdate, onIssuesUpdate, onFlushPending, onUniverseCharRef }) {
+function StepPanel({ session, universe, series, issues, stepId, locked, onChanged, onSeriesUpdate, onIssuesUpdate, onFlushPending, onRegisterDraftFlush, onUniverseCharRef }) {
   const { start, busy, phase, op } = useStoryStepRun(stepId);
   const arc = series?.arc || {};
   const isRunning = (which) => busy && op === which;
@@ -796,6 +796,7 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
               onSeriesUpdate={onSeriesUpdate}
               onIssuesUpdate={onIssuesUpdate}
               onFlushPending={onFlushPending}
+              onRegisterDraftFlush={onRegisterDraftFlush}
             />
           </div>
         ) : (
@@ -1133,7 +1134,7 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   // server-confirmed setters. The flush is usually a no-op here (the bible
   // fields are edited on their own steps, not inside the arc step), so a
   // pre-flush save failure is swallowed (silent) rather than toasted.
-  const { updateSeriesFromServer, handleIssuesUpdate, flushPending } = useArcCanvasSync({
+  const { updateSeriesFromServer, handleIssuesUpdate, flushPending, registerDraftFlush } = useArcCanvasSync({
     series,
     setSeries,
     setIssues,
@@ -1173,7 +1174,15 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   }, [stepIds, session, staleSteps]);
 
   const lock = useLockToggle({
-    patchFn: (next) => (next ? lockStoryStep(storyId, activeStepId, { silent: true }) : unlockStoryStep(storyId, activeStepId, { silent: true })),
+    // Locking makes the step read-only server-side, so anything still pending
+    // on screen (dirty bible fields, an open Arc Canvas editor) must land
+    // FIRST — otherwise its save is rejected by the fresh lock and the user's
+    // last edits are silently lost (#3907). Unlocking re-opens the step and has
+    // nothing to preserve, so it skips the flush.
+    patchFn: async (next) => {
+      if (next) await flushPending();
+      return next ? lockStoryStep(storyId, activeStepId, { silent: true }) : unlockStoryStep(storyId, activeStepId, { silent: true });
+    },
     onSuccess: (_updated, next) => {
       reload();
       // "Lock & continue" should actually continue — on a successful LOCK,
@@ -1387,6 +1396,7 @@ function StoryBuilderDetail({ storyId, stepParam }) {
               onSeriesUpdate={updateSeriesFromServer}
               onIssuesUpdate={handleIssuesUpdate}
               onFlushPending={flushPending}
+              onRegisterDraftFlush={registerDraftFlush}
               onUniverseCharRef={applyUniverseCharRef}
             />
 

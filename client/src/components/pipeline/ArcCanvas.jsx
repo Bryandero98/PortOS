@@ -39,7 +39,7 @@ import AddSeasonRow from './arcCanvas/AddSeasonRow.jsx';
 
 export { default as ArcRoadmapChart } from './arcCanvas/ArcRoadmapChart.jsx';
 
-export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
+export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpdate, onFlushPending, onRegisterDraftFlush }) {
   const seasons = useMemo(() => series.seasons || [], [series.seasons]);
   const [activeSeasonId, setActiveSeasonId] = useState(seasons[0]?.id || null);
   // Bucket + sort issues by season once per (seasons, issues) change rather than
@@ -80,6 +80,7 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
           onSeriesUpdate={onSeriesUpdate}
           onIssuesUpdate={onIssuesUpdate}
           onFlushPending={onFlushPending}
+          onRegisterDraftFlush={onRegisterDraftFlush}
         />
         <EditorialRoadmapPanel series={series} seasons={seasons} issues={issues} />
       </div>

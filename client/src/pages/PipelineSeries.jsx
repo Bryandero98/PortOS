@@ -145,7 +145,7 @@ export default function PipelineSeries() {
   // setters). Flushes the full bible field-set; the API helper's auto-toast is
   // suppressed (silent) so `onFlushError` emits the single failure toast that
   // tells the user their edits didn't persist.
-  const { updateSeriesFromServer, handleIssuesUpdate, flushPending } = useArcCanvasSync({
+  const { updateSeriesFromServer, handleIssuesUpdate, flushPending, registerDraftFlush } = useArcCanvasSync({
     series,
     setSeries,
     setIssues,
@@ -296,6 +296,7 @@ export default function PipelineSeries() {
             onSeriesUpdate={updateSeriesFromServer}
             onIssuesUpdate={handleIssuesUpdate}
             onFlushPending={flushPending}
+            onRegisterDraftFlush={registerDraftFlush}
           />
         </section>
       </div>
