@@ -8,6 +8,7 @@
  */
 
 import { REFERENCE_RANGES, getBloodValueStatus } from '../components/meatspace/constants.js';
+import { formatDateTime } from '../utils/formatters';
 
 // Blood-marker category grouping — canonical source for the marker→category map.
 // BloodTestCard imports getCategoryForKey from here so the on-screen tab grouping
@@ -165,7 +166,7 @@ export function reportToMarkdown(report) {
   const lines = [];
   lines.push('# Clinician Summary — Blood & Lifestyle');
   lines.push('');
-  lines.push(`_Generated ${report.generatedAt.toLocaleString()}_`);
+  lines.push(`_Generated ${formatDateTime(report.generatedAt)}_`);
   lines.push('');
   lines.push('> Self-tracked data exported from PortOS MeatSpace. Reference ranges are general adult ranges and not a diagnosis.');
   lines.push('');

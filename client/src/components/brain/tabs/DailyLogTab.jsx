@@ -11,6 +11,7 @@ import { onVoiceEvent, sendText, setDictation as setVoiceDictation } from '../..
 import BrailleSpinner from '../../BrailleSpinner';
 import useMounted from '../../../hooks/useMounted';
 import { useVisibilityEvent } from '../../../hooks/useVisibilityEvent';
+import { formatDateFull } from '../../../utils/formatters';
 
 // Autosave cadence. The debounce keeps us from PUTting on every keystroke;
 // the max-wait ceiling exists because a pure debounce never fires at all
@@ -573,13 +574,9 @@ export default function DailyLogTab() {
     : dirty ? 'Unsaved…'
     : entry ? 'Saved' : '';
 
-  const dateLabel = useMemo(() => {
-    try {
-      return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-      });
-    } catch { return date; }
-  }, [date]);
+  // formatDateFull anchors a bare YYYY-MM-DD at LOCAL midnight and falls back
+  // to '' on an unparseable value, so a malformed route param still renders.
+  const dateLabel = useMemo(() => formatDateFull(date) || date, [date]);
 
   // AI policy: the surface that can trigger LLM work names the provider, so the
   // overflow menu item and the sm+ button share one title string.

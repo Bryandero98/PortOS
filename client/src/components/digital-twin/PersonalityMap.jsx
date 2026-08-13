@@ -3,6 +3,7 @@ import { Brain, RefreshCw, AlertCircle } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
 import { filterSelectableModels } from '../../utils/providers';
+import { formatDateNumeric } from '../../utils/formatters';
 
 const BIG_FIVE_LABELS = {
   O: { name: 'Openness', low: 'Practical', high: 'Curious' },
@@ -290,7 +291,7 @@ export default function PersonalityMap({ traits, confidence, providers, onAnalyz
                   <span className="text-sm text-gray-400">Last analyzed</span>
                   <span className="text-sm text-white">
                     {traits.lastAnalyzed
-                      ? new Date(traits.lastAnalyzed).toLocaleDateString()
+                      ? formatDateNumeric(traits.lastAnalyzed)
                       : 'Never'}
                   </span>
                 </div>

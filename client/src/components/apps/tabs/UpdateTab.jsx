@@ -6,7 +6,7 @@ import MarkdownOutput from '../../cos/MarkdownOutput';
 import Banner from '../../ui/Banner';
 import * as api from '../../../services/api';
 import socket from '../../../services/socket';
-import { formatDateTime } from '../../../utils/formatters';
+import { formatDateTime, formatDateNumeric, formatTimeOfDaySeconds } from '../../../utils/formatters';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
 import useMounted from '../../../hooks/useMounted';
 
@@ -438,7 +438,7 @@ export default function UpdateTab() {
                   <div>Updates pull from your fork's <span className="font-mono">main</span>. Sync it from <span className="font-mono">{upstreamName}</span> before updating, or apply upstream changes onto a working branch first to preserve customizations.</div>
                   <div>Tip: PR shareable fixes upstream; keep private changes on a separate branch and rebase that branch onto <span className="font-mono">main</span> after each sync.</div>
                   {forkSyncFresh && (
-                    <div className="text-port-success">✓ Fork synced {new Date(lastForkSync.syncedAt).toLocaleTimeString()} — ready to update.</div>
+                    <div className="text-port-success">✓ Fork synced {formatTimeOfDaySeconds(lastForkSync.syncedAt)} — ready to update.</div>
                   )}
                 </div>
               )}
@@ -541,7 +541,7 @@ export default function UpdateTab() {
           </div>
           {release.publishedAt && (
             <div className="text-xs text-gray-500 mb-2">
-              Released {new Date(release.publishedAt).toLocaleDateString()}
+              Released {formatDateNumeric(release.publishedAt)}
             </div>
           )}
           {release.body && (

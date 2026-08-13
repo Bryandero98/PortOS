@@ -6,6 +6,7 @@ import * as api from '../../../services/api';
 import { MEMORY_TYPES, MEMORY_TYPE_COLORS } from '../constants';
 import { buildGraph } from '../../../lib/graphSimulation';
 import BrailleSpinner from '../../BrailleSpinner';
+import { formatDateNumeric } from '../../../utils/formatters';
 
 const TYPE_HEX = {
   fact: '#3b82f6',
@@ -302,7 +303,7 @@ export default function MemoryGraph() {
                     </div>
                   )}
                   <div className="text-xs text-gray-500 flex flex-wrap gap-3">
-                    <span>Created: {new Date(fullMemory.createdAt).toLocaleDateString()}</span>
+                    <span>Created: {formatDateNumeric(fullMemory.createdAt)}</span>
                     {fullMemory.accessCount > 0 && <span>Accessed: {fullMemory.accessCount}x</span>}
                     {fullMemory.confidence != null && <span>Confidence: {(fullMemory.confidence * 100).toFixed(0)}%</span>}
                   </div>

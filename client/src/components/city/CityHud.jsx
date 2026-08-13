@@ -10,6 +10,7 @@ import CityVitalsList from './CityVitalsList';
 import CityHudCompact from './CityHudCompact';
 import { HudCorner, HealthBar, getHealthSentinel } from './cityHudBits';
 import useCityViewport from '../../hooks/useCityViewport';
+import { formatClockTime } from '../../utils/formatters';
 
 // WASD controls hint shown briefly on first exploration entry
 function ControlsHint({ visible }) {
@@ -150,7 +151,7 @@ export default function CityHud({ cosStatus, cosAgents, agentMap, eventLogs, con
               <HudCorner position="br" />
 
               <div className="font-pixel text-cyan-400 text-xl tracking-wider" style={{ textShadow: '0 0 10px rgba(6,182,212,0.6)' }}>
-                {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                {formatClockTime(time)}
               </div>
               <div className="font-pixel text-[11px] text-cyan-500 tracking-wide mt-0.5">
                 {activeApps}/{totalApps} SYSTEMS ONLINE

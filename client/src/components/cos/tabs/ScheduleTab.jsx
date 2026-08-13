@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
-import { formatDateTime } from '../../../utils/formatters';
+import { formatDateTime, formatTimeOfDaySeconds } from '../../../utils/formatters';
 import Banner from '../../ui/Banner';
 import { CodeReviewDefaultsProvider } from '../../../hooks/useCodeReviewDefaults';
 import { useAppOverrideActions } from '../../../hooks/useAppOverrideActions';
@@ -147,7 +147,7 @@ export default function ScheduleTab({ apps, providers, activeProviderId }) {
           <div className="space-y-1 mt-2">
             {schedule.onDemandRequests.map(req => (
               <div key={req.id} className="text-sm text-gray-300">
-                {req.taskType}{req.appId ? ` (${req.appId})` : ''} - requested {new Date(req.requestedAt).toLocaleTimeString()}
+                {req.taskType}{req.appId ? ` (${req.appId})` : ''} - requested {formatTimeOfDaySeconds(req.requestedAt)}
               </div>
             ))}
           </div>

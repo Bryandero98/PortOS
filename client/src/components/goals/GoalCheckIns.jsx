@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, ClipboardCheck, Wand2 } from 'lucide-react';
 import Pill from '../ui/Pill';
 import { CHECK_IN_STATUS_CONFIG, CHECK_IN_DOT_COLORS } from './goalConstants';
+import { formatDateNumeric } from '../../utils/formatters';
 
 export default function GoalCheckIns({
   goal, checkInsOpen, setCheckInsOpen, checkingIn, handleCheckIn
@@ -38,7 +39,7 @@ export default function GoalCheckIns({
             return (
               <div key={ci.id} className="p-2 rounded bg-port-bg border border-port-border space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-gray-500">{new Date(ci.date + 'T00:00:00').toLocaleDateString()}</span>
+                  <span className="text-[10px] text-gray-500">{formatDateNumeric(ci.date)}</span>
                   <Pill tone="bare" size="xs" bordered={false} className={`${sc.bg} ${sc.color}`}>{sc.label}</Pill>
                 </div>
                 <div className="text-[10px] text-gray-500">

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Save, Loader2, MonitorPlay, RefreshCw, CheckCircle2, AlertCircle, ShieldQuestion } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
+import { formatDateTime } from '../../utils/formatters';
 import {
   getSettings,
   updateSettings,
@@ -192,7 +193,7 @@ export function YoutubeTab() {
             <div><dt className="text-gray-500 text-xs uppercase">Watches recorded</dt><dd className="text-gray-200">{lastResult?.recorded ?? '—'}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">Entries scanned</dt><dd className="text-gray-200">{lastResult?.scanned ?? '—'}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">Status</dt><dd className="text-gray-200">{lastResult?.ok ? 'ok' : (lastResult?.error || lastResult?.status || 'error')}</dd></div>
-            <div><dt className="text-gray-500 text-xs uppercase">Last run</dt><dd className="text-gray-200">{status?.state?.lastRunAt ? new Date(status.state.lastRunAt).toLocaleString() : '—'}</dd></div>
+            <div><dt className="text-gray-500 text-xs uppercase">Last run</dt><dd className="text-gray-200">{formatDateTime(status?.state?.lastRunAt, '—')}</dd></div>
           </dl>
         </div>
       )}

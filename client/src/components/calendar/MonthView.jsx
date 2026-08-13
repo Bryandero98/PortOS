@@ -5,6 +5,7 @@ import socket from '../../services/socket';
 import EventDetail from './EventDetail';
 import { buildSubcalendarColorMap } from './calendarUtils';
 import BrailleSpinner from '../BrailleSpinner';
+import { formatMonthYear, formatTimeOfDay } from '../../utils/formatters';
 
 function getMonthGrid(year, month) {
   const firstDay = new Date(year, month, 1);
@@ -41,7 +42,7 @@ export default function MonthView({ accounts }) {
   const [selectedEvent, setSelectedEvent] = useState(null);
 
   const cells = getMonthGrid(year, month);
-  const monthLabel = new Date(year, month).toLocaleDateString([], { month: 'long', year: 'numeric' });
+  const monthLabel = formatMonthYear(new Date(year, month));
 
   const fetchEvents = useCallback(async () => {
     const grid = getMonthGrid(year, month);
@@ -154,7 +155,7 @@ export default function MonthView({ accounts }) {
                         >
                           {!event.isAllDay && (
                             <span className="text-gray-500 mr-1">
-                              {new Date(event.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                              {formatTimeOfDay(event.startTime)}
                             </span>
                           )}
                           {event.title}

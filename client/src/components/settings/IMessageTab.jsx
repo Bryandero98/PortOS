@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { Save, Loader2, MessageSquare, ShieldCheck, ShieldAlert, RefreshCw, ExternalLink } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
+import { formatDateTime } from '../../utils/formatters';
 import {
   getSettings,
   updateSettings,
@@ -201,7 +202,7 @@ export function IMessageTab() {
             <div><dt className="text-gray-500 text-xs uppercase">Touchpoints</dt><dd className="text-gray-200">{lastResult?.touchpointsCreated ?? '—'}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">Scanned</dt><dd className="text-gray-200">{lastResult?.scanned ?? '—'}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">Decode skips</dt><dd className="text-gray-200">{lastResult?.decodeFailures ?? '—'}</dd></div>
-            <div><dt className="text-gray-500 text-xs uppercase">Last run</dt><dd className="text-gray-200">{status?.state?.lastRunAt ? new Date(status.state.lastRunAt).toLocaleString() : '—'}</dd></div>
+            <div><dt className="text-gray-500 text-xs uppercase">Last run</dt><dd className="text-gray-200">{formatDateTime(status?.state?.lastRunAt, '—')}</dd></div>
           </dl>
           {lastResult?.hasMore && (
             <p className="mt-3 text-xs text-port-warning">

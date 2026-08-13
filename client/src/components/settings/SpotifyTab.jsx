@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router';
 import { Save, Loader2, Music, Link2, LogOut, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
+import { formatDateTime } from '../../utils/formatters';
 import {
   getSettings,
   updateSettings,
@@ -207,7 +208,7 @@ export function SpotifyTab() {
             ) : (
               <span className="inline-flex items-center gap-1.5 text-gray-400"><AlertCircle size={14} /> Not connected</span>
             )}
-            {auth?.expiresAt && <span className="text-gray-500 text-xs">token expires {new Date(auth.expiresAt).toLocaleString()}</span>}
+            {auth?.expiresAt && <span className="text-gray-500 text-xs">token expires {formatDateTime(auth.expiresAt)}</span>}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -295,7 +296,7 @@ export function SpotifyTab() {
             <div><dt className="text-gray-500 text-xs uppercase">Listens recorded</dt><dd className="text-gray-200">{lastResult?.recorded ?? '—'}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">Scanned</dt><dd className="text-gray-200">{lastResult?.scanned ?? '—'}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">More remaining</dt><dd className="text-gray-200">{lastResult?.hasMore ? 'yes' : 'no'}</dd></div>
-            <div><dt className="text-gray-500 text-xs uppercase">Last run</dt><dd className="text-gray-200">{status?.state?.lastRunAt ? new Date(status.state.lastRunAt).toLocaleString() : '—'}</dd></div>
+            <div><dt className="text-gray-500 text-xs uppercase">Last run</dt><dd className="text-gray-200">{formatDateTime(status?.state?.lastRunAt, '—')}</dd></div>
           </dl>
         </div>
       )}

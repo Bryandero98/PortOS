@@ -6,7 +6,7 @@ import BrailleSpinner from '../../BrailleSpinner';
 import socket from '../../../services/socket';
 import useMoltworldWs from '../../../hooks/useMoltworldWs';
 import { useCooldownTick } from '../../../hooks/useCooldownTick';
-import { timeAgo, formatCooldown } from '../../../utils/formatters';
+import { timeAgo, formatCooldown, formatClockTime } from '../../../utils/formatters';
 
 const EVENT_ICONS = {
   status: '🔌',
@@ -59,7 +59,7 @@ const QUEUE_STATUS_STYLES = {
 
 function formatEventTime(ts) {
   const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return formatClockTime(d);
 }
 
 function summarizeParams(action, params) {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { TrendingUp, TrendingDown, Minus, Clock } from 'lucide-react';
-import { formatDurationMin } from '../../utils/formatters';
+import { formatDurationMin, formatDateNumeric } from '../../utils/formatters';
 
 export default function ProgressSlider({ goal, onCommit }) {
   const stored = goal.progress ?? 0;
@@ -104,7 +104,7 @@ export default function ProgressSlider({ goal, onCommit }) {
           </div>
           {goal.velocity.projectedCompletion && (
             <span className="text-gray-600">
-              ETA {new Date(goal.velocity.projectedCompletion + 'T00:00:00').toLocaleDateString()}
+              ETA {formatDateNumeric(goal.velocity.projectedCompletion)}
             </span>
           )}
         </div>

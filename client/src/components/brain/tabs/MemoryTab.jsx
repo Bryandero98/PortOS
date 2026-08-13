@@ -22,7 +22,7 @@ import {
   IDEA_STATUS_COLORS,
   ADMIN_STATUS_COLORS
 } from '../constants';
-import { timeAgo } from '../../../utils/formatters';
+import { timeAgo, formatDateNumeric } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import CopyableId from '../../ui/CopyableId';
@@ -567,7 +567,7 @@ export default function MemoryTab({ onRefresh }) {
                 </div>
                 {record.dueDate && (
                   <p className="text-sm text-port-warning mt-1">
-                    Due: {new Date(record.dueDate).toLocaleDateString()}
+                    Due: {formatDateNumeric(record.dueDate)}
                   </p>
                 )}
                 {record.nextAction && <p className="text-sm text-gray-400 mt-1">Next: {record.nextAction}</p>}

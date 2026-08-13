@@ -1,3 +1,5 @@
+import { formatWeekdayDate } from '../../../utils/formatters';
+
 export default function MemoryTimeline({ memories }) {
   const grouped = memories.reduce((acc, m) => {
     const date = m.createdAt?.split('T')[0] || 'Unknown';
@@ -13,7 +15,7 @@ export default function MemoryTimeline({ memories }) {
       {dates.map(date => (
         <div key={date}>
           <div className="text-sm font-medium text-gray-400 mb-2 sticky top-0 bg-port-bg py-1">
-            {new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+            {formatWeekdayDate(date)}
           </div>
           <div className="border-l border-port-border pl-4 space-y-3">
             {grouped[date].map(m => (

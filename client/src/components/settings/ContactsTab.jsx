@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
+import { formatDateTime } from '../../utils/formatters';
 import {
   getContactsStatus,
   checkContactsSetup,
@@ -182,7 +183,7 @@ export function ContactsTab() {
           <div>
             <dt className="text-gray-500 text-xs uppercase">Last synced</dt>
             <dd className="text-gray-200">
-              {cache?.syncedAt ? new Date(cache.syncedAt).toLocaleString() : 'Never'}
+              {formatDateTime(cache?.syncedAt, 'Never')}
             </dd>
           </div>
         </dl>

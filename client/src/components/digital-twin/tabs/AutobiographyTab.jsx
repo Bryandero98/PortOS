@@ -21,7 +21,7 @@ import * as api from '../../../services/api';
 import { copyToClipboard } from '../../../lib/clipboard';
 import toast from '../../ui/Toast';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
-import { formatDateTime } from '../../../utils/formatters';
+import { formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 
 export default function AutobiographyTab({ onRefresh }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -479,7 +479,7 @@ export default function AutobiographyTab({ onRefresh }) {
                   )}
                   <span className="text-xs text-gray-500">{story.wordCount} words</span>
                   <span className="text-xs text-gray-600">
-                    {new Date(story.createdAt).toLocaleDateString()}
+                    {formatDateNumeric(story.createdAt)}
                   </span>
                 </div>
                 <p className="text-sm text-gray-300 truncate">{story.promptText}</p>

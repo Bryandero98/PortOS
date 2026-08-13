@@ -16,7 +16,7 @@ import {
   Award
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
-import { formatDateTime } from '../../../utils/formatters';
+import { formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import * as api from '../../../services/api';
 import DailyTrendsChart from '../DailyTrendsChart';
 
@@ -389,7 +389,7 @@ export default function ProductivityTab() {
                       <div className="text-sm font-medium text-white">{m.description}</div>
                       {m.achievedAt && (
                         <div className="text-xs text-gray-500 mt-1">
-                          {new Date(m.achievedAt).toLocaleDateString()}
+                          {formatDateNumeric(m.achievedAt)}
                         </div>
                       )}
                     </div>

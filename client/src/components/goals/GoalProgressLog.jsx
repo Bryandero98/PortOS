@@ -1,5 +1,5 @@
 import { NotebookPen, Plus, Clock, Trash2 } from 'lucide-react';
-import { formatDurationMin } from '../../utils/formatters';
+import { formatDurationMin, formatDateNumeric } from '../../utils/formatters';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 
@@ -81,7 +81,7 @@ export default function GoalProgressLog({
             <div className="flex items-start gap-2 text-xs group">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 text-gray-500">
-                  <span>{new Date(entry.date + 'T00:00:00').toLocaleDateString()}</span>
+                  <span>{formatDateNumeric(entry.date)}</span>
                   {entry.durationMinutes && (
                     <span className="flex items-center gap-0.5">
                       <Clock className="w-3 h-3" />

@@ -1,5 +1,6 @@
 import { Milestone, Check, Calendar } from 'lucide-react';
 import { PRIORITY_BADGE } from './goalConstants';
+import { formatDateNumeric } from '../../utils/formatters';
 
 export default function GoalMilestones({
   goal, newMilestone, setNewMilestone, handleAddMilestone, handleCompleteMilestone,
@@ -35,7 +36,7 @@ export default function GoalMilestones({
                 {ms.targetDate && (
                   <span className="text-xs text-gray-600 ml-auto flex items-center gap-1">
                     <Calendar className="w-3 h-3" />
-                    {new Date(ms.targetDate).toLocaleDateString()}
+                    {formatDateNumeric(ms.targetDate)}
                   </span>
                 )}
               </div>

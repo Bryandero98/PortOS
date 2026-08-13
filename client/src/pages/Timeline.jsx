@@ -9,7 +9,7 @@ import PageHeader from '../components/PageHeader';
 import TimelineImportPanels, { IMPORT_SOURCE_COUNT } from '../components/timeline/TimelineImportPanels';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
-import { formatClockTime, formatDurationSec } from '../utils/formatters';
+import { formatClockTime, formatDurationSec, formatWeekdayDate } from '../utils/formatters';
 
 // Local (browser-tz) YYYY-MM-DD for a Date — matches the server's local-day math
 // closely enough for defaulting the URL; the server is the source of truth for
@@ -183,7 +183,7 @@ export default function Timeline() {
 
   const dayLabel = useMemo(() => {
     const [y, m, d] = date.split('-').map(Number);
-    return new Date(y, m - 1, d).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+    return formatWeekdayDate(new Date(y, m - 1, d), { year: true });
   }, [date]);
 
   return (

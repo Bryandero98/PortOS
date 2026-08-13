@@ -4,6 +4,7 @@ import * as api from '../../services/api';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import MarkdownOutput from '../cos/MarkdownOutput';
+import { formatDateTime } from '../../utils/formatters';
 
 // Divergence badge: divergence is SIGNAL, not error — stated and observed
 // chronotypes differing is a legitimate insight, so we frame it neutrally.
@@ -273,7 +274,7 @@ export default function ObservedTasteEvidence() {
               <div className="text-xs text-gray-500 mt-2">
                 {interpretation.providerName || interpretation.provider}
                 {interpretation.model ? ` · ${interpretation.model}` : ''}
-                {interpretation.generatedAt ? ` · ${new Date(interpretation.generatedAt).toLocaleString()}` : ''}
+                {interpretation.generatedAt ? ` · ${formatDateTime(interpretation.generatedAt)}` : ''}
               </div>
             </div>
           )}
