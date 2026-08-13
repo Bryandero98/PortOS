@@ -864,8 +864,8 @@ describe('getState and saveState', () => {
   it('keeps a rejected write from poisoning the queue for later callers', async () => {
     const { writeFile } = await import('fs/promises');
     const { join } = await import('path');
-    // A pre-existing FILE where the backup dir must go makes ensureDir throw,
-    // so the first saveState rejects mid-queue.
+    // A pre-existing FILE where the backup dir must go makes the write throw
+    // ENOTDIR, so the first saveState rejects mid-queue.
     await writeFile(join(tmpRoot, 'backup'), 'not a directory');
 
     await expect(backup.saveState({ status: 'running' })).rejects.toThrow();
