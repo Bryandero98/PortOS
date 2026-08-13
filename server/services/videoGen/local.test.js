@@ -837,7 +837,9 @@ describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
 });
 
 describe('generateVideo — ltx2 FFLF image resizing', () => {
-  it('resizes both start and end frames before passing them to the ltx2 helper', async () => {
+  // Windows uses the separate diffusers runner, which intentionally consumes
+  // only the start image. This assertion is specific to the MLX FFLF helper.
+  it.skipIf(process.platform === 'win32')('resizes both start and end frames before passing them to the ltx2 helper', async () => {
     const { execFile } = await import('child_process');
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const execFileMock = vi.mocked(execFile);
