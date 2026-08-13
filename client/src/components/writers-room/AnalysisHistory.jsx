@@ -64,7 +64,7 @@ export default function AnalysisHistory({ work, activeHash, onApplyFormat }) {
         <button
           onClick={refresh}
           disabled={loading}
-          className="text-gray-500 hover:text-white disabled:opacity-50"
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center -my-2 -mr-2 text-gray-500 hover:text-white disabled:opacity-50"
           aria-label="Refresh"
         >
           <RotateCcw size={12} className={loading ? 'animate-spin' : ''} />
