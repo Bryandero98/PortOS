@@ -270,8 +270,28 @@ export const roleLlm = (record, role = 'creative') => {
   if (stageRoute && typeof stageRoute === 'object' && Object.keys(stageRoute).length > 0) {
     return inheritLlmRoute(stageRoute, roleRoute);
   }
-  const learned = options.autoSelectModels === true
-    && options.modelRoutesExplicit?.[role] !== true
+  // Evidence-based routing (`autoSelectModels`) only fills in for a role left
+  // ENTIRELY unrouted — read off `roleRoute`, the route this role would
+  // otherwise run on, so the rule has one definition and cannot desync from the
+  // inheritance above it.
+  //
+  // That inheritance is the whole point: with no separate judge configured, the
+  // judge route IS the run route, so choosing a run provider/model chooses the
+  // judge too — which is exactly what the Options panel promises when "Use a
+  // separate model for judging and verification" is unchecked. Deriving this
+  // from `options.judgeLlm` alone instead left a run that picked ONE
+  // provider/model with creation on the chosen route while every judge/verify
+  // call (pipeline-arc-verify above all, plus volume verify, the foundation
+  // judge and the editorial checks) was silently re-pointed at the learned one.
+  // Reading `roleRoute` also covers the run route the series' own `series.llm`
+  // supplied (orchestrator.js resolves that into these options before the run
+  // starts), so a series that names its provider keeps it here too — and keeps
+  // it identically across a pause, since that resolved route is what the resume
+  // marker persists.
+  const routeChosen = !!(
+    roleRoute.providerOverride || roleRoute.modelOverride || roleRoute.effortOverride
+  );
+  const learned = options.autoSelectModels === true && !routeChosen
     ? options.modelRecommendations?.[record?.currentStep]?.[role]
     : null;
   if (learned) {

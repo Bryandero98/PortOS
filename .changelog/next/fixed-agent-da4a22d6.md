@@ -1,0 +1,1 @@
+- Series Autopilot: arc verification (and every other judge-role call) now honors the run's chosen provider/model instead of being silently re-pointed by learned model routing. Evidence-based routing fills in only where the run routed nothing — a per-run pick, the series' own configured LLM, and per-stage routes all outrank it, for the judge role as much as the creative one.
