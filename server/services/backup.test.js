@@ -13,6 +13,11 @@
  *   default-state recovery when state.json is missing or corrupted, patch
  *   merging, and the createFileWriteQueue serialization that keeps two
  *   concurrent saveState() callers from clobbering each other's fields.
+ * - restoreSnapshot — the input guards (snapshotId allow-list + traversal
+ *   check, subdirFilter allow-list) and the exact rsync argument array a
+ *   subdirFilter produces, plus the live-restore-only settings cache re-sync.
+ *   A restore overwrites the user's live data/, so a broken filter chain or a
+ *   skipped reloadSettings() is a data/consistency bug, not cosmetics.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -33,6 +38,7 @@ vi.mock('./memoryBackend.js', () => ({
 
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
+import { hostname } from 'os';
 import { spawn } from 'child_process';
 // Partial mock: only override spawn. Preserve execFile et al. because
 // backup.js transitively imports fileUtils.js, which promisifies execFile.
@@ -51,7 +57,17 @@ vi.mock('fs/promises', async (importOriginal) => {
 
 import { checkHealth, getServerMajorVersion } from '../lib/db.js';
 import { getBackendName } from './memoryBackend.js';
+import { join } from 'path';
+import { PATHS } from '../lib/fileUtils.js';
 import * as fs from 'fs/promises';
+// Partial mock of the settings service: only reloadSettings is overridden, so a
+// live restore can be asserted to re-sync the settings caches without actually
+// touching the developer's settings.json or emitting socket events.
+vi.mock('./settings.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  reloadSettings: vi.fn(async () => {}),
+}));
+import { reloadSettings } from './settings.js';
 import { DEFAULT_EXCLUDES, computeEffectiveExcludes, listSnapshots, restoreSnapshot } from './backup.js';
 
 // Helper: build a fake child process whose close/error we can drive.
@@ -969,5 +985,126 @@ describe('getState and saveState', () => {
     const after = await backup.saveState({ status: 'ok' });
     expect(after).toEqual({ ...DEFAULTS, status: 'ok' });
     expect(await readStateFile()).toEqual(after);
+  });
+});
+
+// snapshotId validation + rsync filter construction + settings cache re-sync.
+// restoreSnapshot writes over the user's live data/ directory, so each of these
+// is a data-loss-adjacent contract, not a style nit (issue #3917).
+describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () => {
+  // Mirrors backup.js's MACHINE_HOST derivation so the expected src path can be
+  // built without hardcoding this machine's hostname.
+  const machineHost = hostname().toLowerCase().replace(/[^\w.\-]/g, '_') || 'unknown';
+
+  beforeEach(() => {
+    spawn.mockReset();
+    reloadSettings.mockClear();
+  });
+
+  // Drive a mocked rsync to a clean exit so restoreSnapshot resolves.
+  async function runRestore(...args) {
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    const pending = restoreSnapshot(...args);
+    await flush();
+    proc.emit('close', 0);
+    return pending;
+  }
+
+  describe('snapshotId validation', () => {
+    // Ids containing a separator fail the character allow-list outright...
+    for (const bad of ['../../etc', '../escape', 'a/b', 'snap 1', 'snap;rm -rf', '']) {
+      it(`rejects ${JSON.stringify(bad)} before spawning rsync`, async () => {
+        await expect(restoreSnapshot('/dest', bad)).rejects.toThrow(/Invalid snapshotId/);
+        expect(spawn).not.toHaveBeenCalled();
+      });
+    }
+
+    // ...but `..` is made only of allow-listed characters, so it slips past the
+    // regex and must be caught by the resolve()/relative() traversal check. This
+    // is the bypass probe: delete that second guard and only this case fails.
+    it('rejects a bare `..` that passes the character allow-list, via the traversal check', async () => {
+      await expect(restoreSnapshot('/dest', '..')).rejects.toThrow(/Path traversal detected/);
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('accepts a timestamp-shaped id', async () => {
+      await expect(runRestore('/dest', '2026-01-02T03:04:05.678Z')).resolves.toMatchObject({
+        snapshotId: '2026-01-02T03:04:05.678Z',
+      });
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('subdirFilter rsync flags', () => {
+    it('builds the exact include/exclude chain for a valid subdirFilter', async () => {
+      await runRestore('/dest', 'snap-1', { dryRun: true, subdirFilter: 'brain' });
+
+      const srcDir = join('/dest', 'snapshots', machineHost, 'snap-1', 'data');
+      // Asserted as an exact array (not arrayContaining): the ORDER matters to
+      // rsync — `--exclude=*` must come last, after both includes, or the
+      // targeted restore silently degrades into a full-tree restore.
+      // `--itemize-changes` legitimately appears twice: runRsync always prepends
+      // it, and restoreSnapshot seeds its own flag list with it. Harmless to
+      // rsync, and pinned here so a future de-dup is a deliberate change.
+      expect(spawn.mock.calls[0][1]).toEqual([
+        '--archive',
+        '--itemize-changes',
+        '--itemize-changes',
+        '--dry-run',
+        '--include=brain/***',
+        '--include=*/',
+        '--exclude=*',
+        `${srcDir}/`,
+        PATHS.data,
+      ]);
+    });
+
+    it('emits no include/exclude flags when no subdirFilter is given', async () => {
+      await runRestore('/dest', 'snap-1', { dryRun: true });
+
+      const args = spawn.mock.calls[0][1];
+      expect(args.filter(a => a.startsWith('--include=') || a.startsWith('--exclude='))).toEqual([]);
+    });
+
+    it('echoes the subdirFilter back in the result', async () => {
+      await expect(runRestore('/dest', 'snap-1', { subdirFilter: 'brain' }))
+        .resolves.toMatchObject({ subdirFilter: 'brain' });
+    });
+  });
+
+  describe('settings cache re-sync', () => {
+    it('reloads settings after a live restore', async () => {
+      await runRestore('/dest', 'snap-1', { dryRun: false });
+
+      expect(reloadSettings).toHaveBeenCalledTimes(1);
+      // A live restore must not pass --dry-run to rsync.
+      expect(spawn.mock.calls[0][1]).not.toContain('--dry-run');
+    });
+
+    it('does not reload settings for a dry run', async () => {
+      await runRestore('/dest', 'snap-1', { dryRun: true });
+
+      expect(reloadSettings).not.toHaveBeenCalled();
+      expect(spawn.mock.calls[0][1]).toContain('--dry-run');
+    });
+
+    it('defaults to a dry run (no settings reload) when no options are given', async () => {
+      await expect(runRestore('/dest', 'snap-1')).resolves.toMatchObject({ dryRun: true });
+
+      expect(reloadSettings).not.toHaveBeenCalled();
+    });
+
+    it('does not reload settings when rsync fails a live restore', async () => {
+      const proc = fakeProc();
+      spawn.mockReturnValue(proc);
+      const pending = restoreSnapshot('/dest', 'snap-1', { dryRun: false });
+      await flush();
+      proc.stderr.emit('data', Buffer.from('boom'));
+      proc.emit('close', 1);
+
+      await expect(pending).rejects.toThrow(/rsync exited with code 1/);
+      expect(reloadSettings).not.toHaveBeenCalled();
+    });
   });
 });
