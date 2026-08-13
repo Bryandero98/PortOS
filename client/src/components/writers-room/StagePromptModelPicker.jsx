@@ -120,7 +120,7 @@ export default function StagePromptModelPicker({ stageName, label = 'Stage LLM',
           <button
             type="button"
             onClick={switchToTier}
-            className={`px-1.5 py-0.5 text-[9px] rounded ${!isSpecific ? 'bg-port-accent text-white' : 'bg-port-border text-gray-400 hover:text-white'}`}
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center px-1.5 py-0.5 text-[9px] rounded ${!isSpecific ? 'bg-port-accent text-white' : 'bg-port-border text-gray-400 hover:text-white'}`}
           >
             Tier
           </button>
@@ -128,7 +128,7 @@ export default function StagePromptModelPicker({ stageName, label = 'Stage LLM',
             type="button"
             onClick={switchToSpecific}
             disabled={providers.length === 0}
-            className={`px-1.5 py-0.5 text-[9px] rounded ${isSpecific ? 'bg-port-accent text-white' : 'bg-port-border text-gray-400 hover:text-white'} disabled:opacity-50`}
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center px-1.5 py-0.5 text-[9px] rounded ${isSpecific ? 'bg-port-accent text-white' : 'bg-port-border text-gray-400 hover:text-white'} disabled:opacity-50`}
           >
             Specific
           </button>
