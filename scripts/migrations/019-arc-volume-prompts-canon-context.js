@@ -46,6 +46,7 @@ export const ACCEPTED_OLD_MD5 = {
     'ff56d8387162017e08d5d0491060ddd6', // current (pre-Phase B) shipped
     '52e31abc93e3105176236fcaa5d1575a', // pre-005 (shape-aware), still in setup-data.js OLD list
     '83347e7d923580a3062033ab39b3c14b', // post-250 / pre-261 — arc spine checkpoint before exhaustive verification
+    '68f6956d7e09ebdb3870d8726b1b2a7a', // post-261 / pre-263 — before the world category canon block
   ],
   'pipeline-arc-resolve.md': [
     'cc27b4da1d1a13c35e35d1c2d6183815', // post-123 / pre-245 — the episodes[] channel, before edits had to name a finding
@@ -62,7 +63,7 @@ export const ACCEPTED_OLD_MD5 = {
 
 export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-overview.md':   '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
-  'pipeline-arc-verify.md':     '68f6956d7e09ebdb3870d8726b1b2a7a', // post-261 exhaustive arc verification
+  'pipeline-arc-verify.md':     '9f32e91bd33b97d30e1cbb2e697f4fc3', // post-263 world category canon
   'pipeline-arc-resolve.md':    '2349bce80e9df8caafa391a6106327b6', // post-259 (measured text budgets)
   'pipeline-volume-verify.md':  '49458d36700cb94e34806d536ffe2940', // post-019
 };
