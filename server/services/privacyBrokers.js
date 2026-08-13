@@ -60,7 +60,7 @@ const STATE_TRANSITIONS = Object.freeze({
   optout_in_progress: ['submitted'],
   submitted: ['verification_pending'],
   verification_pending: ['awaiting_processing'],
-  awaiting_processing: [],
+  awaiting_processing: ['human_task_queued', 'found'],
   // Post-removal / requeue paths resume opt-out work.
   human_task_queued: [
     'found', 'not_found', 'indirect_exposure', 'blocked',

@@ -301,7 +301,7 @@ describe('runVerificationPass', () => {
     expect(res.confirmed).toHaveLength(1);
     expect(transitionCase).toHaveBeenCalledWith('c2', 'confirmed_removed', expect.objectContaining({ viaRescan: true }));
   });
-  it('leaves a still-listed case untouched', async () => {
+  it('increments recheck count and moves verification_pending to awaiting_processing when still found (#4020)', async () => {
     getBroker.mockResolvedValue({ id: 'spokeo', urls: { search: 'https://www.spokeo.com/{firstName}/{state}' } });
     const vault = await import('./privacyVault.js');
     vault.listScanEligibleValues.mockResolvedValue(SCAN_VALUES);
@@ -311,6 +311,24 @@ describe('runVerificationPass', () => {
     const removalProbe = vi.fn(async () => ({ verdict: 'found', found: true }));
     const res = await runVerificationPass({ removalProbe });
     expect(res.confirmed).toHaveLength(0);
+    expect(transitionCase).toHaveBeenCalledWith('c3', 'awaiting_processing', expect.objectContaining({
+      evidence: expect.objectContaining({ verificationRechecks: 1 }),
+    }));
+  });
+  it('transitions stranded awaiting_processing cases to human_task_queued with reason optout_unfulfilled after max rechecks (#4020)', async () => {
+    getBroker.mockResolvedValue({ id: 'spokeo', urls: { search: 'https://www.spokeo.com/{firstName}/{state}' } });
+    const vault = await import('./privacyVault.js');
+    vault.listScanEligibleValues.mockResolvedValue(SCAN_VALUES);
+    listBrokerCases
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'c4', brokerId: 'spokeo', state: 'awaiting_processing', evidence: { verificationRechecks: 2 } }]);
+    const removalProbe = vi.fn(async () => ({ verdict: 'found', found: true }));
+    const res = await runVerificationPass({ removalProbe, maxVerificationRechecks: 3 });
+    expect(res.unfulfilled).toHaveLength(1);
+    expect(transitionCase).toHaveBeenCalledWith('c4', 'human_task_queued', expect.objectContaining({
+      reason: 'optout_unfulfilled',
+      evidence: expect.objectContaining({ verificationRechecks: 3 }),
+    }));
   });
 });
 
