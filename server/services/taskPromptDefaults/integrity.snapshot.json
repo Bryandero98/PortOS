@@ -7,20 +7,20 @@
     "accessibility": "372916803f32b82da38a5b2130a54baf",
     "console-errors": "2b6ed595287f0742bed9ecba6788afe6",
     "dependency-updates": "7ed05444e2602f4895bdd1e5e0edcaa8",
-    "documentation": "74aa8433896647e7815f9d6d9e4a56c8",
+    "documentation": "b375f95ae2274f03d06ba5ceff5705d8",
     "ui-bugs": "def9ad96bd74ab397233f234d79a1974",
     "mobile-responsive": "16d8e7f63a673a2de48994c0ac08ef3d",
     "ux": "e03d03fc7c16faa5b5db93be2896b9ad",
     "feature-ideas": "d3282f16da29efe2d53595b3b34778bc",
-    "plan-task": "808140457aff9ff344ddac426e0022ed",
-    "claim-issue": "ed113d11f477bf1b50cd5a48364b9da9",
-    "claim-issue-gitlab": "4f323dddadb5c7f0047e35914ba80529",
-    "claim-issue-jira": "e3d1a2e884a2a49c306a586089f4f376",
+    "plan-task": "bbc5495a02102fd470d2a429eedfbe76",
+    "claim-issue": "9b90d29048e85c9db640b1db643a08c8",
+    "claim-issue-gitlab": "12d78a91126213f7c10e9a6725cdb464",
+    "claim-issue-jira": "367c22d2587212c9c391f50d146948e8",
     "code-reviewer-review": "1cd13ee5142d130f95cc390098d0f278",
     "code-reviewer-implement": "ab2c3e16d54e195bdf856574b7702042",
     "error-handling": "9afba2e99b90a8d5771c75e7f0615d96",
     "typing": "1f2758ce0bb62d789a21aec241549531",
-    "release-check": "8436a47b5b1c9b2a342795e5634552da",
+    "release-check": "7184e5adc051aebd54c5a5cda5d0f12a",
     "jira-sprint-manager": "3e63c8a3bdf0d5a05a30faaa2dc07980",
     "do-replan": "59a57f1bb445138c30ab4fa23630c6f8",
     "jira-status-report": "9d374a9d8ccb92c5c8fd0aa9899e79a5",
@@ -32,14 +32,14 @@
     "pr-reviewer-review": "21ccd5d3a6f3eea16c479db9ed9aedaa",
     "reference-watch": "e0e20754700fb08d5159b8437d9c260b",
     "pr-watcher": "53ead8e26d396849bfa78f28550bd691",
-    "refresh-local-llm-catalog": "a9dce67bb9f0837ba904f3412b03637f"
+    "refresh-local-llm-catalog": "525bd0077672bf2f8beec9c0124740c8"
   },
   "PROMPT_VERSIONS": {
     "feature-ideas": 10,
-    "plan-task": 12,
-    "claim-issue": 9,
-    "claim-issue-gitlab": 8,
-    "claim-issue-jira": 6,
+    "plan-task": 13,
+    "claim-issue": 10,
+    "claim-issue-gitlab": 9,
+    "claim-issue-jira": 7,
     "pr-reviewer": 3,
     "code-reviewer-a": 1,
     "code-reviewer-b": 1,
@@ -47,18 +47,18 @@
     "pr-watcher": 1,
     "branch-reconcile": 3,
     "issue-reconcile": 3,
-    "refresh-local-llm-catalog": 1,
+    "refresh-local-llm-catalog": 2,
     "security": 2,
     "code-quality": 2,
     "test-coverage": 2,
     "performance": 2,
     "accessibility": 2,
     "dependency-updates": 3,
-    "documentation": 4,
+    "documentation": 5,
     "ui-bugs": 2,
     "mobile-responsive": 2,
     "ux": 1,
-    "release-check": 6
+    "release-check": 7
   },
   "REFERENCE_WATCH_AUDITED_VERSION": 3,
   "PREVIOUS_DEFAULT_PROMPTS": {
@@ -81,7 +81,8 @@
       "5425306bf082b15b6a17f972557d4dd9",
       "2189019880ee12a8ba4d7975e7afc646",
       "dced853944c2cad8fc0c151dea71301a",
-      "8f5b69fd9336b17184e7f7989f97def5"
+      "8f5b69fd9336b17184e7f7989f97def5",
+      "808140457aff9ff344ddac426e0022ed"
     ],
     "pr-reviewer": [
       "9ceeed08f238b3787fc1201a0ce8e023",
@@ -97,7 +98,8 @@
       "4094d2a07cdc33179eedfaaecc2a6104",
       "18de42dd948a14866df8acbc9668e368",
       "3f5cc58943bc08cbbc00f836660ecdfc",
-      "97a3994ce4da2d2743bdffec110a7482"
+      "97a3994ce4da2d2743bdffec110a7482",
+      "e3d1a2e884a2a49c306a586089f4f376"
     ],
     "claim-issue-gitlab": [
       "271ad9c6efa9dce424103711292fd055",
@@ -106,7 +108,8 @@
       "9a4f517a0af3200dcd54f71aa2b8d924",
       "e01f8d7e6dd078ae94516e903ce864d1",
       "c9888390df157b72741aafb9f2f9d8e4",
-      "d7b44882f4d47ae44d39989e29e5fe2b"
+      "d7b44882f4d47ae44d39989e29e5fe2b",
+      "4f323dddadb5c7f0047e35914ba80529"
     ],
     "claim-issue": [
       "89308f712f99ad8134224639cd99f135",
@@ -116,7 +119,8 @@
       "935e47c14b4f5eef1d030dedce5338fc",
       "bd7b5f6a1912d990c2c0f88eb186f40f",
       "e9039e0ee911636db2927fe239280f35",
-      "dc985be3422c9fdee07d92a059666f0a"
+      "dc985be3422c9fdee07d92a059666f0a",
+      "ed113d11f477bf1b50cd5a48364b9da9"
     ],
     "security": [
       "d0f54c1fbe62d067b1a23ee0a9f3528c"
@@ -140,7 +144,8 @@
     "documentation": [
       "074ea22140f8f6a02c7e40a6bc7b0614",
       "658395fa391df5a0fefaaebdf8dbedb7",
-      "751186658f5d9a9dbccdd6830946f3d8"
+      "751186658f5d9a9dbccdd6830946f3d8",
+      "74aa8433896647e7815f9d6d9e4a56c8"
     ],
     "ui-bugs": [
       "01d2a7e034713195f33071f2c71a3c99"
@@ -153,7 +158,8 @@
       "d567ce8c4033687d5a9177439e00d0a6",
       "133c221608545a26f328dead099a4d0a",
       "609167c41331e6bbfc6d5f5edc452d4c",
-      "9c7508598ee772d1cee8f609f9ed7372"
+      "9c7508598ee772d1cee8f609f9ed7372",
+      "8436a47b5b1c9b2a342795e5634552da"
     ],
     "branch-reconcile": [
       "7ef2b5f7d8f05937d4912b26ad45f42e",
@@ -162,6 +168,9 @@
     "issue-reconcile": [
       "c57a39aaa118173a496f030f5878bfc1",
       "c87d7adb57de208c069964760c9c6276"
+    ],
+    "refresh-local-llm-catalog": [
+      "a9dce67bb9f0837ba904f3412b03637f"
     ]
   }
 }
