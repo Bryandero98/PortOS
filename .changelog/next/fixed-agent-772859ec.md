@@ -1,0 +1,1 @@
+- Shell page now activates the next available session when the active one exits or is closed, instead of leaving a dead terminal at /shell
