@@ -1,1 +1,0 @@
-- Unreferenced XP-threshold helpers (`computeXpView`, `MAX_LEVEL`) in the character HUD math; `levelFromXP` stays for the CyberCity artifact unlocks.
