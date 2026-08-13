@@ -654,3 +654,15 @@ export function recommendedRamGb(sizeBytes, sizeStr) {
   if (!gb || gb <= 0) return null;
   return Math.max(1, Math.ceil(gb * 1.2));
 }
+
+/**
+ * Clamp a numeric value `n` into the inclusive range `[min, max]`.
+ * @param {number} n - Value to clamp
+ * @param {number} min - Lower bound
+ * @param {number} max - Upper bound
+ * @returns {number} Clamped value
+ */
+export function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n));
+}
+

@@ -1,11 +1,41 @@
 import { describe, it, expect } from 'vitest';
 import {
-  formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
+  clamp, formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
   formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
   formatWeight, formatPercent, formatUsd, formatBytes,
   formatDateNumeric, formatTimeOfDaySeconds, formatClockTime, formatWeekdayDate,
   formatMonthDay, formatMonthYear, formatWeekdayShort, formatWeekdayTime, formatDateFull, formatDateShort, formatDateTime,
 } from './formatters.js';
+
+describe('clamp', () => {
+  it('returns value unchanged when within [min, max]', () => {
+    expect(clamp(5, 0, 10)).toBe(5);
+    expect(clamp(0, 0, 10)).toBe(0);
+    expect(clamp(10, 0, 10)).toBe(10);
+    expect(clamp(0.5, 0, 1)).toBe(0.5);
+  });
+
+  it('clamps values below min to min', () => {
+    expect(clamp(-5, 0, 10)).toBe(0);
+    expect(clamp(-0.1, 0, 1)).toBe(0);
+  });
+
+  it('clamps values above max to max', () => {
+    expect(clamp(15, 0, 10)).toBe(10);
+    expect(clamp(1.5, 0, 1)).toBe(1);
+  });
+
+  it('handles negative ranges correctly', () => {
+    expect(clamp(-15, -10, -5)).toBe(-10);
+    expect(clamp(0, -10, -5)).toBe(-5);
+    expect(clamp(-7, -10, -5)).toBe(-7);
+  });
+
+  it('handles min equal to max', () => {
+    expect(clamp(5, 10, 10)).toBe(10);
+    expect(clamp(15, 10, 10)).toBe(10);
+  });
+});
 
 describe('formatBytes', () => {
   it('renders whole-MB file-size caps with no decimals at decimals=0', () => {

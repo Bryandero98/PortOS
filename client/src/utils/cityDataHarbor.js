@@ -10,7 +10,7 @@
 // component from the live theme palette (deterministic per name via getAccentColor). No
 // three.js / React imports so the topology is unit-testable (mirrors cityMemoryDistrict.js).
 
-import { formatBytes, formatCompactCount } from './formatters';
+import { clamp, formatBytes, formatCompactCount } from './formatters';
 import { scaleMetricToHeight } from './cityDistrictLayout';
 import { PARCELS } from './cityPlan';
 
@@ -35,8 +35,6 @@ export const DATA_HARBOR = {
   rackHeight: 3.2,
   rackSlats: 8, // emissive slat rows per rack; lit count tracks the fill ratio
 };
-
-const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
 // log2-scale `value` into [0, 1] against `max`. Delegates the curve to the shared
 // scaleMetricToHeight so every district's log scaling stays one implementation.
