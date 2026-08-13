@@ -693,5 +693,27 @@ describe('PipelineManuscriptEditor — generate-edits streamed review', () => {
       expect(await screen.findByDisplayValue('Issue two body.')).toBeInTheDocument();
       expect(screen.queryByText(CONFIRM)).not.toBeInTheDocument();
     });
+
+    it('shows discard confirm immediately when navigating away from a dirty tab while an unrelated tab is saving (#4004)', async () => {
+      api.getPipelineManuscript.mockResolvedValue(twoIssues);
+      const { router } = renderEditor('/pipeline/series/ser-1/manuscript/1');
+      await typeUnsaved('Issue one body.', 'Issue one, edited.');
+
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Issues' })).getByRole('link', { name: /Issue 2/ }));
+      const area2 = await screen.findByDisplayValue('Issue two body.');
+
+      let resolveSave2;
+      api.savePipelineManuscriptSection.mockReturnValue(new Promise((res) => { resolveSave2 = res; }));
+      fireEvent.change(area2, { target: { value: 'Issue two, saving.' } });
+      fireEvent.blur(area2);
+
+      await act(async () => { await router.navigate('/dashboard'); });
+
+      expect(await screen.findByText(CONFIRM)).toBeInTheDocument();
+
+      await act(async () => {
+        resolveSave2({ section: { issueId: 'iss-2', number: 2, title: 'Two', stageId: 'prose', content: 'Issue two, saving.' } });
+      });
+    });
   });
 });

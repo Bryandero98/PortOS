@@ -162,17 +162,22 @@ export default function PipelineManuscriptEditor() {
   // unless the tab itself carries one (#3399). Also the route guard's reactive
   // dirty signal (#3995) — `baselineRef` is for handlers that read outside the
   // render cycle, and can't drive a re-evaluation on its own.
-  const dirtyNumbers = useMemo(() => {
-    const set = new Set();
-    sections.forEach((s) => { if (isSectionDirty(baselines, s)) set.add(s.number); });
-    return set;
-  }, [sections, baselines]);
+  const dirtySections = useMemo(
+    () => sections.filter((s) => isSectionDirty(baselines, s)),
+    [sections, baselines]
+  );
+  const dirtyNumbers = useMemo(
+    () => new Set(dirtySections.map((s) => s.number)),
+    [dirtySections]
+  );
 
   // Guards BOTH exit doors (#3958/#3995): tab close/reload, and any in-app
   // navigation — a sidebar link, ⌘K, voice `ui_navigate`, the browser Back
   // button. This is a splat route, so switching issue tabs changes the pathname
   // WITHOUT leaving the editor; `scopePath` lets those through unguarded.
-  const savingAny = Object.values(saveState).some((s) => s === 'saving');
+  // Suppress the discard confirm ONLY when the dirty section(s) are actively saving (#4004).
+  const savingDirty =
+    dirtySections.length > 0 && dirtySections.every((s) => saveState[s.issueId] === 'saving');
   const routeGuard = useUnsavedChangesGuard(dirtyNumbers.size > 0, {
     scopePath: `/pipeline/series/${seriesId}/manuscript`,
   });
@@ -743,7 +748,7 @@ export default function PipelineManuscriptEditor() {
           guard then releases the parked navigation on its own. */}
       <UnsavedChangesConfirm
         guard={routeGuard}
-        when={!savingAny}
+        when={!savingDirty}
         question="Discard your unsaved manuscript edits?"
         label={`Discard unsaved manuscript edits to ${series?.name || 'this series'}`}
         onDiscard={discardAndExit}
