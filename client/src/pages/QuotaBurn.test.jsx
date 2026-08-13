@@ -296,7 +296,7 @@ describe('QuotaBurn run-once steps', () => {
     },
     status: {
       ...status,
-      families: [{ ...status.families[0], jobs: [{ id: 'j1', ranAt, spent: true, pending: null }] }, status.families[1]],
+      families: [{ ...status.families[0], jobs: [{ id: 'j1', ranAt, pending: null }] }, status.families[1]],
     },
   };
 

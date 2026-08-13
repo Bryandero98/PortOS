@@ -12,7 +12,7 @@ import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import JobParamField from './JobParamField';
 import PresetPicker from './PresetPicker';
-import { applyQuotaBurnPreset } from '../../lib/quotaBurnPatch';
+import { applyQuotaBurnPreset, quotaBurnJobIsSpent } from '../../lib/quotaBurnPatch';
 import { timeAgo } from '../../utils/formatters';
 import { inputClass } from './fields';
 
@@ -42,12 +42,7 @@ export default function JobRow({
   useEffect(() => { if (actionsBusy) setRunArmed(false); }, [actionsBusy]);
   const spec = catalog.jobTypes.find((type) => type.id === job.jobType);
   const idPrefix = `burn-job-${job.id}`;
-  // A completion is recorded whenever a `run once` step dispatches, and is kept
-  // even if the checkbox is later cleared — so the badge is gated on the
-  // checkbox rather than on `ranAt` alone. That way ticking "run once" on a step
-  // that already ran immediately SHOWS that it is spent (with Re-arm right
-  // there), instead of silently dropping it out of the rotation.
-  const spent = Boolean(job.runOnce && ranAt);
+  const spent = quotaBurnJobIsSpent(job, ranAt);
   const setParam = (key, value) => onChange({ ...job, params: { ...job.params, [key]: value } });
   const promptText = String(job.params?.prompt || '').trim();
   const hasPromptText = Boolean(promptText);

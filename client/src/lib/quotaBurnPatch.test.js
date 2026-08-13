@@ -5,8 +5,26 @@ import {
   isUnlimitedDispatchCap,
   jobFromPreset,
   mergeQuotaBurnPatch,
+  quotaBurnJobIsSpent,
   UNLIMITED_DISPATCHES,
 } from './quotaBurnPatch';
+
+describe('quotaBurnJobIsSpent', () => {
+  const ranAt = '2026-08-01T00:00:00.000Z';
+
+  it('gates on the step\'s own run-once flag, not on the completion alone', () => {
+    // A completion is kept even after the checkbox is cleared, so `ranAt` alone
+    // would keep a step the user switched back to repeating looking retired.
+    expect(quotaBurnJobIsSpent({ runOnce: true }, ranAt)).toBe(true);
+    expect(quotaBurnJobIsSpent({ runOnce: false }, ranAt)).toBe(false);
+    expect(quotaBurnJobIsSpent({ runOnce: true }, null)).toBe(false);
+  });
+
+  it('reads a missing job or flag as unspent', () => {
+    expect(quotaBurnJobIsSpent(undefined, ranAt)).toBe(false);
+    expect(quotaBurnJobIsSpent({}, ranAt)).toBe(false);
+  });
+});
 
 describe('mergeQuotaBurnPatch', () => {
   it('merges top-level keys and leaves families untouched', () => {

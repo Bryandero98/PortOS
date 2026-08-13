@@ -305,21 +305,29 @@ export function normalizeQuotaBurnConfig(raw) {
 }
 
 /**
- * Whether a family has anything the runner could dispatch: it must be enabled
- * AND carry at least one enabled job. An enabled family with an empty job list
- * is a half-finished setup, not a burn plan — treating it as actionable would
- * spawn a candidate the runner then has to discard, which shows up as a
- * confusing "selected, then skipped" cycle in the run log.
- *
- * `completions` additionally excludes spent `run once` jobs, so a plan made
- * entirely of one-shot work stops being actionable the moment its last job has
- * run. Defaulted to `{}` because the two questions have different answers and
- * the callers want different ones: the config-only form distinguishes "you
- * configured nothing" from "your plan is finished", and the runner needs the
- * completion-aware form so an exhausted plan stops paying for a multi-second
- * quota scrape every interval, forever.
+ * Whether a family is SET UP to burn: enabled, with at least one enabled job. An
+ * enabled family with an empty job list is a half-finished setup, not a burn
+ * plan — treating it as actionable would spawn a candidate the runner then has
+ * to discard, which shows up as a confusing "selected, then skipped" cycle in
+ * the run log.
  */
-export function familyIsActionable(family, completions = {}) {
-  return family?.enabled === true
+export function familyIsConfigured(family) {
+  return family?.enabled === true && (family.jobs || []).some((job) => job?.enabled !== false);
+}
+
+/**
+ * Whether a family has anything the runner could dispatch RIGHT NOW: configured,
+ * and not every enabled job already spent as a one-shot. A plan made entirely of
+ * `run once` work stops being runnable the moment its last step has run.
+ *
+ * Deliberately a second named predicate rather than an optional second argument
+ * on `familyIsConfigured`. The two questions have different answers and callers
+ * want different ones — "you configured nothing" needs a job added while "your
+ * plan is finished" needs a Re-arm — and an arity-overloaded predicate is a trap
+ * with `some`/`filter`/`map`, which pass the INDEX as the second argument and
+ * would silently make `completions` a number.
+ */
+export function familyHasRunnableJobs(family, completions = {}) {
+  return familyIsConfigured(family)
     && (family.jobs || []).some((job) => job?.enabled !== false && !jobIsSpent(job, family.id, completions));
 }

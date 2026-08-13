@@ -37,12 +37,12 @@
  */
 
 import { getProviderQuotas } from './providerUsage.js';
-import { getQuotaBurnDispatches, evaluateFamilies, recordQuotaBurnDispatch, selectBurnCandidates } from './quotaBurn.js';
+import { getQuotaBurnDispatches, evaluateFamilies, PLAN_COMPLETE_SKIP_REASON, recordQuotaBurnDispatch, selectBurnCandidates } from './quotaBurn.js';
 import { getQuotaBurnCompletions, recordQuotaBurnJobCompletion } from './quotaBurnCompletions.js';
 import { getActiveQuotaBurnBlocks, recordBurnAgentCompletion } from './quotaBurnDenials.js';
 import { getQuotaBurnConfig, getQuotaBurnRuns, recordQuotaBurnRun } from './quotaBurnStore.js';
 import { countJobPending, runBurnJob } from './quotaBurnJobs/index.js';
-import { familyIsActionable, jobIsSpent, quotaBurnJobKey } from '../lib/quotaBurnConfig.js';
+import { familyHasRunnableJobs, familyIsConfigured, jobIsSpent, quotaBurnJobKey } from '../lib/quotaBurnConfig.js';
 import { windowLabelOf } from '../lib/quotaWindows.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import { cosEvents } from './cosEvents.js';
@@ -231,14 +231,16 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // Read once per cycle and threaded through selection, the gate ladder, and the
   // dispatch record, so a job spent mid-cycle can't be re-picked by a later
   // family's walk.
-  const completions = await getQuotaBurnCompletions().catch((err) => {
-    // Fail CLOSED for the ONE-SHOT jobs: an unreadable ledger reads as "nothing
-    // has run", which would re-dispatch every `run once` job on the plan. Better
-    // to skip the cycle and say so than to redo work the user asked for once.
-    console.error(`❌ Quota-burn could not read its run-once ledger: ${err.message}`);
-    return null;
-  });
-  if (!completions) return finish({ dispatched: false, reason: 'run-once ledger unreadable' });
+  //
+  // `null` means the ledger could not be read, which is NOT "nothing has run" —
+  // treating it as such would re-dispatch every `run once` job on the plan. Fails
+  // CLOSED: skip the cycle and say so rather than redoing work the user asked
+  // for exactly once.
+  const completions = await getQuotaBurnCompletions();
+  if (!completions) {
+    console.error('❌ Quota-burn could not read its run-once ledger — skipping this cycle');
+    return finish({ dispatched: false, reason: 'run-once ledger unreadable' });
+  }
 
   // Check the plan BEFORE the quota read. `getProviderQuotas({ wait: WAIT.FRESH })`
   // spawns a multi-second TUI scrape per enabled family; with no actionable
@@ -247,22 +249,22 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // spent `run once` jobs is the same case, which is why `completions` is passed
   // — without it a finished one-shot plan keeps paying for the scrape forever.
   //
-  // A forced run of a NAMED job is exempt: `familyIsActionable` requires an
-  // enabled family with an enabled, unspent job, but ▶ on a paused job (or a
-  // paused family, or one that already ran) is exactly the case the force path
-  // exists to serve — gating it here would make the click a silent no-op before
-  // selection ever ran.
+  // A forced run of a NAMED job is exempt: this requires an enabled family with
+  // an enabled, unspent job, but ▶ on a paused job (or a paused family, or one
+  // that already ran) is exactly the case the force path exists to serve —
+  // gating it here would make the click a silent no-op before selection ever ran.
   //
-  // Spelled as arrows, NOT `.some(familyIsActionable)`: `.some` passes the INDEX
-  // as the second argument, which would land in `completions`.
+  // One short-circuiting pass on the healthy path; the second only runs to pick
+  // the wording, and only when nothing is runnable. The two are kept distinct
+  // because a finished one-shot plan did what it was asked and wants Re-arm,
+  // which is not what an unset plan wants (add a job).
   const targeted = force && familyId;
-  const configured = Object.values(config.families).filter((family) => familyIsActionable(family));
-  if (!targeted && !configured.length) return finish({ dispatched: false, reason: 'no families enabled' });
-  // Kept distinct from "no families enabled": a finished one-shot plan did what
-  // it was asked, and the action it wants (Re-arm) is not the action an unset
-  // plan wants (add a job).
-  if (!targeted && !configured.some((family) => familyIsActionable(family, completions))) {
-    return finish({ dispatched: false, reason: 'every enabled job has already run once — re-arm a step to run the plan again' });
+  const families = Object.values(config.families);
+  if (!targeted && !families.some((family) => familyHasRunnableJobs(family, completions))) {
+    return finish({
+      dispatched: false,
+      reason: families.some(familyIsConfigured) ? PLAN_COMPLETE_SKIP_REASON : 'no families enabled',
+    });
   }
 
   // Scoped to the one family when the caller named it — a per-family "Run now",
@@ -409,7 +411,11 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
     }),
     getQuotaBurnDispatches(),
     getActiveQuotaBurnBlocks(),
-    getQuotaBurnCompletions().catch(() => ({})),
+    // An unreadable ledger degrades to "no badges" here rather than failing the
+    // whole status read — the opposite of the CYCLE's posture, and deliberately
+    // so: the cost of being wrong on this path is a missing "Ran once" label,
+    // while on the cycle's path it is re-spending quota on finished work.
+    getQuotaBurnCompletions().then((ledger) => ledger || {}),
     getQuotaBurnRuns(),
   ]);
 
@@ -447,11 +453,16 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
         // step is finished rather than merely idle.
         jobs: await Promise.all(family.jobs.map(async (job) => {
           const ranAt = completions[quotaBurnJobKey(family.id, job.id)] || null;
-          const spent = jobIsSpent(job, family.id, completions);
+          // `jobIsSpent` re-derived from the value just read rather than called —
+          // it would rebuild the same key and re-index the same object. Not
+          // shipped on the wire either: the client gates its badge on the
+          // OPTIMISTIC config it holds, so a just-ticked checkbox reads as spent
+          // before the save round-trips, and a server copy would only be a second
+          // rule to keep in sync.
+          const spent = job.runOnce === true && Boolean(ranAt);
           return {
             id: job.id,
             ranAt,
-            spent,
             pending: family.enabled && !spent ? await countJobPending({ job, family }) : null,
           };
         })),

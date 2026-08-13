@@ -20,7 +20,7 @@
 import { join } from 'path';
 import { atomicWrite, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
-import { familyIsActionable, isUnlimitedDispatchCap, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
+import { familyHasRunnableJobs, familyIsConfigured, isUnlimitedDispatchCap, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
 import { isPlainObject } from '../lib/objects.js';
 import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 import { classifyWindows, windowLabelOf } from '../lib/quotaWindows.js';
@@ -67,6 +67,16 @@ export async function recordQuotaBurnDispatch(key, { now = Date.now() } = {}) {
     return next;
   });
 }
+
+/**
+ * The verdict for a plan whose every enabled step is a spent `run once`.
+ *
+ * Exported because the runner reports the same state from its own pre-quota
+ * early return (which must run BEFORE the quota read the ladder needs), and two
+ * hand-written wordings for one condition is how the page and the run log end up
+ * describing the same plan in two different sentences.
+ */
+export const PLAN_COMPLETE_SKIP_REASON = 'every enabled job has already run once';
 
 /** Headroom the family is willing to spend on ONE window: what's left, minus its reserve. */
 export function burnBudgetRemaining(limit, family) {
@@ -140,11 +150,14 @@ export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}
   // holds even under force.
   if (!bypassGates) {
     if (!family.enabled) return { skipReason: 'disabled' };
-    // Reported as two distinct verdicts, because they call for opposite actions:
-    // "you configured nothing" wants a job added, while a finished one-shot plan
-    // wants Re-arm (or nothing at all — it did what it was asked).
-    if (!familyIsActionable(family)) return { skipReason: 'no enabled jobs configured' };
-    if (!familyIsActionable(family, completions)) return { skipReason: 'every enabled job has already run once' };
+    // One check on the healthy path; the two verdicts are only told apart on the
+    // failing branch. They are reported distinctly because they call for
+    // opposite actions: "you configured nothing" wants a job added, while a
+    // finished one-shot plan wants Re-arm (or nothing at all — it did what it
+    // was asked).
+    if (!familyHasRunnableJobs(family, completions)) {
+      return { skipReason: familyIsConfigured(family) ? PLAN_COMPLETE_SKIP_REASON : 'no enabled jobs configured' };
+    }
   }
   if (!card) return { skipReason: 'no enabled provider in this family' };
   if (card.supported === false) return { skipReason: 'provider has no queryable quota surface' };

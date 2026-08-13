@@ -150,14 +150,22 @@ accord instead of looping.
 - **A forced ▶ run bypasses the gate AND still records.** `charge: false` is about
   the *window's automatic budget*; `runOnce` is a statement about the *work*, and
   the work just happened however it was triggered.
-- **An unreadable ledger fails CLOSED** — the cycle reports `run-once ledger
+- **An unreadable ledger fails CLOSED** — `getQuotaBurnCompletions` returns
+  `null` (not `{}`) for a failed read, so the cycle reports `run-once ledger
   unreadable` rather than treating "nothing has run" as fact and re-dispatching
-  every one-shot job on the plan.
-- **A finished plan stops costing a quota scrape.** `familyIsActionable(family,
+  every one-shot job. `writeLedger` refuses to write over an unread ledger for
+  the same reason: an empty write erases the completions that survived. Same
+  posture, and the same `readJSONFileStrict` shape, as `quotaBurnDenials.js`.
+- **A finished plan stops costing a quota scrape.** `familyHasRunnableJobs(family,
   completions)` returns false once every enabled job is a spent one-shot, so the
   cycle returns before the multi-second per-family TUI scrape. The page reports
-  it as `every enabled job has already run once`, kept distinct from `no enabled
-  jobs configured` — a finished plan wants Re-arm, an unset one wants a job added.
+  it as `every enabled job has already run once` (`PLAN_COMPLETE_SKIP_REASON`,
+  shared with the runner's pre-scrape early return so one condition can't be
+  worded two ways), kept distinct from `no enabled jobs configured` — a finished
+  plan wants Re-arm, an unset one wants a job added. It is a **second named
+  predicate** rather than an optional argument on `familyIsConfigured`: array
+  callbacks pass the index as the second argument, so an overloaded arity turns
+  `some(familyIsConfigured)` silently wrong.
 - **Re-arm** puts steps back in the rotation: the ↺ on a job row for one step,
   **Re-arm all** on the plan header for the family. `POST /api/quota-burn/rearm`
   with `{ familyId, jobId? }`; a `familyId` is required, since a bare "clear

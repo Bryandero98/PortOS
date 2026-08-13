@@ -11,7 +11,7 @@ import { Ban, ChevronDown, ChevronRight, Flame, Plus, RotateCcw } from 'lucide-r
 import BrailleSpinner from '../BrailleSpinner';
 import JobRow from './JobRow';
 import PresetPicker from './PresetPicker';
-import { dispatchCapInput, isUnlimitedDispatchCap, jobFromPreset, UNLIMITED_DISPATCHES } from '../../lib/quotaBurnPatch';
+import { dispatchCapInput, isUnlimitedDispatchCap, jobFromPreset, quotaBurnJobIsSpent, UNLIMITED_DISPATCHES } from '../../lib/quotaBurnPatch';
 import { formatDateTime } from '../../utils/formatters';
 import { NumberField } from './fields';
 
@@ -24,12 +24,12 @@ export default function FamilyCard({
   // passed to JobRow as their own props — merging them into the job objects
   // would mean stripping them back off before every save (the PUT schema is
   // strict). Matched by id so a reorder mid-save can't mis-pair them.
-  const statusJobs = status?.jobs || [];
-  const statusFor = (id) => statusJobs.find((row) => row.id === id) || null;
-  // Gated on the CONFIG's `runOnce` (as JobRow's badge is), so the count matches
-  // the number of "Ran once" rows on screen rather than counting a stale
-  // completion on a step the user has since switched back to repeating.
-  const spentCount = jobs.filter((job) => job.runOnce && statusFor(job.id)?.ranAt).length;
+  // Indexed once, not scanned per lookup: this component re-renders on every
+  // keystroke (the page holds `config` in state and saves on a trailing
+  // debounce), and a linear `find` ran three times per job — the count below
+  // plus both props on every row.
+  const statusById = new Map((status?.jobs || []).map((row) => [row.id, row]));
+  const spentCount = jobs.filter((job) => quotaBurnJobIsSpent(job, statusById.get(job.id)?.ranAt)).length;
 
   const patchJobs = (next) => onPatch({ jobs: next });
   const changeJob = (index, next) => patchJobs(jobs.map((job, i) => (i === index ? next : job)));
@@ -65,8 +65,6 @@ export default function FamilyCard({
     jobType: catalog.jobTypes[0].id,
     model: null,
     providerId: null,
-    // Standing work by default — the pre-`runOnce` behavior, so adding a step
-    // does the same thing it always did.
     runOnce: false,
     params: {},
   }]);
@@ -219,8 +217,8 @@ export default function FamilyCard({
                 index={index}
                 total={jobs.length}
                 catalog={catalog}
-                pending={statusFor(job.id)?.pending ?? null}
-                ranAt={statusFor(job.id)?.ranAt ?? null}
+                pending={statusById.get(job.id)?.pending ?? null}
+                ranAt={statusById.get(job.id)?.ranAt ?? null}
                 actionsBusy={actionsBusy}
                 onChange={(next) => changeJob(index, next)}
                 onMove={moveJob}

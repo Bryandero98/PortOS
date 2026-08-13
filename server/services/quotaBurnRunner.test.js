@@ -15,7 +15,7 @@ const state = {
   blocks: {},
   completions: {},
   completed: [],
-  completionsError: null,
+  completionsUnreadable: false,
   settled: [],
   settleError: null,
 };
@@ -67,10 +67,9 @@ vi.mock('./quotaBurnDenials.js', async (importActual) => ({
 // two. `state.completed` records the writes so "a one-shot job marks itself
 // spent" is assertable without a filesystem round trip.
 vi.mock('./quotaBurnCompletions.js', () => ({
-  getQuotaBurnCompletions: vi.fn(async () => {
-    if (state.completionsError) throw new Error(state.completionsError);
-    return state.completions;
-  }),
+  // `null` — not a throw — is the module's real "could not read" signal, so the
+  // stub speaks the same contract the runner is being tested against.
+  getQuotaBurnCompletions: vi.fn(async () => (state.completionsUnreadable ? null : state.completions)),
   recordQuotaBurnJobCompletion: vi.fn(async (familyId, jobId) => {
     state.completed.push(`${familyId}:${jobId}`);
     state.completions = { ...state.completions, [`${familyId}:${jobId}`]: new Date(now).toISOString() };
@@ -113,7 +112,7 @@ beforeEach(() => {
   state.blocks = {};
   state.completions = {};
   state.completed = [];
-  state.completionsError = null;
+  state.completionsUnreadable = false;
   state.settled = [];
   state.settleError = null;
   state.jobResult = undefined;
@@ -669,7 +668,7 @@ describe('run-once jobs', () => {
   });
 
   it('stops scraping provider quota once every step of a one-shot plan has run', async () => {
-    // The whole point of threading completions into `familyIsActionable`: a
+    // The whole point of threading completions into `familyHasRunnableJobs`: a
     // finished plan would otherwise pay for a multi-second TUI scrape every
     // interval, forever, to be told there is nothing to dispatch.
     const { getProviderQuotas } = await import('./providerUsage.js');
@@ -712,7 +711,7 @@ describe('run-once jobs', () => {
   it('skips the cycle rather than re-running one-shot work when the ledger is unreadable', async () => {
     // Fails CLOSED: an unreadable ledger reads as "nothing has run", which would
     // re-dispatch every run-once job on the plan.
-    state.completionsError = 'EIO';
+    state.completionsUnreadable = true;
     const result = await runQuotaBurnCycle();
     expect(result).toMatchObject({ dispatched: false, reason: 'run-once ledger unreadable' });
     expect(state.ran).toEqual([]);
@@ -743,7 +742,7 @@ describe('run-once jobs', () => {
 
     const { status } = await getQuotaBurnStatus();
     const grok = status.families.find((family) => family.id === 'grok');
-    expect(grok.jobs).toEqual([{ id: 'once', ranAt, spent: true, pending: null }]);
+    expect(grok.jobs).toEqual([{ id: 'once', ranAt, pending: null }]);
     expect(countJobPending).not.toHaveBeenCalled();
     expect(grok.skipReason).toBe('every enabled job has already run once');
   });

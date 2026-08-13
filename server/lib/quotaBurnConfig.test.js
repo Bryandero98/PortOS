@@ -4,7 +4,8 @@ import {
   QUOTA_BURN_JOB_CATALOG,
   QUOTA_BURN_JOB_TYPES,
   QUOTA_BURN_UNLIMITED_DISPATCHES,
-  familyIsActionable,
+  familyHasRunnableJobs,
+  familyIsConfigured,
   isUnlimitedDispatchCap,
   jobIsSpent,
   normalizeQuotaBurnConfig,
@@ -126,28 +127,39 @@ describe('jobIsSpent', () => {
   });
 });
 
-describe('familyIsActionable', () => {
+describe('familyIsConfigured', () => {
   it('requires an enabled family AND at least one enabled job', () => {
-    expect(familyIsActionable({ enabled: false, jobs: [{ enabled: true }] })).toBe(false);
-    expect(familyIsActionable({ enabled: true, jobs: [] })).toBe(false);
-    expect(familyIsActionable({ enabled: true, jobs: [{ enabled: false }] })).toBe(false);
-    expect(familyIsActionable({ enabled: true, jobs: [{ enabled: true }] })).toBe(true);
+    expect(familyIsConfigured({ enabled: false, jobs: [{ enabled: true }] })).toBe(false);
+    expect(familyIsConfigured({ enabled: true, jobs: [] })).toBe(false);
+    expect(familyIsConfigured({ enabled: true, jobs: [{ enabled: false }] })).toBe(false);
+    expect(familyIsConfigured({ enabled: true, jobs: [{ enabled: true }] })).toBe(true);
+  });
+});
+
+describe('familyHasRunnableJobs', () => {
+  const family = {
+    id: 'grok',
+    enabled: true,
+    jobs: [{ id: 'j1', enabled: true, runOnce: true }, { id: 'j2', enabled: false }],
+  };
+  const ran = { 'grok:j1': '2026-08-01T00:00:00.000Z' };
+
+  it('stops being runnable once every enabled job is a spent one-shot', () => {
+    // `familyIsConfigured` still answers "you configured something" — the runner
+    // and the page report those as two different verdicts, because a finished
+    // plan wants Re-arm and an unset one wants a job added.
+    expect(familyIsConfigured(family)).toBe(true);
+    expect(familyHasRunnableJobs(family, ran)).toBe(false);
+    // One repeating job is enough to keep the plan alive.
+    expect(familyHasRunnableJobs({ ...family, jobs: [...family.jobs, { id: 'j3', enabled: true }] }, ran)).toBe(true);
   });
 
-  it('stops being actionable once every enabled job is a spent one-shot', () => {
-    const family = {
-      id: 'grok',
-      enabled: true,
-      jobs: [{ id: 'j1', enabled: true, runOnce: true }, { id: 'j2', enabled: false }],
-    };
-    const ran = { 'grok:j1': '2026-08-01T00:00:00.000Z' };
-    // The completion-blind form still answers "you configured something" — the
-    // runner and the page report those as two different verdicts, because a
-    // finished plan wants Re-arm and an unset one wants a job added.
-    expect(familyIsActionable(family)).toBe(true);
-    expect(familyIsActionable(family, ran)).toBe(false);
-    // One repeating job is enough to keep the plan alive.
-    expect(familyIsActionable({ ...family, jobs: [...family.jobs, { id: 'j3', enabled: true }] }, ran)).toBe(true);
+  it('is safe to pass straight to some/filter/map', () => {
+    // The reason this is a second named predicate rather than an optional second
+    // argument: array callbacks pass the INDEX as arg two, which on an
+    // arity-overloaded predicate silently becomes the completion ledger.
+    expect([family].some(familyHasRunnableJobs)).toBe(true);
+    expect([family].filter(familyIsConfigured)).toHaveLength(1);
   });
 });
 
