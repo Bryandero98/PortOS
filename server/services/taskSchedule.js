@@ -1068,9 +1068,9 @@ const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCo
  *
  * `dispatchCount` therefore DEFAULTS to 0: a park ends the drain window by
  * definition, so zeroing the budget is the invariant, not an opt-in every caller
- * has to remember. (The churn detector's park in agentChurn.js is exactly the
- * caller that forgot, leaving the next window to cap early on a spend it never
- * made.) Note `dispatchCount` is still deliberately NOT in `PARK_FIELDS`:
+ * has to remember. The churn detector's park in agentChurn.js relies on this
+ * default so a local signal ends the current drain window cleanly. Note
+ * `dispatchCount` is still deliberately NOT in `PARK_FIELDS`:
  * `recordPerpetualDispatch` clears those fields mid-drain on every dispatch, and
  * zeroing the counter there would reset the budget before every dispatch, so the
  * cap could never fire.

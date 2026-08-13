@@ -53,8 +53,9 @@ export function initTaskLearning() {
       console.error(`❌ 📚 TaskLearning: Failed to record completion: ${err.message}`);
     });
     // After the ring includes this run: a burst of short-lived completions of
-    // the SAME task type is a looping coordinator, not something LI should
-    // have to notice. Park + file happen inside observeAgentChurn.
+    // the SAME task type is a local diagnostic signal. A coordinator is parked
+    // immediately; Layered Intelligence decides later whether it supports a
+    // concrete planned fix.
     const { observeAgentChurn } = await import('../agentChurn.js');
     await observeAgentChurn(agent, task).catch(err => {
       console.error(`❌ 🔁 CoS churn: Failed to observe completion: ${err.message}`);
