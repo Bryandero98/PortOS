@@ -27,7 +27,7 @@ import {
   generateStoryStep, refineStoryStep, setStoryIssueLock, generateStoryIssues,
   setStorySessionSync, reconcileStorySession,
   getUniverse, getPipelineSeries, listPipelineIssues,
-  analyzeImport, commitImport, retryImporterIssues, IMPORTER_CONTENT_TYPES,
+  IMPORTER_CONTENT_TYPES,
   getProviders, listCatalogIngredientsByIds,
 } from '../services/api';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
@@ -35,21 +35,18 @@ import { useArcCanvasSync } from '../hooks/useArcCanvasSync';
 import { BEAT_KIND_COLORS, getBeatKindColor } from '../lib/beatColors';
 import { getCatalogType, payloadSnippet } from '../lib/catalogTypes';
 import { useCatalogTypes } from '../hooks/useCatalogTypes.jsx';
-
-// Mirror Importer.jsx's commit picker — only these arc fields are sent on commit.
-const ARC_FIELDS_TO_COMMIT = ['logline', 'summary', 'protagonistArc', 'themes', 'shape'];
+import useDrawerTab from '../hooks/useDrawerTab';
+import useStoryImportIntake from '../hooks/useStoryImportIntake';
 
 // Bible fields the embedded arc step flushes before an ArcCanvas generate/verify.
 // The Story Builder edits these on their own steps (not inside the arc step), so
 // the flush is usually a no-op — kept for API-shape parity with ArcCanvas's
 // contract. Module-level so the `useArcCanvasSync` callbacks keep a stable identity.
 const ARC_FLUSH_FIELDS = ['name', 'logline', 'premise', 'styleNotes', 'issueCountTarget', 'universeId'];
-const pickArcFields = (arc) => {
-  if (!arc) return null;
-  const out = {};
-  for (const k of ARC_FIELDS_TO_COMMIT) if (arc[k] !== undefined) out[k] = arc[k];
-  return out;
-};
+
+// Intake tabs on the index view. The active one lives in `?intake=` (via
+// useDrawerTab) rather than local state so it's shareable and reload-safe.
+const INTAKE_TABS = ['seed', 'import'];
 
 const CONTENT_TYPE_LABELS = {
   'short-story': 'Short story', novel: 'Novel', screenplay: 'Screenplay', 'comic-script': 'Comic script',
@@ -165,7 +162,7 @@ function StoryBuilderIndex() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState(null);
   const [sessionsReloadTick, setSessionsReloadTick] = useState(0);
-  const [mode, setMode] = useState('seed');
+  const [mode, setMode] = useDrawerTab('intake', 'seed', INTAKE_TABS);
   const [title, setTitle] = useState('');
   const [seedIdea, setSeedIdea] = useState('');
   const [creating, setCreating] = useState(false);
@@ -236,7 +233,12 @@ function StoryBuilderIndex() {
     if (created) navigate(`/story-builder/${created.id}/idea`);
   };
 
-  const onCreated = (session) => navigate(`/story-builder/${session.id}/idea`);
+  const onCreated = useCallback((session) => navigate(`/story-builder/${session.id}/idea`), [navigate]);
+
+  // Import intake state lives HERE, not inside <ImportPanel> — the panel unmounts
+  // whenever the user flips to the "Start from an idea" tab, which used to throw
+  // away the pasted manuscript and the minute-long analysis preview (#3904).
+  const intake = useStoryImportIntake(onCreated);
 
   const tabClass = (id) => `px-4 py-2 text-sm rounded-t border-b-2 ${
     mode === id ? 'border-port-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
@@ -311,7 +313,7 @@ function StoryBuilderIndex() {
             </button>
           </div>
         ) : (
-          <ImportPanel onCreated={onCreated} />
+          <ImportPanel intake={intake} />
         )}
       </section>
 
@@ -365,114 +367,19 @@ function StoryBuilderIndex() {
 
 // ── Import intake (reuses the Importer's analyze → commit) ──────────────────
 
-function ImportPanel({ onCreated }) {
-  const [universeName, setUniverseName] = useState('');
-  const [seriesName, setSeriesName] = useState('');
-  const [contentType, setContentType] = useState('comic-script');
-  const [source, setSource] = useState('');
-  const [llm, setLlm] = useState({ provider: '', model: '' });
-  const [analyzing, setAnalyzing] = useState(false);
-  const [preview, setPreview] = useState(null);
-  const [retrying, setRetrying] = useState(false);
-  const [committing, setCommitting] = useState(false);
-  // Set after a partial commit (universe/series/arc/canon persisted, issues
-  // rolled back). The retry then drops arc + seasons + canon so it only
-  // re-creates the issues — re-sending the full payload would clobber the
-  // persisted state and risk duplicate issues. Mirrors Importer.jsx.
-  const [arcAlreadyPersisted, setArcAlreadyPersisted] = useState(false);
-  // Set once commitImport fully succeeds (issues created) but createStorySession
-  // then failed — a re-click must skip commitImport entirely and resume at
-  // session creation, otherwise it re-creates the already-created issues and
-  // overwrites the arc.
-  const [committed, setCommitted] = useState(false);
-  // Any path that clears the preview (analyze, Re-analyze) is a fresh attempt,
-  // so the retry/committed state can't survive it — centralize the reset here.
-  useEffect(() => { if (!preview) { setArcAlreadyPersisted(false); setCommitted(false); } }, [preview]);
+// Presentational half of the import intake. Every field and the whole
+// analyze → commit → create-session workflow live in `useStoryImportIntake`,
+// called by the always-mounted StoryBuilderIndex and handed down as `intake` —
+// this component unmounts on every intake tab flip, so state held here would be
+// destroyed by a single click on "Start from an idea" (#3904).
+function ImportPanel({ intake }) {
+  const {
+    universeName, seriesName, contentType, source, llm,
+    analyzing, preview, retrying, committing, arcAlreadyPersisted, committed,
+    patch, analyze, retryIssues, importAndBuild,
+  } = intake;
 
   const types = IMPORTER_CONTENT_TYPES || ['short-story', 'novel', 'screenplay', 'comic-script'];
-
-  const analyze = async () => {
-    if (!universeName.trim() || !seriesName.trim() || !source.trim()) {
-      toast.error('Universe name, series name, and source text are required'); return;
-    }
-    setAnalyzing(true); setPreview(null);
-    const res = await analyzeImport(
-      {
-        universeName: universeName.trim(), seriesName: seriesName.trim(), contentType, source,
-        providerOverride: llm.provider || undefined, modelOverride: llm.model || undefined,
-      },
-      { silent: true },
-    ).catch((err) => { toast.error(err?.message || 'Analyze failed'); return null; });
-    setAnalyzing(false);
-    if (res) setPreview(res);
-  };
-
-  const retryIssues = async () => {
-    setRetrying(true);
-    const res = await retryImporterIssues(
-      {
-        contentType, source, seriesName: seriesName.trim(), arcSummary: preview?.arcPreview?.summary || '',
-        providerOverride: llm.provider || undefined, modelOverride: llm.model || undefined,
-      },
-      { silent: true },
-    ).catch((err) => { toast.error(err?.message || 'Retry failed'); return null; });
-    setRetrying(false);
-    if (res) setPreview((p) => ({ ...p, issueProposals: res.issueProposals || [], issueSplitFailed: false }));
-  };
-
-  const importAndBuild = async () => {
-    if (!preview) return;
-    const issues = preview.issueProposals || [];
-    if (issues.length === 0) { toast.error('No issues were extracted — retry the issue split or adjust the source'); return; }
-    setCommitting(true);
-    // Skip commitImport when a prior click already committed (only the later
-    // createStorySession failed) — re-running it would duplicate the
-    // already-created issues and overwrite the arc. Resume at session creation.
-    if (!committed) {
-      // On an arcAlreadyPersisted retry the server kept arc/seasons/canon from
-      // the failed commit, so resend issues only — re-sending the full payload
-      // would clobber the persisted state and risk duplicate issues.
-      const base = { universeId: preview.universe.id, seriesId: preview.series.id, issues, contentType };
-      const payload = arcAlreadyPersisted
-        ? { ...base, canonSelections: { characters: [], places: [], objects: [] }, arc: null, seasons: [] }
-        : {
-            ...base,
-            canonSelections: {
-              characters: preview.canonPreview?.characters || [],
-              places: preview.canonPreview?.places || [],
-              objects: preview.canonPreview?.objects || [],
-            },
-            arc: pickArcFields(preview.arcPreview),
-            seasons: preview.seasonsPreview || [],
-          };
-      const result = await commitImport(payload, { silent: true }).catch((err) => {
-        if (err?.code === 'IMPORTER_PARTIAL_COMMIT_ISSUES' && err?.context?.arcAlreadyPersisted) {
-          setArcAlreadyPersisted(true);
-          toast.warning('Arc + seasons saved; issues failed and were rolled back. Click again to re-create the issues only — the arc won\'t be re-sent.');
-          return null;
-        }
-        toast.error(err?.message || 'Import failed');
-        return null;
-      });
-      if (!result) { setCommitting(false); return; }
-      setArcAlreadyPersisted(false);
-      setCommitted(true);
-    }
-    const session = await createStorySession({
-      intakeMode: 'import',
-      title: seriesName.trim() || universeName.trim(),
-      // Seed from the extracted arc so the idea step has context and the
-      // universe-aesthetic expand has a real starter (the imported universe
-      // otherwise only has a name).
-      seedIdea: (preview.arcPreview?.summary || preview.arcPreview?.logline || '').slice(0, 4000),
-      universeId: preview.universe.id,
-      seriesId: preview.series.id,
-      // Persist the picker choice so every in-wizard operation uses it too.
-      llm: { provider: llm.provider || null, model: llm.model || null },
-    }, { silent: true }).catch((err) => { toast.error(err?.message || 'Failed to start the builder'); return null; });
-    setCommitting(false);
-    if (session) onCreated(session);
-  };
 
   const canon = preview?.canonPreview || {};
   const issueCount = preview?.issueProposals?.length || 0;
@@ -485,23 +392,23 @@ function ImportPanel({ onCreated }) {
       </p>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-xs text-gray-500">Provider/model used for this import and every later step:</span>
-        <ProviderModelPicker value={llm} onChange={setLlm} />
+        <ProviderModelPicker value={llm} onChange={(next) => patch({ llm: next })} />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label htmlFor="imp-uni" className="block text-sm text-gray-400 mb-1">Universe name</label>
-          <input id="imp-uni" type="text" value={universeName} onChange={(e) => setUniverseName(e.target.value)}
+          <input id="imp-uni" type="text" value={universeName} onChange={(e) => patch({ universeName: e.target.value })}
             placeholder="e.g. Giant" className="w-full bg-port-bg border border-port-border rounded px-3 py-2" />
         </div>
         <div>
           <label htmlFor="imp-ser" className="block text-sm text-gray-400 mb-1">Series name</label>
-          <input id="imp-ser" type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)}
+          <input id="imp-ser" type="text" value={seriesName} onChange={(e) => patch({ seriesName: e.target.value })}
             placeholder="e.g. Giant" className="w-full bg-port-bg border border-port-border rounded px-3 py-2" />
         </div>
       </div>
       <div>
         <label htmlFor="imp-type" className="block text-sm text-gray-400 mb-1">Content type</label>
-        <select id="imp-type" value={contentType} onChange={(e) => setContentType(e.target.value)}
+        <select id="imp-type" value={contentType} onChange={(e) => patch({ contentType: e.target.value })}
           className="w-full bg-port-bg border border-port-border rounded px-3 py-2">
           {types.map((t) => <option key={t} value={t}>{CONTENT_TYPE_LABELS[t] || t}</option>)}
         </select>
@@ -510,7 +417,7 @@ function ImportPanel({ onCreated }) {
         <label htmlFor="imp-src" className="block text-sm text-gray-400 mb-1">
           Source text <span className="text-gray-600">({source.length.toLocaleString()} chars)</span>
         </label>
-        <textarea id="imp-src" value={source} onChange={(e) => setSource(e.target.value)} rows={8}
+        <textarea id="imp-src" value={source} onChange={(e) => patch({ source: e.target.value })} rows={8}
           placeholder="Paste the full script / manuscript here…"
           className="w-full bg-port-bg border border-port-border rounded px-3 py-2 font-mono text-xs" />
       </div>
@@ -549,7 +456,7 @@ function ImportPanel({ onCreated }) {
               {committing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               {committed ? 'Retry starting the builder' : arcAlreadyPersisted ? 'Retry issues & start building' : 'Import & start building'}
             </button>
-            <button onClick={() => setPreview(null)} disabled={committing}
+            <button onClick={() => patch({ preview: null })} disabled={committing}
               className="text-sm text-gray-400 hover:text-white px-2">Re-analyze</button>
           </div>
         </div>

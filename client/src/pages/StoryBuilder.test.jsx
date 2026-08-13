@@ -425,6 +425,53 @@ describe('StoryBuilder — index', () => {
     await waitFor(() => expect(screen.getByText(/Retry issue split/)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Import & start building/ }).disabled).toBe(true);
   });
+
+  it('import tab: a round trip through the seed tab keeps the typed intake and the analysis preview (#3904)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.analyzeImport.mockResolvedValue({
+      universe: { id: 'u1', name: 'Example Universe' }, series: { id: 's1' },
+      canonPreview: { characters: [{ name: 'A' }], places: [], objects: [] },
+      arcPreview: { logline: 'A courier outruns the tide.', summary: 'S' }, seasonsPreview: [],
+      issueProposals: [{ number: 1, title: 'One' }],
+    });
+    renderAt('/story-builder');
+
+    fireEvent.click(await screen.findByText('Import a finished work'));
+    fireEvent.change(await screen.findByLabelText('Universe name'), { target: { value: 'Example Universe' } });
+    fireEvent.change(screen.getByLabelText('Series name'), { target: { value: 'Example Series' } });
+    fireEvent.change(screen.getByLabelText(/Source text/), { target: { value: 'PAGE ONE. A long manuscript.' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Analyze$/ }));
+
+    // The minute-long analysis landed.
+    expect(await screen.findByText(/Extracted “Example Universe”/)).toBeTruthy();
+    expect(api.analyzeImport).toHaveBeenCalledTimes(1);
+
+    // Flip to the seed tab and back — this used to unmount <ImportPanel> and
+    // destroy the manuscript, the form fields, and the preview with it.
+    fireEvent.click(screen.getByText('Start from an idea'));
+    expect(await screen.findByLabelText('Universe / story name')).toBeTruthy();
+    fireEvent.click(screen.getByText('Import a finished work'));
+
+    // Everything survived, and no second analyze was needed to get it back.
+    expect(await screen.findByText(/Extracted “Example Universe”/)).toBeTruthy();
+    expect(screen.getByLabelText('Universe name').value).toBe('Example Universe');
+    expect(screen.getByLabelText('Series name').value).toBe('Example Series');
+    expect(screen.getByLabelText(/Source text/).value).toBe('PAGE ONE. A long manuscript.');
+    expect(api.analyzeImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('intake tab: ?intake=import deep-links straight to the import form (#3904)', async () => {
+    renderAt('/story-builder?intake=import');
+    expect(await screen.findByLabelText('Universe name')).toBeTruthy();
+    // The seed form is the one that was replaced, not merely hidden alongside it.
+    expect(screen.queryByLabelText('Universe / story name')).toBeNull();
+  });
+
+  it('intake tab: an unknown ?intake= value degrades to the seed tab, not a blank panel (#3904)', async () => {
+    renderAt('/story-builder?intake=bogus');
+    expect(await screen.findByLabelText('Universe / story name')).toBeTruthy();
+    expect(screen.queryByLabelText('Universe name')).toBeNull();
+  });
 });
 
 describe('StoryBuilder — detail stepper', () => {

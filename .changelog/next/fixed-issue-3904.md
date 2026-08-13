@@ -1,0 +1,1 @@
+- Story Builder no longer discards a pasted manuscript and its analysis preview when you switch between the Seed and Import intake tabs; the active tab is now deep-linkable via `?intake=`.
