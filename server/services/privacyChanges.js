@@ -158,11 +158,11 @@ export async function declareChange({ vaultRecordId, replacement, replacementRec
       [vaultRecordId],
     );
 
-    // Flip every current holding of the old record → update_pending, capturing
+    // Flip every active holding of the old record → update_pending, capturing
     // the affected orgs so we can mirror a forward-looking holding on the new one.
     const { rows: flipped } = await client.query(
       `UPDATE privacy_org_holdings SET status = 'update_pending', updated_at = NOW()
-       WHERE vault_record_id = $1 AND status = 'current'
+       WHERE vault_record_id = $1 AND status = ANY(ARRAY['current', 'unknown', 'update_pending'])
        RETURNING org_id`,
       [vaultRecordId],
     );
