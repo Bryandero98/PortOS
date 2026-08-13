@@ -1,0 +1,1 @@
+- privacyBrokers: ensureSeeded updates curated broker definitions on version upgrade (#4019)

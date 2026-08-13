@@ -37,7 +37,7 @@ describe.skipIf(!dbReady)('privacy brokers DB round-trip', () => {
   let svc;
   let scan;
   let vault;
-  const autoBrokerIds = ['test-auto-alpha', 'ca-test-beta-inc'];
+  const autoBrokerIds = ['test-auto-alpha', 'ca-test-beta-inc', 'test-auto-upgrade'];
   const createdVaultIds = [];
   const vaultTableWasEmpty = false;
   const testStart = new Date().toISOString();
@@ -76,6 +76,39 @@ describe.skipIf(!dbReady)('privacy brokers DB round-trip', () => {
     expect(parent.preferSuppression).toBe(true);
     const child = await svc.getBroker('truthfinder');
     expect(child.clusterParent).toBe('peopleconnect');
+  });
+
+  it('ensureSeeded updates curated brokers on version upgrade while preserving user settings and auto sources (#4019)', async () => {
+    svc.resetEnsureSeededForTests();
+    // 1. Disable a curated broker to verify user-modified setting is preserved
+    await svc.setBrokerEnabled('spokeo', false);
+
+    // 2. Insert a dummy non-curated broker to verify auto sources are preserved
+    await query(
+      `INSERT INTO privacy_brokers (id, name, urls, optout, tier, disclosure_fields, source, confidence, enabled, created_at, updated_at)
+       VALUES ('test-auto-upgrade', 'Auto Upgrade', '{}', '{}', 2, '[]', 'badbool', 'auto', true, NOW(), NOW())
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    // 3. Mutate a curated broker's field in DB to simulate an older version record
+    await query(`UPDATE privacy_brokers SET name = 'Old Spokeo Name' WHERE id = 'spokeo'`);
+
+    // 4. Trigger ensureSeeded
+    svc.resetEnsureSeededForTests();
+    await svc.ensureSeeded();
+
+    // 5. Verify curated broker definition is updated from seed file (name restored)
+    const spokeo = await svc.getBroker('spokeo');
+    expect(spokeo.name).toBe('Spokeo');
+    // Verify user-modified enabled setting (false) was preserved
+    expect(spokeo.enabled).toBe(false);
+
+    // 6. Verify non-curated broker was untouched
+    const autoBroker = await svc.getBroker('test-auto-upgrade');
+    expect(autoBroker).toMatchObject({ name: 'Auto Upgrade', source: 'badbool' });
+
+    // Cleanup
+    await svc.setBrokerEnabled('spokeo', true);
   });
 
   it('refresh adds auto brokers and NEVER clobbers a curated row', async () => {
