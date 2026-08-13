@@ -11,7 +11,7 @@ import { MANUSCRIPT_TYPES } from '../series.js';
 import { listIssues, STAGE_INPUT_MAX } from '../issues.js';
 import { ARC_LIMITS, ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
 import { composeStyleNotes } from '../../../lib/styleGuide.js';
-import { renderCharacterArcsForPrompt } from '../../../lib/seriesCharacterArc.js';
+import { CHARACTER_ARC_LIMITS, renderCharacterArcsForPrompt } from '../../../lib/seriesCharacterArc.js';
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
 import { DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
 import { getUniverse } from '../../universeBuilder.js';
@@ -739,6 +739,15 @@ export function matchResolvedFindings(raw, validIds) {
  * its scope prohibition on — see `resolveVerifyIssues` for why the two halves
  * have to agree (#3789).
  */
+/**
+ * One entry of the resolve prompt's `textBudgetsJson`: what a field currently
+ * holds, its cap, and how much an exact-text replacement may add. Pure.
+ */
+const fieldBudget = (value, max) => {
+  const current = (typeof value === 'string' ? value : '').length;
+  return { current, max, remaining: Math.max(0, max - current) };
+};
+
 export async function buildResolveContext(series, findings, preloadedWorld, options = {}) {
   const ctx = await buildVerifyContext(series, preloadedWorld, { spineOnly: options.spineOnly === true });
   const structure = recommendStructure(series.issueCountTarget);
@@ -756,30 +765,34 @@ export async function buildResolveContext(series, findings, preloadedWorld, opti
     avoidJson: JSON.stringify(avoid, null, 2),
     textBudgetsJson: JSON.stringify({
       arc: {
-        summary: {
-          current: (series.arc?.summary || '').length,
-          max: ARC_LIMITS.SUMMARY_MAX,
-          remaining: Math.max(0, ARC_LIMITS.SUMMARY_MAX - (series.arc?.summary || '').length),
-        },
-        protagonistArc: {
-          current: (series.arc?.protagonistArc || '').length,
-          max: ARC_LIMITS.PROTAGONIST_ARC_MAX,
-          remaining: Math.max(0, ARC_LIMITS.PROTAGONIST_ARC_MAX - (series.arc?.protagonistArc || '').length),
-        },
+        summary: fieldBudget(series.arc?.summary, ARC_LIMITS.SUMMARY_MAX),
+        protagonistArc: fieldBudget(series.arc?.protagonistArc, ARC_LIMITS.PROTAGONIST_ARC_MAX),
       },
       seasons: (series.seasons || []).map((season) => ({
         id: season.id,
         number: season.number,
-        synopsis: {
-          current: (season.synopsis || '').length,
-          max: ARC_LIMITS.SEASON_SYNOPSIS_MAX,
-          remaining: Math.max(0, ARC_LIMITS.SEASON_SYNOPSIS_MAX - (season.synopsis || '').length),
-        },
-        endingHook: {
-          current: (season.endingHook || '').length,
-          max: ARC_LIMITS.SEASON_ENDING_HOOK_MAX,
-          remaining: Math.max(0, ARC_LIMITS.SEASON_ENDING_HOOK_MAX - (season.endingHook || '').length),
-        },
+        synopsis: fieldBudget(season.synopsis, ARC_LIMITS.SEASON_SYNOPSIS_MAX),
+        endingHook: fieldBudget(season.endingHook, ARC_LIMITS.SEASON_ENDING_HOOK_MAX),
+      })),
+      // Transition labels are capped an order of magnitude tighter than the arc
+      // prose (200 vs 8000), and the sanitizer clips an over-cap one instead of
+      // rejecting it — so a resolver writing blind lands a half-clause milestone,
+      // which the next round reports as an incomplete record and never converges
+      // on. Publishing the per-transition budget is what keeps the rewrite inside
+      // the cap it is actually being measured against.
+      characterArcs: (series.characterArcs || []).map((arc) => ({
+        characterId: arc.characterId,
+        characterName: arc.characterName,
+        want: fieldBudget(arc.want, CHARACTER_ARC_LIMITS.WANT_MAX),
+        need: fieldBudget(arc.need, CHARACTER_ARC_LIMITS.NEED_MAX),
+        startState: fieldBudget(arc.startState, CHARACTER_ARC_LIMITS.START_STATE_MAX),
+        endState: fieldBudget(arc.endState, CHARACTER_ARC_LIMITS.END_STATE_MAX),
+        transitions: (arc.transitions || []).map((transition) => ({
+          id: transition.id,
+          atIssue: transition.atIssue,
+          label: fieldBudget(transition.label, CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX),
+          note: fieldBudget(transition.note, CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX),
+        })),
       })),
     }, null, 2),
     recommendedStructure: structure

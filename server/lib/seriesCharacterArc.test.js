@@ -54,6 +54,17 @@ describe('sanitizeTransition', () => {
     expect(out).toBe(first.trim());
   });
 
+  // The live failure this fixes (ser-bcebcf41, 2026-08-13): a milestone label is
+  // one clause-chained sentence with no terminator inside 200 chars, so the
+  // whole-word cut ended it on "…with no repayment lien, no" and the spine gate
+  // reported the record as textually incomplete every round.
+  it('ends a clause-chained over-long label on a complete clause', () => {
+    const label = 'Proves with the validated holder block that the hostile takeover cannot reach liquidation quorum, then closes the short position and escrows the proceeds with no repayment lien, no personal withdrawal key, and no veto';
+    const out = sanitizeTransition({ kind: 'point-of-no-return', label }).label;
+    expect(out.length).toBeLessThanOrEqual(CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX);
+    expect(out.endsWith('with no repayment lien')).toBe(true);
+  });
+
   it('falls back to a whole-word cut when an over-long note has no sentence break', () => {
     const note = `${'word '.repeat(CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX / 2)}tail`;
     const out = sanitizeTransition({ kind: 'decision', label: 'x', note }).note;

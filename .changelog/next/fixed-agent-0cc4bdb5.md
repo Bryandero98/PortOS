@@ -1,0 +1,1 @@
+- Arc verification no longer stalls on a truncated character-arc milestone: over-cap transition labels now end on a complete clause, and the arc-resolve prompt receives the per-character and per-transition field budgets it was previously writing blind against

@@ -908,6 +908,60 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     });
   });
 
+  // Transition labels cap at 200 and the sanitizer CLIPS an overrun instead of
+  // rejecting it, so a resolver writing blind lands a half-clause milestone that
+  // the next spine round reports as an incomplete record — the budget block is
+  // what tells it the cap it is actually measured against.
+  it('publishes per-transition character-arc budgets to the resolve prompt', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'seed', summary: 'The queue claim changes hands.', status: 'draft' },
+      characterArcs: [{
+        characterId: 'chr-11111111-2222-3333-4444-555555555555',
+        characterName: 'Queue broker',
+        want: 'To keep the queue claim.',
+        transitions: [{
+          id: 'trn-11111111-2222-3333-4444-555555555555',
+          kind: 'point-of-no-return',
+          atIssue: 14,
+          label: 'Escrows the proceeds with no lien.',
+          note: 'The queue claim passes to the coalition.',
+        }],
+      }],
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { notes: '' }, runId: 'r1', providerId: 'p', model: 'm',
+    }));
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'medium', problem: 'milestone is incomplete', suggestion: 'complete it' }],
+    });
+
+    const budgets = JSON.parse(stageRunnerSpy.mock.calls[0][1].textBudgetsJson);
+    expect(budgets.characterArcs).toHaveLength(1);
+    const [arcBudget] = budgets.characterArcs;
+    expect(arcBudget.characterId).toBe('chr-11111111-2222-3333-4444-555555555555');
+    expect(arcBudget.want).toEqual({
+      current: 'To keep the queue claim.'.length,
+      max: 1000,
+      remaining: 1000 - 'To keep the queue claim.'.length,
+    });
+    expect(arcBudget.transitions[0]).toEqual({
+      id: 'trn-11111111-2222-3333-4444-555555555555',
+      atIssue: 14,
+      label: {
+        current: 'Escrows the proceeds with no lien.'.length,
+        max: 200,
+        remaining: 200 - 'Escrows the proceeds with no lien.'.length,
+      },
+      note: {
+        current: 'The queue claim passes to the coalition.'.length,
+        max: 1000,
+        remaining: 1000 - 'The queue claim passes to the coalition.'.length,
+      },
+    });
+  });
+
   it('rejects ambiguous, whole-field, and over-limit exact text edits', () => {
     expect(planner.applyExactTextEdits(
       'repeat here; repeat here',

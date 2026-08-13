@@ -55,7 +55,7 @@ export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-verify.md':      '9f32e91bd33b97d30e1cbb2e697f4fc3', // post-263 world category canon
   'pipeline-volume-verify.md':   '49458d36700cb94e34806d536ffe2940', // post-019
   'pipeline-season-episodes.md': 'a88e8e78a949b7aaf500d03314e2ea0b', // post-172 (structure rules)
-  'pipeline-arc-resolve.md':     '2349bce80e9df8caafa391a6106327b6', // post-259 (measured text budgets)
+  'pipeline-arc-resolve.md':     'aa2e463ebe0857859d79aa0c6ccb0256', // post-267 (character-arc budgets)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
