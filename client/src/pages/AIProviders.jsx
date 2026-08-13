@@ -223,11 +223,16 @@ export default function AIProviders() {
 
   const handleAddSample = async (provider) => {
     setAddingSample(prev => ({ ...prev, [provider.id]: true }));
-    await api.createProvider(provider);
-    setSampleProviders(prev => prev.filter(p => p.id !== provider.id));
-    setAddingSample(prev => ({ ...prev, [provider.id]: false }));
-    loadData();
-    toast.success(`Added ${provider.name}`);
+    try {
+      await api.createProvider(provider);
+      setSampleProviders(prev => prev.filter(p => p.id !== provider.id));
+      loadData();
+      toast.success(`Added ${provider.name}`);
+    } catch (err) {
+      toast.error(`Failed to add provider: ${err?.message || err}`);
+    } finally {
+      setAddingSample(prev => ({ ...prev, [provider.id]: false }));
+    }
   };
 
   const handleAddAllSamples = async () => {
