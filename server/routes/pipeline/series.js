@@ -7,7 +7,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
-import { validateRequest, optionalBooleanMap, llmSchema, recordRenderPinFields } from '../../lib/validation.js';
+import { validateRequest, optionalBooleanMap, llmSchema } from '../../lib/validation.js';
+import { recordRenderPinFields } from '../../lib/sharedSchemas.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import { TRIM_SIZES, INTERIOR_FONTS } from '../../lib/proseExportSettings.js';
 import * as issuesSvc from '../../services/pipeline/issues.js';
