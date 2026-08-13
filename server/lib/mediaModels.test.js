@@ -58,8 +58,10 @@ describe('mediaModels registry', () => {
   });
 
   it('ships MiniMax H3 as a pinned, keyframe-capable 128 GB BYOV profile', async () => {
-    const { getVideoModels } = await import('./mediaModels.js');
-    const h3 = getVideoModels().find((model) => model.id === 'minimax_h3_8bit');
+    const { loadMediaModels } = await import('./mediaModels.js');
+    // H3 is an Apple-silicon MLX runtime, so inspect the shipped macOS catalog
+    // directly instead of the current platform's filtered model list.
+    const h3 = loadMediaModels().video.macos.find((model) => model.id === 'minimax_h3_8bit');
     expect(h3).toMatchObject({
       runtime: 'minimax_h3',
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
