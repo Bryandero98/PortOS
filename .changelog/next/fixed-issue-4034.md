@@ -1,0 +1,1 @@
+- cos: require confirmation before killing running agent (#4034)
