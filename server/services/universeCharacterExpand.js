@@ -16,28 +16,18 @@ import { buildStyleClause } from './universeCanon.js';
 import { runPromptRefineRaw } from './pipeline/refineHelpers.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { sanitizeCharacter } from '../lib/storyBible.js';
+import { BIBLE_EXPAND_FIELDS } from '../lib/universeBibleCompleteness.js';
 import { shortId } from '../lib/fileUtils.js';
 
-// Adding a new extended field on `sanitizeCharacter` requires adding it here
-// too — otherwise the expand response key is silently dropped. Exported so the
-// vision-driven expand (`universeVisionExpand.js`) fills the SAME canonical set
-// of fields from one source of truth rather than a drifting second copy.
-export const STRING_FIELDS = Object.freeze([
-  'pronouns', 'age', 'coreTheme', 'speechAccent', 'speechPattern',
-  'physicalDescription', 'personality', 'background', 'visualNotes',
-  'silhouetteNotes', 'postureNotes', 'specialTraits', 'visualIdentity',
-  'motivations', 'likes', 'dislikes', 'mannerisms', 'relationships', 'skills',
-  // Character framework (CWQE Phase 10, #2175) — the Ghost → Wound → Lie →
-  // Want → Need chain. Plain prose fields; `arcType` (enum) and `sliders`
-  // (structured) are handled separately below.
-  'ghost', 'wound', 'lie', 'want', 'need',
-]);
-export const LIST_FIELDS = Object.freeze([
-  'stats', 'colorPalette', 'props', 'expressions', 'handGestures',
-  'wardrobes',
-  // Character framework — secrets are a plain string list (#2175).
-  'secrets',
-]);
+// Adding a new extended field on `sanitizeCharacter` requires adding it to
+// `BIBLE_EXPAND_FIELDS.character` too — otherwise the expand response key is
+// silently dropped. Sourced from there rather than restated here so the
+// completeness scan that decides WHICH characters still need an expand and the
+// merge that applies one can never disagree about the field set. Re-exported
+// because the vision-driven expand (`universeVisionExpand.js`) fills the SAME
+// canonical set.
+export const STRING_FIELDS = BIBLE_EXPAND_FIELDS.character.strings;
+export const LIST_FIELDS = BIBLE_EXPAND_FIELDS.character.lists;
 // `relationshipLinks` (#1287) is INTENTIONALLY excluded from both lists: each
 // link points at a sibling character by `targetCharacterId`, an id the LLM
 // expand call has no way to produce. The `{ ...target }` spread above

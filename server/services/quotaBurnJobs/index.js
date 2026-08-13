@@ -34,6 +34,7 @@ import { QUOTA_BURN_JOB_TYPE } from '../../lib/quotaBurnConfig.js';
 
 export const JOB_MODULES = {
   [QUOTA_BURN_JOB_TYPE.AGENT_PROMPT]: () => import('./agentPrompt.js'),
+  [QUOTA_BURN_JOB_TYPE.UNIVERSE_BIBLE_DESCRIBE]: () => import('./universeBibleDescribe.js'),
   [QUOTA_BURN_JOB_TYPE.UNIVERSE_BIBLE_IMAGES]: () => import('./universeBibleImages.js'),
 };
 

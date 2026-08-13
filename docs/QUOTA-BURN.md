@@ -116,7 +116,54 @@ its own type, optional model/provider pin, and type-specific params.
 | Job type | What it does |
 | --- | --- |
 | `agent-prompt` | Queues a CoS agent in a named managed app with a custom prompt. Visible in the CoS queue and Active Agents like any other task. |
+| `universe-bible-describe` | **Programmatic** — no agent. Sends one headless expand prompt per under-described bible entry, pinned to the burning family's own CLI/TUI provider. |
 | `universe-bible-images` | **Programmatic** — no agent. Enqueues renders for universe bible entries whose `imageRefs[]` is empty. Render backend defaults to the burning family's own image mode, so a codex burn spends codex's image quota. |
+
+### Describe before you render
+
+`universe-bible-describe` is the step that belongs **before** `universe-bible-images`
+in a plan. An image rendered from a character row holding only a name is a
+generic figure that has to be thrown away — and it has already spent the image
+quota. Ordering the two describe→images in the family's rotation walks the
+backlog into shape first, then renders from something worth rendering.
+
+The job's `depth` param picks what "described" means, per
+`server/lib/universeBibleCompleteness.js`:
+
+- **`core`** — the entry is unusable without these: a character's
+  `physicalDescription` / `personality` / `background` / `motivations` /
+  `visualNotes`; a place's or object's `description`.
+- **`full`** (default) — the whole sheet. For a character that is every field the
+  character-sheet expand prompt fills: the visual set (silhouette, posture,
+  palette, props, expressions, hand gestures, wardrobes), the novelist set
+  (likes, mannerisms, relationships, skills), and the Ghost → Wound → Lie → Want
+  → Need framework with its arc type and sliders. `full` is the default because
+  the job exists for the sheet — a cast member with a one-line description still
+  renders inconsistently from panel to panel.
+
+Cast is the point but not the whole scope: places and objects run through
+`universe-canon-entry-expand` (description, palette/era/weather/recurring details
+for a place; description + significance for an object). Category variations and
+composite sheets are **out of scope** — their sanitizer already requires a
+prompt, so one cannot exist undescribed.
+
+Picks are ordered by the FRACTION of an entry's own sheet that is blank, not the
+raw gap count. Raw counts would rank by kind: a character sheet has ~31 fields
+and an object two, so every half-written character would outrank a completely
+blank object forever and a large cast would starve the rest of the bible.
+
+Two things bound the spend. Locked entries are never picked (an expand on one
+returns without an LLM call). And every **attempted** entry — including the ones
+the model declined to fill — is stamped into the shared in-flight ledger for its
+6-hour TTL: at `full` depth some fields are legitimately meant to stay blank (the
+prompt tells the model to leave the Ghost→Need chain alone for a bit-player), so
+an entry can be permanently "incomplete", and without the stamp the plan would
+re-pick the same handful every tick and never reach the rest.
+
+The image job's opt-in `requireDescribed` is the other half of the pairing: with
+it on, canon entries with no `core` description are held out of the render
+backlog until the describe job has been through them. It defaults **off**, so an
+existing plan keeps rendering exactly the backlog it rendered yesterday.
 
 ### Repeating vs one-shot work (`runOnce`)
 
@@ -285,6 +332,7 @@ folds those overrides into the single plan (each app's family prompt becomes an
 | File | Role |
 | --- | --- |
 | `server/lib/quotaBurnConfig.js` | Plan shape, job-type catalog, total normalization |
+| `server/lib/universeBibleCompleteness.js` | What "described" means per kind + depth — the field vocabulary the describe job scans with |
 | `server/lib/quotaBurnPresets.js` | Ready-made single-focus audit prompts for `agent-prompt` jobs |
 | `server/lib/quotaWindows.js` | Classifies a window by period — target (broadest) vs limiting (narrowest) |
 | `server/services/quotaBurnStore.js` | `data/cos/quota-burn.json` + the run log |

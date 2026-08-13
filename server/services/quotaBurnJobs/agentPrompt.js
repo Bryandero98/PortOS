@@ -21,15 +21,21 @@ import { windowLabelOf } from '../../lib/quotaWindows.js';
 /**
  * An agent-capable provider in the burning family. A job's explicit
  * `providerId` wins; otherwise match the family id against the enabled
- * providers, PREFERRING the TUI.
+ * providers, PREFERRING the type named by `prefer` (default `tui`).
  *
- * Preferring the TUI is the point: a burn runs unattended for minutes on the
- * user's own subscription, and a TUI agent is watchable in Active Agents and can
- * be steered mid-run, where a headless CLI run can only be read after it has
- * finished. Most families have both registered (`claude-code` + `claude-code-tui`,
- * `codex` + `codex-tui`, …) and the CLI sorts first, so a plain `find` silently
- * picked the unobservable one every time. `pickScrapeProvider` applies the same
- * preference when reading `/usage`.
+ * Preferring the TUI is the point for an AGENT burn: it runs unattended for
+ * minutes on the user's own subscription, and a TUI agent is watchable in Active
+ * Agents and can be steered mid-run, where a headless CLI run can only be read
+ * after it has finished. Most families have both registered (`claude-code` +
+ * `claude-code-tui`, `codex` + `codex-tui`, …) and the CLI sorts first, so a
+ * plain `find` silently picked the unobservable one every time.
+ * `pickScrapeProvider` applies the same preference when reading `/usage`.
+ *
+ * A PROGRAMMATIC job passes `prefer: 'cli'` instead: it sends one headless
+ * prompt through the stage runner, with no agent session to watch or steer, so
+ * the TUI's observability buys nothing and its interactive startup is pure
+ * overhead. The other type is still accepted as a fallback — a family with only
+ * a TUI registered must not silently stop burning.
  *
  * Two exclusions, both about what a burn is FOR — spending a subscription window
  * that would otherwise expire unused:
@@ -39,13 +45,13 @@ import { windowLabelOf } from '../../lib/quotaWindows.js';
  *   them from the quota cards for exactly this reason; a `claude-ollama-tui`
  *   would otherwise be a perfectly good match for the `claude` family.
  */
-export function providerForFamily(providers, { familyId, providerId }) {
+export function providerForFamily(providers, { familyId, providerId, prefer = 'tui' }) {
   const available = (providers || []).filter((provider) =>
     provider?.enabled && provider.ollamaBacked !== true
     && (provider.type === 'cli' || provider.type === 'tui'));
   if (providerId) return available.find((provider) => provider.id === providerId) || null;
   const inFamily = available.filter((provider) => matchesFamily(provider, familyId));
-  return inFamily.find((provider) => provider.type === 'tui') || inFamily[0] || null;
+  return inFamily.find((provider) => provider.type === prefer) || inFamily[0] || null;
 }
 
 /**

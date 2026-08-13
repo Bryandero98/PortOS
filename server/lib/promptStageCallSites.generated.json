@@ -374,6 +374,10 @@
   "twin-trait-extractor": [
     "server/services/digital-twin-analysis.js"
   ],
+  "universe-canon-entry-expand": [
+    "server/services/universeCanon.js",
+    "server/services/universeCanonEntryExpand.js"
+  ],
   "universe-character-expand": [
     "server/services/universeCharacterExpand.js"
   ],

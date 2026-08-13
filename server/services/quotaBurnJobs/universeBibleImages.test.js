@@ -44,6 +44,29 @@ describe('findMissingImageEntries', () => {
     expect(findMissingImageEntries(null)).toEqual([]);
     expect(findMissingImageEntries({})).toEqual([]);
   });
+
+  it('holds back undescribed canon when requireDescribed is on', () => {
+    // Alice is a bare name; rendering her spends image quota on a generic
+    // figure. The variation and the composite sheet are unaffected — their
+    // sanitizer requires a prompt, so they cannot be undescribed.
+    const rows = findMissingImageEntries(universe, { requireDescribed: true });
+    expect(rows.map((row) => row.label)).toEqual(['Salt Flats', 'Cast Sheet']);
+  });
+
+  it('lets a canon entry through once it has a core description', () => {
+    const described = {
+      ...universe,
+      characters: [{
+        id: 'c1',
+        name: 'Alice',
+        imageRefs: [],
+        physicalDescription: 'a', personality: 'b', background: 'c', motivations: 'd', visualNotes: 'e',
+      }],
+      places: [],
+    };
+    const rows = findMissingImageEntries(described, { scope: 'canon', requireDescribed: true });
+    expect(rows.map((row) => row.label)).toEqual(['Alice']);
+  });
 });
 
 describe('buildRenderSelection', () => {
@@ -90,7 +113,11 @@ describe('label deduping', () => {
     };
     const { selection } = buildRenderSelection(findMissingImageEntries(dupes));
     expect(selection.vehicles).toHaveLength(2);
-    // The job's own collect() dedupes before selecting — pinned via the export.
-    expect(inFlightKey('u2', 'Skiff')).toBe(inFlightKey('u2', 'skiff'));
+    // The job's own collect() dedupes before selecting — pinned via the export,
+    // which takes a ROW (passing bare labels here would compare `undefined` to
+    // `undefined` and pass no matter what the key did).
+    const row = (label) => ({ kind: 'variation', categoryKey: 'vehicles', label });
+    expect(inFlightKey('u2', row('Skiff'))).toBe(inFlightKey('u2', row('skiff')));
+    expect(inFlightKey('u2', row('Skiff'))).not.toBe(inFlightKey('u2', row('Barge')));
   });
 });

@@ -19,8 +19,11 @@ import { renderUniverseJobs } from '../universeBuilderRender.js';
 import { CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
 import { getQuotaBurnInFlight, recordQuotaBurnInFlight } from '../quotaBurnStore.js';
 import { QUOTA_BURN_BOUNDS } from '../../lib/quotaBurnConfig.js';
+import { bibleEntryIsDescribed } from '../../lib/universeBibleCompleteness.js';
 
-const CANON_TRUNKS = ['characters', 'places', 'objects'];
+// Universe array key → the canon kind `bibleEntryIsDescribed` measures.
+const CANON_TRUNK_KIND = Object.freeze({ characters: 'character', places: 'place', objects: 'object' });
+const CANON_TRUNKS = Object.keys(CANON_TRUNK_KIND);
 // Bounds come from the catalog descriptor the client renders its min/max from —
 // hardcoding them here would let a raised cap change the accepted range in the
 // form without changing what the job actually runs.
@@ -42,8 +45,14 @@ const wantsScope = (scope, kind) => scope === 'all' || !scope || scope === kind;
  * Every image-less entry in one universe, as `{ kind, categoryKey, label }`
  * rows in a stable order (variations → sheets → canon), so a capped run always
  * chews through the same backlog front-to-back rather than sampling randomly.
+ *
+ * `requireDescribed` holds back canon entries that have no description yet, so a
+ * plan that also runs the `universe-bible-describe` job spends its image quota
+ * on entries worth rendering rather than on a name with nothing behind it. Only
+ * canon can be under-described — a variation or composite sheet cannot exist
+ * without its prompt (the sanitizer drops one that has none).
  */
-export function findMissingImageEntries(universe, { scope = 'all' } = {}) {
+export function findMissingImageEntries(universe, { scope = 'all', requireDescribed = false } = {}) {
   const rows = [];
   if (wantsScope(scope, 'variations')) {
     for (const categoryKey of getWorldCategoryKeys(universe?.categories)) {
@@ -64,6 +73,11 @@ export function findMissingImageEntries(universe, { scope = 'all' } = {}) {
       for (const entry of universe?.[trunk] || []) {
         const label = canonLabel(trunk, entry);
         if (!hasNoImage(entry) || !label) continue;
+        // `core` depth, not `full`: the gate is "is there anything to render
+        // from", not "is the sheet finished". Holding a fully-described
+        // character back because its `dislikes` is blank would park most of a
+        // real universe behind a job the user may not even have configured.
+        if (requireDescribed && !bibleEntryIsDescribed(CANON_TRUNK_KIND[trunk], entry, { depth: 'core' })) continue;
         rows.push({ kind: 'canon', categoryKey: trunk, label });
       }
     }
@@ -112,6 +126,7 @@ async function loadUniverses(params) {
 async function collect(params, inFlight = new Set()) {
   const max = Math.min(ENTRY_BOUNDS.max, Math.max(ENTRY_BOUNDS.min, Number(params?.maxEntries) || ENTRY_BOUNDS.default));
   const scope = typeof params?.scope === 'string' ? params.scope : 'all';
+  const requireDescribed = params?.requireDescribed === true;
   const universes = await loadUniverses(params);
   let picked = null;
   let total = 0;
@@ -119,13 +134,13 @@ async function collect(params, inFlight = new Set()) {
     // Labels are what `compilePrompts` selects on and they are NOT unique
     // (nothing dedupes them on write), so a case-insensitive dedupe here keeps
     // one row from expanding into several renders and blowing past the cap.
-    const rows = dedupeByLabel(findMissingImageEntries(universe, { scope }))
+    const rows = dedupeByLabel(findMissingImageEntries(universe, { scope, requireDescribed }))
       .filter((row) => !inFlight.has(inFlightKey(universe.id, row)));
     total += rows.length;
     if (!rows.length || picked) continue;
     picked = { universe, rows: rows.slice(0, max) };
   }
-  return { picked, total, max };
+  return { picked, total, max, requireDescribed };
 }
 
 // Keyed on the same identity `dedupeByLabel` uses. Label alone would let one
@@ -173,7 +188,7 @@ export async function countPending({ params, family } = {}) {
   }
   const inFlight = await getQuotaBurnInFlight();
   const collected = await collect(params, inFlight);
-  const { picked, total } = collected;
+  const { picked, total, requireDescribed } = collected;
   const next = picked?.rows.length || 0;
   return {
     count: total,
@@ -182,7 +197,10 @@ export async function countPending({ params, family } = {}) {
     context: collected,
     detail: total
       ? `${total} bible ${total === 1 ? 'entry has' : 'entries have'} no image — ${next} queued next from "${picked.universe.name}"`
-      : 'every bible entry already has an image or is already queued',
+      // Naming the description gate matters: with it on, a universe full of
+      // blank canon rows reports zero pending, and "already has an image" would
+      // read as a bug rather than as the filter doing its job.
+      : `every bible entry already has an image${requireDescribed ? ', has no description yet,' : ''} or is already queued`,
   };
 }
 
