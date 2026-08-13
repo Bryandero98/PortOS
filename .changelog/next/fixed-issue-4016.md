@@ -1,0 +1,1 @@
+- Analysis History refresh button meets mobile touch target minimum.
