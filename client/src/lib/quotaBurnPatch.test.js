@@ -80,12 +80,21 @@ describe('applyQuotaBurnPreset', () => {
   it('returns the job untouched when there is no preset', () => {
     expect(applyQuotaBurnPreset(job, null)).toBe(job);
   });
+
+  it('preserves the step\'s run-once choice', () => {
+    // The presets are standing audits, but the user may have marked this step
+    // one-shot for their own reasons — re-picking a preset must not quietly put
+    // it back into a rotation that spends quota on every lap.
+    expect(applyQuotaBurnPreset({ ...job, runOnce: true }, preset).runOnce).toBe(true);
+  });
 });
 
 describe('jobFromPreset', () => {
   it('mints a runnable job with the caller\'s id and app', () => {
     expect(jobFromPreset(preset, { id: 'job-x', appId: 'a1' })).toEqual({
       id: 'job-x', enabled: true, label: 'UX issues', jobType: 'agent-prompt', model: null, providerId: null,
+      // Standing work: an audit dimension is worth re-running as the code moves.
+      runOnce: false,
       params: { ...preset.params, appId: 'a1' },
     });
   });

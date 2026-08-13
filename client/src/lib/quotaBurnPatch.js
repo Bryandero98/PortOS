@@ -38,6 +38,10 @@ export function mergeQuotaBurnPatch(base, patch) {
  *   - `params.appId` — which managed app the work targets. Wiping it would turn
  *     "make this step a UX audit" into a silently unrunnable job whose only
  *     symptom is a status line at the bottom of the row.
+ *   - `runOnce` — whether this is one-shot or standing work. The presets are
+ *     standing audits, but the user may have marked a step "run once" for their
+ *     own reasons, and re-picking a preset must not quietly put it back into the
+ *     rotation to spend quota on every lap.
  */
 export function applyQuotaBurnPreset(job, preset) {
   if (!preset) return job;
@@ -58,6 +62,9 @@ export function applyQuotaBurnPreset(job, preset) {
 export function jobFromPreset(preset, { id, appId = null } = {}) {
   return applyQuotaBurnPreset({
     id, enabled: true, label: '', jobType: preset.jobType, model: null, providerId: null,
+    // Standing work by default, matching a hand-added step — an audit dimension
+    // is worth re-running as the code changes.
+    runOnce: false,
     params: appId ? { appId } : {},
   }, preset);
 }

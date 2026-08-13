@@ -131,15 +131,20 @@ export function windowKey(familyId, limit, { now = Date.now() } = {}) {
  * percentage and reset time instead of a fabricated one. It comes back
  * `charge: false` so it never eats the automatic budget.
  */
-export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}, blocks = {}, bypassGates = false } = {}) {
-  // The two "switched off" gates. A forced run passes both: `enabled` on the
-  // family and on a job governs the UNATTENDED loop, and the user clicking ▶ on
-  // a specific row is a more specific instruction than a checkbox they set
-  // earlier. Everything below — no provider, unreadable quota, unburnable card
-  // — is a fact about the world and holds even under force.
+export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}, blocks = {}, completions = {}, bypassGates = false } = {}) {
+  // The three "switched off" gates. A forced run passes all of them: `enabled`
+  // on the family, `enabled` on a job, and a spent `run once` job all govern the
+  // UNATTENDED loop, and the user clicking ▶ on a specific row is a more
+  // specific instruction than a checkbox they set earlier. Everything below — no
+  // provider, unreadable quota, unburnable card — is a fact about the world and
+  // holds even under force.
   if (!bypassGates) {
     if (!family.enabled) return { skipReason: 'disabled' };
+    // Reported as two distinct verdicts, because they call for opposite actions:
+    // "you configured nothing" wants a job added, while a finished one-shot plan
+    // wants Re-arm (or nothing at all — it did what it was asked).
     if (!familyIsActionable(family)) return { skipReason: 'no enabled jobs configured' };
+    if (!familyIsActionable(family, completions)) return { skipReason: 'every enabled job has already run once' };
   }
   if (!card) return { skipReason: 'no enabled provider in this family' };
   if (card.supported === false) return { skipReason: 'provider has no queryable quota surface' };
@@ -244,15 +249,16 @@ const familiesOf = (config) => Object.entries(config?.families || {})
  *
  * `config` is a normalized quota-burn config; `quotas` the provider cards from
  * `providerUsage.getProviderQuotas()`; `blocks` the active denial ledger from
- * `quotaBurnDenials.getActiveQuotaBurnBlocks()`. `bypassGatesFor` names one
- * family whose window/reserve/cap/denial gates are skipped (see
- * `evaluateFamily`).
+ * `quotaBurnDenials.getActiveQuotaBurnBlocks()`; `completions` the `run once`
+ * ledger from `quotaBurnCompletions.getQuotaBurnCompletions()`.
+ * `bypassGatesFor` names one family whose window/reserve/cap/denial gates are
+ * skipped (see `evaluateFamily`).
  */
-export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatches = {}, blocks = {}, bypassGatesFor = null } = {}) {
+export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatches = {}, blocks = {}, completions = {}, bypassGatesFor = null } = {}) {
   const cards = new Map((quotas || []).map((card) => [card.family, card]));
   return familiesOf(config)
     .map((family) => evaluateFamily(family, cards.get(family.id), {
-      now, dispatches, blocks, bypassGates: bypassGatesFor === family.id,
+      now, dispatches, blocks, completions, bypassGates: bypassGatesFor === family.id,
     }).candidate)
     .filter(Boolean)
     .sort((a, b) => a.hoursUntilReset - b.hoursUntilReset || a.family.priority - b.family.priority);
@@ -263,11 +269,11 @@ export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatc
  * burn on the next tick, otherwise the exact gate that closed. One pass over the
  * SAME ladder the runner uses, so the two can't disagree.
  */
-export function evaluateFamilies(quotas, config, { now = Date.now(), dispatches = {}, blocks = {} } = {}) {
+export function evaluateFamilies(quotas, config, { now = Date.now(), dispatches = {}, blocks = {}, completions = {} } = {}) {
   const cards = new Map((quotas || []).map((card) => [card.family, card]));
   return familiesOf(config).map((family) => ({
     family,
     block: blocks[family.id] || null,
-    ...evaluateFamily(family, cards.get(family.id), { now, dispatches, blocks }),
+    ...evaluateFamily(family, cards.get(family.id), { now, dispatches, blocks, completions }),
   }));
 }

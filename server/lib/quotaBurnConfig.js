@@ -54,6 +54,15 @@ export function quotaBurnFamilyOfDescription(description) {
 }
 
 /**
+ * The completion-ledger key for one job: `<familyId>:<jobId>`.
+ *
+ * Job ids are only unique within a family (they are minted from a clock), so the
+ * family has to be part of the key or a `run once` job in one plan would mark
+ * its namesake in another as already spent.
+ */
+export const quotaBurnJobKey = (familyId, jobId) => `${familyId}:${jobId}`;
+
+/**
  * `maxDispatchesPerWindow` sentinel for "no cap on how many burns this window
  * may spend" — and the default. Why the cap is opt-in rather than a safety
  * property is argued once, in `docs/QUOTA-BURN.md`.
@@ -225,8 +234,30 @@ export function normalizeQuotaBurnJob(raw, index = 0) {
     jobType,
     model: nullableString(raw.model, BOUNDS.labelLength.max),
     providerId: nullableString(raw.providerId, BOUNDS.labelLength.max),
+    // Opt-IN, and absent reads as `false`, so every plan written before this
+    // field existed keeps repeating exactly as it did. See `jobIsSpent`.
+    runOnce: raw.runOnce === true,
     params: normalizeParams(raw.params),
   };
+}
+
+/**
+ * Whether a `run once` job has already had its one dispatch.
+ *
+ * A plan is an ordered ROTATION the runner walks until a quota gate closes
+ * (`quotaBurnRunner.js#rotatePlanAfter`), which is right for standing work
+ * ("audit performance") and wrong for one-shot work ("write the missing README")
+ * — the latter was simply re-done every lap. `runOnce` marks the second kind:
+ * once `quotaBurnCompletions.js` has recorded a dispatch for it, it drops out of
+ * the rotation until the user re-arms it from the page.
+ *
+ * Held in a separate machine-local ledger rather than as a flag on the job so
+ * the plan the user edits stays a statement of intent, and so a config PUT that
+ * replaces the `jobs` array (which is how every reorder and edit saves) can't
+ * silently resurrect a job that already ran.
+ */
+export function jobIsSpent(job, familyId, completions = {}) {
+  return job?.runOnce === true && Boolean(completions?.[quotaBurnJobKey(familyId, job.id)]);
 }
 
 /**
@@ -279,7 +310,16 @@ export function normalizeQuotaBurnConfig(raw) {
  * is a half-finished setup, not a burn plan — treating it as actionable would
  * spawn a candidate the runner then has to discard, which shows up as a
  * confusing "selected, then skipped" cycle in the run log.
+ *
+ * `completions` additionally excludes spent `run once` jobs, so a plan made
+ * entirely of one-shot work stops being actionable the moment its last job has
+ * run. Defaulted to `{}` because the two questions have different answers and
+ * the callers want different ones: the config-only form distinguishes "you
+ * configured nothing" from "your plan is finished", and the runner needs the
+ * completion-aware form so an exhausted plan stops paying for a multi-second
+ * quota scrape every interval, forever.
  */
-export function familyIsActionable(family) {
-  return family?.enabled === true && (family.jobs || []).some((job) => job?.enabled !== false);
+export function familyIsActionable(family, completions = {}) {
+  return family?.enabled === true
+    && (family.jobs || []).some((job) => job?.enabled !== false && !jobIsSpent(job, family.id, completions));
 }

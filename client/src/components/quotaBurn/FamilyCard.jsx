@@ -7,7 +7,7 @@
  * runner evaluates, so the card can't disagree with what actually happens.
  */
 
-import { Ban, ChevronDown, ChevronRight, Flame, Plus } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, Flame, Plus, RotateCcw } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import JobRow from './JobRow';
 import PresetPicker from './PresetPicker';
@@ -17,15 +17,19 @@ import { NumberField } from './fields';
 
 export default function FamilyCard({
   familyId, config, status, catalog, expanded, actionsBusy,
-  onToggleExpand, onPatch, onRunFamily, onRunJob,
+  onToggleExpand, onPatch, onRunFamily, onRunJob, onRearm,
 }) {
   const jobs = config.jobs || [];
-  // Pending counts stay on the STATUS side and are passed to JobRow as their own
-  // prop — merging them into the job objects would mean stripping them back off
-  // before every save (the PUT schema is strict). Matched by id so a reorder
-  // mid-save can't mis-pair them.
+  // Pending counts and `run once` completions stay on the STATUS side and are
+  // passed to JobRow as their own props — merging them into the job objects
+  // would mean stripping them back off before every save (the PUT schema is
+  // strict). Matched by id so a reorder mid-save can't mis-pair them.
   const statusJobs = status?.jobs || [];
-  const pendingFor = (id) => statusJobs.find((row) => row.id === id)?.pending ?? null;
+  const statusFor = (id) => statusJobs.find((row) => row.id === id) || null;
+  // Gated on the CONFIG's `runOnce` (as JobRow's badge is), so the count matches
+  // the number of "Ran once" rows on screen rather than counting a stale
+  // completion on a step the user has since switched back to repeating.
+  const spentCount = jobs.filter((job) => job.runOnce && statusFor(job.id)?.ranAt).length;
 
   const patchJobs = (next) => onPatch({ jobs: next });
   const changeJob = (index, next) => patchJobs(jobs.map((job, i) => (i === index ? next : job)));
@@ -61,6 +65,9 @@ export default function FamilyCard({
     jobType: catalog.jobTypes[0].id,
     model: null,
     providerId: null,
+    // Standing work by default — the pre-`runOnce` behavior, so adding a step
+    // does the same thing it always did.
+    runOnce: false,
     params: {},
   }]);
   // A preset job inherits the app the plan is already pointed at, when the plan
@@ -122,10 +129,13 @@ export default function FamilyCard({
 
         {/* A collapsed card otherwise says nothing about whether this family has
             a plan at all — and a family with zero enabled jobs can never burn,
-            no matter how healthy its window looks. */}
+            no matter how healthy its window looks. A spent `run once` step is
+            counted here for the same reason: it is enabled but unrunnable, so
+            without it "3 jobs · 3 enabled" sits above a family that will never
+            dispatch again. */}
         <span className="text-[11px] text-gray-500">
           {jobs.length
-            ? `${jobs.length} job${jobs.length === 1 ? '' : 's'} · ${jobs.filter((job) => job.enabled !== false).length} enabled`
+            ? `${jobs.length} job${jobs.length === 1 ? '' : 's'} · ${jobs.filter((job) => job.enabled !== false).length} enabled${spentCount ? ` · ${spentCount} ran once` : ''}`
             : 'no jobs'}
         </span>
 
@@ -160,17 +170,35 @@ export default function FamilyCard({
           </div>
 
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-xs uppercase tracking-wide text-gray-400">Burn plan — runs in order</h3>
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-40"
-                disabled={!canAddJob}
-                title={canAddJob ? 'Add a job to this plan' : 'Job catalog unavailable — reload the page'}
-                onClick={addJob}
-              >
-                <Plus size={13} /> Add job
-              </button>
+              <div className="flex items-center gap-3">
+                {/* Re-arming step by step is the wrong shape for the case this
+                    exists to serve: a plan configured as a one-shot SERIES,
+                    which the user wants to run again as a series. Not confirmed
+                    — it dispatches nothing on its own, it just makes the steps
+                    eligible for a future cycle's gates. */}
+                {spentCount > 0 && (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-xs text-gray-300 hover:text-white disabled:opacity-40"
+                    disabled={actionsBusy}
+                    onClick={() => onRearm(familyId)}
+                    title="Put every step that has already run back into the rotation"
+                  >
+                    <RotateCcw size={13} /> Re-arm all ({spentCount})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-40"
+                  disabled={!canAddJob}
+                  title={canAddJob ? 'Add a job to this plan' : 'Job catalog unavailable — reload the page'}
+                  onClick={addJob}
+                >
+                  <Plus size={13} /> Add job
+                </button>
+              </div>
             </div>
             <div className="sm:max-w-md">
               <PresetPicker
@@ -191,12 +219,14 @@ export default function FamilyCard({
                 index={index}
                 total={jobs.length}
                 catalog={catalog}
-                pending={pendingFor(job.id)}
+                pending={statusFor(job.id)?.pending ?? null}
+                ranAt={statusFor(job.id)?.ranAt ?? null}
                 actionsBusy={actionsBusy}
                 onChange={(next) => changeJob(index, next)}
                 onMove={moveJob}
                 onRemove={(i) => patchJobs(jobs.filter((_, x) => x !== i))}
                 onRun={(target) => onRunJob(familyId, target)}
+                onRearm={(target) => onRearm(familyId, target.id)}
               />
             ))}
           </div>

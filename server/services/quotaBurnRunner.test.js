@@ -13,6 +13,9 @@ const state = {
   ran: [],
   contexts: [],
   blocks: {},
+  completions: {},
+  completed: [],
+  completionsError: null,
   settled: [],
   settleError: null,
 };
@@ -60,6 +63,21 @@ vi.mock('./quotaBurnDenials.js', async (importActual) => ({
   }),
 }));
 
+// The `run once` ledger, stubbed off the install's `data/cos/` like the other
+// two. `state.completed` records the writes so "a one-shot job marks itself
+// spent" is assertable without a filesystem round trip.
+vi.mock('./quotaBurnCompletions.js', () => ({
+  getQuotaBurnCompletions: vi.fn(async () => {
+    if (state.completionsError) throw new Error(state.completionsError);
+    return state.completions;
+  }),
+  recordQuotaBurnJobCompletion: vi.fn(async (familyId, jobId) => {
+    state.completed.push(`${familyId}:${jobId}`);
+    state.completions = { ...state.completions, [`${familyId}:${jobId}`]: new Date(now).toISOString() };
+    return state.completions;
+  }),
+}));
+
 const { normalizeQuotaBurnConfig } = await import('../lib/quotaBurnConfig.js');
 const { getQuotaBurnStatus, runQuotaBurnCycle, rotatePlanAfter, __tickQuotaBurn, __onBurnAgentCompleted, __resetQuotaBurnRunner } = await import('./quotaBurnRunner.js');
 
@@ -93,6 +111,9 @@ beforeEach(() => {
   state.dispatches = {};
   state.recorded = [];
   state.blocks = {};
+  state.completions = {};
+  state.completed = [];
+  state.completionsError = null;
   state.settled = [];
   state.settleError = null;
   state.jobResult = undefined;
@@ -605,5 +626,125 @@ describe('forced run bypasses the pending probe', () => {
     state.pending = { first: { count: 1 } };
     await runQuotaBurnCycle();
     expect(countJobPending).toHaveBeenCalled();
+  });
+});
+
+/**
+ * `run once` — the per-step choice between one-shot and standing work.
+ *
+ * A plan is a rotation the runner walks lap after lap while the window still has
+ * quota. That is right for a standing audit and wrong for work that only needs
+ * doing once, which was simply re-done every lap.
+ */
+describe('run-once jobs', () => {
+  const oneShotPlan = (jobs) => plan({
+    families: { grok: { enabled: true, resetWithinHours: 24, jobs } },
+  });
+
+  it('marks a run-once job spent when it dispatches, and skips it next cycle', async () => {
+    state.config = oneShotPlan([
+      { id: 'once', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} },
+      { id: 'standing', enabled: true, jobType: 'agent-prompt', params: {} },
+    ]);
+    state.pending = { once: { count: 1 }, standing: { count: 1 } };
+
+    await runQuotaBurnCycle();
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['once']);
+    expect(state.completed).toEqual(['grok:once']);
+
+    // The plan's next lap must reach `standing` and never return to `once`.
+    await runQuotaBurnCycle();
+    await runQuotaBurnCycle();
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['once', 'standing', 'standing']);
+  });
+
+  it('leaves a repeating job in the rotation and records nothing', async () => {
+    state.pending = { first: { count: 1 }, second: { count: 1 } };
+    await runQuotaBurnCycle();
+    await runQuotaBurnCycle();
+    await runQuotaBurnCycle();
+    // Regression guard for the default: absent `runOnce` must keep repeating.
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['first', 'second', 'first']);
+    expect(state.completed).toEqual([]);
+  });
+
+  it('stops scraping provider quota once every step of a one-shot plan has run', async () => {
+    // The whole point of threading completions into `familyIsActionable`: a
+    // finished plan would otherwise pay for a multi-second TUI scrape every
+    // interval, forever, to be told there is nothing to dispatch.
+    const { getProviderQuotas } = await import('./providerUsage.js');
+    state.config = oneShotPlan([{ id: 'once', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} }]);
+    state.pending = { once: { count: 1 } };
+    await runQuotaBurnCycle();
+    getProviderQuotas.mockClear();
+
+    const result = await runQuotaBurnCycle();
+    expect(getProviderQuotas).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ dispatched: false });
+    // Distinct from "no families enabled": a finished plan wants Re-arm, an
+    // unset one wants a job added.
+    expect(result.reason).toMatch(/already run once/);
+  });
+
+  it('lets a forced run re-run a spent job, and re-stamps it', async () => {
+    state.config = oneShotPlan([{ id: 'once', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} }]);
+    state.completions = { 'grok:once': new Date(now - 86_400_000).toISOString() };
+
+    const result = await runQuotaBurnCycle({ trigger: 'manual', familyId: 'grok', jobId: 'once', force: true });
+    expect(result.dispatched).toBe(true);
+    // Uncharged against the window's automatic budget, but still recorded — the
+    // two ledgers answer different questions, and the work just happened.
+    expect(state.ran).toEqual([{ jobId: 'once', familyId: 'grok', charge: false }]);
+    expect(state.recorded).toEqual([]);
+    expect(state.completed).toEqual(['grok:once']);
+  });
+
+  it('does not record a completion for a job that declined to dispatch', async () => {
+    state.config = oneShotPlan([{ id: 'once', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} }]);
+    state.pending = { once: { count: 1 } };
+    state.jobResult = { dispatched: false, reason: 'no managed app selected' };
+    await runQuotaBurnCycle();
+    // A misconfigured step must stay retryable — burning its one run on a
+    // decline would strand it behind a Re-arm click for work that never ran.
+    expect(state.completed).toEqual([]);
+  });
+
+  it('skips the cycle rather than re-running one-shot work when the ledger is unreadable', async () => {
+    // Fails CLOSED: an unreadable ledger reads as "nothing has run", which would
+    // re-dispatch every run-once job on the plan.
+    state.completionsError = 'EIO';
+    const result = await runQuotaBurnCycle();
+    expect(result).toMatchObject({ dispatched: false, reason: 'run-once ledger unreadable' });
+    expect(state.ran).toEqual([]);
+  });
+
+  it('walks a whole one-shot series through the completion continuation', async () => {
+    // The "run the series once" case: each finished burn agent advances the
+    // plan, and the series stops of its own accord instead of looping.
+    state.config = oneShotPlan([
+      { id: 's1', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} },
+      { id: 's2', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} },
+    ]);
+    state.pending = { s1: { count: 1 }, s2: { count: 1 } };
+
+    await runQuotaBurnCycle();
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+    await __onBurnAgentCompleted({ metadata: { taskQuotaBurnFamily: 'grok' } });
+
+    expect(state.ran.map((entry) => entry.jobId)).toEqual(['s1', 's2']);
+    expect(state.completed).toEqual(['grok:s1', 'grok:s2']);
+  });
+
+  it('reports a spent step as ran rather than probing it', async () => {
+    const { countJobPending } = await import('./quotaBurnJobs/index.js');
+    const ranAt = new Date(now - 3_600_000).toISOString();
+    state.config = oneShotPlan([{ id: 'once', enabled: true, runOnce: true, jobType: 'agent-prompt', params: {} }]);
+    state.completions = { 'grok:once': ranAt };
+
+    const { status } = await getQuotaBurnStatus();
+    const grok = status.families.find((family) => family.id === 'grok');
+    expect(grok.jobs).toEqual([{ id: 'once', ranAt, spent: true, pending: null }]);
+    expect(countJobPending).not.toHaveBeenCalled();
+    expect(grok.skipReason).toBe('every enabled job has already run once');
   });
 });

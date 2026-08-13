@@ -6,10 +6,11 @@
 
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest, quotaBurnConfigUpdateSchema, quotaBurnRunSchema } from '../lib/validation.js';
+import { validateRequest, quotaBurnConfigUpdateSchema, quotaBurnRearmSchema, quotaBurnRunSchema } from '../lib/validation.js';
 import { QUOTA_BURN_JOB_CATALOG } from '../lib/quotaBurnConfig.js';
 import { QUOTA_BURN_PROMPT_PRESETS } from '../lib/quotaBurnPresets.js';
 import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
+import { clearQuotaBurnJobCompletion } from '../services/quotaBurnCompletions.js';
 import { saveQuotaBurnConfig } from '../services/quotaBurnStore.js';
 import { getQuotaBurnStatus, runQuotaBurnCycle } from '../services/quotaBurnRunner.js';
 import { getActiveApps } from '../services/apps.js';
@@ -72,6 +73,19 @@ router.post('/run', asyncHandler(async (req, res) => {
   }
   const result = await runQuotaBurnCycle({ trigger: 'manual', familyId, jobId, force });
   res.json({ result });
+}));
+
+// POST /api/quota-burn/rearm — put spent `run once` steps back into the
+// rotation. `{ familyId }` re-arms that family's whole plan; adding `jobId`
+// scopes it to one step. Does NOT dispatch anything: the next cycle decides
+// that, against the same quota gates as always.
+router.post('/rearm', asyncHandler(async (req, res) => {
+  const { familyId, jobId = null } = validateRequest(quotaBurnRearmSchema, req.body || {});
+  await clearQuotaBurnJobCompletion(familyId, jobId);
+  // The fresh status, so the page's job rows drop their "ran once" badges
+  // without a second round trip. Cached quota (no `refresh`) — re-arming says
+  // nothing about the provider's numbers.
+  res.json(await getQuotaBurnStatus());
 }));
 
 export default router;

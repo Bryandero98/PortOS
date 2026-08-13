@@ -36,6 +36,10 @@ const quotaBurnJobSchema = z.object({
   jobType: z.enum(QUOTA_BURN_JOB_TYPES),
   model: z.string().max(B.labelLength.max).nullable().optional(),
   providerId: z.string().max(B.labelLength.max).nullable().optional(),
+  // One-shot work: dispatch this step at most once, then drop it out of the
+  // rotation until the user re-arms it. Absent reads as `false`, so plans
+  // written before this field keep repeating.
+  runOnce: z.boolean().optional(),
   params: z.record(paramValueSchema).optional(),
 }).strict();
 
@@ -72,4 +76,15 @@ export const quotaBurnRunSchema = z.object({
   // Bypasses the reset-window / reserve / cap gates for ONE named job. Only
   // meaningful with `familyId` — the route rejects it otherwise.
   force: z.boolean().optional(),
+}).strict();
+
+/**
+ * Re-arm a spent `run once` step. `familyId` is required — a bare "clear
+ * everything" would silently re-queue every one-shot job on the install, which
+ * is real spend nobody asked for. Omitting `jobId` re-arms that family's whole
+ * plan, which is how "run that series again" is expressed.
+ */
+export const quotaBurnRearmSchema = z.object({
+  familyId: z.enum(QUOTA_BURN_FAMILIES),
+  jobId: z.string().max(B.idLength.max).optional(),
 }).strict();

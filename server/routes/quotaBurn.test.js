@@ -11,9 +11,11 @@ vi.mock('../services/quotaBurnRunner.js', () => ({
   getQuotaBurnStatus: vi.fn(),
   runQuotaBurnCycle: vi.fn(),
 }));
+vi.mock('../services/quotaBurnCompletions.js', () => ({ clearQuotaBurnJobCompletion: vi.fn() }));
 vi.mock('../services/apps.js', () => ({ getActiveApps: vi.fn() }));
 vi.mock('../services/universeBuilder.js', () => ({ listUniverseNames: vi.fn() }));
 
+import { clearQuotaBurnJobCompletion } from '../services/quotaBurnCompletions.js';
 import { getQuotaBurnConfig, saveQuotaBurnConfig } from '../services/quotaBurnStore.js';
 import { getQuotaBurnStatus, runQuotaBurnCycle } from '../services/quotaBurnRunner.js';
 import { getActiveApps } from '../services/apps.js';
@@ -124,6 +126,37 @@ describe('POST /api/quota-burn/run', () => {
     const res = await request(buildApp()).post('/api/quota-burn/run').send({ force: true });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('QUOTA_BURN_FORCE_NEEDS_FAMILY');
+    expect(runQuotaBurnCycle).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quota-burn/rearm', () => {
+  it('re-arms one named step and returns the fresh status', async () => {
+    const res = await request(buildApp()).post('/api/quota-burn/rearm').send({ familyId: 'grok', jobId: 'job-1' });
+    expect(res.status).toBe(200);
+    expect(clearQuotaBurnJobCompletion).toHaveBeenCalledWith('grok', 'job-1');
+    // The page swaps its badges from this response rather than re-fetching, and
+    // re-arming says nothing about the provider's numbers — so no scrape.
+    expect(getQuotaBurnStatus).toHaveBeenCalledWith();
+    expect(res.body.status).toEqual({ running: false, families: [], runs: [] });
+  });
+
+  it('re-arms the whole family when no step is named', async () => {
+    await request(buildApp()).post('/api/quota-burn/rearm').send({ familyId: 'grok' });
+    expect(clearQuotaBurnJobCompletion).toHaveBeenCalledWith('grok', null);
+  });
+
+  it('refuses an unscoped or unknown-family re-arm', async () => {
+    // A bare "clear everything" would silently re-queue every one-shot job on
+    // the install — real spend nobody asked for.
+    const app = buildApp();
+    expect((await request(app).post('/api/quota-burn/rearm').send({})).status).toBe(400);
+    expect((await request(app).post('/api/quota-burn/rearm').send({ familyId: 'nope' })).status).toBe(400);
+    expect(clearQuotaBurnJobCompletion).not.toHaveBeenCalled();
+  });
+
+  it('never dispatches anything', async () => {
+    await request(buildApp()).post('/api/quota-burn/rearm').send({ familyId: 'grok' });
     expect(runQuotaBurnCycle).not.toHaveBeenCalled();
   });
 });
