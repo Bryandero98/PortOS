@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
+import { join } from 'path';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import { DEFAULT_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
@@ -418,7 +419,7 @@ describe('videoGen routes', () => {
       expect(r.text).toContain('Wan 2.2 MLX ready');
       expect(installProcess.spawn).toHaveBeenCalledWith(
         'bash',
-        ['/mock/scripts/setup-image-video.sh'],
+        [join('/mock', 'scripts', 'setup-image-video.sh')],
         expect.objectContaining({
           detached: true,
           env: expect.objectContaining({
