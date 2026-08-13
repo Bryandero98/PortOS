@@ -69,6 +69,7 @@ Bring your entire portfolio of projects under one roof.
 - **Smart Import** — Point to a directory and auto-detect project config from `package.json`, `vite.config`, and `ecosystem.config` ([App Wizard docs](./docs/features/app-wizard.md))
 - **App Templates** — Scaffold new projects from pre-built templates with AI provider integration
 - **Real-time Logs** — Stream PM2 logs via Socket.IO with tail length control
+- **Submodules** — Per-app tab (on repos with a `.gitmodules`) that tracks each git submodule against its remote and updates it, optionally committing the pointer bump on the repo's default branch
 - **JIRA Integration** — Per-app board config, active sprint resolution, epic search, and ticket creation from the UI ([Sprint Manager docs](./docs/features/jira-sprint-manager.md))
 - **Autofixer** — Autonomous crash detection and repair: polls PM2 for errored processes, invokes AI to diagnose and fix, tracks attempts with cooldowns ([Autofixer docs](./docs/features/autofixer.md))
 
@@ -223,7 +224,6 @@ Everything you need to manage your dev environment without leaving the browser.
 - **Feature Agents** — Long-running, scoped agents that own a feature area and pick up work autonomously
 - **Process Monitor** — View all PM2 processes with live memory, CPU, uptime, and restart controls
 - **GitHub** — Per-repo branch/PR status, release workflows, and PR creation from the dashboard
-- **Submodules** — Track and update git submodules across all registered apps
 - **JIRA + JIRA Reports** — Per-app sprint board, ticket creation, and weekly/monthly reporting ([Sprint Manager docs](./docs/features/jira-sprint-manager.md))
 - **DataDog** — Wire in a DataDog API key to surface logs/metrics from monitored apps
 - **Loops** — Schedule recurring work (cron-style) for any PortOS action or agent task

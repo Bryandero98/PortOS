@@ -74,14 +74,21 @@ router.get('/:id', loadApp, asyncHandler(async (req, res) => {
   // Auto-derive uiPort/apiPort/devUiPort from processes when not explicitly set
   const { uiPort, apiPort, devUiPort } = deriveAppPorts(app, app.processes || []);
 
-  // Read version from app's package.json if available
+  // Read version from app's package.json if available, and flag whether the
+  // repo declares git submodules — the detail view only shows its Submodules
+  // tab for repos that actually have any.
   let appVersion = null;
+  let hasSubmodules = false;
   if (app.repoPath) {
-    const pkg = await readJSONFile(join(app.repoPath, 'package.json'), null, { logError: false });
+    const [pkg, gitmodules] = await Promise.all([
+      readJSONFile(join(app.repoPath, 'package.json'), null, { logError: false }),
+      pathExists(join(app.repoPath, '.gitmodules')),
+    ]);
     appVersion = pkg?.version || null;
+    hasSubmodules = gitmodules;
   }
 
-  res.json({ ...app, uiPort, devUiPort, apiPort, overallStatus, degraded, pm2Status: statuses, appVersion, hasDeployScript: hasDeployScript(app), xcodeScripts: checkScripts(app) });
+  res.json({ ...app, uiPort, devUiPort, apiPort, overallStatus, degraded, pm2Status: statuses, appVersion, hasSubmodules, hasDeployScript: hasDeployScript(app), xcodeScripts: checkScripts(app) });
 }));
 
 // POST /api/apps - Create new app

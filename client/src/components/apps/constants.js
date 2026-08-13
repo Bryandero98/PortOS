@@ -1,3 +1,8 @@
+// From lib/, NOT services/apiCore.js: this file is imported by a node-env server
+// test (streamingDetect's DESKTOP_TYPES parity check), where apiCore's React
+// dependency doesn't resolve.
+import { PORTOS_APP_ID } from '../../lib/appIdentity.js';
+
 export const NON_PM2_TYPES = new Set(['ios-native', 'macos-native', 'xcode', 'swift']);
 
 // The app-config text input / select styling. Shared so a restyle of these forms
@@ -66,10 +71,14 @@ export const workItemNoun = (tracker) =>
 // Overview first, then alphabetical. Every id is a real route segment
 // (`/apps/:appId/:tab`) so each tab is linkable, bookmarkable, and reachable
 // from ⌘K — see the routing rules in client/src/CLAUDE.md.
+//
+// `visibleWhen(app)` gates a tab that only some apps earn; omit it for the tabs
+// every app gets. Keeping the predicate on the entry means adding a conditional
+// tab is one edit here rather than a second id-string case in the detail view.
 export const APP_DETAIL_TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'automation', label: 'Automation' },
-  { id: 'datadog', label: 'DataDog' },
+  { id: 'datadog', label: 'DataDog', visibleWhen: (app) => !!app?.datadog?.enabled },
   { id: 'documents', label: 'Documents' },
   { id: 'git', label: 'Git' },
   { id: 'gsd', label: 'GSD' },
@@ -77,6 +86,9 @@ export const APP_DETAIL_TABS = [
   { id: 'jira', label: 'JIRA' },
   { id: 'processes', label: 'Processes' },
   { id: 'references', label: 'References' },
+  // Only repos that declare submodules (a .gitmodules file) get the tab — most
+  // managed apps have none, and an always-empty tab is just noise.
+  { id: 'submodules', label: 'Submodules', visibleWhen: (app) => !!app?.hasSubmodules },
   { id: 'tasks', label: 'Tasks' },
-  { id: 'update', label: 'Update' },
+  { id: 'update', label: 'Update', visibleWhen: (app) => app?.id === PORTOS_APP_ID },
 ];

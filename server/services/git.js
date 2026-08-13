@@ -19,6 +19,7 @@ import {
   parsePullRequestUrl
 } from '../lib/gitForge.js';
 import { PROTECTED_BRANCHES, validateFilePaths, toLiteralPathspec } from '../lib/gitArgs.js';
+import { ServerError } from '../lib/errorHandler.js';
 
 // Re-export so callers that used to import from services/git.js keep working.
 export { execGit };
@@ -1198,10 +1199,11 @@ export async function getGitInfo(dir) {
 }
 
 /**
- * Get submodule status for the PortOS repo
+ * Get submodule status for a repo.
+ * @param {string} [repoPath] - Repo root; defaults to the PortOS checkout.
  */
-export async function getSubmodules() {
-  const root = PATHS.root;
+export async function getSubmodules(repoPath) {
+  const root = repoPath || PATHS.root;
   const result = await execGit(['submodule', 'status'], root);
   // Split before trimming — the leading space is a status character (means "up to date")
   const lines = result.stdout.split('\n').filter(l => l.trimEnd());
@@ -1283,29 +1285,125 @@ async function fetchRemoteInfo(fullPath, currentCommit) {
 }
 
 /**
- * Get known submodule paths
+ * Submodule statuses plus the branch a pointer bump would be committed on, so
+ * a caller that needs both doesn't pay for the whole `getGitInfo` fan-out
+ * (status + log + diffstat + remote) to read one branch name.
+ * @param {string} [repoPath] - Repo root; defaults to the PortOS checkout.
+ * @returns {Promise<{submodules: object[], defaultBranch: string}>}
  */
-export async function getSubmodulePaths() {
-  const root = PATHS.root;
+export async function getSubmoduleOverview(repoPath) {
+  const root = repoPath || PATHS.root;
+  const [submodules, { baseBranch }] = await Promise.all([
+    getSubmodules(root),
+    getRepoBranches(root)
+  ]);
+  return { submodules, defaultBranch: baseBranch || 'main' };
+}
+
+/**
+ * Get known submodule paths
+ * @param {string} [repoPath] - Repo root; defaults to the PortOS checkout.
+ */
+export async function getSubmodulePaths(repoPath) {
+  const root = repoPath || PATHS.root;
   const result = await execGit(['submodule', 'status'], root);
   return result.stdout.split('\n').filter(l => l.trimEnd())
     .map(parseSubmoduleStatusLine).filter(Boolean).map(s => s.path);
 }
 
 /**
- * Update a specific submodule to the latest remote version
+ * @typedef {object} SubmoduleCommitResult
+ * @property {boolean} committed - Whether a commit was written.
+ * @property {string} [commitSha] - Sha of the commit, when one was written.
+ * @property {string} [commitMessage] - Subject of the commit, when one was written.
+ * @property {'not-on-default-branch'|'no-changes'} [commitSkipped] - Why nothing was committed.
+ * @property {string} commitNote - One-phrase rendering of the outcome, for the UI.
+ * @property {string} defaultBranch - Branch a pointer bump commits to.
+ * @property {string} currentBranch - Branch the repo is actually checked out on.
  */
-export async function updateSubmodule(subPath) {
-  const root = PATHS.root;
-  // Validate subPath is a known submodule
-  const knownPaths = await getSubmodulePaths();
+
+/**
+ * Commit a submodule pointer bump on the repo's default branch.
+ *
+ * Stages ONLY the submodule path — a repo mid-edit keeps its other dirty files
+ * out of the commit. Refuses to commit when the checkout is on any other branch:
+ * "we updated the submodule" belongs on the default branch, and silently landing
+ * it on whatever feature branch happens to be checked out would pollute unrelated
+ * work. The caller gets a reason back instead of a silent no-op.
+ *
+ * The skip reason ships as both a code and a rendered `commitNote`, so the UI
+ * reports what happened without keeping its own copy of the reason table.
+ *
+ * @param {string} root - Repo root
+ * @param {string} subPath - Repo-relative submodule path
+ * @param {string|null} newCommit - Short sha the submodule now points at (message detail)
+ * @returns {Promise<SubmoduleCommitResult>}
+ */
+async function commitSubmoduleBump(root, subPath, newCommit) {
+  const [{ baseBranch }, currentBranch] = await Promise.all([
+    getRepoBranches(root),
+    getBranch(root)
+  ]);
+  const defaultBranch = baseBranch || 'main';
+  if (currentBranch !== defaultBranch) {
+    console.log(`⏭️  Skipping submodule commit — ${root} is on ${currentBranch}, not ${defaultBranch}`);
+    return {
+      committed: false,
+      commitSkipped: 'not-on-default-branch',
+      commitNote: `not committed — repo is on ${currentBranch}, not ${defaultBranch}`,
+      defaultBranch,
+      currentBranch
+    };
+  }
+
+  await stageFiles(root, [subPath]);
+  const staged = await execGitSafe(['diff', '--cached', '--name-only', '--', toLiteralPathspec(subPath)], root);
+  if (!staged.stdout.trim()) {
+    return {
+      committed: false,
+      commitSkipped: 'no-changes',
+      commitNote: 'pointer already committed',
+      defaultBranch,
+      currentBranch
+    };
+  }
+
+  const message = `chore: update ${subPath} submodule${newCommit ? ` to ${newCommit}` : ''}`;
+  const { hash } = await commit(root, message);
+  console.log(`📝 Committed submodule bump ${subPath} on ${defaultBranch} (${hash || 'unknown sha'})`);
+  return {
+    committed: true,
+    commitSha: hash,
+    commitMessage: message,
+    commitNote: `committed on ${defaultBranch}`,
+    defaultBranch,
+    currentBranch
+  };
+}
+
+/**
+ * Update a specific submodule to the latest remote version.
+ * @param {string} subPath - Repo-relative submodule path
+ * @param {object} [options]
+ * @param {string} [options.repoPath] - Repo root; defaults to the PortOS checkout.
+ * @param {boolean} [options.commit] - Commit the pointer bump on the default branch.
+ * @returns {Promise<{newCommit: string|null} & SubmoduleCommitResult>}
+ */
+export async function updateSubmodule(subPath, { repoPath, commit: shouldCommit = false } = {}) {
+  const root = repoPath || PATHS.root;
+  // Owns the known-submodule invariant for every caller — thrown as a ServerError
+  // so the route doesn't have to re-list the submodules just to answer with a 400.
+  const knownPaths = await getSubmodulePaths(root);
   if (!knownPaths.includes(subPath)) {
-    throw new Error(`Unknown submodule path: ${subPath}`);
+    throw new ServerError(`Unknown submodule path: ${subPath}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
   console.log(`📦 Updating submodule ${subPath}...`);
   await execGit(['submodule', 'update', '--init', '--recursive', '--remote', subPath], root, { timeout: 60000 });
   console.log(`✅ Submodule ${subPath} updated`);
   const statusResult = await execGit(['submodule', 'status', subPath], root);
   const parsed = parseSubmoduleStatusLine(statusResult.stdout);
-  return parsed ? parsed.commit.substring(0, 7) : null;
+  const newCommit = parsed ? parsed.commit.substring(0, 7) : null;
+
+  if (!shouldCommit) return { newCommit, committed: false };
+  return { newCommit, ...(await commitSubmoduleBump(root, subPath, newCommit)) };
 }

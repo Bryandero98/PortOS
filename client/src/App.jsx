@@ -1,7 +1,7 @@
 import { Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router';
 import Layout from './components/Layout';
-import { getSettings, updateSettings, getSelfInstance } from './services/api';
+import { getSettings, updateSettings, getSelfInstance, PORTOS_APP_ID } from './services/api';
 import BrailleSpinner from './components/BrailleSpinner';
 import { CatalogTypesProvider } from './hooks/useCatalogTypes.jsx';
 import Dashboard from './pages/Dashboard';
@@ -37,7 +37,6 @@ const Tribe = lazyWithReload(() => import('./pages/Tribe'));
 const Timeline = lazyWithReload(() => import('./pages/Timeline'));
 const Goals = lazyWithReload(() => import('./pages/Goals'));
 const OpenClawPage = lazyWithReload(() => import('./pages/OpenClaw'));
-const Submodules = lazyWithReload(() => import('./pages/Submodules'));
 const ImageClean = lazyWithReload(() => import('./pages/ImageClean'));
 const QuotaBurn = lazyWithReload(() => import('./pages/QuotaBurn'));
 const VideoDownloaderPage = lazyWithReload(() => import('./pages/VideoDownloaderPage'));
@@ -262,7 +261,9 @@ export default function App() {
           <Route path="devtools/quota-burn/:familyId" element={<QuotaBurn />} />
           <Route path="devtools/runs" element={<RunsHistoryPage />} />
           <Route path="devtools/runner" element={<RunnerPage />} />
-          <Route path="devtools/submodules" element={<Submodules />} />
+          {/* Submodules moved onto the managed-app detail page (one tab per repo).
+              Keeps old links/bookmarks working by landing on PortOS's own tab. */}
+          <Route path="devtools/submodules" element={<Navigate to={`/apps/${PORTOS_APP_ID}/submodules`} replace />} />
           <Route path="devtools/usage" element={<UsagePage />} />
           <Route path="devtools/video-download" element={<VideoDownloaderPage />} />
           <Route path="devtools/processes" element={<ProcessesPage />} />

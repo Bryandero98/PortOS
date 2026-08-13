@@ -3,12 +3,18 @@
 // Entry: { id, path, label, section, aliases?, keywords? }. See CLAUDE.md
 // "Command Palette & Voice Nav" for the contract.
 
+import { PORTOS_APP_ID } from './appIdentity.js';
+
 export const NAV_COMMANDS = [
   { id: 'nav.dashboard', path: '/', label: 'Dashboard', section: 'Main', aliases: ['dashboard', 'home'], keywords: ['overview', 'start'] },
   { id: 'nav.review-hub', path: '/review', label: 'Review Hub', section: 'Main', aliases: ['review', 'review-hub'] },
   { id: 'nav.cybercity', path: '/city', label: 'City', section: 'Main', aliases: ['city', 'cybercity'], keywords: ['3d', 'visualization', 'cybercity'] },
   { id: 'nav.cybercity.settings', path: '/city/settings', label: 'City Settings', section: 'Main', aliases: ['city settings', 'cybercity settings', 'city-settings', 'cybercity-config'], keywords: ['cybercity', 'settings', '3d', 'configure'] },
   { id: 'nav.apps', path: '/apps', label: 'Apps', section: 'Main', aliases: ['apps'] },
+  // Submodules are per-app (a tab on the app detail page), so this entry is
+  // explicitly PortOS's own — the only repo whose app id is a fixed constant.
+  // Every other app reaches its tab from /apps/<id>/submodules.
+  { id: 'nav.apps.submodules', path: `/apps/${PORTOS_APP_ID}/submodules`, label: 'PortOS Submodules', section: 'Apps', aliases: ['submodules', 'devtools-submodules', 'portos-submodules'], keywords: ['git', 'slashdo', 'vendored', 'update submodule'] },
   { id: 'nav.templates', path: '/templates', label: 'Templates', section: 'Main', aliases: ['templates', 'app-templates'], keywords: ['app template', 'create app', 'pre-configured', 'starter'] },
 
   { id: 'nav.catalog', path: '/catalog', label: 'Catalog', section: 'Create', aliases: ['catalog', 'ingredients', 'cast', 'creative-catalog'], keywords: ['character', 'place', 'object', 'idea', 'scene', 'concept', 'inventory', 'reference', 'creative'] },
@@ -124,7 +130,6 @@ export const NAV_COMMANDS = [
   { id: 'nav.devtools.jira-reports', path: '/devtools/jira/reports', label: 'JIRA Reports', section: 'Dev Tools', aliases: ['jira-reports'] },
   { id: 'nav.devtools.quota-burn', path: '/devtools/quota-burn', label: 'Quota Burn', section: 'Dev Tools', aliases: ['quota-burn', 'burn-quota', 'quota'], keywords: ['subscription', 'usage', 'reset window', 'spend quota', 'claude', 'codex', 'grok', 'agy', 'burn'] },
   { id: 'nav.shell', path: '/shell', label: 'Shell', section: 'Dev Tools', aliases: ['shell', 'terminal'] },
-  { id: 'nav.devtools.submodules', path: '/devtools/submodules', label: 'Submodules', section: 'Dev Tools', aliases: ['devtools-submodules'] },
   { id: 'nav.devtools.usage', path: '/devtools/usage', label: 'Usage', section: 'Dev Tools', aliases: ['devtools-usage'] },
   { id: 'nav.devtools.video-download', path: '/devtools/video-download', label: 'Video Downloader', section: 'Dev Tools', aliases: ['video-download', 'video-downloader', 'download-video'], keywords: ['youtube', 'x.com', 'twitter', 'yt-dlp', 'download', 'clip'] },
   { id: 'nav.workspace-contexts', path: '/workspace-contexts', label: 'Workspaces', section: 'Dev Tools', aliases: ['workspaces', 'workspace-contexts', 'project-contexts', 'project-switcher'], keywords: ['project', 'context', 'switch project', 'branch', 'shell', 'tasks', 'restore', 'working context'] },

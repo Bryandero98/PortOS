@@ -57,6 +57,7 @@ export * from './goalFeatureMap.js';
 
 // === Generic UI / collection utilities ===
 export * from './a11yKeyboard.js';
+export * from './appIdentity.js';
 export * from './applyManuscriptEdits.js';
 export * from './audioRecorder.js';
 export * from './bareUrl.js';
