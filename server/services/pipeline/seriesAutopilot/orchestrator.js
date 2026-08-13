@@ -100,14 +100,6 @@ export async function startSeriesAutopilot(sId, options = {}) {
       return { recommendations: {} };
     })
     : { recommendations: {} };
-  const creativeRouteExplicit = !!(
-    options?.providerOverride || options?.modelOverride || options?.effortOverride
-  );
-  const judgeRouteExplicit = !!(
-    options?.judgeLlm?.providerOverride
-    || options?.judgeLlm?.modelOverride
-    || options?.judgeLlm?.effortOverride
-  );
   const runOptions = {
     ...options,
     ...resolveAutopilotRounds(options, settings),
@@ -134,11 +126,9 @@ export async function startSeriesAutopilot(sId, options = {}) {
     // (see config.js). Resolved here with the other gates so the coordinator
     // wrap below, the start frame and a resume all read the same effective flag.
     overrideStagePins: resolveAutopilotOverrideStagePins(options, settings),
+    // Candidate routes only: session.js#roleLlm applies one to a role that has
+    // no route of its own, and the run route resolved below outranks it.
     modelRecommendations: modelPerformance.recommendations || {},
-    modelRoutesExplicit: {
-      creative: creativeRouteExplicit,
-      judge: judgeRouteExplicit,
-    },
     priorArcAvoidFindings,
     priorFoundationAvoidFindings,
     // Run provider/model: per-run override → the series' own `series.llm` →

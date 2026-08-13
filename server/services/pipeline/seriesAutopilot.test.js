@@ -197,7 +197,12 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
 });
 
 const recordModelOutcome = vi.fn(async () => true);
-vi.mock('./seriesAutopilot/modelPerformance.js', () => ({ recordModelOutcome }));
+// Learned routing (`autoSelectModels`) reads the run history through this
+// report. Mocked so a test can hand the run a recommendation and assert which
+// roles it is allowed to re-point.
+let modelRecommendations = {};
+const getModelPerformanceReport = vi.fn(async () => ({ recommendations: modelRecommendations }));
+vi.mock('./seriesAutopilot/modelPerformance.js', () => ({ recordModelOutcome, getModelPerformanceReport }));
 
 // Pause-escalation notifications (#1615) — spy on the notification center so a
 // test can assert a pause posts a banner (and a clean run / opt-out does not).
@@ -266,6 +271,7 @@ beforeEach(() => {
   editorialChecksPerCheck = [];
   editorialChecksFindings = [];
   nextTaskId = 0;
+  modelRecommendations = {};
   autopilot.__testing.runs.clear();
   vi.clearAllMocks();
   generateReverseOutline.mockImplementation(async () => ({ status: 'complete', stale: false, scenes: [{ id: 'sc1' }] }));
@@ -345,28 +351,65 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
     });
   });
 
-  it('uses learned stage/role routing only when that role has no explicit run choice', () => {
+  // Learned routing fills in only where the run routed NOTHING. The run route
+  // reaching roleLlm is already resolved (per-run picker, else the series' own
+  // `series.llm`), so "the run chose none" means both are blank.
+  const recommendations = {
+    foundationGate: {
+      creative: { providerOverride: 'ollama', modelOverride: 'local-14b' },
+      judge: { providerOverride: 'codex', modelOverride: 'judge-model' },
+    },
+  };
+
+  it('uses learned stage/role routing for a role the run left unrouted', () => {
     const learned = {
       currentStep: 'foundationGate',
       options: {
         autoSelectModels: true,
-        providerOverride: 'series-default',
-        modelOverride: 'series-model',
-        modelRoutesExplicit: { creative: false, judge: true },
-        modelRecommendations: {
-          foundationGate: {
-            creative: { providerOverride: 'ollama', modelOverride: 'local-14b' },
-            judge: { providerOverride: 'codex', modelOverride: 'judge-model' },
-          },
-        },
+        modelRecommendations: recommendations,
         judgeLlm: { providerOverride: 'manual-judge', modelOverride: 'manual-model' },
       },
     };
     expect(autopilot.__testing.roleLlm(learned, 'creative')).toEqual({
       providerOverride: 'ollama', modelOverride: 'local-14b', effortOverride: undefined,
     });
+    // …but never over a hand-picked one.
     expect(autopilot.__testing.roleLlm(learned, 'judge')).toEqual({
       providerOverride: 'manual-judge', modelOverride: 'manual-model', effortOverride: undefined,
+    });
+  });
+
+  // The live failure: with `autoSelectModels` on, a run that picked ONE
+  // provider/model and left "use a separate model for judging" unchecked kept
+  // CREATION on that route while every judge-role call — pipeline-arc-verify
+  // above all — was re-pointed at the learned route. Judging inherits the run
+  // route, so choosing the run route chooses the judge with it.
+  it.each(['creative', 'judge'])('keeps the %s role on the run route the user chose', (role) => {
+    const chosen = {
+      currentStep: 'foundationGate',
+      options: {
+        autoSelectModels: true,
+        providerOverride: 'antigravity-tui',
+        modelOverride: 'gemini-3.6-flash-high',
+        effortOverride: 'high',
+        modelRecommendations: recommendations,
+      },
+    };
+    expect(autopilot.__testing.roleLlm(chosen, role)).toEqual({
+      providerOverride: 'antigravity-tui', modelOverride: 'gemini-3.6-flash-high', effortOverride: 'high',
+    });
+  });
+
+  // Any ONE dimension is a deliberate choice — an effort-only run route still
+  // has to keep its (provider-default) route rather than adopt a learned one.
+  it('treats an effort-only run route as chosen for both roles', () => {
+    const effortOnly = {
+      currentStep: 'foundationGate',
+      options: { autoSelectModels: true, effortOverride: 'max', modelRecommendations: recommendations },
+    };
+    expect(autopilot.__testing.roleLlm(effortOnly, 'creative').effortOverride).toBe('max');
+    expect(autopilot.__testing.roleLlm(effortOnly, 'judge')).toEqual({
+      providerOverride: undefined, modelOverride: undefined, effortOverride: 'max',
     });
   });
 
@@ -1838,6 +1881,28 @@ describe('autopilot conductor', () => {
     expect(run.options.providerOverride).toBe('claude');
     // codex's model must NOT ride along to claude.
     expect(run.options.modelOverride).toBeUndefined();
+  });
+
+  // arc verify is a JUDGE-role call, and the live failure was that a run which
+  // picked ONE provider/model with `autoSelectModels` on kept creation on that
+  // route while the verifier was re-pointed at the learned one. Asserted at the
+  // delegated verify call — where the wrong provider actually got spent — for
+  // both a run that chose a route and one that left the judge to the evidence.
+  it.each([
+    ['keeps arc verify on the run route the user chose', { providerOverride: 'claude', modelOverride: 'claude-model' }, 'claude', 'claude-model'],
+    ['lets a learned judge route fill in for a run that chose none', {}, 'codex', 'gpt-x'],
+  ])('%s', async (_name, routeOptions, provider, model) => {
+    modelRecommendations = {
+      verifyArcSpine: { judge: { providerOverride: 'codex', modelOverride: 'gpt-x' } },
+      verifyArc: { judge: { providerOverride: 'codex', modelOverride: 'gpt-x' } },
+    };
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { ...routeOptions, autoSelectModels: true });
+    await waitFor(runFinished(seriesId));
+    expect(arcSpies.verifyArc).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ providerDefault: provider, modelDefault: model }),
+    );
   });
 
   it('pauses for review when arc verify never converges', async () => {
