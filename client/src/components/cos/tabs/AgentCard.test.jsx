@@ -213,3 +213,37 @@ describe('AgentCard transcript truncation (#3498)', () => {
     expect(screen.queryByText(/Showing the last/)).not.toBeInTheDocument();
   });
 });
+
+describe('AgentCard kill confirmation (#4034)', () => {
+  it('requires confirmation before calling onKill', async () => {
+    const user = userEvent.setup();
+    const onKill = vi.fn().mockResolvedValue(true);
+    const runningAgent = {
+      ...agent,
+      status: 'running',
+      completedAt: null,
+    };
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={runningAgent} onKill={onKill} />
+      </MemoryRouter>
+    );
+
+    // Clicking Kill should show confirmation prompt and NOT call onKill immediately
+    await user.click(screen.getByRole('button', { name: 'Force kill agent (SIGKILL)' }));
+    expect(onKill).not.toHaveBeenCalled();
+    expect(screen.getByText('Kill?')).toBeInTheDocument();
+
+    // Clicking Cancel disarms confirmation state
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onKill).not.toHaveBeenCalled();
+    expect(screen.queryByText('Kill?')).not.toBeInTheDocument();
+
+    // Re-arm and click Confirm
+    await user.click(screen.getByRole('button', { name: 'Force kill agent (SIGKILL)' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(onKill).toHaveBeenCalledWith(runningAgent.id);
+  });
+});
+

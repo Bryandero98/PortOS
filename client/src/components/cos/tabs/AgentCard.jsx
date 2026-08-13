@@ -124,6 +124,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
   const [pausing, setPausing] = useState(false);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
   const [killing, setKilling] = useState(false);
+  const [confirmingKill, setConfirmingKill] = useState(false);
   const [feedbackState, setFeedbackState] = useState(agent.feedback?.rating || null);
   const [btwInput, setBtwInput] = useState('');
   const [sendingBtw, setSendingBtw] = useState(false);
@@ -244,8 +245,12 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
   const handleKill = async () => {
     if (!onKill) return;
     setKilling(true);
-    await onKill(agent.id);
-    setKilling(false);
+    try {
+      await onKill(agent.id);
+    } finally {
+      setKilling(false);
+      setConfirmingKill(false);
+    }
   };
 
   // Fetch full output when expanded for completed agents (skip for remote)
@@ -479,15 +484,28 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             )}
             {/* Kill button (force SIGKILL) */}
             {!inactive && onKill && (
-              <button
-                onClick={handleKill}
-                disabled={killing}
-                className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-port-error/20 text-port-error hover:bg-port-error/30 transition-colors disabled:opacity-50"
-                aria-label="Force kill agent (SIGKILL)"
-              >
-                {killing ? <Loader2 size={12} aria-hidden="true" className="animate-spin" /> : <Skull size={12} aria-hidden="true" />}
-                <span className="hidden sm:inline">Kill</span>
-              </button>
+              confirmingKill ? (
+                <ConfirmButtonPair
+                  prompt="Kill?"
+                  confirmText="Confirm"
+                  cancelText="Cancel"
+                  ariaLabel="Confirm kill agent"
+                  confirmIcon={Skull}
+                  busy={killing}
+                  onConfirm={handleKill}
+                  onCancel={() => setConfirmingKill(false)}
+                />
+              ) : (
+                <button
+                  onClick={() => setConfirmingKill(true)}
+                  disabled={killing}
+                  className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-port-error/20 text-port-error hover:bg-port-error/30 transition-colors disabled:opacity-50"
+                  aria-label="Force kill agent (SIGKILL)"
+                >
+                  {killing ? <Loader2 size={12} aria-hidden="true" className="animate-spin" /> : <Skull size={12} aria-hidden="true" />}
+                  <span className="hidden sm:inline">Kill</span>
+                </button>
+              )
             )}
             {(completed || paused) && onResume && (
               <button
