@@ -24,11 +24,16 @@
  * scan, so the two are deliberately one list rather than two that agree today.
  */
 
+import { isBlank } from './storyBible.js';
+
 /** Depth vocabulary. `core` = renderable at all; `full` = the whole sheet. */
 export const BIBLE_DESCRIBE_DEPTHS = Object.freeze(['core', 'full']);
 
-/** The three slider axes, all of which must be rated for `sliders` to count as filled. */
-const SLIDER_AXES = Object.freeze(['proactivity', 'likability', 'competence']);
+/**
+ * The three slider axes, all of which must be rated for `sliders` to count as
+ * filled. Exported so the character expand's merge rates the same three.
+ */
+export const SLIDER_AXES = Object.freeze(['proactivity', 'likability', 'competence']);
 
 /**
  * Every field the per-kind expand prompt may fill, grouped by how it is stored.
@@ -83,9 +88,6 @@ export const BIBLE_CORE_FIELDS = Object.freeze({
   object: Object.freeze(['description']),
 });
 
-/** Canon kinds this module knows how to measure. Mirrors `storyBible.BIBLE_KINDS`. */
-export const BIBLE_DESCRIBE_KINDS = Object.freeze(Object.keys(BIBLE_EXPAND_FIELDS));
-
 /**
  * `relationshipLinks` (characters) and `attachments` (objects) are INTENTIONALLY
  * absent from every list above: each row points at a sibling entry by id, which
@@ -93,41 +95,36 @@ export const BIBLE_DESCRIBE_KINDS = Object.freeze(Object.keys(BIBLE_EXPAND_FIELD
  * them as "missing" would make every entry permanently incomplete.
  */
 
+/**
+ * Every field a kind's expand prompt can fill, flattened across the groups.
+ * Reads the groups generically so adding a fifth storage shape is one edit here
+ * rather than one at every flatten site.
+ */
+export const expandableBibleFields = (kind) => Object.values(BIBLE_EXPAND_FIELDS[kind] || {}).flat();
+
 const requiredFields = (kind, depth) => {
-  const groups = BIBLE_EXPAND_FIELDS[kind];
-  if (!groups) return [];
-  if (depth === 'core') return BIBLE_CORE_FIELDS[kind] || [];
-  return [...groups.strings, ...groups.lists, ...groups.enums, ...groups.objects];
+  if (!BIBLE_EXPAND_FIELDS[kind]) return [];
+  return depth === 'core' ? (BIBLE_CORE_FIELDS[kind] || []) : expandableBibleFields(kind);
 };
 
 /**
- * A character's canonical description lives in `physicalDescription`; migration
- * 019 rewrites the legacy `description` alias forward but the read-side fallback
- * stays, so a pre-migration entry must not read as blank here (it would be
- * re-described on top of text it already has).
+ * Whether ONE field on an entry is still unfilled — the single blank predicate
+ * the completeness scan AND the expand merges both call, so the code that
+ * decides an entry needs work can't disagree with the code that does it.
+ * `isBlank` (storyBible) carries the base string/array rule; the two exceptions
+ * below are what this wrapper adds.
  */
-const FIELD_VALUE = Object.freeze({
-  physicalDescription: (entry) => entry?.physicalDescription || entry?.description || '',
-});
-
-/**
- * Per-field "is this still blank" overrides. Everything else falls through to
- * the string/array rule below: `sliders` is an always-present object whose axes
- * are individually null until rated, so plain presence would report it filled
- * the moment the sanitizer materialized it.
- */
-const FIELD_IS_BLANK = Object.freeze({
-  sliders: (value) => !value || typeof value !== 'object' || SLIDER_AXES.some((axis) => value[axis] == null),
-});
-
-const isBlankValue = (value) => (Array.isArray(value)
-  ? value.length === 0
-  : (typeof value !== 'string' || value.trim() === ''));
-
-/** Whether ONE field on an entry is still unfilled. Exported for the expand merges. */
 export function bibleFieldIsBlank(entry, field) {
-  const value = FIELD_VALUE[field] ? FIELD_VALUE[field](entry) : entry?.[field];
-  return (FIELD_IS_BLANK[field] || isBlankValue)(value);
+  // A character's canonical description lives in `physicalDescription`; migration
+  // 019 rewrites the legacy `description` alias forward but the read-side fallback
+  // stays, so a pre-migration entry must not read as blank here — it would be
+  // re-described on top of text it already has.
+  if (field === 'physicalDescription') return isBlank(entry?.physicalDescription) && isBlank(entry?.description);
+  // `sliders` is an always-present object whose axes are individually null until
+  // rated, so plain presence would report it filled the moment the sanitizer
+  // materialized it.
+  if (field === 'sliders') return SLIDER_AXES.some((axis) => entry?.sliders?.[axis] == null);
+  return isBlank(entry?.[field]);
 }
 
 /** Normalize an untrusted depth param to a known depth, defaulting to `full`. */
@@ -148,17 +145,14 @@ export const bibleEntryIsDescribed = (kind, entry, options) =>
   missingBibleFields(kind, entry, options).length === 0;
 
 /**
- * Completeness as a ratio plus the gap list — what the describe job reports and
- * what orders its picks (the emptiest entries first, so a capped run spends its
- * budget where it buys the most).
+ * The gap list plus the size of the sheet it was measured against — what orders
+ * the describe job's picks (emptiest FRACTION first, so one kind's much longer
+ * sheet doesn't permanently outrank another's).
  */
 export function bibleEntryCompleteness(kind, entry, { depth = 'full' } = {}) {
   const required = requiredFields(kind, normalizeDescribeDepth(depth));
-  const missing = missingBibleFields(kind, entry, { depth });
-  return {
-    required: required.length,
-    missing,
-    filled: required.length - missing.length,
-    complete: missing.length === 0,
-  };
+  const missing = (entry && typeof entry === 'object')
+    ? required.filter((field) => bibleFieldIsBlank(entry, field))
+    : [];
+  return { required: required.length, missing };
 }

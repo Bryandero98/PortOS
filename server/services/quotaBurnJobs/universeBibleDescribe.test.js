@@ -25,7 +25,7 @@ vi.mock('../quotaBurnStore.js', () => ({
 }));
 
 const {
-  countPending, describeInFlightKey, findUnderdescribedEntries, run,
+  countPending, describeInFlightKey, findUnderdescribedEntries, run, sortByEmptiest,
 } = await import('./universeBibleDescribe.js');
 
 const CODEX_CLI = { id: 'codex', type: 'cli', enabled: true, command: '/usr/local/bin/codex' };
@@ -61,16 +61,19 @@ beforeEach(() => {
 });
 
 describe('findUnderdescribedEntries', () => {
-  it('orders the emptiest entries first and skips locked ones', () => {
-    const rows = findUnderdescribedEntries(universe());
+  it('skips locked entries', () => {
+    // Bob is locked — an expand on it returns `{ locked: true }` without an LLM
+    // call, so picking it would spend a dispatch on a guaranteed no-op.
+    expect(findUnderdescribedEntries(universe()).some((row) => row.id === 'c2')).toBe(false);
+  });
+
+  it('ranks the emptiest FRACTION first, not the biggest raw gap', () => {
     // Fully-blank entries first (the character sheet wins the tiebreak on raw
     // gap size), then the partly-filled ones. Ranking on the raw count instead
     // would put every half-written character ahead of a totally blank object,
     // and on a real cast the objects would never be reached at all.
+    const rows = sortByEmptiest(findUnderdescribedEntries(universe()));
     expect(rows.map((row) => row.id)).toEqual(['c1', 'o1', 'p1', 'c3']);
-    // Bob is locked — an expand on it returns `{ locked: true }` without an LLM
-    // call, so picking it would spend a dispatch on a guaranteed no-op.
-    expect(rows.some((row) => row.id === 'c2')).toBe(false);
   });
 
   it('reports a place described at core depth as done, and still thin at full', () => {

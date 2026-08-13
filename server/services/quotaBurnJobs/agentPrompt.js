@@ -13,67 +13,9 @@
 
 import { addTask } from '../cosTaskStore.js';
 import { getAppById } from '../apps.js';
-import { getAllProviders } from '../providers.js';
-import { commandBasename } from '../../lib/providerModels.js';
+import { noProviderReason, resolveBurnProvider } from './providerPick.js';
 import { burnTaskDescription, isUnlimitedDispatchCap } from '../../lib/quotaBurnConfig.js';
 import { windowLabelOf } from '../../lib/quotaWindows.js';
-
-/**
- * An agent-capable provider in the burning family. A job's explicit
- * `providerId` wins; otherwise match the family id against the enabled
- * providers, PREFERRING the type named by `prefer` (default `tui`).
- *
- * Preferring the TUI is the point for an AGENT burn: it runs unattended for
- * minutes on the user's own subscription, and a TUI agent is watchable in Active
- * Agents and can be steered mid-run, where a headless CLI run can only be read
- * after it has finished. Most families have both registered (`claude-code` +
- * `claude-code-tui`, `codex` + `codex-tui`, …) and the CLI sorts first, so a
- * plain `find` silently picked the unobservable one every time.
- * `pickScrapeProvider` applies the same preference when reading `/usage`.
- *
- * A PROGRAMMATIC job passes `prefer: 'cli'` instead: it sends one headless
- * prompt through the stage runner, with no agent session to watch or steer, so
- * the TUI's observability buys nothing and its interactive startup is pure
- * overhead. The other type is still accepted as a fallback — a family with only
- * a TUI registered must not silently stop burning.
- *
- * Two exclusions, both about what a burn is FOR — spending a subscription window
- * that would otherwise expire unused:
- * - API-type providers bill per token rather than drawing down a window.
- * - Ollama-backed wrappers run a LOCAL model, so there is no window to spend and
- *   burning through one accomplishes nothing. `resolveEnabledFamilies` drops
- *   them from the quota cards for exactly this reason; a `claude-ollama-tui`
- *   would otherwise be a perfectly good match for the `claude` family.
- */
-export function providerForFamily(providers, { familyId, providerId, prefer = 'tui' }) {
-  const available = (providers || []).filter((provider) =>
-    provider?.enabled && provider.ollamaBacked !== true
-    && (provider.type === 'cli' || provider.type === 'tui'));
-  if (providerId) return available.find((provider) => provider.id === providerId) || null;
-  const inFamily = available.filter((provider) => matchesFamily(provider, familyId));
-  return inFamily.find((provider) => provider.type === prefer) || inFamily[0] || null;
-}
-
-/**
- * Does this provider belong to `familyId`?
- *
- * The BINARY is what actually identifies the family — the provider id is a
- * user-facing label and does not have to contain the family name. Matching on
- * the id alone silently stranded the whole `agy` family: its providers ship as
- * `antigravity-cli` / `antigravity-tui`, neither of which contains "agy", so a
- * configured Antigravity burn plan reported "no enabled CLI/TUI provider" and
- * could never dispatch — while the quota card sat right above it showing a
- * healthy window, because `providerUsage`'s own matcher checks the command.
- *
- * The id substring stays as a fallback for a provider registered under a wrapper
- * script whose basename isn't the family name.
- */
-const matchesFamily = (provider, familyId) => {
-  const needle = String(familyId || '').toLowerCase();
-  if (!needle) return false;
-  return commandBasename(provider.command) === needle
-    || String(provider.id || '').toLowerCase().includes(needle);
-};
 
 async function resolve({ params, job, family }) {
   const appId = typeof params?.appId === 'string' ? params.appId.trim() : '';
@@ -82,12 +24,10 @@ async function resolve({ params, job, family }) {
   if (!prompt) return { error: 'no work prompt configured' };
   const app = await getAppById(appId);
   if (!app) return { error: `managed app ${appId} no longer exists` };
-  const result = await getAllProviders();
-  const provider = providerForFamily(
-    Array.isArray(result) ? result : result?.providers,
-    { familyId: family?.id, providerId: job?.providerId || null },
-  );
-  if (!provider) return { error: `no enabled CLI/TUI provider in the ${family?.id} family` };
+  // Default `prefer: 'tui'` — an agent burn runs for minutes and should be
+  // watchable in Active Agents.
+  const provider = await resolveBurnProvider({ job, family });
+  if (!provider) return { error: noProviderReason(family) };
   return { app, prompt, provider };
 }
 

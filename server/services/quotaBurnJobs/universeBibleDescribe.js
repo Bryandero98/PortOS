@@ -25,28 +25,27 @@
  * sanitizer already REQUIRES a prompt, so one cannot exist undescribed.
  */
 
-import { getUniverse, listUniverses } from '../universeBuilder.js';
 import { expandUniverseCharacter } from '../universeCharacterExpand.js';
 import { expandUniverseCanonEntry } from '../universeCanonEntryExpand.js';
-import { getAllProviders } from '../providers.js';
 import { getQuotaBurnInFlight, recordQuotaBurnInFlight } from '../quotaBurnStore.js';
-import { BIBLE_FIELD, BIBLE_KIND } from '../../lib/storyBible.js';
+import { BIBLE_FIELD, BIBLE_KEYS, BIBLE_KIND, BIBLE_KINDS } from '../../lib/storyBible.js';
 import { bibleEntryCompleteness, normalizeDescribeDepth } from '../../lib/universeBibleCompleteness.js';
-import { QUOTA_BURN_BOUNDS } from '../../lib/quotaBurnConfig.js';
-import { providerForFamily } from './agentPrompt.js';
+import { collectUniverseBacklog } from './universeBacklog.js';
+import { noProviderReason, resolveBurnProvider } from './providerPick.js';
 
-/** Scope value → the canon kinds it selects. `all` walks the cast first. */
+/**
+ * Scope value → the canon kinds it selects, derived from `BIBLE_FIELD` rather
+ * than restated, so a future canon kind reaches this job's picker for free (the
+ * scope option list in the job catalog is the one place it still needs naming).
+ * Order matters: `all` walks the cast first.
+ */
 const SCOPE_KINDS = Object.freeze({
-  all: [BIBLE_KIND.CHARACTER, BIBLE_KIND.PLACE, BIBLE_KIND.OBJECT],
-  characters: [BIBLE_KIND.CHARACTER],
-  places: [BIBLE_KIND.PLACE],
-  objects: [BIBLE_KIND.OBJECT],
+  all: BIBLE_KINDS,
+  ...Object.fromEntries(BIBLE_KINDS.map((kind) => [BIBLE_FIELD[kind], [kind]])),
 });
-
-// Bounds come from the catalog descriptor the client renders its min/max from —
-// hardcoding them here would let a raised cap change the accepted range in the
-// form without changing what the job actually runs.
-const ENTRY_BOUNDS = QUOTA_BURN_BOUNDS.maxEntries;
+// Pinned so a rename of a `BIBLE_FIELD` value can't silently orphan a stored
+// job's `scope` — the catalog's option list has to move with it.
+export const DESCRIBE_SCOPES = Object.freeze(['all', ...BIBLE_KEYS]);
 
 /**
  * One in-flight key per ENTRY (ids are unique, unlike the image job's labels),
@@ -57,16 +56,8 @@ export const describeInFlightKey = (universeId, kind, entryId) => `describe:${un
 const entryLabel = (entry) => entry?.name || entry?.slugline || entry?.id || '';
 
 /**
- * Every under-described entry in one universe, emptiest first.
- *
- * Ordering is by the FRACTION of the entry's own sheet that is blank, not the
- * raw gap count. Raw counts would rank by kind rather than by need: a character
- * sheet has ~31 fields and an object two, so every half-written character in the
- * cast would outrank a completely blank object forever, and on a large cast the
- * places and objects would simply never be reached. The absolute gap breaks
- * ties (between two equally-empty entries the bigger one buys more per call) and
- * the id breaks those, so repeated runs walk a stable backlog rather than
- * reshuffling it.
+ * Every under-described entry in one universe. Unordered — `sortRows` below is
+ * what ranks the ones actually picked.
  */
 export function findUnderdescribedEntries(universe, { scope = 'all', depth = 'full' } = {}) {
   const kinds = SCOPE_KINDS[scope] || SCOPE_KINDS.all;
@@ -82,46 +73,42 @@ export function findUnderdescribedEntries(universe, { scope = 'all', depth = 'fu
       rows.push({
         kind,
         id: entry.id,
-        label: entryLabel(entry),
+        label: entry.name || entry.slugline || entry.id,
         missing: missing.length,
-        required,
         blankRatio: required ? missing.length / required : 0,
       });
     }
   }
-  return rows.sort((a, b) => b.blankRatio - a.blankRatio || b.missing - a.missing || a.id.localeCompare(b.id));
-}
-
-async function loadUniverses(params) {
-  const id = typeof params?.universeId === 'string' ? params.universeId.trim() : '';
-  if (!id || id === 'all') return listUniverses();
-  // A universe deleted since the job was configured must not wedge the family —
-  // report zero pending and let the next job in the plan take the window.
-  return getUniverse(id).then((universe) => [universe]).catch(() => []);
+  return rows;
 }
 
 /**
+ * Emptiest first, by the FRACTION of the entry's own sheet that is blank rather
+ * than the raw gap count. Raw counts would rank by kind rather than by need: a
+ * character sheet has ~31 fields and an object two, so every half-written
+ * character in the cast would outrank a completely blank object forever, and on
+ * a large cast the places and objects would never be reached. The absolute gap
+ * breaks ties (between two equally-empty entries the bigger one buys more per
+ * call) and the id breaks those, so repeated runs walk a stable backlog rather
+ * than reshuffling it.
+ */
+export const sortByEmptiest = (rows) =>
+  [...rows].sort((a, b) => b.blankRatio - a.blankRatio || b.missing - a.missing || a.id.localeCompare(b.id));
+
+/**
  * Rows this job would describe next, plus the total backlog so the page can say
- * "10 of 143".
- *
- * ONE universe per run, capped to `maxEntries` — same shape as the image job, so
- * a run's summary names exactly one universe and the cap means what it says.
+ * "10 of 143". The universe walk + one-universe-per-run rule are shared with the
+ * image job (`universeBacklog.js`).
  */
 async function collect(params, inFlight = new Set()) {
-  const max = Math.min(ENTRY_BOUNDS.max, Math.max(ENTRY_BOUNDS.min, Number(params?.maxEntries) || ENTRY_BOUNDS.default));
   const scope = typeof params?.scope === 'string' ? params.scope : 'all';
   const depth = normalizeDescribeDepth(params?.depth);
-  const universes = await loadUniverses(params);
-  let picked = null;
-  let total = 0;
-  for (const universe of universes) {
-    const rows = findUnderdescribedEntries(universe, { scope, depth })
-      .filter((row) => !inFlight.has(describeInFlightKey(universe.id, row.kind, row.id)));
-    total += rows.length;
-    if (!rows.length || picked) continue;
-    picked = { universe, rows: rows.slice(0, max) };
-  }
-  return { picked, total, max, depth };
+  const collected = await collectUniverseBacklog(params, {
+    rowsFor: (universe) => findUnderdescribedEntries(universe, { scope, depth })
+      .filter((row) => !inFlight.has(describeInFlightKey(universe.id, row.kind, row.id))),
+    sortRows: sortByEmptiest,
+  });
+  return { ...collected, depth };
 }
 
 /**
@@ -132,22 +119,14 @@ async function collect(params, inFlight = new Set()) {
  * calls would spend a DIFFERENT subscription while this family's window expires
  * unused and its dispatch cap is charged for the privilege.
  */
-export async function resolveDescribeProvider({ job, family }) {
-  const result = await getAllProviders();
-  return providerForFamily(Array.isArray(result) ? result : result?.providers, {
-    familyId: family?.id,
-    providerId: job?.providerId || null,
-    // Headless one-shot prompts, not a watchable agent session — see
-    // `providerForFamily`.
-    prefer: 'cli',
-  });
-}
+export const resolveDescribeProvider = ({ job, family }) =>
+  // Headless one-shot prompts, not a watchable agent session — see `providerForFamily`.
+  resolveBurnProvider({ job, family, prefer: 'cli' });
 
 export async function countPending({ params, job, family } = {}) {
   const provider = await resolveDescribeProvider({ job, family });
-  if (!provider) return { count: 0, detail: `no enabled CLI/TUI provider in the ${family?.id} family` };
-  const inFlight = await getQuotaBurnInFlight();
-  const collected = await collect(params, inFlight);
+  if (!provider) return { count: 0, detail: noProviderReason(family) };
+  const collected = await collect(params, await getQuotaBurnInFlight());
   const { picked, total, depth } = collected;
   const next = picked?.rows.length || 0;
   return {
@@ -156,7 +135,7 @@ export async function countPending({ params, job, family } = {}) {
     // happen once per dispatch instead of twice — see the registry's contract.
     context: { ...collected, provider },
     detail: total
-      ? `${total} bible ${total === 1 ? 'entry is' : 'entries are'} under-described (${depth}) — ${next} queued next from "${picked.universe.name}"`
+      ? `${total} bible ${total === 1 ? 'entry is' : 'entries are'} under-described (${depth}) — ${next} queued next from "${picked.universeName}"`
       : `every bible entry is described (${depth}) or was just attempted`,
   };
 }
@@ -181,7 +160,7 @@ const expandRow = (universeId, row, options) => (row.kind === BIBLE_KIND.CHARACT
  */
 export async function run({ params, job, family, context, force = false } = {}) {
   const provider = context?.provider ?? await resolveDescribeProvider({ job, family });
-  if (!provider) return { dispatched: false, reason: `no enabled CLI/TUI provider in the ${family?.id} family` };
+  if (!provider) return { dispatched: false, reason: noProviderReason(family) };
 
   // Reuse the probe's scan when the runner supplied it; the page's force path
   // calls run() with no probe, so fall back to scanning here. A forced run
@@ -194,7 +173,7 @@ export async function run({ params, job, family, context, force = false } = {}) 
   const outcome = { described: 0, fields: 0, skipped: 0, failed: 0 };
   const failures = [];
   for (const row of picked.rows) {
-    const result = await expandRow(picked.universe.id, row, options).catch((err) => ({ error: err.message }));
+    const result = await expandRow(picked.universeId, row, options).catch((err) => ({ error: err.message }));
     if (result?.error) {
       outcome.failed += 1;
       if (failures.length < 3) failures.push(`${row.label}: ${result.error}`);
@@ -222,14 +201,14 @@ export async function run({ params, job, family, context, force = false } = {}) 
   // chain alone for a bit-player), so an entry can be permanently "incomplete" —
   // without the cooldown the plan would re-pick the same handful every tick and
   // never reach the rest.
-  await recordQuotaBurnInFlight(picked.rows.map((row) => describeInFlightKey(picked.universe.id, row.kind, row.id)));
+  await recordQuotaBurnInFlight(picked.rows.map((row) => describeInFlightKey(picked.universeId, row.kind, row.id)));
 
-  console.log(`🔥 Quota-burn describe "${picked.universe.name}" via ${provider.id} — described=${outcome.described} fields=${outcome.fields} skipped=${outcome.skipped} failed=${outcome.failed}`);
+  console.log(`🔥 Quota-burn describe "${picked.universeName}" via ${provider.id} — described=${outcome.described} fields=${outcome.fields} skipped=${outcome.skipped} failed=${outcome.failed}`);
   return {
     dispatched: true,
-    summary: `Described ${outcome.described} of ${picked.rows.length} bible entr${picked.rows.length === 1 ? 'y' : 'ies'} (${outcome.fields} field${outcome.fields === 1 ? '' : 's'}) in "${picked.universe.name}" via ${provider.id}`,
+    summary: `Described ${outcome.described} of ${picked.rows.length} bible entr${picked.rows.length === 1 ? 'y' : 'ies'} (${outcome.fields} field${outcome.fields === 1 ? '' : 's'}) in "${picked.universeName}" via ${provider.id}`,
     detail: {
-      universeId: picked.universe.id,
+      universeId: picked.universeId,
       providerId: provider.id,
       model: job?.model || null,
       depth,

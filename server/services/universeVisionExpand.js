@@ -28,13 +28,8 @@
  */
 
 import { getUniverse } from './universeBuilder.js';
-import {
-  applyExpansion,
-  STRING_FIELDS,
-  LIST_FIELDS,
-  isBlankString,
-  isBlankArray,
-} from './universeCharacterExpand.js';
+import { applyExpansion, STRING_FIELDS, LIST_FIELDS } from './universeCharacterExpand.js';
+import { bibleFieldIsBlank } from '../lib/universeBibleCompleteness.js';
 import { resolveAPIProvider, parseLLMJSON } from '../lib/aiProvider.js';
 import { runPromptThroughProvider, assertProvider, assertVisionRunUsedImages } from '../lib/promptRunner.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -160,10 +155,10 @@ export async function expandEntityFromImages({
     return { universe, entry: target, locked: true, updatedFields: [] };
   }
 
-  const blankFields = [
-    ...STRING_FIELDS.filter((f) => isBlankString(target[f])),
-    ...LIST_FIELDS.filter((f) => isBlankArray(target[f])),
-  ];
+  // Same blank predicate the completeness scan and the text expand use — a
+  // second implementation here is how a pre-migration character carrying only
+  // the legacy `description` alias ended up in the "still blank" ask.
+  const blankFields = [...STRING_FIELDS, ...LIST_FIELDS].filter((f) => bibleFieldIsBlank(target, f));
 
   const provider = await resolveAPIProvider(providerId);
   assertProvider(provider, {

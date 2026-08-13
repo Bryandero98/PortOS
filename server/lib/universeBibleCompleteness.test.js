@@ -6,9 +6,11 @@ import {
   bibleEntryCompleteness,
   bibleEntryIsDescribed,
   bibleFieldIsBlank,
+  expandableBibleFields,
   missingBibleFields,
   normalizeDescribeDepth,
 } from './universeBibleCompleteness.js';
+import { bibleUserEditableFields } from './storyBible.js';
 
 const describedCharacter = () => {
   const groups = BIBLE_EXPAND_FIELDS.character;
@@ -23,10 +25,7 @@ const describedCharacter = () => {
 describe('missingBibleFields', () => {
   it('reports every unfilled character-sheet field at full depth', () => {
     const missing = missingBibleFields('character', { id: 'c1', name: 'Alice' });
-    const groups = BIBLE_EXPAND_FIELDS.character;
-    expect(missing).toHaveLength(
-      groups.strings.length + groups.lists.length + groups.enums.length + groups.objects.length,
-    );
+    expect(missing).toHaveLength(expandableBibleFields('character').length);
     expect(missing).toContain('physicalDescription');
     expect(missing).toContain('colorPalette');
     expect(missing).toContain('sliders');
@@ -78,13 +77,19 @@ describe('missingBibleFields', () => {
 });
 
 describe('bibleEntryCompleteness', () => {
-  it('reports the gap size the describe job orders its picks by', () => {
+  it('reports the gap and the sheet size the describe job ranks on', () => {
     const empty = bibleEntryCompleteness('place', { id: 'p1' });
     const partial = bibleEntryCompleteness('place', { id: 'p2', description: 'a foundry', era: 'late-industrial' });
-    expect(empty.filled).toBe(0);
-    expect(partial.filled).toBe(2);
-    expect(partial.missing.length).toBeLessThan(empty.missing.length);
-    expect(empty.complete).toBe(false);
+    expect(empty.required).toBe(expandableBibleFields('place').length);
+    expect(empty.missing).toHaveLength(empty.required);
+    expect(partial.missing).toHaveLength(empty.required - 2);
+    // The ratio is what the job sorts on — a place's 7-field sheet must be
+    // comparable to a character's 31-field one.
+    expect(partial.missing.length / partial.required).toBeLessThan(1);
+  });
+
+  it('reports a blank gap list rather than throwing on a malformed entry', () => {
+    expect(bibleEntryCompleteness('place', null).missing).toEqual([]);
   });
 });
 
@@ -95,6 +100,31 @@ describe('normalizeDescribeDepth', () => {
     expect(normalizeDescribeDepth('deep')).toBe('full');
     expect(normalizeDescribeDepth(undefined)).toBe('full');
   });
+});
+
+describe('parity with the prose extractor\'s no-clobber set', () => {
+  // `MERGE_CONFIG[kind].userEditable` (storyBible) and `BIBLE_EXPAND_FIELDS`
+  // answer the same question — what may an LLM fill in on an existing entry? A
+  // field added to one but not the other is invisible to the completeness scan
+  // forever, so the delta has to be named rather than merely tolerated.
+  const KNOWN_DELTA = {
+    // `role` is extracted from prose but is not something the expand prompts
+    // invent — a character's function in the story is the writer's call.
+    character: { extractorOnly: ['role'], expandOnly: ['sliders'] },
+    place: { extractorOnly: [], expandOnly: [] },
+    object: { extractorOnly: [], expandOnly: [] },
+  };
+
+  for (const kind of Object.keys(BIBLE_EXPAND_FIELDS)) {
+    it(`matches for ${kind} modulo the documented delta`, () => {
+      const expand = new Set(expandableBibleFields(kind));
+      const extractor = new Set(bibleUserEditableFields(kind));
+      expect([...extractor].filter((f) => !expand.has(f)).sort())
+        .toEqual([...KNOWN_DELTA[kind].extractorOnly].sort());
+      expect([...expand].filter((f) => !extractor.has(f)).sort())
+        .toEqual([...KNOWN_DELTA[kind].expandOnly].sort());
+    });
+  }
 });
 
 describe('core sets', () => {

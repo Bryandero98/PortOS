@@ -147,18 +147,11 @@ for a place; description + significance for an object). Category variations and
 composite sheets are **out of scope** — their sanitizer already requires a
 prompt, so one cannot exist undescribed.
 
-Picks are ordered by the FRACTION of an entry's own sheet that is blank, not the
-raw gap count. Raw counts would rank by kind: a character sheet has ~31 fields
-and an object two, so every half-written character would outrank a completely
-blank object forever and a large cast would starve the rest of the bible.
-
-Two things bound the spend. Locked entries are never picked (an expand on one
-returns without an LLM call). And every **attempted** entry — including the ones
-the model declined to fill — is stamped into the shared in-flight ledger for its
-6-hour TTL: at `full` depth some fields are legitimately meant to stay blank (the
-prompt tells the model to leave the Ghost→Need chain alone for a bit-player), so
-an entry can be permanently "incomplete", and without the stamp the plan would
-re-pick the same handful every tick and never reach the rest.
+Locked entries are never picked, and every attempted entry is stamped into the
+shared in-flight ledger for its 6-hour TTL. Why picks are ranked by blank
+*fraction* rather than raw gap count, and why the stamp covers entries the model
+declined to fill, are argued at the code site
+(`server/services/quotaBurnJobs/universeBibleDescribe.js`).
 
 The image job's opt-in `requireDescribed` is the other half of the pairing: with
 it on, canon entries with no `core` description are held out of the render
