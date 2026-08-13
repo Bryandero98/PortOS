@@ -14,6 +14,14 @@ import { updatePipelineSeries } from '../services/api';
 //                     run against the on-screen state. Returns `true` when a save
 //                     occurred so the caller can surface a confirmation toast.
 //
+// A fourth callback, `onRegisterDraftFlush` → registerDraftFlush(fn), lets a
+// descendant that owns an unsaved *draft* (the ArcContent logline / summary /
+// protagonist-arc editor) hand up a committer. flushPending() runs it after the
+// bible PATCH, so "flush before you act" covers an open arc editor too — without
+// which clicking Lock & continue / Generate / Save while the editor is open
+// silently discards what is on screen (#3907). The registered fn returns `true`
+// when it saved, and is expected to swallow its own errors.
+//
 // Both PipelineSeries and the embedded StoryBuilder arc step used to hand-roll
 // this identical contract; the only real divergence is WHICH bible fields each
 // host flushes (PipelineSeries carries 10 + cover/style overrides; StoryBuilder
@@ -40,6 +48,12 @@ export function useArcCanvasSync({
     if (series && lastSavedRef.current?.id !== series.id) lastSavedRef.current = series;
   }, [series]);
 
+  // Committer handed up by an open draft editor (see the header comment). Held
+  // in a ref, not state — registering must not re-render the host, and
+  // flushPending only needs the latest value at call time.
+  const draftFlushRef = useRef(null);
+  const registerDraftFlush = useCallback((fn) => { draftFlushRef.current = fn || null; }, []);
+
   const updateSeriesFromServer = useCallback((next) => {
     setSeries(next);
     lastSavedRef.current = next;
@@ -58,23 +72,30 @@ export function useArcCanvasSync({
     const saved = lastSavedRef.current || series;
     const dirty = flushFields.some((k) => (series[k] ?? '') !== (saved[k] ?? ''))
       || JSON.stringify(series.llm || {}) !== JSON.stringify(saved.llm || {});
-    if (!dirty) return false;
-    // Build the PATCH payload from the same field list, applying any per-field
-    // empty-value default (e.g. `titleLogo: '' ` so the server clears rather than
-    // sees `undefined`). `llm` is always sent.
-    const patch = { llm: series.llm || { provider: null, model: null } };
-    for (const k of flushFields) {
-      patch[k] = k in payloadDefaults ? (series[k] || payloadDefaults[k]) : series[k];
+    let didSave = false;
+    if (dirty) {
+      // Build the PATCH payload from the same field list, applying any per-field
+      // empty-value default (e.g. `titleLogo: '' ` so the server clears rather than
+      // sees `undefined`). `llm` is always sent.
+      const patch = { llm: series.llm || { provider: null, model: null } };
+      for (const k of flushFields) {
+        patch[k] = k in payloadDefaults ? (series[k] || payloadDefaults[k]) : series[k];
+      }
+      const updated = await updatePipelineSeries(series.id, patch, { silent })
+        .catch((err) => {
+          if (onFlushError) onFlushError(err);
+          return null;
+        });
+      if (updated) {
+        updateSeriesFromServer(updated);
+        didSave = true;
+      }
     }
-    const updated = await updatePipelineSeries(series.id, patch, { silent })
-      .catch((err) => {
-        if (onFlushError) onFlushError(err);
-        return null;
-      });
-    if (!updated) return false;
-    updateSeriesFromServer(updated);
-    return true;
+    // Bible PATCH first, THEN the draft — the draft committer's response then
+    // carries the bible fields too, so lastSavedRef ends on the freshest record.
+    if (draftFlushRef.current && await draftFlushRef.current()) didSave = true;
+    return didSave;
   }, [series, flushFields, payloadDefaults, silent, onFlushError, updateSeriesFromServer]);
 
-  return { updateSeriesFromServer, handleIssuesUpdate, flushPending };
+  return { updateSeriesFromServer, handleIssuesUpdate, flushPending, registerDraftFlush };
 }

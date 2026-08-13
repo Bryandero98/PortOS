@@ -65,11 +65,18 @@ const toastMock = vi.hoisted(() => {
 });
 vi.mock('../components/ui/Toast', () => ({ default: toastMock, toast: toastMock, Toaster: () => null }));
 
+// Stand-in for the committer ArcContent hands up through ArcCanvas when its
+// logline / summary / protagonist-arc editor is open with unsaved text.
+const arcDraftFlush = vi.hoisted(() => vi.fn(async () => true));
+
 // The plotArc step embeds the full ArcCanvas roadmap editor; mock it to an
 // inert sentinel so these tests assert the EMBEDDING (and its props) without
 // pulling ArcCanvas's heavy import graph or its own API calls into scope.
 vi.mock('../components/pipeline/ArcCanvas', () => ({
-  default: ({ series }) => <div data-testid="arc-canvas">ArcCanvas[{series?.id}]</div>,
+  default: ({ series, onRegisterDraftFlush }) => {
+    onRegisterDraftFlush?.(arcDraftFlush);
+    return <div data-testid="arc-canvas">ArcCanvas[{series?.id}]</div>;
+  },
 }));
 
 import StoryBuilder, { composeSeedFromIngredients } from './StoryBuilder';
@@ -475,6 +482,42 @@ describe('StoryBuilder — detail stepper', () => {
     await waitFor(() => expect(api.lockStoryStep).toHaveBeenCalledWith('stb-1', 'idea', expect.anything()));
     // …then advances the current-step pointer to the next step (universeAesthetic).
     await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
+  });
+
+  it('"Lock & continue" flushes the open Arc Canvas draft BEFORE locking the step', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'plotArc', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({ idea: { locked: true }, universeAesthetic: { locked: true } }),
+      staleSteps: [], llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/plotArc');
+    await waitFor(() => expect(screen.getByTestId('arc-canvas')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Lock & continue'));
+    await waitFor(() => expect(api.lockStoryStep).toHaveBeenCalledWith('stb-1', 'plotArc', expect.anything()));
+    // Locking makes the step read-only (and unmounts the canvas), so the
+    // pending draft has to land first or the edit is silently lost.
+    expect(arcDraftFlush).toHaveBeenCalled();
+    expect(arcDraftFlush.mock.invocationCallOrder[0])
+      .toBeLessThan(api.lockStoryStep.mock.invocationCallOrder[0]);
+  });
+
+  it('"Unlock to revise" does NOT flush — unlocking re-opens the step, nothing to preserve', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'plotArc', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({ idea: { locked: true }, universeAesthetic: { locked: true }, plotArc: { locked: true } }),
+      staleSteps: [], llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/plotArc');
+    await waitFor(() => expect(screen.getByText('Unlock to revise')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Unlock to revise'));
+    await waitFor(() => expect(api.unlockStoryStep).toHaveBeenCalledWith('stb-1', 'plotArc', expect.anything()));
+    expect(arcDraftFlush).not.toHaveBeenCalled();
   });
 
   it('manual step click: a rejected pointer move stays put and resyncs (no navigation)', async () => {

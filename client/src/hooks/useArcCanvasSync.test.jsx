@@ -102,6 +102,50 @@ describe('useArcCanvasSync', () => {
     expect(result.current.issues.map((i) => i.id)).toEqual(['i3']);
   });
 
+  it('flushPending runs a registered draft committer AFTER the bible PATCH', async () => {
+    const server = { id: 's1', name: 'A' };
+    updatePipelineSeries.mockResolvedValue({ ...server, name: 'B' });
+    const order = [];
+    const draftFlush = vi.fn(async () => { order.push('draft'); return true; });
+    updatePipelineSeries.mockImplementation(async () => { order.push('bible'); return { ...server, name: 'B' }; });
+    const { result } = renderHook(() => useHarness(server, [], { flushFields: FLUSH_FIELDS, silent: true }));
+
+    act(() => { result.current.registerDraftFlush(draftFlush); });
+    act(() => { result.current.setSeries((s) => ({ ...s, name: 'B' })); });
+
+    let did;
+    await act(async () => { did = await result.current.flushPending(); });
+    expect(did).toBe(true);
+    expect(order).toEqual(['bible', 'draft']);
+  });
+
+  it('flushPending reports a save when ONLY the registered draft committer wrote', async () => {
+    const server = { id: 's1', name: 'A' };
+    const draftFlush = vi.fn(async () => true);
+    const { result } = renderHook(() => useHarness(server, [], { flushFields: FLUSH_FIELDS }));
+
+    act(() => { result.current.registerDraftFlush(draftFlush); });
+    let did;
+    await act(async () => { did = await result.current.flushPending(); });
+    // Nothing diverged in the bible, so the PATCH is skipped — but the open
+    // draft editor still committed, and the caller must hear about it.
+    expect(updatePipelineSeries).not.toHaveBeenCalled();
+    expect(draftFlush).toHaveBeenCalled();
+    expect(did).toBe(true);
+  });
+
+  it('registerDraftFlush(null) unregisters the committer', async () => {
+    const draftFlush = vi.fn(async () => true);
+    const { result } = renderHook(() => useHarness({ id: 's1', name: 'A' }, [], { flushFields: FLUSH_FIELDS }));
+
+    act(() => { result.current.registerDraftFlush(draftFlush); });
+    act(() => { result.current.registerDraftFlush(null); });
+    let did;
+    await act(async () => { did = await result.current.flushPending(); });
+    expect(draftFlush).not.toHaveBeenCalled();
+    expect(did).toBe(false);
+  });
+
   it('updateSeriesFromServer keeps the baseline aligned so a follow-up flush is a no-op', async () => {
     const server = { id: 's1', name: 'A' };
     const { result } = renderHook(() => useHarness(server, [], { flushFields: FLUSH_FIELDS }));

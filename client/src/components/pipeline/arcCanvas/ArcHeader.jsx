@@ -34,7 +34,7 @@ const VERIFY_ARC_SCOPE = {
 
 // ---- Arc header (logline, themes, action buttons) ----
 
-export default function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
+export default function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending, onRegisterDraftFlush }) {
   const arc = series.arc;
   const arcLocked = !!series.locked?.arc;
   const [running, setRunning] = useState(null); // 'generate' | 'verify' | 'resolve' | 'derive' | 'derive-commit' | 'completeness' | null
@@ -348,7 +348,7 @@ export default function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFl
       ) : null}
 
       {arc ? (
-        <ArcContent series={series} onSeriesUpdate={onSeriesUpdate} />
+        <ArcContent series={series} onSeriesUpdate={onSeriesUpdate} onRegisterDraftFlush={onRegisterDraftFlush} />
       ) : (
         <p className="text-xs text-gray-500 italic">
           No arc yet — describe the series in the bible, then click <em>Generate arc</em> to have an LLM propose a multi-volume spine + volume breakdown.
