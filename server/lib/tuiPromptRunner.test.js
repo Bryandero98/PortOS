@@ -10,8 +10,9 @@ const TEST_WORKSPACE = process.cwd();
 
 // node-pty + runner hooks are mocked so executeTuiRun can be driven
 // synchronously from the test without spawning a real terminal. fileUtils
-// stays real for everything except `ensureDir` (which would otherwise create
-// real run directories the SUT never needs in these tests). Mocks live
+// stays real except for `ensureDir` (which would otherwise create real run
+// directories the SUT never needs in these tests) and `tryReadFile` (which
+// serves seeded response files from memory — see below). Mocks live
 // inside vi.hoisted so the vi.mock factories (which are themselves hoisted
 // to the top of the file) can reference them.
 const { ptyInstances, ptySpawnMock, runnerMocks, shellMocks, runsTmpDirRef, responseFiles } = vi.hoisted(() => ({
