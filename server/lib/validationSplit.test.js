@@ -7,6 +7,8 @@ import * as agentValidation from './agentValidation.js';
 import * as cosValidation from './cosValidation.js';
 import * as mediaValidation from './mediaValidation.js';
 import * as pipelineValidation from './pipelineValidation.js';
+import * as spriteValidation from './spriteValidation.js';
+import * as sharedSchemas from './sharedSchemas.js';
 
 // Issues #1151 and #1831 split validation.js's domain schema groups into per-
 // domain files, with validation.js re-exporting them so existing deep imports
@@ -24,6 +26,8 @@ describe('validation.js transitional re-exports (issues #1151, #1831)', () => {
     ['cosValidation', cosValidation],
     ['mediaValidation', mediaValidation],
     ['pipelineValidation', pipelineValidation],
+    // #3873
+    ['spriteValidation', spriteValidation],
   ];
 
   it.each(domains)('%s exports are all reachable from validation.js as the same objects', (_name, mod) => {
@@ -74,8 +78,29 @@ describe('validation.js transitional re-exports (issues #1151, #1831)', () => {
     expect(typeof validation.emptyToUndefined).toBe('function');
   });
 
+  it('#3873: the sprite split kept its shared helpers reachable and its schemas usable', () => {
+    // The four cross-domain fragments the sprite block depends on moved to the
+    // leaf sharedSchemas.js. validation.js must still export the SAME objects
+    // (deep imports across six non-sprite call sites relied on it), and the
+    // sprite schemas must still parse through the validation.js entry.
+    for (const key of ['grokVideoDurationSchema', 'cloudModelIdString', 'recordRenderPinFields', 'isSafeSubdirFilter']) {
+      expect(validation[key], `validation.js re-export of '${key}'`).toBe(sharedSchemas[key]);
+    }
+    expect(() => validation.validateRequest(validation.spriteCreateSchema, {
+      name: 'Example Sprite', imageMode: '', imageModelId: '',
+    })).not.toThrow();
+    expect(() => validation.validateRequest(validation.spriteWalkTrimSchema, {
+      runId: 'run-3', enabledColumns: [0, 1, 2],
+    })).not.toThrow();
+    // The `recordRenderPinFields` spread must still be live inside the moved
+    // schemas — a bad model id is a rejection, not a stripped field.
+    expect(validation.spriteCreateSchema.safeParse({
+      name: 'Example Sprite', imageModelId: '../etc/passwd',
+    }).success).toBe(false);
+  });
+
   it('the new #1831 domain files do NOT import back from validation.js (cycle guard)', () => {
-    for (const mod of [agentValidation, cosValidation, mediaValidation, pipelineValidation]) {
+    for (const mod of [agentValidation, cosValidation, mediaValidation, pipelineValidation, spriteValidation]) {
       // validateRequest / parsePagination live only in validation.js — if a
       // domain file re-imported the barrel they'd leak through `export *`.
       expect(mod.validateRequest).toBeUndefined();

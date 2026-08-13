@@ -17,7 +17,7 @@ import { checkHealth, getServerMajorVersion } from '../lib/db.js';
 import { resolvePgDumpBinary } from '../lib/pgTools.js';
 import { getBackendName } from './memoryBackend.js';
 import { emitErrorEvent, ServerError } from '../lib/errorHandler.js';
-import { isSafeSubdirFilter } from '../lib/validation.js';
+import { isSafeSubdirFilter } from '../lib/sharedSchemas.js';
 import { getIo } from './socket.js';
 import { reloadSettings } from './settings.js';
 
