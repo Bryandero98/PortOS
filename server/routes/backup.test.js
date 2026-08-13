@@ -213,5 +213,78 @@ describe('backup routes', () => {
       expect(res.body.code).toBe('BACKUP_NOT_CONFIGURED');
       expect(backup.restorePostgres).not.toHaveBeenCalled();
     });
+
+    // `restoreDbRequestSchema` types snapshotId as a non-empty string. A client
+    // that sends a number, object, array, null, or '' must get the structured
+    // 400 VALIDATION_ERROR envelope — never a coerced snapshot id reaching the
+    // service, and never a generic 500.
+    it.each([
+      ['a number', 12345],
+      ['an object', { id: 'snap-1' }],
+      ['an array', ['snap-1']],
+      ['null', null],
+      ['an empty string', ''],
+      ['a boolean', true]
+    ])('returns 400 VALIDATION_ERROR when snapshotId is %s', async (_label, snapshotId) => {
+      getSettings.mockResolvedValue({ backup: { destPath: '/dest' } });
+      const res = await request(buildApp())
+        .post('/api/backup/restore-db')
+        .send({ snapshotId });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(backup.restorePostgres).not.toHaveBeenCalled();
+    });
+
+    // dryRun is the safety switch between "report what would happen" and
+    // "replay the dump over the live database". Zod must NOT coerce a truthy/
+    // falsy lookalike — a client sending the string 'false' has to be rejected
+    // outright rather than silently arriving as `true` and wiping the DB.
+    it.each([
+      ['the string "false"', 'false'],
+      ['the string "true"', 'true'],
+      ['the number 0', 0],
+      ['the number 1', 1],
+      ['null', null],
+      ['an object', {}]
+    ])('returns 400 VALIDATION_ERROR when dryRun is %s', async (_label, dryRun) => {
+      getSettings.mockResolvedValue({ backup: { destPath: '/dest' } });
+      const res = await request(buildApp())
+        .post('/api/backup/restore-db')
+        .send({ snapshotId: 'snap-1', dryRun });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(backup.restorePostgres).not.toHaveBeenCalled();
+    });
+
+    // Bypass probe: the rejections above must come from the schema rejecting
+    // those specific values, not from the request never reaching the handler.
+    it('accepts a well-formed body so the rejections above are not vacuous', async () => {
+      getSettings.mockResolvedValue({ backup: { destPath: '/dest' } });
+      backup.restorePostgres.mockResolvedValue({ status: 'ok', dryRun: false });
+      const res = await request(buildApp())
+        .post('/api/backup/restore-db')
+        .send({ snapshotId: 'snap-1', dryRun: false });
+      expect(res.status).toBe(200);
+      expect(backup.restorePostgres).toHaveBeenCalledWith('/dest', 'snap-1', { dryRun: false });
+    });
+
+    // restorePostgres reports domain failures in its resolved value rather than
+    // by throwing. The route must serialize those verbatim at 200 so the client
+    // can surface the reason — collapsing them into a 500 envelope would hide
+    // which check refused the restore.
+    it.each([
+      ['manifest_mismatch', { status: 'failed', reason: 'manifest_mismatch' }],
+      ['restore_error', { status: 'failed', reason: 'restore_error', error: 'psql: exited 1' }],
+      ['no_dump', { status: 'skipped', reason: 'no_dump' }],
+      ['not_configured', { status: 'skipped', reason: 'not_configured' }]
+    ])('returns the %s service result verbatim with a 200 status', async (_label, serviceResult) => {
+      getSettings.mockResolvedValue({ backup: { destPath: '/dest' } });
+      backup.restorePostgres.mockResolvedValue(serviceResult);
+      const res = await request(buildApp())
+        .post('/api/backup/restore-db')
+        .send({ snapshotId: 'snap-1', dryRun: false });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(serviceResult);
+    });
   });
 });
