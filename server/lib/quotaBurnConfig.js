@@ -23,6 +23,7 @@
  */
 
 import { isPlainObject, POLLUTING_KEYS } from './objects.js';
+import { BIBLE_DESCRIBE_DEPTHS, BIBLE_DESCRIBE_SCOPES } from './universeBibleCompleteness.js';
 
 /** Provider quota families a burn plan may target. Mirrors `providerUsage.js`'s card ids. */
 export const QUOTA_BURN_FAMILIES = Object.freeze(['claude', 'codex', 'agy', 'grok']);
@@ -110,6 +111,7 @@ export const isUnlimitedDispatchCap = (cap) => Number(cap) < 0;
  */
 export const QUOTA_BURN_JOB_TYPE = Object.freeze({
   AGENT_PROMPT: 'agent-prompt',
+  UNIVERSE_BIBLE_DESCRIBE: 'universe-bible-describe',
   UNIVERSE_BIBLE_IMAGES: 'universe-bible-images',
 });
 export const QUOTA_BURN_JOB_TYPES = Object.freeze(Object.values(QUOTA_BURN_JOB_TYPE));
@@ -150,6 +152,21 @@ export const QUOTA_BURN_JOB_CATALOG = Object.freeze([
     ]),
   },
   {
+    id: QUOTA_BURN_JOB_TYPE.UNIVERSE_BIBLE_DESCRIBE,
+    label: 'Universe bible descriptions',
+    description: 'Fill in blank fields on universe bible entries — the full character sheet for cast, description + world detail for places and objects. No agent; PortOS sends one expand prompt per entry. Order this BEFORE the image job so renders have something to work from.',
+    programmatic: true,
+    params: Object.freeze([
+      { key: 'universeId', kind: 'universe', label: 'Universe', default: 'all', emptyLabel: 'All universes', emptyValue: 'all' },
+      { key: 'scope', kind: 'enum', label: 'Entries', options: BIBLE_DESCRIBE_SCOPES, default: 'all' },
+      // `full` is the default because the job exists for the sheet, not the
+      // one-line description: a cast member with a description and nothing else
+      // still renders inconsistently from panel to panel.
+      { key: 'depth', kind: 'enum', label: 'Depth', options: BIBLE_DESCRIBE_DEPTHS, default: 'full' },
+      { key: 'maxEntries', kind: 'number', label: 'Max entries per run', min: BOUNDS.maxEntries.min, max: BOUNDS.maxEntries.max, default: BOUNDS.maxEntries.default },
+    ]),
+  },
+  {
     id: QUOTA_BURN_JOB_TYPE.UNIVERSE_BIBLE_IMAGES,
     label: 'Universe bible images',
     description: 'Render images for universe bible entries that have none yet. No agent — PortOS enqueues the renders itself.',
@@ -159,6 +176,11 @@ export const QUOTA_BURN_JOB_CATALOG = Object.freeze([
       { key: 'scope', kind: 'enum', label: 'Entries', options: ['all', 'variations', 'canon', 'sheets'], default: 'all' },
       { key: 'maxEntries', kind: 'number', label: 'Max entries per run', min: BOUNDS.maxEntries.min, max: BOUNDS.maxEntries.max, default: BOUNDS.maxEntries.default },
       { key: 'mode', kind: 'imageMode', label: 'Render backend', default: null, emptyLabel: 'Match the burning provider', emptyValue: '' },
+      // Opt-IN, and default `false`, so an existing plan keeps rendering exactly
+      // the backlog it rendered yesterday. Turning it on pairs this job with the
+      // describe job above: canon entries that are still blank wait for a
+      // description instead of spending image quota on a generic render.
+      { key: 'requireDescribed', kind: 'boolean', label: 'Skip canon entries that have no description yet', default: false },
     ]),
   },
 ]);

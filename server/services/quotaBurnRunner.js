@@ -74,6 +74,13 @@ const selectJobs = (family, { jobId = null, force = false, completions = {} } = 
 };
 
 /**
+ * The two fields of a pending-probe the page actually renders. An allowlist
+ * rather than an omit so a job type that starts returning something new has to
+ * opt into the wire deliberately.
+ */
+const wireShape = (pending) => ({ count: pending?.count ?? 0, detail: pending?.detail ?? '' });
+
+/**
  * The plan, re-anchored to start just AFTER the job this family last dispatched.
  *
  * A burn plan is an ordered ROTATION, not a priority list. Without this the walk
@@ -463,7 +470,12 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
           return {
             id: job.id,
             ranAt,
-            pending: family.enabled && !spent ? await countJobPending({ job, family }) : null,
+            // `context` is stripped: it is the probe→run hand-off (see the job
+            // registry), and it holds whatever the probe already computed —
+            // for the universe jobs a picked-universe payload. The page renders
+            // `count` and `detail` only, so shipping the rest would put probe
+            // internals on the wire and grow with every job type.
+            pending: family.enabled && !spent ? wireShape(await countJobPending({ job, family })) : null,
           };
         })),
       };

@@ -11,33 +11,20 @@
  *   - key present with non-empty value → fill ONLY when target field is blank.
  */
 
-import { getUniverse, updateUniverse } from './universeBuilder.js';
 import { buildStyleClause } from './universeCanon.js';
-import { runPromptRefineRaw } from './pipeline/refineHelpers.js';
-import { ServerError } from '../lib/errorHandler.js';
-import { sanitizeCharacter } from '../lib/storyBible.js';
-import { shortId } from '../lib/fileUtils.js';
+import { runCanonEntryExpand } from './universeCanonExpandRunner.js';
+import { BIBLE_KIND, sanitizeBibleField } from '../lib/storyBible.js';
+import { BIBLE_EXPAND_FIELDS, bibleFieldIsBlank, SLIDER_AXES } from '../lib/universeBibleCompleteness.js';
 
-// Adding a new extended field on `sanitizeCharacter` requires adding it here
-// too — otherwise the expand response key is silently dropped. Exported so the
-// vision-driven expand (`universeVisionExpand.js`) fills the SAME canonical set
-// of fields from one source of truth rather than a drifting second copy.
-export const STRING_FIELDS = Object.freeze([
-  'pronouns', 'age', 'coreTheme', 'speechAccent', 'speechPattern',
-  'physicalDescription', 'personality', 'background', 'visualNotes',
-  'silhouetteNotes', 'postureNotes', 'specialTraits', 'visualIdentity',
-  'motivations', 'likes', 'dislikes', 'mannerisms', 'relationships', 'skills',
-  // Character framework (CWQE Phase 10, #2175) — the Ghost → Wound → Lie →
-  // Want → Need chain. Plain prose fields; `arcType` (enum) and `sliders`
-  // (structured) are handled separately below.
-  'ghost', 'wound', 'lie', 'want', 'need',
-]);
-export const LIST_FIELDS = Object.freeze([
-  'stats', 'colorPalette', 'props', 'expressions', 'handGestures',
-  'wardrobes',
-  // Character framework — secrets are a plain string list (#2175).
-  'secrets',
-]);
+// Adding a new extended field on `sanitizeCharacter` requires adding it to
+// `BIBLE_EXPAND_FIELDS.character` too — otherwise the expand response key is
+// silently dropped. Sourced from there rather than restated here so the
+// completeness scan that decides WHICH characters still need an expand and the
+// merge that applies one can never disagree about the field set. Re-exported
+// because the vision-driven expand (`universeVisionExpand.js`) fills the SAME
+// canonical set.
+export const STRING_FIELDS = BIBLE_EXPAND_FIELDS.character.strings;
+export const LIST_FIELDS = BIBLE_EXPAND_FIELDS.character.lists;
 // `relationshipLinks` (#1287) is INTENTIONALLY excluded from both lists: each
 // link points at a sibling character by `targetCharacterId`, an id the LLM
 // expand call has no way to produce. The `{ ...target }` spread above
@@ -75,7 +62,7 @@ export function applyExpansion(target, content) {
     if (!(field in content)) continue;
     const proposed = content[field];
     if (isAbsent(proposed) || typeof proposed !== 'string') continue;
-    if (!isBlankString(target[field])) continue;
+    if (!bibleFieldIsBlank(target, field)) continue;
     if (isBlankString(proposed)) continue;
     merged[field] = proposed.trim();
     updatedFields.push(field);
@@ -84,32 +71,25 @@ export function applyExpansion(target, content) {
     if (!(field in content)) continue;
     const proposed = content[field];
     if (isAbsent(proposed) || !Array.isArray(proposed)) continue;
-    if (!isBlankArray(target[field])) continue;
+    if (!bibleFieldIsBlank(target, field)) continue;
     if (isBlankArray(proposed)) continue;
-    // Sanitize the proposed list before recording the update. The bible
+    // Sanitize the proposed list before recording the update: the bible
     // sanitizer drops rows missing required keys (stats without `label`,
-    // props/expressions/gestures without `name`, palette without `name`),
-    // so a raw acceptance would report `updatedFields: ['stats']` while
-    // the persisted character actually saves `stats: []`. Run the proposal
-    // through `sanitizeCharacter` (target's name carries the record so the
-    // top-level sanitizer accepts it) and use the cleaned rows; skip the
-    // field entirely when nothing survives.
-    const sanitized = sanitizeCharacter(
-      { name: target.name, [field]: proposed },
-      { preserveTimestamps: false },
-    );
-    const cleaned = Array.isArray(sanitized?.[field]) ? sanitized[field] : [];
-    if (cleaned.length === 0) continue;
+    // props/expressions/gestures without `name`, palette without `name`), so a
+    // raw acceptance would report `updatedFields: ['stats']` while the persisted
+    // character actually saves `stats: []`. Skip the field when nothing survives.
+    const cleaned = sanitizeBibleField('character', target, field, proposed);
+    if (!Array.isArray(cleaned) || cleaned.length === 0) continue;
     merged[field] = cleaned;
     updatedFields.push(field);
   }
   // arcType — a bare enum string, filled only when the target has no arc type.
-  // Run through sanitizeCharacter so an unrecognized value (folded to null by
-  // trimEnum) never records a spurious update.
-  if ('arcType' in content && !isBlankString(content.arcType) && isBlankString(target.arcType)) {
-    const sanitized = sanitizeCharacter({ name: target.name, arcType: content.arcType }, { preserveTimestamps: false });
-    if (sanitized?.arcType) {
-      merged.arcType = sanitized.arcType;
+  // Sanitized so an unrecognized value (folded to null by trimEnum) never
+  // records a spurious update.
+  if ('arcType' in content && !isBlankString(content.arcType) && bibleFieldIsBlank(target, 'arcType')) {
+    const cleaned = sanitizeBibleField('character', target, 'arcType', content.arcType);
+    if (cleaned) {
+      merged.arcType = cleaned;
       updatedFields.push('arcType');
     }
   }
@@ -118,11 +98,11 @@ export function applyExpansion(target, content) {
   // rated. Sanitize the proposal so an out-of-range value collapses to null and
   // never records a bogus update.
   if (content.sliders && typeof content.sliders === 'object') {
-    const proposed = sanitizeCharacter({ name: target.name, sliders: content.sliders }, { preserveTimestamps: false })?.sliders || {};
+    const proposed = sanitizeBibleField('character', target, 'sliders', content.sliders) || {};
     const existing = (target.sliders && typeof target.sliders === 'object') ? target.sliders : {};
     const nextSliders = { ...existing };
     let changed = false;
-    for (const axis of ['proactivity', 'likability', 'competence']) {
+    for (const axis of SLIDER_AXES) {
       if (existing[axis] == null && proposed[axis] != null) {
         nextSliders[axis] = proposed[axis];
         changed = true;
@@ -136,72 +116,28 @@ export function applyExpansion(target, content) {
   return { merged, updatedFields };
 }
 
+/**
+ * Fill blank fields on one canon character. The lock checks, the re-derive of
+ * the merge inside the write queue, and the return shape all live in
+ * `universeCanonExpandRunner.js` — shared with the place/object expand, which
+ * needs the same three contracts.
+ */
 export async function expandUniverseCharacter(universeId, entryId, options = {}) {
-  const universe = await getUniverse(universeId);
-  const list = Array.isArray(universe.characters) ? universe.characters : [];
-  const idx = list.findIndex((e) => e.id === entryId);
-  if (idx < 0) {
-    throw new ServerError(`Character ${entryId} not found in universe`, {
-      status: 404, code: 'UNIVERSE_CANON_NOT_FOUND',
-    });
-  }
-  const target = list[idx];
-  if (target.locked === true) {
-    return { universe, entry: target, locked: true, updatedFields: [] };
-  }
-  const peers = list.filter((_, i) => i !== idx);
-
-  // logTag: null — emit a context-rich log AFTER the merge so universeId,
-  // entryId, and the field count are all available.
-  const { content, rationale, runId, providerId, model } = await runPromptRefineRaw({
+  return runCanonEntryExpand({
+    universeId,
+    kind: BIBLE_KIND.CHARACTER,
+    entryId,
     templateName: 'universe-character-expand',
-    variables: {
+    buildVariables: ({ universe, target, peers }) => ({
       styleClause: buildStyleClause(universe),
       characterJson: JSON.stringify(target),
       peersJson: JSON.stringify(peers.map(peerForExpandPrompt)),
-    },
-    options: { providerId: options.providerId, model: options.model },
-    source: 'universe-character-expand',
-    logTag: null,
+    }),
+    applyMerge: applyExpansion,
+    options,
     emptyError: {
       code: 'UNIVERSE_CHARACTER_EXPAND_EMPTY',
       message: 'LLM returned an empty character expansion',
     },
   });
-
-  // Re-derive the merge INSIDE the write queue against the freshest persisted
-  // universe so a user edit (or another LLM call) that landed during the
-  // expand LLM round-trip isn't silently overwritten. The mutator returns
-  // null to short-circuit the write when nothing changed.
-  let updatedFields = [];
-  // Track WHY the write was skipped so the caller can distinguish "nothing
-  // to fill" (no-op success) from "user locked the character mid-LLM-call"
-  // (preserves the locked-character contract — UI shows the same "Locked"
-  // badge it would for the pre-LLM-call lock check).
-  let lockedDuringRender = false;
-  const updated = await updateUniverse(universeId, (latest) => {
-    const latestList = Array.isArray(latest.characters) ? latest.characters : [];
-    const latestIdx = latestList.findIndex((e) => e.id === entryId);
-    if (latestIdx < 0) return null;
-    const latestTarget = latestList[latestIdx];
-    // Re-check the lock — could have been set during the LLM call.
-    if (latestTarget.locked === true) {
-      lockedDuringRender = true;
-      return null;
-    }
-    const { merged: next, updatedFields: fields } = applyExpansion(latestTarget, content);
-    updatedFields = fields;
-    if (fields.length === 0) return null;
-    const nextList = latestList.map((e, i) => (i === latestIdx ? next : e));
-    return { characters: nextList };
-  });
-  const latestEntry = (updated.characters || []).find((e) => e.id === entryId) || target;
-  if (lockedDuringRender) {
-    return { universe: updated, entry: latestEntry, locked: true, updatedFields: [], rationale, runId, providerId, model };
-  }
-  if (updatedFields.length === 0) {
-    return { universe: updated, entry: latestEntry, rationale, runId, providerId, model, updatedFields };
-  }
-  console.log(`✨ Universe character expand — universe=${shortId(universeId)} entry=${shortId(entryId)} fields=${updatedFields.length} runId=${shortId(runId)}`);
-  return { universe: updated, entry: latestEntry, rationale, runId, providerId, model, updatedFields };
 }

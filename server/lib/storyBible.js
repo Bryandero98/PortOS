@@ -1130,6 +1130,31 @@ export const SANITIZERS = Object.freeze({
   object: sanitizeObject,
 });
 
+/**
+ * Run ONE proposed field value through its kind's sanitizer and return the
+ * cleaned value (or `undefined` when the kind is unknown).
+ *
+ * Every LLM-expand merge needs this before it records a field as filled: the
+ * sanitizers drop rows missing required keys (a stat without `label`, a palette
+ * swatch without `name`) and fold an unrecognized enum to null, so accepting a
+ * raw proposal reports a field as updated that the next persist silently
+ * discards.
+ *
+ * The stub carries `target`'s identity fields because the top-level sanitizers
+ * REJECT a record without one — a character/object needs `name`, a place needs
+ * `name` OR `slugline` — and a rejected stub would discard every proposal for a
+ * slugline-only place. That rule is the reason this is one helper rather than
+ * the same three-line stub written at each merge site.
+ */
+export function sanitizeBibleField(kind, target, field, value) {
+  const sanitize = SANITIZERS[kind];
+  if (!sanitize) return undefined;
+  return sanitize(
+    { name: target?.name, slugline: target?.slugline, [field]: value },
+    { preserveTimestamps: false },
+  )?.[field];
+}
+
 // ---------------------------------------------------------------------------
 // Reveal-gated canon / spoiler scoping (#2178)
 // ---------------------------------------------------------------------------
@@ -1339,6 +1364,17 @@ const MERGE_CONFIG = Object.freeze({
     ],
   },
 });
+
+/**
+ * The fields the prose extractor's merge will fill only when blank, per kind.
+ *
+ * Exported so `universeBibleCompleteness.js` can be held to it: the extractor's
+ * no-clobber set and the expand prompts' field set are two answers to the same
+ * question ("what may an LLM fill in on an existing entry?"), and a field added
+ * to one but not the other is invisible to the completeness scan forever.
+ * `universeBibleCompleteness.test.js` asserts the two match modulo a named delta.
+ */
+export const bibleUserEditableFields = (kind) => MERGE_CONFIG[kind]?.userEditable || [];
 
 function indexEntry(map, entry, keyFields) {
   for (const { field, normalize } of keyFields) {

@@ -88,6 +88,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `composeStyledPrompt.js` | Compose user prompt + negative with an optional style preset. |
 | `creativeDirectorPresets.js` | Locked-at-creation aspect ratio + quality presets for the Creative Director. |
 | `creativeDirectorPrompts.js` | Creative Director agent prompt builders. |
+| `universeBibleCompleteness.js` | Is a universe bible entry actually described? The shared per-kind expand-field vocabulary (`BIBLE_EXPAND_FIELDS`, `BIBLE_CORE_FIELDS`) and the `core`/`full` completeness predicates the quota-burn describe job scans with. Pure. |
 | `universePromptRenderers.js` | Renderers that turn a universe's `categories` map + canon into prompt context. |
 | `writersRoomPresets.js` | Writers Room enums (WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS). |
 | `writersRoomStylePresets.js` | Curated style presets for storyboards + universe. |

@@ -84,6 +84,7 @@ export * from './streamLines.js';
 // `storyBible.js` re-exports `normalizeSlugline` from `scenePrompt.js` for
 // back-compat — namespace it so the canonical scenePrompt export wins flat.
 export * as storyBible from './storyBible.js';
+export * from './universeBibleCompleteness.js';
 export * from './universePromptRenderers.js';
 export * from './writersRoomPresets.js';
 export * from './writersRoomStylePresets.js';
