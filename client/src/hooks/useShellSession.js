@@ -441,17 +441,15 @@ export function useShellSession({ isFullscreen } = {}) {
 
   // The one recovery path — see the module doc comment. Hands the user the next free
   // shell, or runs `onNothing` (default: fall back to bare /shell) when there is none.
-  // Returns whether a survivor was adopted, for callers that branch on it.
   const recoverToSurvivor = useCallback((excludeId = null, onNothing = goToShellRoot) => {
     const survivor = pickFreeSurvivor(excludeId);
     if (!survivor) {
       onNothing();
-      return false;
+      return;
     }
     // claim:true — an auto-pick must never boot another tab off a session it is
     // already driving, however the broadcast race falls out.
     attachToSession(survivor, { claim: true });
-    return true;
   }, [pickFreeSurvivor, attachToSession, goToShellRoot]);
 
   // The session the user is looking at just went away by their own action (Stop
