@@ -33,6 +33,7 @@ import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isMachineOnline } from '../lib/connectivity.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
+import { detectForgeCli } from '../lib/gitForge.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
@@ -42,6 +43,7 @@ import {
   MERGE_QUEUE_IDLE_TIMEOUT_MS,
   REVIEW_LOOP_IDLE_TIMEOUT_MS,
   BACKGROUND_SHELL_IDLE_TIMEOUT_MS,
+  decideIdleReap,
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
   PASTE_MARKER_POLL_MS,
@@ -102,6 +104,13 @@ const PASTE_INPUT_GRACE_MS = 15000;
 // outage.
 const CONNECTIVITY_RECHECK_MS = 10000;
 const CONNECTIVITY_PROBE_LEAD_MS = 20000;
+
+// Throttle for the PR-follow-up deliverable check (see refreshFollowUpPrState).
+// Far slacker than the connectivity probe because it shells out to `gh` over the
+// network and the answer it is waiting for — "the PR flipped to MERGED" — only
+// ever changes once per run. Polling starts only after the session has already
+// been silent for its BASE idle window, so a busy follow-up never hits the forge.
+const PR_STATE_RECHECK_MS = 30000;
 
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
 // worktree-inspection helpers (readFileTail, worktreeHasChanges, commitsSince,
@@ -835,6 +844,48 @@ export async function spawnTuiAgent({
       })
       .catch(() => {})
       .finally(() => { connectivity.checking = false; });
+  };
+
+  // PR-follow-up deliverable gate. A follow-up run spawned by
+  // `spawnReviewLoopFollowUp` exists to land ONE pull request — it makes no
+  // commit, is told to "Exit" when the PR reads MERGED, and (on Antigravity,
+  // which routinely skips the sentinel) then just sits at its prompt. Every
+  // signal the idle reaper otherwise has is a proxy that gets this run WRONG:
+  // its prompt quotes `gh pr checks` / `gh pr merge` / `--delete-branch`, so the
+  // TUI's echo latches the merge-queue tracker before any work happens, and the
+  // finished run is reaped 15 minutes later as `merge-queue-idle-timeout` — a
+  // needs-manual-finish FAILURE naming a PR that is already merged, retried to
+  // `Max retries exceeded` and a HIGH orphaned-PR notification (sys-rl-msr1j1a5
+  // / PR #3909, 2026-08-13). So ask the forge the actual question instead.
+  //
+  // `merged` starts false and only a `known` MERGED answer flips it: a gh we
+  // could not run (firewalled, offline) is NOT evidence of anything and must
+  // leave the pre-existing verdicts untouched. GitHub only — `gh pr view`
+  // against a GitLab MR answers nothing, so those follow-ups keep prior behavior.
+  const prFollowUpRef = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp)
+    && detectForgeCli(task.metadata?.reviewLoopPRHost) === 'gh'
+    ? (task.metadata?.reviewLoopPRUrl || task.metadata?.reviewLoopPRNumber || null)
+    : null;
+  const followUpPr = { merged: false, checking: false, lastCheckAt: 0 };
+  const refreshFollowUpPrState = () => {
+    if (!prFollowUpRef || followUpPr.merged || followUpPr.checking) return;
+    if (Date.now() - followUpPr.lastCheckAt < PR_STATE_RECHECK_MS) return;
+    followUpPr.checking = true;
+    followUpPr.lastCheckAt = Date.now();
+    // Dynamic import, matching agentFinalization's forge-lookup call site: it
+    // keeps `github.js` (and its settings/data-file dependencies) out of the
+    // module graph of every suite that mocks this spawner.
+    import('./github.js')
+      .then(({ getPullRequestState }) => getPullRequestState(prFollowUpRef, { cwd }))
+      .then((res) => {
+        if (finalized) return;
+        if (res?.status === 'known' && res.state === 'MERGED') {
+          followUpPr.merged = true;
+          emitLog('info', `TUI agent ${agentId} follow-up PR reads MERGED — finalizing on the deliverable rather than the idle window`, { agentId });
+        }
+      })
+      .catch(() => {})
+      .finally(() => { followUpPr.checking = false; });
   };
 
   // The paste-attempt / max-runtime / wrap-up-grace machinery (postPasteBuffer,
@@ -1608,13 +1659,26 @@ export async function spawnTuiAgent({
     // re-runs go silent for minutes at a time; extend the idle grace so a
     // still-working orchestrator isn't reaped mid-merge (issue #2074). The
     // extended window still bounds a genuinely-dead orchestrator's reap.
-    const effectiveIdleTimeoutMs = mergeQueue.active
-      ? Math.max(tuiConfig.idleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
-      : reviewLoop.active
-        ? Math.max(tuiConfig.idleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
-        : backgroundShell.active
-          ? Math.max(tuiConfig.idleTimeoutMs, BACKGROUND_SHELL_IDLE_TIMEOUT_MS)
-          : tuiConfig.idleTimeoutMs;
+    // Which verdict this tick warrants — the whole branch matrix, as a pure
+    // function so it can be unit-tested against the real implementation instead
+    // of a drifting inline copy. This body just executes what it returns.
+    const decision = decideIdleReap({
+      idle,
+      baseIdleTimeoutMs: tuiConfig.idleTimeoutMs,
+      mergeQueueActive: mergeQueue.active,
+      reviewLoopActive: reviewLoop.active,
+      backgroundShellActive: backgroundShell.active,
+      prFollowUpMerged: followUpPr.merged,
+      workActive: workActivity.active,
+      rendersCounter: rendersWorkCounter(commandName),
+    });
+    const { effectiveIdleTimeoutMs } = decision;
+    // Past the BASE idle window a PR follow-up asks the forge whether its one
+    // deliverable already landed (throttled, non-blocking — the reading is read
+    // synchronously by the NEXT tick's decision). Keyed on the base window, not
+    // the extended one, precisely because the extended one is the bug: a merge
+    // follow-up latches the merge-queue grace off its own echoed prompt.
+    if (idle >= tuiConfig.idleTimeoutMs) refreshFollowUpPrState();
     // Once within the LEAD window of the (possibly extended) reap deadline, keep
     // a reachability reading fresh (throttled, non-blocking) so the gate below
     // can read it synchronously and won't reap an agent that's only silent
@@ -1622,7 +1686,17 @@ export async function spawnTuiAgent({
     // fixed lead off the base window) keeps a long merge-queue/review-loop idle
     // from probing for its whole 15-min window.
     if (idle >= effectiveIdleTimeoutMs - CONNECTIVITY_PROBE_LEAD_MS) refreshConnectivity();
-    if (idle >= effectiveIdleTimeoutMs) {
+    if (decision.action === 'reap') {
+      // The follow-up's PR is MERGED and the session has gone quiet: the
+      // deliverable is provably in hand, so finalize on it. Deliberately ahead
+      // of the offline defer below — that gate exists because silence is
+      // ambiguous, and this verdict does not rest on silence.
+      if (decision.reason === 'pr-follow-up-merged') {
+        finish({ success: true, exitCode: 0, reason: 'pr-follow-up-merged' }).catch(err => {
+          emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
+        });
+        return;
+      }
       // An internet outage silences a live TUI exactly like a hung or finished
       // agent looks to this timer. If a recent probe says we're offline, DEFER
       // the reap — the agent is only blocked on the network and resumes when it
@@ -1639,7 +1713,7 @@ export async function spawnTuiAgent({
       // almost certainly died mid-merge with PRs opened/merged-but-uncleaned.
       // Surface it as a needs-manual-finish FAILURE rather than the silent
       // `status: completed` that hid the half-done merge queue (issue #2074).
-      if (mergeQueue.active) {
+      if (decision.reason === 'merge-queue-idle-timeout') {
         finish({
           success: false,
           exitCode: 1,
@@ -1655,7 +1729,7 @@ export async function spawnTuiAgent({
       // simply exceeded budget. Surface it as a needs-manual-finish FAILURE
       // rather than the silent `status: completed` that let PR #2084 sit
       // open+unmerged for hours while agent-61508f36 looked "done".
-      if (reviewLoop.active) {
+      if (decision.reason === 'review-loop-idle-timeout') {
         finish({
           success: false,
           exitCode: 1,
@@ -1687,8 +1761,7 @@ export async function spawnTuiAgent({
       // orchestrator doesn't treat a no-op as done. Capture the diff into the
       // agent archive dir before cleanup so post-mortems can see what (if
       // anything) was left behind.
-      const noWorkButCounterExpected = !workActivity.active && rendersWorkCounter(commandName);
-      if (noWorkButCounterExpected) {
+      if (decision.reason === 'idle-no-activity') {
         // Capture any uncommitted changes for post-mortem analysis
         captureWorktreeDiff(cwd, agentDir).catch(() => {});
         finish({

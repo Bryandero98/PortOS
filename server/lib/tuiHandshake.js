@@ -1063,6 +1063,84 @@ export function createBackgroundShellTracker() {
   };
 }
 
+/**
+ * The idle reaper's verdict, as a pure function of the signals the spawner has
+ * already latched. Lives here (not inline in the interval body) so the branch
+ * matrix is unit-testable against the REAL implementation — `agentTuiSpawning`
+ * calls this and executes what it returns.
+ *
+ * Priority order, highest first:
+ *  1. `prFollowUpMerged` — a PR follow-up run (`reviewLoopFollowUp`) exists to
+ *     land ONE pull request. Once that PR reads MERGED and the session has been
+ *     silent for the BASE window, the deliverable is provably in hand and there
+ *     is nothing left to wait for. This outranks everything below because those
+ *     branches all measure proxies (silence, worktree churn, a merge-queue
+ *     latch) for a question this one answers directly. Without it a merge
+ *     follow-up that did its whole job in 60s was recorded as a FAILURE: its
+ *     prompt QUOTES `gh pr checks` / `gh pr merge` / `--delete-branch`, so the
+ *     TUI's echo of that prompt latches `mergeQueueActive` before any work runs,
+ *     and the agent — which is told to "Exit", makes no commit, and on
+ *     Antigravity often skips the sentinel — then idles into (4)'s
+ *     needs-manual-finish verdict 15 minutes later, gets retried twice more, and
+ *     lands in Blocked with a HIGH "PR left open" card naming an already-merged
+ *     PR (task sys-rl-msr1j1a5, PR #3909, 2026-08-13).
+ *  2. Not yet at the (possibly extended) deadline → keep waiting.
+ *  3–4. The extended-grace reaps: a latched merge queue / multi-reviewer loop
+ *     that blew even its 15-minute window is a needs-manual-finish FAILURE
+ *     (#2074, PR #2084) — the run really did go dark mid-merge.
+ *  5. `idle-no-activity` (#1229) — provider renders a work counter and it never
+ *     advanced: the prompt never submitted.
+ *  6. Otherwise the pre-existing permissive `idle-complete`, which the caller
+ *     still gates on worktree evidence (#2191) before recording success.
+ *
+ * Note `backgroundShellActive` extends the deadline but carries NO verdict of
+ * its own — a background-shell wait that blows its window falls through to the
+ * ordinary (5)/(6) reasoning, unchanged.
+ *
+ * @param {Object} signals
+ * @param {number} signals.idle - ms since the last PTY output
+ * @param {number} signals.baseIdleTimeoutMs - the run's configured idle window
+ * @param {boolean} [signals.mergeQueueActive]
+ * @param {boolean} [signals.reviewLoopActive]
+ * @param {boolean} [signals.backgroundShellActive]
+ * @param {boolean} [signals.prFollowUpMerged] - this is a PR follow-up AND its PR reads MERGED
+ * @param {boolean} [signals.workActive] - the work counter advanced post-submit
+ * @param {boolean} [signals.rendersCounter] - this provider renders a work counter at all
+ * @returns {{ action: 'wait'|'reap', effectiveIdleTimeoutMs: number, success?: boolean, reason?: string }}
+ */
+export function decideIdleReap({
+  idle,
+  baseIdleTimeoutMs,
+  mergeQueueActive = false,
+  reviewLoopActive = false,
+  backgroundShellActive = false,
+  prFollowUpMerged = false,
+  workActive = false,
+  rendersCounter = false,
+} = {}) {
+  const effectiveIdleTimeoutMs = mergeQueueActive
+    ? Math.max(baseIdleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
+    : reviewLoopActive
+      ? Math.max(baseIdleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
+      : backgroundShellActive
+        ? Math.max(baseIdleTimeoutMs, BACKGROUND_SHELL_IDLE_TIMEOUT_MS)
+        : baseIdleTimeoutMs;
+  if (prFollowUpMerged && idle >= baseIdleTimeoutMs) {
+    return { action: 'reap', success: true, reason: 'pr-follow-up-merged', effectiveIdleTimeoutMs };
+  }
+  if (idle < effectiveIdleTimeoutMs) return { action: 'wait', effectiveIdleTimeoutMs };
+  if (mergeQueueActive) {
+    return { action: 'reap', success: false, reason: 'merge-queue-idle-timeout', effectiveIdleTimeoutMs };
+  }
+  if (reviewLoopActive) {
+    return { action: 'reap', success: false, reason: 'review-loop-idle-timeout', effectiveIdleTimeoutMs };
+  }
+  if (!workActive && rendersCounter) {
+    return { action: 'reap', success: false, reason: 'idle-no-activity', effectiveIdleTimeoutMs };
+  }
+  return { action: 'reap', success: true, reason: 'idle-complete', effectiveIdleTimeoutMs };
+}
+
 // ─── Codex MCP-server boot detection ──────────────────────────────────────
 //
 // Codex (unlike Claude Code) boots any MCP servers configured in the user's

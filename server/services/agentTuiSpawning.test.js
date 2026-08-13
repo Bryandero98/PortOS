@@ -211,7 +211,14 @@ import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
-import { MAX_RUNTIME_WRAP_UP_GRACE_MS, SELF_CLEARING_RESUBMIT_INTERVAL_MS } from '../lib/tuiHandshake.js';
+import {
+  MAX_RUNTIME_WRAP_UP_GRACE_MS,
+  SELF_CLEARING_RESUBMIT_INTERVAL_MS,
+  MERGE_QUEUE_IDLE_TIMEOUT_MS,
+  REVIEW_LOOP_IDLE_TIMEOUT_MS,
+  BACKGROUND_SHELL_IDLE_TIMEOUT_MS,
+  decideIdleReap,
+} from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
 // it directly exercises the same code path production does.
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
@@ -2449,39 +2456,15 @@ describe('spawnTuiAgent runtime', () => {
 
 // Issue #2074 — the idle reaper must extend its grace while a swarm orchestrator
 // is in its Phase C merge queue, and, if the EXTENDED window still blows, surface
-// a needs-manual-finish failure instead of a silent `status: completed`. This is
-// the exact decision the `idleTimer` interval makes; mirror it as a pure function
-// (the inline-copy pattern from subAgentSpawner.test.js) so the branch matrix is
-// tested without standing up the full fake-timer PTY harness. Generalized to
-// do:release/do:pr/do:rpr's multi-reviewer loop below (agent-61508f36, PR #2084).
+// a needs-manual-finish failure instead of a silent `status: completed`.
+//
+// Exercises the REAL `decideIdleReap` the idleTimer body calls (it was an inline
+// copy here until the merge-follow-up branch below made the drift risk concrete
+// — a copy would have "passed" while the shipped reaper still failed merged
+// PRs). The real code keeps an async worktree-changes check (#2191) that can
+// downgrade `idle-complete` to `idle-no-changes`; that's covered by the full
+// fake-timer harness above, not by this pure function.
 describe('agentTuiSpawning — idle reap decision (#2074)', () => {
-  const MERGE_QUEUE_IDLE_TIMEOUT_MS = 900000;
-  const REVIEW_LOOP_IDLE_TIMEOUT_MS = 900000;
-
-  // Faithful copy of the SYNCHRONOUS part of the idleTimer body's finalize-
-  // selection logic. The real code has an async worktree-changes check (#2191)
-  // that may downgrade `idle-complete` to `idle-no-changes` — that's tested via
-  // the full fake-timer harness above, not this pure function.
-  function decideIdleReap({ idle, baseIdleTimeoutMs, mergeQueueActive, reviewLoopActive, workActive, rendersCounter }) {
-    const effectiveIdleTimeoutMs = mergeQueueActive
-      ? Math.max(baseIdleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
-      : reviewLoopActive
-        ? Math.max(baseIdleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
-        : baseIdleTimeoutMs;
-    if (idle < effectiveIdleTimeoutMs) return { action: 'wait', effectiveIdleTimeoutMs };
-    if (mergeQueueActive) {
-      return { action: 'reap', success: false, reason: 'merge-queue-idle-timeout', effectiveIdleTimeoutMs };
-    }
-    if (reviewLoopActive) {
-      return { action: 'reap', success: false, reason: 'review-loop-idle-timeout', effectiveIdleTimeoutMs };
-    }
-    const noWorkButCounterExpected = !workActive && rendersCounter;
-    if (noWorkButCounterExpected) {
-      return { action: 'reap', success: false, reason: 'idle-no-activity', effectiveIdleTimeoutMs };
-    }
-    return { action: 'reap', success: true, reason: 'idle-complete', effectiveIdleTimeoutMs };
-  }
-
   const BASE = 180000;
 
   it('does NOT reap at the 3-min default while in a merge queue — grace extends to 15min', () => {
@@ -2543,5 +2526,63 @@ describe('agentTuiSpawning — idle reap decision (#2074)', () => {
   it('a merge-queue reap takes precedence over a review-loop reap when both are (implausibly) active', () => {
     const r = decideIdleReap({ idle: 900001, baseIdleTimeoutMs: BASE, mergeQueueActive: true, reviewLoopActive: true, workActive: true, rendersCounter: true });
     expect(r.reason).toBe('merge-queue-idle-timeout');
+  });
+
+  it('a background-shell wait extends the window but carries no verdict of its own', () => {
+    const waiting = decideIdleReap({ idle: BASE + 1, baseIdleTimeoutMs: BASE, backgroundShellActive: true, workActive: true, rendersCounter: true });
+    expect(waiting.action).toBe('wait');
+    expect(waiting.effectiveIdleTimeoutMs).toBe(BACKGROUND_SHELL_IDLE_TIMEOUT_MS);
+    const blown = decideIdleReap({ idle: BACKGROUND_SHELL_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, backgroundShellActive: true, workActive: true, rendersCounter: true });
+    expect(blown.reason).toBe('idle-complete');
+    expect(blown.success).toBe(true);
+  });
+
+  // The merge-follow-up false failure (task sys-rl-msr1j1a5 / PR #3909,
+  // 2026-08-13). The follow-up prompt QUOTES `gh pr checks` / `gh pr merge` /
+  // `--delete-branch`, so the TUI's echo of it latches `mergeQueueActive` before
+  // any work runs. The agent then merged the PR in ~60s, printed "PR Status:
+  // MERGED", made no commit (nothing to commit — it only merges), skipped the
+  // sentinel, and idled — and was recorded as `merge-queue-idle-timeout` 15
+  // minutes later, three times over, ending in Blocked with a HIGH "PR left
+  // open" card naming an already-merged PR.
+  describe('PR follow-up whose PR already merged', () => {
+    it('reaps as a SUCCESS at the BASE window even with the merge queue latched', () => {
+      const r = decideIdleReap({
+        idle: BASE + 1, baseIdleTimeoutMs: BASE,
+        mergeQueueActive: true, prFollowUpMerged: true, workActive: true, rendersCounter: true,
+      });
+      expect(r.action).toBe('reap');
+      expect(r.success).toBe(true);
+      expect(r.reason).toBe('pr-follow-up-merged');
+    });
+
+    it('does not fire before the BASE window — a merged PR is not a reason to cut a working agent short', () => {
+      const r = decideIdleReap({
+        idle: BASE - 1, baseIdleTimeoutMs: BASE,
+        mergeQueueActive: true, prFollowUpMerged: true, workActive: true, rendersCounter: true,
+      });
+      expect(r.action).toBe('wait');
+    });
+
+    it('outranks the no-activity downgrade too — the deliverable landed regardless of the work counter', () => {
+      const r = decideIdleReap({
+        idle: BASE + 1, baseIdleTimeoutMs: BASE,
+        prFollowUpMerged: true, workActive: false, rendersCounter: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.reason).toBe('pr-follow-up-merged');
+    });
+
+    // The bug this whole branch exists to kill: without `prFollowUpMerged` the
+    // SAME signals produce the needs-manual-finish failure. Guards against a
+    // future refactor that quietly stops threading the forge answer through.
+    it('still fails as needs-manual-finish when the PR did NOT merge', () => {
+      const r = decideIdleReap({
+        idle: MERGE_QUEUE_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE,
+        mergeQueueActive: true, prFollowUpMerged: false, workActive: true, rendersCounter: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.reason).toBe('merge-queue-idle-timeout');
+    });
   });
 });
