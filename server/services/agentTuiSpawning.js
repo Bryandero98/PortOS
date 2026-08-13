@@ -1070,7 +1070,7 @@ export async function spawnTuiAgent({
         openPR: agentOwnsPR ? false : taskOpenPR,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
-        skipMerge: agentOwnsPR,
+        skipMerge: taskReviewLoopFollowUp || agentOwnsPR,
         description: task.description,
         agentOutput: getOutputBuffer(),
         originalTask: task

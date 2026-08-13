@@ -1839,6 +1839,9 @@ export function applyAppWorktreeDefault(metadata, app) {
       metadata.useWorktree = true; // openPR implies useWorktree
     } else if (app.defaultOpenPR === false || taskTypeDisabledWorktree) {
       metadata.openPR = false;
+    } else if ((app.defaultUseWorktree === true || metadata.useWorktree === true || metadata.useWorktree === 'true') && app.defaultOpenPR !== false) {
+      metadata.openPR = true;
+      metadata.useWorktree = true;
     }
   }
 

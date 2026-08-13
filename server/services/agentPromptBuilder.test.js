@@ -2445,3 +2445,32 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
     rmSync(empty, { recursive: true, force: true });
   });
 });
+
+describe('TUI reviewLoopFollowUp completion instructions', () => {
+  it('appends .agent-done sentinel instructions for TUI agents on follow-up tasks', async () => {
+    const task = {
+      id: 'task-flw-1',
+      description: 'Follow-up merge PR',
+      metadata: {
+        useWorktree: true,
+        openPR: false,
+        reviewLoopFollowUp: true,
+        reviewLoopMergeOnly: true,
+        reviewLoopPRUrl: 'https://github.com/org/repo/pull/42',
+        reviewLoopPRBranch: 'cos/task-orig/agent-1',
+        providerId: 'antigravity-tui',
+        providerCommand: 'agy',
+      }
+    };
+    const worktreeInfo = { worktreePath: '/tmp/wt-1', branchName: 'cos/task-orig/agent-1' };
+    const prompt = await buildLightContextPrompt(task, '/repo', worktreeInfo, (v) => v === true || v === 'true', {
+      isTui: true,
+      providerId: 'antigravity-tui',
+      providerCommand: 'agy',
+    });
+    expect(prompt).toContain('## Completion Handoff');
+    expect(prompt).toContain('cat > "/tmp/wt-1/.agent-done"');
+    expect(prompt).toContain('## Summary');
+  });
+});
+
