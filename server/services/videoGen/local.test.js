@@ -22,6 +22,9 @@ const MOCK_PATHS = {
   loras: '/mock/data/loras',
 };
 
+const isLtx2Python = (bin) => String(bin)
+  .includes(join('.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3'));
+
 vi.mock('../../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
   ensureDir: vi.fn(async () => {}),
@@ -872,7 +875,7 @@ describe('generateVideo — ltx2 FFLF image resizing', () => {
     ]);
 
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args)
         && args.includes('--mode')
         && args.includes('fflf'),
@@ -908,7 +911,7 @@ describe('generateVideo — LTX audio-reactive conditioning', () => {
     });
 
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args)
         && args.includes('--mode')
         && args.includes('a2v'),
@@ -945,7 +948,7 @@ describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
       // plain T2V: no mode, no conditioning, no explicit steps/guidance
     });
     const call = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args) && args.includes('--mode') && args.includes('text'),
     );
     expect(call).toBeTruthy();
@@ -1732,7 +1735,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     });
 
     const call = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args) && args.includes('--user-loras'),
     );
     expect(call).toBeTruthy();
@@ -1780,7 +1783,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     });
 
     const call = spawnMock.mock.calls.find(
-      ([bin]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3'),
+      ([bin]) => isLtx2Python(bin),
     );
     expect(call[1]).not.toContain('--user-loras');
   });
@@ -2693,7 +2696,7 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
   };
 
   const findIcCall = (spawnMock) => spawnMock.mock.calls.find(
-    ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+    ([bin, args]) => isLtx2Python(bin)
       && Array.isArray(args) && args.includes('--ic-mode'),
   );
 
@@ -3184,7 +3187,7 @@ describe('generateVideo — durable re-render inputs (#3696)', () => {
     });
     videoGenEvents.off('started', onStarted);
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3') && Array.isArray(args),
+      ([bin, args]) => isLtx2Python(bin) && Array.isArray(args),
     );
     return { started, args: renderCall?.[1] || [] };
   };
