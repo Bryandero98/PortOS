@@ -236,7 +236,7 @@ function ImageGenSettingsRow({ cfg, models, availableBackends = [], onChange }) 
               <button
                 type="button"
                 onClick={() => onChange({ ...cfg, seed: randomSeed() })}
-                className="px-1.5 text-gray-500 hover:text-port-accent border border-port-border rounded"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-500 hover:text-port-accent border border-port-border rounded"
                 title="Randomize seed"
                 aria-label="Randomize seed"
               >

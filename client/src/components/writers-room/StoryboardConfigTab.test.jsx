@@ -42,4 +42,12 @@ describe('StoryboardConfigTab', () => {
 
     expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull();
   });
+
+  it('a11y: the seed randomizer button meets the 44px touch-target floor', () => {
+    render(<StoryboardConfigTab {...baseProps} />);
+
+    const seedBtn = screen.getByRole('button', { name: 'Randomize seed' });
+    expect(seedBtn.className).toContain('min-h-[44px]');
+    expect(seedBtn.className).toContain('min-w-[44px]');
+  });
 });
