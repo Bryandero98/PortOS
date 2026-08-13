@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import toast from '../ui/Toast';
+import Banner from '../ui/Banner';
 import * as api from '../../services/api';
 import ReviewerPicker from '../cos/ReviewerPicker';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
@@ -27,6 +28,7 @@ const CLI_REVIEWER_LIST = new Intl.ListFormat('en', { style: 'long', type: 'conj
 // the model option lists (via useReviewerModelOptions) and the save.
 export default function CodeReviewDefaultsPanel() {
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reviewers, setReviewers] = useState(DEFAULT_REVIEWERS);
   const [usernames, setUsernames] = useState([]);
@@ -39,10 +41,11 @@ export default function CodeReviewDefaultsPanel() {
   const [installed, setInstalled] = useState({});
   const modelOptions = useReviewerModelOptions();
 
-  useEffect(() => {
+  const loadDefaults = useCallback(() => {
+    setLoading(true);
+    setLoadError(false);
     let cancelled = false;
     api.getCodeReviewDefaults({ silent: true })
-      .catch(() => null)
       .then((defaults) => {
         if (cancelled) return;
         if (defaults) {
@@ -57,13 +60,25 @@ export default function CodeReviewDefaultsPanel() {
           setStopMode(defaults.stopMode || DEFAULT_REVIEW_STOP_MODE);
           setReviewerApplies(defaults.reviewerApplies === true);
           setInstalled(defaults.installed && typeof defaults.installed === 'object' && !Array.isArray(defaults.installed) ? defaults.installed : {});
+        } else {
+          setLoadError(true);
         }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError(true);
         setLoading(false);
       });
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    return loadDefaults();
+  }, [loadDefaults]);
+
   const handleSave = async () => {
+    if (saving || loadError) return;
     setSaving(true);
     const payload = {
       reviewers,
@@ -92,6 +107,25 @@ export default function CodeReviewDefaultsPanel() {
         Default Review Loop reviewer chain — used by ad-hoc CoS tasks and task-type schedules that haven't pinned their own. Local-LLM reviewers route the diff through PortOS's local code-review endpoint; the {CLI_REVIEWER_LIST} reviewers invoke their CLI directly. Each runs the model pinned on its row (Claude also supports an Ollama-backed CLI for local-only setups — type one of your installed Ollama models).
       </p>
 
+      {loadError && (
+        <Banner
+          tone="error"
+          size="sm"
+          align="center"
+          actions={
+            <button
+              type="button"
+              onClick={loadDefaults}
+              className="px-2.5 py-1 text-xs font-medium bg-port-error/20 hover:bg-port-error/30 text-port-error rounded transition-colors"
+            >
+              Retry
+            </button>
+          }
+        >
+          Failed to load code review defaults.
+        </Banner>
+      )}
+
       {loading ? (
         <div className="text-xs text-gray-500">Loading defaults…</div>
       ) : (
@@ -107,7 +141,7 @@ export default function CodeReviewDefaultsPanel() {
             installed={installed}
             stopMode={stopMode}
             reviewerApplies={reviewerApplies}
-            disabled={saving}
+            disabled={saving || loadError}
             onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: dm, reviewerEfforts: de, stopMode: s, reviewerApplies: a }) => {
               setReviewers(r);
               setUsernames(u);
@@ -124,7 +158,7 @@ export default function CodeReviewDefaultsPanel() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || loadError}
               className="px-3 py-1.5 text-sm bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 text-white rounded transition-colors"
             >
               {saving ? 'Saving…' : 'Save defaults'}
@@ -135,3 +169,4 @@ export default function CodeReviewDefaultsPanel() {
     </div>
   );
 }
+
