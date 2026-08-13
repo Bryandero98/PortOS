@@ -1788,7 +1788,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     expect(call[1]).not.toContain('--user-loras');
   });
 
-  it('routes a bf16 mlx_video LTX model through the generate_av_lora.py wrapper with --user-loras', async () => {
+  it.skipIf(process.platform === 'win32')('routes a bf16 mlx_video LTX model through the generate_av_lora.py wrapper with --user-loras', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
@@ -1821,7 +1821,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     ]);
   });
 
-  it('a non-LoRA mlx_video render still uses the bare generate_av module (no wrapper)', async () => {
+  it.skipIf(process.platform === 'win32')('a non-LoRA mlx_video render still uses the bare generate_av module (no wrapper)', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
@@ -1843,7 +1843,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     expect(call[1]).not.toContain(join(MOCK_PATHS.root, 'scripts', 'generate_av_lora.py'));
   });
 
-  it('rejects LoRAs on a quantized (out-of-scope) mlx_video model', async () => {
+  it.skipIf(process.platform === 'win32')('rejects LoRAs on a quantized (out-of-scope) mlx_video model', async () => {
     await expect(generateVideo({
       jobId: 'mlx-q4-lora',
       pythonPath: '/usr/bin/python3',
