@@ -496,15 +496,39 @@ export async function recordScanVerdict(brokerId, verdict, { evidence = {}, foun
     if (!existing.rows[0]) {
       assertTransition('unscanned', verdict);
       const id = randomUUID();
-      const { rows } = await client.query(
-        `INSERT INTO privacy_broker_cases
-           (id, subject_id, broker_id, state, found, evidence, next_recheck_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-         RETURNING ${CASE_COLUMNS}`,
-        [id, resolvedSubjectId, brokerId, verdict, found, JSON.stringify(evidence), nextRecheck],
-      );
-      console.log(`🔎 Broker ${brokerId}: new case → ${verdict} (subject=${resolvedSubjectId})`);
-      return rowToCase(rows[0]);
+      try {
+        await client.query('SAVEPOINT sp_insert_scan_verdict');
+        const { rows } = await client.query(
+          `INSERT INTO privacy_broker_cases
+             (id, subject_id, broker_id, state, found, evidence, next_recheck_at, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+           RETURNING ${CASE_COLUMNS}`,
+          [id, resolvedSubjectId, brokerId, verdict, found, JSON.stringify(evidence), nextRecheck],
+        );
+        await client.query('RELEASE SAVEPOINT sp_insert_scan_verdict');
+        console.log(`🔎 Broker ${brokerId}: new case → ${verdict} (subject=${resolvedSubjectId})`);
+        return rowToCase(rows[0]);
+      } catch (err) {
+        await client.query('ROLLBACK TO SAVEPOINT sp_insert_scan_verdict');
+        if (err.code === '23505') {
+          const raceExisting = await client.query(
+            `SELECT id, state FROM privacy_broker_cases WHERE broker_id = $1 AND subject_id = $2 FOR UPDATE`,
+            [brokerId, resolvedSubjectId],
+          );
+          if (raceExisting.rows[0]) {
+            assertTransition(raceExisting.rows[0].state, verdict, { viaRescan: true });
+            const { rows } = await client.query(
+              `UPDATE privacy_broker_cases
+               SET state = $1, found = $2, evidence = $3, next_recheck_at = $4, updated_at = NOW()
+               WHERE id = $5 RETURNING ${CASE_COLUMNS}`,
+              [verdict, found, JSON.stringify(evidence), nextRecheck, raceExisting.rows[0].id],
+            );
+            console.log(`🔎 Broker ${brokerId}: case ${raceExisting.rows[0].state} → ${verdict} (subject=${resolvedSubjectId})`);
+            return rowToCase(rows[0]);
+          }
+        }
+        throw err;
+      }
     }
     // Re-scan of an existing case. A settled verdict flipping is a rescan.
     assertTransition(existing.rows[0].state, verdict, { viaRescan: true });

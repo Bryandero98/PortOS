@@ -7,8 +7,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
-vi.mock('../lib/db.js', () => ({ query: queryMock, withTransaction: vi.fn() }));
+const { queryMock, withTransactionMock } = vi.hoisted(() => ({ queryMock: vi.fn(), withTransactionMock: vi.fn() }));
+vi.mock('../lib/db.js', () => ({ query: queryMock, withTransaction: withTransactionMock }));
 
 const SELF = '00000000-0000-4000-8000-000000000001';
 vi.mock('./privacySubjects.js', () => ({ resolveSubjectId: (id) => id || SELF }));
@@ -22,6 +22,7 @@ const {
   parseCaRegistryCsv,
   parseBadboolList,
   listBrokerCases,
+  recordScanVerdict,
   ensureSeeded,
   resetEnsureSeededForTests,
 } = await import('./privacyBrokers.js');
@@ -226,5 +227,50 @@ describe('parseBadboolList', () => {
   it('accepts a { brokers: [...] } wrapper and drops nameless rows', () => {
     const out = parseBadboolList({ brokers: [{ url: 'https://x.example' }, { name: 'Yes' }] });
     expect(out.map((b) => b.name)).toEqual(['Yes']);
+  });
+});
+
+describe('recordScanVerdict — 23505 unique constraint fallback (#4021)', () => {
+  it('handles unique constraint violation 23505 during concurrent insert and falls back to update branch', async () => {
+    const clientMock = {
+      query: vi.fn(),
+    };
+    withTransactionMock.mockImplementation(async (fn) => fn(clientMock));
+
+    // 1. SELECT broker -> found
+    clientMock.query.mockResolvedValueOnce({ rows: [{ id: 'spokeo' }] });
+    // 2. SELECT existing case -> none found initially
+    clientMock.query.mockResolvedValueOnce({ rows: [] });
+    // 3. SAVEPOINT -> ok
+    clientMock.query.mockResolvedValueOnce({});
+    // 4. INSERT -> throws Postgres error 23505
+    const err23505 = new Error('duplicate key value violates unique constraint "idx_privacy_broker_cases_broker_subject"');
+    err23505.code = '23505';
+    clientMock.query.mockRejectedValueOnce(err23505);
+    // 5. ROLLBACK TO SAVEPOINT -> ok
+    clientMock.query.mockResolvedValueOnce({});
+    // 6. Re-SELECT existing case FOR UPDATE -> now found (inserted by concurrent call)
+    clientMock.query.mockResolvedValueOnce({ rows: [{ id: 'case-123', state: 'unscanned' }] });
+    // 7. UPDATE case -> success
+    const mockCaseRow = {
+      id: 'case-123',
+      subject_id: SELF,
+      broker_id: 'spokeo',
+      state: 'found',
+      found: true,
+      evidence: '{}',
+      disclosed_fields: [],
+      channel: null,
+      reason: null,
+      next_recheck_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    clientMock.query.mockResolvedValueOnce({ rows: [mockCaseRow] });
+
+    const result = await recordScanVerdict('spokeo', 'found');
+    expect(result).toBeDefined();
+    expect(result.id).toBe('case-123');
+    expect(result.state).toBe('found');
   });
 });
