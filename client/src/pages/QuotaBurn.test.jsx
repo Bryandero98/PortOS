@@ -10,6 +10,7 @@ vi.mock('../services/api', () => ({
   getQuotaBurnCatalog: vi.fn(),
   saveQuotaBurn: vi.fn(),
   runQuotaBurn: vi.fn(),
+  rearmQuotaBurn: vi.fn(),
 }));
 
 import * as api from '../services/api';
@@ -80,6 +81,7 @@ beforeEach(() => {
   api.getQuotaBurnCatalog.mockResolvedValue(catalog);
   api.saveQuotaBurn.mockResolvedValue({ config });
   api.runQuotaBurn.mockResolvedValue({ result: { dispatched: false, reason: 'nothing to burn' } });
+  api.rearmQuotaBurn.mockResolvedValue({ config, status });
 });
 
 describe('QuotaBurn page', () => {
@@ -276,6 +278,69 @@ describe('QuotaBurn page', () => {
     await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalled());
     const [patch] = api.saveQuotaBurn.mock.calls.at(-1);
     expect(patch.families.grok.jobs[0]).not.toHaveProperty('pending');
+    expect(patch.families.grok.jobs[0]).not.toHaveProperty('ranAt');
+  });
+});
+
+/**
+ * `run once` — a plan is a rotation the runner walks lap after lap, which is
+ * wrong for work that only needs doing once.
+ */
+describe('QuotaBurn run-once steps', () => {
+  const ranAt = new Date(Date.now() - 3_600_000).toISOString();
+  // A spent step: `runOnce` on the config side, `ranAt` on the status side.
+  const spent = {
+    config: {
+      ...config,
+      families: { ...config.families, grok: { ...config.families.grok, jobs: [{ ...config.families.grok.jobs[0], runOnce: true }] } },
+    },
+    status: {
+      ...status,
+      families: [{ ...status.families[0], jobs: [{ id: 'j1', ranAt, pending: null }] }, status.families[1]],
+    },
+  };
+
+  it('saves the run-once choice as part of the job', async () => {
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.click(await screen.findByLabelText('Run once'));
+    await waitFor(() => expect(api.saveQuotaBurn).toHaveBeenCalled());
+    expect(api.saveQuotaBurn.mock.calls.at(-1)[0].families.grok.jobs[0].runOnce).toBe(true);
+  });
+
+  it('reports a spent step as ran rather than idle', async () => {
+    // The server stops probing a spent step, so without this the row's only
+    // self-description would be the absence of a pending line.
+    api.getQuotaBurn.mockResolvedValue(spent);
+    renderPage('/devtools/quota-burn/grok');
+    expect(await screen.findByText(/Ran once/)).toBeInTheDocument();
+    expect(screen.getByText(/1 ran once/)).toBeInTheDocument();
+  });
+
+  it('re-arms one step without dispatching anything', async () => {
+    api.getQuotaBurn.mockResolvedValue(spent);
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.click(await screen.findByRole('button', { name: /Re-arm$/ }));
+    await waitFor(() => expect(api.rearmQuotaBurn).toHaveBeenCalledWith('grok', 'j1', { silent: true }));
+    // Re-arming makes a step ELIGIBLE; the next cycle's gates still decide.
+    expect(api.runQuotaBurn).not.toHaveBeenCalled();
+  });
+
+  it('re-arms a whole one-shot series in one click', async () => {
+    // The case this exists for: a plan configured as a series the user wants to
+    // run again as a series.
+    api.getQuotaBurn.mockResolvedValue(spent);
+    const user = userEvent.setup();
+    renderPage('/devtools/quota-burn/grok');
+    await user.click(await screen.findByRole('button', { name: /Re-arm all/ }));
+    await waitFor(() => expect(api.rearmQuotaBurn).toHaveBeenCalledWith('grok', null, { silent: true }));
+  });
+
+  it('offers no re-arm control while nothing has run', async () => {
+    renderPage('/devtools/quota-burn/grok');
+    await screen.findByText(/Ready — 4 bible entries/);
+    expect(screen.queryByRole('button', { name: /Re-arm/ })).not.toBeInTheDocument();
   });
 });
 

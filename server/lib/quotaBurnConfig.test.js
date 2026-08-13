@@ -4,10 +4,13 @@ import {
   QUOTA_BURN_JOB_CATALOG,
   QUOTA_BURN_JOB_TYPES,
   QUOTA_BURN_UNLIMITED_DISPATCHES,
-  familyIsActionable,
+  familyHasRunnableJobs,
+  familyIsConfigured,
   isUnlimitedDispatchCap,
+  jobIsSpent,
   normalizeQuotaBurnConfig,
   normalizeQuotaBurnJob,
+  quotaBurnJobKey,
 } from './quotaBurnConfig.js';
 
 describe('normalizeQuotaBurnConfig', () => {
@@ -83,6 +86,35 @@ describe('normalizeQuotaBurnJob', () => {
     expect(normalizeQuotaBurnJob({ jobType: 'agent-prompt' }, 2).id).toBe('job-3');
   });
 
+  it('treats an absent runOnce as repeating so an older plan keeps its meaning', () => {
+    // Opt-IN. Every plan written before this field existed is standing work, and
+    // coercing those to one-shot would silently retire someone's whole rotation.
+    expect(normalizeQuotaBurnJob({ jobType: 'agent-prompt' }).runOnce).toBe(false);
+    expect(normalizeQuotaBurnJob({ jobType: 'agent-prompt', runOnce: 'yes' }).runOnce).toBe(false);
+    expect(normalizeQuotaBurnJob({ jobType: 'agent-prompt', runOnce: true }).runOnce).toBe(true);
+  });
+});
+
+describe('jobIsSpent', () => {
+  const ran = { 'grok:j1': '2026-08-01T00:00:00.000Z' };
+
+  it('only retires a job that opted into running once', () => {
+    // A completion is kept even after the checkbox is cleared, so the flag — not
+    // the ledger entry — is what decides whether the job still runs.
+    expect(jobIsSpent({ id: 'j1', runOnce: true }, 'grok', ran)).toBe(true);
+    expect(jobIsSpent({ id: 'j1', runOnce: false }, 'grok', ran)).toBe(false);
+  });
+
+  it('scopes the completion to the family, so two plans cannot retire each other', () => {
+    expect(jobIsSpent({ id: 'j1', runOnce: true }, 'claude', ran)).toBe(false);
+    expect(quotaBurnJobKey('grok', 'j1')).toBe('grok:j1');
+  });
+
+  it('reads an unrecorded job as unspent, including with no ledger at all', () => {
+    expect(jobIsSpent({ id: 'j2', runOnce: true }, 'grok', ran)).toBe(false);
+    expect(jobIsSpent({ id: 'j1', runOnce: true }, 'grok')).toBe(false);
+  });
+
   it('keeps scalar params and strips nested blobs and prototype keys', () => {
     // `JSON.parse`, not an object literal: `{ __proto__: … }` in a literal sets
     // [[Prototype]] rather than creating an own property, so Object.entries
@@ -95,12 +127,39 @@ describe('normalizeQuotaBurnJob', () => {
   });
 });
 
-describe('familyIsActionable', () => {
+describe('familyIsConfigured', () => {
   it('requires an enabled family AND at least one enabled job', () => {
-    expect(familyIsActionable({ enabled: false, jobs: [{ enabled: true }] })).toBe(false);
-    expect(familyIsActionable({ enabled: true, jobs: [] })).toBe(false);
-    expect(familyIsActionable({ enabled: true, jobs: [{ enabled: false }] })).toBe(false);
-    expect(familyIsActionable({ enabled: true, jobs: [{ enabled: true }] })).toBe(true);
+    expect(familyIsConfigured({ enabled: false, jobs: [{ enabled: true }] })).toBe(false);
+    expect(familyIsConfigured({ enabled: true, jobs: [] })).toBe(false);
+    expect(familyIsConfigured({ enabled: true, jobs: [{ enabled: false }] })).toBe(false);
+    expect(familyIsConfigured({ enabled: true, jobs: [{ enabled: true }] })).toBe(true);
+  });
+});
+
+describe('familyHasRunnableJobs', () => {
+  const family = {
+    id: 'grok',
+    enabled: true,
+    jobs: [{ id: 'j1', enabled: true, runOnce: true }, { id: 'j2', enabled: false }],
+  };
+  const ran = { 'grok:j1': '2026-08-01T00:00:00.000Z' };
+
+  it('stops being runnable once every enabled job is a spent one-shot', () => {
+    // `familyIsConfigured` still answers "you configured something" — the runner
+    // and the page report those as two different verdicts, because a finished
+    // plan wants Re-arm and an unset one wants a job added.
+    expect(familyIsConfigured(family)).toBe(true);
+    expect(familyHasRunnableJobs(family, ran)).toBe(false);
+    // One repeating job is enough to keep the plan alive.
+    expect(familyHasRunnableJobs({ ...family, jobs: [...family.jobs, { id: 'j3', enabled: true }] }, ran)).toBe(true);
+  });
+
+  it('is safe to pass straight to some/filter/map', () => {
+    // The reason this is a second named predicate rather than an optional second
+    // argument: array callbacks pass the INDEX as arg two, which on an
+    // arity-overloaded predicate silently becomes the completion ledger.
+    expect([family].some(familyHasRunnableJobs)).toBe(true);
+    expect([family].filter(familyIsConfigured)).toHaveLength(1);
   });
 });
 

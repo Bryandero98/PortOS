@@ -38,6 +38,10 @@ export function mergeQuotaBurnPatch(base, patch) {
  *   - `params.appId` — which managed app the work targets. Wiping it would turn
  *     "make this step a UX audit" into a silently unrunnable job whose only
  *     symptom is a status line at the bottom of the row.
+ *   - `runOnce` — whether this is one-shot or standing work. The presets are
+ *     standing audits, but the user may have marked a step "run once" for their
+ *     own reasons, and re-picking a preset must not quietly put it back into the
+ *     rotation to spend quota on every lap.
  */
 export function applyQuotaBurnPreset(job, preset) {
   if (!preset) return job;
@@ -58,9 +62,29 @@ export function applyQuotaBurnPreset(job, preset) {
 export function jobFromPreset(preset, { id, appId = null } = {}) {
   return applyQuotaBurnPreset({
     id, enabled: true, label: '', jobType: preset.jobType, model: null, providerId: null,
+    // Standing work, matching a hand-added step: an audit dimension is worth
+    // re-running as the code changes.
+    runOnce: false,
     params: appId ? { appId } : {},
   }, preset);
 }
+
+/**
+ * Whether a step has already had its one dispatch — the client's mirror of the
+ * server's `jobIsSpent`, taking the row's `ranAt` from the status feed instead
+ * of the whole keyed ledger.
+ *
+ * Gated on the step's OWN `runOnce`, not on `ranAt` alone, and read from the
+ * page's optimistic config rather than the server's copy: a completion is kept
+ * even after the checkbox is cleared, so ticking "run once" on a step that
+ * already ran must SHOW that it is spent (with Re-arm right there) instead of
+ * silently dropping it out of the rotation until the next status read.
+ *
+ * One definition because two components need it — the row renders the badge and
+ * the family card counts them — and a rule split across both drifts the first
+ * time either changes.
+ */
+export const quotaBurnJobIsSpent = (job, ranAt) => Boolean(job?.runOnce && ranAt);
 
 /**
  * `QUOTA_BURN_UNLIMITED_DISPATCHES` in `server/lib/quotaBurnConfig.js`: the

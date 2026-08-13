@@ -37,11 +37,12 @@
  */
 
 import { getProviderQuotas } from './providerUsage.js';
-import { getQuotaBurnDispatches, evaluateFamilies, recordQuotaBurnDispatch, selectBurnCandidates } from './quotaBurn.js';
+import { getQuotaBurnDispatches, evaluateFamilies, PLAN_COMPLETE_SKIP_REASON, recordQuotaBurnDispatch, selectBurnCandidates } from './quotaBurn.js';
+import { getQuotaBurnCompletions, recordQuotaBurnJobCompletion } from './quotaBurnCompletions.js';
 import { getActiveQuotaBurnBlocks, recordBurnAgentCompletion } from './quotaBurnDenials.js';
 import { getQuotaBurnConfig, getQuotaBurnRuns, recordQuotaBurnRun } from './quotaBurnStore.js';
 import { countJobPending, runBurnJob } from './quotaBurnJobs/index.js';
-import { familyIsActionable } from '../lib/quotaBurnConfig.js';
+import { familyHasRunnableJobs, familyIsConfigured, jobIsSpent, quotaBurnJobKey } from '../lib/quotaBurnConfig.js';
 import { windowLabelOf } from '../lib/quotaWindows.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import { cosEvents } from './cosEvents.js';
@@ -59,14 +60,18 @@ const deferredContinuations = new Set();
  * The jobs a cycle will consider, in plan order.
  *
  * `jobId` scopes to one named job. When it is named AND the run was forced, the
- * job's own `enabled` checkbox is ignored: the user just clicked ▶ on that
- * exact row, which is a more specific instruction than the checkbox they set
- * earlier. Without this, clicking ▶ on a paused job is a silent no-op reported
- * as "no pending work".
+ * job's own `enabled` checkbox — and a spent `run once` marker — are ignored:
+ * the user just clicked ▶ on that exact row, which is a more specific
+ * instruction than the checkbox they set earlier, and re-running a finished
+ * one-shot job on demand is exactly what that button is for. Without this,
+ * clicking ▶ on a paused (or already-run) job is a silent no-op reported as "no
+ * pending work".
  */
-const selectJobs = (family, { jobId = null, force = false } = {}) =>
-  (family.jobs || []).filter((job) =>
-    (!jobId || job.id === jobId) && (job?.enabled !== false || (jobId && force)));
+const selectJobs = (family, { jobId = null, force = false, completions = {} } = {}) => {
+  const targeted = Boolean(jobId) && force;
+  return (family.jobs || []).filter((job) => (!jobId || job.id === jobId)
+    && (targeted || (job?.enabled !== false && !jobIsSpent(job, family.id, completions))));
+};
 
 /**
  * The plan, re-anchored to start just AFTER the job this family last dispatched.
@@ -114,7 +119,7 @@ async function lastDispatchedJobByFamily() {
  * and `run` needs the very same scan to know what to render. Without the
  * passthrough that multi-megabyte read happened twice per dispatch.
  */
-async function dispatchFromCandidate(candidate, { jobId = null, force = false, afterJobId = null } = {}) {
+async function dispatchFromCandidate(candidate, { jobId = null, force = false, afterJobId = null, completions = {} } = {}) {
   const attempts = [];
   // A forced run of a NAMED job skips the pending probe entirely and calls the
   // job directly. The probe exists to pick which job in the plan to run; when
@@ -125,7 +130,7 @@ async function dispatchFromCandidate(candidate, { jobId = null, force = false, a
   // override it from the page. `force` is threaded into the job so it can relax
   // its own cooldown too.
   const targeted = force && jobId;
-  for (const job of rotatePlanAfter(selectJobs(candidate.family, { jobId, force }), afterJobId)) {
+  for (const job of rotatePlanAfter(selectJobs(candidate.family, { jobId, force, completions }), afterJobId)) {
     const pending = targeted ? null : await countJobPending({ job, family: candidate.family });
     if (pending && !(pending.count > 0)) {
       attempts.push({ jobId: job.id, jobType: job.jobType, skipped: pending.detail || 'no pending work' });
@@ -223,18 +228,43 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // allowlist of automatic triggers so a trigger added later fails CLOSED.
   if (!config.enabled && trigger !== 'manual') return { skipped: 'disabled' };
 
+  // Read once per cycle and threaded through selection, the gate ladder, and the
+  // dispatch record, so a job spent mid-cycle can't be re-picked by a later
+  // family's walk.
+  //
+  // `null` means the ledger could not be read, which is NOT "nothing has run" —
+  // treating it as such would re-dispatch every `run once` job on the plan. Fails
+  // CLOSED: skip the cycle and say so rather than redoing work the user asked
+  // for exactly once.
+  const completions = await getQuotaBurnCompletions();
+  if (!completions) {
+    console.error('❌ Quota-burn could not read its run-once ledger — skipping this cycle');
+    return finish({ dispatched: false, reason: 'run-once ledger unreadable' });
+  }
+
   // Check the plan BEFORE the quota read. `getProviderQuotas({ wait: WAIT.FRESH })`
   // spawns a multi-second TUI scrape per enabled family; with no actionable
   // family configured that scrape could never produce a dispatch, and it would
-  // otherwise run every `checkIntervalMinutes` forever.
+  // otherwise run every `checkIntervalMinutes` forever. A plan made entirely of
+  // spent `run once` jobs is the same case, which is why `completions` is passed
+  // — without it a finished one-shot plan keeps paying for the scrape forever.
   //
-  // A forced run of a NAMED job is exempt: `familyIsActionable` requires an
-  // enabled family with an enabled job, but ▶ on a paused job (or a paused
-  // family) is exactly the case the force path exists to serve — gating it here
-  // would make the click a silent no-op before selection ever ran.
+  // A forced run of a NAMED job is exempt: this requires an enabled family with
+  // an enabled, unspent job, but ▶ on a paused job (or a paused family, or one
+  // that already ran) is exactly the case the force path exists to serve —
+  // gating it here would make the click a silent no-op before selection ever ran.
+  //
+  // One short-circuiting pass on the healthy path; the second only runs to pick
+  // the wording, and only when nothing is runnable. The two are kept distinct
+  // because a finished one-shot plan did what it was asked and wants Re-arm,
+  // which is not what an unset plan wants (add a job).
   const targeted = force && familyId;
-  if (!targeted && !Object.values(config.families).some(familyIsActionable)) {
-    return finish({ dispatched: false, reason: 'no families enabled' });
+  const families = Object.values(config.families);
+  if (!targeted && !families.some((family) => familyHasRunnableJobs(family, completions))) {
+    return finish({
+      dispatched: false,
+      reason: families.some(familyIsConfigured) ? PLAN_COMPLETE_SKIP_REASON : 'no families enabled',
+    });
   }
 
   // Scoped to the one family when the caller named it — a per-family "Run now",
@@ -255,7 +285,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // goes through the same selection, so the candidate still carries the family's
   // real card and limit; it only comes back `charge: false`.
   const candidates = selectBurnCandidates(quotas, config, {
-    dispatches, blocks, bypassGatesFor: force ? familyId : null,
+    dispatches, blocks, completions, bypassGatesFor: force ? familyId : null,
   }).filter((candidate) => !familyId || candidate.family.id === familyId);
 
   if (!candidates.length) {
@@ -264,7 +294,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // off, "disabled" IS the answer — reporting a different family's verdict
     // instead (or claiming it is "ready" when it did not run) leaves them with
     // no path to the control they need.
-    const reasons = evaluateFamilies(quotas, config, { dispatches, blocks })
+    const reasons = evaluateFamilies(quotas, config, { dispatches, blocks, completions })
       .filter(({ family }) => (familyId ? family.id === familyId : family.enabled))
       .map(({ family, skipReason }) => `${family.id}: ${skipReason || 'ready'}`);
     return finish({
@@ -285,7 +315,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   // provider's window.
   for (const candidate of candidates) {
     const outcome = await dispatchFromCandidate(candidate, {
-      jobId, force, afterJobId: cursors.get(candidate.family.id) || null,
+      jobId, force, completions, afterJobId: cursors.get(candidate.family.id) || null,
     });
     attempts.push(...outcome.attempts.map((entry) => ({ familyId: candidate.family.id, ...entry })));
     if (!outcome.dispatched) continue;
@@ -294,6 +324,19 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
     // the cap bounds real burns, not attempts. `charge` is false for a forced
     // run, which the user asked for outside the automatic budget.
     if (candidate.charge) await recordQuotaBurnDispatch(candidate.dispatchKey);
+    // A `run once` job records its one dispatch even when the run was FORCED
+    // and therefore uncharged. The two ledgers answer different questions:
+    // `charge` is about this window's automatic budget, while `runOnce` is a
+    // statement about the WORK ("this only needs doing once") — and the work
+    // just happened, however it was triggered. The ▶ on the row stays the way
+    // back, since a forced run bypasses this gate too.
+    if (outcome.job.runOnce) {
+      await recordQuotaBurnJobCompletion(candidate.family.id, outcome.job.id)
+        // A ledger failure must not fail a dispatch that already happened —
+        // the worst case is the job running one extra time next cycle, which
+        // is the pre-`runOnce` behavior.
+        .catch((err) => console.error(`⚠️ Quota-burn run-once ledger for ${candidate.family.id}/${outcome.job.id}: ${err.message}`));
+    }
     // One run-log entry PER dispatch, recorded as it happens: the page's
     // "Recent runs" list is how the user audits what their subscriptions were
     // spent on, and folding three families into one row would hide two of them.
@@ -360,7 +403,7 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
 export async function getQuotaBurnStatus({ refresh = false } = {}) {
   // Independent reads: only `quotas` is slow (a PTY scrape on the Refresh path),
   // and nothing else waits on it.
-  const [config, quotas, dispatches, blocks, runs] = await Promise.all([
+  const [config, quotas, dispatches, blocks, completions, runs] = await Promise.all([
     getQuotaBurnConfig(),
     getProviderQuotas({ wait: refresh ? WAIT.FRESH : WAIT.NEVER }).catch((err) => {
       console.error(`❌ Quota-burn status could not read provider quota: ${err.message}`);
@@ -368,13 +411,18 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
     }),
     getQuotaBurnDispatches(),
     getActiveQuotaBurnBlocks(),
+    // An unreadable ledger degrades to "no badges" here rather than failing the
+    // whole status read — the opposite of the CYCLE's posture, and deliberately
+    // so: the cost of being wrong on this path is a missing "Ran once" label,
+    // while on the cycle's path it is re-spending quota on finished work.
+    getQuotaBurnCompletions().then((ledger) => ledger || {}),
     getQuotaBurnRuns(),
   ]);
 
   const cards = new Map(quotas.map((card) => [card.family, card]));
   // ONE pass over the gate ladder the runner uses — the page's "will burn" and
   // its reason come from the same verdict, so they can't contradict each other.
-  const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches, blocks })
+  const families = await Promise.all(evaluateFamilies(quotas, config, { dispatches, blocks, completions })
     .map(async ({ family, candidate, skipReason, block }) => {
       const card = cards.get(family.id);
       return {
@@ -397,12 +445,27 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
         // The reading for this family is being taken right now — the page polls
         // again instead of leaving a card that looks like it has no quota.
         pending: Boolean(card?.pending),
-        // Probe pending work only for families the user actually enabled — a probe
-        // is not free (the universe job reads every bible), and a disabled
-        // family's counts are never acted on.
-        jobs: family.enabled
-          ? await Promise.all(family.jobs.map(async (job) => ({ id: job.id, pending: await countJobPending({ job, family }) })))
-          : family.jobs.map((job) => ({ id: job.id, pending: null })),
+        // Probe pending work only for families the user actually enabled, and
+        // only for jobs a cycle could still pick — a probe is not free (the
+        // universe job reads every bible), and neither a disabled family's
+        // counts nor a spent `run once` job's are ever acted on. `ranAt` is what
+        // the row renders instead, and it is the only signal the page has that a
+        // step is finished rather than merely idle.
+        jobs: await Promise.all(family.jobs.map(async (job) => {
+          const ranAt = completions[quotaBurnJobKey(family.id, job.id)] || null;
+          // `jobIsSpent` re-derived from the value just read rather than called —
+          // it would rebuild the same key and re-index the same object. Not
+          // shipped on the wire either: the client gates its badge on the
+          // OPTIMISTIC config it holds, so a just-ticked checkbox reads as spent
+          // before the save round-trips, and a server copy would only be a second
+          // rule to keep in sync.
+          const spent = job.runOnce === true && Boolean(ranAt);
+          return {
+            id: job.id,
+            ranAt,
+            pending: family.enabled && !spent ? await countJobPending({ job, family }) : null,
+          };
+        })),
       };
     }));
 

@@ -7,17 +7,18 @@
  */
 
 import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, Play, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, Play, RotateCcw, Trash2 } from 'lucide-react';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import JobParamField from './JobParamField';
 import PresetPicker from './PresetPicker';
-import { applyQuotaBurnPreset } from '../../lib/quotaBurnPatch';
+import { applyQuotaBurnPreset, quotaBurnJobIsSpent } from '../../lib/quotaBurnPatch';
+import { timeAgo } from '../../utils/formatters';
 import { inputClass } from './fields';
 
 export default function JobRow({
-  job, index, total, catalog, pending, actionsBusy,
-  onChange, onMove, onRemove, onRun,
+  job, index, total, catalog, pending, ranAt, actionsBusy,
+  onChange, onMove, onRemove, onRun, onRearm,
 }) {
   // Two-click arm on delete (the repo's inline-confirm convention). A job holds
   // the family's whole free-text work prompt and nothing else stores it — a
@@ -41,6 +42,7 @@ export default function JobRow({
   useEffect(() => { if (actionsBusy) setRunArmed(false); }, [actionsBusy]);
   const spec = catalog.jobTypes.find((type) => type.id === job.jobType);
   const idPrefix = `burn-job-${job.id}`;
+  const spent = quotaBurnJobIsSpent(job, ranAt);
   const setParam = (key, value) => onChange({ ...job, params: { ...job.params, [key]: value } });
   const promptText = String(job.params?.prompt || '').trim();
   const hasPromptText = Boolean(promptText);
@@ -140,6 +142,26 @@ export default function JobRow({
             onChange={(event) => onChange({ ...job, model: event.target.value || null })}
           />
         </label>
+        {/* The repeat/one-shot choice. The plan is a rotation the runner walks
+            lap after lap while the window still has quota, which is right for a
+            standing audit and wrong for work that only needs doing once — that
+            was simply re-done every lap. */}
+        <div className="text-xs text-gray-400">
+          <div className="flex items-center gap-2 mt-1">
+            <input
+              id={`${idPrefix}-run-once`}
+              type="checkbox"
+              checked={job.runOnce === true}
+              onChange={(event) => onChange({ ...job, runOnce: event.target.checked })}
+            />
+            <label htmlFor={`${idPrefix}-run-once`}>Run once</label>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1">
+            {job.runOnce
+              ? 'Dispatches once, then drops out of the rotation until you re-arm it.'
+              : 'Repeats every lap of the plan while the window still has quota.'}
+          </p>
+        </div>
         <PresetPicker
           id={`${idPrefix}-preset`}
           label="Start from a preset (optional)"
@@ -181,7 +203,26 @@ export default function JobRow({
       )}
 
       {spec?.description && <p className="text-[11px] text-gray-500">{spec.description}</p>}
-      {pending && (
+      {/* A spent step is not probed server-side (its count would never be acted
+          on), so this REPLACES the pending line rather than sitting beside it —
+          "Idle — no pending work" would otherwise be the only thing a finished
+          step said about itself. */}
+      {spent ? (
+        <p className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
+          <span className="inline-flex items-center gap-1 text-sky-300">
+            <CheckCircle2 size={12} /> Ran once {timeAgo(ranAt)}
+          </span>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-port-accent hover:underline disabled:opacity-40"
+            disabled={actionsBusy}
+            onClick={() => onRearm(job)}
+            title="Put this step back into the rotation — it burns again on a future cycle"
+          >
+            <RotateCcw size={12} /> Re-arm
+          </button>
+        </p>
+      ) : pending && (
         <p className={`text-[11px] ${pending.count > 0 ? 'text-emerald-400' : 'text-gray-500'}`}>
           {pending.count > 0 ? `Ready — ${pending.detail}` : `Idle — ${pending.detail}`}
         </p>

@@ -20,7 +20,7 @@
 import { join } from 'path';
 import { atomicWrite, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
-import { familyIsActionable, isUnlimitedDispatchCap, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
+import { familyHasRunnableJobs, familyIsConfigured, isUnlimitedDispatchCap, normalizeQuotaBurnFamily } from '../lib/quotaBurnConfig.js';
 import { isPlainObject } from '../lib/objects.js';
 import { hoursUntilReset, normalizeResetAt } from '../lib/quotaReset.js';
 import { classifyWindows, windowLabelOf } from '../lib/quotaWindows.js';
@@ -67,6 +67,16 @@ export async function recordQuotaBurnDispatch(key, { now = Date.now() } = {}) {
     return next;
   });
 }
+
+/**
+ * The verdict for a plan whose every enabled step is a spent `run once`.
+ *
+ * Exported because the runner reports the same state from its own pre-quota
+ * early return (which must run BEFORE the quota read the ladder needs), and two
+ * hand-written wordings for one condition is how the page and the run log end up
+ * describing the same plan in two different sentences.
+ */
+export const PLAN_COMPLETE_SKIP_REASON = 'every enabled job has already run once';
 
 /** Headroom the family is willing to spend on ONE window: what's left, minus its reserve. */
 export function burnBudgetRemaining(limit, family) {
@@ -131,15 +141,23 @@ export function windowKey(familyId, limit, { now = Date.now() } = {}) {
  * percentage and reset time instead of a fabricated one. It comes back
  * `charge: false` so it never eats the automatic budget.
  */
-export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}, blocks = {}, bypassGates = false } = {}) {
-  // The two "switched off" gates. A forced run passes both: `enabled` on the
-  // family and on a job governs the UNATTENDED loop, and the user clicking ▶ on
-  // a specific row is a more specific instruction than a checkbox they set
-  // earlier. Everything below — no provider, unreadable quota, unburnable card
-  // — is a fact about the world and holds even under force.
+export function evaluateFamily(family, card, { now = Date.now(), dispatches = {}, blocks = {}, completions = {}, bypassGates = false } = {}) {
+  // The three "switched off" gates. A forced run passes all of them: `enabled`
+  // on the family, `enabled` on a job, and a spent `run once` job all govern the
+  // UNATTENDED loop, and the user clicking ▶ on a specific row is a more
+  // specific instruction than a checkbox they set earlier. Everything below — no
+  // provider, unreadable quota, unburnable card — is a fact about the world and
+  // holds even under force.
   if (!bypassGates) {
     if (!family.enabled) return { skipReason: 'disabled' };
-    if (!familyIsActionable(family)) return { skipReason: 'no enabled jobs configured' };
+    // One check on the healthy path; the two verdicts are only told apart on the
+    // failing branch. They are reported distinctly because they call for
+    // opposite actions: "you configured nothing" wants a job added, while a
+    // finished one-shot plan wants Re-arm (or nothing at all — it did what it
+    // was asked).
+    if (!familyHasRunnableJobs(family, completions)) {
+      return { skipReason: familyIsConfigured(family) ? PLAN_COMPLETE_SKIP_REASON : 'no enabled jobs configured' };
+    }
   }
   if (!card) return { skipReason: 'no enabled provider in this family' };
   if (card.supported === false) return { skipReason: 'provider has no queryable quota surface' };
@@ -244,15 +262,16 @@ const familiesOf = (config) => Object.entries(config?.families || {})
  *
  * `config` is a normalized quota-burn config; `quotas` the provider cards from
  * `providerUsage.getProviderQuotas()`; `blocks` the active denial ledger from
- * `quotaBurnDenials.getActiveQuotaBurnBlocks()`. `bypassGatesFor` names one
- * family whose window/reserve/cap/denial gates are skipped (see
- * `evaluateFamily`).
+ * `quotaBurnDenials.getActiveQuotaBurnBlocks()`; `completions` the `run once`
+ * ledger from `quotaBurnCompletions.getQuotaBurnCompletions()`.
+ * `bypassGatesFor` names one family whose window/reserve/cap/denial gates are
+ * skipped (see `evaluateFamily`).
  */
-export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatches = {}, blocks = {}, bypassGatesFor = null } = {}) {
+export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatches = {}, blocks = {}, completions = {}, bypassGatesFor = null } = {}) {
   const cards = new Map((quotas || []).map((card) => [card.family, card]));
   return familiesOf(config)
     .map((family) => evaluateFamily(family, cards.get(family.id), {
-      now, dispatches, blocks, bypassGates: bypassGatesFor === family.id,
+      now, dispatches, blocks, completions, bypassGates: bypassGatesFor === family.id,
     }).candidate)
     .filter(Boolean)
     .sort((a, b) => a.hoursUntilReset - b.hoursUntilReset || a.family.priority - b.family.priority);
@@ -263,11 +282,11 @@ export function selectBurnCandidates(quotas, config, { now = Date.now(), dispatc
  * burn on the next tick, otherwise the exact gate that closed. One pass over the
  * SAME ladder the runner uses, so the two can't disagree.
  */
-export function evaluateFamilies(quotas, config, { now = Date.now(), dispatches = {}, blocks = {} } = {}) {
+export function evaluateFamilies(quotas, config, { now = Date.now(), dispatches = {}, blocks = {}, completions = {} } = {}) {
   const cards = new Map((quotas || []).map((card) => [card.family, card]));
   return familiesOf(config).map((family) => ({
     family,
     block: blocks[family.id] || null,
-    ...evaluateFamily(family, cards.get(family.id), { now, dispatches, blocks }),
+    ...evaluateFamily(family, cards.get(family.id), { now, dispatches, blocks, completions }),
   }));
 }

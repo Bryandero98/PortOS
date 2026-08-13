@@ -26,3 +26,12 @@ export const runQuotaBurn = (body = {}, options) => request('/quota-burn/run', {
   body: JSON.stringify(body),
   ...options,
 });
+
+// Put spent `run once` steps back into the rotation and return the fresh status.
+// `jobId` scopes it to one step; omitting it re-arms the family's whole plan.
+// Nothing is dispatched — the next cycle decides that.
+export const rearmQuotaBurn = (familyId, jobId = null, options) => request('/quota-burn/rearm', {
+  method: 'POST',
+  body: JSON.stringify(jobId ? { familyId, jobId } : { familyId }),
+  ...options,
+});

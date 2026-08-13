@@ -5,8 +5,26 @@ import {
   isUnlimitedDispatchCap,
   jobFromPreset,
   mergeQuotaBurnPatch,
+  quotaBurnJobIsSpent,
   UNLIMITED_DISPATCHES,
 } from './quotaBurnPatch';
+
+describe('quotaBurnJobIsSpent', () => {
+  const ranAt = '2026-08-01T00:00:00.000Z';
+
+  it('gates on the step\'s own run-once flag, not on the completion alone', () => {
+    // A completion is kept even after the checkbox is cleared, so `ranAt` alone
+    // would keep a step the user switched back to repeating looking retired.
+    expect(quotaBurnJobIsSpent({ runOnce: true }, ranAt)).toBe(true);
+    expect(quotaBurnJobIsSpent({ runOnce: false }, ranAt)).toBe(false);
+    expect(quotaBurnJobIsSpent({ runOnce: true }, null)).toBe(false);
+  });
+
+  it('reads a missing job or flag as unspent', () => {
+    expect(quotaBurnJobIsSpent(undefined, ranAt)).toBe(false);
+    expect(quotaBurnJobIsSpent({}, ranAt)).toBe(false);
+  });
+});
 
 describe('mergeQuotaBurnPatch', () => {
   it('merges top-level keys and leaves families untouched', () => {
@@ -80,12 +98,21 @@ describe('applyQuotaBurnPreset', () => {
   it('returns the job untouched when there is no preset', () => {
     expect(applyQuotaBurnPreset(job, null)).toBe(job);
   });
+
+  it('preserves the step\'s run-once choice', () => {
+    // The presets are standing audits, but the user may have marked this step
+    // one-shot for their own reasons — re-picking a preset must not quietly put
+    // it back into a rotation that spends quota on every lap.
+    expect(applyQuotaBurnPreset({ ...job, runOnce: true }, preset).runOnce).toBe(true);
+  });
 });
 
 describe('jobFromPreset', () => {
   it('mints a runnable job with the caller\'s id and app', () => {
     expect(jobFromPreset(preset, { id: 'job-x', appId: 'a1' })).toEqual({
       id: 'job-x', enabled: true, label: 'UX issues', jobType: 'agent-prompt', model: null, providerId: null,
+      // Standing work: an audit dimension is worth re-running as the code moves.
+      runOnce: false,
       params: { ...preset.params, appId: 'a1' },
     });
   });
