@@ -443,6 +443,9 @@ describe('restorePostgres', () => {
   let restorePostgres;
   beforeEach(async () => {
     vi.clearAllMocks();
+    // clearAllMocks does not undo stubEnv — a PGPASSWORD stub from a failed
+    // (thrown) test would otherwise leak into every test after it.
+    vi.unstubAllEnvs();
     ({ restorePostgres } = await import('./backup.js'));
   });
 
@@ -574,6 +577,96 @@ describe('restorePostgres', () => {
     const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
     expect(result.status).toBe('ok');
     expect(result.tableCount).toBe(1);
+  });
+
+  // A manifest.json that is PRESENT but unparseable reads the same as absent:
+  // readJSONFile returns its `null` default, so there is no expected hash to
+  // compare against and verification is skipped rather than hard-failing.
+  // Pinning that here so a future "throw on corrupt manifest" change is a
+  // deliberate decision instead of a silent behavior swap.
+  it('skips verification (does not throw) when manifest.json is malformed JSON', async () => {
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: DUMP_SQL.length, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockImplementation(async (p) => (
+      String(p).endsWith('manifest.json') ? '{ "files": { ' : DUMP_SQL
+    ));
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
+    expect(result).toEqual({ status: 'ok', dryRun: true, sizeBytes: DUMP_SQL.length, tableCount: 1 });
+  });
+
+  // A malformed manifest must not become a free pass for a real restore either:
+  // the replay still happens (verification skipped), so assert it reaches psql
+  // rather than silently returning skipped.
+  it('still runs a real restore when manifest.json is malformed JSON', async () => {
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: DUMP_SQL.length, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockImplementation(async (p) => (
+      String(p).endsWith('manifest.json') ? 'not json at all' : DUMP_SQL
+    ));
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    const p = restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false });
+    await flush();
+    proc.emit('close', 0);
+    const result = await p;
+    expect(result.status).toBe('ok');
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  // psql missing from the host (ENOENT) surfaces as a spawn 'error' event, not a
+  // 'close'. Without the error listener the promise would never settle and the
+  // restore UI would hang forever — assert it resolves as a structured failure.
+  it('resolves failed/restore_error when the psql spawn emits an error event', async () => {
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 4096, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE a (...);\n');
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    const p = restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false });
+    await flush();
+    proc.emit('error', new Error('spawn psql ENOENT'));
+    await expect(p).resolves.toEqual({
+      status: 'failed',
+      reason: 'restore_error',
+      error: 'spawn psql ENOENT'
+    });
+  });
+
+  // The atomicity contract: ON_ERROR_STOP=1 aborts on the first failed statement
+  // and --single-transaction rolls the whole replay back, so a failed restore
+  // leaves the live DB untouched instead of half-dropped. Both flags are load
+  // bearing — a refactor that drops either turns a failed restore into data loss.
+  it('passes --single-transaction and ON_ERROR_STOP=1 with the default PGPASSWORD', async () => {
+    vi.stubEnv('PGPASSWORD', '');
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 4096, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE a (...);\n');
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    const p = restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false });
+    await flush();
+    proc.emit('close', 0);
+    await p;
+    const [bin, args, opts] = spawn.mock.calls[0];
+    expect(bin).toBe('psql');
+    expect(args).toContain('--single-transaction');
+    // Assert the flag/value pairing, not just membership: '-v' followed by
+    // something else would still satisfy arrayContaining.
+    expect(args[args.indexOf('-v') + 1]).toBe('ON_ERROR_STOP=1');
+    expect(opts.env.PGPASSWORD).toBe('portos');
+  });
+
+  it('prefers an explicit PGPASSWORD over the portos default', async () => {
+    vi.stubEnv('PGPASSWORD', 'from-env');
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 4096, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE a (...);\n');
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    const p = restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false });
+    await flush();
+    proc.emit('close', 0);
+    await p;
+    expect(spawn.mock.calls[0][2].env.PGPASSWORD).toBe('from-env');
   });
 });
 
