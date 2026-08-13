@@ -247,6 +247,31 @@ describe.each(SCENARIOS)('$label (BibleSection)', (s) => {
     expect(editBtn.className).toContain('min-w-[44px]');
   });
 
+  it('a11y: Add, Cancel, Delete, and Save buttons meet the 44px touch-target floor', async () => {
+    s.api.list.mockResolvedValue([s.existingItem]);
+
+    render(<s.Component workId="work-1" />);
+    await screen.findByText(displayText(s.existingItem));
+
+    const addBtn = screen.getByRole('button', { name: 'Add' });
+    expect(addBtn.className).toContain('min-h-[44px]');
+    expect(addBtn.className).toContain('min-w-[44px]');
+
+    await userEvent.click(screen.getByRole('button', { name: `Edit ${displayText(s.existingItem)}` }));
+
+    const cancelBtn = screen.getByRole('button', { name: 'Cancel edit' });
+    expect(cancelBtn.className).toContain('min-h-[44px]');
+    expect(cancelBtn.className).toContain('min-w-[44px]');
+
+    const deleteBtn = screen.getByRole('button', { name: 'Delete' });
+    expect(deleteBtn.className).toContain('min-h-[44px]');
+    expect(deleteBtn.className).toContain('min-w-[44px]');
+
+    const saveBtn = screen.getByRole('button', { name: 'Save' });
+    expect(saveBtn.className).toContain('min-h-[44px]');
+    expect(saveBtn.className).toContain('min-w-[44px]');
+  });
+
   it('a11y: the identity field exposes an accessible name matching its config label', async () => {
     s.api.list.mockResolvedValue([]);
     render(<s.Component workId="work-1" />);

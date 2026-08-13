@@ -1,0 +1,1 @@
+- Enforce 44px minimum touch target sizing on BibleSection action buttons for mobile responsiveness.

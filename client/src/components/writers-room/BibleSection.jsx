@@ -85,7 +85,7 @@ export default function BibleSection({ workId, items: itemsProp, onItemsChange, 
         <div className="text-[11px] text-gray-500">{config.countLabel(items.length)}</div>
         <button
           onClick={() => { setCreating(true); setEditingId(null); }}
-          className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-port-accent"
+          className="flex items-center justify-center min-w-[44px] min-h-[44px] -my-2 -mr-2 gap-1 text-[11px] text-gray-400 hover:text-port-accent"
         >
           <Plus size={12} /> Add
         </button>
@@ -270,7 +270,7 @@ function BibleEditor({ workId, item, config, onSaved, onDeleted, onCancel }) {
         </label>
         <button
           onClick={onCancel}
-          className="text-gray-500 hover:text-white shrink-0"
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-500 hover:text-white shrink-0 -my-2 -mr-2"
           aria-label="Cancel edit"
           title="Cancel"
         >
@@ -292,7 +292,7 @@ function BibleEditor({ workId, item, config, onSaved, onDeleted, onCancel }) {
           <button
             onClick={remove}
             disabled={saving}
-            className="flex items-center gap-1 text-[10px] text-port-error hover:underline disabled:opacity-50"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center gap-1 text-[10px] text-port-error hover:underline disabled:opacity-50 -my-2 -ml-2"
           >
             <Trash2 size={10} /> Delete
           </button>
@@ -300,7 +300,7 @@ function BibleEditor({ workId, item, config, onSaved, onDeleted, onCancel }) {
         <button
           onClick={save}
           disabled={saving}
-          className="flex items-center gap-1 px-2 py-1 bg-port-accent text-white rounded text-[10px] hover:bg-port-accent/80 disabled:opacity-50"
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center gap-1 px-2 py-1 bg-port-accent text-white rounded text-[10px] hover:bg-port-accent/80 disabled:opacity-50 -my-2 -mr-2"
         >
           {saving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />} Save
         </button>
