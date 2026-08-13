@@ -1,0 +1,1 @@
+- Agent prompt defaults now defer to the changelog convention a repo documents (per-branch fragments where present) instead of prescribing an append to .changelog/NEXT.md; release-check also reads uncollected fragments so a ready release isn't reported as 'not enough work'

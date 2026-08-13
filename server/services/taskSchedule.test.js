@@ -406,6 +406,43 @@ describe('taskSchedule', () => {
     })
   })
 
+  describe('changelog-fragment prompt revision (issue #3998)', () => {
+    // Pins that each task type touched by this revision actually participates in
+    // the auto-upgrade path: it is in PROMPT_VERSIONS, loadSchedule walks it, and
+    // a stored body listed in PREVIOUS_DEFAULT_PROMPTS resolves to the current
+    // default rather than being stamped promptCustomized (which would pin the
+    // stale body on that install forever).
+    //
+    // NOT a byte-copy check: the fixture is read from the same array the
+    // recognition set is read from, so a mis-copied body would agree with itself.
+    // Copy fidelity is verified against the COMMITTED integrity snapshot — the
+    // pre-change DEFAULT_TASK_PROMPTS hash for each key must reappear in the
+    // post-change PREVIOUS_DEFAULT_PROMPTS hashes, which is visible in the diff.
+    //
+    // Scoped to the keys loadSchedule actually walks — claim-issue-gitlab /
+    // claim-issue-jira are router-reached prompts with no DEFAULT_TASK_INTERVALS
+    // entry, so their preservation is asserted in taskPromptDefaults.test.js instead.
+    it.each([
+      'documentation',
+      'plan-task',
+      'claim-issue',
+      'release-check',
+      'refresh-local-llm-catalog',
+    ])('%s: an install on the outgoing default auto-upgrades instead of being flagged customized', async (taskType) => {
+      const previous = PREVIOUS_DEFAULT_PROMPTS[taskType]
+      const outgoing = previous[previous.length - 1]
+      // A stored prompt with NO promptVersion takes the legacy-migration path,
+      // which is where an unrecognized body gets stamped promptCustomized.
+      mockSchedule({
+        tasks: { [taskType]: { type: 'once', enabled: false, providerId: null, model: null, prompt: outgoing } }
+      })
+      const task = (await loadSchedule()).tasks[taskType]
+      expect(task.promptCustomized).not.toBe(true)
+      expect(task.prompt).toBe(DEFAULT_TASK_PROMPTS[taskType])
+      expect(task.promptVersion).toBe(PROMPT_VERSIONS[taskType])
+    })
+  })
+
   describe('getTaskInterval', () => {
     it('should return interval for known task type', async () => {
       const interval = await getTaskInterval('security')
