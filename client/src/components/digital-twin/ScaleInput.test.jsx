@@ -45,19 +45,27 @@ describe('ScaleInput accessibility', () => {
     expect(screen.getByRole('group', { name: 'Rating scale' })).toBeTruthy();
   });
 
-  it('reports the chosen value on click and on keyboard activation', () => {
+  it('reports the chosen value on click', () => {
     const onChange = vi.fn();
     render(<ScaleInput value={null} onChange={onChange} />);
     const btn = screen.getByRole('button', { name: '5 - Strongly Agree' });
     fireEvent.click(btn);
     expect(onChange).toHaveBeenCalledWith(5);
-    // Native <button> maps Enter/Space to a click, so focus + keyboard activation
-    // reaches the same handler.
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('is focusable and rendered as a native <button>, so Enter/Space activation is the browser\'s job, not this component\'s', () => {
+    // jsdom's `fireEvent.keyDown` does NOT synthesize a click the way a real
+    // browser does for a native button — asserting keyboard activation here
+    // would just be asserting two clicks fired back-to-back. The real
+    // guarantee is that this stays a native <button> (which the browser maps
+    // Enter/Space → click for) rather than a non-native element with only an
+    // onClick handler.
+    render(<ScaleInput value={null} onChange={() => {}} />);
+    const btn = screen.getByRole('button', { name: '5 - Strongly Agree' });
+    expect(btn.tagName).toBe('BUTTON');
     btn.focus();
     expect(document.activeElement).toBe(btn);
-    fireEvent.keyDown(btn, { key: 'Enter' });
-    fireEvent.click(btn);
-    expect(onChange).toHaveBeenCalledTimes(2);
   });
 
   it('does not fire onChange while disabled', () => {

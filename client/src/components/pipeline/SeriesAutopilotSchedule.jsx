@@ -129,7 +129,8 @@ export default function SeriesAutopilotSchedule({ series, providers = [], active
   const setModel = async (model) => persist({ ...entry, model: model || undefined });
   const setEffort = async (effort) => persist({ ...entry, effort: effort || undefined });
   // Stored as a plain boolean; `runOptionsFor` forwards only an explicit `true`,
-  // so an unticked schedule still inherits the saved pipelineEditorialChecks default.
+  // so an unticked schedule still leaves each stage's own pinned provider/model
+  // (from the Prompts page) in effect instead of overriding it.
   const setOverrideStagePins = async (on) => persist({ ...entry, overrideStagePins: on });
 
   const removeSchedule = async () => {

@@ -184,6 +184,17 @@ describe('migration 262 up()', () => {
     expect(parseTasksMarkdown(await readFile(join(rootDir, 'data', 'custom-cos.md'), 'utf-8'))[0].status).toBe('pending');
   });
 
+  // A prior crash can leave data/cos/state.json truncated/corrupted. That must
+  // fall back to the default queue paths exactly like a missing file, not abort
+  // this migration (and every one queued after it in the same run).
+  it('falls back to the default queue paths when state.json is corrupted', async () => {
+    await mkdir(join(rootDir, 'data', 'cos'), { recursive: true });
+    await writeFile(join(rootDir, 'data', 'cos', 'state.json'), '{not valid json');
+    await writeFile(cosTasks(), queue([strandedFollowUp('sys-rl-1')]));
+    await expect(migration.up({ rootDir, now: STAMP })).resolves.toMatchObject({ ok: true, revived: 1 });
+    expect(parseTasksMarkdown(await readFile(cosTasks(), 'utf-8'))[0].status).toBe('pending');
+  });
+
   it('is idempotent across runs', async () => {
     await writeFile(cosTasks(), queue([strandedFollowUp('sys-rl-1')]));
     await migration.up({ rootDir, now: STAMP });

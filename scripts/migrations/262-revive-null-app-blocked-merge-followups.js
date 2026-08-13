@@ -82,7 +82,11 @@ const QUEUE_FILES = [
  */
 async function queuePaths(rootDir) {
   const raw = await readFile(join(rootDir, 'data', 'cos', 'state.json'), 'utf-8').catch(() => null);
-  const config = raw ? JSON.parse(raw)?.config ?? {} : {};
+  // A truncated/corrupted state.json (left behind by a prior crash) must not
+  // abort this migration and every one after it — fall back to the defaults
+  // exactly as a missing file already does.
+  const parsed = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
+  const config = parsed?.config ?? {};
   return QUEUE_FILES.map(({ configKey, file }) => (
     typeof config[configKey] === 'string' && config[configKey] ? config[configKey] : file
   ));

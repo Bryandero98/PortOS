@@ -74,12 +74,12 @@ export function buildCostPatch(drafts, families) {
   return patch;
 }
 
-function CostInput({ row, value, onChange }) {
+function CostInput({ row, value, onChange, idPrefix }) {
   return (
     <div className="flex items-center gap-1">
       <span className="text-gray-500 text-xs">$</span>
       <input
-        id={`subscription-cost-${row.family}`}
+        id={`${idPrefix}-subscription-cost-${row.family}`}
         type="number"
         inputMode="decimal"
         min="0"
@@ -192,11 +192,11 @@ export default function SubscriptionSavingsCard({ savings, onSaved }) {
             {families.map((row) => (
               <div key={row.family} className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`subscription-cost-${row.family}`} className="text-sm font-medium text-white truncate">
+                  <label htmlFor={`mobile-subscription-cost-${row.family}`} className="text-sm font-medium text-white truncate">
                     {row.label}
                     {!row.enabled && <Pill tone="context" size="xs" className="ml-2">disabled</Pill>}
                   </label>
-                  <CostInput row={row} value={displayValue(drafts, row)} onChange={onChange} />
+                  <CostInput row={row} value={displayValue(drafts, row)} onChange={onChange} idPrefix="mobile" />
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-[11px] text-white">
                   {rowCells(row).map((cell) => (
@@ -242,13 +242,13 @@ export default function SubscriptionSavingsCard({ savings, onSaved }) {
                 {families.map((row) => (
                   <tr key={row.family} className="border-t border-port-border text-white">
                     <td className="py-2 pr-2">
-                      <label htmlFor={`subscription-cost-${row.family}`} className="font-medium cursor-pointer">
+                      <label htmlFor={`desktop-subscription-cost-${row.family}`} className="font-medium cursor-pointer">
                         {row.label}
                       </label>
                       {!row.enabled && <Pill tone="context" size="xs" className="ml-2">disabled</Pill>}
                     </td>
                     <td className="py-2 px-2">
-                      <CostInput row={row} value={displayValue(drafts, row)} onChange={onChange} />
+                      <CostInput row={row} value={displayValue(drafts, row)} onChange={onChange} idPrefix="desktop" />
                     </td>
                     {rowCells(row).map((cell) => (
                       <td key={cell.key} className="py-2 px-2 text-right text-gray-300">

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router';
-import { formatDurationMs, formatMonthDay } from '../../utils/formatters';
+import { formatDurationMs } from '../../utils/formatters';
 import { StatButton, metricColor } from './cityHudBits';
 
 // The System Vitals rows (uptime, health CPU/MEM/DISK, agents, stopped, archived,
@@ -121,7 +121,7 @@ export default function CityVitalsList({
         <div className="flex items-center justify-between">
           <span className="font-pixel text-[9px] text-cyan-500/40 tracking-widest">SYS.OK</span>
           <span className="font-pixel text-[9px] text-cyan-500/40 tracking-widest">
-            {formatMonthDay(new Date()).toUpperCase()}
+            {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()}
           </span>
         </div>
       </div>

@@ -1890,6 +1890,12 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   if (appRequests.length > 0) {
     const request = appRequests[0];
     await taskSchedule.clearOnDemandRequest(request.id);
+    // Only a human "Run" may clear the drain's brakes (park state, dispatch
+    // count); the policy lives in applyOnDemandRunResets so this idle-review
+    // path can't drift from its spawnPriority0OnDemand siblings — without it,
+    // a currently drain-capped or parked perpetual type dequeued here stays
+    // capped/parked and the explicit "Run" silently produces no task.
+    await taskSchedule.applyOnDemandRunResets(request, app.id);
     nextType = request.taskType;
     selectionReason = 'on-demand';
     emitLog('info', `Processing on-demand app task request: ${nextType} for ${app.name}`, { requestId: request.id });

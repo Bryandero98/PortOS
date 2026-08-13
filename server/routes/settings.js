@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { getAiAssignments, updateAiAssignment } from '../services/aiAssignments.js';
+import { saveSubscriptionCosts } from '../services/subscriptionCosts.js';
 import {
   setCodexParallelLimit,
   CODEX_PARALLEL_MIN,
@@ -272,12 +273,21 @@ router.put('/', asyncHandler(async (req, res) => {
   // would bypass the current-password proof the /api/auth/password routes
   // require. Secrets are write-only through their dedicated routes
   // (/api/auth/password, /api/github/secrets, etc.).
-  const { secrets: _ignoredSecrets, catalogUserTypes: _ignoredTypes, ...settingsPatch } = req.body || {};
+  // subscriptionCosts is excluded from the generic shallow spread below and
+  // routed through the same per-family merge PUT /api/usage/subscriptions
+  // uses (saveSubscriptionCosts) — a shallow `{ ...current, ...settingsPatch }`
+  // would replace the whole map, silently dropping any family the incoming
+  // patch didn't mention.
+  const { secrets: _ignoredSecrets, catalogUserTypes: _ignoredTypes, subscriptionCosts: subscriptionCostsPatch, ...settingsPatch } = req.body || {};
   // updateSettingsWith (not updateSettings) so we can re-inject persisted
   // write-only tokens the incoming patch omits, against the freshest snapshot
   // inside the write queue (see preserveExternallyOwnedKeys).
-  const merged = await updateSettingsWith((current) =>
+  let merged = await updateSettingsWith((current) =>
     preserveExternallyOwnedKeys({ ...current, ...settingsPatch }, current));
+  if (subscriptionCostsPatch !== undefined) {
+    const costs = await saveSubscriptionCosts(subscriptionCostsPatch);
+    merged = { ...merged, subscriptionCosts: costs };
+  }
   // The queue caches codex.parallelLimit in-process; sync it from the
   // merged value so a save takes effect without a restart and without
   // re-reading the file.

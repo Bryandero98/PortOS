@@ -131,12 +131,21 @@ export default function QuotaBurn() {
   // `persistRef` above.
   const saveRef = useRef(null);
   const hasConfigRef = useRef(false);
+  // Pure request-ordering guard for `load()`, distinct from `editSeqRef` above
+  // (which only tracks the user's own edits). The manual Refresh button and the
+  // background poll can both have a `load()` in flight at once — a family scrape
+  // takes 10-20s, longer than the poll interval — so a slower, earlier-started
+  // request can resolve AFTER a faster, later one and silently revert the page
+  // to stale numbers. Only the response to the most recently issued request may
+  // write state.
+  const loadSeqRef = useRef(0);
 
   // Every failure — first load, manual refresh, or a background poll — is
   // reported by `loadError` and rendered as this page's ONE banner, so the
   // caller doesn't need the cause back.
   const load = useCallback(async (refresh = false) => {
     const seq = editSeqRef.current;
+    const requestSeq = ++loadSeqRef.current;
     // `silent: true` because the failure is rendered by this page's own banner
     // rather than the request helper's toast — see client/src/CLAUDE.md's
     // silent-vs-toasting rule.
@@ -150,6 +159,10 @@ export default function QuotaBurn() {
     // nothing has to clear the previous failure, or the banner goes on blaming
     // a network error for what is now the server returning no plan.
     if (data === READ_FAILED) return;
+    // A slower, earlier-started `load()` (e.g. a poll issued before a manual
+    // Refresh) resolving after a fresher one must not overwrite what the fresher
+    // response already wrote.
+    if (loadSeqRef.current !== requestSeq) return;
     // Cleared on ANY successful read, including the polls: the last error no
     // longer describes the page once the server has answered.
     setLoadError(null);

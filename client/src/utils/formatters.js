@@ -331,12 +331,15 @@ export function formatPercent(value, { decimals = 1, fallback = '—' } = {}) {
  * `trimWhole` drops the `.00` on a round figure — for a price the user typed
  * ($200/mo), not for a computed total, where aligned cents are the point.
  *
- * @param {number} value - Dollar amount (nullish renders as $0.00)
- * @param {{ signed?: boolean, trimWhole?: boolean }} [options]
+ * @param {number} value - Dollar amount (nullish renders as $0.00; a non-nullish
+ *   value that fails to parse as a finite number — NaN, a broken calc — renders
+ *   `fallback` instead, so a computation failure never masquerades as "$0.00")
+ * @param {{ signed?: boolean, trimWhole?: boolean, fallback?: string }} [options]
  * @returns {string} e.g. "$12.34", "-$5.00", "$200"
  */
-export function formatUsd(value, { signed = false, trimWhole = false } = {}) {
-  const n = Number(value) || 0;
+export function formatUsd(value, { signed = false, trimWhole = false, fallback = '—' } = {}) {
+  const n = value === null || value === undefined ? 0 : Number(value);
+  if (!Number.isFinite(n)) return fallback;
   const magnitude = signed ? Math.abs(n) : n;
   const body = trimWhole && Number.isInteger(magnitude) ? String(magnitude) : magnitude.toFixed(2);
   return `${signed && n < 0 ? '-' : ''}$${body}`;
