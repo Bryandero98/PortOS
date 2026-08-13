@@ -1115,9 +1115,11 @@ describe('peerSync', () => {
         directions: ['outbound'],
         syncCategories: { universe: true },
       });
-      // Allow the listener's fire-and-forget IIFE to settle.
-      await new Promise((r) => setTimeout(r, 30));
-      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).not.toBeNull();
+      // Poll for the listener's fire-and-forget IIFE to persist the subscription;
+      // a fixed sleep races the write queue on slower CI runners.
+      await vi.waitFor(async () => {
+        expect(await findPeerSubscription('peer-a', 'universe', 'u1')).not.toBeNull();
+      });
     });
 
     it('reciprocates a full-sync peer on peer:online (mirror requested once identity is known)', async () => {
