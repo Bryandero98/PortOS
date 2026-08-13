@@ -18,9 +18,31 @@
  *   subdirFilter produces, plus the live-restore-only settings cache re-sync.
  *   A restore overwrites the user's live data/, so a broken filter chain or a
  *   skipped reloadSettings() is a data/consistency bug, not cosmetics.
+ * - runBackup — the lifecycle itself (#3915): snapshot layout, rsync argv,
+ *   manifest + state persistence, socket emissions, the isRunning re-entrancy
+ *   guard, and the error path that must release the lock and record the failure.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join as joinPath } from 'path';
+import { makePathsProxy } from '../lib/mockPathsDataRoot.js';
+
+// runBackup persists state to PATHS.data/backup/state.json. Re-root PATHS at
+// a temp tree so the suite can never write into the live install's data dir.
+var TEST_DATA_ROOT; // eslint-disable-line no-var
+function testDataRoot() {
+  if (!TEST_DATA_ROOT) TEST_DATA_ROOT = mkdtempSync(joinPath(tmpdir(), 'portos-backup-data-'));
+  return TEST_DATA_ROOT;
+}
+vi.mock('../lib/fileUtils.js', async (importOriginal) =>
+  makePathsProxy(await importOriginal(), { dataRoot: testDataRoot }));
+
+afterAll(() => {
+  if (TEST_DATA_ROOT) rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
+});
+
 
 // Mock the DB health check and child_process.spawn before importing backup.js
 vi.mock('../lib/db.js', () => ({
@@ -1106,5 +1128,230 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
       await expect(pending).rejects.toThrow(/rsync exited with code 1/);
       expect(reloadSettings).not.toHaveBeenCalled();
     });
+  });
+});
+
+// =============================================================================
+// runBackup lifecycle (#3915)
+//
+// runBackup was previously only covered indirectly (backupStatusForPg) or
+// mocked out wholesale by the route/scheduler suites. These tests drive the
+// real function against a temp destination with rsync + pg_dump stubbed at the
+// spawn boundary, and assert only observable effects: what was spawned, what
+// landed on disk, what was emitted, and what the module lock did.
+//
+// Postgres is never touched — checkHealth is mocked unreachable and
+// MEMORY_BACKEND=file selects dumpPostgres's explicit file escape hatch, so it
+// returns skipped/not_configured without spawning pg_dump.
+// =============================================================================
+describe('runBackup lifecycle', () => {
+  const SKIPPED_PG = { status: 'skipped', reason: 'not_configured' };
+  let realFs;
+  let destRoot;
+  let prevMemoryBackend;
+  let runBackup;
+  let dataRoot;
+
+  // Real fs bound once, bypassing the module-level fs/promises mock, so the
+  // helpers below read what actually landed on disk.
+  const actualFs = async () => (realFs ??= await vi.importActual('fs/promises'));
+
+  // rsync/pg_dump are stubbed, so backup work completes via real async I/O
+  // rather than on a fixed number of microtasks. Poll instead of guessing.
+  async function waitFor(predicate, label) {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (await predicate()) return;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  }
+
+  // Snapshots live under snapshots/<machine-host>/<snapshotId>; the host
+  // segment is derived from os.hostname() inside backup.js and is not
+  // exported, so discover it from disk rather than recomputing it here.
+  async function findSnapshotDir() {
+    const fsp = await actualFs();
+    const [host] = await fsp.readdir(joinPath(destRoot, 'snapshots'));
+    const [snapshot] = await fsp.readdir(joinPath(destRoot, 'snapshots', host));
+    return joinPath(destRoot, 'snapshots', host, snapshot);
+  }
+
+  async function readJson(path) {
+    const fsp = await actualFs();
+    return JSON.parse(await fsp.readFile(path, 'utf-8'));
+  }
+
+  beforeEach(async () => {
+    // Earlier suites leave persistent fs spies and factory-level stat/readFile
+    // stubs installed; these tests use the real filesystem.
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    const fsp = await actualFs();
+    fs.stat.mockImplementation(fsp.stat);
+    fs.readFile.mockImplementation(fsp.readFile);
+
+    prevMemoryBackend = process.env.MEMORY_BACKEND;
+    process.env.MEMORY_BACKEND = 'file';
+    checkHealth.mockResolvedValue({ connected: false, hasSchema: false });
+
+    destRoot = await fsp.mkdtemp(joinPath(tmpdir(), 'portos-backup-dest-'));
+
+    // Fresh module per test: `isRunning` is module-level state, so the lock
+    // tests must not inherit a previous test's value.
+    vi.resetModules();
+    ({ runBackup } = await import('./backup.js'));
+    ({ PATHS: { data: dataRoot } } = await import('../lib/fileUtils.js'));
+  });
+
+  afterAll(async () => {
+    if (prevMemoryBackend === undefined) delete process.env.MEMORY_BACKEND;
+    else process.env.MEMORY_BACKEND = prevMemoryBackend;
+  });
+
+  it('rsyncs, writes a manifest and state, and emits started/completed', async () => {
+    const io = { emit: vi.fn() };
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const pending = runBackup(destRoot, io, { excludePaths: ['/my-custom-dir/'] });
+    await waitFor(() => spawn.mock.calls.length === 1, 'rsync spawn');
+
+    // Stand in for what rsync would have copied, so generateManifest hashes a
+    // real file and fileCount reflects actual snapshot contents.
+    const snapshotDir = await findSnapshotDir();
+    const fsp = await actualFs();
+    await fsp.writeFile(joinPath(snapshotDir, 'data', 'settings.json'), '{"a":1}');
+
+    proc.stdout.emit('data', Buffer.from(
+      '>f+++++++++ settings.json\n' +
+      '<f.st...... notes.json\n' +
+      'cd+++++++++ some-dir/\n' // not > or < — must not count as a changed file
+    ));
+    proc.emit('close', 0);
+    const result = await pending;
+
+    // --- rsync invocation -------------------------------------------------
+    const [bin, args, opts] = spawn.mock.calls[0];
+    expect(bin).toBe('rsync');
+    expect(opts).toEqual({ shell: false });
+    expect(args.slice(0, 2)).toEqual(['--archive', '--itemize-changes']);
+    // Source is PATHS.data with a trailing slash (copy contents, not the dir);
+    // destination is the snapshot's data/ subdir.
+    expect(args.at(-2)).toBe(`${dataRoot}/`);
+    expect(args.at(-1)).toBe(joinPath(snapshotDir, 'data'));
+    // The user exclude and a non-overridable default each arrive as an
+    // `--exclude <path>` pair, not a bare positional.
+    for (const path of ['/my-custom-dir/', '/browser-profile/']) {
+      const at = args.indexOf(path);
+      expect(at, `${path} missing from rsync argv`).toBeGreaterThan(-1);
+      expect(args[at - 1]).toBe('--exclude');
+    }
+
+    // --- return value -----------------------------------------------------
+    expect(result.snapshotId).toBe(snapshotDir.split('/').pop());
+    expect(result.filesChanged).toBe(2);
+    expect(result.status).toBe('ok');
+    expect(result.pgBackup).toEqual(SKIPPED_PG);
+
+    // --- manifest ---------------------------------------------------------
+    const manifest = await readJson(joinPath(snapshotDir, 'manifest.json'));
+    expect(manifest.fileCount).toBe(1);
+    expect(manifest.files['settings.json']).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.manifest).toEqual(manifest);
+
+    // --- persisted state --------------------------------------------------
+    const state = await readJson(joinPath(dataRoot, 'backup', 'state.json'));
+    expect(state).toMatchObject({
+      lastRun: result.lastRun,
+      lastSnapshotId: result.snapshotId,
+      status: 'ok',
+      filesChanged: 2,
+      pgBackup: SKIPPED_PG,
+      error: null,
+    });
+
+    // --- socket events ----------------------------------------------------
+    expect(io.emit.mock.calls).toEqual([
+      ['backup:started', { snapshotId: result.snapshotId }],
+      ['backup:completed', {
+        snapshotId: result.snapshotId,
+        filesChanged: 2,
+        status: 'ok',
+        pgBackup: SKIPPED_PG,
+      }],
+    ]);
+  });
+
+  it('returns { skipped: true } for a concurrent call without a second rsync', async () => {
+    const io = { emit: vi.fn() };
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const first = runBackup(destRoot, io);
+    await waitFor(() => spawn.mock.calls.length === 1, 'first rsync spawn');
+
+    // Second call while the first is mid-flight.
+    const second = { emit: vi.fn() };
+    await expect(runBackup(destRoot, second)).resolves.toEqual({ skipped: true });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(second.emit).not.toHaveBeenCalled();
+    // The suppressed call must not announce a run it never started.
+    expect(io.emit.mock.calls.filter(([event]) => event === 'backup:started')).toHaveLength(1);
+
+    proc.emit('close', 0);
+    await first;
+  });
+
+  it('on rsync failure: releases the lock, records status error, emits backup:failed, and rethrows', async () => {
+    const io = { emit: vi.fn() };
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const pending = runBackup(destRoot, io);
+    await waitFor(() => spawn.mock.calls.length === 1, 'rsync spawn');
+    proc.stderr.emit('data', Buffer.from('rsync: mkstemp failed: Permission denied (13)'));
+    proc.emit('close', 23);
+
+    await expect(pending).rejects.toThrow(/rsync exited with code 23: rsync: mkstemp failed/);
+
+    const snapshotId = io.emit.mock.calls[0][1].snapshotId;
+    const failure = io.emit.mock.calls.find(([event]) => event === 'backup:failed');
+    expect(failure[1].snapshotId).toBe(snapshotId);
+    expect(failure[1].error).toMatch(/rsync exited with code 23/);
+    expect(io.emit.mock.calls.some(([event]) => event === 'backup:completed')).toBe(false);
+
+    const state = await readJson(joinPath(dataRoot, 'backup', 'state.json'));
+    expect(state.status).toBe('error');
+    expect(state.error).toMatch(/rsync exited with code 23/);
+    expect(state.pgBackup).toBeNull();
+    // No manifest is written for a failed run.
+    const fsp = await actualFs();
+    await expect(fsp.stat(joinPath(await findSnapshotDir(), 'manifest.json'))).rejects.toThrow();
+
+    // isRunning must have been reset: the next run proceeds instead of
+    // short-circuiting to { skipped: true }.
+    const retryProc = fakeProc();
+    spawn.mockReturnValue(retryProc);
+    const retry = runBackup(destRoot, io);
+    await waitFor(() => spawn.mock.calls.length === 2, 'retry rsync spawn');
+    retryProc.emit('close', 0);
+    await expect(retry).resolves.toMatchObject({ status: 'ok' });
+  });
+
+  it('rejects a missing destination before locking, spawning, or emitting', async () => {
+    const io = { emit: vi.fn() };
+    await expect(runBackup(joinPath(destRoot, 'does-not-exist'), io))
+      .rejects.toThrow(/Backup destination not found/);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(io.emit).not.toHaveBeenCalled();
+
+    // The failed precondition must not have left the lock engaged.
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    const pending = runBackup(destRoot, io);
+    await waitFor(() => spawn.mock.calls.length === 1, 'rsync spawn after bad dest');
+    proc.emit('close', 0);
+    await expect(pending).resolves.toMatchObject({ status: 'ok' });
   });
 });
