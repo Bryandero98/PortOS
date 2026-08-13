@@ -156,8 +156,7 @@ export function formatWeekdayShort(value, { timeZone } = {}) {
 /**
  * Format a weekday-led date with a short month (e.g., "Monday, Mar 5", or
  * "Mon, Mar 5, 2026" with `{ weekday: 'short', year: true }`). Distinct from
- * `formatDateFull` (long month, always with year) and `formatDateWeekday`
- * (noon-anchored heatmap tooltips).
+ * `formatDateFull` (long month, always with year).
  * @param {string|number|Date|null} value
  * @param {object} [options]
  * @param {'long'|'short'} [options.weekday='long'] - Weekday width
@@ -535,11 +534,11 @@ export function formatDurationMin(minutes, options = {}) {
  * time (e.g. "Sat, Apr 1, 1:30 PM"); all-day events show a full weekday and
  * year (e.g. "Saturday, April 1, 2026"). Kept separate from `formatDateTime`
  * because the weekday-led shape is event-specific.
- * Behavior-identical to the local formatter it replaced: any input is passed
- * straight to `new Date(...)`, so malformed/empty values render the same
- * `Invalid Date` / epoch string the original did. The two call sites always
- * pass a real event time, so this degenerate path is never exercised — kept
- * faithful so the migration introduces zero visual change.
+ * Missing/unparseable input renders '' — the same fallback contract every
+ * other helper here follows. (It used to pass the raw `Invalid Date` string
+ * through "for migration fidelity"; once the all-day branch started routing
+ * through `formatDateFull`'s guard, that left one branch guarded and one not.
+ * Both call sites pass a real event time, so nothing visible changes.)
  * @param {string|Date|null} dateStr - ISO timestamp or Date object
  * @param {object} [options]
  * @param {boolean} [options.allDay=false] - Render date-only (all-day event).
@@ -547,25 +546,12 @@ export function formatDurationMin(minutes, options = {}) {
  */
 export function formatEventDateTime(dateStr, options = {}) {
   const { allDay = false } = options ?? {};
-  const date = new Date(dateStr);
   // All-day events render exactly like `formatDateFull` (full weekday + year).
-  if (allDay) return formatDateFull(date);
+  if (allDay) return formatDateFull(dateStr);
+  if (dateStr == null || dateStr === '') return '';
+  const date = toDisplayDate(dateStr);
+  if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
-
-/**
- * Format a date string as a short weekday + month + day string
- * (e.g., "Sat, Mar 5"). Used for activity-heatmap tooltips where compact
- * output with a leading weekday abbreviation is important.
- * The input is treated as a calendar date (anchored at local noon to avoid
- * day-boundary drift), not as a precise timestamp.
- * @param {string} dateStr - Date-only string ("YYYY-MM-DD"); a full ISO
- *   timestamp is NOT supported (the noon-anchor suffix would make it invalid)
- * @returns {string} Formatted date (e.g., "Sat, Mar 5")
- */
-export function formatDateWeekday(dateStr) {
-  const date = new Date(dateStr + 'T12:00:00');
-  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 /**

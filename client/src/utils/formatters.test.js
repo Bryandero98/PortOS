@@ -207,14 +207,15 @@ describe('formatEventDateTime', () => {
     expect(formatEventDateTime(sample, null)).toBe(formatEventDateTime(sample));
   });
 
-  it('passes malformed input straight through, like the original local formatter (no guard, by design)', () => {
-    // The migration is deliberately behavior-identical: unparseable input
-    // yields the raw toLocaleString result ("Invalid Date"), not an empty
-    // string. Locks the no-guard decision so a future change does not re-add
-    // a guard and silently alter the (unreachable) degenerate path.
-    expect(formatEventDateTime('not-a-date')).toBe(
-      new Date('not-a-date').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-    );
+  it("renders an empty string for malformed/missing input on BOTH branches (#3870)", () => {
+    // Used to pass the raw "Invalid Date" string through for migration
+    // fidelity. Once the all-day branch started routing through formatDateFull's
+    // guard, one branch was guarded and one was not; both now follow the
+    // module-wide fallback contract.
+    expect(formatEventDateTime('not-a-date')).toBe('');
+    expect(formatEventDateTime('not-a-date', { allDay: true })).toBe('');
+    expect(formatEventDateTime(null)).toBe('');
+    expect(formatEventDateTime('')).toBe('');
   });
 });
 
