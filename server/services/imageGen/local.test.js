@@ -390,7 +390,7 @@ describe('imageGen local.buildArgs flux2 dispatch', () => {
     expect(args[args.indexOf('--image-strength') + 1]).toBe('0.25');
   });
 
-  it('falls back to mflux dispatch for non-flux2 models on macOS', () => {
+  it.skipIf(process.platform === 'win32')('falls back to mflux dispatch for non-flux2 models on macOS', () => {
     // No flux2 mock needed — the branch shouldn't be taken at all.
     mockResolveFlux2Python.mockReturnValue(null);
     const { bin, args } = buildArgs({
