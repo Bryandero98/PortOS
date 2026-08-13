@@ -249,7 +249,20 @@ function DomainBudgetControl({ config, usage, onBudgetChange }) {
   );
 }
 
-export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, setAvatarStyle }) {
+const getDefaultFormData = (config, avatarStyle) => ({
+  healthCheckIntervalMs: config?.healthCheckIntervalMs || 900000,
+  maxConcurrentAgents: config?.maxConcurrentAgents || 3,
+  maxConcurrentAgentsPerProject: config?.maxConcurrentAgentsPerProject || 2,
+  maxProcessMemoryMb: config?.maxProcessMemoryMb || 2048,
+  autoStart: config?.autoStart || false,
+  improvementEnabled: config?.improvementEnabled ?? config?.selfImprovementEnabled ?? true,
+  proactiveMode: config?.proactiveMode ?? true,
+  idleReviewEnabled: config?.idleReviewEnabled ?? true,
+  immediateExecution: config?.immediateExecution ?? true,
+  avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
+});
+
+export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle }) {
   const { providers, availableModels, setSelectedProviderId: setProviderHook, setSelectedModel: setModelHook, selectedProviderId: hookProviderId, selectedModel: hookModel } = useProviderModels();
   const [embeddingProviderId, setEmbeddingProviderId] = useState(config?.embeddingProviderId || 'lmstudio');
   const [embeddingModel, setEmbeddingModel] = useState(config?.embeddingModel || '');
@@ -267,50 +280,19 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, s
   }, [config?.embeddingProviderId, config?.embeddingModel, setProviderHook, setModelHook]);
 
   const [editing, setEditing] = useState(false);
-  const [formData, setFormData] = useState({
-    healthCheckIntervalMs: config?.healthCheckIntervalMs || 900000,
-    maxConcurrentAgents: config?.maxConcurrentAgents || 3,
-    maxConcurrentAgentsPerProject: config?.maxConcurrentAgentsPerProject || 2,
-    maxProcessMemoryMb: config?.maxProcessMemoryMb || 2048,
-    autoStart: config?.autoStart || false,
-    improvementEnabled: config?.improvementEnabled ?? config?.selfImprovementEnabled ?? true,
-    proactiveMode: config?.proactiveMode ?? true,
-    idleReviewEnabled: config?.idleReviewEnabled ?? true,
-    immediateExecution: config?.immediateExecution ?? true,
-    avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
-  });
+  const [formData, setFormData] = useState(() => getDefaultFormData(config, avatarStyle));
 
   useEffect(() => {
     if (!editing) {
       setFormData(prev => ({
         ...prev,
-        healthCheckIntervalMs: config?.healthCheckIntervalMs || 900000,
-        maxConcurrentAgents: config?.maxConcurrentAgents || 3,
-        maxConcurrentAgentsPerProject: config?.maxConcurrentAgentsPerProject || 2,
-        maxProcessMemoryMb: config?.maxProcessMemoryMb || 2048,
-        autoStart: config?.autoStart || false,
-        improvementEnabled: config?.improvementEnabled ?? config?.selfImprovementEnabled ?? true,
-        proactiveMode: config?.proactiveMode ?? true,
-        idleReviewEnabled: config?.idleReviewEnabled ?? true,
-        immediateExecution: config?.immediateExecution ?? true,
-        avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
+        ...getDefaultFormData(config, avatarStyle)
       }));
     }
   }, [config, avatarStyle, editing]);
 
   const handleCancel = () => {
-    setFormData({
-      healthCheckIntervalMs: config?.healthCheckIntervalMs || 900000,
-      maxConcurrentAgents: config?.maxConcurrentAgents || 3,
-      maxConcurrentAgentsPerProject: config?.maxConcurrentAgentsPerProject || 2,
-      maxProcessMemoryMb: config?.maxProcessMemoryMb || 2048,
-      autoStart: config?.autoStart || false,
-      improvementEnabled: config?.improvementEnabled ?? config?.selfImprovementEnabled ?? true,
-      proactiveMode: config?.proactiveMode ?? true,
-      idleReviewEnabled: config?.idleReviewEnabled ?? true,
-      immediateExecution: config?.immediateExecution ?? true,
-      avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
-    });
+    setFormData(getDefaultFormData(config, avatarStyle));
     setEditing(false);
   };
 
