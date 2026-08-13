@@ -1,0 +1,1 @@
+- privacy: GET /api/privacy/social-account-links respects subjectId query parameter (#4022)
