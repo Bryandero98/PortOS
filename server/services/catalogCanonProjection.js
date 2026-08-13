@@ -217,7 +217,7 @@ export async function projectToCatalog(universeId, canonArrays, { guardToken = n
         { name: entry.name, payload: entryToPayload(entry) },
         { source: 'sync', actor: 'canon-projection' },
       );
-      appliedTimestamps.set(ingredientId, entry.updatedAt);
+      appliedTimestamps.set(ingredientId, entry.updatedAt || rowUpdatedAt);
       stats.written++;
     } catch (err) {
       console.error(`🔁 projectToCatalog: ingredient ${ingredientId} update failed: ${err.message}`);
