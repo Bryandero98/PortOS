@@ -21,10 +21,10 @@ import {
   musicVideoPlanRequestSchema,
   musicVideoManualAnalysisSchema,
   musicVideoTranscribeMidiRequestSchema,
-  recordRenderPinFields,
   isPaginationRequested,
   paginateArray,
 } from '../lib/validation.js';
+import { recordRenderPinFields } from '../lib/sharedSchemas.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { safeUnder } from '../lib/ffmpeg.js';
 import {
@@ -57,8 +57,11 @@ const router = Router();
 // the shared universe/series/sprite field pair) on Music Video projects: scene
 // reference-frame renders resolve through it (imageGen/prepareParams.js).
 // Extended at the route layer — the same pattern as routes/universeBuilder/ —
-// because musicVideoValidation.js can't import recordRenderPinFields from
-// validation.js without a circular import (validation.js re-exports it).
+// so the pin stays a route-level concern and musicVideoProjectCreateSchema keeps
+// the shape peers sync against. (Since #3873 the fragment lives in the leaf
+// sharedSchemas.js, so musicVideoValidation.js COULD import it without the
+// TDZ cycle that re-exporting through validation.js used to cause — the route
+// layer is now a choice, not a workaround.)
 const projectCreateSchema = musicVideoProjectCreateSchema.extend(recordRenderPinFields);
 const projectUpdateSchema = musicVideoProjectUpdateSchema.extend(recordRenderPinFields);
 
