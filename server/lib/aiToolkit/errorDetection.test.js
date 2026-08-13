@@ -13,6 +13,12 @@ import {
   ERROR_CATEGORIES
 } from './errorDetection.js';
 
+// The banner line agy paints where a spent-quota answer would have gone,
+// ANSI-stripped exactly as captured from the runs that killed a series-autopilot
+// foundation gate on 2026-08-13. Real chrome always pairs it with an
+// `Error ID: <uuid>-<n>` line, which the signal requires but does not capture.
+const QUOTA_BANNER_LINE = '⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h51m14s.';
+
 describe('Error Detection', () => {
   describe('analyzeError', () => {
     it('detects a Codex/OpenAI content-safety refusal', () => {
@@ -57,6 +63,16 @@ describe('Error Detection', () => {
 
     it('should detect Claude extra-usage status as a usage limit', () => {
       const result = analyzeError('Now using extra usage');
+      expect(result.hasError).toBe(true);
+      expect(result.category).toBe(ERROR_CATEGORIES.USAGE_LIMIT);
+      expect(result.requiresFallback).toBe(true);
+    });
+
+    // The post-hoc scan a failed run runs through analyzeError must reach the
+    // same verdict as the in-stream signal, or the provider is never benched and
+    // the next dequeued call re-dies on the same spent quota.
+    it('should detect the Antigravity spent-quota banner as a usage limit', () => {
+      const result = analyzeError('⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h51m14s.', 1);
       expect(result.hasError).toBe(true);
       expect(result.category).toBe(ERROR_CATEGORIES.USAGE_LIMIT);
       expect(result.requiresFallback).toBe(true);
@@ -252,6 +268,81 @@ describe('Error Detection', () => {
     // self-resolving, but it resets in hours — no live session can wait it out.
     it('leaves other signals at graceMs 0 so they still fail immediately', () => {
       expect(detectImmediateFallbackSignal('Now using extra usage\n')).toMatchObject({ graceMs: 0 });
+    });
+
+    // agy paints this INSTEAD of an answer and then goes quiet, so the one-shot
+    // TUI runner idle-completes the run as SUCCESS and hands the repainted
+    // prompt screen downstream as the model's response. Fixture is the
+    // ANSI-stripped shape captured from the runs that killed a series-autopilot
+    // foundation gate on 2026-08-13.
+    it('detects the Antigravity spent-quota banner', () => {
+      const rendered = `  \`\`\`\r\n\n${QUOTA_BANNER_LINE}\r\nError ID: 00000000-0000-4000-8000-000000000000-7\r\n`;
+      expect(detectImmediateFallbackSignal(rendered)).toMatchObject({
+        hasError: true,
+        category: ERROR_CATEGORIES.USAGE_LIMIT,
+        requiresFallback: true,
+        origin: 'provider',
+        // The banner names its own reset — no human has to do anything, and a
+        // fallback provider can serve the call right now. Blocking the task
+        // (resolveFailedTaskDecision) would strand an unattended run.
+        actionable: false,
+        // …but hours is far longer than a live session can profitably hold, so
+        // unlike the eligibility handshake this one fails over immediately.
+        graceMs: 0
+      });
+    });
+
+    it('carries the reset clause into the message so /runs shows when the quota frees up', () => {
+      expect(detectImmediateFallbackSignal(`${QUOTA_BANNER_LINE}\r\nError ID: 00000000-0000-4000-8000-000000000000-7\r\n`).message)
+        .toContain('Resets in 3h51m14s');
+    });
+
+    // The message becomes the run's error → the autopilot's failure reason → the
+    // body of the CoS task dispatched to investigate it, which a TUI echoes back
+    // indented (i.e. behind nothing but whitespace). If the signal matched its own
+    // propagated message it would kill that investigating agent on sight — which
+    // is why the `Error ID:` envelope is required but held OUT of the capture.
+    it('does not match the message it propagates, echoed back as prompt text', () => {
+      const propagated = detectImmediateFallbackSignal(`${QUOTA_BANNER_LINE}\r\nError ID: abc-7\r\n`).message;
+      expect(detectImmediateFallbackSignal(`### Context\n  ${propagated}\n`)).toBeNull();
+    });
+
+    it('detects the quota banner without its optional reset clause', () => {
+      expect(detectImmediateFallbackSignal('⚠ Individual quota reached. Please upgrade your subscription to increase your limits.\nError ID: abc-7\n'))
+        .toMatchObject({ category: ERROR_CATEGORIES.USAGE_LIMIT, origin: 'provider' });
+    });
+
+    // Line-anchored behind gutter decoration only: an agent WRITING ABOUT the
+    // banner must not fail its own run, let alone bench a healthy provider.
+    it.each([
+      ['a markdown bullet in an agent write-up', `- ${QUOTA_BANNER_LINE}\nError ID: abc-7\n`],
+      ['prose quoting the banner', `The failure mode is "${QUOTA_BANNER_LINE}" — see errorDetection.js`],
+      ['a grep hit over a prior transcript', `data/runs/abc/output.txt:412: ${QUOTA_BANNER_LINE}\nError ID: abc-7\n`],
+      ['the banner with no agy error envelope behind it', `${QUOTA_BANNER_LINE}\nsome other line\n`],
+    ])('ignores a quoted quota banner (%s)', (_label, transcript) => {
+      expect(detectImmediateFallbackSignal(transcript)).toBeNull();
+    });
+
+    it('buffers the quota banner across stream chunks', () => {
+      const detect = createImmediateFallbackSignalDetector();
+      expect(detect('⚠ Individual quota reached. Please upgrade your ')).toBeNull();
+      // The envelope line lands in a later repaint than the banner itself.
+      expect(detect('subscription to increase your limits. Resets in 3h51m14s.\r\n')).toBeNull();
+      expect(detect('Error ID: 00000000-0000-4000-8000-000000000000-7\r\n'))
+        .toMatchObject({ category: ERROR_CATEGORIES.USAGE_LIMIT, origin: 'provider' });
+    });
+
+    // The rolling window's slice boundary matches `^…/m` too. The run still
+    // fails (its screen scrape is not an answer either way), but a fabricated
+    // line start must not be read as evidence about the provider's health.
+    it('does not promote a quota banner whose line start was fabricated by the window slice', () => {
+      // Size the window so the slice lands EXACTLY on the banner's first
+      // character: buffer[0] then looks like a line start the stream never
+      // witnessed, which is the only way `^…/m` can fire on quoted text.
+      const quoted = 'Individual quota reached. Please upgrade your subscription to increase your limits.\nError ID: abc-7\n';
+      const detect = createImmediateFallbackSignalDetector({ maxBuffer: quoted.length });
+      expect(detect(`while investigating I saw ${quoted}`))
+        .toMatchObject({ category: ERROR_CATEGORIES.USAGE_LIMIT, origin: 'output-scan' });
     });
 
     it('detects the Claude extra-usage status line', () => {

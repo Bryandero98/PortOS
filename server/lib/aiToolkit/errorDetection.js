@@ -76,7 +76,14 @@ const ERROR_PATTERNS = [
     suggestedFix: 'Wait and retry - temporary rate limiting'
   },
   {
-    pattern: /(?:hit your usage limit|You've hit your limit|usage limit|Upgrade to Pro|(?:^|\n)\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$))/i,
+    // `upgrade your subscription to increase your limits` is Antigravity's
+    // quota banner (see AGY_QUOTA_BANNER). Included here as well as in the
+    // immediate-fallback signals so the post-hoc output scan a FAILED run runs
+    // through `analyzeError` categorizes it as a usage limit and benches the
+    // provider, rather than falling through to UNKNOWN. Kept as the whole
+    // vendor sentence — a bare "quota reached" is a phrase story text can
+    // legitimately contain, and this scan reads the model's entire screen.
+    pattern: /(?:hit your usage limit|You've hit your limit|usage limit|Upgrade to Pro|upgrade your subscription to increase your limits|(?:^|\n)\s*(?:\[stderr\]\s*)?Now using extra usage\s*(?:\r?\n|$))/i,
     category: ERROR_CATEGORIES.USAGE_LIMIT,
     requiresFallback: true,
     actionable: true,
@@ -138,7 +145,31 @@ const WAIT_TIME_PATTERNS = [
 // to the detector as `[stderr] ${text}`, so it lands BEFORE the CLI's own gutter
 // glyphs. The alternation lets tag and gutter interleave in either order —
 // requiring gutter-then-tag would demote a genuine banner printed on stderr.
-const TUI_GUTTER_PREFIX = '^(?:[\\s│┃╎⎿⏺●•]|\\[stderr\\])*';
+// `⚠` is agy's gutter glyph for its own error banners (quota, see below).
+const TUI_GUTTER_PREFIX = '^(?:[\\s│┃╎⎿⏺●•⚠]|\\[stderr\\])*';
+
+// Antigravity's spent-subscription banner, as agy paints it:
+//
+//     ⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h51m14s.
+//     Error ID: <uuid>-7
+//
+// Line-anchored behind gutter decoration only, so an agent writing ABOUT the
+// banner (a markdown bullet, prose, a grep hit) never matches — the same
+// precision the `Now using extra usage` entry relies on. The qualifier before
+// `quota reached` is left open (`Individual` today) because it names WHOSE
+// quota, not what happened. `Resets in …` is optional: it is the part most
+// likely to change shape, and the sentence before it is already unambiguous.
+//
+// The trailing lookahead requires agy's `Error ID:` envelope line WITHOUT
+// pulling it into match[0], and that asymmetry is the point. `match[0]` becomes
+// the run's error string, which becomes the autopilot's failure reason, which a
+// CoS task description then quotes on a line of its own — and a TUI echoes a
+// pasted prompt indented, i.e. behind nothing but whitespace. Without the
+// lookahead this signal would match its OWN propagated message and kill the very
+// agent dispatched to investigate it. Keeping the envelope out of the capture
+// means the reason string can never re-match. A hypothetical banner agy prints
+// with no `Error ID:` is deliberately left to the post-hoc output scan below.
+const AGY_QUOTA_BANNER = `${TUI_GUTTER_PREFIX}(?:[A-Za-z][\\w-]*\\s+)?quota reached\\.\\s*Please upgrade your subscription to increase your limits\\.(?:\\s*Resets? in\\s*[^\\r\\n]{1,32})?(?=\\s{0,8}Error ID:)`;
 
 /**
  * Signals that fail a run immediately so the task can pick a fallback provider.
@@ -218,6 +249,42 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
     category: ERROR_CATEGORIES.AUTH_ERROR,
     message: 'Antigravity account eligibility is still being verified',
     suggestedFix: 'Antigravity account verification is still in progress — sidelining the provider briefly and retrying on a fallback.',
+    actionable: false
+  },
+  {
+    // Antigravity REFUSES a submission outright once the account's subscription
+    // quota is spent: it paints the one-line banner above where the answer would
+    // have gone, empties the composer, and returns to its idle footer. Nothing
+    // further arrives — so the one-shot TUI runner's output-idle fallback fires
+    // and finalizes the run as `idle-complete` SUCCESS with the repainted PROMPT
+    // screen standing in for the response.
+    //
+    // That is worse than a lost run. On 2026-08-13 both attempts of a
+    // `pipeline-judge-foundation` call died this way (90KB and 284KB of screen
+    // scrape, `success: true`, `errorCategory: null`). The judge prompt carries a
+    // JSON output-contract example — `{ "score": 6, "gap": "string", "fix":
+    // "string" }` — so the judge parsed the placeholder rubric back out of its own
+    // echoed instructions, the shape guard rejected it (correctly), and the series
+    // autopilot died reporting "foundation judge response parsed but its rubric is
+    // incomplete or contains placeholders": a manuscript-shaped error for what was
+    // purely a spent provider quota.
+    //
+    // USAGE_LIMIT, not AUTH_ERROR: the account and the PortOS config are both
+    // fine. `actionable: false` (unlike the extra-usage entry below) because the
+    // banner states its own reset — blocking the task would strand an unattended
+    // run over a condition that needs no human and that a fallback provider can
+    // serve right now (see agentErrorAnalysis#resolveFailedTaskDecision).
+    // `graceMs` stays 0: hours is far past what a live session can wait out.
+    //
+    // `structuredMarker` mirrors the pattern rather than loosening it — the point
+    // here is the untrusted-slice-boundary guard in resolveSignalOrigin, so a
+    // `^` match fabricated by the rolling window fails the run without benching a
+    // healthy provider.
+    pattern: new RegExp(AGY_QUOTA_BANNER, 'im'),
+    structuredMarker: new RegExp(AGY_QUOTA_BANNER, 'im'),
+    category: ERROR_CATEGORIES.USAGE_LIMIT,
+    message: 'Antigravity subscription quota reached',
+    suggestedFix: 'Antigravity subscription quota is spent until it resets — sidelining the provider and retrying on a fallback.',
     actionable: false
   },
   {
