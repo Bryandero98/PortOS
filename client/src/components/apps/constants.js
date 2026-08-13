@@ -1,4 +1,7 @@
-import { PORTOS_APP_ID } from '../../services/apiCore.js';
+// From lib/, NOT services/apiCore.js: this file is imported by a node-env server
+// test (streamingDetect's DESKTOP_TYPES parity check), where apiCore's React
+// dependency doesn't resolve.
+import { PORTOS_APP_ID } from '../../lib/appIdentity.js';
 
 export const NON_PM2_TYPES = new Set(['ios-native', 'macos-native', 'xcode', 'swift']);
 
