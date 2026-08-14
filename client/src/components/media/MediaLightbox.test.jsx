@@ -8,6 +8,7 @@ import MediaLightbox from './MediaLightbox';
 // on MediaLightbox's own <video> markup and off the network.
 vi.mock('./AddToCollectionMenu', () => ({ default: () => null }));
 vi.mock('./PromptRefineModal', () => ({ default: () => null }));
+vi.mock('./PromptFromMedia', () => ({ default: () => null, PromptFromMediaModal: () => null }));
 
 const videoItem = {
   kind: 'video',

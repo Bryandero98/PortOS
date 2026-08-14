@@ -452,6 +452,19 @@ export const isVisionModel = (id) =>
   /(?:^|[-_/:])vision(?:[-_/:.]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|(?:^|[-_/:])gemma-?[34]|llava|bakllava|moondream|minicpm-?v|pixtral|smolvlm|internvl|cogvlm|glm-?4v|phi-?3\.5?-vision|phi-?4-multimodal|got-ocr|idefics|fuyu|paligemma|kosmos|nanollava/i.test(id);
 
 /**
+ * Whether a CLI-type provider can read an image file (its CLI accepts a
+ * vision attachment). Mirror of `isVisionCapableCliProvider` in
+ * server/lib/localModelHeuristics.js — keyed on command basename so a
+ * renamed/path-configured Claude or Codex still qualifies. API providers
+ * return false here; use `visionLocalModelFilter` for their model lists.
+ * @param {{type?:string, command?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const isVisionCapableCliProvider = (provider) =>
+  provider?.type === 'cli'
+  && (commandBasename(provider.command) === 'codex' || commandBasename(provider.command) === 'claude');
+
+/**
  * Tool-use (function-calling) capable model detector — mirror of `isToolUseModel`
  * in server/lib/localModelHeuristics.js (and the TOOL_USE_RE inlined in
  * server/lib/aiToolkit/providers.js). Keep all three in lockstep (the server libs

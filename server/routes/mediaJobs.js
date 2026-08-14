@@ -11,6 +11,7 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchivedJob, runJobNow, JOB_KINDS, JOB_STATUSES } from '../services/mediaJobQueue/index.js';
 import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
+import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 
 const router = Router();
@@ -64,6 +65,32 @@ const refinePromptSchema = z.object({
       message: `renderConfig must be JSON-serializable and ≤ ${RENDER_CONFIG_MAX_BYTES} bytes`,
     })
     .optional(),
+});
+
+const optionalTrimmed = z.string().max(256).optional().transform((s) => {
+  const v = (s ?? '').trim();
+  return v.length > 0 ? v : undefined;
+});
+
+const promptFromMediaSchema = z.object({
+  sourceKind: z.enum(['image', 'video', 'upload']),
+  filename: z.string().trim().min(1).max(256).optional(),
+  videoId: z.string().trim().min(1).max(64).optional(),
+  targets: z.array(z.enum(['image', 'video'])).min(1).max(2)
+    .refine((arr) => new Set(arr).size === arr.length, { message: 'targets must be unique' }),
+  providerId: z.string().trim().min(1).max(128),
+  model: optionalTrimmed,
+  effort: z.string().max(64).optional().transform((s) => {
+    const v = (s ?? '').trim();
+    return v.length > 0 ? v : undefined;
+  }),
+}).superRefine((data, ctx) => {
+  if (data.sourceKind === 'video' && !data.videoId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'videoId is required for a gallery video', path: ['videoId'] });
+  }
+  if ((data.sourceKind === 'image' || data.sourceKind === 'upload') && !data.filename) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'filename is required', path: ['filename'] });
+  }
 });
 
 // Sanitize a job before serialization. The internal job record carries
@@ -146,6 +173,11 @@ router.get('/', asyncHandler(async (req, res) => {
 router.post('/refine-prompt', asyncHandler(async (req, res) => {
   const data = validateRequest(refinePromptSchema, req.body);
   res.json(await refineMediaPrompt(data));
+}));
+
+router.post('/prompt-from-media', asyncHandler(async (req, res) => {
+  const data = validateRequest(promptFromMediaSchema, req.body);
+  res.json(await promptFromMedia(data));
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {

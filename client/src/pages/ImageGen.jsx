@@ -17,6 +17,7 @@ import MediaPreview from '../components/media/MediaPreview';
 import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import PromptEnhancer from '../components/media/PromptEnhancer';
+import PromptFromMedia from '../components/media/PromptFromMedia';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
 import { RUNNER_FAMILIES, loraCompatKey } from '../lib/runnerFamilies';
@@ -1224,6 +1225,13 @@ export default function ImageGen() {
             negativePrompt={negativePrompt}
             setNegativePrompt={setNegativePrompt}
             renderConfig={{ stylePreset: stylePreset?.id, mode: effectiveMode }}
+            disabled={statusLoading}
+          />
+          <PromptFromMedia
+            kindDefault="both"
+            applyKind="image"
+            setPrompt={setPrompt}
+            setNegativePrompt={setNegativePrompt}
             disabled={statusLoading}
           />
 

@@ -12,6 +12,7 @@ import {
   filterGenerationModels,
   isEmbeddingModel,
   isVisionModel,
+  isVisionCapableCliProvider,
   visionLocalModelFilter,
   isToolUseModel,
   localToolUseHint,
@@ -589,6 +590,21 @@ describe('isVisionModel (mirror of server localModelHeuristics)', () => {
       expect(isVisionModel(id), id).toBe(false);
     }
     expect(isVisionModel(null)).toBe(false);
+  });
+});
+
+describe('isVisionCapableCliProvider', () => {
+  it('accepts Claude and Codex CLIs, including a path-configured command', () => {
+    expect(isVisionCapableCliProvider({ type: 'cli', command: 'codex' })).toBe(true);
+    expect(isVisionCapableCliProvider({ type: 'cli', command: 'claude' })).toBe(true);
+    expect(isVisionCapableCliProvider({ type: 'cli', command: '/opt/homebrew/bin/claude' })).toBe(true);
+  });
+
+  it('rejects API providers and non-vision CLIs', () => {
+    expect(isVisionCapableCliProvider({ type: 'api', command: 'codex' })).toBe(false);
+    expect(isVisionCapableCliProvider({ type: 'cli', command: 'agy' })).toBe(false);
+    expect(isVisionCapableCliProvider({ type: 'tui', command: 'claude' })).toBe(false);
+    expect(isVisionCapableCliProvider(null)).toBe(false);
   });
 });
 
