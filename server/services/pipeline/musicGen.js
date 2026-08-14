@@ -299,9 +299,9 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
   const pythonPath = engine.resolvePython();
   if (engine.cudaRequired) {
     const cuda = await getCudaCapability();
-    if (cuda.state !== 'available') {
+    if (cuda.status !== 'available') {
       throw new ServerError(
-        cuda.state === 'unknown' ? 'CUDA availability could not be determined.' : `${engine.name} requires an NVIDIA CUDA GPU.`,
+        cuda.status === 'unknown' ? 'CUDA availability could not be determined.' : `${engine.name} requires an NVIDIA CUDA GPU.`,
         { status: 503, code: 'PIPELINE_MUSIC_CUDA_REQUIRED' },
       );
     }

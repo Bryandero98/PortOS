@@ -1,0 +1,1 @@
+- Music now opens with a standalone tune generator, and audio-model runtime and weight setup can be completed directly from the generation panel.

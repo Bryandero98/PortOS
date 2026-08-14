@@ -452,12 +452,8 @@ export default function TracksManager() {
                   (MusicGen/AudioLDM2/ACE-Step) and the LLM-composed looping
                   chiptune score (#2911).
 
-                  The mode TOGGLE renders even before the track is saved: mode
-                  is pure local state and needs no track id, and hiding it left
-                  a brand-new track showing no sign either generator existed
-                  (#3264). The PANELS stay gated on `persisted` — the server
-                  attaches audio + gen metadata to a saved id — but the gate now
-                  explains itself instead of rendering an empty region. */}
+                  Audio-model generation can create a standalone track directly;
+                  chiptune composition still needs a persisted score record. */}
               <div className="space-y-2">
                 <div className="inline-flex rounded-lg border border-port-border overflow-hidden text-sm" role="group" aria-label="Generation mode">
                   {[['audio', 'Audio model'], ['chiptune', 'Chiptune score']].map(([mode, label]) => (
@@ -472,9 +468,9 @@ export default function TracksManager() {
                     </button>
                   ))}
                 </div>
-                {!persisted ? (
+                {!persisted && genMode === 'chiptune' ? (
                   <p className="text-xs text-gray-500">
-                    Save the track first, then generate {genMode === 'chiptune' ? 'a chiptune score' : 'with an audio model'}.
+                    Save the track first, then generate a chiptune score.
                   </p>
                 ) : genMode === 'chiptune' ? (
                   <ChiptunePanel
@@ -490,11 +486,21 @@ export default function TracksManager() {
                 ) : (
                   <MusicGenPanel
                     track={persisted}
+                    title={form.title}
+                    artistId={form.artistId}
+                    artist={form.artist}
+                    albumId={form.albumId}
                     prompt={form.prompt}
                     lyrics={form.lyrics}
                     remix={remix}
                     onGenerated={(updated) => {
                       upsertLocal(updated); // list update is id-keyed → always safe
+                      if (!persisted) {
+                        justCreatedIdRef.current = updated.id;
+                        setForm((f) => ({ ...f, audioFilename: updated.audioFilename || '' }));
+                        navigate(`/music/tracks/${encodeURIComponent(updated.id)}`);
+                        return;
+                      }
                       // Merge ONLY the server-set generation fields into the open
                       // form (the active audio pointer mirrors onto the form) so any
                       // UNSAVED edits the user made to title/artist/album/prompt/

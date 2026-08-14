@@ -11,13 +11,15 @@
  */
 
 import { useParams, useNavigate, Navigate } from 'react-router';
-import { Music as MusicIcon, Mic, Disc3, AudioLines } from 'lucide-react';
+import { Music as MusicIcon, Mic, Disc3, AudioLines, Wand2 } from 'lucide-react';
 import ArtistsManager from '../components/music/ArtistsManager';
 import AlbumsManager from '../components/music/AlbumsManager';
 import TracksManager from '../components/music/TracksManager';
+import QuickMusicGenerator from '../components/music/QuickMusicGenerator';
 import TabPills from '../components/ui/TabPills';
 
 const TABS = [
+  { id: 'generate', label: 'Generate', icon: Wand2 },
   { id: 'artists', label: 'Artists', icon: Mic },
   { id: 'albums', label: 'Albums', icon: Disc3 },
   { id: 'tracks', label: 'Tracks', icon: AudioLines },
@@ -28,9 +30,9 @@ const VALID = new Set(TABS.map((t) => t.id));
 export default function Music() {
   const { tab } = useParams();
   const navigate = useNavigate();
-  const active = tab || 'artists';
+  const active = tab || 'generate';
   // Unknown tab → redirect to the default rather than render an empty shell.
-  if (!VALID.has(active)) return <Navigate to="/music/artists" replace />;
+  if (!VALID.has(active)) return <Navigate to="/music/generate" replace />;
 
   return (
     <div>
@@ -50,6 +52,7 @@ export default function Music() {
         className="mb-6"
       />
 
+      {active === 'generate' && <QuickMusicGenerator />}
       {active === 'artists' && <ArtistsManager />}
       {active === 'albums' && <AlbumsManager />}
       {active === 'tracks' && <TracksManager />}

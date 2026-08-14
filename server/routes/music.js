@@ -45,27 +45,30 @@ router.get('/engines', asyncHandler(async (_req, res) => {
   const cuda = await getCudaCapability();
   const engines = await Promise.all(Object.values(ENGINES).map(async (engine) => {
     const modelCache = engine.fixedModelInstall ? await inspectModelCache(engine.models[0].repo).catch(() => ({ cached: false })) : null;
+    const runtimeReady = isEngineReady(engine.id);
     return ({
-    id: engine.id,
-    name: engine.name,
-    models: await listEngineModels(engine.id),
-    defaultModelId: engine.defaultModelId,
-    minDurationSec: engine.minDurationSec,
-    maxDurationSec: engine.maxDurationSec,
-    defaultDurationSec: engine.defaultDurationSec,
-    lyrics: engine.lyrics === true,
-    // Whether this engine can render an arbitrary HuggingFace checkpoint (gates
-    // the "install/select model" UI). ACE-Step resolves a single foundation
-    // checkpoint via checkpoint_dir, so custom repos don't apply to it.
-    customModels: engine.customModels === true,
-    fixedModelInstall: engine.fixedModelInstall === true,
-    modelReady: modelCache ? modelCache.cached === true : true,
-    cudaRequired: engine.cudaRequired === true,
-    cudaState: engine.cudaRequired ? cuda.state : 'available',
-    ready: isEngineReady(engine.id) && (!engine.cudaRequired || cuda.state === 'available') && (!modelCache || modelCache.cached === true),
-    installEnv: engine.installEnv,
-    venvDefault: engine.venvDefault,
-  }); }));
+      id: engine.id,
+      name: engine.name,
+      models: await listEngineModels(engine.id),
+      defaultModelId: engine.defaultModelId,
+      minDurationSec: engine.minDurationSec,
+      maxDurationSec: engine.maxDurationSec,
+      defaultDurationSec: engine.defaultDurationSec,
+      lyrics: engine.lyrics === true,
+      // Whether this engine can render an arbitrary HuggingFace checkpoint (gates
+      // the "install/select model" UI). ACE-Step resolves a single foundation
+      // checkpoint via checkpoint_dir, so custom repos don't apply to it.
+      customModels: engine.customModels === true,
+      fixedModelInstall: engine.fixedModelInstall === true,
+      modelReady: modelCache ? modelCache.cached === true : true,
+      runtimeReady,
+      cudaRequired: engine.cudaRequired === true,
+      cudaState: engine.cudaRequired ? cuda.status : 'available',
+      ready: runtimeReady && (!engine.cudaRequired || cuda.status === 'available') && (!modelCache || modelCache.cached === true),
+      installEnv: engine.installEnv,
+      venvDefault: engine.venvDefault,
+    });
+  }));
   res.json({ engines, defaultEngine: DEFAULT_ENGINE_ID });
 }));
 
@@ -111,8 +114,8 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   }
   if (engine.cudaRequired) {
     const cuda = await getCudaCapability();
-    if (cuda.state !== 'available') {
-      send({ type: 'error', message: cuda.state === 'unknown'
+    if (cuda.status !== 'available') {
+      send({ type: 'error', message: cuda.status === 'unknown'
         ? `${engine.name} cannot be installed because CUDA availability could not be determined.`
         : `${engine.name} requires an NVIDIA CUDA GPU and cannot be installed on this host.` });
       return safeEnd();
