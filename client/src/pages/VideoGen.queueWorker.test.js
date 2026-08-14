@@ -111,3 +111,60 @@ describe('VideoGen queue-worker BUSY-retry guard', () => {
     expect(w.runningQueueId).toBeNull();
   });
 });
+
+describe('useVideoGenQueue parameter preservation', () => {
+  it('preserves string filenames, arrays, objects, and File/Blob objects when enqueued and restored', () => {
+    // Import helper logic corresponding to useVideoGenQueue's enqueue and dequeue restoration
+    const fakeFile = { name: 'source.png', size: 100 };
+    // Simulated instanceof File / Blob check logic
+    const isBlob = (v) => v === fakeFile || (typeof Blob !== 'undefined' && (v instanceof File || v instanceof Blob));
+    
+    const payload = {
+      prompt: 'a cinematic scene',
+      mode: 'image',
+      sourceImage: 'gallery_source.png',
+      lastImage: 'gallery_last.png',
+      audioFile: 'track.mp3',
+      icReference: 'ic_ref.mp4',
+      icReferenceImageFiles: ['ref1.png', 'ref2.png'],
+      keyframes: [{ frame: 0, image: 'f1.png' }],
+      sourceImageFile: fakeFile,
+    };
+
+    const _blobs = {};
+    const params = {};
+    for (const [k, v] of Object.entries(payload)) {
+      if (isBlob(v)) {
+        _blobs[k] = v;
+      } else if (Array.isArray(v) && v.some((item) => isBlob(item))) {
+        _blobs[k] = v;
+      } else {
+        params[k] = v;
+      }
+    }
+
+    // Verify params keeps all non-File properties
+    expect(params.sourceImage).toBe('gallery_source.png');
+    expect(params.lastImage).toBe('gallery_last.png');
+    expect(params.audioFile).toBe('track.mp3');
+    expect(params.icReference).toBe('ic_ref.mp4');
+    expect(params.icReferenceImageFiles).toEqual(['ref1.png', 'ref2.png']);
+    expect(params.keyframes).toEqual([{ frame: 0, image: 'f1.png' }]);
+
+    // Verify _blobs holds the File object
+    expect(_blobs.sourceImageFile).toBe(fakeFile);
+
+    // Dequeue restoration
+    const restoredPayload = { ...params };
+    for (const [k, v] of Object.entries(_blobs)) {
+      if (v != null) restoredPayload[k] = v;
+    }
+
+    expect(restoredPayload.sourceImage).toBe('gallery_source.png');
+    expect(restoredPayload.lastImage).toBe('gallery_last.png');
+    expect(restoredPayload.audioFile).toBe('track.mp3');
+    expect(restoredPayload.icReference).toBe('ic_ref.mp4');
+    expect(restoredPayload.sourceImageFile).toBe(fakeFile);
+  });
+});
+

@@ -634,12 +634,11 @@ export default function VideoGen() {
 
   const handleGenerate = async (e) => {
     e?.preventDefault?.();
-    // Mirror the inline submit-button's disabled rules: blank prompt,
-    // already generating, backend disconnected, or extend mode not ready.
-    // Without these guards the user could press Enter in the prompt
-    // textarea and fire a request the disabled button would otherwise
-    // have prevented.
-    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
+    if (generating) {
+      if (canEnqueue) handleEnqueue();
+      return;
+    }
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
