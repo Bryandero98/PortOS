@@ -681,20 +681,39 @@ describe('buildLightContextPrompt', () => {
       expect(prompt.length).toBeLessThan(20_000);
     });
 
-    it('does not interpolate a hostile branch ref into the PR-create command line', () => {
+    it('quotes a hostile branch ref inert in the PR-create command line', () => {
       // Branch names are usually PortOS's own, but a JIRA-derived one is external
-      // input — and this text is pasted straight into an agent's terminal.
+      // input — and this text is pasted straight into an agent's terminal, so it
+      // goes through the canonical `shellQuote` rather than being dropped for a
+      // placeholder the agent would have to guess at.
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { openPR: true } }),
         '/r',
         { branchName: 'weird;rm -rf /', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
         { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
-      // The ref is quoted as prose in the worktree header, but never rendered
-      // into a runnable command line.
-      expect(prompt).toMatch(/git push -u origin <branch>/);
-      expect(prompt).toMatch(/gh pr create --base main --head <branch>/);
-      expect(prompt).not.toMatch(/(git|gh|glab) [^\n]*weird;rm -rf/);
+      expect(prompt).toMatch(/git push -u origin 'weird;rm -rf \/'/);
+      expect(prompt).toMatch(/gh pr create --base main --head 'weird;rm -rf \/'/);
+      // Never bare — that would be a command substitution waiting to happen.
+      expect(prompt).not.toMatch(/origin weird;rm/);
+    });
+
+    it('leaves a readable branch unquoted, and falls back to a placeholder with no ref', () => {
+      const readable = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true } }),
+        '/r',
+        { branchName: 'cos/task-1/agent-2', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(readable).toMatch(/git push -u origin cos\/task-1\/agent-2/);
+
+      const noBase = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(noBase).toMatch(/gh pr create --base <base-branch> --head b/);
     });
 
     it('a path-configured claude binary under a custom provider id gets the slashdo workflow', () => {

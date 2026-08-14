@@ -208,7 +208,16 @@ export async function loadSlashdoLib(libName, { teams = false } = {}) {
 
   const libDir = join(PATHS.slashdo, 'lib');
   let content = await readFile(join(libDir, `${libName}.md`), 'utf-8').catch(() => null);
-  if (!content) return null;
+  // Cache the MISS too. An install whose `lib/slashdo` submodule was never
+  // initialized (`npm run install:all` is what fetches it) would otherwise
+  // re-attempt the read on every spawn that asks — and since #3733 that is every
+  // slashdo-free PR-opening agent, not just review-loop follow-ups. The
+  // submodule can't appear without a restart, which is the same assumption the
+  // hit path already makes.
+  if (!content) {
+    slashdoLibCache.set(cacheKey, null);
+    return null;
+  }
   content = await resolveSlashdoIncludes(content, libDir);
   content = resolveSlashdoConditionals(content, { teams });
   slashdoLibCache.set(cacheKey, content);

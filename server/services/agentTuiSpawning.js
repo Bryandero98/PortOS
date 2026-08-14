@@ -21,7 +21,7 @@ import { PATHS } from '../lib/fileUtils.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
-import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
@@ -1130,8 +1130,7 @@ export async function spawnTuiAgent({
           })
         : {};
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: taskOpenPR,
-        openPRIfMissing: agentOwnsPR,
+        prCreation: resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified: prClaimExpected }),
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

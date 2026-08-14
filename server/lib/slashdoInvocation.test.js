@@ -7,6 +7,7 @@ import {
   agentOwnsPrWorkflow,
   buildSlashdoSection,
   canTypeSlashCommands,
+  resolveOwnsPrWorkflow,
   isValidSlashdoCommand,
   resolveSlashdoInvocation,
   resolveSlashdoStyle,
@@ -176,6 +177,29 @@ describe('agentOwnsPrWorkflow (#3733)', () => {
     expect(agentOwnsPrWorkflow({ providerType: 'api' })).toBe(false);
     expect(agentOwnsPrWorkflow({})).toBe(false);
     expect(agentOwnsPrWorkflow()).toBe(false);
+  });
+});
+
+describe('resolveOwnsPrWorkflow (#3733)', () => {
+  it('trusts the stamp — cleanup must act on what the prompt actually said', () => {
+    // Including when the stamp disagrees with a fresh derivation: a provider
+    // reconfigured mid-run must not change the answer for an agent already
+    // prompted under the old one.
+    expect(resolveOwnsPrWorkflow({ persisted: true, providerId: 'codex', providerCommand: 'codex' })).toBe(true);
+    expect(resolveOwnsPrWorkflow({ persisted: false, providerId: 'claude-code', providerCommand: 'claude' })).toBe(false);
+  });
+
+  it('falls back to the slash-command gate for a pre-#3733 record', () => {
+    // Those runs really were prompted by the old builder, whose gate this was.
+    expect(resolveOwnsPrWorkflow({ persisted: undefined, providerId: 'claude-code', providerCommand: 'claude' })).toBe(true);
+    expect(resolveOwnsPrWorkflow({ persisted: undefined, providerId: 'codex', providerCommand: 'codex' })).toBe(false);
+    expect(resolveOwnsPrWorkflow({ persisted: undefined, providerId: 'claude-ollama', providerCommand: 'claude', leanMode: true })).toBe(false);
+  });
+
+  it('treats a non-boolean stamp as absent, not as false', () => {
+    // `null` from a JSON round-trip must not silently claim PortOS owns the PR.
+    expect(resolveOwnsPrWorkflow({ persisted: null, providerId: 'claude-code' })).toBe(true);
+    expect(resolveOwnsPrWorkflow({ persisted: 'true', providerId: 'codex', providerCommand: 'codex' })).toBe(false);
   });
 });
 

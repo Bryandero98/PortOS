@@ -689,10 +689,9 @@ describe('spawnTuiAgent runtime', () => {
     await spawnPromise;
 
     // The codex TUI drives its own push → PR → review → merge, so PortOS only
-    // steps in when the forge says no PR exists — hence openPRIfMissing.
+    // steps in when the forge says no PR exists — hence prCreation: if-missing.
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: true,
-      openPRIfMissing: true,
+      prCreation: 'if-missing',
       prCompletion: 'review-then-merge',
       reviewers: ['codex'],
       skipMerge: true,
@@ -717,8 +716,7 @@ describe('spawnTuiAgent runtime', () => {
     await spawnPromise;
 
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: true,
-      openPRIfMissing: false,
+      prCreation: 'always',
       skipMerge: false,
     }));
   });
@@ -739,9 +737,10 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnExit({ exitCode: 0, killed: false });
     await spawnPromise;
 
+    // `never`, not `if-missing`: finalize already ran `verifyPrClaim` for a
+    // slashdo-capable session, so a second forge query would be pure duplication.
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: true,
-      openPRIfMissing: true,
+      prCreation: 'never',
       prCompletion: 'review-then-merge',
       skipMerge: true,
     }));

@@ -68,3 +68,42 @@ export function leavesPrForHuman(task) {
   const metadata = task?.metadata || {};
   return PR_STAYS_OPEN_SET.has(metadata.analysisType) || !!metadata.jiraTicketId;
 }
+
+/**
+ * Who opens the change request for a completing worktree agent (#3733).
+ *
+ * One tri-state rather than two booleans, because two booleans have an
+ * unrepresentable-in-practice pair ("check first, but never create") and a
+ * caller has to keep them consistent by hand.
+ *
+ * - `NEVER`    — the agent owns it and finalize ALREADY verified the claim
+ *                (`prExpected`), so a run that reaches cleanup as a success has
+ *                a confirmed PR. Also the no-PR-at-all case.
+ * - `IF_MISSING` — the agent owns it and finalize did NOT verify (a slashdo-free
+ *                harness). Cleanup asks the forge once and creates one only on a
+ *                definite "none".
+ * - `ALWAYS`   — PortOS owns it (a lean `--bare` session hands the lifecycle back).
+ */
+export const PR_CREATION = Object.freeze({
+  NEVER: 'never',
+  IF_MISSING: 'if-missing',
+  ALWAYS: 'always',
+});
+
+/**
+ * Resolve `PR_CREATION` for a completing agent — one place, so the three
+ * completion paths (runner, TUI spawner, direct-CLI spawner) can't drift into
+ * double-firing `gh pr create` or into leaving a branch with no PR.
+ *
+ * @param {Object} opts
+ * @param {boolean} opts.taskOpenPR - the task asked for a PR at all
+ * @param {boolean} opts.agentOwnsPr - the prompt told the agent to open it
+ * @param {boolean} opts.prClaimVerified - finalize ran `verifyPrClaim` for this
+ *   run (i.e. `prExpected` was true), so cleanup must not ask a second time
+ * @returns {string} a `PR_CREATION` value
+ */
+export function resolvePrCreation({ taskOpenPR, agentOwnsPr, prClaimVerified }) {
+  if (!taskOpenPR) return PR_CREATION.NEVER;
+  if (!agentOwnsPr) return PR_CREATION.ALWAYS;
+  return prClaimVerified ? PR_CREATION.NEVER : PR_CREATION.IF_MISSING;
+}

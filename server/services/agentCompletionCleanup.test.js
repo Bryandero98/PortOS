@@ -151,15 +151,19 @@ describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', ()
   // #3733: the record now STAMPS the answer at spawn time, because it no longer
   // tracks `canTypeSlashCommands` — a codex/grok/agy harness can't type `/do:pr`
   // but is told to run `gh pr create` itself.
-  it.each([
-    ['a codex harness', 'codex', 'codex'],
-    ['a claude session', 'claude-code', 'claude'],
-  ])('%s that owns its PR workflow is backstopped, not double-fired', async (_label, providerId, providerCommand) => {
-    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false, ownsPrWorkflow: true });
-    // openPR stays true so cleanup can still recover a PR the agent never opened;
-    // openPRIfMissing is what makes that a check-first safety net.
-    expect(opts.openPR).toBe(true);
-    expect(opts.openPRIfMissing).toBe(true);
+  it('a codex harness that owns its PR workflow is backstopped, not double-fired', async () => {
+    // Finalize skipped `verifyPrClaim` for it (`prExpected` keys on the
+    // slash-command predicate), so cleanup asks the forge once itself.
+    const opts = await cleanupCallFor({ providerId: 'codex', providerCommand: 'codex', leanMode: false, ownsPrWorkflow: true });
+    expect(opts.prCreation).toBe('if-missing');
+    expect(opts.skipMerge).toBe(true);
+  });
+
+  it('a claude session that owns its PR workflow needs no second forge query', async () => {
+    // Finalize already ran `verifyPrClaim`, and a run that reaches cleanup as a
+    // success passed it — re-asking would be a duplicate `gh pr list`.
+    const opts = await cleanupCallFor({ providerId: 'claude-code', providerCommand: 'claude', leanMode: false, ownsPrWorkflow: true });
+    expect(opts.prCreation).toBe('never');
     expect(opts.skipMerge).toBe(true);
   });
 
@@ -167,33 +171,42 @@ describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', ()
     const opts = await cleanupCallFor({
       providerId: 'claude-ollama', providerCommand: 'claude', leanMode: true, ownsPrWorkflow: false,
     });
-    expect(opts.openPR).toBe(true);
-    expect(opts.openPRIfMissing).toBe(false);
+    expect(opts.prCreation).toBe('always');
     expect(opts.skipMerge).toBe(false);
   });
 
+  it('a task that asked for no PR never creates one', async () => {
+    await runAgentCompletionCleanup({
+      agentId: 'a1', task: { id: 't', taskType: 'user', metadata: {} },
+      agent: { providerId: 'codex', providerCommand: 'codex', ownsPrWorkflow: true },
+      effectiveSuccess: true, outputBuffer: '',
+    });
+    expect(cleanupAgentWorktree.mock.calls.at(-1)[2].prCreation).toBe('never');
+  });
+
   it.each([
-    ['claude-code', 'claude', true],
-    ['claude-code-bedrock', 'claude', true],
+    ['claude-code', 'claude', 'never'],
+    ['claude-code-bedrock', 'claude', 'never'],
     // The case an id allowlist missed: a path-configured claude under a custom id
     // IS told to run /do:pr, so PortOS must not open a second PR.
-    ['my-custom-agent', '/opt/homebrew/bin/claude', true],
-    ['codex', 'codex', false],
-    ['antigravity-cli', 'agy', false],
-  ])('a pre-upgrade %s record falls back to the slash-command derivation it was prompted with', async (providerId, providerCommand, owns) => {
+    ['my-custom-agent', '/opt/homebrew/bin/claude', 'never'],
+    // Prompted by the OLD builder, which told these to commit and stop.
+    ['codex', 'codex', 'always'],
+    ['antigravity-cli', 'agy', 'always'],
+  ])('a pre-upgrade %s record falls back to the slash-command derivation it was prompted with', async (providerId, providerCommand, prCreation) => {
     // No `ownsPrWorkflow` key: written before #3733, so the run really was
     // prompted by the old builder and the old gate is the correct answer.
     const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
-    expect(opts.openPRIfMissing).toBe(owns);
-    expect(opts.skipMerge).toBe(owns);
+    expect(opts.prCreation).toBe(prCreation);
+    expect(opts.skipMerge).toBe(prCreation === 'never');
   });
 
   it('a pre-upgrade agent record with only providerId still resolves', async () => {
     // Records written before providerCommand/leanMode were persisted: a blank
     // command reads as `claude`, which is what the old id allowlist effectively
     // assumed for the claude-code ids anyway.
-    expect((await cleanupCallFor({ providerId: 'claude-code' })).openPRIfMissing).toBe(true);
-    expect((await cleanupCallFor({ providerId: 'codex-tui' })).openPRIfMissing).toBe(false);
+    expect((await cleanupCallFor({ providerId: 'claude-code' })).prCreation).toBe('never');
+    expect((await cleanupCallFor({ providerId: 'codex-tui' })).prCreation).toBe('always');
   });
 });
 

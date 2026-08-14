@@ -36,7 +36,7 @@ import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } 
 import { resolveForgeTokenEnv } from './git.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
-import { resolvePrCompletion } from '../lib/prDisposition.js';
+import { resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { doneSentinelPath } from '../lib/agentSentinel.js';
 import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
@@ -786,8 +786,11 @@ export async function spawnDirectly({
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
       const reviewOptions = await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn });
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: directOpenPR,
-        openPRIfMissing: directAgentOwnsPR,
+        prCreation: resolvePrCreation({
+          taskOpenPR: directOpenPR,
+          agentOwnsPr: directAgentOwnsPR,
+          prClaimVerified: directPrClaimExpected,
+        }),
         prCompletion: directPrCompletion,
         ...reviewOptions,
         skipMerge: directReviewLoopFollowUp || directAgentOwnsPR,
