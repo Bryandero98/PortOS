@@ -1,3 +1,4 @@
+import { join } from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./providers.js', () => ({
@@ -181,8 +182,8 @@ describe('promptFromMedia', () => {
       model: 'gpt-5',
       effort: 'medium',
       imagePaths: [
-        '/mock/video-thumbnails/pfm-vid-f1.jpg',
-        '/mock/video-thumbnails/pfm-vid-f2.jpg',
+        join('/mock/video-thumbnails', 'pfm-vid-f1.jpg'),
+        join('/mock/video-thumbnails', 'pfm-vid-f2.jpg'),
       ],
     }));
     expect(promptRunner.runPromptThroughProvider).not.toHaveBeenCalled();
