@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { posixPath } from './testHelper.js';
+
 import { buildCliChildEnv, composeProviderEnv } from './cliChildEnv.js';
 import { AGENT_GUARD_BIN } from './agentGuard/index.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
@@ -80,11 +82,11 @@ describe('buildCliChildEnv — layering', () => {
 describe('buildCliChildEnv — PWD pin and CLAUDECODE strip', () => {
   it('pins PWD to the spawn cwd, overriding a stale inherited value (#3193)', () => {
     const env = buildCliChildEnv({ baseEnv: { PWD: '/repos/PortOS' }, cwd: '/repos/my-app' });
-    expect(env.PWD).toBe('/repos/my-app');
+    expect(posixPath(env.PWD)).toBe('/repos/my-app');
   });
 
   it('leaves the inherited PWD alone when no cwd is passed', () => {
-    expect(buildCliChildEnv({ baseEnv: { PWD: '/repos/PortOS' } }).PWD).toBe('/repos/PortOS');
+    expect(posixPath(buildCliChildEnv({ baseEnv: { PWD: '/repos/PortOS' } }).PWD)).toBe('/repos/PortOS');
   });
 
   // The pin runs LAST, over the composed object — so a provider that sets its
@@ -93,7 +95,7 @@ describe('buildCliChildEnv — PWD pin and CLAUDECODE strip', () => {
     const env = buildCliChildEnv({
       baseEnv: {}, provider: { envVars: { PWD: '/somewhere/else' } }, cwd: '/repos/my-app',
     });
-    expect(env.PWD).toBe('/repos/my-app');
+    expect(posixPath(env.PWD)).toBe('/repos/my-app');
   });
 
   it('strips CLAUDECODE from every layer that could supply it', () => {
@@ -110,7 +112,7 @@ describe('buildCliChildEnv — PWD pin and CLAUDECODE strip', () => {
 describe('buildCliChildEnv — pm2 guard', () => {
   it('leaves PATH untouched without `guard` (Run Prompt / fire-and-collect paths)', () => {
     const env = buildCliChildEnv({ baseEnv: { PATH: '/usr/bin' } });
-    expect(env.PATH).toBe('/usr/bin');
+    expect(posixPath(env.PATH)).toBe('/usr/bin');
     expect(env.PORTOS_REAL_PM2).toBeUndefined();
   });
 
@@ -124,8 +126,8 @@ describe('buildCliChildEnv — pm2 guard', () => {
       guard: true,
     });
     expect(env.PATH.startsWith(`${AGENT_GUARD_BIN}`)).toBe(true);
-    expect(env.PATH).toContain('/provider/bin');
-    expect(env.PATH).not.toContain('/usr/bin');
+    expect(posixPath(env.PATH)).toContain('/provider/bin');
+    expect(posixPath(env.PATH)).not.toContain('/usr/bin');
   });
 });
 
@@ -176,7 +178,7 @@ describe('buildCliChildEnv — per-call-site composition', () => {
     expect(buildCliChildEnv({ ...args, guard: true }).A).toBe('provider');
     expect(buildCliChildEnv({ ...args, guard: true }).PATH).toContain(AGENT_GUARD_BIN);
     // The fire-and-collect path is not an agent — it must stay unguarded.
-    expect(buildCliChildEnv(args).PATH).toBe('/usr/bin');
+    expect(posixPath(buildCliChildEnv(args).PATH)).toBe('/usr/bin');
   });
 
   it('cliProviderRun.js: honors a sanitized baseEnv instead of process.env', () => {
@@ -242,7 +244,7 @@ describe('buildCliChildEnv — per-call-site composition', () => {
     const env = buildCliChildEnv({
       baseEnv: { PWD: '/repos/PortOS' }, provider: OLLAMA_OPENCODE, model: 'llava:7b', cwd: '/tmp/portos-vision-x',
     });
-    expect(env.PWD).toBe('/tmp/portos-vision-x');
+    expect(posixPath(env.PWD)).toBe('/tmp/portos-vision-x');
     // And the vision model is declared, so `--model ollama/llava:7b` is accepted.
     expect(declaredModels(env)).toContain('llava:7b');
   });

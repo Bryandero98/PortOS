@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 const NOT_SYNCED_ERROR = 'ClinVar database not synced. Click "Sync ClinVar" first.';
 const NO_GENOME_ERROR = 'No genome data uploaded.';
@@ -10,7 +11,7 @@ const fileStore = new Map();
 vi.mock('../lib/fileUtils.js', () => ({
   PATHS: { meatspace: '/mock/meatspace' },
   ensureDir: vi.fn().mockResolvedValue(undefined),
-  tryReadFile: vi.fn(async (path) => (fileStore.has(path) ? fileStore.get(path) : null)),
+  tryReadFile: vi.fn(async (path) => (fileStore.has(toPosix(path)) ? fileStore.get(toPosix(path)) : null)),
   safeJSONParse: (raw, fallback) => {
     try {
       return JSON.parse(raw);
@@ -22,15 +23,15 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn(async (path, data) => {
-    fileStore.set(path, data);
+    fileStore.set(toPosix(path), data);
   }),
   unlink: vi.fn(async (path) => {
-    if (!fileStore.has(path)) {
+    if (!fileStore.has(toPosix(path))) {
       const err = new Error('ENOENT');
       err.code = 'ENOENT';
       throw err;
     }
-    fileStore.delete(path);
+    fileStore.delete(toPosix(path));
   })
 }));
 

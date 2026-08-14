@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 const fileStore = new Map();
 
@@ -8,9 +9,9 @@ vi.mock('../lib/uuid.js', () => {
 });
 
 vi.mock('../lib/fileUtils.js', () => ({
-  tryReadFile: vi.fn(async (path) => fileStore.has(path) ? fileStore.get(path) : null),
+  tryReadFile: vi.fn(async (path) => fileStore.has(toPosix(path)) ? fileStore.get(toPosix(path)) : null),
   atomicWrite: vi.fn(async (path, data) => {
-    fileStore.set(path, typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+    fileStore.set(toPosix(path), typeof data === 'string' ? data : JSON.stringify(data, null, 2));
   }),
   ensureDir: vi.fn().mockResolvedValue(undefined),
   PATHS: { messages: '/mock/messages' },

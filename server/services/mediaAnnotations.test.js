@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 const fileStore = new Map();
 
@@ -6,8 +7,8 @@ vi.mock('../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: '/mock/data' },
   ensureDir: vi.fn().mockResolvedValue(undefined),
-  atomicWrite: vi.fn(async (path, data) => { fileStore.set(path, data); }),
-  readJSONFile: vi.fn(async (path, fallback) => fileStore.has(path) ? fileStore.get(path) : fallback),
+  atomicWrite: vi.fn(async (path, data) => { fileStore.set(toPosix(path), data); }),
+  readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(toPosix(path)) ? fileStore.get(toPosix(path)) : fallback)),
 }));
 
 // Stable identity for tests — bypass the disk-backed instances service.

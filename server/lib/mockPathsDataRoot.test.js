@@ -1,4 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
+import { posixPath } from './testHelper.js';
+
 import { existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, sep } from 'path';
@@ -104,10 +106,10 @@ describe('mockPathsDataRoot', () => {
         dataRoot: '/tmp/x',
         extraOverrides: { images: '/tmp/x/images', videos: '/tmp/x/videos' },
       });
-      expect(proxy.PATHS.data).toBe('/tmp/x');
-      expect(proxy.PATHS.images).toBe('/tmp/x/images');
-      expect(proxy.PATHS.videos).toBe('/tmp/x/videos');
-      expect(proxy.PATHS.logs).toBe('/real/logs'); // untouched
+      expect(posixPath(proxy.PATHS.data)).toBe('/tmp/x');
+      expect(posixPath(proxy.PATHS.images)).toBe('/tmp/x/images');
+      expect(posixPath(proxy.PATHS.videos)).toBe('/tmp/x/videos');
+      expect(posixPath(proxy.PATHS.logs)).toBe('/real/logs'); // untouched
     });
 
     it('extraOverrides (function) receives the dataRoot', () => {
@@ -115,7 +117,7 @@ describe('mockPathsDataRoot', () => {
         dataRoot: '/tmp/x',
         extraOverrides: (root) => ({ images: join(root, 'images') }),
       });
-      expect(proxy.PATHS.images).toBe('/tmp/x/images');
+      expect(posixPath(proxy.PATHS.images)).toBe('/tmp/x/images');
     });
 
     it('dataRoot (function) resolves lazily on each PATHS read', () => {

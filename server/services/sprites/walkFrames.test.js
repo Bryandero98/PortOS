@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
+import { posixPath } from '../../lib/testHelper.js';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -146,7 +147,7 @@ describe('verifyPackagedFrames — byte mode (compile gate)', () => {
     expect(frameBytes).toHaveLength(8);
     expect(frameBytes[0].toString()).toBe(`frame-${id}-0`);
     // Read-once-verify-in-memory: every frame read exactly once, none twice.
-    const frameReads = readCalls.filter((p) => p.includes('/frames/'));
+    const frameReads = readCalls.filter((p) => posixPath(p).includes('/frames/'));
     expect(frameReads).toHaveLength(8);
     expect(new Set(frameReads).size).toBe(8);
   });

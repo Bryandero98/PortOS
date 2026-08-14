@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 let files = {};            // path → string (markers)
 let dirEntries = null;     // readdir(legacyDir) result, or null = ENOENT
@@ -14,7 +15,7 @@ let renamed = [];
 
 vi.mock('../lib/fileUtils.js', () => ({
   PATHS: { data: '/fake/data' },
-  readJSONFile: vi.fn(async (path) => recordsByDir[path] ?? null),
+  readJSONFile: vi.fn(async (path) => recordsByDir[toPosix(path)] ?? null),
 }));
 
 // Marker I/O is delegated to migrationMarker.js; mock it against the same
@@ -25,10 +26,10 @@ vi.mock('../lib/migrationMarker.js', () => ({
 }));
 
 vi.mock('fs/promises', () => ({
-  rename: vi.fn(async (from, to) => { renamed.push([from, to]); }),
+  rename: vi.fn(async (from, to) => { renamed.push([toPosix(from), toPosix(to)]); }),
   readdir: vi.fn(async () => (dirEntries === null ? [] : dirEntries)),
   stat: vi.fn(async (path) => {
-    if (path === '/fake/data/pipeline-series') {
+    if (toPosix(path) === '/fake/data/pipeline-series') {
       if (dirEntries === null) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
       return { isDirectory: () => true };
     }

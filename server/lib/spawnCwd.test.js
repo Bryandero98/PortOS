@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { posixPath } from './testHelper.js';
+
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
@@ -141,12 +143,12 @@ describe('withSpawnCwdEnv', () => {
   // the app's workspace.
   it('pins PWD to the spawn cwd, overriding a stale inherited value', () => {
     const env = withSpawnCwdEnv({ PATH: '/usr/bin', PWD: '/repos/PortOS' }, '/repos/my-app');
-    expect(env.PWD).toBe('/repos/my-app');
-    expect(env.PATH).toBe('/usr/bin');
+    expect(posixPath(env.PWD)).toBe('/repos/my-app');
+    expect(posixPath(env.PATH)).toBe('/usr/bin');
   });
 
   it('sets PWD even when the inherited env had none', () => {
-    expect(withSpawnCwdEnv({ PATH: '/usr/bin' }, '/repos/my-app').PWD).toBe('/repos/my-app');
+    expect(posixPath(withSpawnCwdEnv({ PATH: '/usr/bin' }, '/repos/my-app').PWD)).toBe('/repos/my-app');
   });
 
   // Windows env names are case-insensitive, so a spread of process.env can carry
@@ -158,7 +160,7 @@ describe('withSpawnCwdEnv', () => {
       const env = withSpawnCwdEnv({ [variant]: '/repos/PortOS', PATH: '/usr/bin' }, '/repos/my-app');
       const pwdKeys = Object.keys(env).filter((k) => /^pwd$/i.test(k));
       expect(pwdKeys, `${variant} must not survive alongside PWD`).toEqual(['PWD']);
-      expect(env.PWD).toBe('/repos/my-app');
+      expect(posixPath(env.PWD)).toBe('/repos/my-app');
     }
   });
 
@@ -168,15 +170,15 @@ describe('withSpawnCwdEnv', () => {
   it('leaves the inherited PWD untouched when there is no cwd to pin', () => {
     for (const absent of [undefined, null, '']) {
       const env = withSpawnCwdEnv({ PWD: '/repos/PortOS', PATH: '/usr/bin' }, absent);
-      expect(env.PWD).toBe('/repos/PortOS');
-      expect(env.PATH).toBe('/usr/bin');
+      expect(posixPath(env.PWD)).toBe('/repos/PortOS');
+      expect(posixPath(env.PATH)).toBe('/usr/bin');
     }
   });
 
   it('copies rather than mutating the caller env', () => {
     const original = { PWD: '/repos/PortOS' };
     const env = withSpawnCwdEnv(original, '/repos/my-app');
-    expect(original.PWD).toBe('/repos/PortOS');
+    expect(posixPath(original.PWD)).toBe('/repos/PortOS');
     expect(env).not.toBe(original);
   });
 

@@ -2,10 +2,19 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { resolveTestPython } from '../server/lib/testHelper.js';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), 'generate_minimax_h3.py');
 
-const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+// Probe for an interpreter that actually RUNS rather than assuming a name.
+// On Windows a machine with no Store-installed Python still has `python` on
+// PATH as an alias STUB: it exists, exits non-zero, and prints "Python was
+// not found". A name-only choice passes there and then every case dies with
+// an opaque "Command failed" — and PortOS provisions its own interpreters
+// (~/.portos venvs), so a box can be set up for image/video gen while the
+// bare name is still a stub. Null when there is genuinely none, so the suite
+// skips instead of failing.
+const pyBin = resolveTestPython();
 const runPython = (source) => execFileSync(pyBin, ['-c', source, script], {
   encoding: 'utf8',
 });
@@ -58,7 +67,7 @@ const argsExpr = (overrides = {}) => {
   return `args = SimpleNamespace(${fields.join(', ')})`;
 };
 
-describe('generate_minimax_h3.py', () => {
+describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   it('keeps the lexical HF snapshot root when cache entries are blob symlinks', () => {
     const output = runPython(`${importRunner}\n${[
       'import tempfile',
@@ -467,7 +476,11 @@ describe('generate_minimax_h3.py', () => {
 
   it('emits the video_path JSON completion contract on stdout', () => {
     const output = runPython(`${importRunner}\nrunner.emit_result(Path("/tmp/example.mp4"))`);
-    expect(JSON.parse(output)).toEqual({ video_path: '/tmp/example.mp4' });
+    // pathlib.Path renders with the platform separator, so the emitted path is
+    // backslashed on Windows. Normalize what was RECEIVED — the contract under
+    // test is the JSON shape and the key, not the separator the OS spells.
+    const { video_path: videoPath } = JSON.parse(output);
+    expect(videoPath.split('\\').join('/')).toBe('/tmp/example.mp4');
   });
 
   it('loads only the pinned namespace and cannot import a root-level shadow module', () => {
