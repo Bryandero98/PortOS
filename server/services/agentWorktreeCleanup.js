@@ -25,7 +25,7 @@ import { PATHS } from '../lib/fileUtils.js';
 import { isRetryHoldOwner, clearedRetryHoldMetadata } from '../lib/taskRetryHold.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
 import { detectForgeCli } from '../lib/gitForge.js';
-import { PR_COMPLETIONS, PR_COMPLETION_VALUES, PR_CREATION, leavesPrForHuman } from '../lib/prDisposition.js';
+import { PR_COMPLETIONS, PR_COMPLETION_VALUES, PR_CREATION, leavesPrForHuman, prClaimWasVerified } from '../lib/prDisposition.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, EFFORT_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
 
 // In-flight cleanup per agentId, so two completion paths racing to clean the
@@ -145,14 +145,25 @@ async function runCleanupAgentWorktree(agentId, success, { prCreation = PR_CREAT
       createPr = true;
       emitLog('warn', `🌳 ${agentId} owned its PR workflow but opened no pull request for ${worktreeBranch} — PortOS is opening one`, { agentId, branchName: worktreeBranch });
       warnings.push(`Agent ${agentId} was told to open its own pull request for ${worktreeBranch} but did not; PortOS opened it instead.`);
-    } else if (verdict.ok) {
+    } else if (prClaimWasVerified(verdict)) {
       // `found`, or `noChangesToShip` — the branch holds nothing a PR could be
       // opened for. Either way the agent's contract was met.
+      //
+      // The `verdict.branch` term is load-bearing: `verifyPrClaim` has a THIRD
+      // `ok: true` shape — `{ ok: true, branch: null }`, its explicit "we could
+      // not name a branch, so nothing was verified" sentinel (a detached HEAD,
+      // e.g. an agent that left an aborted rebase behind). Reading that as a
+      // confirmed PR would stand down AND, because the stand-down is not marked
+      // uncertain, let the cleanup below `git branch -D` a branch that was never
+      // pushed and has no PR. Absent must not collapse into verified.
       emitLog('info', `🌳 ${agentId} opened its own pull request for ${worktreeBranch} — PortOS is standing down`, { agentId, branchName: worktreeBranch });
     } else {
+      // `forge-unreachable`, or the no-branch sentinel above. Neither is
+      // evidence a PR exists, and neither is evidence one is missing.
       preserveBranchOnStandDown = true;
-      emitLog('warn', `🌳 Could not confirm a pull request for ${worktreeBranch} (${verdict.category}) — keeping the branch rather than opening a possible duplicate`, { agentId, branchName: worktreeBranch });
-      warnings.push(`Could not confirm a pull request for ${worktreeBranch} (${verdict.category}); the branch was preserved for manual follow-up rather than risking a duplicate PR.`);
+      const why = verdict.category || 'nothing to verify against';
+      emitLog('warn', `🌳 Could not confirm a pull request for ${worktreeBranch} (${why}) — keeping the branch rather than opening a possible duplicate`, { agentId, branchName: worktreeBranch });
+      warnings.push(`Could not confirm a pull request for ${worktreeBranch} (${why}); the branch was preserved for manual follow-up rather than risking a duplicate PR.`);
     }
   }
 
@@ -338,6 +349,42 @@ async function runCleanupAgentWorktree(agentId, success, { prCreation = PR_CREAT
     warnings.push(`Push failed for branch ${worktreeBranch} — worktree preserved at ${worktreePath} for manual retry`);
     emitLog('warn', `🌳 Push failed for ${worktreeBranch} — worktree preserved at ${worktreePath} for manual retry`, { agentId, branchName: worktreeBranch });
     return warnings;
+  }
+
+  // A run that owned its PR workflow and FAILED may still have opened the PR
+  // before it died — the prompt has it open one at step 3 and merge at step 4,
+  // so a reap in between (max-runtime, idle reaper, spend limit, host shutdown)
+  // leaves a real PR with nothing watching it (#3733). The old flow could not
+  // produce this: PortOS opened the PR only on success and spawned the follow-up
+  // in the same breath. The retry adopts the PR ("if `gh` reports the pull
+  // request already exists, adopt it"), but a task that exhausts its retry
+  // budget and goes `blocked` would strand it — and the orphaned-PR notifier
+  // keys on a follow-up task's `reviewLoopPRUrl`, which an inline run never
+  // creates. So hand it to the same follow-up machinery the old flow used.
+  if (prCreation === PR_CREATION.IF_MISSING && !success) {
+    const worktreePath = agentState.metadata.workspacePath || join(PATHS.worktrees, agentId);
+    const { findPullRequestForBranch } = await import('./github.js');
+    const { env } = await git.resolveForgeForRepo(worktreePath).catch(() => ({ env: null }));
+    const found = await findPullRequestForBranch(worktreeBranch, { cwd: worktreePath, env: env || null })
+      .catch(() => ({ status: 'unavailable' }));
+    if (found.status === 'found' && found.url) {
+      emitLog('warn', `🌳 ${agentId} failed after opening ${found.url} — handing the PR to a follow-up so it isn't stranded`, { agentId, prUrl: found.url, branchName: worktreeBranch });
+      warnings.push(`Agent ${agentId} failed after opening ${found.url}; a follow-up was queued to land it.`);
+      await spawnReviewLoopFollowUp({
+        originalAgentId: agentId,
+        originalTask,
+        prUrl: found.url,
+        prBranch: worktreeBranch,
+        sourceWorkspace,
+        prCompletion: PR_COMPLETION_VALUES.includes(prCompletion) ? prCompletion : PR_COMPLETIONS.REVIEW_THEN_MERGE,
+        reviewers, usernames, optionalReviewers, reviewerMaxRounds,
+        reviewStopMode, reviewerApplies, reviewerModels, reviewerEfforts,
+        leaveOpen: leavesPrForHuman(originalTask),
+      }).catch(err => {
+        emitLog('warn', `🌳 Failed to spawn a follow-up for orphaned ${found.url}: ${err.message}`, { agentId });
+        warnings.push(`Could not queue a follow-up for ${found.url}: ${err.message}`);
+      });
+    }
   }
 
   // Default: auto-merge on success, just cleanup on failure.

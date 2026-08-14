@@ -723,6 +723,11 @@ describe('spawnTuiAgent runtime', () => {
 
   it('does not double-fire a PR owned by a slashdo-capable Claude TUI', async () => {
     const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    // finalize asked the forge and got an answer for a real branch — the only
+    // shape that lets cleanup skip its own query (see `prClaimWasVerified`).
+    vi.mocked(agentLifecycle.finalizeAgent).mockResolvedValueOnce({
+      success: true, prVerdict: { ok: true, branch: 'cos/task-1/agent-1' },
+    });
     const spawnPromise = runSpawn({
       provider: { id: 'claude-code-tui', name: 'Claude TUI', type: 'tui', command: 'claude', envVars: {} },
       task: {

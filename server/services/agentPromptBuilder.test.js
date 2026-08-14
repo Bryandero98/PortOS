@@ -413,22 +413,60 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/gh pr merge/);
     });
 
-    it('an OpenCode TUI JIRA task opens its own PR but leaves it open instead of merging', () => {
+    it('an OpenCode TUI JIRA task still hands its PR to PortOS — the agent opens one only when it also lands it', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { openPR: true, analysisType: 'jira-sprint-manager' } }),
         '/r',
         { branchName: 'claim/x', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
-      // The harness opens the PR itself (#3733) — but a JIRA-tracked PR is a
-      // human's to land, so no merge steps and no inline review loop.
-      expect(prompt).toMatch(/gh pr create/);
-      expect(prompt).toMatch(/Leave the PR open — do NOT merge it/);
-      expect(prompt).toMatch(/tracked in JIRA/);
+      // A JIRA-tracked PR is a human's to land, so there is no merge section for
+      // the agent to drive — and an agent told to open a PR it will never land
+      // just races PortOS's own `gh pr create` for the same branch.
+      expect(prompt).not.toMatch(/gh pr create/);
+      expect(prompt).toMatch(/JIRA-linked human handoff/);
       expect(prompt).not.toMatch(/## Review Loop/);
       expect(prompt).not.toMatch(/## Merge Gate/);
       expect(prompt).not.toMatch(/gh pr merge/);
       expect(prompt).not.toMatch(/glab mr merge/);
+    });
+
+    it('a non-worktree run never gets the PR steps — there is no branch name to put in them', () => {
+      // The production shape is a JIRA-ticket run (agentWorkspacePrep skips
+      // worktree creation when a jiraBranch is set). Emitting the steps anyway
+      // rendered a literal `<branch>` placeholder for the agent to guess at.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        null,
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).not.toMatch(/gh pr create/);
+      expect(prompt).not.toMatch(/git push -u origin/);
+      // …and no dangling "step 4 of the Completion Workflow above" pointing at
+      // a section that was never emitted.
+      expect(prompt).not.toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/\$PR_URL/);
+    });
+
+    it.each([
+      ['a read-only task', { openPR: true, readOnly: true }],
+      ['a no-code-output task', { openPR: true, noCodeOutput: true }],
+      ['a Creative Director task', { openPR: true, creativeDirector: true }],
+      ['a discard-worktree reasoning task', { openPR: true, discardWorktree: true }],
+    ])('%s is never told it owns a PR, and gets no inline loop', (_label, metadata) => {
+      // These completion contracts never mention a PR. Claiming ownership for
+      // them routed a reasoning run into cleanup's did-you-open-it net, which
+      // opened a PR for it and filed a HIGH notification blaming the agent.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).not.toMatch(/gh pr create/);
+      expect(prompt).not.toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/## Merge Gate/);
     });
 
     it('a leave-open review follow-up on a GitLab MR comments with glab, not gh', () => {

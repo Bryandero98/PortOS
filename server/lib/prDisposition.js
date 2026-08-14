@@ -107,3 +107,24 @@ export function resolvePrCreation({ taskOpenPR, agentOwnsPr, prClaimVerified }) 
   if (!agentOwnsPr) return PR_CREATION.ALWAYS;
   return prClaimVerified ? PR_CREATION.NEVER : PR_CREATION.IF_MISSING;
 }
+
+/**
+ * Did a `verifyPrClaim` result actually come from the forge about a real branch?
+ *
+ * `{ ok: true }` alone does NOT mean "a PR exists" — it is also what the
+ * function returns when there was nothing to verify (`prExpected` false, a
+ * failed run, no workspace), when the branch could not be named (detached
+ * HEAD → `{ ok: true, branch: null }`), and what the callers substitute when
+ * the check itself threw or the run was user-terminated. Every one of those is
+ * "we did not ask", and collapsing them into "asked and it's there" is how a
+ * branch with no PR gets cleaned up as if it had one.
+ *
+ * A verified verdict therefore requires BOTH `ok` and a named `branch` — which
+ * only the `found` and `noChangesToShip` shapes carry.
+ *
+ * @param {{ok?: boolean, branch?: string|null}|null|undefined} prVerdict
+ * @returns {boolean}
+ */
+export function prClaimWasVerified(prVerdict) {
+  return prVerdict?.ok === true && !!prVerdict.branch;
+}

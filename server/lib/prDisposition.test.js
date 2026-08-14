@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PR_COMPLETIONS, PR_CREATION, resolvePrCompletion, resolvePrCreation } from './prDisposition.js';
+import { PR_COMPLETIONS, PR_CREATION, prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from './prDisposition.js';
 
 describe('resolvePrCompletion', () => {
   it('prefers an explicit valid disposition', () => {
@@ -37,9 +37,41 @@ describe('resolvePrCreation (#3733)', () => {
     expect(resolvePrCreation({ taskOpenPR: true, agentOwnsPr: true, prClaimVerified: false })).toBe(PR_CREATION.IF_MISSING);
   });
 
+  it('backstops an owner whose claim was never actually verified', () => {
+    // `prClaimVerified` is the ACTUAL verdict, not "was one expected" — finalize
+    // substitutes a bare `{ok:true}` when its check throws or the run was
+    // user-terminated, and a throw from finalize skips the assignment entirely.
+    expect(resolvePrCreation({ taskOpenPR: true, agentOwnsPr: true, prClaimVerified: false })).toBe(PR_CREATION.IF_MISSING);
+  });
+
   it('stands down for an owner finalize already verified, rather than re-asking the forge', () => {
     // A slashdo-capable run that reaches cleanup as a success already passed
     // verifyPrClaim; a second `gh pr list` would be pure duplication.
     expect(resolvePrCreation({ taskOpenPR: true, agentOwnsPr: true, prClaimVerified: true })).toBe(PR_CREATION.NEVER);
+  });
+});
+
+describe('prClaimWasVerified (#3733)', () => {
+  it('accepts only a forge answer about a real branch', () => {
+    expect(prClaimWasVerified({ ok: true, branch: 'feature-x' })).toBe(true);
+    expect(prClaimWasVerified({ ok: true, branch: 'feature-x', noChangesToShip: true })).toBe(true);
+  });
+
+  it('rejects a bare ok — that is "nothing was verified", not "a PR exists"', () => {
+    // verifyPrClaim returns this shape for a run it never checked (prExpected
+    // false, a failed run, no workspace) and for a branch it could not name
+    // (detached HEAD); both finalize and cleanup also substitute it when the
+    // check throws or the run was user-terminated. Reading it as a confirmed PR
+    // is what let a stand-down delete an unpushed branch with no PR.
+    expect(prClaimWasVerified({ ok: true })).toBe(false);
+    expect(prClaimWasVerified({ ok: true, branch: null })).toBe(false);
+    expect(prClaimWasVerified({ ok: true, branch: '' })).toBe(false);
+  });
+
+  it('rejects a real negative verdict, and a missing one', () => {
+    expect(prClaimWasVerified({ ok: false, branch: 'b', category: 'pr-missing' })).toBe(false);
+    expect(prClaimWasVerified({ ok: false, branch: 'b', category: 'forge-unreachable' })).toBe(false);
+    expect(prClaimWasVerified(undefined)).toBe(false);
+    expect(prClaimWasVerified(null)).toBe(false);
   });
 });

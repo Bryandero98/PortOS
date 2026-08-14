@@ -21,7 +21,7 @@ import { PATHS } from '../lib/fileUtils.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
-import { resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
@@ -1082,6 +1082,12 @@ export async function spawnTuiAgent({
       providerCommand: provider?.command,
       leanMode,
     });
+    // Whether finalize's check ACTUALLY produced a forge answer, filled in from
+    // its return below. Deliberately not `prClaimExpected`: finalize substitutes
+    // `{ok:true}` for a user-terminated run and for a check that threw, and a
+    // throw from finalize itself skips the assignment entirely — in all three
+    // cases nothing was verified, so cleanup must ask rather than stand down.
+    let prClaimVerified = false;
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
     // hook crash) still runs the local cleanup — sentinel removal, worktree
@@ -1115,6 +1121,7 @@ export async function spawnTuiAgent({
         startedAt: agentData?.startedAt ?? null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
+      prClaimVerified = prClaimWasVerified(finalized?.prVerdict);
     } finally {
       // This run's sentinel only — a sibling agent sharing this workspace owns
       // its own file and may still be running.
@@ -1130,7 +1137,7 @@ export async function spawnTuiAgent({
           })
         : {};
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        prCreation: resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified: prClaimExpected }),
+        prCreation: resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified }),
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

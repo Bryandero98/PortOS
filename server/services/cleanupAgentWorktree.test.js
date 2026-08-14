@@ -541,6 +541,23 @@ describe('cleanupAgentWorktree - PR-creation path', () => {
       expect(warnings).toEqual([]);
     });
 
+    it('treats the no-branch sentinel as uncertain — it is NOT a confirmed PR', async () => {
+      // `verifyPrClaim` returns `{ok:true, branch:null}` when it could not name a
+      // branch (detached HEAD — e.g. an agent that left an aborted rebase
+      // behind). Reading that third `ok:true` shape as "the agent opened its PR"
+      // stood cleanup down AND, because the stand-down was not marked uncertain,
+      // let `removeWorktree` force-delete a branch that was never pushed and has
+      // no PR — losing the commits outright.
+      verifyPrClaimMock.mockResolvedValue({ ok: true, branch: null });
+
+      const warnings = await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+      expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123',
+        expect.objectContaining({ preserveBranchWithCommits: true }));
+      expect(warnings.some(w => w.includes('Could not confirm a pull request'))).toBe(true);
+    });
+
     it('treats a thrown verification as uncertain, not as "no PR"', async () => {
       // Failing open here would open a duplicate PR on every transient error.
       verifyPrClaimMock.mockRejectedValue(new Error('boom'));

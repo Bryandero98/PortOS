@@ -36,7 +36,7 @@ import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } 
 import { resolveForgeTokenEnv } from './git.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
-import { resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { doneSentinelPath } from '../lib/agentSentinel.js';
 import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
@@ -753,6 +753,12 @@ export async function spawnDirectly({
       providerCommand: provider?.command,
       leanMode: directLeanMode,
     });
+    // Whether finalize's check ACTUALLY produced a forge answer (filled in from
+    // its return below) — not the same question as whether one was expected.
+    // Finalize substitutes `{ok:true}` for a user-terminated run and for a check
+    // that threw, and a throw from finalize skips the assignment entirely; in all
+    // three cases nothing was verified, so cleanup must ask rather than stand down.
+    let directPrClaimVerified = false;
 
     // try/finally so a throw from finalizeAgent still runs the local
     // cleanup (worktree, pid unregister, activeAgents delete). Mirrors the
@@ -781,6 +787,7 @@ export async function spawnDirectly({
         startedAt: agentData?.startedAt ?? null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
+      directPrClaimVerified = prClaimWasVerified(finalized?.prVerdict);
     } finally {
       const directPrCompletion = resolvePrCompletion(task.metadata);
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
@@ -789,7 +796,7 @@ export async function spawnDirectly({
         prCreation: resolvePrCreation({
           taskOpenPR: directOpenPR,
           agentOwnsPr: directAgentOwnsPR,
-          prClaimVerified: directPrClaimExpected,
+          prClaimVerified: directPrClaimVerified,
         }),
         prCompletion: directPrCompletion,
         ...reviewOptions,

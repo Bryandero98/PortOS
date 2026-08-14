@@ -52,9 +52,10 @@ import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { createAgentRun } from './agentRunTracking.js';
 import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { capturePrimaryCheckoutState } from '../lib/primaryCheckoutGuard.js';
-import { buildAgentPrompt, getAppWorkspace } from './agentPromptBuilder.js';
+import { buildAgentPrompt, getAppWorkspace, inlinePrLifecycleSection } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
-import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
+import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { prClaimWasVerified } from '../lib/prDisposition.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
@@ -466,12 +467,27 @@ async function runAgentSpawn(task) {
       providerCommand: provider.command || null,
       leanMode,
       // Whether THIS run's prompt told the agent to push, open, review, and merge
-      // its own PR (`agentOwnsPrWorkflow`). Persisted rather than re-derived at
-      // cleanup time: the two must agree exactly or PortOS double-fires
-      // `gh pr create`, and a pre-upgrade record has no value here at all — so
-      // cleanup falls back to the old `canTypeSlashCommands` derivation when the
-      // key is absent, which is what those older runs were actually prompted with.
-      ownsPrWorkflow: agentOwnsPrWorkflow({ providerType: provider.type, leanMode }),
+      // its own PR. Persisted rather than re-derived at cleanup time: the two
+      // must agree exactly or PortOS double-fires `gh pr create`. A pre-upgrade
+      // record has no value here, so cleanup falls back to the old
+      // `canTypeSlashCommands` derivation — what those runs were prompted with.
+      //
+      // Stamped from `inlinePrLifecycleSection`, the SAME predicate that decided
+      // whether the prompt above emitted the PR steps — NOT from `provider.type`
+      // alone. Ownership depends on task shape too (read-only, no-code-output,
+      // discard-worktree, JIRA/leave-open, and no-worktree runs are all told
+      // PortOS owns the PR), and a provider-only stamp claimed ownership for
+      // every one of them — routing a Creative Director reasoning run into the
+      // did-you-open-it net, which then opened a PR for it and filed a HIGH
+      // notification blaming the agent for skipping a step it was never given.
+      ownsPrWorkflow: inlinePrLifecycleSection(task, {
+        providerType: provider.type,
+        providerId: provider.id,
+        providerCommand: provider.command,
+        leanMode,
+        worktreeInfo,
+        isTruthyMetaFn: isTruthyMeta,
+      }) !== null,
       model: selectedModel,
       // The reasoning-effort override this run was dispatched with (null when the
       // task pinned none). Persisted next to the model because the Resume Agent
@@ -1128,6 +1144,11 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // reach the cleanup below, which otherwise removes the worktree, deletes the
     // local branch, and skips the resume pointer for a run it believes succeeded.
     let cleanupSuccess = effectiveSuccess;
+    // Whether finalize's PR-claim check actually produced a forge answer. Threaded
+    // to cleanup rather than re-derived there: a run whose check threw, was
+    // user-terminated, or whose finalize threw outright verified nothing, and
+    // cleanup must ask the forge itself rather than assume the PR exists.
+    let runnerPrClaimVerified = false;
     try {
       const finalized = await finalizeAgent({
         agentId,
@@ -1146,6 +1167,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
         startedAt: Number.isFinite(runStartedAt) ? runStartedAt : null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
+      runnerPrClaimVerified = prClaimWasVerified(finalized?.prVerdict);
     } catch (err) {
       finalizeError = err;
       emitLog('error', `finalizeAgent threw for ${agentId} (continuing cleanup): ${err.message}`, { agentId, error: err.message });
@@ -1155,7 +1177,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // pipeline progression, the Creative Director chain hook, and worktree
     // cleanup (+ cleanup-warning notification and merge-recovery task). Runs
     // inside this try so a throw still hits the finally below.
-    await runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess: cleanupSuccess, outputBuffer });
+    await runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess: cleanupSuccess, outputBuffer, prClaimVerified: runnerPrClaimVerified });
 
     // Surface a finalizeAgent throw to the caller after best-effort
     // cleanup completed — without this the runner harness would never see

@@ -140,9 +140,12 @@ describe('handlePipelineProgression', () => {
 describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', () => {
   const prTask = { id: 't', taskType: 'user', metadata: { openPR: true } };
 
-  const cleanupCallFor = async (agent) => {
+  // `prClaimVerified` is the caller's answer to "did finalize's PR-claim check
+  // actually produce a forge verdict for this run?" — threaded in, never
+  // re-derived here (see the note at its use site).
+  const cleanupCallFor = async (agent, { prClaimVerified = false } = {}) => {
     await runAgentCompletionCleanup({
-      agentId: 'a1', task: prTask, agent, effectiveSuccess: true, outputBuffer: '',
+      agentId: 'a1', task: prTask, agent, effectiveSuccess: true, outputBuffer: '', prClaimVerified,
     });
     // cleanupAgentWorktree(agentId, success, options) — options is the 3rd arg.
     return cleanupAgentWorktree.mock.calls.at(-1)[2];
@@ -159,12 +162,26 @@ describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', ()
     expect(opts.skipMerge).toBe(true);
   });
 
-  it('a claude session that owns its PR workflow needs no second forge query', async () => {
-    // Finalize already ran `verifyPrClaim`, and a run that reaches cleanup as a
-    // success passed it — re-asking would be a duplicate `gh pr list`.
-    const opts = await cleanupCallFor({ providerId: 'claude-code', providerCommand: 'claude', leanMode: false, ownsPrWorkflow: true });
+  it('a claude session whose claim finalize VERIFIED needs no second forge query', async () => {
+    // Finalize already asked the forge and got an answer; re-asking would be a
+    // duplicate `gh pr list` on every completing Claude agent.
+    const opts = await cleanupCallFor(
+      { providerId: 'claude-code', providerCommand: 'claude', leanMode: false, ownsPrWorkflow: true },
+      { prClaimVerified: true });
     expect(opts.prCreation).toBe('never');
     expect(opts.skipMerge).toBe(true);
+  });
+
+  it('an owner whose claim finalize did NOT verify still gets the backstop', async () => {
+    // The regression this guards: `prExpected` being true does NOT mean a verdict
+    // was produced. Finalize substitutes `{ok:true}` when the check throws or the
+    // run was user-terminated, and a throw from finalize itself skips the
+    // assignment entirely — deriving "already verified" from the provider would
+    // stand cleanup down on a run whose PR was never confirmed, orphaning it.
+    const opts = await cleanupCallFor(
+      { providerId: 'claude-code', providerCommand: 'claude', leanMode: false, ownsPrWorkflow: true },
+      { prClaimVerified: false });
+    expect(opts.prCreation).toBe('if-missing');
   });
 
   it('a lean --bare claude session does NOT own its PR (it fumbles multi-step flows)', async () => {
@@ -185,27 +202,27 @@ describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', ()
   });
 
   it.each([
-    ['claude-code', 'claude', 'never'],
-    ['claude-code-bedrock', 'claude', 'never'],
+    ['claude-code', 'claude', true],
+    ['claude-code-bedrock', 'claude', true],
     // The case an id allowlist missed: a path-configured claude under a custom id
     // IS told to run /do:pr, so PortOS must not open a second PR.
-    ['my-custom-agent', '/opt/homebrew/bin/claude', 'never'],
+    ['my-custom-agent', '/opt/homebrew/bin/claude', true],
     // Prompted by the OLD builder, which told these to commit and stop.
-    ['codex', 'codex', 'always'],
-    ['antigravity-cli', 'agy', 'always'],
-  ])('a pre-upgrade %s record falls back to the slash-command derivation it was prompted with', async (providerId, providerCommand, prCreation) => {
+    ['codex', 'codex', false],
+    ['antigravity-cli', 'agy', false],
+  ])('a pre-upgrade %s record falls back to the slash-command derivation it was prompted with', async (providerId, providerCommand, owns) => {
     // No `ownsPrWorkflow` key: written before #3733, so the run really was
     // prompted by the old builder and the old gate is the correct answer.
-    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
-    expect(opts.prCreation).toBe(prCreation);
-    expect(opts.skipMerge).toBe(prCreation === 'never');
+    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false }, { prClaimVerified: owns });
+    expect(opts.prCreation).toBe(owns ? 'never' : 'always');
+    expect(opts.skipMerge).toBe(owns);
   });
 
   it('a pre-upgrade agent record with only providerId still resolves', async () => {
     // Records written before providerCommand/leanMode were persisted: a blank
     // command reads as `claude`, which is what the old id allowlist effectively
     // assumed for the claude-code ids anyway.
-    expect((await cleanupCallFor({ providerId: 'claude-code' })).prCreation).toBe('never');
+    expect((await cleanupCallFor({ providerId: 'claude-code' }, { prClaimVerified: true })).prCreation).toBe('never');
     expect((await cleanupCallFor({ providerId: 'codex-tui' })).prCreation).toBe('always');
   });
 });
