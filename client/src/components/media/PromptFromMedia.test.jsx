@@ -109,4 +109,10 @@ describe('PromptFromMedia', () => {
     });
     expect(screen.getByText('the camera dollies past the subject')).toBeInTheDocument();
   });
+
+  it('skips the disclosure toggle when hosted as an always-open card', () => {
+    renderPanel({ alwaysOpen: true, initialSource: null });
+    expect(screen.queryByRole('button', { name: /toggle prompt from media/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /pick image/i })).toBeInTheDocument();
+  });
 });

@@ -105,13 +105,7 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
     videoLane.trackJob(jobId, sceneId);
   };
 
-  // A restricted model's license gate is enforced server-side, so a render can
-  // still be rejected for terms the board thought were accepted (accepted on
-  // another peer, withdrawn since this page loaded). Refresh the gate state so
-  // the acknowledgement panel appears with the checkbox the message is asking
-  // for, rather than leaving a 403 the user has nowhere to act on.
   const handleVideoError = (err, sceneId, fallbackMessage) => {
-    if (err?.code === 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED') videoSettings?.refreshTerms?.();
     toast.error(err?.message || fallbackMessage);
     videoLane.clearScene(sceneId);
   };

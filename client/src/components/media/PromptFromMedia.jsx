@@ -217,7 +217,7 @@ export default function PromptFromMedia({
       )}
 
       {isOpen && (
-        <div className="p-3 bg-port-bg/70 border border-port-border rounded-lg space-y-3">
+        <div className={alwaysOpen ? 'space-y-3' : 'p-3 bg-port-bg/70 border border-port-border rounded-lg space-y-3'}>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"

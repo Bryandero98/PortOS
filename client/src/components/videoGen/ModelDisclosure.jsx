@@ -13,9 +13,9 @@
 //     place (server/lib/videoDisclosure.js) and can't drift here.
 //
 // It is deliberately NOT part of `ModelSelect` — that component selects models
-// and must stay a plain picker, and it is deliberately NOT where a restricted
-// model's terms gate lives: that is an execution gate every render surface
-// needs, so it is its own component (`ModelTermsGate`) rendered beside this one.
+// and must stay a plain picker. Territory exclusions (when a model declares
+// them) render here as facts next to the weights license, not as a blocking
+// acknowledgement.
 import { Server, Cloud } from 'lucide-react';
 import FactLink from './FactLink.jsx';
 
@@ -136,6 +136,11 @@ export default function ModelDisclosure({
               </Fact>
               <LicenseFact label="Weights license" license={disclosure?.weightsLicense} />
               <LicenseFact label="Runtime license" license={disclosure?.runtimeLicense} />
+              {Array.isArray(model?.termsGate?.excludedTerritories) && model.termsGate.excludedTerritories.length > 0 && (
+                <Fact label="License territory">
+                  Excludes {model.termsGate.excludedTerritories.join(', ')}
+                </Fact>
+              )}
               <Fact label="Estimated download">{formatGb(disclosure?.estimatedDownloadGb)}</Fact>
               <MemoryFact model={model} systemMemoryGb={systemMemoryGb} />
               <Fact label="Supported modes">{modes}</Fact>

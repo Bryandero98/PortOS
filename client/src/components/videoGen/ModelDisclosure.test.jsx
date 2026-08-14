@@ -134,13 +134,19 @@ describe('ModelDisclosure', () => {
     expect(empty.querySelector('details')).toBeNull();
   });
 
-  // The restricted-model terms gate is NOT part of this component — it is an
-  // execution gate every render surface renders for itself (ModelTermsGate).
-  it('never renders a terms gate, even for a model that declares one', () => {
+  it('lists excluded territories as a disclosure fact, not an acknowledgement checkbox', () => {
     renderDisclosure({
       backend: 'local',
-      model: { ...SHIPPED_MODEL, termsGate: { id: 'example-license-v1', title: 'Territory and terms' } },
+      model: {
+        ...SHIPPED_MODEL,
+        termsGate: {
+          id: 'example-license-v1',
+          excludedTerritories: ['European Union', 'United States of America'],
+        },
+      },
     });
+    expect(screen.getByText(/Excludes European Union, United States of America/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Model terms acceptance')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
   });
 });

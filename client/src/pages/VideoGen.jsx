@@ -50,9 +50,7 @@ import IcLoraPanel from '../components/videoGen/IcLoraPanel';
 import AdvancedParamsPanel from '../components/videoGen/AdvancedParamsPanel';
 import RuntimeFingerprint from '../components/videoGen/RuntimeFingerprint';
 import ModelDisclosure from '../components/videoGen/ModelDisclosure';
-import ModelTermsGate from '../components/videoGen/ModelTermsGate';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
-import VideoPreviewPanel from '../components/videoGen/VideoPreviewPanel';
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
@@ -95,9 +93,6 @@ import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVi
 import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord } from '../lib/videoFinish.js';
-import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
-import useVideoModelTerms from '../hooks/useVideoModelTerms.js';
-
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
   { id: 'image',  label: 'Image',  icon: ImageIcon,  desc: 'Image-to-video (start frame)' },
@@ -176,39 +171,6 @@ export default function VideoGen() {
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
   const localResolutionOptions = resolutionOptionsForModel(currentModel);
   const localResolutionBounds = videoEdgeBoundsForModel(currentModel);
-
-  // Restricted model terms are accepted per exact reviewed license id, and the
-  // acceptance is recorded server-side so it authorizes every other render
-  // surface (music video board, pipeline, agent runs) — not just this page in
-  // this browser. That record is the ONLY authorization: no request carries an
-  // acceptance of its own, so the gates below are a UI mirror of what the
-  // server independently enforces on every download and render.
-  const termsGate = !isGrok && currentModel?.termsGate ? currentModel.termsGate : null;
-  const modelTerms = useVideoModelTerms();
-  // Key acceptance by the exact license id, never a shared boolean, so a model
-  // switch can't momentarily apply one model's acceptance to another's terms.
-  const termsAccepted = modelTerms.isAccepted(termsGate?.id);
-  // One-time carry-forward of the browser-local acceptance bit this page used
-  // to keep: the user already performed this exact acknowledgement (same
-  // versioned id) here, so re-home it into settings instead of asking again.
-  // The legacy key is cleared afterwards so it can never re-assert a later
-  // withdrawal, and `migratedTerms` keeps the re-home to one attempt per id —
-  // the effect re-runs on any acceptance-list change, and the PATCH is not
-  // instantaneous.
-  const migratedTerms = useRef(new Set());
-  useEffect(() => {
-    const id = termsGate?.id;
-    if (!id || !modelTerms.loaded || modelTerms.isAccepted(id) || migratedTerms.current.has(id)) return;
-    const legacyKey = `video-gen:terms:${id}`;
-    if (safeReadStorage(legacyKey) !== '1') return;
-    migratedTerms.current.add(id);
-    modelTerms.setAcceptance(id, true).then((saved) => { if (saved) safeWriteStorage(legacyKey, '0'); });
-  }, [termsGate?.id, modelTerms.loaded, modelTerms.isAccepted, modelTerms.setAcceptance]);
-  const handleTermsAcceptedChange = (accepted) => {
-    if (termsGate?.id) modelTerms.setAcceptance(termsGate.id, accepted);
-  };
-  const termsGateBlocked = !!termsGate && !termsAccepted;
-  const termsDescriptionId = termsGate ? 'video-model-terms-requirement' : undefined;
 
   // Every gallery-image slot on this page (both frame panels, each multi-keyframe
   // row, each IC-LoRA reference row) opens the SAME GalleryImagePicker modal the
@@ -321,7 +283,6 @@ export default function VideoGen() {
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState(null);
   const [statusMsg, setStatusMsg] = useState('');
-  const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const { attach, eventSourceRef } = useMediaJobSse('video');
   // Hold the reject() of the in-flight runGeneration Promise so cancel can
@@ -367,7 +328,6 @@ export default function VideoGen() {
         if (msg.message) setStatusMsg(msg.message);
       },
       onComplete: (msg) => {
-        setResult(msg.result);
         setGenerating(false);
         setProgress({ progress: 1 });
         setStatusMsg('Complete');
@@ -395,7 +355,7 @@ export default function VideoGen() {
   };
 
   // Resume an in-flight (or queued) render so a page reload doesn't lose
-  // the preview/progress display. Server holds the job's last SSE payload,
+  // the progress line next to Generate. Server holds the job's last SSE payload,
   // so re-attaching replays the most recent status/progress immediately.
   // Mirrors the ImageGen `getActiveImageJob` mount path.
   useEffect(() => {
@@ -561,13 +521,6 @@ export default function VideoGen() {
 
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
 
-  // Explicit px sizing — maxWidth + maxHeight + aspectRatio together resolves
-  // inconsistently across browsers for mixed orientations.
-  const previewBudget = 420;
-  const previewRatio = (width > 0 && height > 0) ? width / height : 16 / 9;
-  const previewWidth = previewRatio >= 1 ? previewBudget : Math.round(previewBudget * previewRatio);
-  const previewHeight = previewRatio >= 1 ? Math.round(previewBudget / previewRatio) : previewBudget;
-
   // Run a single payload through the SSE pipeline. Returns a promise that
   // resolves when the job completes (or rejects on error / cancel). Shared
   // by the inline submit and the queue worker.
@@ -586,7 +539,6 @@ export default function VideoGen() {
     setGenerating(true);
     setProgress({ progress: 0 });
     setStatusMsg('Starting...');
-    setResult(null);
     setError(null);
 
     const myToken = ++runTokenRef.current;
@@ -640,7 +592,7 @@ export default function VideoGen() {
       if (canEnqueue) handleEnqueue();
       return;
     }
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
@@ -649,7 +601,7 @@ export default function VideoGen() {
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
     enqueue(buildGeneratePayload());
@@ -694,7 +646,7 @@ export default function VideoGen() {
 
   const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked
     && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
-    && !weightsGateBlocked && !keyframesBlocked && !termsGateBlocked));
+    && !weightsGateBlocked && !keyframesBlocked));
 
   return (
     <div className="space-y-3">
@@ -845,8 +797,7 @@ export default function VideoGen() {
                 modelDownload.repair(modelId);
               }}
               onDismiss={() => setDismissedIntegrityKey(integrityKey)}
-              disabled={termsGateBlocked || modelDownload.repairing || modelDownload.downloading}
-              disabledReasonId={termsGateBlocked ? termsDescriptionId : undefined}
+              disabled={modelDownload.repairing || modelDownload.downloading}
               repairing={modelDownload.repairing}
             />
           )}
@@ -899,7 +850,6 @@ export default function VideoGen() {
           <StylePresetPicker
             value={stylePreset?.id || ''}
             onChange={setStylePreset}
-            disabled={generating}
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <FormField label="Prompt" labelClassName="block text-xs font-medium text-gray-400 mb-1">
@@ -925,6 +875,8 @@ export default function VideoGen() {
             </FormField>
           </div>
 
+          {/* Keep Enhance live while a render is in flight so the next clip
+              can be composed and queued. Generate itself becomes Cancel. */}
           <PromptEnhancer
             kind="video"
             prompt={prompt}
@@ -932,14 +884,6 @@ export default function VideoGen() {
             negativePrompt={negativePrompt}
             setNegativePrompt={setNegativePrompt}
             renderConfig={{ stylePreset: stylePreset?.id, mode, model: modelId }}
-            disabled={generating}
-          />
-          <PromptFromMedia
-            kindDefault="both"
-            applyKind="video"
-            setPrompt={setPrompt}
-            setNegativePrompt={setNegativePrompt}
-            disabled={generating}
           />
 
           {mode === 'fflf' && keyframesSupported && (
@@ -1080,9 +1024,6 @@ export default function VideoGen() {
                     onDownload={() => modelDownload.start(modelId)}
                     onCancel={modelDownload.cancel}
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
-                    disabled={termsGateBlocked}
-                    disabledReason="Accept the selected model's eligibility and license terms below before downloading."
-                    disabledReasonId={termsDescriptionId}
                   />
                 )}
                 {activeWeightError && (
@@ -1191,29 +1132,16 @@ export default function VideoGen() {
           </div>
           )}
 
-          {/* A restricted model's server-enforced terms gate, then provenance /
-              licensing / policy scope for the selected backend + model (#3674)
-              — both before Advanced / Generate. */}
-          <div className="space-y-2">
-            <ModelTermsGate
-              termsGate={termsGate}
-              accepted={termsAccepted}
-              onAcceptedChange={handleTermsAcceptedChange}
-              disabled={modelTerms.saving}
-              descriptionId={termsDescriptionId}
-              inputId="video-gen-terms-accept"
-            />
-            <ModelDisclosure
-              backend={backend}
-              backendDisclosures={status?.backendDisclosures}
-              model={isGrok ? null : currentModel}
-              systemMemoryGb={status?.systemMemoryGb}
-            />
-          </div>
+          {/* Provenance / licensing / policy scope for the selected backend +
+              model (#3674). Territory and Community License live here as
+              facts — they do not block download or generate. */}
+          <ModelDisclosure
+            backend={backend}
+            backendDisclosures={status?.backendDisclosures}
+            model={isGrok ? null : currentModel}
+            systemMemoryGb={status?.systemMemoryGb}
+          />
 
-          {/* Sampler/output knobs live behind a closed-by-default disclosure so
-              Generate stays above the fold — the sibling /media/image tab keeps
-              only Model + Resolution inline for the same reason (issue #3279). */}
           {!isGrok && (
             <AdvancedParamsPanel
               mode={mode}
@@ -1245,13 +1173,11 @@ export default function VideoGen() {
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))}
-                aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
+                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))}
                 className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
                 title={
                   byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
-                    : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before generating'
                     : modelWeightsBlocked ? 'Download the selected model weights before generating'
                     : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
                     : textEncoderOptionBlocked ? `Download the ${selectedTextEncoder?.label || 'selected'} text encoder before generating`
@@ -1271,11 +1197,9 @@ export default function VideoGen() {
               type="button"
               onClick={handleEnqueue}
               disabled={!canEnqueue}
-              aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
               className="flex items-center gap-2 px-4 py-2 border border-port-border text-gray-200 hover:text-white hover:bg-port-border/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg min-h-[40px]"
               title={canEnqueue ? 'Add this configuration to the batch queue'
                 : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before queueing`
-                  : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before queueing'
                   : weightsGateBlocked ? 'Finish required model downloads before queueing'
                     : 'Complete the required inputs before queueing'}
             >
@@ -1290,14 +1214,16 @@ export default function VideoGen() {
           </div>
         </div>
 
-        <VideoPreviewPanel
-          result={result}
-          generating={generating}
-          statusMsg={statusMsg}
-          progressPct={progressPct}
-          previewWidth={previewWidth}
-          previewHeight={previewHeight}
-        />
+        <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
+          <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Prompt from media</h2>
+          <PromptFromMedia
+            kindDefault="both"
+            applyKind="video"
+            setPrompt={setPrompt}
+            setNegativePrompt={setNegativePrompt}
+            alwaysOpen
+          />
+        </div>
       </form>
 
       <BatchQueuePanel

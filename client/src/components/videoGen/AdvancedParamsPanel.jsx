@@ -1,24 +1,12 @@
 /**
- * "Advanced" disclosure for the local-backend sampler knobs — frames, chunks
- * (plus their optional per-chunk prompt beats), fps, seed, steps, CFG scale,
- * image strength, tiling and the audio flags.
- *
- * Closed by default so the Generate button sits above the fold on /media/video
- * the way it already does on the sibling /media/image tab (issue #3279), which
- * keeps only Model + Resolution inline too. Every value lives in the VideoGen
- * page's state, so collapsing the panel never discards one — and the collapsed
- * summary line surfaces the values a remix most often carries in (frames, fps,
- * seed) without making the user expand to see them.
+ * Local-backend sampler knobs — frames, chunks (plus optional per-chunk
+ * prompt beats), fps, seed, steps, CFG scale, image strength, tiling and
+ * the audio flags. Always visible in the main form card (no disclosure)
+ * so the right-hand column can host Prompt from media.
  *
  * Presentational: all state and handlers are owned by the VideoGen page.
- *
- * The body is conditionally rendered rather than merely hidden on purpose: a
- * number input that is out of its min/max range while invisible would make the
- * browser refuse the form submit ("invalid form control is not focusable"), so
- * a half-typed Steps/CFG value behind a collapsed panel must not be in the DOM.
  */
-import { useState } from 'react';
-import { ChevronDown, Dice5 } from 'lucide-react';
+import { Dice5 } from 'lucide-react';
 import { FormField } from '../ui/FormField';
 import {
   frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS,
@@ -45,7 +33,6 @@ export default function AdvancedParamsPanel({
   disableAudio, onDisableAudioChange,
   noMusic, onNoMusicChange,
 }) {
-  const [open, setOpen] = useState(false);
   // a2v derives its length + audio track from the uploaded audio, so chunking
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
@@ -62,24 +49,10 @@ export default function AdvancedParamsPanel({
   const fpsOptions = fpsOptionsForModel(currentModel);
   const samplerLocked = currentModel?.samplerLocked === true;
 
-  const summary = `${numFrames}f @ ${fps}fps · ${(numFrames / fps).toFixed(1)}s · seed ${seed === '' || seed == null ? 'random' : seed}`;
-
   return (
-    <div className="border-t border-port-border pt-2">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls="video-advanced-params"
-        className="w-full flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-white min-h-[32px]"
-      >
-        <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
-        <span>Advanced</span>
-        <span className="font-normal text-[11px] text-gray-500 truncate">{summary}</span>
-      </button>
-
-      {open && (
-        <div id="video-advanced-params" className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
+    <div className="border-t border-port-border pt-3 space-y-3">
+      <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Advanced</h2>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <FormField label="Frames" labelClassName="block text-xs font-medium text-gray-400 mb-1">
             <select
               value={numFrames}
@@ -309,7 +282,6 @@ export default function AdvancedParamsPanel({
             </label>
           )}
         </div>
-      )}
     </div>
   );
 }

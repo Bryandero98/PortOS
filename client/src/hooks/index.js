@@ -190,6 +190,5 @@ export * from './useTwinEvaluationSuite.js';
 export * from './useUniverseNav.js';
 export * from './useVideoFileSrc.js';
 export * from './useVideoGenForm.js';
-export { default as useVideoModelTerms } from './useVideoModelTerms.js';
 export * from './useVideoGenQueue.js';
 export * from './useVoiceUiSync.js';

@@ -2082,42 +2082,6 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
 });
 
 describe('generateVideo — MiniMax H3 MLX contract', () => {
-  // Every test below renders H3, which is license-gated: authorization comes
-  // from the install's recorded acknowledgement, re-read here at the render
-  // boundary rather than trusted from the caller's params.
-  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
-
-  it('resolves the license gate from the install record at the render boundary', async () => {
-    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
-    vi.mocked(spawnDetached).mockClear();
-    const base = {
-      jobId: 'h3-terms',
-      modelId: 'minimax_h3_8bit',
-      prompt: 'a fox watches the rain',
-      width: 512, height: 320, numFrames: 141, fps: 24,
-      mode: 'text',
-    };
-
-    settingsState.acceptedModelTerms = [];
-    await expect(generateVideo(base)).rejects.toMatchObject({
-      status: 403,
-      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
-    });
-    // A superseded license revision does not carry forward — a job queued while
-    // the old one was accepted fails closed at execution.
-    settingsState.acceptedModelTerms = ['old-license'];
-    await expect(generateVideo(base)).rejects.toMatchObject({
-      status: 403,
-      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
-    });
-    // A caller cannot assert its own acceptance — only the install record counts.
-    await expect(generateVideo({ ...base, termsAcceptance: H3_TERMS })).rejects.toMatchObject({
-      status: 403,
-      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
-    });
-    expect(spawnDetached).not.toHaveBeenCalled();
-  });
-
   // H3 anchors keyframes at the first/last latent frame only, so the ltx2
   // arbitrary-index array and every non-keyframe conditioning channel stay out.
   it.each([
@@ -3634,19 +3598,5 @@ describe('generateVideo — MiniMax H3 CUDA contract', () => {
 
     const [, args] = cudaCall(spawnMock);
     expect(args).not.toContain('--offload-profile');
-  });
-
-  it('rejects the license gate from the install record, same as the MLX entry', async () => {
-    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
-    vi.mocked(spawnDetached).mockClear();
-    settingsState.acceptedModelTerms = [];
-
-    await expect(generateVideo({
-      jobId: 'h3-cuda-terms',
-      modelId: 'minimax_h3_cuda',
-      prompt: 'a fox watches the rain',
-      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
-    })).rejects.toMatchObject({ code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
-    expect(spawnDetached).not.toHaveBeenCalled();
   });
 });

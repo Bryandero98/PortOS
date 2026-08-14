@@ -1,0 +1,2 @@
+- Video Gen drops the Preview card: advanced settings stay open in the form, and Prompt from media lives in the right-hand column.
+- MiniMax H3 no longer asks for an eligibility checkbox — the Community License and excluded territories stay in the model details, and download / generate are not blocked.

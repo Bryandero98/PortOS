@@ -42,12 +42,8 @@ import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, des
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
 import { videoLoraFamily } from '../../lib/runners.js';
 import {
-  isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
-} from '../../lib/videoDisclosure.js';
-import {
   publicVideoTextEncoderOptions, resolveVideoTextEncoder,
 } from '../../lib/videoTextEncoders.js';
-import { getSettings } from '../settings.js';
 import {
   isIcLoraMode, icLoraSpecForMode, resolveIcLoraWeight,
   assertIcReferenceCount, icResolutionIssue,
@@ -1014,18 +1010,6 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   const model = resolveVideoModel(modelId);
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
-  // Final execution-boundary gate for a restricted model's license. Route
-  // preparation also rejects early, but internal producers, persisted jobs, and
-  // retries all reach this function directly — so authorization is resolved
-  // HERE, from the install's recorded acknowledgements, rather than trusted
-  // from a caller-supplied parameter. Read at execution time, so a withdrawn
-  // acknowledgement (or a license revision that mints a new id) fails a job
-  // that was queued while it was still accepted. Ungated models never pay for
-  // the settings read.
-  if (videoModelTermsGateId(model)
-    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
-    throw videoModelTermsError(model);
-  }
   // Validate the mode contract before cache lookups, image resize, or staging
   // work. Internal producers and persisted/retried jobs bypass route
   // preparation, so silently dropping one of these inputs here would render a

@@ -1,6 +1,6 @@
 // Outbound link to a primary source (a model card, a license text) as rendered
-// by the disclosure surfaces. Shared by ModelDisclosure and ModelTermsGate so
-// the two halves of one panel can't drift apart on link affordance.
+// by the disclosure surfaces so the panel's license and source links stay one
+// affordance.
 import { ExternalLink } from 'lucide-react';
 
 export default function FactLink({ href, children }) {

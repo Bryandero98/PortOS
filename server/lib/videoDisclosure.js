@@ -68,17 +68,14 @@ const RUNTIME_LICENSE = {
   },
 };
 
-// Unlike an informational disclosure, this is an execution gate. The upstream
-// license grants rights solely in its Applicable Territory and makes use itself
-// acceptance, so PortOS requires the exact versioned key on both download and
-// generation requests.
+// Informational territory facts for ModelDisclosure — not an execution gate.
+// The license is use-as-acceptance; PortOS surfaces the exclusions and the
+// license link rather than blocking download or generate.
 //
 // Shared verbatim by every MiniMax H3 entry — the MLX port and the CUDA path
-// load the same weights under the same license, so one acceptance is the honest
-// scope. Sharing the OBJECT (rather than repeating its fields) is what keeps the
-// `id` identical: acceptance is recorded by id in settings, so a second entry
-// with its own id would re-prompt a user who has already accepted, and a later
-// edit to one copy would silently split the two gates apart.
+// load the same weights under the same license. Sharing the OBJECT (rather
+// than repeating its fields) keeps the `id` identical if an older client
+// still writes `acceptedModelTerms`.
 const MINIMAX_H3_TERMS_GATE = Object.freeze({
   id: 'minimax-h3-community-license-2026-08-02',
   title: 'MiniMax H3 eligibility and terms',

@@ -3,3 +3,4 @@
 - Windows: orphaned and merged CoS worktrees were never cleaned up, because git reports POSIX paths while PortOS built Windows ones
 - Series Autopilot retires a queued gap task when a new run starts, so CoS stops dispatching agents against findings the resumed run has already repaired
 - Single-file HuggingFace downloads no longer sit at 100% for the whole transfer — the badge now tracks bytes.
+- Enhance with AI and Prompt from media stay usable during a video render so the next clip can be queued.

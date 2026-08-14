@@ -19,8 +19,8 @@ import { videoModelTermsSchema } from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
 import {
-  VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted, acceptedVideoModelTerms,
-  videoModelTermsGateId, videoModelTermsError,
+  VIDEO_BACKEND_DISCLOSURES, acceptedVideoModelTerms,
+  videoModelTermsGateId,
 } from '../lib/videoDisclosure.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
@@ -832,12 +832,6 @@ router.post('/models/:modelId/repair', asyncHandler(async (req, res) => {
 router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const model = listVideoModels().find((m) => m.id === req.params.modelId);
   if (!model) throw new ServerError(`Unknown video model: ${req.params.modelId}`, { status: 404 });
-  // Only a gated model needs the recorded acknowledgement list — skip the
-  // settings read (and its deep clone) for every ordinary model.
-  if (videoModelTermsGateId(model)
-    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
-    throw videoModelTermsError(model, 'download');
-  }
   const repos = modelDownloadTargets(model);
   if (repos.length === 0) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
   const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];

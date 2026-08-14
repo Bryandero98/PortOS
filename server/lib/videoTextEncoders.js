@@ -83,11 +83,8 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
         weightsLicense: APACHE_2,
         reviewedAt: '2026-08-14',
       }),
-      // Informational, NOT a terms gate. H3's own `termsGate` already gates the
-      // render on its Community License, and this conditioner is plain
-      // Apache-2.0 with nothing extra to accept — so a second acknowledgement
-      // click would be friction with no legal basis behind it. What the user
-      // does need is to know the behavior changed, which the picker states
+      // Informational, NOT a second license. This conditioner is Apache-2.0
+      // with nothing extra to accept. The picker states the behavior change
       // inline at the moment of choosing.
       advisory:
         'This conditioner has had its refusal behavior removed. It will follow prompts the stock '

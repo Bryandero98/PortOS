@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import toast from '../components/ui/Toast';
 import { updateMusicVideoProject } from '../services/apiMusicVideo.js';
 import { getVideoGenStatus, listLorasFull } from '../services/apiImageVideo.js';
-import useVideoModelTerms from './useVideoModelTerms.js';
 import { loraFamilyOf, VIDEO_LORA_FAMILIES } from '../lib/runnerFamilies';
 
 const isLtx23 = (model) => !!model
@@ -78,27 +77,12 @@ export default function useMusicVideoModelSettings({ project, onProjectPatch } =
   const audioReactiveReady = !!(isLtx23(activeModel) && detectedAudioReactiveLora);
   const audioReactiveSelected = settings.backend === 'local' && settings.generationMode === 'audioReactive';
 
-  // Restricted-model license gate. A gated model reached from this board used
-  // to 403 at generate time with no way to resolve it from here — the
-  // acknowledgement UI only existed on the Video Gen page. Acceptance is now
-  // install-wide, so this board both reads it and can capture it inline.
-  // Grok renders never touch the local registry, so no gate applies there.
-  const modelTerms = useVideoModelTerms();
-  const termsGate = settings.backend !== 'grok' && activeModel?.termsGate ? activeModel.termsGate : null;
-  const termsAccepted = modelTerms.isAccepted(termsGate?.id);
-  const termsBlocked = !!termsGate && !termsAccepted;
-  const acceptTerms = (accepted) => {
-    if (termsGate?.id) modelTerms.setAcceptance(termsGate.id, accepted);
-  };
-
   // One reason string for every scene-video kickoff gate, so the disabled
   // buttons, their tooltips, and the toast a blocked call raises all say the
   // same resolvable thing. `null` means nothing is blocking.
-  const videoBlockedReason = termsBlocked
-    ? `${termsGate.title || 'This model’s license terms'} must be accepted before generating`
-    : (audioReactiveSelected && !audioReactiveReady
-      ? 'Audio-reactive generation requires an installed LTX-2.3 audio-reactive LoRA and an LTX-2.3 local model'
-      : null);
+  const videoBlockedReason = audioReactiveSelected && !audioReactiveReady
+    ? 'Audio-reactive generation requires an installed LTX-2.3 audio-reactive LoRA and an LTX-2.3 local model'
+    : null;
 
   const change = (patch) => {
     if (!project || saving) return;
@@ -162,15 +146,7 @@ export default function useMusicVideoModelSettings({ project, onProjectPatch } =
     detectedAudioReactiveLora,
     audioReactiveReady,
     audioReactiveSelected,
-    termsGate,
-    termsAccepted,
-    termsSaving: modelTerms.saving,
     videoBlockedReason,
-    acceptTerms,
-    // Re-read after a render is rejected for terms, so a gate accepted (or
-    // withdrawn) elsewhere repaints this board instead of stranding the user
-    // on a 403 whose cause is invisible here.
-    refreshTerms: modelTerms.refresh,
     change,
     changeFramePin,
   };
