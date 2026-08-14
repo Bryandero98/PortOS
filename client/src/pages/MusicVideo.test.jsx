@@ -112,9 +112,7 @@ import {
   deleteMusicVideoProject, transcribeMusicVideoMidi,
 } from '../services/apiMusicVideo.js';
 import { importTrackFromYoutube, trackImportEventsUrl, listTracks } from '../services/apiTracks.js';
-import {
-  generateVideo, getVideoGenStatus, getVideoModelTerms, setVideoModelTerms,
-} from '../services/apiImageVideo.js';
+import { generateVideo, getVideoGenStatus } from '../services/apiImageVideo.js';
 
 const PROJECT_ANALYZED = {
   ...PROJECT_NO_CLIP,
