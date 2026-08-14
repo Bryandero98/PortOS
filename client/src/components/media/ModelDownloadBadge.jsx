@@ -17,6 +17,7 @@ const STAGE_LABELS = {
   starting: 'Starting…',
   list: 'Fetching file list…',
   download: 'Downloading…',
+  verify: 'Verifying…',
 };
 
 export default function ModelDownloadBadge({
@@ -40,9 +41,19 @@ export default function ModelDownloadBadge({
 
   if (status.downloading) {
     const frame = status.progress || {};
+    const hasBytes = Number.isFinite(frame.downloaded);
     const pct = typeof frame.progress === 'number' ? Math.round(frame.progress * 100) : null;
+    // A 1-file pull used to report 100% the moment the file started. Hide a
+    // bare 0% (file just started, no bytes yet) so we don't flash a number
+    // that is not a transfer percentage.
+    const showPct = pct != null && (hasBytes || pct > 0 || frame.stage === 'verify');
     const stage = STAGE_LABELS[frame.stage] || (frame.type === 'log' ? 'Downloading…' : (STAGE_LABELS[frame.type] || 'Downloading…'));
     const fileLine = frame.file ? `${frame.step}/${frame.total} · ${frame.file}` : '';
+    const byteLine = hasBytes
+      ? (Number.isFinite(frame.totalBytes) && frame.totalBytes > 0
+        ? `${formatBytes(frame.downloaded)} / ${formatBytes(frame.totalBytes)}`
+        : formatBytes(frame.downloaded))
+      : '';
     return (
       <div className="mt-1 flex items-center gap-2 text-[11px]">
         <Loader2 className="w-3.5 h-3.5 animate-spin text-port-accent" />
@@ -50,7 +61,7 @@ export default function ModelDownloadBadge({
           <div className="flex items-center justify-between gap-2 text-port-accent">
             <span className="truncate">
               {stage}
-              {pct != null ? ` ${pct}%` : ''}
+              {showPct ? ` ${pct}%` : ''}
             </span>
             {onCancel && (
               <button
@@ -65,7 +76,10 @@ export default function ModelDownloadBadge({
           {fileLine && (
             <div className="text-[10px] text-gray-500 truncate" title={fileLine}>{fileLine}</div>
           )}
-          {pct != null && (
+          {byteLine && (
+            <div className="text-[10px] text-gray-500 truncate" title={byteLine}>{byteLine}</div>
+          )}
+          {showPct && (
             <div className="mt-0.5 h-1 bg-port-border rounded overflow-hidden">
               <div className="h-full bg-port-accent" style={{ width: `${pct}%` }} />
             </div>

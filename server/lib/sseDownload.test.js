@@ -134,6 +134,34 @@ describe('startHfDownloadStream server-side logging', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  it('does not log every byte-progress tick', async () => {
+    inspectModelCache.mockResolvedValue({ cached: false });
+    downloadHfRepo.mockImplementation(({ onEvent }) => ({
+      promise: (async () => {
+        onEvent({
+          type: 'progress', stage: 'download', step: 1, total: 1,
+          file: 'weights.safetensors',
+        });
+        onEvent({
+          type: 'progress', stage: 'download', step: 1, total: 1,
+          file: 'weights.safetensors', downloaded: 1024, totalBytes: 4096,
+        });
+        onEvent({
+          type: 'progress', stage: 'download', step: 1, total: 1,
+          file: 'weights.safetensors', downloaded: 2048, totalBytes: 4096,
+        });
+        return { ok: true, sizeBytes: 4096 };
+      })(),
+      kill: vi.fn(),
+    }));
+
+    const { req, res } = makeLoggingReqRes();
+    await startHfDownloadStream({ req, res, repo: 'org/big-file' });
+
+    const fileLines = logged(logSpy).filter((l) => l.includes('org/big-file: weights.safetensors'));
+    expect(fileLines).toHaveLength(1);
+  });
+
   it('logs the forced re-fetch marker', async () => {
     inspectModelCache.mockResolvedValue({ cached: true, sizeBytes: 10 });
     downloadHfRepo.mockImplementation(() => ({

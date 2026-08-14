@@ -21,6 +21,9 @@ image-gen runners use, so the existing SSE bridge picks it up unchanged):
 
   STAGE:list                                — fetching file list
   STAGE:download:<n>/<total>:<filename>     — starting file <n> of <total>
+  STAGE:bytes:<n>/<total>:<got>/<size>:<filename>
+                                            — byte progress for the current file
+  STAGE:verify:<n>/<total>:<filename>       — transfer done; committing/hashing
   DOWNLOAD:<n>/<total>:<filename>           — same; redundant for the regex
   STAGE:complete:<bytes>                    — done, with total resident bytes
   USER_ERROR:<kind>:<repo>                  — typed error (gated_repo, …)
@@ -33,33 +36,162 @@ import argparse
 import inspect
 import os
 import sys
+import threading
 from pathlib import Path
 
-# `huggingface_hub` is installed in the FLUX.2 venv (and any mflux venv) —
-# the caller picks the python binary that has it. Import errors surface as
-# a USER_ERROR with a clear "runtime missing huggingface_hub" message so the
-# UI can route the user to the applicable model setup panel.
-try:
-    from huggingface_hub import HfApi, hf_hub_download
-    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
-except Exception as err:  # noqa: BLE001
-    print(f"USER_ERROR:venv_missing_hf_hub:{err}", file=sys.stderr, flush=True)
-    print("❌ The selected model runtime is missing huggingface_hub. Use Install / Repair in the Media Generation UI.", file=sys.stderr, flush=True)
-    sys.exit(2)
+
+# --- Pure helpers (importable without huggingface_hub; covered by the JS suite
+# that loads this file via importlib). Keep them above the hub import so a
+# missing hub package cannot prevent the tests from reaching them.
+
+def repo_cache_dir(repo_id, cache_root):
+    """HF hub folder for a repo: `<cache_root>/models--org--name`."""
+    return Path(cache_root) / f"models--{str(repo_id).replace('/', '--')}"
 
 
-# `hf_hub_download(..., local_dir=...)` defaulted to populating `local_dir`
-# via symlinks into the HF cache on huggingface_hub < 0.23, which would
-# break BYOV installers (HiDream-O1) that need real on-disk files. Force
-# real copies with `local_dir_use_symlinks=False`. Newer huggingface_hub
-# (>= 0.23) deprecated the kwarg and always copies, eventually removing
-# it — probe the signature so we only pass it where it's still accepted.
-_HF_DOWNLOAD_ACCEPTS_SYMLINK_KWARG = (
-    "local_dir_use_symlinks" in inspect.signature(hf_hub_download).parameters
-)
+def incomplete_bytes(cache_dir):
+    """Sum of `*.incomplete` sizes under a repo cache dir (0 if none)."""
+    root = Path(cache_dir)
+    if not root.is_dir():
+        return 0
+    total = 0
+    for path in root.rglob("*.incomplete"):
+        try:
+            total += path.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def format_bytes_stage(step, total_files, downloaded, total_bytes, filename):
+    return (
+        f"STAGE:bytes:{int(step)}/{int(total_files)}:"
+        f"{int(downloaded)}/{int(total_bytes)}:{filename}"
+    )
+
+
+def format_verify_stage(step, total_files, filename):
+    return f"STAGE:verify:{int(step)}/{int(total_files)}:{filename}"
+
+
+class ByteProgressWatcher:
+    """Poll the HF incomplete blob and emit STAGE:bytes / STAGE:verify.
+
+    huggingface_hub (HTTP and xet) writes the in-flight weight to
+    `*.incomplete` under the repo cache. File-count progress is 1/1 the moment
+    a single-file pull starts, which made a 50 GB conditioner look "done" for
+    the entire transfer. This watcher is the byte signal the badge needs.
+
+    When the incomplete file disappears after having grown, the hub is
+    committing/hashing — emit STAGE:verify so the UI does not sit on a stale
+    "Downloading… 100%" with no further movement.
+    """
+
+    def __init__(self, cache_dir, filename, step, total_files, expected, interval=0.5):
+        self.cache_dir = Path(cache_dir)
+        self.filename = filename
+        self.step = step
+        self.total_files = total_files
+        self.expected = int(expected or 0)
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+        self._last_n = 0
+        self._saw_bytes = False
+
+    def _emit_bytes(self, n):
+        print(
+            format_bytes_stage(self.step, self.total_files, n, self.expected, self.filename),
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def _run(self):
+        n = incomplete_bytes(self.cache_dir)
+        self._last_n = n
+        if n > 0:
+            self._saw_bytes = True
+        self._emit_bytes(n)
+        while not self._stop.wait(self.interval):
+            n = incomplete_bytes(self.cache_dir)
+            if n > 0:
+                self._saw_bytes = True
+            if n == 0 and self._saw_bytes:
+                # Transfer finished; hub is renaming + hashing the blob.
+                self._emit_bytes(self.expected or self._last_n)
+                print(
+                    format_verify_stage(self.step, self.total_files, self.filename),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self._stop.wait()
+                return
+            if n != self._last_n:
+                self._last_n = n
+                self._emit_bytes(n)
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, name="hf-byte-progress", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+        return False
+
+
+def _hub_cache_root():
+    # huggingface_hub.constants.HF_HUB_CACHE already honors HF_HUB_CACHE /
+    # HF_HOME. Importing here (not at module load) keeps the helpers above
+    # testable without the package.
+    from huggingface_hub.constants import HF_HUB_CACHE
+    return HF_HUB_CACHE
+
+
+def _expected_file_size(repo, filename, revision, token):
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        meta = get_hf_file_metadata(
+            hf_hub_url(repo_id=repo, filename=filename, revision=revision),
+            token=token,
+        )
+        size = getattr(meta, "size", None)
+        return int(size) if size else 0
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def main() -> int:
+    # `huggingface_hub` is installed in the FLUX.2 venv (and any mflux venv) —
+    # the caller picks the python binary that has it. Import errors surface as
+    # a USER_ERROR with a clear "runtime missing huggingface_hub" message so the
+    # UI can route the user to the applicable model setup panel.
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+    except Exception as err:  # noqa: BLE001
+        print(f"USER_ERROR:venv_missing_hf_hub:{err}", file=sys.stderr, flush=True)
+        print("❌ The selected model runtime is missing huggingface_hub. Use Install / Repair in the Media Generation UI.", file=sys.stderr, flush=True)
+        return 2
+
+    # `hf_hub_download(..., local_dir=...)` defaulted to populating `local_dir`
+    # via symlinks into the HF cache on huggingface_hub < 0.23, which would
+    # break BYOV installers (HiDream-O1) that need real on-disk files. Force
+    # real copies with `local_dir_use_symlinks=False`. Newer huggingface_hub
+    # (>= 0.23) deprecated the kwarg and always copies, eventually removing
+    # it — probe the signature so we only pass it where it's still accepted.
+    accepts_symlink_kwarg = (
+        "local_dir_use_symlinks" in inspect.signature(hf_hub_download).parameters
+    )
+
     parser = argparse.ArgumentParser(description="Pre-fetch a HuggingFace repo snapshot.")
     parser.add_argument("--repo", required=True, help="HF repo id, e.g. 'org/name'.")
     parser.add_argument("--revision", default=None, help="Optional revision (branch / tag / sha).")
@@ -129,6 +261,7 @@ def main() -> int:
         print(f"❌ Repository {args.repo} reports zero downloadable files.", file=sys.stderr, flush=True)
         return 2
 
+    cache_dir = repo_cache_dir(args.repo, _hub_cache_root())
     total_bytes = 0
     for i, filename in enumerate(files, start=1):
         # Stage marker (UI-friendly) + DOWNLOAD: marker (matches the existing
@@ -146,10 +279,12 @@ def main() -> int:
         # Only force copies when the caller actually asked for a flat
         # on-disk layout — without `--local-dir`, hf_hub_download writes
         # into the standard HF cache where symlinks are the contract.
-        if args.local_dir and _HF_DOWNLOAD_ACCEPTS_SYMLINK_KWARG:
+        if args.local_dir and accepts_symlink_kwarg:
             download_kwargs["local_dir_use_symlinks"] = False
+        expected = _expected_file_size(args.repo, filename, args.revision, token)
         try:
-            resolved = hf_hub_download(**download_kwargs)
+            with ByteProgressWatcher(cache_dir, filename, i, total, expected):
+                resolved = hf_hub_download(**download_kwargs)
         except GatedRepoError:
             print(f"USER_ERROR:gated_repo:{args.repo}", file=sys.stderr, flush=True)
             print(f"❌ {args.repo} is gated. Accept its license, save your Hugging Face token in Media Generation settings, then retry.", file=sys.stderr, flush=True)

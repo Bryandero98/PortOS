@@ -2,3 +2,4 @@
 - Windows: git worktree add for CoS agents timed out at 30s on a full checkout, blocking tasks with worktree-failed while git actually completed the worktree
 - Windows: orphaned and merged CoS worktrees were never cleaned up, because git reports POSIX paths while PortOS built Windows ones
 - Series Autopilot retires a queued gap task when a new run starts, so CoS stops dispatching agents against findings the resumed run has already repaired
+- Single-file HuggingFace downloads no longer sit at 100% for the whole transfer — the badge now tracks bytes.

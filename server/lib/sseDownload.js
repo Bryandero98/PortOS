@@ -158,7 +158,9 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
       only: singleFile ? onlyFiles : null,
       pythonPath,
       onEvent: (ev) => {
-        if (ev.type === 'progress' && ev.file) {
+        // File-start frames only. Byte ticks arrive several times a second on
+        // a large single-file pull and would drown the PM2 log.
+        if (ev.type === 'progress' && ev.file && ev.downloaded == null && ev.stage !== 'verify') {
           console.log(`⬇️  ${r}: ${ev.file} (${ev.step}/${ev.total})`);
         }
         // A failure that we're about to retry against the next candidate isn't a
