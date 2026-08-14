@@ -431,6 +431,7 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
     venvPath: info.venvPython,
     repoDir: info.repoDir,
     repoUrl: info.repoUrl,
+    installSourceLabel: info.installSourceLabel,
     installEnvVar: info.installEnvVar,
   });
 }));

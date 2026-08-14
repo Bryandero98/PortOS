@@ -94,21 +94,18 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   // takes H3's full documented 4-15s range, where the diffusers CUDA runner is
   // narrower. Everything else on the grid (fps, the 32px canvas, the 17n+5 step,
   // anchoring) is shared, and asserted once in _minimax_h3_common.test.js.
-  it.each([107, 124, 362])('accepts the MLX window's %i-frame grid point', (frames) => {
-    const output = runPython(`${importRunner}
-${[
+  it.each([107, 124, 362])('accepts the %i-frame grid point inside the MLX window', (frames) => {
+    const output = runPython(`${importRunner}\n${[
       'from types import SimpleNamespace',
       argsExpr({ width: 1536, height: 672, num_frames: frames }),
       'runner.validate_args(args)',
       'print("ok")',
-    ].join('
-')}`);
+    ].join('\n')}`);
     expect(output.trim()).toBe('ok');
   });
 
   it('rejects a frame count outside the MLX window', () => {
-    const output = runPython(`${importRunner}
-${[
+    const output = runPython(`${importRunner}\n${[
       'from types import SimpleNamespace',
       argsExpr({ width: 1536, height: 672, num_frames: 90 }),
       'try:',
@@ -117,8 +114,7 @@ ${[
       '    print(str(exc))',
       'else:',
       '    raise SystemExit("an out-of-window frame count was accepted")',
-    ].join('
-')}`);
+    ].join('\n')}`);
     expect(output).toMatch(/approximately 4-15 seconds \(107-362 aligned frames\)/i);
   });
 

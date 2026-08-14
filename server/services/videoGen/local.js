@@ -64,6 +64,7 @@ import {
   MINIMAX_H3_EXPECTED_REVISION,
   MINIMAX_H3_CUDA_VENV_PYTHON,
   MINIMAX_H3_CUDA_HELPER_SCRIPT,
+  MINIMAX_H3_CUDA_OFFLOAD_PROFILES,
   HUNYUAN_VENV_PYTHON,
   HUNYUAN_HELPER_SCRIPT,
   HUNYUAN_REPO_DIR,
@@ -776,8 +777,19 @@ const buildMiniMaxH3CudaArgs = ({ model, prompt, negativePrompt, width, height, 
   // A user-pinned offload recipe from data/media-models.json. Omitted, the
   // helper sizes one from the card's own VRAM — the right default, since the
   // registry entry is shared across every install that syncs it and can't know
-  // what GPU is on the other end.
-  if (model.offloadProfile) args.push('--offload-profile', String(model.offloadProfile));
+  // what GPU is on the other end. Validated here rather than left to the
+  // helper's `choices=`: argparse would reject a typo as an opaque non-zero
+  // child exit, well after the render was queued.
+  if (model.offloadProfile !== undefined && model.offloadProfile !== null && model.offloadProfile !== '') {
+    if (!MINIMAX_H3_CUDA_OFFLOAD_PROFILES.includes(model.offloadProfile)) {
+      throw new ServerError(
+        `MiniMax H3 model "${model.id}" declares an unknown offloadProfile "${model.offloadProfile}"; `
+        + `expected one of ${MINIMAX_H3_CUDA_OFFLOAD_PROFILES.join(', ')}.`,
+        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+      );
+    }
+    args.push('--offload-profile', model.offloadProfile);
+  }
   // Anchor order is packed order, same as the MLX lane: diffusers takes the
   // first keyframe as `image` (which sets the canvas) and the last as
   // `last_image`, so a first-frame image must lead.

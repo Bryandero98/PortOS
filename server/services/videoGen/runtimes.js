@@ -66,6 +66,12 @@ export const MINIMAX_H3_CUDA_VENV_PYTHON = process.platform === 'win32'
   ? join(MINIMAX_H3_CUDA_REPO_DIR, '.venv', 'Scripts', 'python.exe')
   : join(MINIMAX_H3_CUDA_REPO_DIR, '.venv', 'bin', 'python3');
 export const MINIMAX_H3_CUDA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_minimax_h3_cuda.py');
+// Mirrors OFFLOAD_PROFILES in scripts/generate_minimax_h3_cuda.py. Kept in sync
+// by hand — the helper's argparse `choices=` is the enforcement, this list is
+// what lets the server reject a bad `offloadProfile` before queueing a render.
+export const MINIMAX_H3_CUDA_OFFLOAD_PROFILES = Object.freeze([
+  'auto', 'bf16', 'int8-stream', 'int8-lean',
+]);
 
 // HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
 // ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
@@ -136,6 +142,11 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     // is therefore the integration's documentation rather than a clone source —
     // there is no checkout under repoDir, only the venv.
     repoUrl: 'https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3',
+    // Because `repoUrl` is documentation here, the install banner must not say
+    // PortOS fetches the runtime "from" it — this names what is actually
+    // installed. Optional: a runtime that clones its repoUrl leaves it unset and
+    // the banner falls back to the URL, which is accurate for those.
+    installSourceLabel: 'pinned PyPI wheels',
     // Three things must hold before a render is even attempted, and each fails
     // as an unusable install rather than as a bad render: diffusers must carry
     // the H3 modular integration (merged to main after v0.39.0 and in no tagged

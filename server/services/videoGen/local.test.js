@@ -3579,6 +3579,63 @@ describe('generateVideo — MiniMax H3 CUDA contract', () => {
     expect(spawnDetached).not.toHaveBeenCalled();
   });
 
+  // `offloadProfile` is an optional per-install override in data/media-models.json,
+  // so it arrives unvalidated. The helper's argparse `choices=` would catch a typo
+  // too, but only as an opaque non-zero child exit after the render was queued.
+  it.each([
+    ['int8-lean', true],
+    ['bf16', true],
+    ['int8-leaan', false],
+  ])('validates a declared offloadProfile %j before spawning', async (profile, legal) => {
+    const mediaModels = await import('../../lib/mediaModels.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const getVideoModelsMock = vi.mocked(mediaModels.getVideoModels);
+    const catalog = getVideoModelsMock();
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    getVideoModelsMock.mockReturnValue(catalog.map((model) => (
+      model.id === 'minimax_h3_cuda' ? { ...model, offloadProfile: profile } : model
+    )));
+
+    const render = () => generateVideo({
+      jobId: `h3-cuda-offload-${profile}`,
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    try {
+      if (!legal) {
+        await expect(render()).rejects.toMatchObject({ code: 'VIDEO_MODEL_MISCONFIGURED' });
+        expect(spawnDetached).not.toHaveBeenCalled();
+        return;
+      }
+      await render();
+      const [, args] = cudaCall(spawnMock);
+      expect(args[args.indexOf('--offload-profile') + 1]).toBe(profile);
+    } finally {
+      getVideoModelsMock.mockReturnValue(catalog);
+    }
+  });
+
+  // Absent is the shipped state: the registry syncs between peers and cannot
+  // know what GPU is on the other end, so the helper sizes the recipe itself.
+  it('omits --offload-profile entirely when the entry declares none', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-offload-default',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    const [, args] = cudaCall(spawnMock);
+    expect(args).not.toContain('--offload-profile');
+  });
+
   it('rejects the license gate from the install record, same as the MLX entry', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     vi.mocked(spawnDetached).mockClear();

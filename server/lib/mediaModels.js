@@ -22,6 +22,12 @@
  *       integrity-verify and repair paths all fan out from the same
  *       `modelDownloadTargets()` in routes/videoGen.js and would otherwise pull
  *       and checksum the lot.
+ *       `offloadProfile` (optional, `minimax_h3_cuda` only) pins the weight
+ *       offload recipe to one of `auto` / `bf16` / `int8-stream` / `int8-lean`
+ *       instead of letting the runner size one from the card's own VRAM. Left
+ *       absent on the shipped entry deliberately: the registry syncs between
+ *       peers and cannot know what GPU is on the other end. Validated in
+ *       services/videoGen/local.js against MINIMAX_H3_CUDA_OFFLOAD_PROFILES.
  *       `disclosure` is optional provenance/licensing metadata (issue #3674):
  *       { modelCardUrl?, weightsLicense?: { name, url }, runtimeLicense?: { name, url },
  *         estimatedDownloadGb?, reviewedAt? }. Every key is optional and an

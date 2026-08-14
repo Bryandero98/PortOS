@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runner_common import emit_runtime_fingerprint, heartbeat  # noqa: E402
 from _minimax_h3_common import (  # noqa: E402
-    FPS, emit_result, load_keyframes, require_ffmpeg, resolve_cached_snapshot,
+    FPS, emit_result, load_keyframes, resolve_cached_snapshot,
     validate_h3_output_args,
 )
 
@@ -41,8 +41,8 @@ from _minimax_h3_common import (  # noqa: E402
 # The diffusers integration snaps `num_frames` up to the next 17n+5 the video
 # VAE can decode and then requires the RESULTING duration to land in 5-15 s.
 # That is narrower than the MLX port's 4-15 s at both ends, so these bounds are
-# deliberately not shared with generate_minimax_h3.py — see the frameOptions
-# note on MINIMAX_H3_CUDA_PROFILE in server/lib/mediaModels.js.
+# deliberately not shared with generate_minimax_h3.py — the matching list is
+# MINIMAX_H3_CUDA_FRAME_OPTIONS in server/lib/mediaModels.js.
 MIN_FRAMES = 124  # first 17n+5 grid point at or above 5 seconds
 MAX_FRAMES = 345  # last 17n+5 grid point at or below 15 seconds
 OFFLOAD_PROFILES = ("auto", "bf16", "int8-stream", "int8-lean")
@@ -229,7 +229,12 @@ def main() -> int:
         except OSError:
             pass
 
-    require_ffmpeg()
+    # No ffmpeg preflight here, unlike the MLX runner: that one shells out to the
+    # binary to mux, while this one muxes in-process through diffusers'
+    # encode_video(), which is backed by the pinned PyAV wheel. Gating on
+    # `shutil.which("ffmpeg")` would fail every render on a box where PortOS
+    # itself is happy — server/lib/ffmpeg.js deliberately falls back to
+    # C:\ffmpeg\bin and Program Files rather than requiring it on PATH.
 
     # Resolve the cache BEFORE importing torch. The lookups are pure
     # huggingface_hub path arithmetic against a pinned commit — no network, no
