@@ -21,7 +21,16 @@ import {
 } from '../../services/api';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
 
-export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remix }) {
+function engineSetupMessage(engine) {
+  if (engine.cudaRequired && engine.cudaState === 'absent') return `${engine.name} requires an NVIDIA CUDA GPU and is unavailable on this host.`;
+  if (engine.cudaRequired && engine.cudaState === 'unknown') return `${engine.name} is disabled because CUDA availability could not be determined.`;
+  if (engine.runtimeReady === false && engine.fixedModelInstall && engine.modelReady === false) return `${engine.name} needs its runtime and model weights before generation.`;
+  if (engine.runtimeReady === false) return `${engine.name} needs its runtime before generation.`;
+  if (engine.fixedModelInstall && engine.modelReady === false) return `${engine.name} model weights are not installed yet.`;
+  return `${engine.name} is not installed yet. Install the runtime to enable generation.`;
+}
+
+export default function MusicGenPanel({ track, title = '', artistId = '', artist = '', albumId = '', prompt, lyrics, onGenerated, remix }) {
   const [engines, setEngines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [engineId, setEngineId] = useState('');
@@ -82,7 +91,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
-  const canGenerate = !!engine?.ready && !!prompt?.trim() && !generating && !!track?.id;
+  const canGenerate = !!engine?.ready && !!prompt?.trim() && !generating;
 
   const handleFixedModelInstall = async () => {
     const model = engine?.models?.find((item) => item.id === engine.defaultModelId) || engine?.models?.[0];
@@ -104,7 +113,6 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
 
   const handleGenerate = async () => {
     if (!engine) return;
-    if (!track?.id) { toast.error('Save the track first, then generate'); return; }
     if (!prompt?.trim()) { toast.error('Add a generation prompt first'); return; }
     setGenerating(true);
     const body = {
@@ -112,8 +120,14 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
       lyrics: engine.lyrics ? (lyrics || '') : '',
       engine: engine.id,
       modelId,
-      trackId: track.id,
     };
+    if (track?.id) body.trackId = track.id;
+    else {
+      body.title = title.trim();
+      body.artistId = artistId;
+      body.artist = artist;
+      body.albumId = albumId;
+    }
     if (Number.isFinite(durationSec)) body.durationSec = durationSec;
     const res = await generateMusic(body, { silent: true }).catch((err) => { toast.error(err.message || 'Generation failed'); return null; });
     if (!mountedRef.current) return;
@@ -161,6 +175,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
   const showRuntimeInstallHint = !!engine && !engine.ready && (!!prompt?.trim() || userSelectedEngine);
+  const canInstallRuntime = engine?.runtimeReady !== true && (!engine?.cudaRequired || engine?.cudaState === 'available');
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -215,15 +230,9 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
       {showRuntimeInstallHint ? (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-port-warning/30 bg-port-warning/10 px-3 py-2">
           <p className="text-[11px] text-port-warning">
-            {engine.cudaRequired && engine.cudaState === 'absent'
-              ? `${engine.name} requires an NVIDIA CUDA GPU and is unavailable on this host.`
-              : engine.cudaRequired && engine.cudaState === 'unknown'
-                ? `${engine.name} is disabled because CUDA availability could not be determined.`
-                : engine.fixedModelInstall && engine.modelReady === false
-                  ? `${engine.name} runtime and model weights must both be installed before generation.`
-                  : `${engine.name} is not installed yet. Install the runtime to enable generation.`}
+            {engineSetupMessage(engine)}
           </p>
-          {!engine.cudaRequired || engine.cudaState === 'available' ? <button
+          {canInstallRuntime ? <button
             type="button"
             onClick={() => setRuntimeInstallEngine(engine)}
             className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-warning/50 text-port-warning text-xs font-medium hover:border-port-warning disabled:opacity-50"
@@ -251,11 +260,11 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
           type="button"
           onClick={handleGenerate}
           disabled={!canGenerate}
-          title={!track?.id ? 'Save the track first' : !prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Engine not installed' : 'Generate audio'}
+          title={!prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Complete engine setup first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
         >
           {generating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-          {generating ? 'Generating…' : 'Generate'}
+          {generating ? 'Generating…' : track?.id ? 'Generate' : 'Generate track'}
         </button>
         {selectedUserModel ? (
           <button

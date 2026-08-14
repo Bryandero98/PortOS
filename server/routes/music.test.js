@@ -11,10 +11,15 @@ const gen = vi.hoisted(() => ({
   ready: true,
   readyByEngine: null,
 }));
+const cuda = vi.hoisted(() => ({ status: 'available' }));
+vi.mock('../lib/cudaCapability.js', () => ({
+  getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: null, error: null })),
+}));
 vi.mock('../services/pipeline/musicGen.js', () => {
   const ENGINES = {
     musicgen: { id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }], defaultModelId: 'm', minDurationSec: 1, maxDurationSec: 30, defaultDurationSec: 12, installEnv: 'INSTALL_MUSICGEN', venvDefault: '/v/mg', resolvePython: () => (gen.ready ? '/v/mg/bin/python3' : null), customModels: true },
     acestep: { id: 'acestep', name: 'ACE-Step', models: [{ id: 'a', name: 'A' }], defaultModelId: 'a', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP', venvDefault: '/v/ace', resolvePython: () => (gen.ready ? '/v/ace/bin/python3' : null), lyrics: true, customModels: false },
+    'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true },
   };
   return {
     ENGINES,
@@ -104,6 +109,7 @@ describe('music routes', () => {
     gen.ready = true;
     gen.readyByEngine = null;
     cache.cached = true;
+    cuda.status = 'available';
     models.list.mockResolvedValue([{ id: 'm', name: 'M', userAdded: false }]);
   });
 
@@ -127,6 +133,20 @@ describe('music routes', () => {
     expect(r.status).toBe(200);
     expect(r.body.engines.find((e) => e.id === 'musicgen').ready).toBe(true);
     expect(r.body.engines.find((e) => e.id === 'acestep').ready).toBe(false);
+  });
+
+  it('GET /engines uses the CUDA capability status to expose installable MiniMax readiness', async () => {
+    cache.cached = false;
+    const supported = await request(app).get('/api/music/engines');
+    expect(supported.body.engines.find((e) => e.id === 'minimax-music3')).toMatchObject({
+      cudaState: 'available', fixedModelInstall: true, modelReady: false, runtimeReady: true, ready: false,
+    });
+
+    cuda.status = 'absent';
+    const unsupported = await request(app).get('/api/music/engines');
+    expect(unsupported.body.engines.find((e) => e.id === 'minimax-music3')).toMatchObject({
+      cudaState: 'absent', ready: false,
+    });
   });
 
   it('POST /models rejects an engine that does not support custom models (acestep)', async () => {
