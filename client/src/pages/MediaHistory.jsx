@@ -1,7 +1,8 @@
 /**
  * Media History — unified timeline of generated images + videos with filter
- * chips, ffmpeg stitching (videos only), Remix + Send-to-Video for images,
- * and "continue from last frame" piping back into Image Gen.
+ * chips, ffmpeg stitching (videos only), Remix for images and videos,
+ * Send-to-Video for images, and "continue from last frame" piping back
+ * into Video Gen.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';

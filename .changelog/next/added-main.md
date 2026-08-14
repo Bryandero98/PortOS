@@ -1,0 +1,1 @@
+- Video recent-render and history cards now have a Remix button that loads the clip's prompt and settings back into the form.

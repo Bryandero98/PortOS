@@ -23,7 +23,7 @@ const videoRecord = (over = {}) => ({
   ...over,
 });
 
-const renderGallery = ({ records, models, hidden = [], showHidden = false, onFinish = vi.fn() }) => {
+const renderGallery = ({ records, models, hidden = [], showHidden = false, onFinish = vi.fn(), onRemix } = {}) => {
   render(
     <MemoryRouter>
       <VideoGenGallery
@@ -34,6 +34,7 @@ const renderGallery = ({ records, models, hidden = [], showHidden = false, onFin
         onToggleFavorites={vi.fn()}
         onToggleShowHidden={vi.fn()}
         onPreview={vi.fn()}
+        onRemix={onRemix}
         onContinue={vi.fn()}
         onUpscale={vi.fn()}
         onDelete={vi.fn()}
@@ -121,5 +122,34 @@ describe('VideoGenGallery — Finish action (#3696)', () => {
     );
     expect(screen.queryByRole('button', { name: /Finish/i })).toBeNull();
     expect(screen.getByRole('button', { name: /Continue/i })).toBeInTheDocument();
+  });
+});
+
+describe('VideoGenGallery — Remix action', () => {
+  it('offers Remix and hands the raw record to the handler', () => {
+    const onRemix = vi.fn();
+    renderGallery({ records: [videoRecord()], models: [DRAFT_MODEL, DELIVERY_MODEL], onRemix });
+    fireEvent.click(screen.getByRole('button', { name: /Remix/i }));
+    expect(onRemix).toHaveBeenCalledTimes(1);
+    expect(onRemix.mock.calls[0][0].id).toBe('rec-1');
+    expect(onRemix.mock.calls[0][0].prompt).toBe('a quiet street at dusk');
+  });
+
+  it('offers Remix in the expanded hidden section too', () => {
+    const onRemix = vi.fn();
+    renderGallery({
+      records: [],
+      hidden: [videoRecord({ id: 'rec-hidden', hidden: true })],
+      showHidden: true,
+      models: [DRAFT_MODEL, DELIVERY_MODEL],
+      onRemix,
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Remix/i }));
+    expect(onRemix.mock.calls[0][0].id).toBe('rec-hidden');
+  });
+
+  it('omits Remix when no handler is supplied', () => {
+    renderGallery({ records: [videoRecord()], models: [DRAFT_MODEL, DELIVERY_MODEL] });
+    expect(screen.queryByRole('button', { name: /Remix/i })).toBeNull();
   });
 });

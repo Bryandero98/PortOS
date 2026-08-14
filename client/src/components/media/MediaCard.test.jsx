@@ -76,6 +76,33 @@ describe('MediaCard', () => {
     expect(screen.getByTitle('Delete')).toBeInTheDocument();
   });
 
+  it('offers Remix for videos when the handler is provided', () => {
+    const onRemix = vi.fn();
+    const videoItem = { ...imageItem, kind: 'video', key: 'video:clip-1', id: 'clip-1', filename: 'clip.mp4' };
+    render(
+      <MediaCard
+        item={videoItem}
+        onRemix={onRemix}
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Remix/i }));
+    expect(onRemix).toHaveBeenCalledWith(videoItem);
+  });
+
+  it('omits Remix when no handler is provided — including for videos', () => {
+    render(
+      <MediaCard
+        item={{ ...imageItem, kind: 'video' }}
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+    expect(screen.queryByRole('button', { name: /Remix/i })).toBeNull();
+  });
+
   it('offers the image-to-Three.js handoff only when its handler is provided', () => {
     const onSendTo3d = vi.fn();
     const { rerender } = render(

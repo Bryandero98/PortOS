@@ -10,7 +10,7 @@ import { normalizeVideo } from '../media/normalize';
 export default function VideoGenGallery({
   galleryVisible, galleryHidden, favoritesOnly, showHidden,
   onToggleFavorites, onToggleShowHidden,
-  onPreview, onContinue, onUpscale, onDelete, onToggleHidden, getCardProps,
+  onPreview, onRemix, onContinue, onUpscale, onDelete, onToggleHidden, getCardProps,
   finishTargetFor, onFinish,
 }) {
   // Finish (#3696) is offered per-card, and only when the stored record is a
@@ -50,6 +50,7 @@ export default function VideoGenGallery({
                     key={item.key}
                     item={item}
                     onPreview={() => onPreview(item)}
+                    onRemix={onRemix ? () => onRemix(v) : undefined}
                     onContinue={() => onContinue(v)}
                     {...finishProps(v)}
                     onUpscale={() => onUpscale(v)}
@@ -83,6 +84,7 @@ export default function VideoGenGallery({
                     key={item.key}
                     item={item}
                     onPreview={() => onPreview(item)}
+                    onRemix={onRemix ? () => onRemix(v) : undefined}
                     onContinue={() => onContinue(v)}
                     {...finishProps(v)}
                     onDelete={() => onDelete(v)}

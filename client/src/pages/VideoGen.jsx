@@ -1321,6 +1321,7 @@ export default function VideoGen() {
         onToggleFavorites={() => setFavoritesOnly((v) => !v)}
         onToggleShowHidden={() => setShowHidden((s) => !s)}
         onPreview={setPreview}
+        onRemix={handleRemixVideo}
         onContinue={(v) => handleContinue(normalizeVideo(v))}
         onUpscale={handleUpscaleHistory}
         onDelete={handleDeleteHistory}

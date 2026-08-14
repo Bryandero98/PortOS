@@ -524,7 +524,7 @@ export default function MediaCollectionDetail() {
                   item={item}
                   onPreview={selectMode ? undefined : setPreview}
                   onClick={selectMode ? () => toggleSelect(key) : undefined}
-                  onRemix={!selectMode && item.kind === 'image' ? handleRemix : undefined}
+                  onRemix={!selectMode ? handleRemix : undefined}
                   onSendToImage={!selectMode && item.kind === 'image' ? handleSendToImage : undefined}
                   onSendToVideo={!selectMode && item.kind === 'image' ? handleSendToVideo : undefined}
                   onContinue={!selectMode && item.kind === 'video' ? handleContinue : undefined}

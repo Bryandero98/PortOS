@@ -9,7 +9,8 @@ import { loraDisplayName } from './normalize';
 // Single card used everywhere a generated image/video appears in a grid:
 // the Image Gen page's recent gallery, the Video Gen page's recent renders,
 // and the Media History tab. Action visibility is opt-in — pass only the
-// callbacks you want rendered. Image-only actions (remix, send-to-video) and
+// callbacks you want rendered. Remix is offered for both kinds (callers
+// dispatch by `item.kind`). Image-only actions (send-to-video, i2i, 3d) and
 // video-only actions (continue, finish) are auto-hidden when the kind doesn't
 // match. `onFinish` is passed only for a draft the caller already resolved a
 // delivery model for (see client/src/lib/videoFinish.js) — an image-conditioned
@@ -142,12 +143,12 @@ export default function MediaCard({
         )}
         {!hideActions && !confirmingDelete && (
           <div className="flex flex-wrap gap-1">
-            {!isVideo && onRemix && (
+            {onRemix && (
               <button
                 type="button"
                 onClick={() => onRemix(item)}
                 className="flex-1 min-w-0 px-1.5 py-1 bg-port-accent/20 hover:bg-port-accent/40 text-port-accent text-[10px] rounded flex items-center justify-center gap-1"
-                title="Reuse settings"
+                title="Reuse prompt and settings"
               >
                 <Sparkles className="w-3 h-3 shrink-0" /> <span className="truncate">Remix</span>
               </button>
