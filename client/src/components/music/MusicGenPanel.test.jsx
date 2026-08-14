@@ -131,4 +131,45 @@ describe('MusicGenPanel', () => {
     expect(screen.queryByRole('button', { name: /install runtime/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /install model/i })).not.toBeInTheDocument();
   });
+
+  it('generates an unsaved standalone track without requiring a title or associations', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'musicgen',
+      engines: [engine({ ready: true })],
+    });
+    api.generateMusic.mockResolvedValue({ track: { id: 'generated-track', title: 'Ambient sunrise' } });
+    const onGenerated = vi.fn();
+
+    render(<MusicGenPanel prompt="Ambient sunrise" lyrics="" onGenerated={onGenerated} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate track/i }));
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'Ambient sunrise',
+      title: '',
+      artistId: '',
+      artist: '',
+      albumId: '',
+    }), { silent: true }));
+    expect(api.generateMusic.mock.calls[0][0]).not.toHaveProperty('trackId');
+    expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
+  });
+
+  it('offers the fixed-model install without suggesting a runtime reinstall', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3', name: 'MiniMax Music 3 (CUDA only)', ready: false,
+        runtimeReady: true, modelReady: false, fixedModelInstall: true,
+        cudaRequired: true, cudaState: 'available', customModels: false,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+
+    render(<MusicGenPanel prompt="cinematic score" lyrics="" />);
+
+    expect(await screen.findByText(/model weights are not installed yet/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /install model/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install runtime/i })).not.toBeInTheDocument();
+  });
 });

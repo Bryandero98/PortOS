@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { posixPath } from './testHelper.js';
+
 import { join } from 'path';
 import { parseGitHubUrl, isGitHubRepoUrl } from './githubRepoUrl.js';
 
@@ -82,7 +84,7 @@ describe('parseGitHubUrl', () => {
     it('never yields a clone path outside the repos root', () => {
       expect(clonePath('https://github.com/../evil')).toBeNull();
       expect(clonePath('https://github.com/example-owner/..')).toBeNull();
-      expect(clonePath('https://github.com/example-owner/example-repo'))
+      expect(posixPath(clonePath('https://github.com/example-owner/example-repo')))
         .toBe('/data/repos/example-owner/example-repo');
     });
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { posixPath } from '../lib/testHelper.js';
 
 const fileStore = new Map();
 
@@ -58,7 +59,7 @@ describe('mediaSketches service', () => {
     expect(await svc.getSketchPngPath(KEY)).toBeNull();
     await svc.saveSketch(KEY, { width: 10, height: 10, strokes: sampleStrokes, png: PNG_DATA_URL });
     const path = await svc.getSketchPngPath(KEY);
-    expect(path).toBe('/mock/data/media-sketches/aW1hZ2U6Zm9vLnBuZw.png');
+    expect(posixPath(path)).toBe('/mock/data/media-sketches/aW1hZ2U6Zm9vLnBuZw.png');
     // A vectors-only re-save drops the PNG, so the path resolver goes null again.
     await svc.saveSketch(KEY, { width: 10, height: 10, strokes: sampleStrokes });
     expect(await svc.getSketchPngPath(KEY)).toBeNull();

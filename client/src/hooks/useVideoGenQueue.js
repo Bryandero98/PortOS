@@ -59,19 +59,24 @@ export function useVideoGenQueue({ generating, runGeneration }) {
   }, []);
 
   const enqueue = useCallback((payload) => {
-    // Strip File blobs for snapshot — re-using a File across multiple queued
-    // submissions is fine, but we need a stable JSON-ish summary for the
-    // queue UI display. Hold the Files in `_blobs` separately.
-    const { sourceImage, lastImage, audioFile: audioBlob, ...summary } = payload;
+    // Preserve string properties in params so filenames/URLs/strings aren't stripped,
+    // and hold File/Blob objects in _blobs.
+    const _blobs = {};
+    const params = {};
+    for (const [k, v] of Object.entries(payload)) {
+      if (v instanceof File || v instanceof Blob) {
+        _blobs[k] = v;
+      } else if (Array.isArray(v) && v.some((item) => item instanceof File || item instanceof Blob)) {
+        _blobs[k] = v;
+      } else {
+        params[k] = v;
+      }
+    }
     setQueue((q) => [...q, {
       id: newQueueId(),
       status: 'pending',
-      params: summary,
-      _blobs: {
-        sourceImage: sourceImage instanceof File ? sourceImage : null,
-        lastImage: lastImage instanceof File ? lastImage : null,
-        audioFile: audioBlob instanceof File ? audioBlob : null,
-      },
+      params,
+      _blobs,
       enqueuedAt: Date.now(),
     }]);
     toast.success('Added to queue');
@@ -116,9 +121,11 @@ export function useVideoGenQueue({ generating, runGeneration }) {
     setRunningQueueId(next.id);
     setQueue((q) => q.map((item) => item.id === next.id ? { ...item, status: 'running', startedAt: Date.now() } : item));
     const payload = { ...next.params };
-    if (next._blobs?.sourceImage) payload.sourceImage = next._blobs.sourceImage;
-    if (next._blobs?.lastImage) payload.lastImage = next._blobs.lastImage;
-    if (next._blobs?.audioFile) payload.audioFile = next._blobs.audioFile;
+    if (next._blobs) {
+      for (const [k, v] of Object.entries(next._blobs)) {
+        if (v != null) payload[k] = v;
+      }
+    }
     let busyRetry = false;
     runGenerationRef.current(payload).then((res) => {
       if (!isCurrent()) return;

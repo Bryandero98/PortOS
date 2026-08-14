@@ -11,6 +11,7 @@
 
 import { spawn } from 'child_process'
 import { PATHS } from '../../lib/fileUtils.js'
+import { prepareCliSpawn, killProcessTree } from '../../lib/bufferedSpawn.js'
 import { withSpawnCwdEnv } from '../../lib/spawnCwd.js'
 import { validateCommand, redactOutput, ALLOWED_COMMANDS_SORTED } from '../../lib/commandSecurity.js'
 import { cosEvents } from '../cosEvents.js'
@@ -71,14 +72,22 @@ async function executeShellJob(job) {
   const SHELL_JOB_TIMEOUT_MS = 5 * 60 * 1000
   const timeoutMs = SHELL_JOB_TIMEOUT_MS
 
+  // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193). The allowlist
+  // includes AI CLIs, and the inherited PWD only happens to match PATHS.root
+  // when the server was started from its own checkout.
+  const childEnv = withSpawnCwdEnv(process.env, PATHS.root)
+  // Nearly every allowlisted command (`pm2`, `npm`, `gh`, `docker`, …) is a
+  // `.cmd`/`.exe` on Windows, and `spawn()` under `shell: false` does NOT apply
+  // PATHEXT — a bare `pm2` fails ENOENT (exit -4058) forever. Resolve against
+  // the child's own PATH and wrap a batch shim as `cmd.exe /c`. No-op on POSIX.
+  const { command: spawnCommand, args: spawnArgs } =
+    prepareCliSpawn(validation.baseCommand, validation.args || [], childEnv)
+
   return new Promise((resolve, reject) => {
     let killed = false
-    const child = spawn(validation.baseCommand, validation.args || [], {
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: PATHS.root,
-      // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193). The allowlist
-      // includes AI CLIs, and the inherited PWD only happens to match PATHS.root
-      // when the server was started from its own checkout.
-      env: withSpawnCwdEnv(process.env, PATHS.root),
+      env: childEnv,
       shell: false,
       windowsHide: true
     })
@@ -86,7 +95,12 @@ async function executeShellJob(job) {
     const timer = setTimeout(() => {
       if (child.exitCode !== null) return
       killed = true
-      child.kill('SIGKILL')
+      // Kill the TREE, not just the direct child. On Windows the spawn above
+      // is `cmd.exe /c <cmd> <args>`, so the actual command is a GRANDCHILD —
+      // and Windows has no process groups, so killing cmd.exe would orphan a
+      // hung `pm2`/`npm`/`docker` that then outlives the timeout forever.
+      // killProcessTree is taskkill /T /F there and a plain kill on POSIX.
+      killProcessTree(child, 'SIGKILL')
       console.error(`⏰ Shell job timed out after ${timeoutMs}ms: ${job.name}`)
     }, timeoutMs)
 

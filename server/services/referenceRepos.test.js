@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 // ─── mocks (must precede the import under test) ──────────────────────────────
 
@@ -56,8 +57,8 @@ vi.mock('./taskPromptService.js', () => ({
 const existsMock = vi.fn(() => false);
 const statMock = vi.fn(() => ({ isDirectory: () => true }));
 vi.mock('fs', () => ({
-  existsSync: (p) => existsMock(p),
-  statSync: (p) => statMock(p),
+  existsSync: (p) => existsMock(toPosix(p)),
+  statSync: (p) => statMock(toPosix(p)),
 }));
 
 // ─── module under test (after mocks) ─────────────────────────────────────────

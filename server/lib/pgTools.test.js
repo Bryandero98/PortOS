@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { posixPath } from './testHelper.js';
 
 // Mock readdir (keg enumeration) and execFileAsync (version probe) so discovery
 // runs against a controlled filesystem/version map instead of the host.
@@ -87,13 +88,14 @@ describe('discoverPgDumpCandidates', () => {
       '/opt/homebrew/opt/postgresql@15/bin/pg_dump': '15.10',
       '/opt/homebrew/opt/postgresql@17/bin/pg_dump': '17.2',
     };
-    execFileAsync.mockImplementation(async (binary) => ({
-      stdout: versions[binary] ? `pg_dump (PostgreSQL) ${versions[binary]}` : '',
-    }));
+    execFileAsync.mockImplementation(async (binary) => {
+      const version = versions[posixPath(binary)];
+      return { stdout: version ? `pg_dump (PostgreSQL) ${version}` : '' };
+    });
     const candidates = await discoverPgDumpCandidates();
     // PATH binary first, then the kegs; the non-postgresql entry is ignored.
     expect(candidates[0]).toEqual({ binary: 'pg_dump', major: 15 });
-    expect(candidates.map(c => c.binary)).toContain('/opt/homebrew/opt/postgresql@17/bin/pg_dump');
+    expect(posixPath(candidates.map(c => c.binary))).toContain('/opt/homebrew/opt/postgresql@17/bin/pg_dump');
     expect(candidates.find(c => c.binary.includes('postgresql@17')).major).toBe(17);
   });
 });
@@ -112,11 +114,12 @@ describe('resolvePgDump', () => {
       'pg_dump': '15.10',
       '/opt/homebrew/opt/postgresql@17/bin/pg_dump': '17.2',
     };
-    execFileAsync.mockImplementation(async (binary) => ({
-      stdout: versions[binary] ? `pg_dump (PostgreSQL) ${versions[binary]}` : '',
-    }));
+    execFileAsync.mockImplementation(async (binary) => {
+      const version = versions[posixPath(binary)];
+      return { stdout: version ? `pg_dump (PostgreSQL) ${version}` : '' };
+    });
     const { binary, satisfies } = await resolvePgDump(17);
-    expect(binary).toBe('/opt/homebrew/opt/postgresql@17/bin/pg_dump');
+    expect(posixPath(binary)).toBe('/opt/homebrew/opt/postgresql@17/bin/pg_dump');
     expect(satisfies).toBe(true);
   });
 

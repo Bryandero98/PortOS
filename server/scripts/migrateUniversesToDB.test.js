@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 // In-memory marker/legacy state.
 let files = {};            // path → string (markers)
@@ -19,8 +20,8 @@ let renamed = [];
 vi.mock('../lib/fileUtils.js', () => ({
   PATHS: { data: '/fake/data' },
   readJSONFile: vi.fn(async (path) => {
-    if (path === '/fake/data/universes/index.json') return typeIndex;
-    return recordsByDir[path] ?? null;
+    if (toPosix(path) === '/fake/data/universes/index.json') return typeIndex;
+    return recordsByDir[toPosix(path)] ?? null;
   }),
 }));
 
@@ -35,14 +36,14 @@ vi.mock('../lib/migrationMarker.js', () => ({
 vi.mock('fs/promises', () => ({
   rename: vi.fn(async (from, to) => {
     if (renameShouldFail) throw new Error('EACCES');
-    renamed.push([from, to]);
+    renamed.push([toPosix(from), toPosix(to)]);
   }),
   readdir: vi.fn(async () => {
     if (dirEntries === null) return [];
     return dirEntries;
   }),
   stat: vi.fn(async (path) => {
-    if (path === '/fake/data/universes') {
+    if (toPosix(path) === '/fake/data/universes') {
       if (dirEntries === null) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
       return { isDirectory: () => true };
     }
