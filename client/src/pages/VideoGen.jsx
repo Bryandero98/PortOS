@@ -68,7 +68,8 @@ import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import ModelSelect from '../components/ModelSelect';
 import { FormField } from '../components/ui/FormField';
 import ModelDownloadBadge, { deriveSizeEstimate } from '../components/media/ModelDownloadBadge';
-import { useModelDownloadStatus, TEXT_ENCODER_DOWNLOAD_ID } from '../hooks/useModelDownloadStatus';
+import { useModelDownloadStatus, TEXT_ENCODER_DOWNLOAD_ID, textEncoderDownloadId } from '../hooks/useModelDownloadStatus';
+import TextEncoderPicker from '../components/videoGen/TextEncoderPicker';
 import { useMediaJobSse } from '../hooks/useMediaJobSse';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
@@ -154,6 +155,7 @@ export default function VideoGen() {
     contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
+    textEncoderId, setTextEncoderId, textEncoderOptions,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
     sourceImageFile, sourceImageUpload, sourceUploadUrl,
     pickSourceImage, uploadSourceImage, clearSourceImage,
@@ -469,6 +471,17 @@ export default function VideoGen() {
       ? { ...textEncoderInfo, downloading: true, progress: modelDownload.progress }
       : textEncoderInfo)
     : null;
+  // Substitutable prompt conditioner (#4081). A built-in option ships inside
+  // the model's own weights, so only a substitute has a download of its own to
+  // track — and only then can it gate Generate.
+  const selectedTextEncoder = textEncoderOptions.find((option) => option.id === textEncoderId) || null;
+  const textEncoderOptionNeedsWeights = !!selectedTextEncoder && !selectedTextEncoder.builtIn;
+  const textEncoderOptionDownloadId = textEncoderOptionNeedsWeights
+    ? textEncoderDownloadId(selectedTextEncoder.id)
+    : null;
+  const textEncoderOptionStatus = textEncoderOptionDownloadId
+    ? modelDownload.getStatus(textEncoderOptionDownloadId)
+    : null;
   const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
   const modelWeightsBlocked = !isGrok
     && (statusLoading || !modelId || !currentModel || modelDownload.loading
@@ -477,10 +490,14 @@ export default function VideoGen() {
     && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
   const icWeightsBlocked = !isGrok && icModeActive
     && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
-  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked || icWeightsBlocked;
+  const textEncoderOptionBlocked = !isGrok && textEncoderOptionNeedsWeights
+    && (modelDownload.loading || textEncoderOptionStatus === null || textEncoderOptionStatus?.cached === false);
+  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked
+    || textEncoderOptionBlocked || icWeightsBlocked;
   const activeWeightErrorIds = [
     modelId,
     usesSharedTextEncoder ? TEXT_ENCODER_DOWNLOAD_ID : null,
+    textEncoderOptionDownloadId,
     icModeActive ? icSpec?.mode : null,
   ].filter(Boolean);
   const activeWeightError = activeWeightErrorIds.includes(modelDownload.lastError?.modelId)
@@ -1050,6 +1067,20 @@ export default function VideoGen() {
                     </button>
                   </div>
                 )}
+                {/* Prompt conditioner. Sits with the Model field rather than in
+                    the collapsed Advanced panel: a substitute is its own
+                    multi-GB pull and gates Generate, so its badge has to be
+                    visible at the moment it's picked. Renders nothing unless
+                    the model offers a real choice. */}
+                <TextEncoderPicker
+                  options={textEncoderOptions}
+                  value={textEncoderId}
+                  onChange={setTextEncoderId}
+                  status={textEncoderOptionStatus}
+                  onDownload={(id) => modelDownload.start(textEncoderDownloadId(id))}
+                  onCancel={modelDownload.cancel}
+                  disabled={generating}
+                />
                 {usesSharedTextEncoder && textEncoderStatus && (textEncoderStatus.cached === false || textEncoderStatus.downloading) && (
                   <div className="mt-1">
                     <p className="text-[10px] text-gray-500">Text encoder ({textEncoderStatus.repo}) is also required:</p>
@@ -1177,6 +1208,7 @@ export default function VideoGen() {
                     : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before generating'
                     : modelWeightsBlocked ? 'Download the selected model weights before generating'
                     : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
+                    : textEncoderOptionBlocked ? `Download the ${selectedTextEncoder?.label || 'selected'} text encoder before generating`
                     : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before generating`
                     : extendModeBlocked ? 'Pick a prior render and wait for the last frame to extract before generating'
                     : a2vModeBlocked ? (currentModel?.runtime !== 'ltx2'
