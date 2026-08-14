@@ -327,6 +327,103 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.suggestedFix).toContain('1 commit ');
   });
 
+  /**
+   * Put `repo`'s current HEAD content upstream under a DIFFERENT sha, the way a
+   * rebase-merged PR does: push it to a scratch remote branch, then have a
+   * contributor cherry-pick that onto `main` and push. Leaves `repo` fetched.
+   */
+  async function mergeHeadUpstreamRebased(label) {
+    const slug = label.replace(/\W+/g, '-');
+    await execGit(['push', 'origin', `HEAD:refs/heads/pr-${slug}`], repo);
+    const contributor = join(scratch, `contributor-${slug}`);
+    await execGit(['clone', join(scratch, 'origin.git'), contributor], scratch);
+    await execGit(['config', 'user.email', 'other@example.com'], contributor);
+    await execGit(['config', 'user.name', 'Other Contributor'], contributor);
+    await execGit(['cherry-pick', `origin/pr-${slug}`], contributor);
+    await execGit(['push', 'origin', 'main'], contributor);
+    await execGit(['fetch', 'origin'], repo);
+  }
+
+  it('does not blame an agent whose branch MERGED for the primary\'s own upstream copies (#4098)', async () => {
+    // The observed false failure. The primary sat on a human's local WIP branch that
+    // TRACKS `origin/main` (no remote branch of its own), carrying commits that are
+    // unpushed by design. The agent's PR then merged, which makes its branch an
+    // ancestor of `origin/main` — at which point "patch-equivalent to the agent's
+    // branch" is indistinguishable from "patch-equivalent to anything in main's
+    // history", and the primary's own local copy of already-merged work reads as the
+    // agent's branch-jack. Attribution has to ask only about the STRANDED commits,
+    // which by construction have no patch-equivalent upstream.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await execGit(['checkout', '-b', 'fix/wip', '--track', 'origin/main'], repo);
+    await commit('human wip, never pushed');
+
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // During the run the human commits work that ALSO lands upstream via a PR (rebase
+    // -merged, so origin/main carries a patch-equivalent under a different sha)...
+    await commit('human work that also lands upstream');
+    await mergeHeadUpstreamRebased('lands-upstream');
+    // ...and a commit that lands nowhere, which is the only genuinely stranded one.
+    await commit('human work that stays local');
+    // The agent's own PR merged too, so its branch is now an ancestor of origin/main.
+    await execGit(['branch', agentBranch, 'origin/main'], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    expect(verdict.suggestedFix).toBeUndefined();
+  });
+
+  it('does not read a rewritten baseline as proof every patch-equivalent commit is new (#4098)', async () => {
+    // The fallback path (no upstream to compare against) keeps a pre-run copy out of
+    // the attributed set by asking "is this commit an ancestor of the run baseline?".
+    // A mid-run rewrite on the primary — `pull --rebase`, an amend, an interactive
+    // rebase — orphans that baseline, so NOTHING on the current history is an ancestor
+    // of it and the filter answers "created during the run" for every commit, whenever
+    // it was really made. The run is surfaced (warn-logged) rather than failed, per the
+    // module's fail-open contract for a check that could not run.
+    const agentBranch = 'cos/task-x/agent-y';
+    // A PRE-RUN copy of the agent branch's work already sits on the primary's main.
+    await execGit(['checkout', '-b', agentBranch], repo);
+    await commit('the agent\'s work');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['cherry-pick', agentTip], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // Mid-run the human rewords that commit, rewriting its sha (same patch) and
+    // orphaning the baseline stamped at spawn.
+    await execGit(['commit', '--amend', '-m', 'reworded by the human mid-run'], repo);
+    expect(await execGit(['merge-base', '--is-ancestor', baseline.head, 'HEAD'], repo,
+      { ignoreExitCode: true }).then(r => r.exitCode)).not.toBe(0);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+  });
+
+  it('names the branch\'s REAL upstream in the recovery command, not origin/<branch> (#4098)', async () => {
+    // `fix/wip` tracks `origin/main` and has no remote branch of its own, so the old
+    // hardcoded `origin/fix/wip` named a ref that does not exist — the "recovery"
+    // command errors out, and correcting it to the real upstream discards the human's
+    // unpushed commits along with the agent's.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await execGit(['checkout', '-b', 'fix/wip', '--track', 'origin/main'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    await execGit(['checkout', '-b', agentBranch], repo);
+    await commit('the agent\'s own work');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    await execGit(['checkout', 'fix/wip'], repo);
+    await execGit(['cherry-pick', agentTip], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(true);
+    expect(verdict.suggestedFix).toContain(`git -C ${repo} reset --hard origin/main`);
+    expect(verdict.suggestedFix).not.toContain('origin/fix/wip');
+    // ...and it warns that the reset rewinds onto a ref that is not this branch.
+    expect(verdict.suggestedFix).toContain('tracks `origin/main`');
+  });
+
   it('does not quote a commit count spanning a baseline a mid-run rebase rewrote (#3744)', async () => {
     // `git pull --rebase` on the primary replays its local commits under new shas,
     // orphaning the baseline stamped at spawn. `rev-list ^baseline` then counts the
@@ -502,6 +599,13 @@ describe('prose helpers', () => {
   it('singularizes a one-commit drift', () => {
     expect(formatDriftMessage({ baseline, current, commitCount: 1 })).toContain('(1 new commit)');
     expect(formatDriftRecovery({ current, commitCount: 1, agentBranch: null })).toContain('1 commit ');
+  });
+
+  it('falls back to origin/<branch> only when no upstream was resolved', () => {
+    expect(formatDriftRecovery({ current, commitCount: 1, agentBranch: null }))
+      .toContain('reset --hard origin/main');
+    expect(formatDriftRecovery({ current, commitCount: 1, agentBranch: null, upstreamRef: 'upstream/trunk' }))
+      .toContain('reset --hard upstream/trunk');
   });
 
   it('never tells the user PortOS already fixed it', () => {
