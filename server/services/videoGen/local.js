@@ -40,7 +40,7 @@ import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
-import { videoLoraFamily, isMiniMaxH3Runtime } from '../../lib/runners.js';
+import { videoLoraFamily } from '../../lib/runners.js';
 import {
   isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
 } from '../../lib/videoDisclosure.js';
@@ -643,9 +643,6 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
   return { bin: WAN22_VENV_PYTHON, args };
 };
 
-// Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
-// only exact, already-cached HF revisions; every network download remains an
-// explicit Video Gen UI action guarded by the model's terms acknowledgement.
 // Everything both H3 builders must clear before they start assembling argv:
 // the venv is installed, the mode/source combination is legal, H3's fixed
 // controls were not overridden, and the entry carries its pin. The two lanes
@@ -681,6 +678,9 @@ const assertMiniMaxH3Preflight = ({
   }
 };
 
+// Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
+// only exact, already-cached HF revisions; every network download remains an
+// explicit Video Gen UI action guarded by the model's terms acknowledgement.
 const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras, textEncoder }) => {
   assertMiniMaxH3Preflight({
     runtimeId: 'minimax_h3',
