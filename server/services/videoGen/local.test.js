@@ -6,7 +6,7 @@
  * chunk's output video file — not mode='image' with an extracted last frame.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
 
@@ -21,6 +21,9 @@ const MOCK_PATHS = {
   uploads: '/mock/data/uploads',
   loras: '/mock/data/loras',
 };
+
+const isLtx2Python = (bin) => String(bin)
+  .includes(join('.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3'));
 
 vi.mock('../../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
@@ -56,7 +59,8 @@ vi.mock('../../lib/mediaModels.js', () => ({
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
       revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
       supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
-      frameOptions: [124, 141, 158], fpsOptions: [24],
+      frameOptions: [107, 124, 141, 158], fpsOptions: [24],
+      defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
       steps: 8, guidance: 0, samplerLocked: true,
       termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
       requiredWeights: [{
@@ -255,6 +259,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  settingsState.acceptedModelTerms = [];
   vi.clearAllMocks();
 });
 
@@ -325,6 +330,41 @@ async function runChainAndCaptureArgs(chainParams, totalChunks) {
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
+
+describe('generateChainedVideo — model-aware ETA geometry', () => {
+  it('estimates an omitted H3 canvas at the model native default', async () => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValue([{
+      modelId: 'minimax_h3_8bit',
+      width: 1344,
+      height: 768,
+      numFrames: 124,
+      steps: 8,
+      renderMs: 10_000,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }]);
+    settingsState.acceptedModelTerms = [H3_TERMS];
+    const outerJobId = randomUUID();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let outerCompleted = false;
+    videoGenEvents.on('completed', (event) => {
+      if (event.generationId === outerJobId) outerCompleted = true;
+    });
+
+    await generateChainedVideo({
+      chunks: 2,
+      jobId: outerJobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'test prompt',
+      mode: 'text',
+    });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('2 chunks, eta=20s (measured, n=1)'));
+    await vi.waitFor(() => expect(outerCompleted).toBe(true));
+    videoGenEvents.removeAllListeners('completed');
+    logSpy.mockRestore();
+  });
+});
 
 describe('generateChainedVideo — continuation strategy (context window vs last frame)', () => {
   // numFrames=25 → extendLatentFrames(25) = 3 latents = 24 new pixel frames.
@@ -800,7 +840,9 @@ describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
 });
 
 describe('generateVideo — ltx2 FFLF image resizing', () => {
-  it('resizes both start and end frames before passing them to the ltx2 helper', async () => {
+  // Windows uses the separate diffusers runner, which intentionally consumes
+  // only the start image. This assertion is specific to the MLX FFLF helper.
+  it.skipIf(process.platform === 'win32')('resizes both start and end frames before passing them to the ltx2 helper', async () => {
     const { execFile } = await import('child_process');
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const execFileMock = vi.mocked(execFile);
@@ -833,7 +875,7 @@ describe('generateVideo — ltx2 FFLF image resizing', () => {
     ]);
 
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args)
         && args.includes('--mode')
         && args.includes('fflf'),
@@ -869,7 +911,7 @@ describe('generateVideo — LTX audio-reactive conditioning', () => {
     });
 
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args)
         && args.includes('--mode')
         && args.includes('a2v'),
@@ -906,7 +948,7 @@ describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
       // plain T2V: no mode, no conditioning, no explicit steps/guidance
     });
     const call = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args) && args.includes('--mode') && args.includes('text'),
     );
     expect(call).toBeTruthy();
@@ -1693,7 +1735,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     });
 
     const call = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args) && args.includes('--user-loras'),
     );
     expect(call).toBeTruthy();
@@ -1741,12 +1783,12 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     });
 
     const call = spawnMock.mock.calls.find(
-      ([bin]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3'),
+      ([bin]) => isLtx2Python(bin),
     );
     expect(call[1]).not.toContain('--user-loras');
   });
 
-  it('routes a bf16 mlx_video LTX model through the generate_av_lora.py wrapper with --user-loras', async () => {
+  it.skipIf(process.platform === 'win32')('routes a bf16 mlx_video LTX model through the generate_av_lora.py wrapper with --user-loras', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
@@ -1779,7 +1821,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     ]);
   });
 
-  it('a non-LoRA mlx_video render still uses the bare generate_av module (no wrapper)', async () => {
+  it.skipIf(process.platform === 'win32')('a non-LoRA mlx_video render still uses the bare generate_av module (no wrapper)', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
@@ -1801,7 +1843,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     expect(call[1]).not.toContain(join(MOCK_PATHS.root, 'scripts', 'generate_av_lora.py'));
   });
 
-  it('rejects LoRAs on a quantized (out-of-scope) mlx_video model', async () => {
+  it.skipIf(process.platform === 'win32')('rejects LoRAs on a quantized (out-of-scope) mlx_video model', async () => {
     await expect(generateVideo({
       jobId: 'mlx-q4-lora',
       pythonPath: '/usr/bin/python3',
@@ -1890,7 +1932,7 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       width: 480, height: 256, numFrames: 81, fps: 20,
       steps: 99, guidanceScale: 9, mode: 'text',
     });
-    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_wan22.py')));
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_wan22.py'));
     expect(call).toBeDefined();
     const args = call[1];
     expect(args[args.indexOf('--steps') + 1]).toBe('4');
@@ -1900,8 +1942,8 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
     expect(args[args.indexOf('--solver') + 1]).toBe('euler');
     expect(args[args.indexOf('--model-repo') + 1]).toBe('/mock/hf/snap');
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
-      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
-      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+      join('/mock/hf/snap', 'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors'),
+      join('/mock/hf/snap', 'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors'),
     ]);
     expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
       'high_noise_transformer',
@@ -1931,10 +1973,10 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       sourceImagePath: '/mock/data/images/boat.png',
       width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
     });
-    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => String(arg).endsWith('/generate_wan22.py')))[1];
+    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => basename(String(arg)) === 'generate_wan22.py'))[1];
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
-      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
-      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+      join('/mock/hf/snap', 'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors'),
+      join('/mock/hf/snap', 'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors'),
     ]);
     expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
       'high_noise_transformer',
@@ -2109,7 +2151,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     // Paths are the ffmpeg-resized copies, so assert the anchors and that each
     // one directly follows its own --image rather than the literal input path.
@@ -2135,7 +2177,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
         modelId: 'minimax_h3_8bit',
 
         prompt: 'a fox watches the rain',
-        width: 512, height: 320, numFrames: 141, fps: 24,
+        width: 1536, height: 672, numFrames: 107, fps: 24,
         steps: 99, guidanceScale: 12, mode: 'text',
       });
     } finally {
@@ -2145,16 +2187,19 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     }
 
     const call = spawnMock.mock.calls.find(([, args]) => (
-      Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(call).toBeDefined();
     const [bin, args, options] = call;
-    expect(bin).toMatch(/\.portos\/minimax-h3-mlx\/\.venv\/bin\/python3$/);
+    expect(String(bin)).toContain(join('.portos', 'minimax-h3-mlx', '.venv', 'bin', 'python3'));
     expect(args[args.indexOf('--model-repo') + 1]).toBe('pipenetwork/MiniMax-H3-MLX-8bit');
     expect(args[args.indexOf('--model-revision') + 1]).toBe('3ac52081470b0488921c3ec3ba84a39097bf2361');
     expect(args[args.indexOf('--runtime-revision') + 1]).toBe('fcd9e9b79a1d6018d91ac477c0968de1fa067e49');
     expect(args[args.indexOf('--checkpoint-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
     expect(args[args.indexOf('--checkpoint-revision') + 1]).toBe('6818f6c32d12b210915e44ad56a4228c2608f160');
+    expect(args[args.indexOf('--width') + 1]).toBe('1536');
+    expect(args[args.indexOf('--height') + 1]).toBe('672');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('107');
     expect(args[args.indexOf('--steps') + 1]).toBe('8');
     expect(args.flatMap((arg, i) => arg === '--checkpoint-file' ? [args[i + 1]] : []))
       .toEqual(['LICENSE', 'FL2VA/vae/video/config.json']);
@@ -2169,13 +2214,64 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(options.env).not.toHaveProperty('HUGGING_FACE_HUB_TOKEN');
     expect(hfChildEnv).not.toHaveBeenCalled();
   });
+
+  it('uses H3 native dimensions when an internal caller omits resolution', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-native-default',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
+      Array.isArray(childArgs) && childArgs.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    expect(args[args.indexOf('--width') + 1]).toBe('1344');
+    expect(args[args.indexOf('--height') + 1]).toBe('768');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('124');
+  });
+
+  it('falls back when user-edited model defaults are not valid dimensions', async () => {
+    const mediaModels = await import('../../lib/mediaModels.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const getVideoModelsMock = vi.mocked(mediaModels.getVideoModels);
+    const catalog = getVideoModelsMock();
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    getVideoModelsMock.mockReturnValue(catalog.map((model) => (
+      model.id === 'minimax_h3_8bit'
+        ? { ...model, defaultWidth: '', defaultHeight: 'not-a-number' }
+        : model
+    )));
+
+    try {
+      await generateVideo({
+        jobId: 'h3-invalid-native-default',
+        modelId: 'minimax_h3_8bit',
+        prompt: 'a fox watches the rain',
+        mode: 'text',
+      });
+    } finally {
+      getVideoModelsMock.mockReturnValue(catalog);
+    }
+
+    const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
+      Array.isArray(childArgs) && childArgs.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    expect(args[args.indexOf('--width') + 1]).toBe('768');
+    expect(args[args.indexOf('--height') + 1]).toBe('512');
+  });
 });
 
 // H3's DiT is quantized, so LoRAs ride along only if the installed runner
 // applies them at render time from quantization metadata. That is a property of
 // the pinned checkout, so the verdict comes from a probe — and the render path
 // must honor it in both directions rather than blanket-rejecting the runtime.
-describe('MiniMax H3 user LoRAs', () => {
+describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
   const h3Render = (jobId) => generateVideo({
     jobId,
     modelId: 'minimax_h3_8bit',
@@ -2184,6 +2280,7 @@ describe('MiniMax H3 user LoRAs', () => {
     loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
   });
 
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
   afterEach(() => { h3LoraState.capable = false; h3LoraState.cached = null; });
 
   // The model is decorated from the sync cache read, so on a capable install the
@@ -2200,7 +2297,7 @@ describe('MiniMax H3 user LoRAs', () => {
     await expect(h3Render('h3-lora-cold-cache')).resolves.toBeDefined();
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args).toContain('--lora');
   });
@@ -2228,7 +2325,7 @@ describe('MiniMax H3 user LoRAs', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args.flatMap((arg, i) => (
       arg === '--lora' ? [[args[i + 1], args[i + 2] === '--lora-scale' ? args[i + 3] : 'UNPAIRED']] : []
@@ -2252,7 +2349,7 @@ describe('MiniMax H3 user LoRAs', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args).not.toContain('--lora');
     expect(args).not.toContain('--lora-scale');
@@ -2599,7 +2696,7 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
   };
 
   const findIcCall = (spawnMock) => spawnMock.mock.calls.find(
-    ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+    ([bin, args]) => isLtx2Python(bin)
       && Array.isArray(args) && args.includes('--ic-mode'),
   );
 
@@ -3090,7 +3187,7 @@ describe('generateVideo — durable re-render inputs (#3696)', () => {
     });
     videoGenEvents.off('started', onStarted);
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3') && Array.isArray(args),
+      ([bin, args]) => isLtx2Python(bin) && Array.isArray(args),
     );
     return { started, args: renderCall?.[1] || [] };
   };

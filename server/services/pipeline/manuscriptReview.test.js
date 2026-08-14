@@ -15,7 +15,7 @@ vi.mock('./series.js', () => ({
   listSeries: async () => {
     const ids = [];
     for (const key of fileStore.keys()) {
-      const id = /^\/mock\/series\/([^/]+)\//.exec(key)?.[1];
+      const id = /^[\\/]mock[\\/]series[\\/]([^\\/]+)[\\/]/.exec(key)?.[1];
       if (id && !ids.includes(id)) ids.push(id);
     }
     return ids.map((id) => ({ id }));

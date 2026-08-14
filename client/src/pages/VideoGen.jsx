@@ -86,10 +86,10 @@ import {
   listLorasFull,
 } from '../services/api';
 import LoraPicker from '../components/imageGen/LoraPicker';
-import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
+import { VIDEO_RESOLUTIONS, resolutionOptionsForModel } from '../lib/videoGenResolutions';
 import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import ResolutionField from '../components/media/ResolutionField';
-import { VIDEO_EDGE_BOUNDS, IC_LORA_MODES } from '../lib/videoGenParams.js';
+import { VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord } from '../lib/videoFinish.js';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
 import useVideoModelTerms from '../hooks/useVideoModelTerms.js';
@@ -169,6 +169,8 @@ export default function VideoGen() {
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
+  const localResolutionOptions = resolutionOptionsForModel(currentModel);
+  const localResolutionBounds = videoEdgeBoundsForModel(currentModel);
 
   // Restricted model terms are accepted per exact reviewed license id, and the
   // acceptance is recorded server-side so it authorizes every other render
@@ -1084,17 +1086,18 @@ export default function VideoGen() {
             )}
 
             {/* Preset dropdown + free-form custom W×H for exact I2V sizing beyond
-                the preset list. The server accepts 64..2048 and rounds each dim
-                DOWN to the 64-grid, so an off-grid size renders at the next-lower
-                multiple of 64 — ResolutionField's blur-snap reflects that. */}
+                the preset list. Most runners use the shared 64px grid; models
+                such as H3 declare their native 32px grid and trained presets. */}
             <ResolutionField
-              presets={VIDEO_RESOLUTIONS}
+              presets={localResolutionOptions}
               width={width}
               height={height}
               onChange={handleResolutionChange}
-              {...VIDEO_EDGE_BOUNDS}
+              {...localResolutionBounds}
               snapOnBlur
-              note="Each edge 64–2048px; the server rounds each down to the nearest multiple of 64."
+              note={currentModel?.runtime === 'minimax_h3'
+                ? 'H3 quality presets follow its trained 768px short-edge, area-capped canvas. Smaller custom sizes are off-distribution but useful for faster wiring tests; each edge snaps to 32px.'
+                : 'Each edge 64–2048px; the server rounds each down to the nearest multiple of 64.'}
             />
 
           </div>

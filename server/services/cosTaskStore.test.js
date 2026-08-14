@@ -119,8 +119,8 @@ import {
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, registerPauseReleaseAdapter, __resetPauseReleaseAdapter } from '../lib/taskPauseHold.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/cosValidation.js';
 
-const USER_FILE = '/root/TASKS.md';
-const COS_FILE = '/root/COS-TASKS.md';
+const USER_FILE = join('/root', 'TASKS.md');
+const COS_FILE = join('/root', 'COS-TASKS.md');
 
 const baseState = () => ({
   config: { userTasksFile: 'TASKS.md', cosTasksFile: 'COS-TASKS.md' }

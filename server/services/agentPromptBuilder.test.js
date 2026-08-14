@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { join } from 'path';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { PATHS } from '../lib/fileUtils.js';
 
 // #3475 — The builder reads ~/.claude/CLAUDE.md off the real filesystem and splices
@@ -1362,7 +1363,7 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/## Pipeline Context/);
       expect(prompt).toMatch(/Stage 2 of 3: "prose"/);
       expect(prompt).toMatch(/Previous stage: "idea"/);
-      expect(prompt).toMatch(/agent-prev-1\/output\.txt/);
+      expect(prompt).toMatch(/agent-prev-1[\\/]output\.txt/);
     });
   });
 });
@@ -1774,10 +1775,10 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
     let priorHomeStub;
 
     beforeAll(() => {
-      fixtureHome = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-claudemd-fixture-'));
+      priorHomeStub = homeStub.dir;
+      fixtureHome = mkdtempSync(join(tmpdir(), 'portos-claudemd-fixture-'));
       mkdirSync(join(fixtureHome, '.claude'), { recursive: true });
       writeFileSync(join(fixtureHome, '.claude', 'CLAUDE.md'), FIXTURE_GLOBAL_CLAUDE_MD);
-      priorHomeStub = homeStub.dir;
       homeStub.dir = fixtureHome;
     });
 
@@ -1785,7 +1786,7 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
     // the global CLAUDE.md section being empty.
     afterAll(() => {
       homeStub.dir = priorHomeStub;
-      rmSync(fixtureHome, { recursive: true, force: true });
+      if (fixtureHome) rmSync(fixtureHome, { recursive: true, force: true });
     });
 
     it('splices the fixture verbatim yet still suppresses commit/push/merge in every builder-generated section', async () => {
@@ -2352,7 +2353,7 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
   };
 
   beforeAll(() => {
-    workspace = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-nested-claudemd-'));
+    workspace = mkdtempSync(join(tmpdir(), 'portos-nested-claudemd-'));
     writeClaudeMd('', '# Root rules\nAnchor every backup exclude.');
     writeClaudeMd('server', '# Server rules\nSchema parity when adding fields.');
     writeClaudeMd('client/src/components/dashboard', '# Dashboard rules\nRegister the widget.');
@@ -2415,7 +2416,7 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
   });
 
   it('caps the number of nested files spliced', async () => {
-    const capped = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-nested-claudemd-cap-'));
+    const capped = mkdtempSync(join(tmpdir(), 'portos-nested-claudemd-cap-'));
     mkdirSync(capped, { recursive: true });
     writeFileSync(join(capped, 'CLAUDE.md'), '# Root of capped workspace');
     // 12 nested files > the 10-file cap. Zero-padded so lexicographic order
@@ -2439,7 +2440,7 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
   });
 
   it('returns null for a workspace with no CLAUDE.md at any level', async () => {
-    const empty = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'portos-nested-claudemd-empty-'));
+    const empty = mkdtempSync(join(tmpdir(), 'portos-nested-claudemd-empty-'));
     mkdirSync(join(empty, 'sub'), { recursive: true });
     expect(await getClaudeMdContext(empty)).toBeNull();
     rmSync(empty, { recursive: true, force: true });
@@ -2499,4 +2500,3 @@ describe('TUI reviewLoopFollowUp completion instructions', () => {
     expect(first).not.toMatch(/\.agent-done(?![-\w])/);
   });
 });
-
