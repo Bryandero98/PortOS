@@ -47,7 +47,7 @@ export default function GalleryVideoPicker({ open, onClose, onSelect, allowUploa
   const tokens = useMemo(() => tokenizeQuery(query), [query]);
   const filtered = useMemo(() => {
     if (!tokens.length) return items;
-    return items.filter((item, idx) => matchHaystack(haystacks[idx], tokens));
+    return items.filter((_, idx) => matchHaystack(haystacks[idx], tokens));
   }, [items, haystacks, tokens]);
 
   const handleUpload = async (event) => {
