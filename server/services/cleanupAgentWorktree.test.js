@@ -198,6 +198,14 @@ vi.mock('./prWatcher.js', () => ({
   queuePendingMerge: (...args) => queuePendingMergeMock(...args)
 }));
 
+// The `if-missing` safety net asks finalize's own PR-claim check whether
+// the agent actually opened the PR it was told to open (#3733).
+const verifyPrClaimMock = vi.fn();
+vi.mock('./agentFinalization.js', () => ({
+  PR_MISSING_CATEGORY: 'pr-missing',
+  verifyPrClaim: (...args) => verifyPrClaimMock(...args)
+}));
+
 vi.mock('./runner.js', () => ({
   executeApiRun: vi.fn(),
   executeCliRun: vi.fn(),
@@ -231,7 +239,7 @@ function mockWorktreeAgent(overrides = {}) {
   };
 }
 
-describe('cleanupAgentWorktree - openPR path', () => {
+describe('cleanupAgentWorktree - PR-creation path', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queuePendingMergeMock.mockResolvedValue(false);
@@ -249,11 +257,11 @@ describe('cleanupAgentWorktree - openPR path', () => {
     );
   });
 
-  it('should run PR flow when openPR is true and success is true', async () => {
+  it('should run PR flow when prCreation is always and success is true', async () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/1' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test task' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test task' });
 
     expect(git.push).toHaveBeenCalledWith('/mock/root/data/cos/worktrees/agent-1', 'cos/task-abc123');
     expect(git.createPR).toHaveBeenCalledWith('/mock/root/data/cos/worktrees/agent-1', {
@@ -269,7 +277,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/2' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(removeWorktree).toHaveBeenCalledTimes(1);
     expect(removeWorktree).toHaveBeenCalledWith(
@@ -283,7 +291,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   it('should preserve worktree when push fails (no removeWorktree call)', async () => {
     git.push.mockRejectedValue(new Error('push rejected'));
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test task' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test task' });
 
     expect(git.push).toHaveBeenCalled();
     expect(git.createPR).not.toHaveBeenCalled();
@@ -294,7 +302,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: false, error: 'PR already exists' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test task' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test task' });
 
     expect(git.createPR).toHaveBeenCalled();
     expect(removeWorktree).not.toHaveBeenCalled();
@@ -304,7 +312,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: false, error: 'GraphQL: No commits between main and cos/task-abc123 (createPullRequest)' });
 
-    const warnings = await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test task' });
+    const warnings = await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test task' });
 
     expect(git.createPR).toHaveBeenCalled();
     // Agent made no changes — delete remote branch and clean up silently without a warning
@@ -313,15 +321,15 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(warnings).toHaveLength(0);
   });
 
-  it('should use auto-merge path when openPR is false (success)', async () => {
-    await cleanupAgentWorktree('agent-1', true, { openPR: false });
+  it('should use auto-merge path when prCreation is never (success)', async () => {
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'never' });
 
     expect(git.push).not.toHaveBeenCalled();
     expect(git.createPR).not.toHaveBeenCalled();
     expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true, preserveBranchWithCommits: false });
   });
 
-  it('should use auto-merge path when openPR is not provided (defaults to false)', async () => {
+  it('should use auto-merge path when prCreation is not provided (defaults to never)', async () => {
     await cleanupAgentWorktree('agent-1', true);
 
     expect(git.push).not.toHaveBeenCalled();
@@ -329,8 +337,8 @@ describe('cleanupAgentWorktree - openPR path', () => {
     expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true, preserveBranchWithCommits: false });
   });
 
-  it('should skip PR flow when openPR is true but success is false', async () => {
-    await cleanupAgentWorktree('agent-1', false, { openPR: true });
+  it('should skip PR flow when prCreation is always but success is false', async () => {
+    await cleanupAgentWorktree('agent-1', false, { prCreation: 'always' });
 
     expect(git.push).not.toHaveBeenCalled();
     expect(git.createPR).not.toHaveBeenCalled();
@@ -345,7 +353,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/3' });
     git.getRepoBranches.mockResolvedValue({ baseBranch: 'main', devBranch: 'develop' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test' });
 
     expect(git.createPR).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       base: 'main'
@@ -357,7 +365,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/4' });
     git.getRepoBranches.mockRejectedValue(new Error('not a git repo'));
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test' });
 
     expect(git.createPR).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       base: 'main'
@@ -368,7 +376,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockRejectedValue(new Error('network error'));
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test' });
 
     // PR creation failed — worktree preserved for manual intervention
     expect(removeWorktree).not.toHaveBeenCalled();
@@ -379,7 +387,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/5' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: longDesc });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: longDesc });
 
     expect(git.createPR).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       title: 'A'.repeat(100)
@@ -391,7 +399,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/7' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, description: multilineDesc });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: multilineDesc });
 
     expect(git.createPR).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       title: '[Improvement: grace] Error Handling'
@@ -402,7 +410,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/6' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(git.createPR).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       title: 'CoS automated task',
@@ -415,7 +423,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   it('should no-op when agent is not a worktree agent', async () => {
     getAgent.mockResolvedValue({ metadata: { isWorktree: false } });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(git.push).not.toHaveBeenCalled();
     expect(removeWorktree).not.toHaveBeenCalled();
@@ -424,7 +432,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   it('should no-op when agent state is null', async () => {
     getAgent.mockResolvedValue(null);
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(git.push).not.toHaveBeenCalled();
     expect(removeWorktree).not.toHaveBeenCalled();
@@ -433,7 +441,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   it('should no-op for persistent worktree agents', async () => {
     getAgent.mockResolvedValue(mockWorktreeAgent({ isPersistentWorktree: true }));
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(git.push).not.toHaveBeenCalled();
     expect(removeWorktree).not.toHaveBeenCalled();
@@ -442,7 +450,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   it('should no-op when sourceWorkspace or worktreeBranch is missing', async () => {
     getAgent.mockResolvedValue(mockWorktreeAgent({ sourceWorkspace: null }));
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(git.push).not.toHaveBeenCalled();
     expect(removeWorktree).not.toHaveBeenCalled();
@@ -454,7 +462,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/7' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, requestCopilotReview: true, description: 'Test' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', requestCopilotReview: true, description: 'Test' });
 
     expect(git.requestCopilotReview).toHaveBeenCalledWith('/mock/root/data/cos/worktrees/agent-1', 'https://github.com/test/repo/pull/7');
   });
@@ -463,21 +471,121 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/8' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, requestCopilotReview: false, description: 'Test' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', requestCopilotReview: false, description: 'Test' });
 
     expect(git.requestCopilotReview).not.toHaveBeenCalled();
   });
 
-  it('should still create PR (not auto-merge) when both openPR and requestCopilotReview are true — regression', async () => {
+  it('should still create PR (not auto-merge) when both prCreation:always and requestCopilotReview are set — regression', async () => {
     // Regression for the bug where `openPR: taskOpenPR && !taskReviewLoop` skipped
     // PR creation when both flags were set, causing auto-merge into main with no PR/review.
     git.push.mockResolvedValue(undefined);
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/9' });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true, requestCopilotReview: true, description: 'Test' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', requestCopilotReview: true, description: 'Test' });
 
     expect(git.createPR).toHaveBeenCalled();
     expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false });
+  });
+
+  // #3733: a slashdo-free harness now opens its own PR, so cleanup's job flips
+  // from "create the PR" to "make sure one exists". Getting this wrong in either
+  // direction is expensive — a duplicate PR, or a branch nobody ever reviews.
+  describe('prCreation: if-missing safety net', () => {
+    const netOpts = { prCreation: 'if-missing', description: 'Test task' };
+
+    it('stands down when the agent already opened its own PR', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: true, branch: 'cos/task-abc123' });
+      git.push.mockResolvedValue(undefined);
+
+      await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.push).not.toHaveBeenCalled();
+      expect(git.createPR).not.toHaveBeenCalled();
+      expect(addTask).not.toHaveBeenCalled();
+    });
+
+    it('opens the PR itself when the forge confirms the agent opened none', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: false, category: 'pr-missing', branch: 'cos/task-abc123' });
+      git.push.mockResolvedValue(undefined);
+      git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/42' });
+
+      const warnings = await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).toHaveBeenCalled();
+      expect(warnings.some(w => w.includes('was told to open its own pull request'))).toBe(true);
+    });
+
+    it('stands down on an unreachable forge — a duplicate PR is worse than a flagged one', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: false, category: 'forge-unreachable', branch: 'cos/task-abc123' });
+
+      const warnings = await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+      // …but standing down must NOT also throw the work away. `removeWorktree`
+      // deletes an unmerged branch outright on a `success` run, so without this
+      // a transient `gh pr list` failure takes the agent's only copy of the
+      // commits with it — we chose not to push, so the branch IS the copy.
+      expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123',
+        expect.objectContaining({ preserveBranchWithCommits: true }));
+      expect(warnings.some(w => w.includes('Could not confirm a pull request'))).toBe(true);
+    });
+
+    it('lets the branch be tidied up when the agent DID open its PR', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: true, branch: 'cos/task-abc123' });
+
+      const warnings = await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123',
+        expect.objectContaining({ preserveBranchWithCommits: false }));
+      expect(warnings).toEqual([]);
+    });
+
+    it('treats the no-branch sentinel as uncertain — it is NOT a confirmed PR', async () => {
+      // `verifyPrClaim` returns `{ok:true, branch:null}` when it could not name a
+      // branch (detached HEAD — e.g. an agent that left an aborted rebase
+      // behind). Reading that third `ok:true` shape as "the agent opened its PR"
+      // stood cleanup down AND, because the stand-down was not marked uncertain,
+      // let `removeWorktree` force-delete a branch that was never pushed and has
+      // no PR — losing the commits outright.
+      verifyPrClaimMock.mockResolvedValue({ ok: true, branch: null });
+
+      const warnings = await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+      expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123',
+        expect.objectContaining({ preserveBranchWithCommits: true }));
+      expect(warnings.some(w => w.includes('Could not confirm a pull request'))).toBe(true);
+    });
+
+    it('treats a thrown verification as uncertain, not as "no PR"', async () => {
+      // Failing open here would open a duplicate PR on every transient error.
+      verifyPrClaimMock.mockRejectedValue(new Error('boom'));
+
+      await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+      expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123',
+        expect.objectContaining({ preserveBranchWithCommits: true }));
+    });
+
+    it('stands down when the branch holds no commits — there was nothing to open a PR for', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: true, noChangesToShip: true, branch: 'cos/task-abc123' });
+
+      await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+    });
+
+    it('still creates the PR outright when the net is off (a lean session hands off)', async () => {
+      git.push.mockResolvedValue(undefined);
+      git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/43' });
+
+      await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', description: 'Test task' });
+
+      expect(verifyPrClaimMock).not.toHaveBeenCalled();
+      expect(git.createPR).toHaveBeenCalled();
+    });
   });
 
   it('should record warning but still complete cleanup when Copilot review request fails', async () => {
@@ -485,7 +593,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/10' });
     git.requestCopilotReview.mockResolvedValue({ success: false, error: 'gh exited with code 1' });
 
-    const warnings = await cleanupAgentWorktree('agent-1', true, { openPR: true, requestCopilotReview: true, description: 'Test' });
+    const warnings = await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', requestCopilotReview: true, description: 'Test' });
 
     expect(warnings.some(w => w.includes('Copilot review request failed'))).toBe(true);
     expect(removeWorktree).toHaveBeenCalled();
@@ -499,7 +607,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://gitlab.com/group/proj/-/merge_requests/11' });
     git.requestCopilotReview.mockResolvedValue({ success: true, skipped: true });
 
-    const warnings = await cleanupAgentWorktree('agent-1', true, { openPR: true, requestCopilotReview: true, description: 'Test' });
+    const warnings = await cleanupAgentWorktree('agent-1', true, { prCreation: 'always', requestCopilotReview: true, description: 'Test' });
 
     expect(warnings.some(w => w.includes('Copilot review'))).toBe(false);
     expect(removeWorktree).toHaveBeenCalled();
@@ -516,7 +624,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-x' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true,
+      prCreation: 'always',
       requestCopilotReview: true,
       description: 'Build the thing',
       originalTask: { id: 'task-orig', priority: 'HIGH', metadata: { app: 'sparsetree' }, description: 'Build the thing' }
@@ -549,7 +657,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-q' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, description: 'X',
+      prCreation: 'always', requestCopilotReview: true, description: 'X',
       originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
     });
 
@@ -570,7 +678,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-p' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: false, description: 'X',
+      prCreation: 'always', requestCopilotReview: false, description: 'X',
       originalTask: {
         id: 'task-orig',
         metadata: { provider: 'claude-code', providerId: 'claude-code', model: 'claude-opus-5', effort: 'high' },
@@ -593,7 +701,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-q' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: false, description: 'X',
+      prCreation: 'always', requestCopilotReview: false, description: 'X',
       originalTask: { id: 'task-orig', metadata: { model: 'claude-opus-5', effort: 'high' }, description: 'X' }
     });
 
@@ -612,7 +720,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/77' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: false, description: 'X',
+      prCreation: 'always', requestCopilotReview: false, description: 'X',
       originalTask: { id: 'task-orig', metadata: { analysisType: 'jira-sprint-manager' }, description: 'X' }
     });
 
@@ -625,7 +733,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/78' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: false, description: 'X',
+      prCreation: 'always', requestCopilotReview: false, description: 'X',
       originalTask: { id: 'task-orig', metadata: { jiraTicketId: 'PROJ-1' }, description: 'X' }
     });
 
@@ -637,7 +745,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/79' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true,
+      prCreation: 'always',
       prCompletion: 'leave-open',
       reviewers: ['copilot'],
       description: 'X',
@@ -659,7 +767,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-gl' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, description: 'X',
+      prCreation: 'always', requestCopilotReview: true, description: 'X',
       originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
     });
 
@@ -676,7 +784,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-m' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: false, description: 'X',
+      prCreation: 'always', requestCopilotReview: false, description: 'X',
       originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
     });
 
@@ -701,7 +809,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     queuePendingMergeMock.mockResolvedValue(true);
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true,
+      prCreation: 'always',
       requestCopilotReview: false,
       description: 'Build with deterministic merge',
       originalTask: {
@@ -730,7 +838,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-y' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['claude'], description: 'X',
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['claude'], description: 'X',
       originalTask: { id: 'task-orig', metadata: {}, description: 'X' }
     });
 
@@ -743,7 +851,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-z' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['codex'], description: 'Build with codex review',
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['codex'], description: 'Build with codex review',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
 
@@ -760,7 +868,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-w' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot', 'codex', 'antigravity'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot', 'codex', 'antigravity'],
       reviewStopMode: 'on-findings', reviewerApplies: true,
       reviewerModels: { codex: 'gpt-5.6-sol', claude: 'qwen2.5:7b' }, description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
@@ -786,7 +894,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-max' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot', 'ollama'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot', 'ollama'],
       // `nope` is not a reviewer and `codex: -1` is not a cap — both dropped.
       // An explicit 0 (loop until clean) survives.
       reviewerMaxRounds: { ollama: 1, copilot: 0, nope: 2, codex: -1 },
@@ -804,7 +912,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-nomax' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, prCompletion: 'merge-on-green', reviewers: ['copilot', 'ollama'],
+      prCreation: 'always', prCompletion: 'merge-on-green', reviewers: ['copilot', 'ollama'],
       reviewerMaxRounds: { ollama: 1 }, description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
@@ -820,7 +928,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-cl' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot', 'claude'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot', 'claude'],
       reviewerModels: { codex: 'gpt-5.6-sol', claude: 'qwen2.5:7b' }, description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
@@ -846,7 +954,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-eff' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot', 'antigravity', 'claude', 'grok'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot', 'antigravity', 'claude', 'grok'],
       reviewerModels: { claude: 'qwen2.5:7b', grok: 'grok-code-fast-1' },
       // `codex` isn't in the reviewer list; `copilot` has no effort control at all,
       // and neither does `grok` — its CLI takes no effort flag.
@@ -870,7 +978,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-noeff' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot'],
       reviewerEfforts: { claude: 'high' }, description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
@@ -886,7 +994,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-nc' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot', 'antigravity'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot', 'antigravity'],
       reviewerModels: { codex: 'gpt-5.6-sol', claude: 'qwen2.5:7b' }, description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
@@ -902,7 +1010,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-v' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['codex', 'antigravity', 'copilot'], description: 'Build',
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['codex', 'antigravity', 'copilot'], description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
 
@@ -922,7 +1030,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-u' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot'],
       usernames: ['@CodeReviewbot', 'bad token', 'codereviewbot'], description: 'Build',
       originalTask: { id: 'task-orig', priority: 'MEDIUM', metadata: { app: 'sparsetree' }, description: 'Build' }
     });
@@ -940,7 +1048,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
     addTask.mockResolvedValue({ id: 'sys-rl-uonly' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true, requestCopilotReview: true, reviewers: ['copilot'],
+      prCreation: 'always', requestCopilotReview: true, reviewers: ['copilot'],
       usernames: ['CodeReviewbot'], description: 'Build',
       originalTask: { id: 'task-orig', metadata: {}, description: 'Build' }
     });
@@ -958,7 +1066,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   it('should pass merge: false in the auto-merge fallback when skipMerge is true (review-loop follow-up cleanup)', async () => {
     // The follow-up agent already merged via `gh pr merge`; re-merging the worktree
     // branch into source workspace would duplicate the squashed commits.
-    await cleanupAgentWorktree('agent-1', true, { openPR: false, skipMerge: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'never', skipMerge: true });
 
     expect(removeWorktree).toHaveBeenCalledWith(
       'agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false, preserveBranchWithCommits: false }
@@ -966,7 +1074,7 @@ describe('cleanupAgentWorktree - openPR path', () => {
   });
 
   it('should still pass merge: true in the auto-merge fallback when skipMerge is false on success', async () => {
-    await cleanupAgentWorktree('agent-1', true, { openPR: false, skipMerge: false });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'never', skipMerge: false });
 
     expect(removeWorktree).toHaveBeenCalledWith(
       'agent-1', '/mock/workspace', 'cos/task-abc123', { merge: true, preserveBranchWithCommits: false }
@@ -1707,7 +1815,7 @@ describe('cleanupAgentWorktree - discardWorktree (throwaway reasoning worktree)'
 
   it('removes the worktree with merge:false and never pushes/opens a PR — even with openPR:true', async () => {
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true,
+      prCreation: 'always',
       originalTask: { metadata: { discardWorktree: true } }
     });
 
@@ -1723,7 +1831,7 @@ describe('cleanupAgentWorktree - discardWorktree (throwaway reasoning worktree)'
 
   it('treats the re-parsed string "true" as discard (metadata round-trips through the task store)', async () => {
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true,
+      prCreation: 'always',
       originalTask: { metadata: { discardWorktree: 'true' } }
     });
 
@@ -1737,7 +1845,7 @@ describe('cleanupAgentWorktree - discardWorktree (throwaway reasoning worktree)'
     git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/9' });
 
     await cleanupAgentWorktree('agent-1', true, {
-      openPR: true,
+      prCreation: 'always',
       originalTask: { metadata: {} }
     });
 
@@ -1779,9 +1887,9 @@ describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', ()
       }));
     });
 
-    const first = cleanupAgentWorktree('agent-1', true, { openPR: true });
+    const first = cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
     await removeCalled;
-    const second = cleanupAgentWorktree('agent-1', true, { openPR: true });
+    const second = cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     releaseRemove();
     const [firstWarnings, secondWarnings] = await Promise.all([first, second]);
@@ -1796,7 +1904,7 @@ describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', ()
   });
 
   // The guard is keyed per agent — two agents finishing together must NOT be
-  // collapsed into one cleanup. `openPR: false` keeps this on the plain merge
+  // collapsed into one cleanup. `prCreation: 'never'` keeps this on the plain merge
   // path so it asserts the keying and nothing else.
   it('does NOT coalesce across different agents', async () => {
     // Park each pass inside removeWorktree so both are in flight at once, and
@@ -1813,10 +1921,10 @@ describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', ()
     // overlap the guard has to distinguish — started sequentially so the two
     // passes don't race the lazy module graph and make the test flaky.
     const aParked = nextArrival();
-    cleanupAgentWorktree('agent-A', true, { openPR: false });
+    cleanupAgentWorktree('agent-A', true, { prCreation: 'never' });
     await aParked;
     const bParked = nextArrival();
-    cleanupAgentWorktree('agent-B', true, { openPR: false });
+    cleanupAgentWorktree('agent-B', true, { prCreation: 'never' });
     await bParked;
 
     expect(reached).toEqual(['agent-A', 'agent-B']);
@@ -1825,8 +1933,8 @@ describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', ()
   it('releases the guard so a LATER cleanup of the same agent still runs', async () => {
     removeWorktree.mockResolvedValue({ merged: false, removed: true, warnings: [] });
 
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
-    await cleanupAgentWorktree('agent-1', true, { openPR: true });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'always' });
 
     expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
@@ -1843,9 +1951,9 @@ describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', ()
       }));
     });
 
-    const first = cleanupAgentWorktree('agent-1', true, { openPR: false });
+    const first = cleanupAgentWorktree('agent-1', true, { prCreation: 'never' });
     await removeCalled;
-    const second = cleanupAgentWorktree('agent-1', true, { openPR: false });
+    const second = cleanupAgentWorktree('agent-1', true, { prCreation: 'never' });
     releaseRemove();
 
     const [firstWarnings, secondWarnings] = await Promise.all([first, second]);
@@ -1855,7 +1963,7 @@ describe('cleanupAgentWorktree — re-entrancy (duplicate completion paths)', ()
 
     // Guard cleared → a later cleanup is not wedged on the failed pass.
     removeWorktree.mockResolvedValue({ merged: false, removed: true, warnings: [] });
-    await cleanupAgentWorktree('agent-1', true, { openPR: false });
+    await cleanupAgentWorktree('agent-1', true, { prCreation: 'never' });
     expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
 });

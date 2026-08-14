@@ -413,17 +413,60 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/gh pr merge/);
     });
 
-    it('an OpenCode TUI JIRA task leaves its PR open instead of merging', () => {
+    it('an OpenCode TUI JIRA task still hands its PR to PortOS — the agent opens one only when it also lands it', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { openPR: true, analysisType: 'jira-sprint-manager' } }),
         '/r',
         { branchName: 'claim/x', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
+      // A JIRA-tracked PR is a human's to land, so there is no merge section for
+      // the agent to drive — and an agent told to open a PR it will never land
+      // just races PortOS's own `gh pr create` for the same branch.
       expect(prompt).not.toMatch(/gh pr create/);
       expect(prompt).toMatch(/JIRA-linked human handoff/);
+      expect(prompt).not.toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/## Merge Gate/);
       expect(prompt).not.toMatch(/gh pr merge/);
       expect(prompt).not.toMatch(/glab mr merge/);
+    });
+
+    it('a non-worktree run never gets the PR steps — there is no branch name to put in them', () => {
+      // The production shape is a JIRA-ticket run (agentWorkspacePrep skips
+      // worktree creation when a jiraBranch is set). Emitting the steps anyway
+      // rendered a literal `<branch>` placeholder for the agent to guess at.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        null,
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).not.toMatch(/gh pr create/);
+      expect(prompt).not.toMatch(/git push -u origin/);
+      // …and no dangling "step 4 of the Completion Workflow above" pointing at
+      // a section that was never emitted.
+      expect(prompt).not.toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/\$PR_URL/);
+    });
+
+    it.each([
+      ['a read-only task', { openPR: true, readOnly: true }],
+      ['a no-code-output task', { openPR: true, noCodeOutput: true }],
+      ['a Creative Director task', { openPR: true, creativeDirector: true }],
+      ['a discard-worktree reasoning task', { openPR: true, discardWorktree: true }],
+    ])('%s is never told it owns a PR, and gets no inline loop', (_label, metadata) => {
+      // These completion contracts never mention a PR. Claiming ownership for
+      // them routed a reasoning run into cleanup's did-you-open-it net, which
+      // opened a PR for it and filed a HIGH notification blaming the agent.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).not.toMatch(/gh pr create/);
+      expect(prompt).not.toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/## Merge Gate/);
     });
 
     it('a leave-open review follow-up on a GitLab MR comments with glab, not gh', () => {
@@ -489,10 +532,11 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/gh pr merge/);
     });
 
-    it('hands a slashdo-free OpenCode TUI PR to PortOS for description, review, and merge', () => {
+    it('a slashdo-free OpenCode TUI drives its own PR, review loop, and merge', () => {
       // OpenCode TUI doesn't load Claude Code slash commands, so /do:pr / /do:push
-      // would be uninvokable. The agent commits and writes the sentinel; PortOS
-      // owns the PR body, configured reviewer follow-up, and merge.
+      // would be uninvokable — but it runs `git`/`gh` and the reviewer CLIs fine,
+      // so it owns the whole lifecycle in one session rather than handing off to a
+      // `sys-rl-*` follow-up agent (#3733).
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { simplify: true, openPR: true, reviewLoop: true } }),
         '/r',
@@ -506,31 +550,33 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/`\/simplify`/);
       // /simplify is a Claude built-in — OpenCode gets the inline equivalent.
       expect(prompt).toMatch(/review your changed code for reuse, quality, and efficiency/i);
-      // Plain git commit only — no agent-owned push or forge action.
+      // Commit → push → PR → review loop → merge, all in this session.
       expect(prompt).toMatch(/git commit -m/);
-      expect(prompt).not.toMatch(/git push/);
-      expect(prompt).not.toMatch(/gh pr create/);
-      expect(prompt).not.toMatch(/glab mr create/);
-      expect(prompt).not.toMatch(/gh pr merge/);
-      expect(prompt).not.toMatch(/glab mr merge/);
-      expect(prompt).toMatch(/PortOS will push the branch, create a pull request with your completion summary as its description, run the configured reviewer follow-up, and merge only after review and CI pass/);
+      expect(prompt).toMatch(/git push -u origin claim\/issue-1/);
+      expect(prompt).toMatch(/PR_URL=\$\(gh pr create --base main --head claim\/issue-1/);
+      expect(prompt).toMatch(/## Review Loop/);
+      expect(prompt).toMatch(/gh pr merge "\$PR_URL" --merge --delete-branch/);
+      // PortOS no longer promises to do any of it.
+      expect(prompt).not.toMatch(/PortOS will push the branch/);
       // Sentinel handshake still drives completion; never tell the agent to run /quit.
       expect(prompt).toMatch(/\.agent-done/);
       expect(prompt).toMatch(/NOT run `\/quit`/);
       expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
     });
 
-    it('hands a slashdo-free OpenCode TUI PR to PortOS for a green-CI merge', () => {
+    it('a slashdo-free OpenCode TUI with no reviewer gets the CI merge gate, not a review loop', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { simplify: true, openPR: true } }),
         '/r',
         { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
-      expect(prompt).not.toMatch(/gh pr create/);
-      expect(prompt).not.toMatch(/gh pr checks/);
-      expect(prompt).not.toMatch(/gh pr merge/);
-      expect(prompt).toMatch(/PortOS will push the branch, create a pull request with your completion summary as its description, and merge it once CI is green/);
+      expect(prompt).toMatch(/gh pr create/);
+      expect(prompt).toMatch(/## Merge Gate/);
+      expect(prompt).not.toMatch(/## Review Loop/);
+      expect(prompt).toMatch(/gh pr checks/);
+      expect(prompt).toMatch(/gh pr merge "\$PR_URL" --merge --delete-branch/);
+      expect(prompt).not.toMatch(/PortOS will push the branch/);
     });
 
     it('OpenCode TUI without openPR leaves the committed branch for PortOS to merge', () => {
@@ -578,12 +624,134 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/does NOT have slashdo/);
       expect(prompt).not.toMatch(/`\/do:pr`/);
       expect(prompt).not.toMatch(/`\/do:push`/);
-      // Plain commit + system-owned PR handoff instead.
+      // Plain git/gh equivalent of the whole slashdo workflow (#3733).
       expect(prompt).toMatch(/git commit -m/);
-      expect(prompt).not.toMatch(/git push/);
-      expect(prompt).not.toMatch(/gh pr create/);
-      expect(prompt).toMatch(/PortOS will push the branch/);
+      expect(prompt).toMatch(/git push -u origin claim\/x/);
+      expect(prompt).toMatch(/gh pr create --base main --head claim\/x/);
+      expect(prompt).toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/PortOS will push the branch/);
       expect(prompt).toMatch(/\.agent-done/);
+    });
+
+    // #3733 — the inline review loop is the SAME builder the `sys-rl-*` follow-up
+    // agent gets, so the only things that can be wrong are its framing.
+    it('the inline review loop never claims a reviewer was pre-requested', () => {
+      // The follow-up variant says "the system already requested the initial
+      // Copilot review". Inline, nothing did — the agent opened the PR seconds
+      // ago, so that wording would have it poll forever for a review no one asked for.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['copilot'] } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'antigravity-tui', providerCommand: 'agy' });
+      expect(prompt).toMatch(/## Review Loop/);
+      expect(prompt).not.toMatch(/## Review-Loop Follow-up/);
+      expect(prompt).not.toMatch(/already requested the initial Copilot/);
+      expect(prompt).toMatch(/request\/invoke each configured reviewer yourself/);
+      // …and it must not tell an agent that never ran `/do:pr` that a saved
+      // `/do:pr` default might have merged the PR for it.
+      expect(prompt).not.toMatch(/a saved `\/do:pr` default can merge it/);
+    });
+
+    it('the inline review loop hands control back to the sentinel, not to an exit', () => {
+      // The follow-up variant ends "Exit — the system will clean up your
+      // worktree". A TUI run that exits there never writes `.agent-done` and
+      // idles into a false timeout with the PR already merged.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).toMatch(/write the completion sentinel — the run is not done until you have/);
+      expect(prompt).not.toMatch(/The system will clean up your worktree on exit/);
+    });
+
+    it('a CLI inline review loop ends by exiting — a CLI run has no sentinel to write', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'codex', providerCommand: 'codex' });
+      expect(prompt).toMatch(/## Review Loop/);
+      expect(prompt).toMatch(/You are done — exit/);
+      expect(prompt).not.toMatch(/write the completion sentinel — the run is not done/);
+    });
+
+    it('inlines the slashdo CLI-reviewer recipe into the inline loop, as the follow-up gets', () => {
+      // Without it the agent only sees "invoke that CLI" and reverse-engineers
+      // the invocation — the failure that had a codex agent burn a dozen
+      // `--help` probes before stumbling into a working review call.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        {
+          isTui: true, providerId: 'codex-tui', providerCommand: 'codex',
+          localAgentLoopBody: 'RECIPE: codex --sandbox read-only review --base <base>',
+        });
+      expect(prompt).toMatch(/### CLI Reviewer Procedure \(codex\)/);
+      expect(prompt).toMatch(/RECIPE: codex --sandbox read-only review/);
+      expect(prompt).toMatch(/do NOT probe the CLI/);
+    });
+
+    it('points an over-budget CLI-reviewer recipe at its staged file instead of pasting 40KB', () => {
+      // The real recipe is ~40KB. A follow-up agent inlines it because the loop
+      // is its whole job; an initial run is already carrying the actual task.
+      const body = 'RECIPE HEADER\n' + 'x'.repeat(40_000);
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        {
+          isTui: true, providerId: 'codex-tui', providerCommand: 'codex',
+          localAgentLoopBody: body,
+          localAgentLoopBodyPath: '/data/slashdo-resolved/local-agent-review-loop.md',
+        });
+      expect(prompt).toMatch(/### CLI Reviewer Procedure \(codex\)/);
+      expect(prompt).toMatch(/READ THAT FILE/);
+      expect(prompt).toMatch(/\/data\/slashdo-resolved\/local-agent-review-loop\.md/);
+      expect(prompt).not.toMatch(/RECIPE HEADER/);
+      expect(prompt.length).toBeLessThan(20_000);
+    });
+
+    it('quotes a hostile branch ref inert in the PR-create command line', () => {
+      // Branch names are usually PortOS's own, but a JIRA-derived one is external
+      // input — and this text is pasted straight into an agent's terminal, so it
+      // goes through the canonical `shellQuote` rather than being dropped for a
+      // placeholder the agent would have to guess at.
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true } }),
+        '/r',
+        { branchName: 'weird;rm -rf /', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(prompt).toMatch(/git push -u origin 'weird;rm -rf \/'/);
+      expect(prompt).toMatch(/gh pr create --base main --head 'weird;rm -rf \/'/);
+      // Never bare — that would be a command substitution waiting to happen.
+      expect(prompt).not.toMatch(/origin weird;rm/);
+    });
+
+    it('leaves a readable branch unquoted, and falls back to a placeholder with no ref', () => {
+      const readable = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true } }),
+        '/r',
+        { branchName: 'cos/task-1/agent-2', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(readable).toMatch(/git push -u origin cos\/task-1\/agent-2/);
+
+      const noBase = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
+      expect(noBase).toMatch(/gh pr create --base <base-branch> --head b/);
     });
 
     it('a path-configured claude binary under a custom provider id gets the slashdo workflow', () => {
@@ -637,7 +805,11 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/^## Completion$/m);
       expect(prompt).not.toMatch(/`\/do:pr`/);
       expect(prompt).not.toMatch(/`\/quit`/);
-      expect(prompt).toMatch(/PortOS will push and open the PR/);
+      // Owns the lifecycle via plain git/gh instead of handing it to PortOS (#3733),
+      // and — being a CLI, not a TUI — never mentions a completion sentinel.
+      expect(prompt).toMatch(/gh pr create/);
+      expect(prompt).not.toMatch(/PortOS will push and open the PR/);
+      expect(prompt).not.toMatch(/\.agent-done/);
     });
 
     it('inlines a simplify-equivalent self-review (no /simplify command) for non-Claude CLI agents', () => {
@@ -653,7 +825,8 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/^## Completion$/m);
       expect(prompt).not.toMatch(/`\/simplify`/);
       expect(prompt).toMatch(/review your changed code for reuse, quality, and efficiency/i);
-      expect(prompt).toMatch(/PortOS will push and open the PR/);
+      expect(prompt).toMatch(/gh pr create/);
+      expect(prompt).not.toMatch(/PortOS will push and open the PR/);
     });
 
     // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'

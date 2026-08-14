@@ -21,8 +21,9 @@ import { PATHS } from '../lib/fileUtils.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
-import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { PR_CREATION, prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
+import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
@@ -1063,22 +1064,30 @@ export async function spawnTuiAgent({
       completionError: finalError,
     });
 
-    // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
-    // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
-    // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
-    // from the same predicate used by the prompt builder so neither side can
-    // believe the other owns the PR.
-    //
-    // Resolved BEFORE finalizeAgent (not just in the cleanup below) because it is
-    // also the gate for the PR-claim verification (#3358): only a run that owned
-    // its own PR creation can be expected to have produced one by finalize time.
+    // Every TUI that is a real coding harness drives its own push → PR → review
+    // → merge, whether or not it can type `/do:pr` (#3733) — a Claude TUI runs
+    // the slashdo command, codex/antigravity/grok/OpenCode run the plain
+    // `git`/`gh` equivalent from the same prompt. Only a lean `--bare` session
+    // still hands the lifecycle back to PortOS. Derived from the same predicate
+    // the prompt builder used so neither side can believe the other owns the PR.
     const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
     const taskReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+    const agentOwnsPR = taskOpenPR && agentOwnsPrWorkflow({ providerType: PROVIDER_TYPES.TUI, leanMode });
+    // …but PR-claim verification (#3358) stays keyed on the SLASH-command
+    // predicate. A run PortOS still backstops (it re-checks the forge at cleanup
+    // and opens the PR itself when the agent skipped it) must not be failed here
+    // for a PR that is about to exist — finalize runs before that net.
+    const prClaimExpected = taskOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
       leanMode,
     });
+    // Whether finalize's check ACTUALLY produced a forge answer, filled in from
+    // its return below. Deliberately not `prClaimExpected`: finalize substitutes
+    // `{ok:true}` for a user-terminated run and for a check that threw, and a
+    // throw from finalize itself skips the assignment entirely — in all three
+    // cases nothing was verified, so cleanup must ask rather than stand down.
+    let prClaimVerified = false;
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
     // hook crash) still runs the local cleanup — sentinel removal, worktree
@@ -1107,17 +1116,22 @@ export async function spawnTuiAgent({
         error: finalError || undefined,
         completionReason: reason,
         workspacePath,
-        prExpected: agentOwnsPR,
+        prExpected: prClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
+      prClaimVerified = prClaimWasVerified(finalized?.prVerdict);
     } finally {
       // This run's sentinel only — a sibling agent sharing this workspace owns
       // its own file and may still be running.
       if (doneSentinelPath) await rm(doneSentinelPath).catch(() => {});
 
-      const reviewOptions = cleanupSuccess && taskOpenPR && !agentOwnsPR
+      const prCreation = resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified });
+      // Only the two modes that can still open a PR (and thus spawn a follow-up
+      // that needs these) pay for the resolve. `never` — the dominant path, an
+      // agent that opened and landed its own PR — discards them.
+      const reviewOptions = prCreation !== PR_CREATION.NEVER
         ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
           .catch(err => {
             emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
@@ -1125,7 +1139,7 @@ export async function spawnTuiAgent({
           })
         : {};
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: agentOwnsPR ? false : taskOpenPR,
+        prCreation,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

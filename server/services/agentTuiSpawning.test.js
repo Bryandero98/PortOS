@@ -521,6 +521,7 @@ describe('spawnTuiAgent runtime', () => {
       executionId,
       laneName,
       checkOnlineFn,
+      leanMode: overrides.leanMode ?? false,
       useDurableRunner: overrides.useDurableRunner ?? false,
       ...helpers,
     });
@@ -671,7 +672,7 @@ describe('spawnTuiAgent runtime', () => {
     await completeDone;
   });
 
-  it('hands a slashdo-free TUI PR to PortOS for creation and review/merge follow-up', async () => {
+  it('backstops a slashdo-free TUI PR instead of creating one outright (#3733)', async () => {
     const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
     const spawnPromise = runSpawn({
       provider: { id: 'codex-tui', name: 'Codex TUI', type: 'tui', command: 'codex', envVars: {} },
@@ -687,16 +688,46 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnExit({ exitCode: 0, killed: false });
     await spawnPromise;
 
+    // The codex TUI drives its own push → PR → review → merge, so PortOS only
+    // steps in when the forge says no PR exists — hence prCreation: if-missing.
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: true,
+      prCreation: 'if-missing',
       prCompletion: 'review-then-merge',
       reviewers: ['codex'],
+      skipMerge: true,
+    }));
+  });
+
+  it('a lean --bare TUI still hands its PR to PortOS outright', async () => {
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-ollama-tui', name: 'Lean Claude TUI', type: 'tui', command: 'claude', ollamaBacked: true, envVars: {} },
+      leanMode: true,
+      task: {
+        id: 'task-1',
+        description: 'do the thing',
+        metadata: { openPR: true, prCompletion: 'review-then-merge' },
+      },
+      helpers: { cleanupWorktreeFn, isTruthyMetaFn: (value) => value === true || value === 'true' },
+    });
+    await flushMicrotasks();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+
+    expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
+      prCreation: 'always',
       skipMerge: false,
     }));
   });
 
   it('does not double-fire a PR owned by a slashdo-capable Claude TUI', async () => {
     const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    // finalize asked the forge and got an answer for a real branch — the only
+    // shape that lets cleanup skip its own query (see `prClaimWasVerified`).
+    vi.mocked(agentLifecycle.finalizeAgent).mockResolvedValueOnce({
+      success: true, prVerdict: { ok: true, branch: 'cos/task-1/agent-1' },
+    });
     const spawnPromise = runSpawn({
       provider: { id: 'claude-code-tui', name: 'Claude TUI', type: 'tui', command: 'claude', envVars: {} },
       task: {
@@ -711,8 +742,10 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnExit({ exitCode: 0, killed: false });
     await spawnPromise;
 
+    // `never`, not `if-missing`: finalize already ran `verifyPrClaim` for a
+    // slashdo-capable session, so a second forge query would be pure duplication.
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: false,
+      prCreation: 'never',
       prCompletion: 'review-then-merge',
       skipMerge: true,
     }));

@@ -28,8 +28,8 @@ import * as git from './git.js';
 import { isTruthyMeta } from './agentState.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { cleanupAgentWorktree, spawnMergeRecoveryTask, releaseRetryHold } from './agentWorktreeCleanup.js';
-import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { resolveOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 
 const ROOT_DIR = PATHS.root;
 
@@ -184,7 +184,7 @@ export async function handlePipelineProgression(task, agentId, success) {
  *
  * @param {{ agentId: string, task: object, agent: object, effectiveSuccess: boolean, outputBuffer: string }} params
  */
-export async function runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess, outputBuffer }) {
+export async function runAgentCompletionCleanup({ agentId, task, agent, effectiveSuccess, outputBuffer, prClaimVerified = false }) {
   // Fetch agent state once for JIRA, plan-question, and the resume pointer. Its
   // worktree fields are stamped once at registerAgent and never mutated, so passing
   // it to the release spares a re-read that would re-split the whole output.txt.
@@ -192,7 +192,7 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
   const agentState = await getAgentState(agentId).catch(() => null);
 
   try {
-    await runCompletionCleanupSteps({ agentId, task, agent, agentState, effectiveSuccess, outputBuffer });
+    await runCompletionCleanupSteps({ agentId, task, agent, agentState, effectiveSuccess, outputBuffer, prClaimVerified });
   } finally {
     await releaseRetryHold({
       agentId,
@@ -207,7 +207,7 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
  * The cleanup steps themselves. Split from the public entry point above only so
  * the retry-hold release can wrap them in a `finally` without re-indenting them.
  */
-async function runCompletionCleanupSteps({ agentId, task, agent, agentState, effectiveSuccess, outputBuffer }) {
+async function runCompletionCleanupSteps({ agentId, task, agent, agentState, effectiveSuccess, outputBuffer, prClaimVerified = false }) {
   // JIRA integration: push branch, create PR, comment on ticket
   const jiraTicketId = task?.metadata?.jiraTicketId;
   const jiraBranch = task?.metadata?.jiraBranch;
@@ -329,37 +329,39 @@ async function runCompletionCleanupSteps({ agentId, task, agent, agentState, eff
     // body — re-merging the worktree branch into the source workspace would
     // duplicate the squashed commits, so suppress the auto-merge fallback.
     const taskReviewLoopFollowUp = isTruthyMeta(task?.metadata?.reviewLoopFollowUp);
-    // Claude Code CLI agents run `/simplify` + `/do:pr` themselves (see
-    // buildCliCompletionSection in agentPromptBuilder.js) — they push the
-    // branch and open the PR on their own. Mirror the TUI cleanup contract
-    // so PortOS doesn't double-fire `gh pr create` ("a pull request already
-    // exists" would preserve the worktree as a false-positive failure).
+    // Who opens the PR, and whether finalize already checked that they did.
+    // These two must match what the prompt actually told the agent or PortOS
+    // double-fires `gh pr create` ("a pull request already exists" would then
+    // preserve the worktree as a false-positive failure).
     //
-    // Derived from the SAME `canTypeSlashCommands` predicate the prompt's
-    // `hasSlashdo` gate uses (#3114) — these two must agree or the double-fire
-    // this comment describes is exactly what happens. An id allowlist here would
-    // miss a path-configured `claude` under a custom provider id (told to run
-    // `/do:pr`, then PortOS opens a second PR) and would wrongly claim a lean
-    // `--bare` session owns a PR it was never told to open. `providerCommand` /
-    // `leanMode` are persisted on the agent record for this; a pre-upgrade record
-    // carries neither, and a blank command reads as `claude` — which is what the
-    // old id allowlist effectively assumed for the claude-code ids anyway.
-    // Read off the PERSISTED record first (#3358): the in-memory `runnerAgents`
-    // entry carries only `providerId`, so a lean `--bare` or path-configured
-    // provider would be misjudged here — and finalizeAgent's PR verification
-    // keys on the same question, so the two must resolve it identically.
-    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+    // Read off the PERSISTED record (#3358): the in-memory `runnerAgents` entry
+    // carries only `providerId`, so a lean `--bare` or path-configured provider
+    // would be misjudged from it. `resolveOwnsPrWorkflow` owns the stamped-vs-
+    // derived fallback for pre-#3733 records, alongside the predicate itself.
+    const providerDescriptor = {
       providerId: agentState?.metadata?.providerId ?? agent.providerId,
       providerCommand: agentState?.metadata?.providerCommand ?? agent.providerCommand ?? null,
       leanMode: (agentState?.metadata?.leanMode ?? agent.leanMode) === true,
+    };
+    const agentOwnsPR = taskOpenPR && resolveOwnsPrWorkflow({
+      persisted: agentState?.metadata?.ownsPrWorkflow ?? agent.ownsPrWorkflow,
+      ...providerDescriptor,
     });
+    // `prClaimVerified` is the caller's — it carries whether finalize's check
+    // ACTUALLY produced a forge answer for this run. Re-deriving it here from
+    // `canTypeSlashCommands` would answer a different question ("was one
+    // expected?") off a different expression than the one finalize used, and the
+    // two silently disagree the moment a run's check throws or its finalize does.
     // Merge per-task reviewer metadata with the user's Code Review Defaults
     // (AI Providers → Code Review Defaults panel). Settings I/O is cached
     // inside the resolver, so this is effectively free even when invoked
     // from a tight CoS sweep.
     const reviewOptions = await resolveReviewLoopOptions(task?.metadata, { normalize: normalizeReviewers, isTruthyMeta });
     const cleanupWarnings = await cleanupAgentWorktree(agentId, effectiveSuccess, {
-      openPR: agentOwnsPR ? false : taskOpenPR,
+      // `if-missing` for an agent-owned PR that finalize did NOT verify: cleanup
+      // asks the forge once and only stands down when a PR actually exists, so a
+      // harness that skipped its completion workflow can't strand the branch.
+      prCreation: resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified }),
       prCompletion: taskPrCompletion,
       ...reviewOptions,
       skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

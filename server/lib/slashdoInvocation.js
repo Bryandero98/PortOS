@@ -29,6 +29,7 @@
  */
 import { isClaudeProvider, isOpencodeProvider } from './providerModels.js';
 import { inferTuiCommand } from './tuiHandshake.js';
+import { PROVIDER_TYPES } from './aiToolkit/constants.js';
 
 /** slashdo's command namespace — `commands/do/<cmd>.md` in the submodule. */
 export const SLASHDO_NAMESPACE = 'do';
@@ -261,6 +262,75 @@ export function canTypeSlashCommands({
 }
 
 /**
+ * Provider types spawned as a local coding harness — a real shell, real file
+ * tools, and a PATH that has `git` / `gh` / the reviewer CLIs on it. An HTTP
+ * `api` provider has none of that, so it can never drive its own PR.
+ *
+ * Built from `PROVIDER_TYPES` rather than string literals: a typo'd literal here
+ * silently returns `false` and PortOS starts double-driving the PR.
+ */
+const HARNESS_PROVIDER_TYPES = new Set([PROVIDER_TYPES.CLI, PROVIDER_TYPES.TUI]);
+
+/**
+ * True when a spawned session can drive the WHOLE change-request lifecycle
+ * itself — commit, push, open the PR, run the configured review loop, merge
+ * (#3733).
+ *
+ * This is a strictly weaker question than `canTypeSlashCommands`, and
+ * conflating the two is what stranded every agy / grok / codex run in a
+ * two-agent handoff. Those hosts can't TYPE `/do:pr` (slashdo installs there as
+ * Agent Skills, not slash commands), so they used to be told "commit and stop"
+ * — PortOS then opened the PR after the run and queued a separate `sys-rl-*`
+ * follow-up agent just to run the review loop. But not typing a slash command
+ * says nothing about running `gh pr create`: these are full coding harnesses,
+ * and the follow-up agent they hand off TO is routinely one of them driving the
+ * exact same inlined slashdo procedure. So the split bought nothing and cost a
+ * whole extra agent, a cold context, and a queue hop per task.
+ *
+ * `leanMode` is the one local harness excluded: a small Ollama-backed model
+ * behind `claude --bare` fumbles multi-step flows, and a half-run merge
+ * procedure is worse than a clean handoff.
+ *
+ * The prompt builder, `agentCompletionCleanup`, and the spawners must all agree
+ * on this answer or PortOS double-fires `gh pr create` — so the spawn path
+ * persists the resolved value on the agent record (`metadata.ownsPrWorkflow`)
+ * and cleanup reads it back rather than re-deriving it.
+ *
+ * @param {Object} [opts]
+ * @param {string|null} [opts.providerType] - `'tui' | 'cli' | 'api'`
+ * @param {boolean} [opts.leanMode]
+ * @returns {boolean}
+ */
+export function agentOwnsPrWorkflow({ providerType = null, leanMode = false } = {}) {
+  if (leanMode) return false;
+  return HARNESS_PROVIDER_TYPES.has(providerType);
+}
+
+/**
+ * The same answer for a COMPLETED agent, read off its record.
+ *
+ * `metadata.ownsPrWorkflow` is stamped at spawn time from the resolved provider,
+ * and is authoritative: cleanup must act on what the prompt actually said, not
+ * on a fresh derivation that could disagree with it.
+ *
+ * A record written before #3733 carries no such key. Those runs really were
+ * prompted by the old builder, whose gate was `canTypeSlashCommands` — so that
+ * is the correct answer for them, and it lives here next to the predicate rather
+ * than inline in a service, where the next caller would miss it.
+ *
+ * @param {Object} opts
+ * @param {boolean|undefined} opts.persisted - `metadata.ownsPrWorkflow`
+ * @param {string|null} [opts.providerId]
+ * @param {string|null} [opts.providerCommand]
+ * @param {boolean} [opts.leanMode]
+ * @returns {boolean}
+ */
+export function resolveOwnsPrWorkflow({ persisted, providerId = null, providerCommand = null, leanMode = false }) {
+  if (typeof persisted === 'boolean') return persisted;
+  return canTypeSlashCommands({ providerId, providerCommand, leanMode });
+}
+
+/**
  * Resolve the concrete invocation for a slashdo-backed task.
  *
  * @param {Object} opts
@@ -294,6 +364,20 @@ export function resolveSlashdoInvocation({
       : `Use the \`${skillName}\` skill${trimmedArgs ? ` on: ${trimmedArgs}` : ''}`;
 
   return { command, skillName, style, args: trimmedArgs, invocation };
+}
+
+/**
+ * The "it's on disk, go read it" line for a procedure body too large to paste
+ * (#3110). Shared so every pointer an agent meets reads the same — a second
+ * hand-typed copy is how one caller ends up omitting the read-it-in-sections
+ * instruction that makes a 40KB file usable.
+ *
+ * @param {string} bodyPath - absolute path to the resolved copy
+ * @param {string} body - the body itself, for its size
+ * @returns {string}
+ */
+export function oversizedBodyPointer(bodyPath, body) {
+  return `The full procedure is on disk at \`${bodyPath}\` (${Math.round(body.length / 1000)}KB) — too large to paste here. READ THAT FILE before you start and follow it exactly rather than improvising. It is long: read it in sections as you need them, and do not assume a step you have not read.`;
 }
 
 /**
@@ -373,10 +457,7 @@ export function buildSlashdoSection(resolved, body = null, { bodyPath = null, re
     lines.push('', reviewerEffortNote);
   }
   if (body && bodyPath && body.length > SLASHDO_INLINE_BUDGET_CHARS) {
-    lines.push(
-      '',
-      `The full procedure is on disk at \`${bodyPath}\` (${Math.round(body.length / 1000)}KB) — too large to paste here. READ THAT FILE before you start and follow it exactly rather than improvising. It is long: read it in sections as you need them, and do not assume a step you have not read.`
-    );
+    lines.push('', oversizedBodyPointer(bodyPath, body));
   } else if (body) {
     lines.push(
       '',

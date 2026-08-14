@@ -1,0 +1,1 @@
+- CoS agents on codex, grok/agy, and OpenCode now drive their own push, PR, review loop, and merge in one session instead of handing off to a separate follow-up agent
