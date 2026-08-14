@@ -15,7 +15,7 @@ import BrailleSpinner from '../BrailleSpinner';
 
 // Goals has no routed per-goal detail today (GoalsListView selects into a local `selectedGoal`
 // panel), so every row links to the list rather than inventing a deep link the router cannot
-// honor. See PLAN.md — routing that selection through the URL is the goals feature's job.
+// honor. Routing that selection through the URL is the goals feature's job — see #4121.
 export const GOALS_PATH = '/goals/list';
 
 const TOP_N = 4;
@@ -90,7 +90,7 @@ export default function GoalsCard() {
     // so the two surfaces can never show contradictory urgency. (Enriching the flat endpoint
     // instead would change a shared API's semantics.)
     //
-    // Two honest limits on how fresh that is, both the goals feature's to fix (see PLAN.md),
+    // Two honest limits on how fresh that is, both the goals feature's to fix (see #4122),
     // and both landing on "sorts last" rather than on a wrong number:
     //   - The tree only re-derives for goals it considers active (`goals.js` gates on a
     //     strict status), so the status-less goals `isActive` admits keep whatever urgency

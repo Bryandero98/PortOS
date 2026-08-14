@@ -8,7 +8,7 @@
  * re-pointing every child issue's `seasonId` so a deleted season doesn't
  * leave orphan references.
  *
- * Phase 2 of the Story Arc Planning initiative. See PLAN.md for the full spec.
+ * Phase 2 of the Story Arc Planning initiative.
  */
 
 import { ARC_LIMITS, buildSeason, sanitizeSeason } from '../../lib/storyArc.js';

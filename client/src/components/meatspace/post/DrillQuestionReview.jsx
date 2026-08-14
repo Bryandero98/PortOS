@@ -81,7 +81,7 @@ function formatGenericValue(type, value) {
 // `expected`. Fall back to those so this generic view never just shows "—"
 // for every row if that type is ever produced, without conflating this
 // display-only fallback with the separate, pre-existing scoring gap for that
-// type in usePostSession.js (out of scope here — see PLAN.md).
+// type in usePostSession.js (out of scope here, not yet filed as an issue).
 function expectedForDisplay(q) {
   if (q.expected !== null && q.expected !== undefined && q.expected !== '') return q.expected;
   if (Array.isArray(q.answers) && q.answers.length) {

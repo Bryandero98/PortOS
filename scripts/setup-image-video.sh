@@ -401,7 +401,7 @@ if [[ "$INSTALL_MINIMAX_H3_CUDA" == "1" ]]; then
   # Windows: the catalog picks video.windows[] vs video.macos[] off IS_WIN, so
   # a Linux install is served the macOS/MLX list and would never see the row.
   # Warn rather than refuse — the install is harmless and ready for the day
-  # that axis widens (tracked in PLAN.md).
+  # that axis widens (tracked in #4142).
   if ! is_windows; then
     echo "⚠️  MiniMax H3 CUDA is only surfaced in Video Gen on Windows today; this venv will install but no model row will appear." >&2
   fi

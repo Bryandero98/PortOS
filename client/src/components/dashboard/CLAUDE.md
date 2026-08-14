@@ -12,7 +12,7 @@ On drop, `onDragEnd` re-flows the whole grid through `reflowToOrder` so its read
 
 **One source of truth for the mobile/desktop seam.** `DashboardGrid` measures its own *container* (`useContainerWidth`), which page padding makes narrower than the viewport — so a Tailwind `sm:` breakpoint disagrees with it in a ~30px band. Anything outside the grid that needs to know which affordance is live (the Dashboard's edit-mode hint) reads it from the `onLayoutModeChange` callback, never from a CSS breakpoint.
 
-**Widget order lives in the grid.** `saveGridEdit` rewrites the layout's `widgets` array into `readingOrderIds(grid)` so LayoutEditor lists widgets in the order the dashboard actually shows them. Note that `reconcileGrid` iterates the *grid* and uses `widgets` only for membership, so LayoutEditor's own Move up/down buttons currently do not move anything once a layout has a grid — see the PLAN.md item.
+**Widget order lives in the grid.** `saveGridEdit` rewrites the layout's `widgets` array into `readingOrderIds(grid)` so LayoutEditor lists widgets in the order the dashboard actually shows them. Note that `reconcileGrid` iterates the *grid* and uses `widgets` only for membership, so LayoutEditor's own Move up/down buttons currently do not move anything once a layout has a grid — tracked in #4132.
 
 **When adding a new dashboard widget:**
 1. Add a `{ id, label, Component, width, defaultH?, gate? }` entry to `WIDGETS` in `widgetRegistry.jsx`. Use a stable `id` (kebab-case) — it's the contract stored in layouts. Pick `defaultH` from the widget's rough content height (default `4`); it only has to be close, since the cell measures itself once painted.

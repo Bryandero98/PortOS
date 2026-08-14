@@ -13,8 +13,6 @@
  *   from, so letting the LLM see character interiority + role here produces
  *   better arc decisions that downstream stages can keep building on.
  *
- *   See PLAN.md `[pipeline-idea-stage-character-detail-plumbing]`.
- *
  * Implementation: hash-driven prompt-replace via `./_lib.js`. Idempotent.
  */
 

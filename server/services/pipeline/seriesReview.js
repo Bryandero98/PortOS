@@ -379,7 +379,7 @@ async function clearSnapshot(seriesId) {
  * a "Fix here" link) or new findings appeared — so a reload can warn the verdict
  * is out of date instead of presenting it as current. (This covers the
  * findings-store drift this feature introduces; foundation/canon/manuscript edits
- * through other paths are a broader pre-existing concern tracked in PLAN.md.)
+ * through other paths are a broader pre-existing concern tracked in #4111.)
  */
 export async function getSeriesReview(seriesId) {
   assertValidSeriesId(seriesId);

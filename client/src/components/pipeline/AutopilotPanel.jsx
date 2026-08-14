@@ -1411,7 +1411,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
           no marker and completes immediately, and a run that pauses while the
           panel is open keeps its map beside the banner. Both halves are
           in-memory on the server, so a reload after the run ended shows the
-          persisted banner alone — see PLAN.md for persisting the map itself.
+          persisted banner alone — persisting the map itself is tracked in #4140.
           Cleared when the next run starts. `planTotals` carries the #1576
           estimated cos-action budget so a large series on a small daily cap can
           see, before starting, whether it will run out before editorial. */}

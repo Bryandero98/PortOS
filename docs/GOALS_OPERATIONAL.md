@@ -2,7 +2,7 @@
 
 Runtime guidance for the Chief of Staff (CoS) autonomous agent system. CoS reads this file to decide what work to generate when idle, how to prioritize incoming tasks, and which operating principles to apply.
 
-This file is **operational config**, not strategic intent. For the project's mission and strategic goals, see [../GOALS.md](../GOALS.md). For the active development backlog, see [../PLAN.md](../PLAN.md).
+This file is **operational config**, not strategic intent. For the project's mission and strategic goals, see [../GOALS.md](../GOALS.md). For the active development backlog, see the GitHub issue tracker (issues labeled [`plan`](https://github.com/atomantic/PortOS/issues?q=is%3Aissue+is%3Aopen+label%3Aplan)).
 
 The `server/services/goalProgress.js` parser walks the `## Operational Goals` section below and maps each `### Goal N: <name>` heading to a category in `GOAL_MAPPINGS` for the Goal Progress dashboard.
 
@@ -27,7 +27,7 @@ The CoS autonomous agent system reads these goals to guide its behavior and task
 - Learn from completed tasks
 
 ### Goal 3: Documentation
-- Keep PLAN.md up to date with completed milestones
+- Keep the GitHub issue tracker up to date with completed milestones
 - Document new features in /docs
 - Generate daily/weekly summary reports
 - Track metrics and improvements over time

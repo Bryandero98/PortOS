@@ -13,8 +13,7 @@
  *   The pre-resolve verify prompt (`pipeline-arc-verify.md`) already calls
  *   out episode-level evidence explicitly ("Did a character die in episode 4
  *   but get dialogue in episode 7?"). Resolve inherited the same data path
- *   but not the same instruction shape — see PLAN.md
- *   `[resolve-issues-inherits-verify-gaps-verify-the]`.
+ *   but not the same instruction shape.
  *
  * Implementation: hash-driven prompt-replace via `./_lib.js`. Idempotent.
  */

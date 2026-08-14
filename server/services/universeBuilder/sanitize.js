@@ -29,7 +29,7 @@ import { persistedRenderPinFields } from '../../lib/renderTargets.js';
 //   v4 — categories carry a `kind` field tagging them to one of the 3 canon
 //        trunks (characters/places/objects/other); the default `characters`
 //        category is retired and any variations get folded into canon
-//        characters[]. See "Categories vs canon — decision" in PLAN.md.
+//        characters[].
 //   v5 — styleReferences stores uploaded visual references with their
 //        vision-authored title and recreation prompt.
 export const CURRENT_SCHEMA_VERSION = 5;

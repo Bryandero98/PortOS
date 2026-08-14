@@ -59,7 +59,7 @@ export const MINIMAX_H3_ENCODER_SHIM_DIR = join(homedir(), '.portos', 'minimax-h
 // model catalog's platform axis is a macOS/Windows binary —
 // `getVideoModels()` is `IS_WIN ? video.windows : video.macos` — so a Linux
 // install is served the macOS/MLX list and cannot select this runtime's model
-// however well the venv provisions. Widening that axis is tracked in PLAN.md;
+// however well the venv provisions. Widening that axis is tracked in #4142;
 // until then, do not advertise Linux support here or in the installer.
 export const MINIMAX_H3_CUDA_REPO_DIR = join(homedir(), '.portos', 'minimax-h3-cuda');
 export const MINIMAX_H3_CUDA_VENV_PYTHON = process.platform === 'win32'

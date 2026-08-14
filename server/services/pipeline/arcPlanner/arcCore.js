@@ -1647,8 +1647,7 @@ export function buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons) {
     const safeLabel = (s) => {
       const raw = typeof s.title === 'string' ? s.title : '';
       // stripAnsi removes full ESC + CSI sequences (so "[31m" payload tails
-      // don't leak through). Note: per PLAN.md
-      // [ansistrip-osc-alternative-unreachable], OSC sequence bodies do leak
+      // don't leak through). Note: OSC sequence bodies do leak
       // through stripAnsi today — extremely unlikely in LLM-generated season
       // titles, but called out here so a future fix to ANSI_PATTERN naturally
       // tightens this path. The trailing control-char sweep catches any bare

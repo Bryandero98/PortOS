@@ -21,7 +21,7 @@ import { applyCollectionView } from '../../lib/mediaCollectionList.js';
 // provides `renderItem` for the per-row UI and `onCreated`/`onPickCreated` for
 // what to do after the inline create succeeds.
 //
-// Data flow (per PLAN.md item 2):
+// Data flow:
 //   - If `collections` is provided by the parent, we never call `loadItems()`
 //     ourselves — this lets MediaCollectionDetail reuse its already-fetched
 //     list instead of paying a per-mount round-trip.
