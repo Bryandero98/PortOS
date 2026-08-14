@@ -122,15 +122,23 @@ describe('videoTextEncoders', () => {
     expect(projected.sizeBytes).toBeUndefined();
   });
 
-  // Size is declared once, as bytes. A GB figure also appears in `disclosure`
-  // (the convention lib/videoDisclosure.js uses for its own entries), so pin it
-  // against the byte count rather than letting the two drift.
-  it('keeps the disclosure GB figure consistent with the byte count', () => {
+  // Size is declared ONCE, as bytes, and the UI formats it. A second GB literal
+  // (the shape lib/videoDisclosure.js uses for its own entries) would be a
+  // driftable restatement of the same fact.
+  it('declares size only as bytes', () => {
     for (const entry of downloadableVideoTextEncoders()) {
-      const declaredGb = entry.disclosure?.estimatedDownloadGb;
-      expect(declaredGb).toBeGreaterThan(0);
-      expect(declaredGb).toBeCloseTo(entry.sizeBytes / 1e9, 0);
+      expect(entry.sizeBytes).toBeGreaterThan(0);
+      expect(entry.disclosure?.estimatedDownloadGb).toBeUndefined();
     }
+  });
+
+  // The licence descriptor is the SHARED one from lib/videoDisclosure.js, not a
+  // local restatement — a correction to the licence text URL has to reach both
+  // tables from one edit.
+  it('reuses the shared license descriptors', async () => {
+    const { APACHE_2 } = await import('./videoDisclosure.js');
+    const entry = videoTextEncoderOption(H3, 'heretic-bf16');
+    expect(entry.disclosure.weightsLicense).toBe(APACHE_2);
   });
 
   // An uncensored conditioner is a deliberate choice; the picker states what

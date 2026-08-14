@@ -14,17 +14,26 @@ import {
 // callers and the hook agree on the magic string.
 export const TEXT_ENCODER_DOWNLOAD_ID = '__text_encoder__';
 
-// IC-LoRA remix weights (issue #3100) are downloadable but aren't registry
-// models, so — like the text encoder — they route to a dedicated endpoint.
-// Callers pass the remix mode itself ('ic-control') as the download id, and
-// membership in the mode registry (NOT a raw `ic-` string prefix) is what
-// identifies one — so an id can never be misrouted by coincidence of naming.
 // Namespace for a substitutable prompt-conditioner download id (#4081). The
 // video form passes `textEncoderDownloadId(option.id)` to start()/repair(); the
 // prefix keeps those ids from ever colliding with a registry model id.
 export const TEXT_ENCODER_OPTION_PREFIX = '__text_encoder_option__:';
 export const textEncoderDownloadId = (id) => `${TEXT_ENCODER_OPTION_PREFIX}${id}`;
+// The registry id inside a namespaced download id, or `null` when this isn't
+// one. One place decides both questions, so the URL builder, the repair
+// dispatch and the status lookup can't disagree about what counts as a
+// conditioner id or where the bare id starts.
+const textEncoderOptionIdOf = (downloadId) => (
+  String(downloadId).startsWith(TEXT_ENCODER_OPTION_PREFIX)
+    ? String(downloadId).slice(TEXT_ENCODER_OPTION_PREFIX.length)
+    : null
+);
 
+// IC-LoRA remix weights (issue #3100) are downloadable but aren't registry
+// models, so — like the text encoder — they route to a dedicated endpoint.
+// Callers pass the remix mode itself ('ic-control') as the download id, and
+// membership in the mode registry (NOT a raw `ic-` string prefix) is what
+// identifies one — so an id can never be misrouted by coincidence of naming.
 export const buildDownloadUrl = (kind, modelId, force = false) => {
   if (!modelId) return null;
   // A repair-initiated re-download appends `?force=1` so the server re-fetches
@@ -41,12 +50,12 @@ export const buildDownloadUrl = (kind, modelId, force = false) => {
     return `/api/video-gen/ic-loras/${encodeURIComponent(modelId)}/download${q}`;
   }
   // Substitutable prompt conditioners (#4081) are downloadable but aren't
-  // registry models either. Identified by the TEXT_ENCODER_OPTION_PREFIX the
-  // caller wraps the registry id in, rather than by the bare id — otherwise a
-  // future model whose id happened to match one would be misrouted.
-  if (kind === 'video' && String(modelId).startsWith(TEXT_ENCODER_OPTION_PREFIX)) {
-    const id = String(modelId).slice(TEXT_ENCODER_OPTION_PREFIX.length);
-    return `/api/video-gen/text-encoders/${encodeURIComponent(id)}/download${q}`;
+  // registry models either. Identified by the namespace the caller wraps the
+  // registry id in, rather than by the bare id — otherwise a future model whose
+  // id happened to match one would be misrouted.
+  const encoderOptionId = kind === 'video' ? textEncoderOptionIdOf(modelId) : null;
+  if (encoderOptionId) {
+    return `/api/video-gen/text-encoders/${encodeURIComponent(encoderOptionId)}/download${q}`;
   }
   return `/api/${kind}-gen/models/${encodeURIComponent(modelId)}/download${q}`;
 };
@@ -165,16 +174,15 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     // The shared text encoder isn't a model id, so its repair hits the scalar
     // /text-encoder/repair endpoint; the sentinel `start()` below already maps
     // to the dedicated /text-encoder/download SSE for the clean re-fetch.
-    const isTextEncoder = kind === 'video' && modelId === TEXT_ENCODER_DOWNLOAD_ID;
-    const isIcLora = kind === 'video' && isIcLoraMode(modelId);
-    const isEncoderOption = kind === 'video' && String(modelId).startsWith(TEXT_ENCODER_OPTION_PREFIX);
-    const run = isTextEncoder
-      ? () => repairTextEncoder({ deep })
-      : isIcLora
-        ? () => repairIcLora(modelId, { deep })
-        : isEncoderOption
-          ? () => repairTextEncoderOption(String(modelId).slice(TEXT_ENCODER_OPTION_PREFIX.length), { deep })
-          : () => (kind === 'video' ? repairVideoModel : repairImageModel)(modelId, { deep });
+    const run = () => {
+      if (kind === 'video') {
+        if (modelId === TEXT_ENCODER_DOWNLOAD_ID) return repairTextEncoder({ deep });
+        if (isIcLoraMode(modelId)) return repairIcLora(modelId, { deep });
+        const encoderOptionId = textEncoderOptionIdOf(modelId);
+        if (encoderOptionId) return repairTextEncoderOption(encoderOptionId, { deep });
+      }
+      return (kind === 'video' ? repairVideoModel : repairImageModel)(modelId, { deep });
+    };
     const result = await run().catch((err) => {
       toast.error(err?.message || 'Repair failed');
       return null;
@@ -217,10 +225,10 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     if (ic) return ic;
     // Conditioner entries are keyed by their BARE registry id in the status
     // payload, so unwrap the download namespace before matching.
-    if (String(modelId).startsWith(TEXT_ENCODER_OPTION_PREFIX)) {
-      const bare = String(modelId).slice(TEXT_ENCODER_OPTION_PREFIX.length);
-      const list = Array.isArray(extra.textEncoderOptions) ? extra.textEncoderOptions : [];
-      return list.find((s) => s.id === bare) || null;
+    const encoderOptionId = textEncoderOptionIdOf(modelId);
+    if (encoderOptionId) {
+      const encoders = Array.isArray(extra.textEncoderOptions) ? extra.textEncoderOptions : [];
+      return encoders.find((s) => s.id === encoderOptionId) || null;
     }
     return null;
   }, [statuses, extra.icLoras, extra.textEncoderOptions]);

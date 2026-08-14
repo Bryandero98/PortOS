@@ -11,6 +11,10 @@ const HERETIC = {
   builtIn: false,
   sizeBytes: 51506295440,
   advisory: 'This conditioner has had its refusal behavior removed.',
+  disclosure: {
+    modelCardUrl: 'https://huggingface.co/example/heretic',
+    weightsLicense: { name: 'Apache-2.0', url: 'https://www.apache.org/licenses/LICENSE-2.0' },
+  },
 };
 const OPTIONS = [STOCK, HERETIC];
 
@@ -103,6 +107,20 @@ describe('TextEncoderPicker', () => {
   it('falls back to the first option for an unknown value', () => {
     render(<TextEncoderPicker options={OPTIONS} value="gone" onChange={vi.fn()} />);
     expect(screen.getByLabelText('Text encoder')).toHaveValue('stock');
+  });
+
+  // A substitute is someone else's tens-of-GB checkpoint — its provenance stays
+  // one click away, the same affordance a MODEL gets. The built-in option has
+  // no separate card or license of its own, so it shows neither.
+  it('links the selected substitute’s model card and license', () => {
+    const { rerender } = render(<TextEncoderPicker options={OPTIONS} value="stock" onChange={vi.fn()} />);
+    expect(screen.queryByRole('link', { name: /Model card/ })).not.toBeInTheDocument();
+
+    rerender(<TextEncoderPicker options={OPTIONS} value="heretic-bf16" onChange={vi.fn()} />);
+    expect(screen.getByRole('link', { name: /Model card/ }))
+      .toHaveAttribute('href', HERETIC.disclosure.modelCardUrl);
+    expect(screen.getByRole('link', { name: /Apache-2\.0/ }))
+      .toHaveAttribute('href', HERETIC.disclosure.weightsLicense.url);
   });
 
   it('disables the select while a render is in flight', () => {

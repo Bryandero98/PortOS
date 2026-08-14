@@ -235,8 +235,10 @@ describe('Video Gen integrity routes', () => {
       // The mocked verify reports 'bad', but an uncached file gets the Download
       // badge rather than a Repair banner — same rule as repoCacheStatus.
       expect(entry.integrity).toBeNull();
+      // Through the shared target verifier, so the badge is checked exactly the
+      // way the integrity scan and the repair route check it.
       expect(verifyCachedRepoFiles).toHaveBeenCalledWith(
-        encoder().repo, [encoder().file], { revision: encoder().revision },
+        encoder().repo, [encoder().file], { deep: false, revision: encoder().revision },
       );
     });
 

@@ -475,8 +475,10 @@ export default function VideoGen() {
   // the model's own weights, so only a substitute has a download of its own to
   // track — and only then can it gate Generate.
   const selectedTextEncoder = textEncoderOptions.find((option) => option.id === textEncoderId) || null;
-  const textEncoderOptionNeedsWeights = !!selectedTextEncoder && !selectedTextEncoder.builtIn;
-  const textEncoderOptionDownloadId = textEncoderOptionNeedsWeights
+  // Non-null exactly when the selection has a download of its own — a built-in
+  // conditioner ships inside the model's weights. Doubles as the "needs
+  // weights" predicate so there's one derivation, not two.
+  const textEncoderOptionDownloadId = selectedTextEncoder && !selectedTextEncoder.builtIn
     ? textEncoderDownloadId(selectedTextEncoder.id)
     : null;
   const textEncoderOptionStatus = textEncoderOptionDownloadId
@@ -490,7 +492,7 @@ export default function VideoGen() {
     && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
   const icWeightsBlocked = !isGrok && icModeActive
     && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
-  const textEncoderOptionBlocked = !isGrok && textEncoderOptionNeedsWeights
+  const textEncoderOptionBlocked = !isGrok && !!textEncoderOptionDownloadId
     && (modelDownload.loading || textEncoderOptionStatus === null || textEncoderOptionStatus?.cached === false);
   const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked
     || textEncoderOptionBlocked || icWeightsBlocked;
@@ -525,6 +527,22 @@ export default function VideoGen() {
   const encoderIntegrityKey = encoderIntegrityBad ? `text-encoder:${(encoderIntegrity.badFiles || []).map((f) => f.name).join(',')}` : null;
   const [dismissedEncoderIntegrityKey, setDismissedEncoderIntegrityKey] = useState(null);
   const showEncoderIntegrityBanner = encoderIntegrityBad && dismissedEncoderIntegrityKey !== encoderIntegrityKey && !modelDownload.downloading;
+
+  // A substituted conditioner is a separate pinned file, so it gets the same
+  // treatment: the model-keyed and shared-encoder repairs above can't reach it,
+  // and a corrupt one degrades the render rather than failing it.
+  const textEncoderOptionIntegrity = textEncoderOptionStatus && !textEncoderOptionStatus.downloading
+    ? textEncoderOptionStatus.integrity
+    : null;
+  const textEncoderOptionIntegrityBad = textEncoderOptionIntegrity?.status === 'bad';
+  const textEncoderOptionIntegrityBadCount = textEncoderOptionIntegrityBad ? (textEncoderOptionIntegrity.badFiles || []).length : 0;
+  const textEncoderOptionIntegrityKey = textEncoderOptionIntegrityBad
+    ? `${textEncoderOptionDownloadId}:${(textEncoderOptionIntegrity.badFiles || []).map((f) => f.name).join(',')}`
+    : null;
+  const [dismissedTextEncoderOptionIntegrityKey, setDismissedTextEncoderOptionIntegrityKey] = useState(null);
+  const showTextEncoderOptionIntegrityBanner = textEncoderOptionIntegrityBad
+    && dismissedTextEncoderOptionIntegrityKey !== textEncoderOptionIntegrityKey
+    && !modelDownload.downloading;
 
   // IC-LoRA weights are independent downloads too. Keep their corruption
   // recovery on the originating Video Gen surface instead of requiring a CLI
@@ -840,6 +858,26 @@ export default function VideoGen() {
               repairLabel="Repair encoder"
               onRepair={() => { setDismissedEncoderIntegrityKey(encoderIntegrityKey); modelDownload.repair(TEXT_ENCODER_DOWNLOAD_ID); }}
               onDismiss={() => setDismissedEncoderIntegrityKey(encoderIntegrityKey)}
+              disabled={modelDownload.repairing || modelDownload.downloading}
+              repairing={modelDownload.repairing}
+            />
+          )}
+          {/* A substituted conditioner is its own multi-GB file, so a corrupt
+              one needs its own Repair path — neither the model-keyed banner nor
+              the shared-encoder one above can reach it. Same failure mode as a
+              corrupt model: the render completes and comes out garbled. */}
+          {showTextEncoderOptionIntegrityBanner && (
+            <ModelRepairBanner
+              message={<>
+                The <strong className="font-semibold">{selectedTextEncoder?.label}</strong> text encoder has {textEncoderOptionIntegrityBadCount || 'corrupt'} damaged file{textEncoderOptionIntegrityBadCount === 1 ? '' : 's'} — renders may come out garbled.
+                Repair deletes the bad file{textEncoderOptionIntegrityBadCount === 1 ? '' : 's'} and re-downloads a clean copy.
+              </>}
+              repairLabel="Repair text encoder"
+              onRepair={() => {
+                setDismissedTextEncoderOptionIntegrityKey(textEncoderOptionIntegrityKey);
+                modelDownload.repair(textEncoderOptionDownloadId);
+              }}
+              onDismiss={() => setDismissedTextEncoderOptionIntegrityKey(textEncoderOptionIntegrityKey)}
               disabled={modelDownload.repairing || modelDownload.downloading}
               repairing={modelDownload.repairing}
             />

@@ -31,6 +31,7 @@
  */
 
 import { ServerError } from './errorHandler.js';
+import { APACHE_2 } from './videoDisclosure.js';
 
 // Every runtime's built-in conditioner option. Selected by default and always
 // present, so the picker never renders a single-option select and a render that
@@ -73,19 +74,21 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
       // size the UI shows — the picker formats it rather than carrying a second,
       // driftable "~N GB" literal.
       sizeBytes: 51506295440,
+      // Same shape as VIDEO_MODEL_DISCLOSURES, and rendered by the same
+      // FactLink affordance — reusing that module's license descriptor rather
+      // than restating the Apache text URL. `estimatedDownloadGb` is omitted on
+      // purpose: `sizeBytes` above is the one size, and the UI formats it.
       disclosure: Object.freeze({
         modelCardUrl: 'https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-H3-ComfyUI-INT8-ConvRot',
-        weightsLicense: Object.freeze({
-          name: 'Apache-2.0',
-          url: 'https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct',
-        }),
-        baseModel: 'Qwen/Qwen3-VL-32B-Instruct',
-        // Decimal GB, matching lib/videoDisclosure.js's convention.
-        estimatedDownloadGb: 51.5,
+        weightsLicense: APACHE_2,
         reviewedAt: '2026-08-14',
       }),
-      // The stock conditioner is aligned; this one is deliberately not. Surface
-      // that in the picker rather than burying it in a model card.
+      // Informational, NOT a terms gate. H3's own `termsGate` already gates the
+      // render on its Community License, and this conditioner is plain
+      // Apache-2.0 with nothing extra to accept — so a second acknowledgement
+      // click would be friction with no legal basis behind it. What the user
+      // does need is to know the behavior changed, which the picker states
+      // inline at the moment of choosing.
       advisory:
         'This conditioner has had its refusal behavior removed. It will follow prompts the stock '
         + 'conditioner declines. You remain responsible for what you generate.',
@@ -94,14 +97,16 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
 });
 
 /**
- * Every conditioner option a model can render with, stock first.
- * Returns `[]` for a runtime with no substitutions — the caller renders no
- * picker rather than a select with one entry.
+ * Every conditioner option a model can render with, stock first — `[]` for a
+ * runtime this build has no conditioner table for.
+ *
+ * Deliberately NOT filtered down to "more than one option": that is a
+ * presentation rule, and folding it in here would quietly change what the
+ * SERVER believes a model supports (and empty the "offers …" list in the error
+ * below) for a reason that is only about how a `<select>` looks. The picker
+ * owns the hide-when-there-is-no-real-choice check.
  */
-export const videoTextEncoderOptions = (model) => {
-  const list = TEXT_ENCODERS_BY_RUNTIME[model?.runtime];
-  return list && list.length > 1 ? list : [];
-};
+export const videoTextEncoderOptions = (model) => TEXT_ENCODERS_BY_RUNTIME[model?.runtime] || [];
 
 /** Resolve one option by id, or `null` when the model can't render with it. */
 export const videoTextEncoderOption = (model, id) =>
@@ -143,8 +148,9 @@ export const videoTextEncoderUnsupportedError = (model, id) => {
  */
 export const resolveVideoTextEncoder = (model, id) => {
   if (isStockTextEncoder(id)) return null;
-  if (!supportsVideoTextEncoder(model, id)) throw videoTextEncoderUnsupportedError(model, id);
-  return videoTextEncoderOption(model, id);
+  const option = videoTextEncoderOption(model, id);
+  if (!option || option.builtIn) throw videoTextEncoderUnsupportedError(model, id);
+  return option;
 };
 
 /**
@@ -152,24 +158,28 @@ export const resolveVideoTextEncoder = (model, id) => {
  * /models/status lane and the download/repair routes enumerate. The built-in
  * options are excluded: they ride the model's own download.
  */
-export const downloadableVideoTextEncoders = () => {
-  const seen = new Map();
-  for (const list of Object.values(TEXT_ENCODERS_BY_RUNTIME)) {
-    for (const entry of list) {
-      if (!entry.builtIn && !seen.has(entry.id)) seen.set(entry.id, entry);
-    }
-  }
-  return [...seen.values()];
-};
+// Deduped by id, not merely flattened: the table is keyed by RUNTIME, so one
+// conditioner can legitimately be offered by two of them — and a duplicate here
+// would mean two download targets and two status rows for one file.
+export const downloadableVideoTextEncoders = () => [...new Map(
+  Object.values(TEXT_ENCODERS_BY_RUNTIME).flat()
+    .filter((entry) => !entry.builtIn)
+    .map((entry) => [entry.id, entry]),
+).values()];
 
 /** Resolve a downloadable conditioner by id for the download/repair routes. */
 export const downloadableVideoTextEncoder = (id) =>
   downloadableVideoTextEncoders().find((entry) => entry.id === id) || null;
 
 /**
- * The client-facing projection of an option. Deliberately drops `keyPrefixMap`
- * and `finalNormKey` — loader mechanics the UI has no use for and that would
- * only invite a client-side reimplementation of the remap.
+ * The client-facing projection of an option — exactly what the picker renders,
+ * nothing more.
+ *
+ * Deliberately drops `keyPrefixMap` / `finalNormKey` (loader mechanics that
+ * would only invite a client-side reimplementation of the remap), `revision`,
+ * and `file`: the client never addresses the weight by path — it passes the
+ * option's `id` and the server resolves the rest. `repo` stays because the
+ * download badge names it in its tooltip.
  */
 export const publicTextEncoderOption = (entry) => ({
   id: entry.id,
@@ -177,8 +187,14 @@ export const publicTextEncoderOption = (entry) => ({
   description: entry.description,
   builtIn: !!entry.builtIn,
   ...(entry.repo ? { repo: entry.repo } : {}),
-  ...(entry.file ? { file: entry.file } : {}),
   ...(entry.sizeBytes ? { sizeBytes: entry.sizeBytes } : {}),
   ...(entry.advisory ? { advisory: entry.advisory } : {}),
   ...(entry.disclosure ? { disclosure: entry.disclosure } : {}),
 });
+
+/**
+ * The client-facing option list for a model — what `decorateVideoModel`
+ * attaches to every registry entry.
+ */
+export const publicVideoTextEncoderOptions = (model) =>
+  videoTextEncoderOptions(model).map(publicTextEncoderOption);

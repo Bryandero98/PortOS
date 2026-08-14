@@ -98,6 +98,14 @@ export const textEncoderOptionsForModel = (model) => (
 export const normalizeTextEncoderForModel = (id, model) => (
   textEncoderOptionsForModel(model).some((option) => option.id === id) ? id : STOCK_TEXT_ENCODER_ID
 );
+// Read a conditioner out of a persisted record (a history entry, a resumed
+// job's params). Both only record a SUBSTITUTE, so a missing field means stock —
+// and must CLEAR a leftover selection rather than carry it into a render the
+// user asked to reproduce. Keeping that rule next to the sentinel stops the two
+// restore paths from drifting on it.
+export const textEncoderIdFromRecord = (value) => (
+  typeof value === 'string' && value ? value : STOCK_TEXT_ENCODER_ID
+);
 
 // Per-edge bounds for video: mirrors the videoGen route (64..2048). The base
 // grid is 64px, while a model may declare a finer resolutionStep (H3 uses 32).

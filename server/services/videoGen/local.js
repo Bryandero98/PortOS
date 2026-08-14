@@ -45,7 +45,7 @@ import {
   isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
 } from '../../lib/videoDisclosure.js';
 import {
-  videoTextEncoderOptions, publicTextEncoderOption, resolveVideoTextEncoder,
+  publicVideoTextEncoderOptions, resolveVideoTextEncoder,
 } from '../../lib/videoTextEncoders.js';
 import { getSettings } from '../settings.js';
 import {
@@ -175,7 +175,7 @@ const decorateVideoModel = (m) => (m ? {
   ...m,
   lastFrameAnchored: modelAnchorsLastFrame(m),
   runtimeLoraCapable: byovRuntimeLoraCapable(m.runtime),
-  textEncoderOptions: videoTextEncoderOptions(m).map(publicTextEncoderOption),
+  textEncoderOptions: publicVideoTextEncoderOptions(m),
 } : m);
 
 export const resolveVideoModel = (modelId) =>

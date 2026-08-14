@@ -625,11 +625,15 @@ const modelDownloadTargets = (model) => {
 // pinned file inside a repo that also publishes quantizations and generation
 // tails PortOS's MLX loader can't read, so these are ALWAYS scoped to `only:
 // [file]` — a repo-wide snapshot would pull ~130 GB of unusable variants.
-const textEncoderDownloadTargets = () => downloadableVideoTextEncoders().map((entry) => ({
+const textEncoderDownloadTarget = (entry) => ({
   repo: entry.repo,
   revision: entry.revision || null,
   only: [entry.file],
-}));
+});
+// Paired with its entry so the status lane can project the registry fields
+// (label, advisory, size) alongside the cache verdict without a second lookup.
+const textEncoderDownloadTargets = () => downloadableVideoTextEncoders()
+  .map((entry) => ({ entry, target: textEncoderDownloadTarget(entry) }));
 
 const targetKey = (target) => `${target.repo}@${target.revision || 'latest'}::${target.only.join(',')}`;
 const targetVerifyOptions = (target, deep) => ({
@@ -654,7 +658,7 @@ const reposToVerify = (modelId) => {
   // Substitutable prompt conditioners are single pinned files the render path
   // depends on, so an unscoped scan must reach them too — a truncated one
   // otherwise only surfaces as a load failure minutes into a render.
-  targets.push(...textEncoderDownloadTargets());
+  targets.push(...textEncoderDownloadTargets().map(({ target }) => target));
   // IC-LoRA remix weights are separate HF pulls that the render path depends
   // on, so an unscoped integrity scan must cover them too — otherwise a
   // corrupt IC weight only surfaces as a garbled render.
@@ -715,10 +719,11 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
     // the IC weights, so the video form renders their Download button and
     // Repair banner with the existing components. Scoped to the ONE pinned file
     // (never the repo) for the reason in textEncoderDownloadTargets.
-    Promise.all(downloadableVideoTextEncoders().map(async (entry) => {
-      const verify = await verifyCachedRepoFiles(entry.repo, [entry.file], {
-        ...(entry.revision ? { revision: entry.revision } : {}),
-      });
+    Promise.all(textEncoderDownloadTargets().map(async ({ entry, target }) => {
+      // Through the shared target verifier, so the badge, the integrity scan
+      // and the repair route can't drift on how a pinned single-file target is
+      // checked.
+      const verify = await verifyDownloadTarget(target);
       const cached = verify.status === 'ok';
       return {
         ...publicTextEncoderOption(entry),
@@ -914,7 +919,7 @@ router.get('/text-encoders/:id/download', asyncHandler(async (req, res) => {
   await startHfDownloadStream({
     req,
     res,
-    repos: [{ repo: entry.repo, revision: entry.revision || null, only: [entry.file] }],
+    repos: [textEncoderDownloadTarget(entry)],
     force: req.query.force === '1',
   });
 }));
@@ -923,12 +928,10 @@ router.post('/text-encoders/:id/repair', asyncHandler(async (req, res) => {
   const entry = textEncoderFromParam(req.params.id);
   const parsed = z.object({ deep: z.boolean().optional() }).safeParse(req.body || {});
   if (!parsed.success) failValidation(parsed);
-  const result = await repairCachedRepoFiles(entry.repo, [entry.file], {
-    deep: parsed.data.deep || false,
-    ...(entry.revision ? { revision: entry.revision } : {}),
-  });
+  const deep = parsed.data.deep || false;
+  const result = await repairDownloadTarget(textEncoderDownloadTarget(entry), { deep });
   res.json({
-    deep: parsed.data.deep || false,
+    deep,
     deleted: result.deleted.map((name) => ({ repo: entry.repo, name })),
     repos: [entry.repo],
   });

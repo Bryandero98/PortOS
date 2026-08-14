@@ -8,19 +8,27 @@
  * control for that choice.
  *
  * Presentational: options, selection, and download status are all owned by the
- * VideoGen page. Rendered only when the model actually offers more than one
- * option (the server decorates the list per model), so no runtime check lives
- * here.
+ * VideoGen page. It renders only when the model offers a real choice; the server
+ * ships the true option list (including a lone stock entry), so the
+ * hide-when-there-is-nothing-to-pick rule lives here rather than in the
+ * server-side accessor every validation predicate is built on.
  *
  * A substitute is a separate multi-GB pull, so its Download badge sits inline
  * with the select rather than behind the collapsed Advanced panel — the user has
  * to see the cost at the moment they pick it, and the page gates Generate on the
  * same status.
  */
+import { FormField } from '../ui/FormField';
+import ModelSelect from '../ModelSelect';
 import ModelDownloadBadge from '../media/ModelDownloadBadge';
+import FactLink from './FactLink';
 import { formatBytes } from '../../utils/formatters.js';
 
-const inputCls = 'w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50';
+// The option text carries its own download size, so the shared ModelSelect gets
+// a getLabel rather than the default `m.name` (these entries have `label`).
+const optionLabel = (option) => (
+  option.sizeBytes ? `${option.label} (~${formatBytes(option.sizeBytes)} download)` : option.label
+);
 
 export default function TextEncoderPicker({
   options = [],
@@ -33,33 +41,26 @@ export default function TextEncoderPicker({
 }) {
   if (options.length < 2) return null;
   const selected = options.find((option) => option.id === value) || options[0];
-  // Formatted from the option's exact published byte count rather than a second
-  // "~N GB" literal on the registry entry, so the option text, the Download
-  // button and the post-download "Available · N" badge can never disagree.
-  const sizeLabel = selected.sizeBytes ? formatBytes(selected.sizeBytes) : null;
   // Built-in conditioners ship inside the model's own weights, so they have no
   // separate download of their own to badge.
   const needsDownload = !selected.builtIn && (status === null || status.cached === false || status.downloading);
+  const card = selected.disclosure?.modelCardUrl;
+  const license = selected.disclosure?.weightsLicense;
 
   return (
-    <div className="mt-2">
-      <label htmlFor="video-text-encoder" className="block text-xs font-medium text-gray-400 mb-1">
-        Text encoder
-      </label>
-      <select
+    <FormField
+      className="mt-2"
+      label="Text encoder"
+      labelClassName="block text-xs font-medium text-gray-400 mb-1"
+    >
+      <ModelSelect
         id="video-text-encoder"
+        models={options}
         value={selected.id}
         onChange={(e) => onChange(e.target.value)}
+        getLabel={optionLabel}
         disabled={disabled}
-        className={inputCls}
-      >
-        {options.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-            {option.sizeBytes ? ` (~${formatBytes(option.sizeBytes)} download)` : ''}
-          </option>
-        ))}
-      </select>
+      />
       {selected.description && (
         <p className="text-[10px] text-gray-500 leading-snug mt-1">{selected.description}</p>
       )}
@@ -68,16 +69,24 @@ export default function TextEncoderPicker({
       {selected.advisory && (
         <p className="text-[10px] text-port-warning leading-snug mt-1">{selected.advisory}</p>
       )}
-      {needsDownload && (
-        <div className="mt-1">
-          <ModelDownloadBadge
-            status={status}
-            onDownload={() => onDownload?.(selected.id)}
-            onCancel={onCancel}
-            estimateLabel={sizeLabel ? `~${sizeLabel}` : undefined}
-          />
-        </div>
+      {/* Same provenance affordance a MODEL gets (ModelDisclosure/FactLink): a
+          substitute is someone else's tens-of-GB checkpoint, so its card and
+          license stay one click away instead of being facts only the registry
+          knows. */}
+      {(card || license) && (
+        <p className="text-[10px] text-gray-500 leading-snug mt-1 flex flex-wrap items-center gap-x-2">
+          {card && <FactLink href={card}>Model card</FactLink>}
+          {license && <FactLink href={license.url}>{license.name}</FactLink>}
+        </p>
       )}
-    </div>
+      {needsDownload && (
+        <ModelDownloadBadge
+          status={status}
+          onDownload={() => onDownload?.(selected.id)}
+          onCancel={onCancel}
+          estimateLabel={selected.sizeBytes ? `~${formatBytes(selected.sizeBytes)}` : undefined}
+        />
+      )}
+    </FormField>
   );
 }

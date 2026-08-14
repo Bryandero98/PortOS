@@ -18,6 +18,7 @@ import {
   normalizeFramesForModel, normalizeFpsForModel,
   icLoraSpecForMode, icResolutionIssue,
   STOCK_TEXT_ENCODER_ID, textEncoderOptionsForModel, normalizeTextEncoderForModel,
+  textEncoderIdFromRecord,
 } from '../lib/videoGenParams.js';
 
 /**
@@ -888,9 +889,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // 'stock' and must clear a leftover override rather than silently reusing it
     // on a render the user asked to reproduce faithfully. The currentModel effect
     // snaps an id this model can't load back to stock.
-    setTextEncoderId(typeof item.textEncoderId === 'string' && item.textEncoderId
-      ? item.textEncoderId
-      : STOCK_TEXT_ENCODER_ID);
+    setTextEncoderId(textEncoderIdFromRecord(item.textEncoderId));
     // disableAudio: always set explicitly (true/false) so the toggle reliably
     // matches the remixed render. Skipping the false branch would leave the
     // toggle stuck ON when the user remixes a clip that had audio enabled.
@@ -989,9 +988,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     if (p.seed != null) setSeed(String(p.seed));
     if (p.tiling) setTiling(p.tiling);
     // Resume echoes the field only for a non-stock render, so absence is 'stock'.
-    setTextEncoderId(typeof p.textEncoderId === 'string' && p.textEncoderId
-      ? p.textEncoderId
-      : STOCK_TEXT_ENCODER_ID);
+    setTextEncoderId(textEncoderIdFromRecord(p.textEncoderId));
     if (typeof p.disableAudio === 'boolean') setDisableAudio(p.disableAudio);
     if (p.mode === 'grok') {
       // Grok job: 'grok' is the queue discriminator, not a semantic video
