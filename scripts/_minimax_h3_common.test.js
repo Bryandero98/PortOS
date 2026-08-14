@@ -60,6 +60,36 @@ const validate = (overrides = {}, window = {}) => {
 };
 
 describe.skipIf(!pyBin)('_minimax_h3_common.py — checkpoint facts shared by both H3 runners', () => {
+  // The shared validator reads these exact fields off the parsed Namespace, so
+  // the two runners have to present the same surface or one of them can hand it
+  // an attribute that doesn't exist. Declaring the flags once is what makes that
+  // true; this pins the set so a runner can't quietly drop one back into its own
+  // parser with a different type or default.
+  it('declares the CLI surface both runners share', () => {
+    const output = lines(runPython(`${importShared}\n${[
+      'import argparse',
+      'parser = shared.add_h3_common_args(argparse.ArgumentParser())',
+      'for action in parser._actions:',
+      '    if action.dest == "help":',
+      '        continue',
+      '    print(f"{action.dest}:{action.required}:{action.default}")',
+    ].join('\n')}`));
+    expect(output).toEqual([
+      'model_repo:True:None',
+      'model_revision:True:None',
+      'prompt:True:None',
+      'width:True:None',
+      'height:True:None',
+      'num_frames:True:None',
+      'fps:False:24',
+      'steps:False:8',
+      'seed:False:0',
+      'image:False:[]',
+      'anchor:False:[]',
+      'output:True:None',
+    ]);
+  });
+
   it('states the fixed fps and frame grid once', () => {
     const output = lines(runPython(`${importShared}\n${[
       'print(f"{shared.FPS},{shared.FRAME_MODULUS},{shared.FRAME_REMAINDER}")',
@@ -183,19 +213,6 @@ describe.skipIf(!pyBin)('_minimax_h3_common.py — checkpoint facts shared by bo
       ].join('\n')}`);
       expect(output).toContain('span multiple snapshots');
     });
-  });
-
-  it('fails the ffmpeg preflight before any model load can begin', () => {
-    // Tens of GB of weights load before the mux; discovering a missing ffmpeg
-    // after that wastes the whole render.
-    const output = runPython(`${importShared}\n${[
-      'shared.shutil.which = lambda name: None',
-      'try:',
-      '    shared.require_ffmpeg()',
-      'except RuntimeError as exc:',
-      '    print(exc)',
-    ].join('\n')}`);
-    expect(output).toContain('ffmpeg is required');
   });
 
   it('emits the video_path JSON completion contract on stdout', () => {

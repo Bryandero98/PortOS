@@ -15,8 +15,10 @@ dependency it didn't already pin.
 
 What must NOT move here: anything true of only one runner. The MLX port's
 `resolve_transformer_snapshot` (its quantized DiT ships a separate
-`quant_config.json`), its LoRA argument pairing, and the CUDA path's
-`--repo-file` requirement and offload profiles all stay in their own runner.
+`quant_config.json`), its LoRA argument pairing, its `require_ffmpeg` preflight
+(it shells out to the binary to mux, where the CUDA runner muxes in-process via
+PyAV), and the CUDA path's `--repo-file` requirement and offload profiles all
+stay in their own runner.
 The frame WINDOW is the subtle one — it differs between the two (diffusers
 requires the snapped duration in 5-15s where the MLX port accepts 4-15s), so
 `validate_h3_output_args` takes it as a parameter rather than asserting one.
@@ -24,8 +26,8 @@ requires the snapped duration in 5-15s where the MLX port accepts 4-15s), so
 
 from __future__ import annotations
 
+import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -34,6 +36,33 @@ from pathlib import Path
 FPS = 24
 FRAME_MODULUS = 17
 FRAME_REMAINDER = 5
+
+
+def add_h3_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Declare the CLI surface both runners present to PortOS.
+
+    `validate_h3_output_args` below reads exactly these fields off the parsed
+    Namespace, so the schema and its validator have to agree — declaring them
+    apart is how one runner's `--steps` default drifts from the other's with
+    nothing failing until a render. Each runner adds its own flags on top
+    (`--checkpoint-*` and the LoRA / text-encoder pairs for MLX, `--repo-file`
+    and `--offload-profile` for CUDA).
+    """
+    parser.add_argument("--model-repo", required=True)
+    parser.add_argument("--model-revision", required=True)
+    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--width", type=int, required=True)
+    parser.add_argument("--height", type=int, required=True)
+    parser.add_argument("--num-frames", type=int, required=True)
+    parser.add_argument("--fps", type=int, default=FPS)
+    parser.add_argument("--steps", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--image", action="append", default=[],
+                        help="keyframe conditioning image (repeatable, max 2)")
+    parser.add_argument("--anchor", action="append", default=[], choices=["first", "last"],
+                        help="latent anchor for each --image, in the same order")
+    parser.add_argument("--output", required=True)
+    return parser
 
 
 def snapshot_root(resolved_file: str | Path, repo_filename: str) -> Path:
@@ -73,14 +102,6 @@ def resolve_cached_snapshot(repo: str, revision: str, required_files: list[str])
     if len(roots) != 1:
         raise RuntimeError(f"Cached files for {repo}@{revision[:12]} span multiple snapshots; repair the model in Video Gen.")
     return roots.pop()
-
-
-def require_ffmpeg() -> str:
-    """Fail before loading tens of GB of weights when muxing cannot succeed."""
-    path = shutil.which("ffmpeg")
-    if path is None:
-        raise RuntimeError("ffmpeg is required to mux MiniMax H3 video and audio; install it before generating.")
-    return path
 
 
 def emit_result(output: Path) -> None:
@@ -152,12 +173,9 @@ def load_keyframes(paths: list[str]) -> list:
 
 __all__ = [
     "FPS",
-    "FRAME_MODULUS",
-    "FRAME_REMAINDER",
+    "add_h3_common_args",
     "emit_result",
     "load_keyframes",
-    "require_ffmpeg",
     "resolve_cached_snapshot",
-    "snapshot_root",
     "validate_h3_output_args",
 ]

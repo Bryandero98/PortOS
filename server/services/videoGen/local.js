@@ -65,6 +65,8 @@ import {
   MINIMAX_H3_CUDA_VENV_PYTHON,
   MINIMAX_H3_CUDA_HELPER_SCRIPT,
   MINIMAX_H3_CUDA_OFFLOAD_PROFILES,
+  runtimeIsCacheOnly,
+  runtimeNeedsProcessGroupKill,
   HUNYUAN_VENV_PYTHON,
   HUNYUAN_HELPER_SCRIPT,
   HUNYUAN_REPO_DIR,
@@ -644,8 +646,20 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
 // Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
 // only exact, already-cached HF revisions; every network download remains an
 // explicit Video Gen UI action guarded by the model's terms acknowledgement.
-const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras, textEncoder }) => {
-  assertByovRuntimeInstalled('minimax_h3');
+// Everything both H3 builders must clear before they start assembling argv:
+// the venv is installed, the mode/source combination is legal, H3's fixed
+// controls were not overridden, and the entry carries its pin. The two lanes
+// had carried byte-identical copies of all four — the same shape that put the
+// control checks in `minimaxH3Controls.js` in the first place — so a field
+// added to `assertRenderModeContract` can no longer be threaded into one H3
+// runner and forgotten in the other. `repoLabel` is the only real difference:
+// the MLX entry pins a *transformer* repo, the CUDA entry the model repo.
+const assertMiniMaxH3Preflight = ({
+  runtimeId, repoLabel, model, mode, sourceImagePath, lastImagePath, keyframes,
+  extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths,
+  negativePrompt, disableAudio, tiling, numFrames, fps,
+}) => {
+  assertByovRuntimeInstalled(runtimeId);
   assertRenderModeContract({
     model,
     mode,
@@ -661,10 +675,20 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
   if (controlError) throw controlError;
   if (typeof model.repo !== 'string' || typeof model.revision !== 'string') {
     throw new ServerError(
-      `MiniMax H3 model "${model.id}" is missing its pinned transformer repo or revision.`,
+      `MiniMax H3 model "${model.id}" is missing its pinned ${repoLabel}.`,
       { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
     );
   }
+};
+
+const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras, textEncoder }) => {
+  assertMiniMaxH3Preflight({
+    runtimeId: 'minimax_h3',
+    repoLabel: 'transformer repo or revision',
+    model, mode, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath,
+    audioFilePath, audioStartSec, icReferencePaths,
+    negativePrompt, disableAudio, tiling, numFrames, fps,
+  });
   const checkpoint = Array.isArray(model.requiredWeights) ? model.requiredWeights[0] : null;
   const files = Array.isArray(checkpoint?.files) ? checkpoint.files : [];
   if (!checkpoint?.repo || !checkpoint?.revision || files.length === 0) {
@@ -730,26 +754,13 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
 // `repo`, so the file list rides on `repoFiles` and there is no separate
 // upstream-checkpoint dependency to resolve.
 const buildMiniMaxH3CudaArgs = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath }) => {
-  assertByovRuntimeInstalled('minimax_h3_cuda');
-  assertRenderModeContract({
-    model,
-    mode,
-    sourceImagePath,
-    lastImagePath,
-    keyframes,
-    extendFromVideoPath,
-    audioFilePath,
-    audioStartSec,
-    icReferencePaths,
+  assertMiniMaxH3Preflight({
+    runtimeId: 'minimax_h3_cuda',
+    repoLabel: 'repo or revision',
+    model, mode, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath,
+    audioFilePath, audioStartSec, icReferencePaths,
+    negativePrompt, disableAudio, tiling, numFrames, fps,
   });
-  const controlError = minimaxH3ControlError({ model, negativePrompt, disableAudio, tiling, numFrames, fps });
-  if (controlError) throw controlError;
-  if (typeof model.repo !== 'string' || typeof model.revision !== 'string') {
-    throw new ServerError(
-      `MiniMax H3 model "${model.id}" is missing its pinned repo or revision.`,
-      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
-    );
-  }
   const files = Array.isArray(model.repoFiles) ? model.repoFiles.filter((file) => typeof file === 'string' && file) : [];
   if (files.length === 0) {
     // Fail here rather than let the helper fall back to a repo-wide resolve:
@@ -868,8 +879,9 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
   // Windows BYOV runtime now gets the same runner-based reason the enqueue gate
   // gives it, instead of a blanket "can't fuse LoRAs on Windows" that would
   // contradict it.
-  if (hasLoras && (!videoLoraFamily(model) || routesToWindowsHelper(model))) {
-    throw routesToWindowsHelper(model)
+  const usesWindowsHelper = routesToWindowsHelper(model);
+  if (hasLoras && (!videoLoraFamily(model) || usesWindowsHelper)) {
+    throw usesWindowsHelper
       ? new ServerError(
         `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on the Windows LTX-Video helper.`,
         { status: 400, code: 'LORAS_REQUIRE_LTX2' },
@@ -1519,7 +1531,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // python helpers can authenticate snapshot_download() against gated repos
   // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
   // a gated repo, but the merge is harmless when no token is configured.
-  const childEnv = isMiniMaxH3Runtime(model.runtime)
+  const childEnv = runtimeIsCacheOnly(model.runtime)
     ? safeChildProcessEnv()
     : await hfChildEnv();
   delete childEnv.PYTHONPATH;
@@ -1528,9 +1540,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // long inference loops emit nothing to handleLine() for minutes — the UI
   // looks dead even when the model is making progress.
   childEnv.PYTHONUNBUFFERED = '1';
-  if (isMiniMaxH3Runtime(model.runtime)) {
-    // The H3 repositories are public and the runner is cache-only. Do not hand
-    // it an ambient saved HF credential it neither needs nor may transmit.
+  if (runtimeIsCacheOnly(model.runtime)) {
+    // A cache-only runner never reaches the network. Do not hand it an ambient
+    // saved HF credential it neither needs nor may transmit.
     delete childEnv.HF_TOKEN;
     delete childEnv.HUGGING_FACE_HUB_TOKEN;
     childEnv.HF_HUB_DISABLE_IMPLICIT_TOKEN = '1';
@@ -1550,7 +1562,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     env: childEnv,
     controlDir: join(PATHS.videos, '.detached', jobId),
     cleanup: true,
-    killProcessGroup: model.runtime === 'wan22' || isMiniMaxH3Runtime(model.runtime),
+    killProcessGroup: runtimeNeedsProcessGroupKill(model.runtime),
   });
   activeProcess = proc;
 

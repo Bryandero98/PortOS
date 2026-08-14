@@ -31,9 +31,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _runner_common import emit_runtime_fingerprint, heartbeat  # noqa: E402
+from _runner_common import emit_runtime_fingerprint, establish_process_group, heartbeat  # noqa: E402
 from _minimax_h3_common import (  # noqa: E402
-    FPS, emit_result, load_keyframes, resolve_cached_snapshot,
+    FPS, add_h3_common_args, emit_result, load_keyframes, resolve_cached_snapshot,
     validate_h3_output_args,
 )
 
@@ -68,25 +68,11 @@ def log(message: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-repo", required=True)
-    parser.add_argument("--model-revision", required=True)
+    parser = add_h3_common_args(argparse.ArgumentParser(description=__doc__))
     parser.add_argument("--repo-file", action="append", default=[],
                         help="repo-relative diffusers component file that must already be cached (repeatable)")
-    parser.add_argument("--prompt", required=True)
-    parser.add_argument("--width", type=int, required=True)
-    parser.add_argument("--height", type=int, required=True)
-    parser.add_argument("--num-frames", type=int, required=True)
-    parser.add_argument("--fps", type=int, default=FPS)
-    parser.add_argument("--steps", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--image", action="append", default=[],
-                        help="keyframe conditioning image (repeatable, max 2)")
-    parser.add_argument("--anchor", action="append", default=[], choices=["first", "last"],
-                        help="latent anchor for each --image, in the same order")
     parser.add_argument("--offload-profile", choices=OFFLOAD_PROFILES, default="auto",
                         help="weight-placement recipe; 'auto' sizes one from the visible CUDA device")
-    parser.add_argument("--output", required=True)
     return parser.parse_args()
 
 
@@ -219,15 +205,7 @@ def main() -> int:
     # cost seconds before it reports.
     images = load_keyframes(args.image)
 
-    # PortOS cancels this helper by process group; ffmpeg inherits the group and
-    # cannot remain behind muxing after the user presses Cancel. No-op on
-    # Windows, which has no process groups in this sense — the Node side kills
-    # by PID there.
-    if hasattr(os, "setpgid"):
-        try:
-            os.setpgid(0, 0)
-        except OSError:
-            pass
+    establish_process_group()
 
     # No ffmpeg preflight here, unlike the MLX runner: that one shells out to the
     # binary to mux, while this one muxes in-process through diffusers'

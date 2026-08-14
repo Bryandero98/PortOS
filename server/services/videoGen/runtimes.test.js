@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runtimeMocks = vi.hoisted(() => ({
@@ -16,10 +19,10 @@ vi.mock('child_process', async (importOriginal) => ({
 }));
 
 import {
-  BYOV_RUNTIME_INFO, BYOV_VIDEO_RUNTIMES,
+  BYOV_RUNTIME_INFO, BYOV_VIDEO_RUNTIMES, MINIMAX_H3_CUDA_OFFLOAD_PROFILES,
   byovRuntimeLoraCapable, invalidateByovLoraCapabilityCache, invalidateByovReadyCache,
   isByovRuntimeReady, isPinnedSourceStatusClean, modelAnchorsLastFrame,
-  resolveByovRuntimeLoraCapable,
+  resolveByovRuntimeLoraCapable, runtimeIsCacheOnly, runtimeNeedsProcessGroupKill,
 } from './runtimes.js';
 
 const REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
@@ -212,5 +215,44 @@ describe('minimax_h3_cuda runtime registration', () => {
     await expect(resolveByovRuntimeLoraCapable('minimax_h3_cuda')).resolves.toBe(false);
     // No probe child may be spawned for a runtime with no loraProbeArgs.
     expect(runtimeMocks.spawn).not.toHaveBeenCalled();
+  });
+});
+
+// The JS list exists so the server can reject a bad registry `offloadProfile`
+// with a stable code instead of an opaque non-zero child exit — which only
+// works while it agrees with the argparse `choices=` that actually enforces it.
+// Hand-synced across a language boundary is the established shape here (see
+// VIDEO_PRECISIONS), so pin it rather than leave the two free to drift.
+describe('MiniMax H3 CUDA offload profiles', () => {
+  it('matches OFFLOAD_PROFILES in the Python runner', () => {
+    const runner = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'generate_minimax_h3_cuda.py'),
+      'utf8',
+    );
+    const declared = runner.match(/^OFFLOAD_PROFILES = \(([^)]*)\)/m);
+    expect(declared).not.toBeNull();
+    const fromPython = [...declared[1].matchAll(/"([^"]+)"/g)].map(([, value]) => value);
+    expect(fromPython).toEqual([...MINIMAX_H3_CUDA_OFFLOAD_PROFILES]);
+  });
+});
+
+// Execution facts read off the registry rather than re-derived from a runtime id
+// at the spawn site, so a new cache-only runtime is a table line, not an edit to
+// the child-spawn path. Absent means off, as with every other optional key here.
+describe('runtime execution flags', () => {
+  it('reports cache-only for exactly the runners that never touch the network', () => {
+    expect(runtimeIsCacheOnly('minimax_h3')).toBe(true);
+    expect(runtimeIsCacheOnly('minimax_h3_cuda')).toBe(true);
+    expect(runtimeIsCacheOnly('ltx2')).toBe(false);
+    expect(runtimeIsCacheOnly('wan22')).toBe(false);
+    expect(runtimeIsCacheOnly(undefined)).toBe(false);
+  });
+
+  it('reports group-kill for the runners that spawn children of their own', () => {
+    expect(runtimeNeedsProcessGroupKill('wan22')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('minimax_h3')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('minimax_h3_cuda')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('ltx2')).toBe(false);
+    expect(runtimeNeedsProcessGroupKill('nope')).toBe(false);
   });
 });

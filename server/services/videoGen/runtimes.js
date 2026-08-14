@@ -107,6 +107,13 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: MINIMAX_H3_VENV_PYTHON,
     repoDir: MINIMAX_H3_REPO_DIR,
     installEnvVar: 'INSTALL_MINIMAX_H3',
+    // Cache-only: the runner never reaches the network, so the spawn site hands
+    // it a bare env and strips any ambient HF credential rather than passing one
+    // it neither needs nor may transmit. Absent means "the runner may fetch".
+    cacheOnly: true,
+    // The runner spawns children of its own (an ffmpeg mux, a git pin probe), so
+    // cancelling has to signal the whole group or they outlive the render.
+    killProcessGroup: true,
     repoUrl: 'https://github.com/PipeNetwork/minimax-h3-mlx',
     expectedRevision: MINIMAX_H3_EXPECTED_REVISION,
     // Source-only runtime: both status and the render helper verify this
@@ -136,6 +143,9 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: MINIMAX_H3_CUDA_VENV_PYTHON,
     repoDir: MINIMAX_H3_CUDA_REPO_DIR,
     installEnvVar: 'INSTALL_MINIMAX_H3_CUDA',
+    // Cache-only: see minimax_h3 above. The Video Gen UI owns every download.
+    cacheOnly: true,
+    killProcessGroup: true,
     // Everything this runtime executes is an installed distribution, so there
     // is no `expectedRevision` / `sourcePath` clean-checkout probe to run: the
     // `==` set in scripts/requirements-minimax-h3-cuda.txt is the pin. `repoUrl`
@@ -180,6 +190,7 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: WAN22_VENV_PYTHON,
     repoDir: WAN22_REPO_DIR,
     installEnvVar: 'INSTALL_WAN22',
+    killProcessGroup: true,
     repoUrl: 'https://github.com/lpalbou/mlx-gen',
     expectedRevision: WAN22_EXPECTED_REVISION,
     pinEnvVar: 'WAN22_PIN',
@@ -204,6 +215,14 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
 });
 
 export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(Object.keys(BYOV_RUNTIME_INFO)));
+
+// Per-runtime EXECUTION facts, read off the registry rather than re-derived from
+// a runtime id at the spawn site. Both are "key absent means off", the same
+// convention `loraProbeArgs` / `expectedRevision` already use here — so the next
+// cache-only or group-killed runtime is a line in the table above rather than an
+// edit to the child-spawn path in local.js.
+export const runtimeIsCacheOnly = (runtime) => BYOV_RUNTIME_INFO[runtime]?.cacheOnly === true;
+export const runtimeNeedsProcessGroupKill = (runtime) => BYOV_RUNTIME_INFO[runtime]?.killProcessGroup === true;
 
 // Does this model render through the legacy Windows helper, `generate_win.py`?
 // That script is the fallback `buildArgs` reaches only after every BYOV runtime

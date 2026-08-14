@@ -90,6 +90,18 @@ export const MINIMAX_H3_CANVAS = Object.freeze({
   ]),
 });
 
+// H3's video VAE decodes only frame counts on the 17n+5 grid, so every frame
+// list PortOS ships is an arithmetic sequence stepping by 17 — the runners
+// enforce the same modulus. Generated rather than typed out for the reason
+// `shardFiles` below is: a single wrong digit among the ~45 literals these three
+// lists would otherwise need is invisible in review and surfaces only as a
+// rejected render, and the three lists could silently disagree about the grid.
+const h3FrameGrid = (min, max) => {
+  const out = [];
+  for (let frames = min; frames <= max; frames += 17) out.push(frames);
+  return Object.freeze(out);
+};
+
 // The MLX entry's output profile: the shared canvas above PLUS the upgrade
 // machinery migration 267 and `upgradeMiniMaxH3OutputControls` key off (the id,
 // the repo it was checked against, and the frame list it supersedes). That
@@ -98,8 +110,8 @@ export const MINIMAX_H3_CANVAS = Object.freeze({
 export const MINIMAX_H3_OUTPUT_PROFILE = Object.freeze({
   id: 'minimax_h3_8bit',
   shippedRepo: 'pipenetwork/MiniMax-H3-MLX-8bit',
-  oldFrameOptions: Object.freeze([124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]),
-  frameOptions: Object.freeze([107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]),
+  oldFrameOptions: h3FrameGrid(124, 362),
+  frameOptions: h3FrameGrid(107, 362),
   ...MINIMAX_H3_CANVAS,
 });
 
@@ -167,9 +179,7 @@ const MINIMAX_H3_CUDA_REPO_FILES = Object.freeze([
 // duration must land in 5-15 s, so 107 (4.46 s) is under the floor and 362
 // (15.08 s) is over the ceiling. Mirrored by MIN_FRAMES / MAX_FRAMES in
 // scripts/generate_minimax_h3_cuda.py, which rejects the same values.
-const MINIMAX_H3_CUDA_FRAME_OPTIONS = Object.freeze([
-  124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345,
-]);
+const MINIMAX_H3_CUDA_FRAME_OPTIONS = h3FrameGrid(124, 345);
 
 const sameValues = (left, right) => (
   Array.isArray(left)

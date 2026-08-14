@@ -24,9 +24,11 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _runner_common import emit_runtime_fingerprint, heartbeat, register_source_namespace  # noqa: E402
+from _runner_common import (  # noqa: E402
+    emit_runtime_fingerprint, establish_process_group, heartbeat, register_source_namespace,
+)
 from _minimax_h3_common import (  # noqa: E402
-    FPS, emit_result, load_keyframes, require_ffmpeg, resolve_cached_snapshot,
+    FPS, add_h3_common_args, emit_result, load_keyframes, resolve_cached_snapshot,
     validate_h3_output_args,
 )
 
@@ -40,25 +42,12 @@ STEP_RE = re.compile(r"\bstep\s+(\d+)/(\d+)\b", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = add_h3_common_args(argparse.ArgumentParser(description=__doc__))
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--runtime-revision", required=True)
-    parser.add_argument("--model-repo", required=True)
-    parser.add_argument("--model-revision", required=True)
     parser.add_argument("--checkpoint-repo", required=True)
     parser.add_argument("--checkpoint-revision", required=True)
     parser.add_argument("--checkpoint-file", action="append", default=[])
-    parser.add_argument("--prompt", required=True)
-    parser.add_argument("--width", type=int, required=True)
-    parser.add_argument("--height", type=int, required=True)
-    parser.add_argument("--num-frames", type=int, required=True)
-    parser.add_argument("--fps", type=int, default=FPS)
-    parser.add_argument("--steps", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--image", action="append", default=[],
-                        help="keyframe conditioning image (repeatable, max 2)")
-    parser.add_argument("--anchor", action="append", default=[], choices=["first", "last"],
-                        help="latent anchor for each --image, in the same order")
     parser.add_argument("--lora", action="append", default=[],
                         help="user LoRA safetensors applied at runtime (repeatable)")
     parser.add_argument("--lora-scale", action="append", type=float, default=[],
@@ -74,8 +63,20 @@ def parse_args() -> argparse.Namespace:
                         help="rewrite this checkpoint-key prefix before the loader matches it (repeatable)")
     parser.add_argument("--text-encoder-final-norm-key",
                         help="synthesize a ones-filled final norm under this key (for a conditioner published without one)")
-    parser.add_argument("--output", required=True)
     return parser.parse_args()
+
+
+def require_ffmpeg() -> str:
+    """Fail before loading tens of GB of weights when muxing cannot succeed.
+
+    Only this runner needs it: it shells out to the ffmpeg binary to mux the
+    joint video+audio output, where the CUDA sibling muxes in-process through
+    diffusers' PyAV-backed encode_video().
+    """
+    path = shutil.which("ffmpeg")
+    if path is None:
+        raise RuntimeError("ffmpeg is required to mux MiniMax H3 video and audio; install it before generating.")
+    return path
 
 
 def resolve_transformer_snapshot(repo: str, revision: str) -> Path:
@@ -315,14 +316,9 @@ def main() -> int:
     # image should not cost seconds before it reports.
     images = load_keyframes(args.image)
 
-    # PortOS cancels this helper by process group; ffmpeg inherits the group and
-    # cannot remain behind muxing after the user presses Cancel. Establish the
-    # group before the git pin probe, which is the first child process.
-    if hasattr(os, "setpgid"):
-        try:
-            os.setpgid(0, 0)
-        except OSError:
-            pass
+    # Before the git pin probe, which is the first child process — and before
+    # the ffmpeg this runner shells out to mux with.
+    establish_process_group()
 
     require_ffmpeg()
 

@@ -68,6 +68,21 @@ const argsExpr = (overrides = {}) => {
 };
 
 describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
+  // Only this runner shells out to ffmpeg (the CUDA sibling muxes in-process
+  // via PyAV), so the preflight lives here rather than in the shared module.
+  // Tens of GB of weights load before the mux; discovering a missing ffmpeg
+  // after that wastes the whole render.
+  it('fails the ffmpeg preflight before any model load can begin', () => {
+    const output = runPython(`${importRunner}\n${[
+      'runner.shutil.which = lambda name: None',
+      'try:',
+      '    runner.require_ffmpeg()',
+      'except RuntimeError as exc:',
+      '    print(exc)',
+    ].join('\n')}`);
+    expect(output).toContain('ffmpeg is required');
+  });
+
   it('preflights transformer config, quant config, index, and every indexed shard', () => {
     const output = runPython(`${importRunner}\n${[
       'import json, tempfile',
