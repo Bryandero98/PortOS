@@ -21,7 +21,7 @@ import { PATHS } from '../lib/fileUtils.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
-import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { PR_CREATION, prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
@@ -1127,9 +1127,11 @@ export async function spawnTuiAgent({
       // its own file and may still be running.
       if (doneSentinelPath) await rm(doneSentinelPath).catch(() => {});
 
-      // Resolved even when the agent owns the PR: cleanup's safety net may find
-      // it never opened one, and the follow-up it then spawns needs these.
-      const reviewOptions = cleanupSuccess && taskOpenPR
+      const prCreation = resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified });
+      // Only the two modes that can still open a PR (and thus spawn a follow-up
+      // that needs these) pay for the resolve. `never` — the dominant path, an
+      // agent that opened and landed its own PR — discards them.
+      const reviewOptions = prCreation !== PR_CREATION.NEVER
         ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
           .catch(err => {
             emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
@@ -1137,7 +1139,7 @@ export async function spawnTuiAgent({
           })
         : {};
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        prCreation: resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified }),
+        prCreation,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

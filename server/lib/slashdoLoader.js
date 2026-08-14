@@ -211,9 +211,15 @@ export async function loadSlashdoLib(libName, { teams = false } = {}) {
   // Cache the MISS too. An install whose `lib/slashdo` submodule was never
   // initialized (`npm run install:all` is what fetches it) would otherwise
   // re-attempt the read on every spawn that asks — and since #3733 that is every
-  // slashdo-free PR-opening agent, not just review-loop follow-ups. The
-  // submodule can't appear without a restart, which is the same assumption the
-  // hit path already makes.
+  // slashdo-free PR-opening agent, not just review-loop follow-ups.
+  //
+  // The cost of caching it: a user who runs `git submodule update --init` by
+  // hand against a RUNNING server keeps getting `null` until a restart, which
+  // now degrades those agents' Review Loop section rather than only follow-ups'.
+  // Accepted rather than papered over with an mtime probe — the recovery is a
+  // restart the user is already adjacent to, and re-statting a known-missing
+  // file on every spawn to catch it is the wrong trade. `clearSlashdoCaches()`
+  // is the hook to add if that ever stops being true.
   if (!content) {
     slashdoLibCache.set(cacheKey, null);
     return null;
