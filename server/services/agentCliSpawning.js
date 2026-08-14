@@ -37,7 +37,7 @@ import { resolveForgeTokenEnv } from './git.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { doneSentinelPath } from '../lib/agentSentinel.js';
 import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 
@@ -733,24 +733,25 @@ export async function spawnDirectly({
     const analysisBuffer = rawStreamBuffer || outputBuffer;
     const errorAnalysis = finalSuccess ? null : (immediateFallbackAnalysis || analyzeAgentFailure(analysisBuffer, task, model));
 
-    // Slashdo-capable CLI agents run `/simplify` + `/do:pr` themselves (see
-    // buildCliCompletionSection in agentPromptBuilder.js) — mirror the TUI
-    // cleanup contract so PortOS doesn't double-fire push+PR creation. Resolved
-    // BEFORE finalizeAgent because it also gates the PR-claim verification
-    // (#3358): a PortOS-owned PR is created by the cleanup below, i.e. AFTER
-    // finalize, so only an agent-owned PR can be verified there.
-    //
-    // Uses the SAME `canTypeSlashCommands` predicate the prompt builder and the
-    // runner-mode cleanup already use, not a provider-id allowlist: an allowlist
-    // misses a path-configured `claude` under a custom provider id (told to run
-    // `/do:pr`, then PortOS opens a second PR) and wrongly claims a lean `--bare`
-    // session owns a PR it was never told to open. Whoever the prompt told to
-    // open the PR must be who cleanup and verification believe opened it.
+    // Every CLI agent that is a real coding harness drives its own push → PR →
+    // review → merge (#3733): a slashdo-capable Claude runs `/simplify` +
+    // `/do:pr`, codex/grok/agy/OpenCode run the plain `git`/`gh` equivalent from
+    // the same prompt (see buildCliCompletionSection in agentPromptBuilder.js).
+    // Mirror that here so PortOS doesn't double-fire push+PR creation.
     const directOpenPR = isTruthyMetaFn(task.metadata?.openPR);
-    const directAgentOwnsPR = directOpenPR && canTypeSlashCommands({
+    const directLeanMode = isOllamaClaudeProvider(provider);
+    const directAgentOwnsPR = directOpenPR && agentOwnsPrWorkflow({
+      providerType: PROVIDER_TYPES.CLI,
+      leanMode: directLeanMode,
+    });
+    // PR-claim verification (#3358) stays on the SLASH-command predicate: it runs
+    // BEFORE the cleanup below, and cleanup now backstops a harness that skipped
+    // its own PR step — failing the run here for a PR that is about to exist
+    // would turn a recovered handoff into a false needs-attention.
+    const directPrClaimExpected = directOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
-      leanMode: isOllamaClaudeProvider(provider),
+      leanMode: directLeanMode,
     });
 
     // try/finally so a throw from finalizeAgent still runs the local
@@ -775,7 +776,7 @@ export async function spawnDirectly({
         error: finalError || undefined,
         completionReason: terminatedByUser ? 'user-terminated' : undefined,
         workspacePath,
-        prExpected: directAgentOwnsPR,
+        prExpected: directPrClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
       });
@@ -785,7 +786,8 @@ export async function spawnDirectly({
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
       const reviewOptions = await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn });
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: directAgentOwnsPR ? false : directOpenPR,
+        openPR: directOpenPR,
+        openPRIfMissing: directAgentOwnsPR,
         prCompletion: directPrCompletion,
         ...reviewOptions,
         skipMerge: directReviewLoopFollowUp || directAgentOwnsPR,

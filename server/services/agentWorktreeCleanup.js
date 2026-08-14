@@ -49,6 +49,11 @@ const inFlightCleanups = new Map();
  * Clean up a worktree for a completed agent.
  * Reads worktree metadata from the agent's registered state and removes the worktree.
  * When openPR is true, pushes the branch and creates a PR instead of auto-merging.
+ * `openPRIfMissing` makes that a SAFETY NET rather than the primary path: the run
+ * owned its own PR workflow, so cleanup asks the forge whether a PR already
+ * exists on the branch and only pushes + creates one when the answer is a
+ * definite "none" (#3733). An unreachable forge stands down — a duplicate PR is
+ * worse than a missing one, and `verifyPrClaim` has already flagged the run.
  * `prCompletion` decides whether the PR is reviewed then merged, merged after
  * green CI, or intentionally left open. The explicit leave-open policy does
  * not spawn a post-PR agent.
@@ -79,7 +84,7 @@ export async function cleanupAgentWorktree(agentId, success, options = {}) {
   return run;
 }
 
-async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
+async function runCleanupAgentWorktree(agentId, success, { openPR = false, openPRIfMissing = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
   if (!agentState?.metadata?.isWorktree) return [];
@@ -113,8 +118,37 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
     return result?.warnings || [];
   }
 
+  // Safety net for a run that OWNED its PR workflow (#3733): the prompt told the
+  // agent to push, open, review, and merge the PR itself, so PortOS stands down —
+  // but only once the forge confirms it actually did. A harness that skipped its
+  // completion workflow would otherwise leave the branch with no change request
+  // and nothing watching it, which is exactly the orphan this net exists to catch.
+  //
+  // Only an affirmative "a PR already exists" cancels PortOS's own creation.
+  // `unavailable` is NOT evidence of one — but opening a duplicate on a guess is
+  // the worse failure, so it warns and stands down too (`verifyPrClaim` has
+  // already recorded the run as needs-attention in that case).
+  let openPRHere = openPR;
+  if (openPR && success && openPRIfMissing) {
+    // Reuses finalize's own PR-claim check rather than re-asking the forge:
+    // `pr-missing` is precisely "the forge answered and there is no change
+    // request for a branch that HOLDS commits", and every other verdict —
+    // found, nothing-to-ship, forge-unreachable — is a correct stand-down.
+    const { verifyPrClaim, PR_MISSING_CATEGORY } = await import('./agentFinalization.js');
+    const worktreePath = agentState.metadata.workspacePath || join(PATHS.worktrees, agentId);
+    const verdict = await verifyPrClaim({ task: originalTask, workspacePath: worktreePath, success: true, prExpected: true })
+      .catch(err => ({ ok: true, category: null, detail: err.message }));
+    if (verdict.category === PR_MISSING_CATEGORY) {
+      emitLog('warn', `🌳 ${agentId} owned its PR workflow but opened no pull request for ${worktreeBranch} — PortOS is opening one`, { agentId, branchName: worktreeBranch });
+      warnings.push(`Agent ${agentId} was told to open its own pull request for ${worktreeBranch} but did not; PortOS opened it instead.`);
+    } else {
+      emitLog('info', `🌳 ${agentId} owns its own pull request for ${worktreeBranch} — PortOS is standing down${verdict.ok ? '' : ` (${verdict.category})`}`, { agentId, branchName: worktreeBranch });
+      openPRHere = false;
+    }
+  }
+
   // When openPR is set and task succeeded, push branch and create PR instead of auto-merging
-  if (openPR && success) {
+  if (openPRHere && success) {
     emitLog('info', `🌳 Opening PR for worktree agent ${agentId} branch ${worktreeBranch}`, { agentId, branchName: worktreeBranch });
 
     const worktreePath = agentState.metadata.workspacePath || join(PATHS.worktrees, agentId);

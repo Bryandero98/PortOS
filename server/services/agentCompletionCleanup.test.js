@@ -148,38 +148,52 @@ describe('runAgentCompletionCleanup — agentOwnsPR mirrors the prompt gate', ()
     return cleanupAgentWorktree.mock.calls.at(-1)[2];
   };
 
+  // #3733: the record now STAMPS the answer at spawn time, because it no longer
+  // tracks `canTypeSlashCommands` — a codex/grok/agy harness can't type `/do:pr`
+  // but is told to run `gh pr create` itself.
   it.each([
-    ['claude-code', 'claude', false],
-    ['claude-code-bedrock', 'claude', false],
-    // The case an id allowlist missed: a path-configured claude under a custom id
-    // IS told to run /do:pr, so PortOS must not open a second PR.
-    ['my-custom-agent', '/opt/homebrew/bin/claude', false],
-  ])('%s does not double-fire the PR (agent owns it)', async (providerId, providerCommand) => {
-    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
-    expect(opts.openPR).toBe(false);
+    ['a codex harness', 'codex', 'codex'],
+    ['a claude session', 'claude-code', 'claude'],
+  ])('%s that owns its PR workflow is backstopped, not double-fired', async (_label, providerId, providerCommand) => {
+    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false, ownsPrWorkflow: true });
+    // openPR stays true so cleanup can still recover a PR the agent never opened;
+    // openPRIfMissing is what makes that a check-first safety net.
+    expect(opts.openPR).toBe(true);
+    expect(opts.openPRIfMissing).toBe(true);
     expect(opts.skipMerge).toBe(true);
   });
 
-  it.each([
-    ['codex', 'codex'],
-    ['antigravity-cli', 'agy'],
-  ])('%s still gets PortOS post-exit push+PR (agent cannot run /do:pr)', async (providerId, providerCommand) => {
-    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
+  it('a lean --bare claude session does NOT own its PR (it fumbles multi-step flows)', async () => {
+    const opts = await cleanupCallFor({
+      providerId: 'claude-ollama', providerCommand: 'claude', leanMode: true, ownsPrWorkflow: false,
+    });
     expect(opts.openPR).toBe(true);
+    expect(opts.openPRIfMissing).toBe(false);
     expect(opts.skipMerge).toBe(false);
   });
 
-  it('a lean --bare claude session does NOT own its PR (it has no project commands)', async () => {
-    const opts = await cleanupCallFor({ providerId: 'claude-ollama', providerCommand: 'claude', leanMode: true });
-    expect(opts.openPR).toBe(true);
+  it.each([
+    ['claude-code', 'claude', true],
+    ['claude-code-bedrock', 'claude', true],
+    // The case an id allowlist missed: a path-configured claude under a custom id
+    // IS told to run /do:pr, so PortOS must not open a second PR.
+    ['my-custom-agent', '/opt/homebrew/bin/claude', true],
+    ['codex', 'codex', false],
+    ['antigravity-cli', 'agy', false],
+  ])('a pre-upgrade %s record falls back to the slash-command derivation it was prompted with', async (providerId, providerCommand, owns) => {
+    // No `ownsPrWorkflow` key: written before #3733, so the run really was
+    // prompted by the old builder and the old gate is the correct answer.
+    const opts = await cleanupCallFor({ providerId, providerCommand, leanMode: false });
+    expect(opts.openPRIfMissing).toBe(owns);
+    expect(opts.skipMerge).toBe(owns);
   });
 
   it('a pre-upgrade agent record with only providerId still resolves', async () => {
     // Records written before providerCommand/leanMode were persisted: a blank
     // command reads as `claude`, which is what the old id allowlist effectively
     // assumed for the claude-code ids anyway.
-    expect((await cleanupCallFor({ providerId: 'claude-code' })).openPR).toBe(false);
-    expect((await cleanupCallFor({ providerId: 'codex-tui' })).openPR).toBe(true);
+    expect((await cleanupCallFor({ providerId: 'claude-code' })).openPRIfMissing).toBe(true);
+    expect((await cleanupCallFor({ providerId: 'codex-tui' })).openPRIfMissing).toBe(false);
   });
 });
 

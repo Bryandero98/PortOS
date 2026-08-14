@@ -22,7 +22,8 @@ import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSen
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
 import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
+import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
@@ -1063,18 +1064,20 @@ export async function spawnTuiAgent({
       completionError: finalError,
     });
 
-    // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
-    // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
-    // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
-    // from the same predicate used by the prompt builder so neither side can
-    // believe the other owns the PR.
-    //
-    // Resolved BEFORE finalizeAgent (not just in the cleanup below) because it is
-    // also the gate for the PR-claim verification (#3358): only a run that owned
-    // its own PR creation can be expected to have produced one by finalize time.
+    // Every TUI that is a real coding harness drives its own push → PR → review
+    // → merge, whether or not it can type `/do:pr` (#3733) — a Claude TUI runs
+    // the slashdo command, codex/antigravity/grok/OpenCode run the plain
+    // `git`/`gh` equivalent from the same prompt. Only a lean `--bare` session
+    // still hands the lifecycle back to PortOS. Derived from the same predicate
+    // the prompt builder used so neither side can believe the other owns the PR.
     const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
     const taskReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+    const agentOwnsPR = taskOpenPR && agentOwnsPrWorkflow({ providerType: PROVIDER_TYPES.TUI, leanMode });
+    // …but PR-claim verification (#3358) stays keyed on the SLASH-command
+    // predicate. A run PortOS still backstops (it re-checks the forge at cleanup
+    // and opens the PR itself when the agent skipped it) must not be failed here
+    // for a PR that is about to exist — finalize runs before that net.
+    const prClaimExpected = taskOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
       leanMode,
@@ -1107,7 +1110,7 @@ export async function spawnTuiAgent({
         error: finalError || undefined,
         completionReason: reason,
         workspacePath,
-        prExpected: agentOwnsPR,
+        prExpected: prClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
       });
@@ -1117,7 +1120,9 @@ export async function spawnTuiAgent({
       // its own file and may still be running.
       if (doneSentinelPath) await rm(doneSentinelPath).catch(() => {});
 
-      const reviewOptions = cleanupSuccess && taskOpenPR && !agentOwnsPR
+      // Resolved even when the agent owns the PR: cleanup's safety net may find
+      // it never opened one, and the follow-up it then spawns needs these.
+      const reviewOptions = cleanupSuccess && taskOpenPR
         ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
           .catch(err => {
             emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
@@ -1125,7 +1130,8 @@ export async function spawnTuiAgent({
           })
         : {};
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: agentOwnsPR ? false : taskOpenPR,
+        openPR: taskOpenPR,
+        openPRIfMissing: agentOwnsPR,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

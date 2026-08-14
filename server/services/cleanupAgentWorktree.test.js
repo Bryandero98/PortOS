@@ -198,6 +198,14 @@ vi.mock('./prWatcher.js', () => ({
   queuePendingMerge: (...args) => queuePendingMergeMock(...args)
 }));
 
+// The `openPRIfMissing` safety net asks finalize's own PR-claim check whether
+// the agent actually opened the PR it was told to open (#3733).
+const verifyPrClaimMock = vi.fn();
+vi.mock('./agentFinalization.js', () => ({
+  PR_MISSING_CATEGORY: 'pr-missing',
+  verifyPrClaim: (...args) => verifyPrClaimMock(...args)
+}));
+
 vi.mock('./runner.js', () => ({
   executeApiRun: vi.fn(),
   executeCliRun: vi.fn(),
@@ -478,6 +486,61 @@ describe('cleanupAgentWorktree - openPR path', () => {
 
     expect(git.createPR).toHaveBeenCalled();
     expect(removeWorktree).toHaveBeenCalledWith('agent-1', '/mock/workspace', 'cos/task-abc123', { merge: false });
+  });
+
+  // #3733: a slashdo-free harness now opens its own PR, so cleanup's job flips
+  // from "create the PR" to "make sure one exists". Getting this wrong in either
+  // direction is expensive — a duplicate PR, or a branch nobody ever reviews.
+  describe('openPRIfMissing safety net', () => {
+    const netOpts = { openPR: true, openPRIfMissing: true, description: 'Test task' };
+
+    it('stands down when the agent already opened its own PR', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: true, branch: 'cos/task-abc123' });
+      git.push.mockResolvedValue(undefined);
+
+      await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.push).not.toHaveBeenCalled();
+      expect(git.createPR).not.toHaveBeenCalled();
+      expect(addTask).not.toHaveBeenCalled();
+    });
+
+    it('opens the PR itself when the forge confirms the agent opened none', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: false, category: 'pr-missing', branch: 'cos/task-abc123' });
+      git.push.mockResolvedValue(undefined);
+      git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/42' });
+
+      const warnings = await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).toHaveBeenCalled();
+      expect(warnings.some(w => w.includes('was told to open its own pull request'))).toBe(true);
+    });
+
+    it('stands down on an unreachable forge — a duplicate PR is worse than a flagged one', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: false, category: 'forge-unreachable', branch: 'cos/task-abc123' });
+
+      await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+    });
+
+    it('stands down when the branch holds no commits — there was nothing to open a PR for', async () => {
+      verifyPrClaimMock.mockResolvedValue({ ok: true, noChangesToShip: true, branch: 'cos/task-abc123' });
+
+      await cleanupAgentWorktree('agent-1', true, netOpts);
+
+      expect(git.createPR).not.toHaveBeenCalled();
+    });
+
+    it('still creates the PR outright when the net is off (a lean session hands off)', async () => {
+      git.push.mockResolvedValue(undefined);
+      git.createPR.mockResolvedValue({ success: true, url: 'https://github.com/test/repo/pull/43' });
+
+      await cleanupAgentWorktree('agent-1', true, { openPR: true, description: 'Test task' });
+
+      expect(verifyPrClaimMock).not.toHaveBeenCalled();
+      expect(git.createPR).toHaveBeenCalled();
+    });
   });
 
   it('should record warning but still complete cleanup when Copilot review request fails', async () => {

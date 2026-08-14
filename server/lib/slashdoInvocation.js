@@ -261,6 +261,48 @@ export function canTypeSlashCommands({
 }
 
 /**
+ * Provider types spawned as a local coding harness — a real shell, real file
+ * tools, and a PATH that has `git` / `gh` / the reviewer CLIs on it. An HTTP
+ * `api` provider has none of that, so it can never drive its own PR.
+ */
+const HARNESS_PROVIDER_TYPES = new Set(['cli', 'tui']);
+
+/**
+ * True when a spawned session can drive the WHOLE change-request lifecycle
+ * itself — commit, push, open the PR, run the configured review loop, merge
+ * (#3733).
+ *
+ * This is a strictly weaker question than `canTypeSlashCommands`, and
+ * conflating the two is what stranded every agy / grok / codex run in a
+ * two-agent handoff. Those hosts can't TYPE `/do:pr` (slashdo installs there as
+ * Agent Skills, not slash commands), so they used to be told "commit and stop"
+ * — PortOS then opened the PR after the run and queued a separate `sys-rl-*`
+ * follow-up agent just to run the review loop. But not typing a slash command
+ * says nothing about running `gh pr create`: these are full coding harnesses,
+ * and the follow-up agent they hand off TO is routinely one of them driving the
+ * exact same inlined slashdo procedure. So the split bought nothing and cost a
+ * whole extra agent, a cold context, and a queue hop per task.
+ *
+ * `leanMode` is the one local harness excluded: a small Ollama-backed model
+ * behind `claude --bare` fumbles multi-step flows, and a half-run merge
+ * procedure is worse than a clean handoff.
+ *
+ * The prompt builder, `agentCompletionCleanup`, and the spawners must all agree
+ * on this answer or PortOS double-fires `gh pr create` — so the spawn path
+ * persists the resolved value on the agent record (`metadata.ownsPrWorkflow`)
+ * and cleanup reads it back rather than re-deriving it.
+ *
+ * @param {Object} [opts]
+ * @param {string|null} [opts.providerType] - `'tui' | 'cli' | 'api'`
+ * @param {boolean} [opts.leanMode]
+ * @returns {boolean}
+ */
+export function agentOwnsPrWorkflow({ providerType = null, leanMode = false } = {}) {
+  if (leanMode) return false;
+  return HARNESS_PROVIDER_TYPES.has(providerType);
+}
+
+/**
  * Resolve the concrete invocation for a slashdo-backed task.
  *
  * @param {Object} opts

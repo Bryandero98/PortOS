@@ -348,18 +348,33 @@ async function runCompletionCleanupSteps({ agentId, task, agent, agentState, eff
     // entry carries only `providerId`, so a lean `--bare` or path-configured
     // provider would be misjudged here — and finalizeAgent's PR verification
     // keys on the same question, so the two must resolve it identically.
-    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
-      providerId: agentState?.metadata?.providerId ?? agent.providerId,
-      providerCommand: agentState?.metadata?.providerCommand ?? agent.providerCommand ?? null,
-      leanMode: (agentState?.metadata?.leanMode ?? agent.leanMode) === true,
-    });
+    //
+    // #3733: the answer is now STAMPED on the record at spawn time
+    // (`metadata.ownsPrWorkflow`) rather than re-derived, because it no longer
+    // tracks `canTypeSlashCommands` — a codex/grok/agy harness can't type
+    // `/do:pr` but is told to run `gh pr create` itself. Re-deriving from the
+    // slash-command predicate would have PortOS open a SECOND PR for every one
+    // of those runs. A pre-upgrade record carries no such key; those runs were
+    // prompted by the old builder, so they fall back to the old derivation.
+    const persistedOwnsPrWorkflow = agentState?.metadata?.ownsPrWorkflow ?? agent.ownsPrWorkflow;
+    const agentOwnsPR = taskOpenPR && (typeof persistedOwnsPrWorkflow === 'boolean'
+      ? persistedOwnsPrWorkflow
+      : canTypeSlashCommands({
+        providerId: agentState?.metadata?.providerId ?? agent.providerId,
+        providerCommand: agentState?.metadata?.providerCommand ?? agent.providerCommand ?? null,
+        leanMode: (agentState?.metadata?.leanMode ?? agent.leanMode) === true,
+      }));
     // Merge per-task reviewer metadata with the user's Code Review Defaults
     // (AI Providers → Code Review Defaults panel). Settings I/O is cached
     // inside the resolver, so this is effectively free even when invoked
     // from a tight CoS sweep.
     const reviewOptions = await resolveReviewLoopOptions(task?.metadata, { normalize: normalizeReviewers, isTruthyMeta });
     const cleanupWarnings = await cleanupAgentWorktree(agentId, effectiveSuccess, {
-      openPR: agentOwnsPR ? false : taskOpenPR,
+      // Never a flat `false` for an agent-owned PR any more: cleanup asks the
+      // forge first and only stands down once a PR actually exists, so a harness
+      // that skipped its completion workflow can't strand the branch (#3733).
+      openPR: taskOpenPR,
+      openPRIfMissing: agentOwnsPR,
       prCompletion: taskPrCompletion,
       ...reviewOptions,
       skipMerge: taskReviewLoopFollowUp || agentOwnsPR,

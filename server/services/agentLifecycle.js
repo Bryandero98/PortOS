@@ -54,7 +54,7 @@ import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { capturePrimaryCheckoutState } from '../lib/primaryCheckoutGuard.js';
 import { buildAgentPrompt, getAppWorkspace } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
@@ -465,6 +465,13 @@ async function runAgentSpawn(task) {
       // capable, and a lean `--bare` session is not.
       providerCommand: provider.command || null,
       leanMode,
+      // Whether THIS run's prompt told the agent to push, open, review, and merge
+      // its own PR (`agentOwnsPrWorkflow`). Persisted rather than re-derived at
+      // cleanup time: the two must agree exactly or PortOS double-fires
+      // `gh pr create`, and a pre-upgrade record has no value here at all — so
+      // cleanup falls back to the old `canTypeSlashCommands` derivation when the
+      // key is absent, which is what those older runs were actually prompted with.
+      ownsPrWorkflow: agentOwnsPrWorkflow({ providerType: provider.type, leanMode }),
       model: selectedModel,
       // The reasoning-effort override this run was dispatched with (null when the
       // task pinned none). Persisted next to the model because the Resume Agent
@@ -1072,12 +1079,15 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     // Analyze failure if applicable
     const errorAnalysis = effectiveSuccess ? null : analyzeAgentFailure(outputBuffer, task, model);
 
-    // Whether the AGENT (not PortOS) owned PR creation — the gate for
-    // finalizeAgent's PR-claim verification (#3358). Derived from the same
-    // `canTypeSlashCommands` predicate `runAgentCompletionCleanup` uses below, so
-    // the run that was told to open its own PR is exactly the run we check for
-    // one. When PortOS owns it the PR is created by that cleanup, i.e. AFTER
-    // finalize, so verifying here would fail every correct run.
+    // The gate for finalizeAgent's PR-claim verification (#3358): a PortOS-owned
+    // PR is created by `runAgentCompletionCleanup` below, i.e. AFTER finalize, so
+    // verifying here would fail every correct run.
+    //
+    // Deliberately the SLASH-command predicate, not `agentOwnsPrWorkflow` — since
+    // #3733 a slashdo-free harness also opens its own PR, but cleanup re-checks
+    // the forge and opens one itself when it didn't, so failing the run here for
+    // a PR that is about to exist would turn a recovered handoff into a false
+    // needs-attention.
     //
     // `persistedAgent` is the record read once at the top of this callback — see
     // the note there for why the metadata must come off disk rather than the
