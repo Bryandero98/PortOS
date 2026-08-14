@@ -40,18 +40,26 @@ export const VIDEO_BASE_MODES = Object.freeze(['text', 'image', 'fflf', 'extend'
  *   - `wan22` — MLX-Gen's Wan CLI is t2v or i2v depending on the checkpoint, so
  *     each shipped profile narrows this itself; the pair is the widest any Wan
  *     checkpoint reaches (no keyframe interpolation, no extend).
- *   - `minimax_h3` — fl2va conditioning anchored at the first / last latent
- *     frame: 'image' anchors one, 'fflf' anchors both. Doubles as the mode
- *     ceiling in videoGen/modeContract.js.
+ *   - `minimax_h3` / `minimax_h3_cuda` — fl2va conditioning anchored at the
+ *     first / last latent frame: 'image' anchors one, 'fflf' anchors both. The
+ *     MLX port and the diffusers CUDA path expose the same three, because the
+ *     capability is the checkpoint partition's, not the runner's. Doubles as
+ *     the mode ceiling in videoGen/modeContract.js.
  *   - `hunyuan` — the MLX port's `hyvideo.inference` helper takes a prompt and
  *     nothing else (see buildHunyuanArgs); text-to-video only. This replaces the
  *     legacy `mode: 't2v'` field, which no reader ever consulted.
  */
+// One array, referenced by both H3 runtimes: the modes are the fl2va
+// checkpoint partition's, so a second literal would be a copy the comment above
+// says must never differ — with nothing enforcing it.
+const MINIMAX_H3_MODE_SET = Object.freeze(['text', 'image', 'fflf']);
+
 export const VIDEO_RUNTIME_MODES = Object.freeze({
   mlx_video: Object.freeze(['text', 'image', 'fflf', 'extend']),
   ltx2: Object.freeze(['text', 'image', 'fflf', 'extend']),
   wan22: Object.freeze(['text', 'image']),
-  minimax_h3: Object.freeze(['text', 'image', 'fflf']),
+  minimax_h3: MINIMAX_H3_MODE_SET,
+  minimax_h3_cuda: MINIMAX_H3_MODE_SET,
   hunyuan: Object.freeze(['text']),
 });
 

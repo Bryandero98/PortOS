@@ -17,6 +17,7 @@ import { PATHS } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { createSingleFlight } from '../../lib/singleFlight.js';
+import { MINIMAX_H3_RUNTIMES } from '../../lib/runners.js';
 
 // Path to the dgrauet/ltx-2-mlx venv populated by `INSTALL_LTX2=1
 // scripts/setup-image-video.sh`. Used when a model entry has
@@ -48,6 +49,23 @@ export const MINIMAX_H3_EXPECTED_REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa0
 // MINIMAX_H3_REPO_DIR: anything written inside the checkout would show up as
 // untracked in the pin verification that both /status and the render helper run.
 export const MINIMAX_H3_ENCODER_SHIM_DIR = join(homedir(), '.portos', 'minimax-h3-encoder-shims');
+
+// MiniMax H3 on CUDA — the diffusers `MiniMaxH3ModularPipeline` rather than a
+// pinned source checkout, so this runtime is a plain pip venv with no revision
+// to verify and no source package to keep clean.
+//
+// SHIPPED FOR WINDOWS. The venv itself is not win32-specific (which is why the
+// interpreter is resolved by venv layout below rather than assumed), but the
+// model catalog's platform axis is a macOS/Windows binary —
+// `getVideoModels()` is `IS_WIN ? video.windows : video.macos` — so a Linux
+// install is served the macOS/MLX list and cannot select this runtime's model
+// however well the venv provisions. Widening that axis is tracked in PLAN.md;
+// until then, do not advertise Linux support here or in the installer.
+export const MINIMAX_H3_CUDA_REPO_DIR = join(homedir(), '.portos', 'minimax-h3-cuda');
+export const MINIMAX_H3_CUDA_VENV_PYTHON = process.platform === 'win32'
+  ? join(MINIMAX_H3_CUDA_REPO_DIR, '.venv', 'Scripts', 'python.exe')
+  : join(MINIMAX_H3_CUDA_REPO_DIR, '.venv', 'bin', 'python3');
+export const MINIMAX_H3_CUDA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_minimax_h3_cuda.py');
 
 // HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
 // ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
@@ -106,6 +124,31 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     loraProbeArgs: [MINIMAX_H3_LORA_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
     fingerprintPackages: ['mlx', 'mlx-metal', 'mlx-vlm', 'transformers', 'huggingface-hub'],
   },
+  minimax_h3_cuda: {
+    id: 'minimax_h3_cuda',
+    label: 'MiniMax H3 CUDA',
+    venvPython: MINIMAX_H3_CUDA_VENV_PYTHON,
+    repoDir: MINIMAX_H3_CUDA_REPO_DIR,
+    installEnvVar: 'INSTALL_MINIMAX_H3_CUDA',
+    // Everything this runtime executes is an installed distribution, so there
+    // is no `expectedRevision` / `sourcePath` clean-checkout probe to run: the
+    // `==` set in scripts/requirements-minimax-h3-cuda.txt is the pin. `repoUrl`
+    // is therefore the integration's documentation rather than a clone source —
+    // there is no checkout under repoDir, only the venv.
+    repoUrl: 'https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3',
+    // Three things must hold before a render is even attempted, and each fails
+    // as an unusable install rather than as a bad render: diffusers must carry
+    // the H3 modular integration (merged to main after v0.39.0 and in no tagged
+    // release yet, so a released wheel imports fine and then has no pipeline —
+    // which is why the requirements file pins a commit), torchao must be present
+    // (int8 weight-only is the only way the 133 GB bf16 pair fits a consumer
+    // card), and CUDA must actually be visible. A CPU-only torch is the trap
+    // here: it installs cleanly on Windows, hides the setup banner, and then
+    // renders a 33B model on the CPU.
+    importProbe: 'import torch; from diffusers import MiniMaxH3Transformer3DModel; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference; import torchao; assert torch.cuda.is_available(), "no CUDA device"',
+    // Mirror scripts/generate_minimax_h3_cuda.py's emit_runtime_fingerprint list.
+    fingerprintPackages: ['torch', 'diffusers', 'transformers', 'torchao', 'accelerate', 'huggingface-hub'],
+  },
   hunyuan: {
     id: 'hunyuan',
     label: 'HunyuanVideo MLX',
@@ -151,15 +194,31 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
 
 export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(Object.keys(BYOV_RUNTIME_INFO)));
 
+// Does this model render through the legacy Windows helper, `generate_win.py`?
+// That script is the fallback `buildArgs` reaches only after every BYOV runtime
+// has declined, so the answer is "on win32, and not a BYOV runtime" — NOT the
+// bare `process.platform === 'win32'` this used to be spelled as at three
+// separate sites in local.js.
+//
+// The distinction became load-bearing the moment Windows gained a BYOV runtime
+// (MiniMax H3 CUDA): `generate_win.py` hardcodes its repo and reads only
+// `--image`, so the platform check was standing in for facts that are true of
+// that ONE script — it takes no repo id, and it never opens the last frame.
+// Applied to an H3 CUDA render those become wrong answers: it does require a
+// pinned repo, and it does anchor both keyframes.
+export const routesToWindowsHelper = (model) => process.platform === 'win32'
+  && !BYOV_VIDEO_RUNTIMES.has(model?.runtime);
+
 // Runtimes whose FFLF *last* frame is a real conditioning anchor rather than an
 // advisory hint: ltx2 runs a true keyframe-interpolation pipeline, and
-// minimax_h3 packs both frames as fl2va conditioning rows. Every other runtime
+// both MiniMax H3 runtimes pack both frames as fl2va conditioning rows (the
+// anchoring is the checkpoint's, so the MLX and CUDA runners agree). Every other runtime
 // conditions on a single frame and drops the other. Declared once here because
 // three consumers must agree — buildArgs (which forwards it), the last-frame
 // resize in local.js (wasted ffmpeg work otherwise), and the client's
 // "last frame is advisory" note, which reads it off the model payload via
 // `lastFrameAnchored`.
-export const LAST_FRAME_ANCHORED_RUNTIMES = Object.freeze(new Set(['ltx2', 'minimax_h3']));
+export const LAST_FRAME_ANCHORED_RUNTIMES = Object.freeze(new Set(['ltx2', ...MINIMAX_H3_RUNTIMES]));
 
 export const modelAnchorsLastFrame = (model) => LAST_FRAME_ANCHORED_RUNTIMES.has(model?.runtime);
 
@@ -268,6 +327,15 @@ export function videoLoraUnsupportedError(model, modelId) {
   if (model?.runtime === 'minimax_h3') {
     return new ServerError(
       `The installed MiniMax H3 runtime cannot apply LoRAs. Model "${modelId}" has a quantized DiT, so LoRAs need a runner that applies them at render time from quantization metadata — the pinned checkout has no such applicator. Upgrade the H3 runtime from Video Gen once a build that supports it is pinned.`,
+      { status: 400, code: 'MINIMAX_H3_LORA_UNSUPPORTED' },
+    );
+  }
+  if (model?.runtime === 'minimax_h3_cuda') {
+    // Do NOT fall through to the LTX-2 suggestion below: those are macOS/MLX
+    // entries, and this runtime only appears in the Windows catalog, so the
+    // advice would name models the user cannot select.
+    return new ServerError(
+      `MiniMax H3 on CUDA cannot apply LoRAs. Model "${modelId}" renders through diffusers' MiniMaxH3ModularPipeline, which has no LoRA path for H3. No video model in the Windows catalog takes LoRAs today.`,
       { status: 400, code: 'MINIMAX_H3_LORA_UNSUPPORTED' },
     );
   }

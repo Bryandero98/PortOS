@@ -120,6 +120,78 @@ describe('mediaModels registry', () => {
     expect(h3.termsGate.id).toBe('minimax-h3-community-license-2026-08-02');
   });
 
+  it('ships MiniMax H3 CUDA as the Windows/NVIDIA H3 profile', async () => {
+    const { loadMediaModels } = await import('./mediaModels.js');
+    // The CUDA entry is Windows-list-only, so inspect the shipped catalog
+    // directly rather than the current platform's filtered list.
+    const h3 = loadMediaModels().video.windows.find((model) => model.id === 'minimax_h3_cuda');
+    expect(h3).toMatchObject({
+      runtime: 'minimax_h3_cuda',
+      repo: 'MiniMaxAI/MiniMax-H3',
+      revision: '42ed227ee7df40d41602854ae760620d6eb651fe',
+      supportedModes: ['text', 'image', 'fflf'],
+      defaultFrames: 124,
+      fpsOptions: [24],
+      samplerLocked: true,
+      supportsNegativePrompt: false,
+      supportsDisableAudio: false,
+      steps: 8,
+    });
+    // Same canvas contract as the MLX profile — it's the checkpoint's, not the
+    // runner's — so these must not drift apart.
+    const mlx = loadMediaModels().video.macos.find((model) => model.id === 'minimax_h3_8bit');
+    expect(h3.defaultWidth).toBe(mlx.defaultWidth);
+    expect(h3.defaultHeight).toBe(mlx.defaultHeight);
+    expect(h3.resolutionStep).toBe(mlx.resolutionStep);
+    expect(h3.resolutionOptions).toEqual(mlx.resolutionOptions);
+    // The frame grid, by contrast, MUST differ: diffusers snaps to 17n+5 and
+    // then requires 5-15 s, so the MLX grid's 107 (4.46 s) and 362 (15.08 s)
+    // ends are both illegal here.
+    expect(h3.frameOptions).toEqual([124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345]);
+    expect(h3.frameOptions).not.toContain(107);
+    expect(h3.frameOptions).not.toContain(362);
+    expect(h3.frameOptions.every((n) => n % 17 === 5)).toBe(true);
+    // Same weights, same license, so one acceptance covers both entries.
+    expect(h3.termsGate.id).toBe(mlx.termsGate.id);
+  });
+
+  it('pins an explicit file list for MiniMax H3 CUDA rather than a repo snapshot', async () => {
+    const { loadMediaModels } = await import('./mediaModels.js');
+    const h3 = loadMediaModels().video.windows.find((model) => model.id === 'minimax_h3_cuda');
+    // `MiniMaxAI/MiniMax-H3` is ~498 GB: it carries the diffusers layout, the
+    // `transformer_ref/` partition for the ref2va workflow PortOS doesn't
+    // expose, AND the original non-diffusers FL2VA/ + Ref2VA/ layouts the MLX
+    // port consumes. Snapshotting it would pull 3.5x what the runner loads, so
+    // the absence of this list is a download bug, not a missing optimization.
+    expect(Array.isArray(h3.repoFiles)).toBe(true);
+    expect(h3.repoFiles).not.toHaveLength(0);
+    for (const prefix of ['transformer_ref/', 'FL2VA/', 'Ref2VA/', 'assets/', 'scripts/', 'docs/']) {
+      expect(h3.repoFiles.filter((file) => file.startsWith(prefix)), prefix).toEqual([]);
+    }
+    // Every sharded component needs its index AND all of its shards; a missing
+    // shard only surfaces as a cache-resolve failure deep into a render.
+    for (const [dir, stem, count] of [
+      ['transformer', 'diffusion_pytorch_model', 14],
+      ['text_encoder', 'model', 14],
+      ['vae', 'diffusion_pytorch_model', 3],
+    ]) {
+      expect(h3.repoFiles, `${dir} index`).toContain(`${dir}/${stem}.safetensors.index.json`);
+      const shards = h3.repoFiles.filter((file) => new RegExp(`^${dir}/${stem}-\\d{5}-of-\\d{5}\\.safetensors$`).test(file));
+      expect(shards, `${dir} shards`).toEqual(Array.from(
+        { length: count },
+        (_, i) => `${dir}/${stem}-${String(i + 1).padStart(5, '0')}-of-${String(count).padStart(5, '0')}.safetensors`,
+      ));
+    }
+    // Keyframe conditioning runs each image through Qwen3-VL's AutoProcessor,
+    // which reads `processor/` — same requirement as the MLX profile.
+    expect(h3.repoFiles).toContain('processor/preprocessor_config.json');
+    expect(h3.repoFiles).toContain('audio_vae/diffusion_pytorch_model.safetensors');
+    expect(h3.repoFiles).toContain('modular_model_index.json');
+    // Every path stays repo-relative POSIX — the download route rejects
+    // anything else as VIDEO_MODEL_MISCONFIGURED.
+    expect(h3.repoFiles.every((file) => !file.startsWith('/') && !file.includes('..') && !file.includes('\\'))).toBe(true);
+  });
+
   // #3737: capability has to be answerable off the entry, or every consumer
   // re-derives it from `runtime` string comparisons and the two ends drift.
   describe('supportedModes resolution (#3737)', () => {

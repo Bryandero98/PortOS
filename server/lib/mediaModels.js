@@ -12,12 +12,22 @@
  *       Models may also declare `defaultWidth` / `defaultHeight`,
  *       `resolutionStep`, and `resolutionOptions[]` when their native canvas
  *       differs from the shared Video Gen presets.
+ *       `repoFiles[]` (optional) narrows the model's OWN `repo` to an explicit
+ *       list of repo-relative POSIX filenames, the way `requiredWeights[].files`
+ *       already does for a secondary repo. Absent means "snapshot the whole
+ *       repo", which is right for a repo that holds exactly one model. Declare
+ *       it when the repo is an AGGREGATE holding more than the runner loads —
+ *       `MiniMaxAI/MiniMax-H3` ships three layouts totalling ~498 GB where the
+ *       CUDA runner needs ~144 GB of them — since the download, cache-status,
+ *       integrity-verify and repair paths all fan out from the same
+ *       `modelDownloadTargets()` in routes/videoGen.js and would otherwise pull
+ *       and checksum the lot.
  *       `disclosure` is optional provenance/licensing metadata (issue #3674):
  *       { modelCardUrl?, weightsLicense?: { name, url }, runtimeLicense?: { name, url },
  *         estimatedDownloadGb?, reviewedAt? }. Every key is optional and an
  *       absent key means "not established" — the UI renders it as Unknown
  *       rather than guessing. Canonical fields (repo/revision/runtime/memoryGb/
- *       supportedModes/requiredWeights) are NOT duplicated inside it. Shipped
+ *       supportedModes/requiredWeights/repoFiles) are NOT duplicated inside it. Shipped
  *       values live in lib/videoDisclosure.js and are backfilled at load.
  *       `finishModelId` (optional, issue #3696) names the delivery model a
  *       fast draft entry finishes into — declared in lib/videoFinishProfiles.js,
@@ -54,11 +64,13 @@ const IS_WIN = process.platform === 'win32';
 // contract. The load-time half is essential because route imports can cache the
 // registry before bootstrap migrations run; a later registry edit would
 // otherwise persist that stale object over the migrated file in the same boot.
-export const MINIMAX_H3_OUTPUT_PROFILE = Object.freeze({
-  id: 'minimax_h3_8bit',
-  shippedRepo: 'pipenetwork/MiniMax-H3-MLX-8bit',
-  oldFrameOptions: Object.freeze([124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]),
-  frameOptions: Object.freeze([107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]),
+// MiniMax H3's canvas contract — a property of the CHECKPOINT, so it is
+// identical on the MLX port and the diffusers CUDA path. H3-Base was trained on
+// a native 768px short edge; its canvas resolver caps area at 768x1344 and
+// rounds each edge to 32px, and these are the exact outputs for the aspect
+// ratios MiniMax documents. Both model entries spread this rather than restating
+// it — `mediaModels.test.js` asserts they stay identical.
+export const MINIMAX_H3_CANVAS = Object.freeze({
   defaultWidth: 1344,
   defaultHeight: 768,
   resolutionStep: 32,
@@ -71,6 +83,87 @@ export const MINIMAX_H3_OUTPUT_PROFILE = Object.freeze({
     Object.freeze({ label: '768x1344 (9:16 H3 native)', w: 768, h: 1344 }),
   ]),
 });
+
+// The MLX entry's output profile: the shared canvas above PLUS the upgrade
+// machinery migration 267 and `upgradeMiniMaxH3OutputControls` key off (the id,
+// the repo it was checked against, and the frame list it supersedes). That
+// upgrade half is specific to this one registry row, which is why the canvas is
+// factored out rather than left tangled with it.
+export const MINIMAX_H3_OUTPUT_PROFILE = Object.freeze({
+  id: 'minimax_h3_8bit',
+  shippedRepo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+  oldFrameOptions: Object.freeze([124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]),
+  frameOptions: Object.freeze([107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]),
+  ...MINIMAX_H3_CANVAS,
+});
+
+// Expand one diffusers sharded-component file set. Written out rather than
+// listed literally because these are 14- and 3-way shards whose names differ
+// only by index — a hand-typed list is 30+ near-identical lines in which a
+// single wrong digit is invisible in review and surfaces only as a failed
+// cache resolve mid-render.
+const shardFiles = (dir, stem, count) => Array.from(
+  { length: count },
+  (_, i) => `${dir}/${stem}-${String(i + 1).padStart(5, '0')}-of-${String(count).padStart(5, '0')}.safetensors`,
+);
+
+// MiniMax H3 on CUDA loads through diffusers' `MiniMaxH3ModularPipeline`, whose
+// `fl2va` workflow reads the `transformer/` partition plus the shared
+// conditioner, VAEs, tokenizers and schedulers.
+//
+// This MUST stay an explicit file list rather than a repo snapshot.
+// `MiniMaxAI/MiniMax-H3` is ~498 GB: it ships the diffusers layout enumerated
+// here (~144 GB), the `transformer_ref/` partition for the `ref2va` workflow
+// PortOS does not expose (~66 GB), and the ORIGINAL non-diffusers `FL2VA/` +
+// `Ref2VA/` layouts (~144 GB each) that the MLX port consumes. A snapshot would
+// pull 3.5x what the render path can use.
+const MINIMAX_H3_CUDA_REPO_FILES = Object.freeze([
+  'LICENSE',
+  'modular_model_index.json',
+  'transformer/config.json',
+  'transformer/diffusion_pytorch_model.safetensors.index.json',
+  ...shardFiles('transformer', 'diffusion_pytorch_model', 14),
+  'text_encoder/config.json',
+  'text_encoder/model.safetensors.index.json',
+  ...shardFiles('text_encoder', 'model', 14),
+  'text_encoder/chat_template.json',
+  'text_encoder/merges.txt',
+  'text_encoder/preprocessor_config.json',
+  'text_encoder/tokenizer.json',
+  'text_encoder/tokenizer_config.json',
+  'text_encoder/video_preprocessor_config.json',
+  'text_encoder/vocab.json',
+  'vae/config.json',
+  'vae/diffusion_pytorch_model.safetensors.index.json',
+  ...shardFiles('vae', 'diffusion_pytorch_model', 3),
+  'audio_vae/config.json',
+  'audio_vae/diffusion_pytorch_model.safetensors',
+  // The Qwen3-VL processor/tokenizer pair the keyframe (image / FFLF) path
+  // runs conditioning images through. ~20 MB, so it rides along rather than
+  // becoming a second opt-in pull the way a multi-GB component would.
+  'processor/chat_template.json',
+  'processor/merges.txt',
+  'processor/preprocessor_config.json',
+  'processor/tokenizer.json',
+  'processor/tokenizer_config.json',
+  'processor/video_preprocessor_config.json',
+  'processor/vocab.json',
+  'tokenizer/merges.txt',
+  'tokenizer/tokenizer.json',
+  'tokenizer/tokenizer_config.json',
+  'tokenizer/vocab.json',
+  'scheduler/scheduler_config.json',
+  'audio_scheduler/scheduler_config.json',
+]);
+
+// The diffusers integration's duration window, which is NARROWER than the MLX
+// port's at both ends: frames are snapped up to the next 17n+5 and the RESULTING
+// duration must land in 5-15 s, so 107 (4.46 s) is under the floor and 362
+// (15.08 s) is over the ceiling. Mirrored by MIN_FRAMES / MAX_FRAMES in
+// scripts/generate_minimax_h3_cuda.py, which rejects the same values.
+const MINIMAX_H3_CUDA_FRAME_OPTIONS = Object.freeze([
+  124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345,
+]);
 
 const sameValues = (left, right) => (
   Array.isArray(left)
@@ -153,13 +246,9 @@ const DEFAULT_REGISTRY = {
         defaultFrames: 124,
         frameOptions: [...MINIMAX_H3_OUTPUT_PROFILE.frameOptions],
         fpsOptions: [24],
-        // H3-Base was trained on a native 768px short edge. Its canvas resolver
-        // caps area at 768x1344 and rounds each edge to 32px; these are the
-        // exact outputs for the aspect ratios MiniMax documents.
-        defaultWidth: MINIMAX_H3_OUTPUT_PROFILE.defaultWidth,
-        defaultHeight: MINIMAX_H3_OUTPUT_PROFILE.defaultHeight,
-        resolutionStep: MINIMAX_H3_OUTPUT_PROFILE.resolutionStep,
-        resolutionOptions: MINIMAX_H3_OUTPUT_PROFILE.resolutionOptions.map((preset) => ({ ...preset })),
+        // The checkpoint's canvas contract, shared verbatim with the CUDA entry.
+        ...MINIMAX_H3_CANVAS,
+        resolutionOptions: MINIMAX_H3_CANVAS.resolutionOptions.map((preset) => ({ ...preset })),
         memoryGb: 128,
         steps: 8,
         guidance: 0,
@@ -340,6 +429,40 @@ const DEFAULT_REGISTRY = {
     ])),
     windows: applyVideoFinishProfiles(applyVideoDisclosures([
       { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
+      // MiniMax H3 on NVIDIA, through diffusers' MiniMaxH3ModularPipeline —
+      // the same joint video+audio model the macOS list runs on MLX, so it
+      // shares H3's canvas grid, its fixed 24 fps, its locked CFG-distilled
+      // sampler and the same license gate. Generation is cache-only: PortOS
+      // owns the explicit file-list download (see MINIMAX_H3_CUDA_REPO_FILES —
+      // never a snapshot of this repo) and the runtime is provisioned only
+      // after the user selects Install in Video Gen.
+      {
+        id: 'minimax_h3_cuda',
+        name: 'MiniMax H3 CUDA int8 (joint video + audio, ~144 GB download, 24 GB VRAM + 96 GB RAM)',
+        repo: 'MiniMaxAI/MiniMax-H3',
+        revision: '42ed227ee7df40d41602854ae760620d6eb651fe',
+        repoFiles: [...MINIMAX_H3_CUDA_REPO_FILES],
+        runtime: 'minimax_h3_cuda',
+        supportedModes: ['text', 'image', 'fflf'],
+        defaultFrames: 124,
+        frameOptions: [...MINIMAX_H3_CUDA_FRAME_OPTIONS],
+        fpsOptions: [24],
+        ...MINIMAX_H3_CANVAS,
+        resolutionOptions: MINIMAX_H3_CANVAS.resolutionOptions.map((preset) => ({ ...preset })),
+        // HOST RAM, not VRAM: at int8 the transformer's blocks and the
+        // conditioner's leaves are streamed from CPU memory, so ~75 GB of the
+        // weights are resident off-GPU for the whole render. The card itself
+        // needs ~24 GB, and the runner steps down to a leaner offload profile
+        // on a smaller one (see scripts/generate_minimax_h3_cuda.py).
+        memoryGb: 96,
+        steps: 8,
+        guidance: 0,
+        samplerLocked: true,
+        samplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.',
+        supportsNegativePrompt: false,
+        supportsTiling: false,
+        supportsDisableAudio: false,
+      },
     ])),
     defaultMacos: 'ltx23_distilled_q4',
     defaultWindows: 'ltx_video',

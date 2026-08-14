@@ -10,7 +10,8 @@
 #   PORTOS_DATA    Path to PortOS data dir (default: ./data, resolved from $REPO_ROOT)
 #   INSTALL_VIDEO  '1' to also install mlx_video for LTX video generation (default: 1 on macOS, 0 on Windows)
 #   INSTALL_LTX2   '1' to also clone + uv-sync dgrauet/ltx-2-mlx at ~/.portos/ltx-2-mlx for the second-gen LTX-2.3 pipeline (proper keyframe interpolation, true video extend, audio-to-video). Default: 0; opt in with INSTALL_LTX2=1.
-#   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx. Weights remain a separate explicit Video Gen download. Default: 0.
+#   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx (Apple Silicon). Weights remain a separate explicit Video Gen download. Default: 0.
+#   INSTALL_MINIMAX_H3_CUDA '1' to install the MiniMax H3 CUDA runtime at ~/.portos/minimax-h3-cuda (Windows + NVIDIA), via diffusers' MiniMaxH3ModularPipeline. Weights remain a separate explicit Video Gen download (~144 GB). Default: 0.
 #   INSTALL_FLUX2  '1' to also bootstrap a separate venv at ~/.portos/venv-flux2 for FLUX.2-klein (default: 1 on macOS, 0 elsewhere)
 #   INSTALL_MUSICGEN '1' to bootstrap a venv at ~/.portos/venv-musicgen + clone ml-explore/mlx-examples to ~/.portos/mlx-examples for local MusicGen (MLX) background-music generation (pipeline audio stage). Default: 0; opt in with INSTALL_MUSICGEN=1 (macOS / Apple Silicon only).
 #   MLX_EXAMPLES_PIN  commit SHA of ml-explore/mlx-examples to check out for MusicGen (default: main).
@@ -27,6 +28,9 @@ PORTOS_DATA="${PORTOS_DATA:-${REPO_ROOT}/data}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+# Git-bash / MSYS / Cygwin all report a prefixed uname; PortOS runs the
+# in-app installer through git-bash on Windows, so match all three.
+is_windows() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0;; *) return 1;; esac; }
 
 # Check out a pin (a commit SHA, tag, or branch name) in an already-fetched
 # clone. A bare `git checkout <branch>` lands on the *local* branch created at
@@ -54,7 +58,7 @@ mkdir -p "${PORTOS_DATA}/videos"
 mkdir -p "${PORTOS_DATA}/video-thumbnails"
 
 # When the user only wants a specific BYOV runtime (set via INSTALL_LTX2 /
-# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 — or one of the self-contained MUSIC venvs
+# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 / INSTALL_MINIMAX_H3_CUDA — or one of the self-contained MUSIC venvs
 # INSTALL_MUSICGEN / INSTALL_AUDIOLDM2 / INSTALL_ACESTEP — typically from the
 # in-app installer), skip the mflux + legacy mlx_video preamble. Those
 # bring-your-own-venv runtimes are self-contained and don't depend on mflux;
@@ -63,8 +67,14 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MUSCRIPTOR:-0}"
-if [[ "$ANY_BYOV" == "00000000" ]]; then
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MUSCRIPTOR:-0}"
+# "no BYOV runtime was requested" = the concatenation contains no non-zero
+# character. Matching a literal string of zeros instead made this a counting
+# exercise that the string and the variable list had to agree on — and they had
+# already fallen out of step, so a bare `bash setup-image-video.sh` was taking
+# the BYOV-only branch and skipping the mflux + flux2 preamble it advertises.
+# This form cannot drift as runtimes are added.
+if [[ "$ANY_BYOV" != *[!0]* ]]; then
   DEFAULT_INSTALL_MFLUX=1
   DEFAULT_INSTALL_VIDEO=$(is_macos && echo 1 || echo 0)
   DEFAULT_INSTALL_FLUX2=$(is_macos && echo 1 || echo 0)
@@ -374,6 +384,80 @@ if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
   fi
   echo "✅ MiniMax H3 MLX runtime ready: ${MINIMAX_H3_PY}"
   echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
+fi
+
+INSTALL_MINIMAX_H3_CUDA="${INSTALL_MINIMAX_H3_CUDA:-0}"
+if [[ "$INSTALL_MINIMAX_H3_CUDA" == "1" ]]; then
+  # MiniMax H3 on NVIDIA, through diffusers' MiniMaxH3ModularPipeline. Unlike
+  # the MLX sibling above there is no source checkout to pin — everything this
+  # runtime executes is an installed distribution, so the pin is the exact
+  # `==` set in requirements-minimax-h3-cuda.txt. Reached only from the
+  # explicit runtime Install / Repair action, never from PortOS boot.
+  if is_macos; then
+    echo "❌ MiniMax H3 CUDA needs an NVIDIA GPU. On Apple Silicon use INSTALL_MINIMAX_H3=1 (the MLX port) instead." >&2
+    exit 1
+  fi
+  # The venv provisions fine on Linux, but PortOS only surfaces this model on
+  # Windows: the catalog picks video.windows[] vs video.macos[] off IS_WIN, so
+  # a Linux install is served the macOS/MLX list and would never see the row.
+  # Warn rather than refuse — the install is harmless and ready for the day
+  # that axis widens (tracked in PLAN.md).
+  if ! is_windows; then
+    echo "⚠️  MiniMax H3 CUDA is only surfaced in Video Gen on Windows today; this venv will install but no model row will appear." >&2
+  fi
+  # diffusers is pinned to a git commit until a release carries the MiniMax-H3
+  # integration (see the note in requirements-minimax-h3-cuda.txt), so pip needs
+  # git to build that wheel. Say so up front rather than failing several minutes
+  # into a torch download.
+  if ! have git; then
+    echo "❌ INSTALL_MINIMAX_H3_CUDA=1 requires git (the diffusers pin is a git commit)." >&2
+    exit 1
+  fi
+
+  MINIMAX_H3_CUDA_DIR="${HOME}/.portos/minimax-h3-cuda"
+  MINIMAX_H3_CUDA_VENV="${MINIMAX_H3_CUDA_DIR}/.venv"
+  MINIMAX_H3_CUDA_REQS="${SCRIPT_DIR}/requirements-minimax-h3-cuda.txt"
+  mkdir -p "${MINIMAX_H3_CUDA_DIR}"
+  # A Windows venv puts the interpreter under Scripts/, a POSIX one under bin/.
+  # Probe for either rather than branching on `uname`, so an MSYS/Cygwin bash on
+  # Windows (which is what the in-app installer runs) resolves correctly.
+  MINIMAX_H3_CUDA_PY="${MINIMAX_H3_CUDA_VENV}/bin/python3"
+  if [[ ! -x "$MINIMAX_H3_CUDA_PY" && ! -x "${MINIMAX_H3_CUDA_VENV}/Scripts/python.exe" ]]; then
+    echo "📦 Creating MiniMax H3 CUDA venv..."
+    "$PYTHON_BIN" -m venv "$MINIMAX_H3_CUDA_VENV"
+  fi
+  [[ -x "$MINIMAX_H3_CUDA_PY" ]] || MINIMAX_H3_CUDA_PY="${MINIMAX_H3_CUDA_VENV}/Scripts/python.exe"
+
+  "$MINIMAX_H3_CUDA_PY" -m pip install --disable-pip-version-check --upgrade pip wheel setuptools
+  # torch comes from PyTorch's own CUDA index on Windows — the default PyPI
+  # Windows wheel is CPU-only, which on a 33B model is not "slower" but
+  # unusable. Linux's PyPI torch already bundles CUDA, so it needs no swap.
+  # Mirrors WIN_TORCH_CUDA_INDEX in server/lib/pythonSetup.js.
+  MINIMAX_H3_TORCH_INDEX="${PORTOS_TORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu126}"
+  if is_windows; then
+    echo "📦 Installing CUDA torch from ${MINIMAX_H3_TORCH_INDEX}..."
+    "$MINIMAX_H3_CUDA_PY" -m pip install --upgrade --index-url "$MINIMAX_H3_TORCH_INDEX" torch
+  else
+    echo "📦 Installing torch..."
+    "$MINIMAX_H3_CUDA_PY" -m pip install --upgrade torch
+  fi
+  echo "📦 Installing pinned MiniMax H3 CUDA packages..."
+  "$MINIMAX_H3_CUDA_PY" -m pip install --upgrade --progress-bar on -r "$MINIMAX_H3_CUDA_REQS"
+
+  # Three separate ways this install can look complete and not be: a CPU-only
+  # torch, a diffusers without the H3 integration, or a missing torchao. Check
+  # all three here so the failure names itself, instead of surfacing hours later
+  # as an ImportError inside a render. Same assertions as the runtime's
+  # `importProbe` in server/services/videoGen/runtimes.js.
+  if ! "$MINIMAX_H3_CUDA_PY" -c "import torch; from diffusers import MiniMaxH3Transformer3DModel; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference; import torchao; assert torch.cuda.is_available(), 'no CUDA device'"; then
+    echo "❌ MiniMax H3 CUDA installed but its readiness check failed (see the error above)." >&2
+    echo "   A 'no CUDA device' assertion means torch cannot see your GPU; anything else means the" >&2
+    echo "   diffusers pin does not carry the MiniMax-H3 integration. Use Repair from the Video Gen runtime panel." >&2
+    exit 1
+  fi
+  echo "✅ MiniMax H3 CUDA runtime ready: ${MINIMAX_H3_CUDA_PY}"
+  echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
+  echo "   That download is ~144 GB, and rendering needs ~24 GB VRAM plus ~75 GB of system RAM for offloaded weights."
 fi
 
 INSTALL_HUNYUAN="${INSTALL_HUNYUAN:-0}"

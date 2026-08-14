@@ -68,22 +68,6 @@ const argsExpr = (overrides = {}) => {
 };
 
 describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
-  it('keeps the lexical HF snapshot root when cache entries are blob symlinks', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import tempfile',
-      'with tempfile.TemporaryDirectory() as temp:',
-      '    root = Path(temp)',
-      '    blob = root / "blobs" / "abc"',
-      '    blob.parent.mkdir(parents=True)',
-      '    blob.write_text("weights")',
-      '    entry = root / "snapshots" / "revision" / "FL2VA" / "config.json"',
-      '    entry.parent.mkdir(parents=True)',
-      '    entry.symlink_to(blob)',
-      '    print(runner.snapshot_root(entry, "FL2VA/config.json"))',
-    ].join('\n')}`);
-    expect(output.trim()).toMatch(/snapshots[/\\]revision$/);
-  });
-
   it('preflights transformer config, quant config, index, and every indexed shard', () => {
     const output = runPython(`${importRunner}\n${[
       'import json, tempfile',
@@ -106,70 +90,36 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     expect(result.resolved).toBeTruthy();
   });
 
-  it('fails the ffmpeg preflight before any model load can begin', () => {
-    const output = runPython(`${importRunner}\n${[
-      'runner.shutil.which = lambda _name: None',
-      'try:',
-      '    runner.require_ffmpeg()',
-      'except RuntimeError as exc:',
-      '    print(str(exc))',
-      'else:',
-      '    raise SystemExit("missing preflight did not fail")',
-    ].join('\n')}`);
-    expect(output).toMatch(/ffmpeg is required/i);
+  // The duration window is the one output fact that is per-runner: the MLX port
+  // takes H3's full documented 4-15s range, where the diffusers CUDA runner is
+  // narrower. Everything else on the grid (fps, the 32px canvas, the 17n+5 step,
+  // anchoring) is shared, and asserted once in _minimax_h3_common.test.js.
+  it.each([107, 124, 362])('accepts the MLX window's %i-frame grid point', (frames) => {
+    const output = runPython(`${importRunner}
+${[
+      'from types import SimpleNamespace',
+      argsExpr({ width: 1536, height: 672, num_frames: frames }),
+      'runner.validate_args(args)',
+      'print("ok")',
+    ].join('
+')}`);
+    expect(output.trim()).toBe('ok');
   });
 
-  it('rejects zero dimensions at the execution boundary', () => {
-    const output = runPython(`${importRunner}\n${[
+  it('rejects a frame count outside the MLX window', () => {
+    const output = runPython(`${importRunner}
+${[
       'from types import SimpleNamespace',
-      argsExpr({ width: 0 }),
+      argsExpr({ width: 1536, height: 672, num_frames: 90 }),
       'try:',
       '    runner.validate_args(args)',
       'except SystemExit as exc:',
       '    print(str(exc))',
       'else:',
-      '    raise SystemExit("zero dimensions were accepted")',
-    ].join('\n')}`);
-    expect(output).toMatch(/dimensions must be positive multiples of 32/i);
-  });
-
-  it('accepts the upstream 4-second aligned frame count and native 32px canvas grid', () => {
-    const output = runPython(`${importRunner}\n${[
-      'from types import SimpleNamespace',
-      argsExpr({ width: 1536, height: 672, num_frames: 107 }),
-      'runner.validate_args(args)',
-      'print("ok")',
-    ].join('\n')}`);
-    expect(output.trim()).toBe('ok');
-  });
-
-  // An unpaired or repeated anchor would silently mis-place a keyframe in the
-  // packed sequence, so both fail at the boundary rather than rendering.
-  it.each([
-    [['a.png', 'b.png'], ['first'], /one --anchor per --image/i],
-    [['a.png', 'b.png'], ['first', 'first'], /anchors must be distinct/i],
-  ])('rejects mismatched keyframe anchors (%j / %j)', (images, anchors, pattern) => {
-    const output = runPython(`${importRunner}\n${[
-      'from types import SimpleNamespace',
-      argsExpr({ image: images, anchor: anchors }),
-      'try:',
-      '    runner.validate_args(args)',
-      'except SystemExit as exc:',
-      '    print(str(exc))',
-      'else:',
-      '    raise SystemExit("bad anchors were accepted")',
-    ].join('\n')}`);
-    expect(output).toMatch(pattern);
-  });
-
-  it('accepts a paired first/last keyframe request', () => {
-    const output = runPython(`${importRunner}\n${[
-      'from types import SimpleNamespace',
-      argsExpr({ image: ['a.png', 'b.png'], anchor: ['first', 'last'] }),
-      'runner.validate_args(args)',
-      'print("ok")',
-    ].join('\n')}`);
-    expect(output.trim()).toBe('ok');
+      '    raise SystemExit("an out-of-window frame count was accepted")',
+    ].join('
+')}`);
+    expect(output).toMatch(/approximately 4-15 seconds \(107-362 aligned frames\)/i);
   });
 
   // An unpaired --lora/--lora-scale would apply the wrong strength (or none) to
@@ -191,51 +141,6 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     ].join('\n')}`);
     expect(output).toMatch(pattern);
   });
-
-  // Reading the keyframes happens before the ~83 GB load, so a bad path costs
-  // a second rather than an hour. Both branches asserted here run WITHOUT
-  // Pillow — CI's bare python3 has no PIL, and blocking `import PIL` on them
-  // would make a missing-file report (and every text-only run) need it.
-  it('fails a missing conditioning image without importing Pillow', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import sys',
-      'sys.modules["PIL"] = None  # make any `from PIL import ...` fail loudly',
-      'try:',
-      '    runner.load_keyframes(["/nonexistent/first.png"])',
-      'except RuntimeError as exc:',
-      '    print(str(exc))',
-      'else:',
-      '    raise SystemExit("missing keyframe was accepted")',
-    ].join('\n')}`);
-    expect(output).toMatch(/Conditioning image is missing/i);
-  });
-
-  it('skips the Pillow import entirely for a text-only run', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import sys',
-      'sys.modules["PIL"] = None',
-      'print(runner.load_keyframes([]))',
-    ].join('\n')}`);
-    expect(output.trim()).toBe('[]');
-  });
-
-  // A later keyframe's bad path must not cost a decode of the earlier one.
-  it('validates every keyframe path before opening any of them', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import sys, tempfile',
-      'sys.modules["PIL"] = None',
-      'with tempfile.NamedTemporaryFile(suffix=".png") as good:',
-      '    try:',
-      '        runner.load_keyframes([good.name, "/nonexistent/last.png"])',
-      '    except RuntimeError as exc:',
-      '        print(str(exc))',
-      '    else:',
-      '        raise SystemExit("missing second keyframe was accepted")',
-    ].join('\n')}`);
-    expect(output).toMatch(/Conditioning image is missing: \/nonexistent\/last\.png/);
-  });
-
-  // ---- substituted prompt conditioner (#4081) --------------------------------
 
   // A partial flag set would silently fall back to the stock conditioner and
   // hand back a render the user has no way to tell apart from the one they asked
@@ -472,15 +377,6 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     const result = JSON.parse(output);
     expect(result.error).toMatch(/Substituted text encoder is missing/);
     expect(result.built).toBe(false);
-  });
-
-  it('emits the video_path JSON completion contract on stdout', () => {
-    const output = runPython(`${importRunner}\nrunner.emit_result(Path("/tmp/example.mp4"))`);
-    // pathlib.Path renders with the platform separator, so the emitted path is
-    // backslashed on Windows. Normalize what was RECEIVED — the contract under
-    // test is the JSON shape and the key, not the separator the OS spells.
-    const { video_path: videoPath } = JSON.parse(output);
-    expect(videoPath.split('\\').join('/')).toBe('/tmp/example.mp4');
   });
 
   it('loads only the pinned namespace and cannot import a root-level shadow module', () => {

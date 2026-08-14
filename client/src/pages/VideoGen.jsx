@@ -37,6 +37,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
+import { isMiniMaxH3Runtime } from '../lib/runnerFamilies';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -1182,7 +1183,7 @@ export default function VideoGen() {
               onChange={handleResolutionChange}
               {...localResolutionBounds}
               snapOnBlur
-              note={currentModel?.runtime === 'minimax_h3'
+              note={isMiniMaxH3Runtime(currentModel?.runtime)
                 ? 'H3 quality presets follow its trained 768px short-edge, area-capped canvas. Smaller custom sizes are off-distribution but useful for faster wiring tests; each edge snaps to 32px.'
                 : 'Each edge 64–2048px; the server rounds each down to the nearest multiple of 64.'}
             />

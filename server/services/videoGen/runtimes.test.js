@@ -16,6 +16,7 @@ vi.mock('child_process', async (importOriginal) => ({
 }));
 
 import {
+  BYOV_RUNTIME_INFO, BYOV_VIDEO_RUNTIMES,
   byovRuntimeLoraCapable, invalidateByovLoraCapabilityCache, invalidateByovReadyCache,
   isByovRuntimeReady, isPinnedSourceStatusClean, modelAnchorsLastFrame,
   resolveByovRuntimeLoraCapable,
@@ -149,6 +150,9 @@ describe('modelAnchorsLastFrame', () => {
   it.each([
     ['ltx2', true],
     ['minimax_h3', true],
+    // Anchoring is a property of the fl2va checkpoint, not of the runner in
+    // front of it, so the CUDA path must agree with the MLX one.
+    ['minimax_h3_cuda', true],
     ['mlx_video', false],
     ['wan22', false],
     ['hunyuan', false],
@@ -159,5 +163,54 @@ describe('modelAnchorsLastFrame', () => {
   it('treats a missing model or runtime as not anchored', () => {
     expect(modelAnchorsLastFrame(null)).toBe(false);
     expect(modelAnchorsLastFrame({})).toBe(false);
+  });
+});
+
+describe('minimax_h3_cuda runtime registration', () => {
+  const info = BYOV_RUNTIME_INFO.minimax_h3_cuda;
+
+  it('is a BYOV runtime with its own venv, distinct from the MLX port', () => {
+    expect(BYOV_VIDEO_RUNTIMES.has('minimax_h3_cuda')).toBe(true);
+    expect(info.installEnvVar).toBe('INSTALL_MINIMAX_H3_CUDA');
+    // Sharing a venv with the MLX port would let one install's `pip sync`
+    // silently uninstall the other's packages.
+    expect(info.venvPython).not.toBe(BYOV_RUNTIME_INFO.minimax_h3.venvPython);
+    expect(info.repoDir).not.toBe(BYOV_RUNTIME_INFO.minimax_h3.repoDir);
+  });
+
+  it('resolves the interpreter by venv layout, not by platform name', () => {
+    // A Windows venv puts python under Scripts\, a POSIX one under bin/. This
+    // is the whole reason the constant can't be the MLX port's bin/python3
+    // literal — that path never exists on the platform this runtime targets.
+    const expected = process.platform === 'win32'
+      ? ['Scripts', 'python.exe']
+      : ['bin', 'python3'];
+    for (const part of expected) expect(info.venvPython).toContain(part);
+  });
+
+  it('probes for CUDA and the H3 integration, not merely for an importable diffusers', () => {
+    // Each of these is a distinct way the install can look complete and not be:
+    // a CPU-only torch wheel, a diffusers release predating PR #14355, or a
+    // missing torchao (int8 is what makes the 133 GB bf16 pair fit at all).
+    expect(info.probeArgs).toBeUndefined();
+    expect(info.importProbe).toContain('MiniMaxH3Transformer3DModel');
+    expect(info.importProbe).toContain('torchao');
+    expect(info.importProbe).toContain('torch.cuda.is_available()');
+  });
+
+  it('declares no revision pin or LoRA probe — it runs distributions, not a checkout', () => {
+    // `expectedRevision`/`sourcePath` drive the clean-checkout gate, which has
+    // nothing to verify here; `loraProbeArgs` absent is the correct "this
+    // runtime can never take LoRAs", matching wan22 / hunyuan.
+    expect(info.expectedRevision).toBeUndefined();
+    expect(info.sourcePath).toBeUndefined();
+    expect(info.loraProbeArgs).toBeUndefined();
+  });
+
+  it('never reports LoRA capability, even after a probe attempt', async () => {
+    expect(byovRuntimeLoraCapable('minimax_h3_cuda')).toBe(false);
+    await expect(resolveByovRuntimeLoraCapable('minimax_h3_cuda')).resolves.toBe(false);
+    // No probe child may be spawned for a runtime with no loraProbeArgs.
+    expect(runtimeMocks.spawn).not.toHaveBeenCalled();
   });
 });

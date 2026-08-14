@@ -21,6 +21,21 @@ const REFERENCE_PATH = join(
   '..', '..', 'data.reference', 'media-models.json',
 );
 
+// The built-in video model ids as of the release that introduced this
+// migration (commit ffac284f9), used for the `_shippedDefaults` bootstrap union
+// below. Frozen deliberately: this is a historical fact about what this
+// migration delivered, not a live view of the catalog, so it must never be
+// re-read from `data.reference/media-models.json`.
+const SHIPPED_AT_242 = Object.freeze({
+  macos: Object.freeze([
+    'ltx2_unified', 'ltx23_unified', 'ltx23_distilled_q4', 'ltx23_dgrauet_q4',
+    'ltx23_dgrauet_q8', 'minimax_h3_8bit', 'wan22_ti2v_5b', 'wan22_t2v_a14b',
+    'wan22_i2v_a14b', 'wan22_t2v_a14b_lightning', 'wan22_i2v_a14b_lightning',
+    'hunyuan_video',
+  ]),
+  windows: Object.freeze(['ltx_video']),
+});
+
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const ids = (entries) => (Array.isArray(entries)
   ? entries.map((entry) => entry?.id).filter((id) => typeof id === 'string')
@@ -79,11 +94,20 @@ export default {
       // mediaModels.js would use for a legacy registry. A partial [H3]-only
       // snapshot would make every historically deleted default look new and
       // silently repopulate the user's curated list on the next load.
+      //
+      // The union is against the id set THIS MIGRATION shipped with, pinned
+      // below — never against today's `data.reference`. Re-deriving it meant a
+      // model added to the catalog *after* this migration got recorded as
+      // "already shipped" the first time a legacy install ran it, and was then
+      // permanently suppressed: `appendNewlyShippedEntries` reads a recorded id
+      // as "the user deleted this", so the entry would never appear and no
+      // later migration could tell the difference. Adding a default must not
+      // retroactively change what this migration claims to have delivered.
       const nextRoot = shippedRoot || {};
       const nextVideo = shippedVideo || {};
-      nextVideo.macos = bootstrapIds(macos, referenceMacos);
+      nextVideo.macos = bootstrapIds(macos, SHIPPED_AT_242.macos.map((id) => ({ id })));
       if (!shippedVideo) {
-        nextVideo.windows = bootstrapIds(config.video.windows, reference?.video?.windows);
+        nextVideo.windows = bootstrapIds(config.video.windows, SHIPPED_AT_242.windows.map((id) => ({ id })));
       }
       nextRoot.video = nextVideo;
       config._shippedDefaults = nextRoot;

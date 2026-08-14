@@ -466,6 +466,170 @@
           },
           "reviewedAt": "2026-08-09"
         }
+      },
+      {
+        "id": "minimax_h3_cuda",
+        "name": "MiniMax H3 CUDA int8 (joint video + audio, ~144 GB download, 24 GB VRAM + 96 GB RAM)",
+        "repo": "MiniMaxAI/MiniMax-H3",
+        "revision": "42ed227ee7df40d41602854ae760620d6eb651fe",
+        "repoFiles": [
+          "LICENSE",
+          "modular_model_index.json",
+          "transformer/config.json",
+          "transformer/diffusion_pytorch_model.safetensors.index.json",
+          "transformer/diffusion_pytorch_model-00001-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00002-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00003-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00004-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00005-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00006-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00007-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00008-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00009-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00010-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00011-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00012-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00013-of-00014.safetensors",
+          "transformer/diffusion_pytorch_model-00014-of-00014.safetensors",
+          "text_encoder/config.json",
+          "text_encoder/model.safetensors.index.json",
+          "text_encoder/model-00001-of-00014.safetensors",
+          "text_encoder/model-00002-of-00014.safetensors",
+          "text_encoder/model-00003-of-00014.safetensors",
+          "text_encoder/model-00004-of-00014.safetensors",
+          "text_encoder/model-00005-of-00014.safetensors",
+          "text_encoder/model-00006-of-00014.safetensors",
+          "text_encoder/model-00007-of-00014.safetensors",
+          "text_encoder/model-00008-of-00014.safetensors",
+          "text_encoder/model-00009-of-00014.safetensors",
+          "text_encoder/model-00010-of-00014.safetensors",
+          "text_encoder/model-00011-of-00014.safetensors",
+          "text_encoder/model-00012-of-00014.safetensors",
+          "text_encoder/model-00013-of-00014.safetensors",
+          "text_encoder/model-00014-of-00014.safetensors",
+          "text_encoder/chat_template.json",
+          "text_encoder/merges.txt",
+          "text_encoder/preprocessor_config.json",
+          "text_encoder/tokenizer.json",
+          "text_encoder/tokenizer_config.json",
+          "text_encoder/video_preprocessor_config.json",
+          "text_encoder/vocab.json",
+          "vae/config.json",
+          "vae/diffusion_pytorch_model.safetensors.index.json",
+          "vae/diffusion_pytorch_model-00001-of-00003.safetensors",
+          "vae/diffusion_pytorch_model-00002-of-00003.safetensors",
+          "vae/diffusion_pytorch_model-00003-of-00003.safetensors",
+          "audio_vae/config.json",
+          "audio_vae/diffusion_pytorch_model.safetensors",
+          "processor/chat_template.json",
+          "processor/merges.txt",
+          "processor/preprocessor_config.json",
+          "processor/tokenizer.json",
+          "processor/tokenizer_config.json",
+          "processor/video_preprocessor_config.json",
+          "processor/vocab.json",
+          "tokenizer/merges.txt",
+          "tokenizer/tokenizer.json",
+          "tokenizer/tokenizer_config.json",
+          "tokenizer/vocab.json",
+          "scheduler/scheduler_config.json",
+          "audio_scheduler/scheduler_config.json"
+        ],
+        "runtime": "minimax_h3_cuda",
+        "supportedModes": [
+          "text",
+          "image",
+          "fflf"
+        ],
+        "defaultFrames": 124,
+        "frameOptions": [
+          124,
+          141,
+          158,
+          175,
+          192,
+          209,
+          226,
+          243,
+          260,
+          277,
+          294,
+          311,
+          328,
+          345
+        ],
+        "fpsOptions": [
+          24
+        ],
+        "defaultWidth": 1344,
+        "defaultHeight": 768,
+        "resolutionStep": 32,
+        "resolutionOptions": [
+          {
+            "label": "1536x672 (21:9 H3 native)",
+            "w": 1536,
+            "h": 672
+          },
+          {
+            "label": "1344x768 (16:9 H3 default)",
+            "w": 1344,
+            "h": 768
+          },
+          {
+            "label": "1024x768 (4:3 H3 native)",
+            "w": 1024,
+            "h": 768
+          },
+          {
+            "label": "768x768 (1:1 H3 native)",
+            "w": 768,
+            "h": 768
+          },
+          {
+            "label": "768x1024 (3:4 H3 native)",
+            "w": 768,
+            "h": 1024
+          },
+          {
+            "label": "768x1344 (9:16 H3 native)",
+            "w": 768,
+            "h": 1344
+          }
+        ],
+        "memoryGb": 96,
+        "steps": 8,
+        "guidance": 0,
+        "samplerLocked": true,
+        "samplerNote": "MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.",
+        "supportsNegativePrompt": false,
+        "supportsTiling": false,
+        "supportsDisableAudio": false,
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/MiniMaxAI/MiniMax-H3",
+          "weightsLicense": {
+            "name": "MiniMax H3 Community License",
+            "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/6818f6c32d12b210915e44ad56a4228c2608f160/LICENSE"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/huggingface/diffusers/blob/main/LICENSE"
+          },
+          "estimatedDownloadGb": 144.1,
+          "reviewedAt": "2026-08-09"
+        },
+        "termsGate": {
+          "id": "minimax-h3-community-license-2026-08-02",
+          "title": "MiniMax H3 eligibility and terms",
+          "summary": "MiniMax grants use only in its Applicable Territory. The license excludes the European Union, United Kingdom, Republic of Korea, and United States of America.",
+          "acknowledgement": "I confirm I am in the Applicable Territory and agree to the MiniMax H3 Community License and its Acceptable Use Policy.",
+          "licenseUrl": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/6818f6c32d12b210915e44ad56a4228c2608f160/LICENSE",
+          "excludedTerritories": [
+            "European Union",
+            "United Kingdom",
+            "Republic of Korea",
+            "United States of America"
+          ]
+        }
       }
     ],
     "defaultMacos": "ltx23_distilled_q4",

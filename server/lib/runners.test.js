@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
-import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES, videoLoraFamily, isMlxVideoLtxLoraCapable, loraFamilyOf, isMflux, isFlux2, isZImage, isErnie, isHiDream, isQwen, flux2VariantFromModel, loraCompatKey, composeCompatKey } from './runners.js';
+import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES, MINIMAX_H3_RUNTIMES, videoLoraFamily, isMiniMaxH3Runtime, isMlxVideoLtxLoraCapable, loraFamilyOf, isMflux, isFlux2, isZImage, isErnie, isHiDream, isQwen, flux2VariantFromModel, loraCompatKey, composeCompatKey } from './runners.js';
 
 const __dirname_self = dirname(fileURLToPath(import.meta.url));
 const CLIENT_MIRROR_PATH = join(__dirname_self, '..', '..', 'client', 'src', 'lib', 'runnerFamilies.js');
@@ -128,6 +128,8 @@ describe('VIDEO_LORA_FAMILIES / videoLoraFamily', () => {
     expect(text).toMatch(/export const videoLoraFamily/);
     expect(text).toMatch(/export const isMlxVideoLtxLoraCapable/);
     expect(text).toMatch(/export const loraFamilyOf/);
+    expect(text).toMatch(/export const isMiniMaxH3Runtime/);
+    expect(text).toMatch(/'minimax_h3', 'minimax_h3_cuda'/);
   });
 });
 
@@ -197,5 +199,28 @@ describe('composeCompatKey', () => {
     // loraCompatKey(model) must agree with composeCompatKey on the same pair.
     expect(loraCompatKey({ runner: 'flux2', id: 'flux2-klein-9b' }))
       .toBe(composeCompatKey('flux2', '9b'));
+  });
+});
+
+// H3's controls (24 fps, joint A/V, no CFG, the 17n+5 grid) are facts about the
+// checkpoint, so the gates that assert them must cover BOTH runtimes. Naming
+// one runtime in a gate is precisely how the CUDA path would silently escape
+// a rule the MLX path enforces.
+describe('isMiniMaxH3Runtime', () => {
+  it('covers both H3 runtimes and nothing else', () => {
+    expect(MINIMAX_H3_RUNTIMES).toEqual(['minimax_h3', 'minimax_h3_cuda']);
+    expect(isMiniMaxH3Runtime('minimax_h3')).toBe(true);
+    expect(isMiniMaxH3Runtime('minimax_h3_cuda')).toBe(true);
+  });
+
+  it.each(['mlx_video', 'ltx2', 'wan22', 'hunyuan', 'minimax', '', undefined, null])(
+    'reports %s as not an H3 runtime',
+    (runtime) => { expect(isMiniMaxH3Runtime(runtime)).toBe(false); },
+  );
+
+  it('does not grant the CUDA runtime a LoRA family — the diffusers path has no applicator', () => {
+    expect(videoLoraFamily({ runtime: 'minimax_h3_cuda' })).toBe(null);
+    // Not even when a stale/synced payload claims the MLX port's probe verdict.
+    expect(videoLoraFamily({ runtime: 'minimax_h3_cuda', runtimeLoraCapable: true })).toBe(null);
   });
 });
