@@ -65,6 +65,18 @@ function gitBashFromPath() {
   return existsSync(bash) ? bash : null;
 }
 
+/**
+ * A path in the form bash can open. Windows-native paths arrive with
+ * backslashes, which bash reads as escape characters — `H:\repo\x.sh` collapses
+ * to `H:repox.sh` and exits 127 ("No such file or directory"). Git Bash accepts
+ * drive paths written with forward slashes. No-op on POSIX, which has no
+ * backslashes to convert.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+export const toBashPath = (p) => String(p).replace(/\\/g, '/');
+
 let cached;
 
 /**

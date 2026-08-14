@@ -11,7 +11,8 @@ import { request } from '../lib/testHelper.js';
 
 // resolveBashBinary and the db.sh path are resolved at module load — mock
 // the dependencies before the route is imported.
-vi.mock('../lib/bashResolver.js', () => ({
+vi.mock('../lib/bashResolver.js', async (importOriginal) => ({
+  ...(await importOriginal()),   // real toBashPath — only the binary needs pinning
   resolveBashBinary: vi.fn(() => 'bash'),
 }));
 

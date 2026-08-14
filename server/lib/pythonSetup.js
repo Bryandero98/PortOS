@@ -4,7 +4,7 @@ import { arch, homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { PATHS } from './fileUtils.js';
-import { safeChildProcessEnv, whichFirst } from './processEnv.js';
+import { safeChildProcessEnv, whichFirst, whichFirstSync } from './processEnv.js';
 import { createLineReader } from './streamLines.js';
 import { getCudaCapability } from './cudaCapability.js';
 
@@ -115,6 +115,26 @@ const firstArchMatch = async (candidates, predicate) => {
   const idx = arches.findIndex((a) => a && predicate(a));
   return idx >= 0 ? candidates[idx] : null;
 };
+
+// First installed candidate — the synchronous half of detectPython(), for
+// callers that cannot await (spawnSetupScript in lib/setupScriptRunner.js,
+// where an extra await would open an abort window between the in-flight claim
+// and the spawn). Prefer detectPython() when you can: the arch probe this
+// skips is what keeps an x86_64 conda from beating an arm64 Homebrew python
+// for mlx wheels on Apple Silicon.
+export function detectPythonSync() {
+  const present = PYTHON_CANDIDATES.find((p) => existsSync(p));
+  if (present) return present;
+  // Same PATH fallback detectPython() ends on — without it a Python installed
+  // somewhere the candidate list does not name (scoop, chocolatey, a custom
+  // dir) reads as "no Python at all", which is exactly the box where the
+  // Windows installer then falls back to its broken `python3` default.
+  const found = whichFirstSync(IS_WIN ? 'python' : 'python3');
+  // The WindowsApps alias is a Store launcher, not an interpreter: it opens the
+  // Microsoft Store and exits, so a venv built from it never appears.
+  if (found && /\\Microsoft\\WindowsApps\\/i.test(found)) return null;
+  return found || null;
+}
 
 export async function detectPython() {
   // mlx ships arm64-only wheels; prefer an arm64 interpreter on Apple Silicon

@@ -8,15 +8,10 @@ import { checkHealth, query } from '../lib/db.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { stripAnsi } from '../lib/ansiStrip.js';
 import { resolvePgDumpBinary } from '../lib/pgTools.js';
-import { resolveBashBinary } from '../lib/bashResolver.js';
+import { resolveBashBinary, toBashPath } from '../lib/bashResolver.js';
 
 const rootDir = PATHS.root;
-// Pass the script path to bash with forward slashes. On Windows the native
-// path is `H:\...\db.sh`; bash treats each backslash as an escape character
-// and collapses it to `H:...db.sh` (exit 127, "No such file or directory").
-// Git Bash accepts drive paths with forward slashes (`H:/.../db.sh`), so
-// normalize separators here. POSIX paths are unaffected (no backslashes).
-const dbScript = join(rootDir, 'scripts', 'db.sh').replace(/\\/g, '/');
+const dbScript = toBashPath(join(rootDir, 'scripts', 'db.sh'));
 // Resolve the interpreter explicitly. A bare `bash` on Windows often resolves
 // (via PM2's PATH) to WSL, which mounts drives at /mnt/h and can't see the
 // `H:/...` drive path above — exit 127. resolveBashBinary() prefers Git Bash,

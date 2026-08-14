@@ -113,6 +113,38 @@ describe('killProcessTree', () => {
     expect(child.killed).toBe(true);
   });
 
+  it('on non-Windows with processGroup signals the whole group, so a detached shell takes its children with it', () => {
+    if (IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild({ pid: 555 });
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    killProcessTree(child, undefined, { processGroup: true });
+    expect(killSpy).toHaveBeenCalledWith(-555, 'SIGTERM');
+    expect(child.kill).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
+  it('on non-Windows falls back to the single pid when the group is already gone (ESRCH)', () => {
+    if (IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('ESRCH'); });
+    killProcessTree(child, 'SIGKILL', { processGroup: true });
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    killSpy.mockRestore();
+  });
+
+  it('on Windows ignores processGroup — taskkill /T is already the tree', () => {
+    if (!IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild({ pid: 777 });
+    const tk = makeFakeChild();
+    tk.unref = vi.fn();
+    spawnMock.mockReturnValueOnce(tk);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    killProcessTree(child, undefined, { processGroup: true });
+    expect(spawnMock).toHaveBeenCalledWith('taskkill', ['/T', '/F', '/PID', '777'], expect.anything());
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
   it('on Windows still uses .kill() (not taskkill) for a non-ChildProcess killable, e.g. a node-pty session', () => {
     if (!IS_WIN32) return; // can't simulate platform branch from outside
     // A killable that exposes .kill()/.pid like a ChildProcess but isn't one

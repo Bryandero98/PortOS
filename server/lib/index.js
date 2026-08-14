@@ -183,6 +183,7 @@ export * from './bufferedSpawn.js';
 export * from './commandExists.js';
 export * from './commandSecurity.js';
 export * from './detachedSpawn.js';
+export * from './setupScriptRunner.js';
 export * from './hostShutdown.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';

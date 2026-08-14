@@ -10,7 +10,7 @@
 //
 // The Malloc* family is documented in libmalloc(3) and only affects macOS;
 // stripping the prefix is a no-op on Linux/Windows.
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +32,21 @@ export function safeChildProcessEnv(extra = {}) {
 // path of the first match, or `null` when the binary isn't on PATH or the
 // probe fails. Spawns through `safeChildProcessEnv()` (Malloc-stripped) with a
 // 5s timeout; `where` can return several lines, so we take the first.
+// Synchronous `whichFirst`, for the few callers that resolve a binary while
+// building a spawn and cannot await (pythonSetup's detectPythonSync, behind the
+// installer spawn). Same contract: absolute path of the first match, or null.
+export function whichFirstSync(name) {
+  const cmd = IS_WIN ? 'where' : 'which';
+  try {
+    const stdout = execFileSync(cmd, [name], {
+      encoding: 'utf8', env: safeChildProcessEnv(), timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return stdout.trim().split(/\r?\n/)[0] || null;
+  } catch {
+    return null; // not on PATH, or the probe itself failed
+  }
+}
+
 export async function whichFirst(name) {
   const cmd = IS_WIN ? 'where' : 'which';
   const { stdout } = await execFileAsync(cmd, [name], { env: safeChildProcessEnv(), timeout: 5000 })

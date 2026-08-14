@@ -215,6 +215,14 @@ export const MAX_OUTPUT_BYTES = 64 * 1024;
  * ConPTY handle), leaking it — so any non-ChildProcess killable always uses
  * its own `.kill()` instead, on every platform.
  *
+ * `processGroup` is for a child spawned `detached` on POSIX: without it the
+ * non-Windows branch signals a single pid, which leaves a shell's own children
+ * (the uv / pip / git an installer script shells out to) running. With it the
+ * negative pid signals the whole group, falling back to the single pid when the
+ * group is already gone. Windows needs no flag — `taskkill /T` is always the
+ * tree. Off by default because a non-detached child shares its PARENT's group,
+ * where a group signal would reach the wrong processes.
+ *
  * `signal` applies to the **POSIX** branch only (`SIGTERM` default → the
  * graceful-then-`SIGKILL`-escalation pattern callers expect). On Windows there
  * is no real POSIX signal — `taskkill /T /F` force-kills the whole tree
@@ -225,17 +233,23 @@ export const MAX_OUTPUT_BYTES = 64 * 1024;
  *
  * @param {import('child_process').ChildProcess} child
  * @param {NodeJS.Signals} [signal] - POSIX signal to send (default `SIGTERM`); ignored on Windows
+ * @param {{processGroup?: boolean}} [opts] - POSIX: signal the child's process group (it must have been spawned `detached`)
  */
-export function killProcessTree(child, signal = 'SIGTERM') {
+export function killProcessTree(child, signal = 'SIGTERM', { processGroup = false } = {}) {
   if (IS_WIN32 && child.pid && child instanceof ChildProcess) {
     child.killed = true;
     spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
       .on('error', () => {})
       .unref();
-  } else {
-    child.kill(signal);
+    return;
   }
+  if (processGroup && child.pid) {
+    try { process.kill(-child.pid, signal); return; }
+    catch { /* ESRCH — the group is already gone; fall through to the pid */ }
+  }
+  child.kill(signal);
 }
+
 
 /**
  * Spawn a command, buffer its (capped) stdout/stderr, enforce a timeout, and

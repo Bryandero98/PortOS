@@ -13,6 +13,7 @@ const mockState = {
   presentPaths: new Set(),
   archByPath: new Map(),
   execShouldFail: false,
+  pathPython: null,
 };
 
 vi.mock('node:os', async () => {
@@ -57,6 +58,14 @@ vi.mock('node:child_process', async () => {
   return { ...actual, execFile: fakeExecFile };
 });
 
+// The PATH fallbacks shell out for real; stub them so a test box's own Python
+// can't decide the result. safeChildProcessEnv stays real (probePythonArch uses it).
+vi.mock('./processEnv.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  whichFirst: async () => mockState.pathPython,
+  whichFirstSync: () => mockState.pathPython,
+}));
+
 vi.mock('./fileUtils.js', () => ({ PATHS: { data: '/data' } }));
 
 const loadModule = async () => {
@@ -71,6 +80,7 @@ const resetState = () => {
   mockState.presentPaths = new Set();
   mockState.archByPath = new Map();
   mockState.execShouldFail = false;
+  mockState.pathPython = null;
 };
 
 describe('HOST_ARCH', () => {
@@ -165,6 +175,36 @@ describe('detectPython on darwin/arm64', () => {
     mockState.archByPath.set('/usr/local/bin/python3', 'x86_64');
     const { detectPython } = await loadModule();
     await expect(detectPython()).resolves.toBe('/opt/anaconda3/bin/python3');
+  });
+});
+
+describe('detectPythonSync', () => {
+  beforeEach(resetState);
+
+  it('returns the first present candidate without probing arch', async () => {
+    mockState.presentPaths.add('/opt/anaconda3/bin/python3');
+    mockState.presentPaths.add('/opt/homebrew/bin/python3');
+    const { detectPythonSync } = await loadModule();
+    expect(detectPythonSync()).toBe('/opt/anaconda3/bin/python3');
+  });
+
+  it('falls back to PATH when no candidate path exists — a scoop / chocolatey / custom-dir install still counts', async () => {
+    mockState.platform = 'win32';
+    mockState.pathPython = 'C:/tools/python311/python.exe';
+    const { detectPythonSync } = await loadModule();
+    expect(detectPythonSync()).toBe('C:/tools/python311/python.exe');
+  });
+
+  it('rejects the WindowsApps alias — it opens the Microsoft Store instead of building a venv', async () => {
+    mockState.platform = 'win32';
+    mockState.pathPython = 'C:\\Users\\example\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe';
+    const { detectPythonSync } = await loadModule();
+    expect(detectPythonSync()).toBeNull();
+  });
+
+  it('returns null when there is no Python anywhere', async () => {
+    const { detectPythonSync } = await loadModule();
+    expect(detectPythonSync()).toBeNull();
   });
 });
 

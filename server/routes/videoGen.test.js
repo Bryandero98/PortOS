@@ -57,6 +57,7 @@ vi.mock('../services/tracks/index.js', () => ({
 vi.mock('../lib/pythonSetup.js', () => ({
   checkPackages: vi.fn(async () => ({ installed: ['mflux', 'mlx'], missing: [], missingPip: [] })),
   isAllowedPython: vi.fn(() => true),
+  detectPythonSync: vi.fn(() => null), // setupScriptRunner's Windows PYTHON_BIN preset
 }));
 
 vi.mock('../services/videoGen/local.js', () => ({
@@ -438,17 +439,19 @@ describe('videoGen routes', () => {
       expect(r.status).toBe(200);
       expect(r.text).toContain('"type":"complete"');
       expect(r.text).toContain('Wan 2.2 MLX ready');
-      expect(installProcess.spawn).toHaveBeenCalledWith(
-        'bash',
-        [join('/mock', 'scripts', 'setup-image-video.sh')],
-        expect.objectContaining({
-          detached: true,
-          env: expect.objectContaining({
-            INSTALL_WAN22: '1',
-            WAN22_PIN: '2452f0c12edcc8886eebf15772205ce9c417a618',
-          }),
+      const [bin, argv, opts] = installProcess.spawn.mock.calls.at(-1);
+      // A bash, but never the WSL one PM2's PATH may resolve first, and never a
+      // backslash path — bash reads those as escapes and exits 127.
+      expect(bin).toMatch(/bash(.exe)?$/i);
+      expect(bin.toLowerCase()).not.toContain('system32');
+      expect(argv).toEqual(['/mock/scripts/setup-image-video.sh']);
+      expect(opts).toMatchObject({
+        detached: process.platform !== 'win32',
+        env: expect.objectContaining({
+          INSTALL_WAN22: '1',
+          WAN22_PIN: '2452f0c12edcc8886eebf15772205ce9c417a618',
         }),
-      );
+      });
     });
   });
 

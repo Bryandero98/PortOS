@@ -16,12 +16,9 @@
 
 import { Router } from 'express';
 import { existsSync } from 'fs';
-import { spawn } from 'child_process';
-import { join } from 'path';
 import { asyncHandler } from '../lib/errorHandler.js';
-import { PATHS } from '../lib/fileUtils.js';
-import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
+import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import { openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import {
@@ -70,14 +67,10 @@ router.get('/install', asyncHandler(async (req, res) => {
     installLog.cancel();
     if (finished) return;
     if (child) {
-      if (!child.killed && child.pid) {
-        // Negative pid signals the whole process group — setup-image-video.sh
-        // shells out to uv / pip / git, and a plain SIGTERM on bash leaves those
-        // running. Guard against ESRCH on an already-dead group.
-        try { process.kill(-child.pid, 'SIGTERM'); }
-        catch { child.kill('SIGTERM'); }
-      }
-      // Do NOT clear installInFlight here — the SIGTERM'd process group is only
+      // setup-image-video.sh shells out to uv / pip / git; stopSetupScript
+      // takes those down with bash rather than orphaning the download.
+      stopSetupScript(child);
+      // Do NOT clear installInFlight here — the installer has only been
       // signalled, not yet reaped, and a mid-download pip child can take seconds
       // to exit. Releasing the singleton now would let an immediate retry spawn a
       // second install against the same half-torn-down venv. child.on('close')
@@ -110,23 +103,15 @@ router.get('/install', asyncHandler(async (req, res) => {
     return safeEnd();
   }
 
-  const scriptPath = join(PATHS.root, 'scripts', 'setup-image-video.sh');
-  if (!existsSync(scriptPath)) {
+  if (!existsSync(SETUP_IMAGE_VIDEO_SCRIPT)) {
     installInFlight = null;
-    send({ type: 'error', message: `Installer script not found at ${scriptPath}` });
+    send({ type: 'error', message: `Installer script not found at ${SETUP_IMAGE_VIDEO_SCRIPT}` });
     return safeEnd();
   }
 
   send({ type: 'log', message: `Starting MuScriptor install via ${MUSCRIPTOR_INSTALL_ENV}=1 bash scripts/setup-image-video.sh` });
   installLog.start();
-  // `detached: true` puts bash in its own process group so a cancel (client
-  // closing the SSE stream) can SIGTERM uv / pip / git children too — otherwise
-  // a multi-GB download keeps burning bandwidth after the modal closes.
-  child = spawn('bash', [scriptPath], {
-    env: safeChildProcessEnv({ [MUSCRIPTOR_INSTALL_ENV]: '1' }),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
+  child = spawnSetupScript({ [MUSCRIPTOR_INSTALL_ENV]: '1' });
   installInFlight = child;
 
   // `splitRe: /[\r\n]+/` so a bash/pip/tqdm progress bar that redraws with a

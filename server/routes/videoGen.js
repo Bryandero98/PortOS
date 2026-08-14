@@ -8,13 +8,11 @@
 
 import { Router } from 'express';
 import { existsSync } from 'fs';
-import { join, basename } from 'path';
-import { spawn } from 'child_process';
+import { basename } from 'path';
 import os from 'os';
 import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
-import { PATHS } from '../lib/fileUtils.js';
 import { videoModelTermsSchema } from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
@@ -25,8 +23,8 @@ import {
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
-import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
+import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
   listVideoModels,
   defaultVideoModelId,
@@ -463,10 +461,7 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     if (info && runtimeInstallInFlight.get(info.id) === null) {
       runtimeInstallInFlight.delete(info.id);
     }
-    if (child && !child.killed && child.pid) {
-      try { process.kill(-child.pid, 'SIGTERM'); }
-      catch { child.kill('SIGTERM'); }
-    }
+    stopSetupScript(child);
   });
 
   if (!info) {
@@ -507,10 +502,9 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   invalidateByovLoraCapabilityCache(info.id);
   invalidateRuntimeFingerprintCache(info.id);
 
-  const scriptPath = join(PATHS.root, 'scripts', 'setup-image-video.sh');
-  if (!existsSync(scriptPath)) {
+  if (!existsSync(SETUP_IMAGE_VIDEO_SCRIPT)) {
     runtimeInstallInFlight.delete(info.id);
-    send({ type: 'error', message: `Installer script not found at ${scriptPath}` });
+    send({ type: 'error', message: `Installer script not found at ${SETUP_IMAGE_VIDEO_SCRIPT}` });
     return safeEnd();
   }
 
@@ -520,20 +514,13 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   const installLog = createInstallLogger({ installer: info.label, target: info.venvPython });
   const emit = (ev) => { installLog.onEvent(ev); send(ev); };
   installLog.start();
-  // `detached: true` puts bash in its own process group so a cancel from the
-  // client can take down uv / pip / git children too. Without it, SIGTERM on
-  // bash leaves a multi-GB `git clone` (and any subsequent pip downloads)
-  // orphaned to init — the user sees the modal close but the bandwidth keeps
-  // burning until the network drops or the snapshot completes.
   const installEnv = {
     [info.installEnvVar]: '1',
     ...(info.pinEnvVar && info.expectedRevision ? { [info.pinEnvVar]: info.expectedRevision } : {}),
   };
-  child = spawn('bash', [scriptPath], {
-    env: safeChildProcessEnv(installEnv),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
+  // spawnSetupScript owns the interpreter / path / process-group details that a
+  // cancel and a Windows box each depend on — see lib/setupScriptRunner.js.
+  child = spawnSetupScript(installEnv);
   runtimeInstallInFlight.set(info.id, child);
 
   // `splitRe: /[\r\n]+/` so a bash/pip/tqdm progress bar that redraws with a

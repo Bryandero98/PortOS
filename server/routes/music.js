@@ -18,14 +18,11 @@
 
 import { Router } from 'express';
 import { existsSync } from 'fs';
-import { spawn } from 'child_process';
-import { join } from 'path';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
-import { PATHS } from '../lib/fileUtils.js';
-import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
+import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import { ENGINES, DEFAULT_ENGINE_ID, getEngine, isEngineReady, generateMusic } from '../services/pipeline/musicGen.js';
 import { listEngineModels, addAudioModel, removeAudioModel, isValidRepoId } from '../services/audioModels.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
@@ -130,10 +127,9 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     return safeEnd();
   }
 
-  const scriptPath = join(PATHS.root, 'scripts', 'setup-image-video.sh');
-  if (!existsSync(scriptPath)) {
+  if (!existsSync(SETUP_IMAGE_VIDEO_SCRIPT)) {
     runtimeInstallInFlight.delete(engine.id);
-    send({ type: 'error', message: `Installer script not found at ${scriptPath}` });
+    send({ type: 'error', message: `Installer script not found at ${SETUP_IMAGE_VIDEO_SCRIPT}` });
     return safeEnd();
   }
 
@@ -143,11 +139,7 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   const installLog = createInstallLogger({ installer: engine.name, target: engine.venvDefault });
   const emit = (ev) => { installLog.onEvent(ev); send(ev); };
   installLog.start();
-  const child = spawn('bash', [scriptPath], {
-    env: safeChildProcessEnv({ [engine.installEnv]: '1' }),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
+  const child = spawnSetupScript({ [engine.installEnv]: '1' });
   runtimeInstallInFlight.set(engine.id, child);
   let finished = false;
 
@@ -186,10 +178,7 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   req.on('close', () => {
     if (finished) return;
     installLog.cancel();
-    if (!child.killed && child.pid) {
-      try { process.kill(-child.pid, 'SIGTERM'); }
-      catch { child.kill('SIGTERM'); }
-    }
+    stopSetupScript(child);
     safeEnd();
   });
 }));
