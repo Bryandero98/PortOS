@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   X, Copy, Sparkles, Film, Image as ImageIcon, Download, Eraser, Wand2,
-  ChevronLeft, ChevronRight, Maximize2, Minimize2, Star, Box,
+  ChevronLeft, ChevronRight, Maximize2, Minimize2, Star, Box, ScanEye,
 } from 'lucide-react';
 import PromptRefineModal from './PromptRefineModal';
+import { PromptFromMediaModal } from './PromptFromMedia';
 import AddToCollectionMenu from './AddToCollectionMenu';
 import PinToMoodBoardMenu from './PinToMoodBoardMenu';
 import MediaImage from '../MediaImage';
@@ -108,6 +109,7 @@ export default function MediaLightbox({
 }) {
   const [fullScreen, setFullScreen] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
+  const [promptFromOpen, setPromptFromOpen] = useState(false);
   useScrollLock(!!item);
   // Read callbacks + frequently-changing values from refs so the keydown
   // listener and the note-save debounce don't tear down on every parent
@@ -150,6 +152,7 @@ export default function MediaLightbox({
       const cb = refs.current;
       if (e.key === 'Escape') {
         if (refineOpen) { setRefineOpen(false); return; }
+        if (promptFromOpen) { setPromptFromOpen(false); return; }
         if (fullScreen) { setFullScreen(false); return; }
         cb.onClose();
         return;
@@ -179,10 +182,10 @@ export default function MediaLightbox({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [item, hasPrevious, hasNext, fullScreen, refineOpen]);
+  }, [item, hasPrevious, hasNext, fullScreen, refineOpen, promptFromOpen]);
 
   // Reset refine modal when the previewed item changes.
-  useEffect(() => { setRefineOpen(false); }, [item?.key]);
+  useEffect(() => { setRefineOpen(false); setPromptFromOpen(false); }, [item?.key]);
 
   const { onTouchStart, onTouchEnd } = useSwipeNav({ onPrevious, onNext, hasPrevious, hasNext });
 
@@ -356,6 +359,7 @@ export default function MediaLightbox({
             regenBounds={regenBounds}
             copy={copy}
             onRefine={() => setRefineOpen(true)}
+            onPromptFrom={() => setPromptFromOpen(true)}
             annotation={annotation}
             onAnnotationChange={onAnnotationChange}
             variantGroup={variantGroup}
@@ -364,6 +368,7 @@ export default function MediaLightbox({
         )}
       </div>
       <PromptRefineModal item={item} open={refineOpen} onClose={() => setRefineOpen(false)} />
+      <PromptFromMediaModal item={item} open={promptFromOpen} onClose={() => setPromptFromOpen(false)} />
     </div>
   );
 }
@@ -396,7 +401,7 @@ function PeerNotes({ others }) {
 function SettingsPane({
   item, meta, isVideo,
   onClose, onRemix, onSendToImage, onSendToVideo, onSendTo3d, onContinue, onClean, onRegenerate, onRemoveWatermark, regenAvailable, regenBounds,
-  copy, onRefine,
+  copy, onRefine, onPromptFrom,
   annotation, onAnnotationChange,
   variantGroup, onSelectVariant,
 }) {
@@ -640,6 +645,16 @@ function SettingsPane({
             className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded"
           >
             <Sparkles className="w-3.5 h-3.5" /> Refine Prompt
+          </button>
+        )}
+        {onPromptFrom && (
+          <button
+            type="button"
+            onClick={onPromptFrom}
+            title="Ask a vision model to write the image and/or video prompt that would recreate this"
+            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded"
+          >
+            <ScanEye className="w-3.5 h-3.5" /> Prompt from this
           </button>
         )}
         {onRemix && (

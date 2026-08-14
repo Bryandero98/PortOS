@@ -80,7 +80,10 @@ vi.mock('../services/api', () => ({
   // provider list from a mount effect. Unmocked it throws out of a passive
   // effect — the tests still pass, but the unhandled rejection fails the run.
   getProviders: vi.fn(async () => ({ providers: [] })),
+  getVisionModels: vi.fn(async () => ({ models: [] })),
 }));
+
+vi.mock('../components/media/PromptFromMedia', () => ({ default: () => null }));
 
 vi.mock('../hooks/useModelDownloadStatus', () => ({
   TEXT_ENCODER_DOWNLOAD_ID: '__text_encoder__',

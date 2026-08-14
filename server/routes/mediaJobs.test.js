@@ -73,6 +73,15 @@ describe('mediaJobs routes', () => {
     expect(r.body.params.uploadedTempPath).toBeUndefined();
   });
 
+  it('POST /prompt-from-media 400s when the image source has no filename', async () => {
+    const r = await request(makeApp()).post('/api/media-jobs/prompt-from-media').send({
+      sourceKind: 'image',
+      targets: ['image'],
+      providerId: 'openai',
+    });
+    expect(r.status).toBe(400);
+  });
+
   it('POST /:id/retry 404s for unknown id', async () => {
     const r = await request(makeApp()).post('/api/media-jobs/nope/retry').send({});
     expect(r.status).toBe(404);

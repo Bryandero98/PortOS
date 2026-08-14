@@ -80,6 +80,35 @@ describe('buildCliVisionInvocation', () => {
     expect(inv.stdin).toContain('vision-input.png');
     expect(posixPath(inv.cwd)).toBe('/tmp/y');
   });
+
+  it('attaches every named frame and injects effort for a multi-image Codex call', () => {
+    const inv = buildCliVisionInvocation(
+      { id: 'codex', command: 'codex', args: [] },
+      'gpt-5',
+      '/tmp/x',
+      'describe motion',
+      { imageNames: ['vision-1.jpg', 'vision-2.jpg'], effort: 'high' },
+    );
+    const paths = inv.args.map((a) => posixPath(a));
+    expect(paths.filter((a) => a === '-i')).toHaveLength(2);
+    expect(paths).toContain('/tmp/x/vision-1.jpg');
+    expect(paths).toContain('/tmp/x/vision-2.jpg');
+    expect(inv.args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort=high']));
+  });
+
+  it('lists every frame in the Claude stdin prompt and passes effort through buildCliArgs', () => {
+    const inv = buildCliVisionInvocation(
+      { id: 'claude-code', command: 'claude', args: [] },
+      'claude-opus-4-8',
+      '/tmp/y',
+      'describe motion',
+      { imageNames: ['vision-1.jpg', 'vision-2.jpg'], effort: 'high' },
+    );
+    expect(inv.stdin).toContain('vision-1.jpg');
+    expect(inv.stdin).toContain('vision-2.jpg');
+    expect(inv.stdin).toMatch(/chronological/i);
+    expect(inv.args).toEqual(expect.arrayContaining(['--effort', 'high']));
+  });
 });
 
 // A minimal child-process double: an EventEmitter with stdin/stdout/stderr.

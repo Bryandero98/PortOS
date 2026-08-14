@@ -44,3 +44,12 @@ export const refineMediaPrompt = (data) => request('/media-jobs/refine-prompt', 
   method: 'POST',
   body: JSON.stringify(data),
 });
+
+// Reverse-engineer an image-gen and/or video-gen prompt from a gallery still,
+// gallery clip, or generic upload. `data` is `{ sourceKind, filename?, videoId?,
+// targets, providerId, model?, effort? }`.
+export const promptFromMedia = (data, options) => request('/media-jobs/prompt-from-media', {
+  method: 'POST',
+  body: JSON.stringify(data),
+  ...options,
+});

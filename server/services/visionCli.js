@@ -24,11 +24,12 @@
  */
 
 import { spawn } from 'child_process';
-import { writeFile, rm, mkdtemp } from 'fs/promises';
+import { writeFile, rm, mkdtemp, copyFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { buildCliArgs, prepareCliPrompt } from '../lib/cliProviderArgs.js';
-import { resolveCliModel, isCodexProvider, buildCodexStartupArgs } from '../lib/providerModels.js';
+import { resolveCliModel, isCodexProvider, buildCodexStartupArgs, buildEffortArgs } from '../lib/providerModels.js';
 import { extractCodexAssistant, extractCodexAssistantTail } from '../lib/codexAssistantExtract.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
@@ -57,13 +58,24 @@ export function decodeImageDataUrl(dataUrl) {
 
 /**
  * Build the spawn invocation (command, argv, stdin, cwd) for a vision CLI call.
- * `imageDir` is the temp dir holding `IMAGE_BASENAME`. Pure — exported so the
+ * `imageDir` is the temp dir holding the image file(s). Pure — exported so the
  * per-provider attachment convention is unit-testable without spawning.
+ *
+ * `opts.imageNames` defaults to `[IMAGE_BASENAME]` (the single-file caption
+ * path). A multi-frame call passes `vision-1.jpg`, `vision-2.jpg`, … and the
+ * prompt text names them in chronological order.
+ *
+ * `opts.effort` is a per-call reasoning-effort override (same contract as
+ * `runPromptThroughProvider`). Codex gets `-c model_reasoning_effort=…`;
+ * Claude/other stdin CLIs inherit it through `buildCliArgs`.
  *
  * @returns {{ command: string, args: string[], stdin: string|null, cwd: string }}
  */
-export function buildCliVisionInvocation(provider, model, imageDir, prompt) {
-  const imagePath = join(imageDir, IMAGE_BASENAME);
+export function buildCliVisionInvocation(provider, model, imageDir, prompt, opts = {}) {
+  const imageNames = Array.isArray(opts.imageNames) && opts.imageNames.length
+    ? opts.imageNames
+    : [IMAGE_BASENAME];
+  const effort = opts.effort || provider?.effort || null;
   if (isCodexProvider(provider)) {
     const baseArgs = Array.isArray(provider.args) ? provider.args : [];
     const hasExec = baseArgs.includes('exec');
@@ -72,6 +84,7 @@ export function buildCliVisionInvocation(provider, model, imageDir, prompt) {
     // sentinel verbatim makes `codex exec` try a non-existent model. Same
     // resolution buildCliArgs applies on the normal CLI run path.
     const codexModel = resolveCliModel(model);
+    const imageFlags = imageNames.flatMap((name) => ['-i', join(imageDir, name)]);
     const args = [
       ...(hasExec ? baseArgs : [...baseArgs, 'exec']),
       '--skip-git-repo-check',
@@ -80,7 +93,8 @@ export function buildCliVisionInvocation(provider, model, imageDir, prompt) {
       // or an unattended `brew upgrade` would blow the caption call. No-op when
       // the user pinned the key in provider.args.
       ...buildCodexStartupArgs(baseArgs),
-      '-i', imagePath,
+      ...imageFlags,
+      ...buildEffortArgs(effort, provider, baseArgs, model),
       ...(codexModel ? ['-m', String(codexModel)] : []),
       prompt,
     ];
@@ -88,10 +102,13 @@ export function buildCliVisionInvocation(provider, model, imageDir, prompt) {
   }
 
   // Claude Code (and any other stdin CLI): buildCliArgs gives the `-p -`
-  // stdin convention + `--model`; the image rides in the spawn cwd so the CLI
-  // can open it by basename with its file tools.
-  const args = buildCliArgs({ ...provider, defaultModel: model });
-  const stdin = `${prompt}\n\nThe image to analyze is the file "${IMAGE_BASENAME}" in the current directory.`;
+  // stdin convention + `--model` + optional `--effort`; the image(s) ride in
+  // the spawn cwd so the CLI can open them by basename with its file tools.
+  const args = buildCliArgs({ ...provider, defaultModel: model, effort });
+  const listed = imageNames.map((n) => `"${n}"`).join(', ');
+  const stdin = imageNames.length === 1
+    ? `${prompt}\n\nThe image to analyze is the file ${listed} in the current directory.`
+    : `${prompt}\n\nThe images to analyze are the files ${listed} in the current directory, in chronological order.`;
   return { command: provider.command, args, stdin, cwd: imageDir };
 }
 
@@ -104,12 +121,13 @@ export function buildCliVisionInvocation(provider, model, imageDir, prompt) {
  * @param {string} opts.dataUrl  — base64 image data URL
  * @param {string} opts.prompt   — what to ask about the image
  * @param {string} [opts.model]  — model override (defaults to provider.defaultModel)
+ * @param {string} [opts.effort] — reasoning-effort override for capable CLIs
  * @param {number} [opts.timeout]
  * @param {Function} [opts.spawnImpl] — child_process.spawn replacement (tests)
  * @returns {Promise<{ text:string, finishReason:null, usage:null, reasoning:string }>}
  */
 export async function describeImageViaCli({
-  provider, dataUrl, prompt, model, timeout = CLI_VISION_TIMEOUT_MS, spawnImpl = spawn,
+  provider, dataUrl, prompt, model, effort, timeout = CLI_VISION_TIMEOUT_MS, spawnImpl = spawn,
 }) {
   const visionModel = model || provider?.defaultModel || null;
   const bytes = decodeImageDataUrl(dataUrl);
@@ -121,94 +139,155 @@ export async function describeImageViaCli({
   let cleanupPromptFile = () => {};
   try {
     await writeFile(join(dir, IMAGE_BASENAME), bytes);
-    const { command, args, stdin, cwd } = buildCliVisionInvocation(provider, visionModel, dir, prompt);
-    // Deliver the prompt per provider convention: antigravity as the --print
-    // VALUE (agy doesn't read stdin); grok's --prompt-file /dev/stdin via stdin
-    // (POSIX) / temp file (Windows); every other provider via stdin.
-    const { args: deliveredArgs, useStdin: writePromptToStdin, cleanup } = prepareCliPrompt(command, args, stdin);
-    cleanupPromptFile = cleanup;
-
-    // Shared composition (provider.envVars + OpenCode models map + PWD pin +
-    // CLAUDECODE strip) — see buildCliChildEnv. The PWD pin is load-bearing
-    // here: the non-codex branch above tells the CLI the image is "in the
-    // current directory", and the vision provider is user-configurable — so on
-    // OpenCode (which resolves its project root from PWD) a stale value both
-    // hides vision-input.png and turns the CLI loose in the PortOS checkout.
-    // Routing through the shared builder also brings the OpenCode declared-models
-    // map here for the first time, so the `--model` buildCliVisionInvocation
-    // injects isn't rejected by an Ollama-backed OpenCode provider (the #2190
-    // fix, previously applied only at the runner/agent sites). No `guard` —
-    // vision is a one-shot describe, not an agent.
-    const childEnv = buildCliChildEnv({ provider, model: visionModel, cwd });
-
-    // npm-installed CLI providers are .cmd/.bat shims on Windows; resolve+wrap
-    // (cmd.exe /c) instead of enabling a shell. This matters even more here
-    // than at other call sites: the codex branch of buildCliVisionInvocation
-    // puts the free-text `prompt` directly into `args` (see above), and
-    // shell:true + an args array does NOT escape arguments (DEP0190) — any
-    // prompt containing a space would silently mis-split into extra shell
-    // tokens, corrupting or shell-injecting the invocation. The cmd.exe
-    // wrapper instead relies on Node's own correct non-shell argv escaping,
-    // which DOES preserve spaces within each arg as a single token. Resolved
-    // against `childEnv` so a provider-configured PATH override is honored.
-    // See resolveWindowsExecutable/prepareWindowsSafeSpawn in
-    // server/lib/bufferedSpawn.js.
-    const resolvedCommand = resolveWindowsExecutable(command, undefined, childEnv) || command;
-    const { command: spawnCommand, args: spawnArgs } = prepareWindowsSafeSpawn(resolvedCommand, deliveredArgs);
-
-    const text = await new Promise((resolve, reject) => {
-      const child = spawnImpl(spawnCommand, spawnArgs, {
-        cwd,
-        env: childEnv,
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      let out = '';
-      let err = '';
-      let killTimer = null;
-      // On timeout, SIGTERM the child AND reject now — don't wait on `close`. A
-      // wedged CLI that ignores SIGTERM would otherwise never emit `close`, so
-      // the promise would hang forever and the temp dir (cleaned in `finally`)
-      // would leak. Escalate to SIGKILL on a short grace timer.
-      const timer = timeout > 0 ? setTimeout(() => {
-        if (!child.killed) killProcessTree(child);
-        killTimer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 5000);
-        killTimer?.unref?.();
-        reject(new Error(`${command} vision call timed out after ${timeout}ms`));
-      }, timeout) : null;
-      timer?.unref?.();
-      const clearTimers = () => { if (timer) clearTimeout(timer); if (killTimer) clearTimeout(killTimer); };
-
-      child.on('error', (e) => { clearTimers(); reject(new Error(`Failed to spawn ${command}: ${e.message}`)); });
-      child.stdout?.on('data', (d) => { out += d.toString(); });
-      child.stderr?.on('data', (d) => { err += d.toString(); });
-      child.on('close', (code) => {
-        clearTimers();
-        // `codex exec` prints the whole session transcript (banner, echoed
-        // prompt, tool sections, `tokens used` footer) to stdout — carve out
-        // the assistant reply so captioning doesn't persist the transcript as
-        // the caption. Newer Codex emits the final reply AFTER the `tokens used`
-        // footer (extractCodexAssistantTail), older versions before it
-        // (extractCodexAssistant); try tail first, then the legacy extractor,
-        // both no-ops for non-codex output (tail → null, legacy → input).
-        if (code === 0) return resolve((extractCodexAssistantTail(out) ?? extractCodexAssistant(out)).trim());
-        const tail = err.trim().split('\n').slice(-4).join('\n');
-        reject(new Error(`${command} vision call exited ${code}${tail ? `: ${tail}` : ''}`));
-      });
-
-      // When grok is delivered via a Windows temp file the prompt is already on
-      // disk (writePromptToStdin=false) — just close stdin.
-      if (writePromptToStdin && stdin != null) {
-        child.stdin?.write(stdin);
-        child.stdin?.end();
-      } else {
-        child.stdin?.end();
-      }
+    const invocation = buildCliVisionInvocation(provider, visionModel, dir, prompt, { effort });
+    const text = await runCliVisionSpawn({
+      provider, model: visionModel, invocation, timeout, spawnImpl,
+      setCleanup: (fn) => { cleanupPromptFile = fn; },
     });
-
     return { text, finishReason: null, usage: null, reasoning: '' };
   } finally {
     cleanupPromptFile();
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/**
+ * Same spawn + diagnostic shape as {@link describeImageViaCli}, but the
+ * images are already on disk (gallery stills, extracted video frames).
+ * Copies them into a fresh temp dir as `vision-1.ext`… so concurrent calls
+ * can't collide, then attaches every file the way the CLI expects.
+ *
+ * @param {object} opts
+ * @param {object} opts.provider
+ * @param {string[]} opts.imagePaths — absolute paths the caller already validated
+ * @param {string} opts.prompt
+ * @param {string} [opts.model]
+ * @param {string} [opts.effort]
+ * @param {number} [opts.timeout]
+ * @param {Function} [opts.spawnImpl]
+ * @returns {Promise<{ text:string, finishReason:null, usage:null, reasoning:string }>}
+ */
+export async function describeImagesFromPaths({
+  provider, imagePaths, prompt, model, effort, timeout = CLI_VISION_TIMEOUT_MS, spawnImpl = spawn,
+}) {
+  const paths = (Array.isArray(imagePaths) ? imagePaths : []).filter((p) => typeof p === 'string' && p);
+  if (!paths.length) throw new Error('At least one image path is required');
+  for (const p of paths) {
+    if (!existsSync(p)) throw new Error(`Vision image not found: ${p}`);
+  }
+
+  const visionModel = model || provider?.defaultModel || null;
+  const dir = await mkdtemp(join(tmpdir(), 'portos-vision-'));
+  let cleanupPromptFile = () => {};
+  try {
+    const imageNames = [];
+    for (let i = 0; i < paths.length; i += 1) {
+      const ext = extname(paths[i]) || '.jpg';
+      const name = `vision-${i + 1}${ext}`;
+      await copyFile(paths[i], join(dir, name));
+      imageNames.push(name);
+    }
+    const invocation = buildCliVisionInvocation(
+      provider, visionModel, dir, prompt, { imageNames, effort },
+    );
+    const text = await runCliVisionSpawn({
+      provider, model: visionModel, invocation, timeout, spawnImpl,
+      setCleanup: (fn) => { cleanupPromptFile = fn; },
+    });
+    return { text, finishReason: null, usage: null, reasoning: '' };
+  } finally {
+    cleanupPromptFile();
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Shared spawn for the two public CLI-vision entry points. `setCleanup` receives
+// the prompt-file cleanup from prepareCliPrompt (Grok-on-Windows temp file).
+async function runCliVisionSpawn({ provider, model, invocation, timeout, spawnImpl, setCleanup }) {
+  const { command, args, stdin, cwd } = invocation;
+  // Deliver the prompt per provider convention: antigravity as the --print
+  // VALUE (agy doesn't read stdin); grok's --prompt-file /dev/stdin via stdin
+  // (POSIX) / temp file (Windows); every other provider via stdin.
+  const { args: deliveredArgs, useStdin: writePromptToStdin, cleanup } = prepareCliPrompt(command, args, stdin);
+  setCleanup?.(cleanup);
+
+  // Shared composition (provider.envVars + OpenCode models map + PWD pin +
+  // CLAUDECODE strip) — see buildCliChildEnv. The PWD pin is load-bearing
+  // here: the non-codex branch above tells the CLI the image is "in the
+  // current directory", and the vision provider is user-configurable — so on
+  // OpenCode (which resolves its project root from PWD) a stale value both
+  // hides vision-input.png and turns the CLI loose in the PortOS checkout.
+  // Routing through the shared builder also brings the OpenCode declared-models
+  // map here for the first time, so the `--model` buildCliVisionInvocation
+  // injects isn't rejected by an Ollama-backed OpenCode provider (the #2190
+  // fix, previously applied only at the runner/agent sites). No `guard` —
+  // vision is a one-shot describe, not an agent.
+  const childEnv = buildCliChildEnv({ provider, model, cwd });
+
+  // npm-installed CLI providers are .cmd/.bat shims on Windows; resolve+wrap
+  // (cmd.exe /c) instead of enabling a shell. This matters even more here
+  // than at other call sites: the codex branch of buildCliVisionInvocation
+  // puts the free-text `prompt` directly into `args` (see above), and
+  // shell:true + an args array does NOT escape arguments (DEP0190) — any
+  // prompt containing a space would silently mis-split into extra shell
+  // tokens, corrupting or shell-injecting the invocation. The cmd.exe
+  // wrapper instead relies on Node's own correct non-shell argv escaping,
+  // which DOES preserve spaces within each arg as a single token. Resolved
+  // against `childEnv` so a provider-configured PATH override is honored.
+  // See resolveWindowsExecutable/prepareWindowsSafeSpawn in
+  // server/lib/bufferedSpawn.js.
+  const resolvedCommand = resolveWindowsExecutable(command, undefined, childEnv) || command;
+  const { command: spawnCommand, args: spawnArgs } = prepareWindowsSafeSpawn(resolvedCommand, deliveredArgs);
+
+  const text = await new Promise((resolve, reject) => {
+    const child = spawnImpl(spawnCommand, spawnArgs, {
+      cwd,
+      env: childEnv,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    let killTimer = null;
+    // On timeout, SIGTERM the child AND reject now — don't wait on `close`. A
+    // wedged CLI that ignores SIGTERM would otherwise never emit `close`, so
+    // the promise would hang forever and the temp dir (cleaned in `finally`)
+    // would leak. Escalate to SIGKILL on a short grace timer.
+    const timer = timeout > 0 ? setTimeout(() => {
+      if (!child.killed) killProcessTree(child);
+      killTimer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 5000);
+      killTimer?.unref?.();
+      reject(new Error(`${command} vision call timed out after ${timeout}ms`));
+    }, timeout) : null;
+    timer?.unref?.();
+    const clearTimers = () => { if (timer) clearTimeout(timer); if (killTimer) clearTimeout(killTimer); };
+
+    child.on('error', (e) => { clearTimers(); reject(new Error(`Failed to spawn ${command}: ${e.message}`)); });
+    child.stdout?.on('data', (d) => { out += d.toString(); });
+    child.stderr?.on('data', (d) => { err += d.toString(); });
+    child.on('close', (code) => {
+      clearTimers();
+      // `codex exec` prints the whole session transcript (banner, echoed
+      // prompt, tool sections, `tokens used` footer) to stdout — carve out
+      // the assistant reply so captioning doesn't persist the transcript as
+      // the caption. Newer Codex emits the final reply AFTER the `tokens used`
+      // footer (extractCodexAssistantTail), older versions before it
+      // (extractCodexAssistant); try tail first, then the legacy extractor,
+      // both no-ops for non-codex output (tail → null, legacy → input).
+      if (code === 0) return resolve((extractCodexAssistantTail(out) ?? extractCodexAssistant(out)).trim());
+      const tail = err.trim().split('\n').slice(-4).join('\n');
+      reject(new Error(`${command} vision call exited ${code}${tail ? `: ${tail}` : ''}`));
+    });
+
+    // When grok is delivered via a Windows temp file the prompt is already on
+    // disk (writePromptToStdin=false) — just close stdin.
+    if (writePromptToStdin && stdin != null) {
+      child.stdin?.write(stdin);
+      child.stdin?.end();
+    } else {
+      child.stdin?.end();
+    }
+  });
+
+  return text;
 }
