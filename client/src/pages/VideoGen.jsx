@@ -56,6 +56,7 @@ import VideoGenGallery from '../components/videoGen/VideoGenGallery';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
+import PromptEnhancer from '../components/media/PromptEnhancer';
 import { normalizeVideo } from '../components/media/normalize';
 import {
   Film, Sparkles, Settings as SettingsIcon, RefreshCw, AlertTriangle,
@@ -867,6 +868,16 @@ export default function VideoGen() {
               />
             </FormField>
           </div>
+
+          <PromptEnhancer
+            kind="video"
+            prompt={prompt}
+            setPrompt={setPrompt}
+            negativePrompt={negativePrompt}
+            setNegativePrompt={setNegativePrompt}
+            renderConfig={{ stylePreset: stylePreset?.id, mode, model: modelId }}
+            disabled={generating}
+          />
 
           {mode === 'fflf' && keyframesSupported && (
             <KeyframePanel
