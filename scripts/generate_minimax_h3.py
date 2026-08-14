@@ -229,7 +229,10 @@ def build_encoder_shim(
     for entry in checkpoint_dir.iterdir():
         if entry.name == "text_encoder":
             continue
-        (root / entry.name).symlink_to(entry)
+        # `target_is_directory` is a no-op on POSIX but load-bearing on Windows,
+        # where a directory linked as a file symlink cannot be traversed — the
+        # VAEs, the tokenizer and the processor are all directories.
+        (root / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
 
     stock_config = checkpoint_dir / "text_encoder" / "config.json"
     if not stock_config.is_file():
