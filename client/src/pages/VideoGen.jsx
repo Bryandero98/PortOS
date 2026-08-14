@@ -37,6 +37,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
+import { isMiniMaxH3Runtime } from '../lib/runnerFamilies';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -819,7 +820,7 @@ export default function VideoGen() {
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
                 <strong className="font-semibold">{byovStatus.label}</strong> {byovStatus.upgradeAvailable ? 'has an update available.' : "isn't installed yet."}
-                {' '}PortOS can {byovStatus.upgradeAvailable ? 'upgrade' : 'fetch and install'} it from {byovStatus.repoUrl?.replace('https://', '')} on demand.
+                {' '}PortOS can {byovStatus.upgradeAvailable ? 'upgrade' : 'fetch and install'} it from {byovStatus.installSourceLabel || byovStatus.repoUrl?.replace('https://', '')} on demand.
               </div>
               <button
                 type="button"
@@ -1182,7 +1183,7 @@ export default function VideoGen() {
               onChange={handleResolutionChange}
               {...localResolutionBounds}
               snapOnBlur
-              note={currentModel?.runtime === 'minimax_h3'
+              note={isMiniMaxH3Runtime(currentModel?.runtime)
                 ? 'H3 quality presets follow its trained 768px short-edge, area-capped canvas. Smaller custom sizes are off-distribution but useful for faster wiring tests; each edge snaps to 32px.'
                 : 'Each edge 64–2048px; the server rounds each down to the nearest multiple of 64.'}
             />

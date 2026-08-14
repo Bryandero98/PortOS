@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runtimeMocks = vi.hoisted(() => ({
@@ -16,9 +19,10 @@ vi.mock('child_process', async (importOriginal) => ({
 }));
 
 import {
+  BYOV_RUNTIME_INFO, BYOV_VIDEO_RUNTIMES, MINIMAX_H3_CUDA_OFFLOAD_PROFILES,
   byovRuntimeLoraCapable, invalidateByovLoraCapabilityCache, invalidateByovReadyCache,
   isByovRuntimeReady, isPinnedSourceStatusClean, modelAnchorsLastFrame,
-  resolveByovRuntimeLoraCapable,
+  resolveByovRuntimeLoraCapable, runtimeIsCacheOnly, runtimeNeedsProcessGroupKill,
 } from './runtimes.js';
 
 const REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
@@ -149,6 +153,9 @@ describe('modelAnchorsLastFrame', () => {
   it.each([
     ['ltx2', true],
     ['minimax_h3', true],
+    // Anchoring is a property of the fl2va checkpoint, not of the runner in
+    // front of it, so the CUDA path must agree with the MLX one.
+    ['minimax_h3_cuda', true],
     ['mlx_video', false],
     ['wan22', false],
     ['hunyuan', false],
@@ -159,5 +166,93 @@ describe('modelAnchorsLastFrame', () => {
   it('treats a missing model or runtime as not anchored', () => {
     expect(modelAnchorsLastFrame(null)).toBe(false);
     expect(modelAnchorsLastFrame({})).toBe(false);
+  });
+});
+
+describe('minimax_h3_cuda runtime registration', () => {
+  const info = BYOV_RUNTIME_INFO.minimax_h3_cuda;
+
+  it('is a BYOV runtime with its own venv, distinct from the MLX port', () => {
+    expect(BYOV_VIDEO_RUNTIMES.has('minimax_h3_cuda')).toBe(true);
+    expect(info.installEnvVar).toBe('INSTALL_MINIMAX_H3_CUDA');
+    // Sharing a venv with the MLX port would let one install's `pip sync`
+    // silently uninstall the other's packages.
+    expect(info.venvPython).not.toBe(BYOV_RUNTIME_INFO.minimax_h3.venvPython);
+    expect(info.repoDir).not.toBe(BYOV_RUNTIME_INFO.minimax_h3.repoDir);
+  });
+
+  it('resolves the interpreter by venv layout, not by platform name', () => {
+    // A Windows venv puts python under Scripts\, a POSIX one under bin/. This
+    // is the whole reason the constant can't be the MLX port's bin/python3
+    // literal — that path never exists on the platform this runtime targets.
+    const expected = process.platform === 'win32'
+      ? ['Scripts', 'python.exe']
+      : ['bin', 'python3'];
+    for (const part of expected) expect(info.venvPython).toContain(part);
+  });
+
+  it('probes for CUDA and the H3 integration, not merely for an importable diffusers', () => {
+    // Each of these is a distinct way the install can look complete and not be:
+    // a CPU-only torch wheel, a diffusers release predating PR #14355, or a
+    // missing torchao (int8 is what makes the 133 GB bf16 pair fit at all).
+    expect(info.probeArgs).toBeUndefined();
+    expect(info.importProbe).toContain('MiniMaxH3Transformer3DModel');
+    expect(info.importProbe).toContain('torchao');
+    expect(info.importProbe).toContain('torch.cuda.is_available()');
+  });
+
+  it('declares no revision pin or LoRA probe — it runs distributions, not a checkout', () => {
+    // `expectedRevision`/`sourcePath` drive the clean-checkout gate, which has
+    // nothing to verify here; `loraProbeArgs` absent is the correct "this
+    // runtime can never take LoRAs", matching wan22 / hunyuan.
+    expect(info.expectedRevision).toBeUndefined();
+    expect(info.sourcePath).toBeUndefined();
+    expect(info.loraProbeArgs).toBeUndefined();
+  });
+
+  it('never reports LoRA capability, even after a probe attempt', async () => {
+    expect(byovRuntimeLoraCapable('minimax_h3_cuda')).toBe(false);
+    await expect(resolveByovRuntimeLoraCapable('minimax_h3_cuda')).resolves.toBe(false);
+    // No probe child may be spawned for a runtime with no loraProbeArgs.
+    expect(runtimeMocks.spawn).not.toHaveBeenCalled();
+  });
+});
+
+// The JS list exists so the server can reject a bad registry `offloadProfile`
+// with a stable code instead of an opaque non-zero child exit — which only
+// works while it agrees with the argparse `choices=` that actually enforces it.
+// Hand-synced across a language boundary is the established shape here (see
+// VIDEO_PRECISIONS), so pin it rather than leave the two free to drift.
+describe('MiniMax H3 CUDA offload profiles', () => {
+  it('matches OFFLOAD_PROFILES in the Python runner', () => {
+    const runner = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'generate_minimax_h3_cuda.py'),
+      'utf8',
+    );
+    const declared = runner.match(/^OFFLOAD_PROFILES = \(([^)]*)\)/m);
+    expect(declared).not.toBeNull();
+    const fromPython = [...declared[1].matchAll(/"([^"]+)"/g)].map(([, value]) => value);
+    expect(fromPython).toEqual([...MINIMAX_H3_CUDA_OFFLOAD_PROFILES]);
+  });
+});
+
+// Execution facts read off the registry rather than re-derived from a runtime id
+// at the spawn site, so a new cache-only runtime is a table line, not an edit to
+// the child-spawn path. Absent means off, as with every other optional key here.
+describe('runtime execution flags', () => {
+  it('reports cache-only for exactly the runners that never touch the network', () => {
+    expect(runtimeIsCacheOnly('minimax_h3')).toBe(true);
+    expect(runtimeIsCacheOnly('minimax_h3_cuda')).toBe(true);
+    expect(runtimeIsCacheOnly('ltx2')).toBe(false);
+    expect(runtimeIsCacheOnly('wan22')).toBe(false);
+    expect(runtimeIsCacheOnly(undefined)).toBe(false);
+  });
+
+  it('reports group-kill for the runners that spawn children of their own', () => {
+    expect(runtimeNeedsProcessGroupKill('wan22')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('minimax_h3')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('minimax_h3_cuda')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('ltx2')).toBe(false);
+    expect(runtimeNeedsProcessGroupKill('nope')).toBe(false);
   });
 });

@@ -91,6 +91,20 @@ vi.mock('../../lib/mediaModels.js', () => ({
       }],
     },
     {
+      id: 'minimax_h3_cuda', name: 'MiniMax H3 CUDA int8', runtime: 'minimax_h3_cuda',
+      repo: 'MiniMaxAI/MiniMax-H3',
+      revision: '42ed227ee7df40d41602854ae760620d6eb651fe',
+      repoFiles: ['modular_model_index.json', 'transformer/config.json'],
+      supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
+      // Deliberately excludes 107 — the diffusers window starts at 5 s, so the
+      // MLX grid's first point is illegal here and the two entries must not
+      // share a frame list.
+      frameOptions: [124, 141, 158], fpsOptions: [24],
+      defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
+      steps: 8, guidance: 0, samplerLocked: true,
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
+    },
+    {
       id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
       repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
       revision: '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3',
@@ -3458,5 +3472,181 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
     expect(await resolveVideoLoras([])).toEqual([]);
     expect(await resolveVideoLoras(undefined)).toEqual([]);
     expect(getLoraKeyLayout).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateVideo — MiniMax H3 CUDA contract', () => {
+  // Same license gate as the MLX entry: it is the same weights under the same
+  // terms, so acceptance is recorded once and honored by both runtimes.
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
+
+  const cudaCall = (spawnMock) => spawnMock.mock.calls.find(([, args]) => (
+    Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_minimax_h3_cuda.py')
+  ));
+
+  it('dispatches to the CUDA helper and venv, never to the MLX port or generate_win.py', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-args',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24,
+      steps: 99, guidanceScale: 12, mode: 'text',
+    });
+
+    const call = cudaCall(spawnMock);
+    expect(call).toBeDefined();
+    const [bin, args, options] = call;
+    expect(String(bin)).toContain(join('.portos', 'minimax-h3-cuda'));
+    // The MLX port's checkout flags describe a runtime this lane doesn't have.
+    expect(args).not.toContain('--runtime-dir');
+    expect(args).not.toContain('--runtime-revision');
+    expect(args).not.toContain('--checkpoint-repo');
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
+    expect(args[args.indexOf('--model-revision') + 1]).toBe('42ed227ee7df40d41602854ae760620d6eb651fe');
+    expect(args[args.indexOf('--width') + 1]).toBe('1344');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('141');
+    // The sampler is locked, so a caller's steps/guidance are ignored.
+    expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    // One --repo-file per pinned component file; this is what keeps the runner
+    // cache-only against a repo whose full snapshot is ~498 GB.
+    expect(args.flatMap((arg, i) => (arg === '--repo-file' ? [args[i + 1]] : [])))
+      .toEqual(['modular_model_index.json', 'transformer/config.json']);
+    // H3's repos are public and the runner never reaches the network, so no
+    // ambient credential is handed to the child — same posture as the MLX lane.
+    expect(options.env).toMatchObject({
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+    });
+    expect(options.env).not.toHaveProperty('HF_TOKEN');
+    expect(options.killProcessGroup).toBe(true);
+  });
+
+  it('anchors both keyframes, in packed order', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-fflf',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24,
+      mode: 'fflf', sourceImagePath: '/mock/source.png', lastImagePath: '/mock/last.png',
+    });
+
+    const [, args] = cudaCall(spawnMock);
+    expect(args.flatMap((arg, i) => (
+      arg === '--image' ? [args[i + 2] === '--anchor' ? args[i + 3] : 'UNPAIRED'] : []
+    ))).toEqual(['first', 'last']);
+  });
+
+  it('enforces its own frame window, not the MLX port\'s', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    // 107 is legal on the MLX grid and illegal here — the check has to read the
+    // entry's own frameOptions or the two lanes silently share one window.
+    await expect(generateVideo({
+      jobId: 'h3-cuda-frames',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 107, fps: 24, mode: 'text',
+    })).rejects.toMatchObject({ code: 'MINIMAX_H3_INVALID_FRAME_COUNT' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a negative prompt', { negativePrompt: 'blurry' }, 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED'],
+    ['disabled audio', { disableAudio: true }, 'MINIMAX_H3_AUDIO_REQUIRED'],
+    ['a tiling mode', { tiling: 'spatial' }, 'MINIMAX_H3_TILING_UNSUPPORTED'],
+    ['a non-24 fps', { fps: 30 }, 'MINIMAX_H3_INVALID_FPS'],
+  ])('rejects %s before any child is spawned', async (_label, fields, code) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    await expect(generateVideo({
+      jobId: 'h3-cuda-controls',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+      ...fields,
+    })).rejects.toMatchObject({ code });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // `offloadProfile` is an optional per-install override in data/media-models.json,
+  // so it arrives unvalidated. The helper's argparse `choices=` would catch a typo
+  // too, but only as an opaque non-zero child exit after the render was queued.
+  it.each([
+    ['int8-lean', true],
+    ['bf16', true],
+    ['int8-leaan', false],
+  ])('validates a declared offloadProfile %j before spawning', async (profile, legal) => {
+    const mediaModels = await import('../../lib/mediaModels.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const getVideoModelsMock = vi.mocked(mediaModels.getVideoModels);
+    const catalog = getVideoModelsMock();
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    getVideoModelsMock.mockReturnValue(catalog.map((model) => (
+      model.id === 'minimax_h3_cuda' ? { ...model, offloadProfile: profile } : model
+    )));
+
+    const render = () => generateVideo({
+      jobId: `h3-cuda-offload-${profile}`,
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    try {
+      if (!legal) {
+        await expect(render()).rejects.toMatchObject({ code: 'VIDEO_MODEL_MISCONFIGURED' });
+        expect(spawnDetached).not.toHaveBeenCalled();
+        return;
+      }
+      await render();
+      const [, args] = cudaCall(spawnMock);
+      expect(args[args.indexOf('--offload-profile') + 1]).toBe(profile);
+    } finally {
+      getVideoModelsMock.mockReturnValue(catalog);
+    }
+  });
+
+  // Absent is the shipped state: the registry syncs between peers and cannot
+  // know what GPU is on the other end, so the helper sizes the recipe itself.
+  it('omits --offload-profile entirely when the entry declares none', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-offload-default',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    const [, args] = cudaCall(spawnMock);
+    expect(args).not.toContain('--offload-profile');
+  });
+
+  it('rejects the license gate from the install record, same as the MLX entry', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    settingsState.acceptedModelTerms = [];
+
+    await expect(generateVideo({
+      jobId: 'h3-cuda-terms',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    })).rejects.toMatchObject({ code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 });

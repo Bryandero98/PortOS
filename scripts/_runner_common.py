@@ -233,6 +233,27 @@ def suppress_cosmetic_clip_truncation() -> None:
                 handler.addFilter(f)
 
 
+def establish_process_group() -> None:
+    """Make this helper the leader of its own process group, where supported.
+
+    PortOS cancels a render by signalling the whole group, so any child the
+    runner spawns (an ffmpeg mux, a git pin probe) is torn down with it rather
+    than surviving to finish work the user just cancelled. Call it before the
+    first child is spawned.
+
+    A no-op on Windows, which has no POSIX process groups — the Node side kills
+    by PID there. `setpgid` can also fail with EPERM when the process is already
+    a group leader, which is harmless and equally not worth failing a render
+    over, so both cases fall through quietly.
+    """
+    if not hasattr(os, "setpgid"):
+        return
+    try:
+        os.setpgid(0, 0)
+    except OSError:
+        pass
+
+
 def pick_device(requested: str) -> str:
     """Resolve `auto`/`mps`/`cuda`/`cpu` against what torch actually has.
     Falls back to CPU with a warning when the requested accelerator isn't

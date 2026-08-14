@@ -11,7 +11,7 @@ import {
   videoBackendDisclosure,
 } from './videoDisclosure.js';
 
-const CANONICAL_FIELDS = ['repo', 'revision', 'runtime', 'memoryGb', 'supportedModes', 'requiredWeights'];
+const CANONICAL_FIELDS = ['repo', 'revision', 'runtime', 'memoryGb', 'supportedModes', 'requiredWeights', 'repoFiles'];
 const RANKING_WORDS = /uncensored|unrestricted|\bunsafe\b|\bsafe\b|less restrictive|no limits/i;
 
 describe('VIDEO_MODEL_DISCLOSURES', () => {

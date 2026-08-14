@@ -96,6 +96,13 @@ vi.mock('../services/videoGen/local.js', () => ({
       expectedRevision: 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49',
       repoUrl: 'x', repoDir: '/tmp',
     },
+    // No `expectedRevision`: this runtime is installed wheels, not a checkout,
+    // which is why it carries an installSourceLabel instead of a clone URL.
+    minimax_h3_cuda: {
+      id: 'minimax_h3_cuda', label: 'MiniMax H3 CUDA', venvPython: '/tmp/minimax-h3-cuda.py',
+      installEnvVar: 'INSTALL_MINIMAX_H3_CUDA', repoUrl: 'x', repoDir: '/tmp',
+      installSourceLabel: 'pinned PyPI wheels',
+    },
     ltx2: { id: 'ltx2', label: 'LTX-2 MLX', venvPython: '/tmp/ltx2.py', installEnvVar: 'INSTALL_LTX2', repoUrl: 'x', repoDir: '/tmp' },
     wan22: {
       id: 'wan22', label: 'Wan 2.2 MLX', venvPython: '/tmp/wan22.py',
@@ -388,6 +395,20 @@ describe('videoGen routes', () => {
         current: false, upgradeAvailable: true,
       });
       expect(videoGenService.isByovRuntimeReady).not.toHaveBeenCalled();
+    });
+
+    // The install banner renders "PortOS can fetch and install it from X". For a
+    // runtime that clones its repoUrl, X is that URL; for minimax_h3_cuda the
+    // repoUrl is DOCUMENTATION (there is no checkout, only a venv), so the label
+    // has to reach the client or the banner tells the user PortOS downloads the
+    // runtime from a docs page.
+    it.each([
+      ['wan22', undefined],
+      ['minimax_h3_cuda', 'pinned PyPI wheels'],
+    ])('surfaces the install source label for %s', async (runtime, expected) => {
+      const r = await request(app).get(`/api/video-gen/setup/runtime-status?runtime=${runtime}`);
+      expect(r.status).toBe(200);
+      expect(r.body.installSourceLabel).toBe(expected);
     });
   });
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -24,37 +23,30 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _runner_common import emit_runtime_fingerprint, heartbeat, register_source_namespace  # noqa: E402
+from _runner_common import (  # noqa: E402
+    emit_runtime_fingerprint, establish_process_group, heartbeat, register_source_namespace,
+)
+from _minimax_h3_common import (  # noqa: E402
+    FPS, add_h3_common_args, emit_result, load_keyframes, resolve_cached_snapshot,
+    validate_h3_output_args,
+)
 
 
-FPS = 24
+# The MLX port accepts H3's full documented 4-15s range. The diffusers CUDA
+# runner is narrower (5-15s) — see generate_minimax_h3_cuda.py — which is why
+# the window is per-runner while FPS and the 17n+5 grid are shared.
 MIN_FRAMES = 107  # first 17n+5 grid point at or above the upstream 4-second minimum
 MAX_FRAMES = 362  # first 17n+5 grid point at or above 15 seconds
-FRAME_MODULUS = 17
-FRAME_REMAINDER = 5
 STEP_RE = re.compile(r"\bstep\s+(\d+)/(\d+)\b", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = add_h3_common_args(argparse.ArgumentParser(description=__doc__))
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--runtime-revision", required=True)
-    parser.add_argument("--model-repo", required=True)
-    parser.add_argument("--model-revision", required=True)
     parser.add_argument("--checkpoint-repo", required=True)
     parser.add_argument("--checkpoint-revision", required=True)
     parser.add_argument("--checkpoint-file", action="append", default=[])
-    parser.add_argument("--prompt", required=True)
-    parser.add_argument("--width", type=int, required=True)
-    parser.add_argument("--height", type=int, required=True)
-    parser.add_argument("--num-frames", type=int, required=True)
-    parser.add_argument("--fps", type=int, default=FPS)
-    parser.add_argument("--steps", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--image", action="append", default=[],
-                        help="keyframe conditioning image (repeatable, max 2)")
-    parser.add_argument("--anchor", action="append", default=[], choices=["first", "last"],
-                        help="latent anchor for each --image, in the same order")
     parser.add_argument("--lora", action="append", default=[],
                         help="user LoRA safetensors applied at runtime (repeatable)")
     parser.add_argument("--lora-scale", action="append", type=float, default=[],
@@ -70,47 +62,20 @@ def parse_args() -> argparse.Namespace:
                         help="rewrite this checkpoint-key prefix before the loader matches it (repeatable)")
     parser.add_argument("--text-encoder-final-norm-key",
                         help="synthesize a ones-filled final norm under this key (for a conditioner published without one)")
-    parser.add_argument("--output", required=True)
     return parser.parse_args()
 
 
-def snapshot_root(resolved_file: str | Path, repo_filename: str) -> Path:
-    """Return the HF snapshot directory containing one resolved repo file."""
-    levels = len(Path(repo_filename).parts)
-    # Hugging Face snapshot entries are normally symlinks into `blobs/`.
-    # Resolving the symlink would therefore walk OUT of the snapshot and hand
-    # the pipeline a blob directory. `hf_hub_download` already returns an
-    # absolute snapshot path, so preserve that lexical path deliberately.
-    return Path(resolved_file).absolute().parents[levels - 1]
+def require_ffmpeg() -> str:
+    """Fail before loading tens of GB of weights when muxing cannot succeed.
 
-
-def resolve_cached_snapshot(repo: str, revision: str, required_files: list[str]) -> Path:
-    """Resolve exact cached files without ever permitting a network fallback."""
-    if not required_files:
-        raise RuntimeError(f"No required files declared for {repo}.")
-
-    from huggingface_hub import hf_hub_download
-
-    resolved: list[tuple[str, Path]] = []
-    for filename in required_files:
-        try:
-            path = hf_hub_download(
-                repo_id=repo,
-                filename=filename,
-                revision=revision,
-                local_files_only=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Required cached weight is missing: {repo}@{revision[:12]}/{filename}. "
-                "Use Download in Video Gen before generating."
-            ) from exc
-        resolved.append((filename, Path(path)))
-
-    roots = {snapshot_root(path, filename) for filename, path in resolved}
-    if len(roots) != 1:
-        raise RuntimeError(f"Cached files for {repo}@{revision[:12]} span multiple snapshots; repair the model in Video Gen.")
-    return roots.pop()
+    Only this runner needs it: it shells out to the ffmpeg binary to mux the
+    joint video+audio output, where the CUDA sibling muxes in-process through
+    diffusers' PyAV-backed encode_video().
+    """
+    path = shutil.which("ffmpeg")
+    if path is None:
+        raise RuntimeError("ffmpeg is required to mux MiniMax H3 video and audio; install it before generating.")
+    return path
 
 
 def resolve_transformer_snapshot(repo: str, revision: str) -> Path:
@@ -249,14 +214,6 @@ def build_encoder_shim(
     return root
 
 
-def require_ffmpeg() -> str:
-    """Fail before loading ~83 GB of weights when muxing cannot succeed."""
-    path = shutil.which("ffmpeg")
-    if path is None:
-        raise RuntimeError("ffmpeg is required to mux MiniMax H3 video and audio; install it before generating.")
-    return path
-
-
 def verify_runtime_checkout(runtime_dir: Path, expected_revision: str) -> None:
     """Require the exact commit and a clean executable source package."""
     try:
@@ -277,11 +234,6 @@ def verify_runtime_checkout(runtime_dir: Path, expected_revision: str) -> None:
     dirty = [line for line in lines if not line.startswith("# ")]
     if oid != expected_revision or dirty:
         raise RuntimeError("MiniMax H3 runtime source differs from the pinned checkout; use Repair in Video Gen.")
-
-
-def emit_result(output: Path) -> None:
-    """Emit the completion contract that arms PortOS's teardown watchdog."""
-    print(json.dumps({"video_path": str(output)}), flush=True)
 
 
 class ProgressWriter:
@@ -320,24 +272,18 @@ class ProgressWriter:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if args.fps != FPS:
-        raise SystemExit(f"MiniMax H3 runs at a fixed {FPS} fps; got {args.fps}.")
-    if args.width <= 0 or args.height <= 0 or args.width % 32 or args.height % 32:
-        raise SystemExit(f"MiniMax H3 dimensions must be positive multiples of 32; got {args.width}x{args.height}.")
-    if not MIN_FRAMES <= args.num_frames <= MAX_FRAMES:
-        raise SystemExit(f"MiniMax H3 supports approximately 4-15 seconds ({MIN_FRAMES}-{MAX_FRAMES} aligned frames).")
-    if args.num_frames % FRAME_MODULUS != FRAME_REMAINDER:
-        raise SystemExit(f"MiniMax H3 frame count must be 17n+5; got {args.num_frames}.")
-    if args.steps < 2:
-        raise SystemExit("MiniMax H3 needs at least 2 sigma grid points.")
-    if len(args.anchor) != len(args.image):
-        raise SystemExit(
-            f"MiniMax H3 needs one --anchor per --image; got {len(args.image)} images and {len(args.anchor)} anchors."
-        )
-    # H3's fl2va conditioning defines exactly two latent anchors, so a repeated
-    # anchor would silently overwrite one keyframe's position with another's.
-    if len(set(args.anchor)) != len(args.anchor):
-        raise SystemExit(f"MiniMax H3 anchors must be distinct; got {args.anchor}.")
+    # Everything the H3 checkpoint imposes regardless of runtime — fps, the 32px
+    # canvas grid, the 17n+5 frame grid, the sigma floor, keyframe anchoring —
+    # lives in the shared module so this runner and the CUDA one cannot drift.
+    # Only the duration window and the LoRA pairing below are ours.
+    validate_h3_output_args(
+        args,
+        min_frames=MIN_FRAMES,
+        max_frames=MAX_FRAMES,
+        frame_window_message=(
+            f"MiniMax H3 supports approximately 4-15 seconds ({MIN_FRAMES}-{MAX_FRAMES} aligned frames)."
+        ),
+    )
     if len(args.lora_scale) != len(args.lora):
         raise SystemExit(
             f"MiniMax H3 needs one --lora-scale per --lora; got {len(args.lora)} LoRAs "
@@ -361,32 +307,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--text-encoder-key-prefix / --text-encoder-final-norm-key need --text-encoder-file.")
 
 
-def load_keyframes(paths: list[str]) -> list:
-    """Open each conditioning image upright, in RGB, in the order given."""
-    # Every path is checked before anything is opened, so a bad second keyframe
-    # doesn't cost a decode of the first — and the message names the PortOS-side
-    # cause rather than surfacing Pillow's bare FileNotFoundError.
-    for path in paths:
-        if not Path(path).is_file():
-            raise RuntimeError(f"Conditioning image is missing: {path}")
-    # Imported only once there is something to decode: a text-only run never
-    # pulls Pillow in, and the missing-file path above stays dependency-free.
-    if not paths:
-        return []
-    from PIL import Image, ImageOps
-
-    images = []
-    for path in paths:
-        with Image.open(path) as handle:
-            image = handle.convert("RGB")
-        # In place: PortOS hands us ffmpeg-normalized PNGs with no orientation
-        # tag, and the copying form would duplicate every pixel buffer for
-        # nothing — then hold it across the 83 GB load below.
-        ImageOps.exif_transpose(image, in_place=True)
-        images.append(image)
-    return images
-
-
 def main() -> int:
     args = parse_args()
     validate_args(args)
@@ -395,14 +315,9 @@ def main() -> int:
     # image should not cost seconds before it reports.
     images = load_keyframes(args.image)
 
-    # PortOS cancels this helper by process group; ffmpeg inherits the group and
-    # cannot remain behind muxing after the user presses Cancel. Establish the
-    # group before the git pin probe, which is the first child process.
-    if hasattr(os, "setpgid"):
-        try:
-            os.setpgid(0, 0)
-        except OSError:
-            pass
+    # Before the git pin probe, which is the first child process — and before
+    # the ffmpeg this runner shells out to mux with.
+    establish_process_group()
 
     require_ffmpeg()
 

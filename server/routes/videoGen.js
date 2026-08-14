@@ -431,6 +431,7 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
     venvPath: info.venvPython,
     repoDir: info.repoDir,
     repoUrl: info.repoUrl,
+    installSourceLabel: info.installSourceLabel,
     installEnvVar: info.installEnvVar,
   });
 }));
@@ -603,19 +604,36 @@ router.get('/models', (_req, res) => {
 // Resolve the repo set an integrity scan should cover. A specific `modelId`
 // scopes to that model's repo; no modelId scans every model repo plus the
 // shared text encoder.
+const safeOnlyList = (model, files, label) => {
+  const only = Array.isArray(files) ? files.filter((file) => typeof file === 'string' && file.length > 0) : [];
+  if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
+    throw new ServerError(
+      `Video model "${model.id}" has an unsafe ${label} path. Use repo-relative POSIX filenames only.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  return only;
+};
+
 const modelDownloadTargets = (model) => {
   const repo = repoForModel(model);
   if (!repo) return [];
-  const targets = [{ repo, revision: model?.revision || null, only: [] }];
+  // `repoFiles` narrows the model's OWN repo to an explicit file list, the way
+  // `requiredWeights[].files` already does for a secondary repo. It is required
+  // — not an optimization — whenever the model's repo is an aggregate that
+  // holds more than the one component set the runner loads: MiniMax H3 ships
+  // its diffusers layout, a second transformer partition and the original
+  // non-diffusers layout in one ~498 GB repo, so the default whole-snapshot
+  // target would pull 3.5x what the render path can use. Absent (every other
+  // model) still means "snapshot the repo".
+  const targets = [{
+    repo,
+    revision: model?.revision || null,
+    only: safeOnlyList(model, model?.repoFiles, 'repo-file'),
+  }];
   for (const dep of Array.isArray(model?.requiredWeights) ? model.requiredWeights : []) {
     if (typeof dep?.repo !== 'string') continue;
-    const only = Array.isArray(dep.files) ? dep.files.filter((file) => typeof file === 'string' && file.length > 0) : [];
-    if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
-      throw new ServerError(
-        `Video model "${model.id}" has an unsafe required-weight path. Use repo-relative POSIX filenames only.`,
-        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
-      );
-    }
+    const only = safeOnlyList(model, dep.files, 'required-weight');
     if (only.length > 0) targets.push({ repo: dep.repo, revision: dep.revision || null, only });
   }
   return targets;

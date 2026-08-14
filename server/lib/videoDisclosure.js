@@ -59,11 +59,39 @@ const RUNTIME_LICENSE = {
     name: 'Apache-2.0',
     url: 'https://github.com/PipeNetwork/minimax-h3-mlx/blob/fcd9e9b79a1d6018d91ac477c0968de1fa067e49/LICENSE',
   },
+  // The diffusers CUDA path executes no vendored source — the license that
+  // governs the inference code is diffusers' own.
+  minimax_h3_cuda: { name: 'Apache-2.0', url: 'https://github.com/huggingface/diffusers/blob/main/LICENSE' },
   hunyuan: {
     name: 'Tencent Hunyuan Community License',
     url: 'https://github.com/gaurav-nelson/HunyuanVideo_MLX/blob/main/LICENSE.txt',
   },
 };
+
+// Unlike an informational disclosure, this is an execution gate. The upstream
+// license grants rights solely in its Applicable Territory and makes use itself
+// acceptance, so PortOS requires the exact versioned key on both download and
+// generation requests.
+//
+// Shared verbatim by every MiniMax H3 entry — the MLX port and the CUDA path
+// load the same weights under the same license, so one acceptance is the honest
+// scope. Sharing the OBJECT (rather than repeating its fields) is what keeps the
+// `id` identical: acceptance is recorded by id in settings, so a second entry
+// with its own id would re-prompt a user who has already accepted, and a later
+// edit to one copy would silently split the two gates apart.
+const MINIMAX_H3_TERMS_GATE = Object.freeze({
+  id: 'minimax-h3-community-license-2026-08-02',
+  title: 'MiniMax H3 eligibility and terms',
+  summary: 'MiniMax grants use only in its Applicable Territory. The license excludes the European Union, United Kingdom, Republic of Korea, and United States of America.',
+  acknowledgement: 'I confirm I am in the Applicable Territory and agree to the MiniMax H3 Community License and its Acceptable Use Policy.',
+  licenseUrl: MINIMAX_H3_LICENSE_URL,
+  excludedTerritories: Object.freeze([
+    'European Union',
+    'United Kingdom',
+    'Republic of Korea',
+    'United States of America',
+  ]),
+});
 
 const hfModelCard = (repo) => `https://huggingface.co/${repo}`;
 
@@ -80,12 +108,14 @@ const customLicense = (repo) => ({ name: 'Custom — see model card', url: hfMod
  * re-pointed `repo` at a fork keeps "Unknown" rather than inheriting upstream's
  * license and size claims.
  *
- * `estimatedDownloadGb` is the total size of the pinned repository snapshot in
+ * `estimatedDownloadGb` is what PortOS's own download path actually pulls, in
  * decimal GB (10^9 bytes), summed from the HuggingFace file listing at the
- * entry's pinned revision (or `main` when unpinned) — i.e. what PortOS's own
- * download path actually pulls, which can exceed the resident-memory figure in
- * a model's display name. Lightning entries include their `requiredWeights`
- * LoRA files.
+ * entry's pinned revision (or `main` when unpinned) — which can exceed the
+ * resident-memory figure in a model's display name. That is the whole repo
+ * snapshot for most entries, but only the enumerated files for an entry that
+ * narrows its repo with `repoFiles` (or adds one with `requiredWeights`), so
+ * quote the file set the entry actually declares rather than the repo total.
+ * Lightning entries include their `requiredWeights` LoRA files.
  */
 export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
   minimax_h3_8bit: {
@@ -100,23 +130,24 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
       estimatedDownloadGb: 103.3,
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
-    // Unlike an informational disclosure, this is an execution gate. The
-    // upstream license grants rights solely in its Applicable Territory and
-    // makes use itself acceptance, so PortOS requires the exact versioned key
-    // on both download and generation requests.
-    termsGate: {
-      id: 'minimax-h3-community-license-2026-08-02',
-      title: 'MiniMax H3 eligibility and terms',
-      summary: 'MiniMax grants use only in its Applicable Territory. The license excludes the European Union, United Kingdom, Republic of Korea, and United States of America.',
-      acknowledgement: 'I confirm I am in the Applicable Territory and agree to the MiniMax H3 Community License and its Acceptable Use Policy.',
-      licenseUrl: MINIMAX_H3_LICENSE_URL,
-      excludedTerritories: [
-        'European Union',
-        'United Kingdom',
-        'Republic of Korea',
-        'United States of America',
-      ],
+    termsGate: MINIMAX_H3_TERMS_GATE,
+  },
+  minimax_h3_cuda: {
+    shippedRepo: 'MiniMaxAI/MiniMax-H3',
+    disclosure: {
+      modelCardUrl: hfModelCard('MiniMaxAI/MiniMax-H3'),
+      weightsLicense: MINIMAX_H3_WEIGHTS,
+      runtimeLicense: RUNTIME_LICENSE.minimax_h3_cuda,
+      // The bf16 diffusers components the fl2va workflow loads: 66.28 GB
+      // transformer + 66.73 GB Qwen3-VL conditioner + 10.42 GB video VAE +
+      // 0.61 GB audio VAE, plus ~0.02 GB of tokenizer / processor / scheduler
+      // configs. NOT the repo total — `MiniMaxAI/MiniMax-H3` is 498 GB because
+      // it also ships the `Ref2VA` partition and the original non-diffusers
+      // `FL2VA/` layout, which is why this entry pulls an explicit file list.
+      estimatedDownloadGb: 144.1,
+      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
+    termsGate: MINIMAX_H3_TERMS_GATE,
   },
   ltx23_unified: {
     shippedRepo: 'notapalindrome/ltx23-mlx-av',
