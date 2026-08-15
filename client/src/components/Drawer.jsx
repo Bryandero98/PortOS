@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { useScrollLock } from '../hooks/useScrollLock';
 import useFocusTrap from '../hooks/useFocusTrap.js';
@@ -26,6 +27,18 @@ import TabPills from './ui/TabPills';
 // child's own labeled sections over tabs (which hide inactive fields behind a
 // click) — e.g. ImageGenSettingsForm's `grouped` prop in the pipeline image-gen
 // drawers.
+//
+// The backdrop + panel are ALWAYS portaled to <body>. Both are `position:fixed`,
+// and a `filter` / `backdrop-filter` / `transform` ancestor becomes the
+// containing block for fixed descendants — so on the "glass" themes (where
+// `index.css` gives every bordered/rounded `.bg-port-card` a `backdrop-filter`)
+// an inline drawer nested under such a card was sized to the card instead of the
+// viewport. Portaling is unconditional rather than an opt-in flag so no call
+// site has to remember it; React still routes events and context through the
+// React tree, so nesting a Drawer deep in a page keeps working unchanged.
+// A caller sitting inside a page-scoped CSS theming root whose rules are written
+// as descendant selectors (e.g. `.cybercity-themed` in `index.css`) must pass
+// that class as `portalClassName`, since the portal leaves that ancestor behind.
 
 // Desktop width brackets. Mobile is always `w-full`. `lg`/`xl` intentionally use
 // more of the viewport (via extra breakpoints) so wide config forms can lay out
@@ -52,6 +65,7 @@ export default function Drawer({
   closeOnEsc = true,
   closeOnBackdrop = true,
   closeLabel = 'Close settings',
+  portalClassName = '',  // re-applies a page-scoped theming class inside the portal
 }) {
   useScrollLock(open);
 
@@ -81,7 +95,7 @@ export default function Drawer({
   const resolvedWidth = widthClass || SIZE[size] || SIZE.sm;
   const bodyClasses = `flex-1 overflow-y-auto p-4 ${bodyClassName}`.trim();
 
-  return (
+  const overlay = (
     <>
       <div
         className="fixed inset-0 z-40 bg-black/60"
@@ -143,5 +157,15 @@ export default function Drawer({
         </div>
       </aside>
     </>
+  );
+
+  // SSR / non-DOM render falls back to rendering in place — there is no <body>
+  // to portal into, and the containing-block trap is a layout concern that only
+  // exists in a browser anyway.
+  if (typeof document === 'undefined') return overlay;
+
+  return createPortal(
+    portalClassName ? <div className={portalClassName}>{overlay}</div> : overlay,
+    document.body
   );
 }
