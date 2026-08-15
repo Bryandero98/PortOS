@@ -13,6 +13,7 @@ import EntityCombobox from '../../EntityCombobox';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import BrailleSpinner from '../../BrailleSpinner';
 import useHoverTooltip from '../../../hooks/useHoverTooltip';
+import useFirstTouchHint from '../../../hooks/useFirstTouchHint';
 import { formatDateNumeric } from '../../../utils/formatters';
 
 const EDGE_COLORS = {
@@ -201,6 +202,7 @@ export default function BrainGraph() {
   // Hover tooltip state + the ref-gated pointer tracking that keeps a plain
   // mouse move from re-rendering this component when nothing can paint.
   const { hoveredNode, tooltipPos, handleHover, handlePointerMove } = useHoverTooltip();
+  const { visible: touchHintVisible, showOnFirstTouch } = useFirstTouchHint();
   const [layoutKey, setLayoutKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [confirmingRefresh, setConfirmingRefresh] = useState(false);
@@ -363,13 +365,14 @@ export default function BrainGraph() {
 
   const handlePointerDown = useCallback((e) => {
     if (!isCanvasGesture(e)) return;
+    showOnFirstTouch(e);
     // A second finger is a pinch-zoom or two-finger pan, never a tap — drop the
     // recorded start so neither the threshold pick nor the miss-clear can fire
     // for it (both gate on `isTapGesture`, which is false without a start).
     const secondFinger = touchGestureRef.current && !e.isPrimary;
     dragStartRef.current = secondFinger ? null : { x: e.clientX, y: e.clientY };
     touchGestureRef.current = e.pointerType === 'touch';
-  }, []);
+  }, [showOnFirstTouch]);
 
   // Touch selection. The raw mesh raycast needs the ray to hit a ~10px sphere;
   // instead project every node and take the nearest within a finger-sized
@@ -627,6 +630,16 @@ export default function BrainGraph() {
               touchGestureRef={touchGestureRef}
             />
           </Canvas>
+        )}
+
+        {touchHintVisible && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute top-3 inset-x-3 z-20 flex justify-center pointer-events-none"
+          >
+            <span className="port-media-overlay rounded-lg px-3 py-2 text-xs">Drag to rotate</span>
+          </div>
         )}
 
         {!graph && (

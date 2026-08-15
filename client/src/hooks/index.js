@@ -153,6 +153,8 @@ export { default as useDrawerTab } from './useDrawerTab.js';
 export { default as useChordPlayer } from './useChordPlayer.js';
 export { default as useDrumPlayer } from './useDrumPlayer.js';
 export * from './useHfTokenStatus.js';
+export { default as useFirstTouchHint } from './useFirstTouchHint.js';
+export * from './useFirstTouchHint.js';
 export * from './useKeyboardHelp.js';
 export * from './useLockToggle.js';
 export { default as usePersistedOptions } from './usePersistedOptions.js';
