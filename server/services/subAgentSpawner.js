@@ -56,6 +56,10 @@ const RUNS_DIR = PATHS.runs;
 // Coalesce reconnect storms (a crash-looping runner) into one dequeue.
 const RECONNECT_DEQUEUE_DEBOUNCE_MS = 1000;
 let reconnectDequeueTimer = null;
+// In-flight runner reconciliation, awaited by the reconnect dequeue so held
+// tasks resume against a settled `runnerAgents` map — the ordering the boot
+// path gets for free by awaiting recovery before it wires anything.
+let runnerRecovery = Promise.resolve();
 
 /**
  * Decline a `task:ready` dispatch WITHOUT failing the task.
@@ -193,6 +197,11 @@ async function runInitSpawner() {
     // here would silently convert every held task into a direct spawn — a child
     // of `portos-server` again — which is the orphaning runner mode exists to
     // prevent. The outage is a hold; it clears on `connection:ready` below.
+    //
+    // Drop any armed reconnect dequeue: a drop inside the debounce window would
+    // otherwise still announce "resuming held agent tasks" and drive a dequeue
+    // cycle into a runner that is gone again. A reconnect re-arms it.
+    clearTimeout(reconnectDequeueTimer);
     emitLog('warn', '⏸️ CoS Runner disconnected — staying in runner mode, holding agent tasks until it returns');
   });
 
@@ -208,14 +217,20 @@ async function runInitSpawner() {
       // in the CoS log stream the UI reads, or a remote install sees the outage
       // reported and never its resolution.
       emitLog('info', '🔼 CoS Runner came up — promoting agent spawning from direct to runner mode');
-      recoverRunnerAgents().catch(err =>
-        console.error(`❌ Failed to recover runner agents after promotion: ${err.message}`)
-      );
+      runnerRecovery = recoverRunnerAgents();
     }
     clearTimeout(reconnectDequeueTimer);
     reconnectDequeueTimer = setTimeout(() => {
-      emitLog('info', '▶️ CoS Runner reconnected — resuming held agent tasks');
-      cosEvents.emit('cos:dequeue-requested');
+      // Resume only once reconciliation has settled, so the dequeue counts the
+      // agents the runner was already driving. `recoverRunnerAgents` swallows
+      // its own failures, so this never rejects — which matters here, on a timer
+      // callback outside any request lifecycle.
+      runnerRecovery
+        .then(() => {
+          emitLog('info', '▶️ CoS Runner reconnected — resuming held agent tasks');
+          cosEvents.emit('cos:dequeue-requested');
+        })
+        .catch(err => console.error(`❌ Failed to resume held agent tasks: ${err.message}`));
     }, RECONNECT_DEQUEUE_DEBOUNCE_MS);
     reconnectDequeueTimer.unref?.();
   });

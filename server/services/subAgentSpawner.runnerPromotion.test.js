@@ -54,12 +54,15 @@ vi.mock('fs', () => ({ existsSync: vi.fn().mockReturnValue(false) }));
 import { initSpawner } from './subAgentSpawner.js';
 import { initCosRunnerConnection } from './cosRunnerClient.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
-import { emitLog } from './cosEvents.js';
+import { cosEvents, emitLog } from './cosEvents.js';
 import * as agentState from './agentState.js';
 
 // Read through the module namespace: `useRunner` is reassigned by `setUseRunner`,
 // and a destructured copy would freeze the value at import time.
 const currentMode = () => agentState.useRunner;
+
+// Mirrors RECONNECT_DEQUEUE_DEBOUNCE_MS in the module under test.
+const RECONNECT_DEQUEUE_DEBOUNCE_MS = 1000;
 
 // Boot-time call counts, snapshotted before `vi.clearAllMocks()` erases them.
 const bootCalls = { initConnection: 0, sync: 0, mode: null };
@@ -144,6 +147,38 @@ describe('subAgentSpawner — runner promotion (#4134)', () => {
     // rejection here would also crash the process — this runs on a socket
     // callback, outside any request lifecycle.
     expect(currentMode()).toBe(true);
+  });
+
+  it('resumes held tasks only after reconciliation settles', async () => {
+    let finishSync;
+    vi.mocked(syncRunnerAgents).mockReturnValueOnce(new Promise(resolve => { finishSync = resolve; }));
+    vi.useFakeTimers();
+
+    runnerHandlers.get('connection:ready')();
+    await vi.advanceTimersByTimeAsync(RECONNECT_DEQUEUE_DEBOUNCE_MS);
+
+    // The debounce elapsed, but the runner has not finished listing its agents:
+    // dequeuing now would size capacity against a half-populated map.
+    expect(cosEvents.emit).not.toHaveBeenCalledWith('cos:dequeue-requested');
+
+    finishSync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+
+    expect(cosEvents.emit).toHaveBeenCalledWith('cos:dequeue-requested');
+  });
+
+  it('drops an armed reconnect dequeue when the runner drops again inside the debounce window', async () => {
+    vi.useFakeTimers();
+
+    runnerHandlers.get('connection:ready')();
+    runnerHandlers.get('connection:lost')();
+    await vi.advanceTimersByTimeAsync(RECONNECT_DEQUEUE_DEBOUNCE_MS);
+    vi.useRealTimers();
+
+    // Otherwise the outage announces "resuming held agent tasks" and drives a
+    // full dequeue cycle into a runner that is gone again.
+    expect(cosEvents.emit).not.toHaveBeenCalledWith('cos:dequeue-requested');
   });
 
   it('keeps runner mode when the connection drops, so tasks hold instead of spawning direct', () => {
