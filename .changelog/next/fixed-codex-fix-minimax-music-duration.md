@@ -1,0 +1,1 @@
+- MiniMax Music 3 instrumental renders now pace their generated section sheet to the requested duration, and local music prompts reach text encoders without Markdown emphasis markers.
