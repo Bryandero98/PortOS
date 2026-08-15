@@ -10,3 +10,4 @@
 - MusicGen is now shown as unavailable on non-Apple-Silicon machines rather than offering an Install button whose installer skips and reports a confusing failure
 - Installing MiniMax Music 3's model weights now actually downloads — the request was aborted before its first byte and the UI reported the no-op as a successful install
 - Generating an instrumental with MiniMax Music 3 no longer fails — the model requires a lyric sheet, so an empty one is now sent as its documented [instrumental] section tag
+- MiniMax Music 3 no longer crashes on generate — the diffusers pipeline returns a NumPy array by default, so the sidecar converts tensor-or-ndarray output instead of calling torch-only .float().cpu()

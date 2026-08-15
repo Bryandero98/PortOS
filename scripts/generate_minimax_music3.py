@@ -7,6 +7,28 @@ import sys
 import wave
 
 
+def to_numpy(audio, np, torch):
+    """Diffusers hands back either a torch tensor or an ndarray depending on version."""
+    while isinstance(audio, (list, tuple)):
+        audio = audio[0]
+    if isinstance(audio, torch.Tensor):
+        return audio.detach().float().cpu().numpy()
+    return np.asarray(audio)
+
+
+def to_stereo(audio, np):
+    """Orient a decoded waveform to (2, samples) float32 whichever layout it arrives in."""
+    audio = np.squeeze(audio).astype(np.float32)
+    if audio.ndim == 1:
+        return np.stack([audio, audio])
+    if audio.ndim != 2:
+        raise RuntimeError(f'unexpected audio shape {audio.shape}')
+    if audio.shape[0] == 2:
+        return audio
+    # Channels-last (samples, 2), or a lone channel row - orient to (2, samples).
+    return audio.T if audio.shape[1] == 2 else np.stack([audio[0], audio[0]])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', required=True)
@@ -30,16 +52,13 @@ def main():
     pipe.load_components(dtype=torch.bfloat16)
     pipe.to('cuda')
     print('STAGE:generate', file=sys.stderr, flush=True)
-    audio = pipe(
+    audio = to_numpy(pipe(
         prompt=args.text,
         lyrics=args.lyrics,
         audio_duration=float(max(1, min(300, args.duration))),
         output='audios',
-    )[0].float().cpu().numpy()
-    if audio.ndim == 1:
-        audio = np.stack([audio, audio])
-    if audio.shape[0] != 2:
-        audio = audio.T
+    )[0], np, torch)
+    audio = to_stereo(audio, np)
     source_rate = int(pipe.sampling_rate)
     if source_rate != 32000:
         source_x = np.arange(audio.shape[1], dtype=np.float64)

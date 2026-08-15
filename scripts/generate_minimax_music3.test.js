@@ -1,0 +1,117 @@
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { resolveTestPython } from '../server/lib/testHelper.js';
+
+const script = join(dirname(fileURLToPath(import.meta.url)), 'generate_minimax_music3.py');
+
+// Same probe as the other python-sidecar suites: on Windows a bare `python` is
+// often a Store alias stub that exits non-zero, so pick an interpreter that
+// actually runs and skip when there genuinely is none.
+const pyBin = resolveTestPython();
+
+// The sidecar's real numpy/torch imports live inside main(); to_numpy/to_stereo
+// take them as parameters precisely so they can be exercised without the CUDA
+// stack CI doesn't have. numpy is the one dep these cases need — torch is a
+// two-line stand-in.
+const hasNumpy = (() => {
+  if (!pyBin) return false;
+  try {
+    execFileSync(pyBin, ['-c', 'import numpy'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+const PRELUDE = [
+  'import importlib.util, json, sys',
+  'import numpy as np',
+  'spec = importlib.util.spec_from_file_location("mm3", sys.argv[1])',
+  'mod = importlib.util.module_from_spec(spec)',
+  'spec.loader.exec_module(mod)',
+  // Stands in for torch: a Tensor whose .float()/.cpu()/.detach() chain is the
+  // path that must NOT run for an ndarray (the AttributeError this suite guards).
+  'class Tensor:',
+  '    def __init__(self, arr): self.arr = arr',
+  '    def detach(self): return self',
+  '    def float(self): return self',
+  '    def cpu(self): return self',
+  '    def numpy(self): return self.arr',
+  'class torch: pass',
+  'torch.Tensor = Tensor',
+].join('\n');
+
+const runPython = (body) => execFileSync(pyBin, ['-c', `${PRELUDE}\n${body}`, script], {
+  encoding: 'utf8',
+}).trim();
+
+describe.skipIf(!hasNumpy)('generate_minimax_music3 sidecar helpers', () => {
+  describe('to_numpy', () => {
+    // Diffusers' MiniMax Music 3 decoder defaults to output_type="np", so the
+    // pipeline hands back a plain ndarray — calling torch's .float().cpu() on it
+    // raised AttributeError and killed every generation.
+    it('passes an ndarray through untouched', () => {
+      const out = runPython([
+        'a = np.zeros((2, 8), dtype=np.float32)',
+        'r = mod.to_numpy(a, np, torch)',
+        'print(json.dumps([isinstance(r, np.ndarray), list(r.shape)]))',
+      ].join('\n'));
+      expect(JSON.parse(out)).toEqual([true, [2, 8]]);
+    });
+
+    it('unwraps a torch tensor via detach/float/cpu/numpy', () => {
+      const out = runPython([
+        'a = np.zeros((2, 8), dtype=np.float32)',
+        'r = mod.to_numpy(Tensor(a), np, torch)',
+        'print(json.dumps([isinstance(r, np.ndarray), list(r.shape)]))',
+      ].join('\n'));
+      expect(JSON.parse(out)).toEqual([true, [2, 8]]);
+    });
+
+    it('unwraps a list/tuple batch before converting', () => {
+      const out = runPython([
+        'a = np.zeros((2, 8), dtype=np.float32)',
+        'r = mod.to_numpy([(Tensor(a),)], np, torch)',
+        'print(json.dumps(list(r.shape)))',
+      ].join('\n'));
+      expect(JSON.parse(out)).toEqual([2, 8]);
+    });
+  });
+
+  describe('to_stereo', () => {
+    // Every layout the decoder can plausibly produce has to land on
+    // (2, samples) float32 — the wave writer below it is hardcoded to stereo.
+    it.each([
+      ['channels-first stereo', '(2, 8)', [2, 8]],
+      ['channels-last stereo', '(8, 2)', [2, 8]],
+      ['mono, no channel dim', '(8,)', [2, 8]],
+      ['mono with a channel dim', '(1, 8)', [2, 8]],
+      ['leading batch dim', '(1, 2, 8)', [2, 8]],
+    ])('orients %s to (2, samples)', (_label, shape, expected) => {
+      const out = runPython([
+        `a = np.arange(int(np.prod(${shape})), dtype=np.float64).reshape(${shape})`,
+        'r = mod.to_stereo(a, np)',
+        'print(json.dumps([list(r.shape), str(r.dtype)]))',
+      ].join('\n'));
+      expect(JSON.parse(out)).toEqual([expected, 'float32']);
+    });
+
+    it('duplicates a mono channel rather than transposing it', () => {
+      const out = runPython([
+        'a = np.array([[1.0, 2.0, 3.0]])',
+        'r = mod.to_stereo(a, np)',
+        'print(json.dumps(r.tolist()))',
+      ].join('\n'));
+      expect(JSON.parse(out)).toEqual([[1, 2, 3], [1, 2, 3]]);
+    });
+
+    it('raises on a shape it cannot orient', () => {
+      expect(() => runPython([
+        'a = np.zeros((3, 4, 5), dtype=np.float32)',
+        'mod.to_stereo(a, np)',
+      ].join('\n'))).toThrow();
+    });
+  });
+});
