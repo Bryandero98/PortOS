@@ -8,6 +8,7 @@ import { writeFileSync, mkdtempSync } from 'fs';
 import {
   buildMusicGenArgs,
   buildSidecarArgs,
+  buildMinimaxInstrumentalLyrics,
   clampDuration,
   getMusicgenModel,
   getEngine,
@@ -173,6 +174,19 @@ describe('buildSidecarArgs', () => {
     durationSec: 10,
     outputPath: '/data/music/music-gen-abc.wav',
   };
+
+  it('strips markdown emphasis out of the prompt for every engine', () => {
+    // The prompt box is a plain textarea; users type markdown into it out of
+    // habit and the text encoders tokenize `**`/`_` as literal content.
+    const textArg = (args) => args[args.indexOf('--text') + 1];
+    for (const engineId of Object.keys(ENGINES)) {
+      const { args } = buildSidecarArgs({
+        ...base, engineId, repo: 'some/repo',
+        prompt: 'slow-burning, cinematic instrumental with a **dark** `analog` pulse',
+      });
+      expect(textArg(args), engineId).toBe('slow-burning, cinematic instrumental with a dark analog pulse');
+    }
+  });
 
   it('routes to the musicgen sidecar script for the musicgen engine', () => {
     const { bin, args } = buildSidecarArgs({ ...base, engineId: 'musicgen' });
@@ -595,14 +609,26 @@ describe('instrumental lyrics fallback', () => {
   const base = { pythonPath: '/venv/bin/python3', prompt: 'cinematic electronic instrumental', durationSec: 60, outputPath: '/tmp/out.wav' };
   const lyricsArg = (args) => args[args.indexOf('--lyrics') + 1];
 
-  it('substitutes the documented [instrumental] tag when MiniMax Music 3 gets no lyrics', () => {
+  it('substitutes a documented structure-tag sheet when MiniMax Music 3 gets no lyrics', () => {
     // The checkpoint's tokenize step raises on an empty string, so an
     // instrumental prompt used to die with "`lyrics` must be a non-empty
     // string" after the model had already loaded.
     for (const lyrics of [undefined, '', '   ', '\n\t ']) {
       const { args } = buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', lyrics });
-      expect(lyricsArg(args), `lyrics=${JSON.stringify(lyrics)}`).toBe('[instrumental]');
+      expect(lyricsArg(args), `lyrics=${JSON.stringify(lyrics)}`).toBe(buildMinimaxInstrumentalLyrics(60));
     }
+  });
+
+  it('sizes the substituted sheet to the render duration, not a fixed one-tag stub', () => {
+    // `audio_duration` is only a ceiling for this engine — the global LLM ends
+    // the piece on its own, paced by the sheet's section count. A single
+    // [instrumental] tag is one section, which is why a 60s ask returned 25s.
+    const lyricsFor = (durationSec) => lyricsArg(
+      buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', durationSec, lyrics: '' }).args,
+    );
+    const sections = (sheet) => sheet.split('\n').length;
+    expect(sections(lyricsFor(20))).toBeLessThan(sections(lyricsFor(60)));
+    expect(sections(lyricsFor(60))).toBeLessThan(sections(lyricsFor(240)));
   });
 
   it('never touches lyrics the caller actually supplied', () => {
@@ -615,5 +641,51 @@ describe('instrumental lyrics fallback', () => {
     expect(ENGINES.acestep.instrumentalLyrics).toBeUndefined();
     const { args } = buildSidecarArgs({ ...base, engineId: 'acestep', repo: 'ACE-Step/ACE-Step-v1-3.5B', lyrics: '' });
     expect(lyricsArg(args)).toBe('');
+  });
+});
+
+describe('buildMinimaxInstrumentalLyrics', () => {
+  const tags = (sheet) => sheet.split('\n');
+
+  it('brackets every line and opens on [intro] / closes on [outro]', () => {
+    const lines = tags(buildMinimaxInstrumentalLyrics(60));
+    for (const line of lines) expect(line).toMatch(/^\[[a-z]+\]$/);
+    expect(lines[0]).toBe('[intro]');
+    expect(lines.at(-1)).toBe('[outro]');
+  });
+
+  it('uses only tags the model card documents, and none that imply a vocal', () => {
+    // Section tags are a fixed vocabulary; [verse]/[chorus] would coax the
+    // model into singing over what the user asked to be an instrumental.
+    const documented = new Set(['intro', 'instrumental', 'bridge', 'solo', 'outro']);
+    for (const seconds of [1, 30, 60, 120, 300]) {
+      for (const line of tags(buildMinimaxInstrumentalLyrics(seconds))) {
+        expect(documented, `${seconds}s → ${line}`).toContain(line.slice(1, -1));
+      }
+    }
+  });
+
+  it('grows monotonically with duration and always keeps a body section', () => {
+    let previous = 0;
+    for (const seconds of [1, 20, 60, 120, 240, 300]) {
+      const count = tags(buildMinimaxInstrumentalLyrics(seconds)).length;
+      expect(count, `${seconds}s`).toBeGreaterThanOrEqual(previous);
+      // intro + at least one body + outro
+      expect(count, `${seconds}s`).toBeGreaterThanOrEqual(3);
+      previous = count;
+    }
+  });
+
+  it('clamps into the engine window instead of throwing on junk input', () => {
+    // Mirrors clampDuration's contract — the route validates shape, this
+    // guards the math, so a non-finite duration falls back to the default.
+    for (const bad of [undefined, null, NaN, 'sixty', -5, 1e9]) {
+      expect(() => buildMinimaxInstrumentalLyrics(bad)).not.toThrow();
+      expect(tags(buildMinimaxInstrumentalLyrics(bad)).length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('caps the sheet so a 5-minute render does not emit an unbounded tag wall', () => {
+    expect(tags(buildMinimaxInstrumentalLyrics(300)).length).toBeLessThanOrEqual(14);
   });
 });

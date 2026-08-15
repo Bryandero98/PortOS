@@ -287,6 +287,7 @@ export * from './postTopics.js';
 export * from './spacedRepetition.js';
 export * from './songPractice.js';
 export * from './planIds.js';
+export * from './markdownText.js';
 export * from './renderSlot.js';
 export * from './renderTargets.js';
 export * from './telegramClient.js';
