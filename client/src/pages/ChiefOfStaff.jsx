@@ -518,13 +518,16 @@ export default function ChiefOfStaff() {
 
   // Learning tile behaviour shared by the compact (sidebar/mobile) and mini
   // (ascii stats bar) renderings — only the icon scale and the empty-state
-  // value differ between them. `skipped > 0` is exactly the server's `critical`
-  // status (taskLearning/insights.js), so the sub-label lands red via the tone.
+  // value differ between them. A skipped task type is critical on its own
+  // terms: derive that here rather than trusting the server's status chain to
+  // keep classifying `skipped > 0` as `critical`, or a reorder there would
+  // silently drop the red signal while the tile still reads "N skipped".
+  const learningSkipped = learningSummary?.skipped ?? 0;
   const learningStatProps = {
     label: 'Learning',
-    tone: learningSummary?.status || 'default',
-    active: (learningSummary?.skipped ?? 0) > 0,
-    activeLabel: learningSummary?.skipped ? `${learningSummary.skipped} skipped` : null,
+    tone: learningSkipped > 0 ? 'critical' : (learningSummary?.status || 'default'),
+    active: learningSkipped > 0,
+    activeLabel: learningSkipped > 0 ? `${learningSkipped} skipped` : null,
     title: learningSummary?.statusMessage || 'View learning analytics',
     onClick: () => navigate('/cos/learning'),
   };

@@ -57,6 +57,21 @@ describe('StatCard onClick', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it('offers a border-hover affordance while the border is still neutral', () => {
+    const { container } = render(<StatCard label="Learning" value="84%" onClick={() => {}} mini />);
+    expect(root(container).className).toContain('hover:border-port-accent-2/50');
+  });
+
+  it('does not hover-recolor a border already carrying a tone or the active accent', () => {
+    // Hovering a red "critical" card must not flash it accent-2 — the health
+    // color is the signal, and Tailwind's hover: variant would win over it.
+    const { container: toned } = render(<StatCard label="Learning" value="12%" onClick={() => {}} tone="critical" mini />);
+    expect(root(toned).className).not.toContain('hover:border-');
+
+    const { container: activeCard } = render(<StatCard label="Active" value={2} onClick={() => {}} active mini />);
+    expect(root(activeCard).className).not.toContain('hover:border-');
+  });
+
   it('passes title through for the hover hint', () => {
     render(<StatCard label="Learning" value="84%" title="2 need attention" onClick={() => {}} mini />);
     expect(screen.getByRole('button', { name: 'Learning: 84%' }).getAttribute('title')).toBe('2 need attention');
