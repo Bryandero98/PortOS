@@ -106,6 +106,30 @@ describe('migration 269 — convert dashboard grids to the order-only shape', ()
     expect(grid.map((g) => g.order)).toEqual([0, 1]);
   });
 
+  // The read path in `sequenceGrid` treats any grid carrying `order` as
+  // new-shape. The migration has to probe the same way, or converting a file
+  // would reorder it relative to how the server was already serving it.
+  it('keeps a real `order` when a stale `y` disagrees with it', async () => {
+    writeJson(layoutsPath, {
+      activeLayoutId: 'default',
+      layouts: [{
+        id: 'default', name: 'Everything', builtIn: true, widgets: ['alpha', 'beta', 'gamma'],
+        grid: [
+          // y says gamma is on top; order says it is last. order wins.
+          { id: 'gamma', x: 0, y: 0, w: 12, order: 2, h: 3 },
+          { id: 'alpha', x: 0, y: 9, w: 6, order: 0, h: 4 },
+          // No sequence of its own — appended by a legacy seeding migration.
+          { id: 'beta', x: 6, y: 0, w: 6, h: 2 },
+        ],
+      }],
+    });
+
+    expect((await migration.up({ rootDir })).updated).toBe(1);
+    const grid = readJson(layoutsPath).layouts[0].grid;
+    expect(grid.map((g) => g.id)).toEqual(['alpha', 'gamma', 'beta']);
+    expect(grid.map((g) => g.order)).toEqual([0, 1, 2]);
+  });
+
   it('converts every layout in the file, and leaves empty grids alone', async () => {
     writeJson(layoutsPath, {
       activeLayoutId: 'focus',

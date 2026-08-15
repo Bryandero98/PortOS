@@ -35,13 +35,31 @@ const intOr = (v, fallback) => (Number.isFinite(v) ? Math.floor(v) : fallback);
 const isConverted = (grid) =>
   grid.every((g) => g && typeof g === 'object' && Number.isFinite(g.order) && g.y === undefined);
 
-// Reading order — top-to-bottom, then left-to-right — is the order the
-// renderer already packed these cells in, so replaying it preserves the
-// layout the user last saw.
+// Resolve the sequence, probing the SHAPE exactly the way
+// `sequenceGrid` in `server/services/dashboardLayouts.js` does — the two must
+// agree, or a file converted here would read back in a different order than
+// the same file read before conversion:
+//   - Fully legacy: reading order — top-to-bottom, then left-to-right — is
+//     the order the renderer already packed these cells in, so replaying it
+//     preserves the layout the user last saw.
+//   - Any entry carrying `order`: that's the sequence. Entries without one go
+//     last in file order (where a widget-seeding migration means to append).
+//     Sorting a half-converted grid by `y` instead would discard a real
+//     sequence and scramble the layout.
 function toOrderedGrid(grid) {
+  const anyOrder = grid.some((g) => Number.isFinite(g.order));
   return grid
-    .map((g, idx) => ({ g, idx, y: intOr(g?.y, 0), x: intOr(g?.x, 0) }))
-    .sort((a, b) => a.y - b.y || a.x - b.x || a.idx - b.idx)
+    .map((g, idx) => ({
+      g,
+      idx,
+      rank: anyOrder
+        ? (Number.isFinite(g.order) ? Math.floor(g.order) : Number.MAX_SAFE_INTEGER)
+        : intOr(g.y, 0),
+      // Ties in legacy grids are side-by-side cells: column decides. Ties in
+      // the new shape are corrupt data: file order decides.
+      tie: anyOrder ? idx : intOr(g.x, 0),
+    }))
+    .sort((a, b) => a.rank - b.rank || a.tie - b.tie || a.idx - b.idx)
     .map(({ g }, order) => {
       const next = { id: g.id, x: intOr(g.x, 0), w: intOr(g.w, 1), order };
       if (Number.isFinite(g.h)) next.h = Math.floor(g.h);
