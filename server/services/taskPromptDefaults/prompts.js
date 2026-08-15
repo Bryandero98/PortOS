@@ -1816,13 +1816,14 @@ Default branch: {defaultBranch}
 
 2. Read the current catalog at \`server/lib/localLlmCatalog.js\` (the
    \`LOCAL_LLM_CATALOG\` array; each entry is
-   \`{ key, name, category, params, size, family, description, capabilities, ollama?, lmstudio? }\`)
+   \`{ key, name, category, recommendedFor?, featured?, params, size, family, description, capabilities, ollama?, lmstudio? }\`)
    and the editorial ranking \`EDITORIAL_FAMILY_RANK\` in
    \`server/lib/localModelHeuristics.js\`.
 
 3. Research the current best-in-class local models for EACH category in
-   \`LOCAL_LLM_CATEGORIES\` (chat, reasoning, coding, vision/image-analysis,
-   embedding, lightweight/small-&-fast, multilingual). Prefer models that are:
+   \`LOCAL_LLM_CATEGORIES\` (general-purpose, coding/agents,
+   reasoning/analysis, vision/image-analysis, chat/voice,
+   lightweight/small-&-fast, multilingual, embedding). Prefer models that are:
    - Pullable on Ollama (use the canonical \`ollama pull\` id) and/or available
      as a well-known GGUF build on LM Studio / Hugging Face (use the canonical
      repo id, e.g. \`lmstudio-community/<Model>-GGUF\`).
@@ -1834,10 +1835,16 @@ Default branch: {defaultBranch}
 4. Update \`LOCAL_LLM_CATALOG\`:
    - Add newly-prominent models, refresh \`params\`/\`size\`/\`description\` on
      existing entries, and remove models that are clearly deprecated/superseded.
+   - Treat \`category\` as the model's ONE primary recommendation lane. Use
+     \`recommendedFor\` only for additional user-facing filters where a genuinely
+     general model is a good choice; it must include the primary category. Keep
+     modality and tool facts in \`capabilities\`, not in arbitrary categories.
+     Reserve \`featured\` for a deliberate first-choice recommendation with a
+     concise user-facing reason — never set it merely because a model is newest.
    - Keep the module's shape EXACTLY: do not change the exports
      (\`BACKENDS\`, \`isBackend\`, \`LOCAL_LLM_CATEGORIES\`, \`LOCAL_LLM_CATALOG\`),
-     the entry field names, or \`category\` values (they must stay within
-     \`LOCAL_LLM_CATEGORIES\` ids). A missing \`ollama\`/\`lmstudio\` id is fine
+     and keep \`category\` and every \`recommendedFor\` value within
+     \`LOCAL_LLM_CATEGORIES\` ids. A missing \`ollama\`/\`lmstudio\` id is fine
      when no well-known build exists for that backend.
 
 5. Review \`EDITORIAL_FAMILY_RANK\` in \`server/lib/localModelHeuristics.js\` (used
@@ -1849,8 +1856,8 @@ Default branch: {defaultBranch}
 
 6. Run the affected tests and make sure they pass:
    \`cd {repoPath}/server && npx vitest run lib/localLlmCatalog lib/localModelHeuristics lib/index.test.js\`.
-   If you changed the catalog's exported shape you broke the contract — revert
-   that part. Fix any test you legitimately invalidated (e.g. an entry count).
+   Update catalog/picker tests when you intentionally add recommendation
+   metadata; do not change existing cross-backend install-id mapping semantics.
 
 7. Log the refresh in the changelog with
    \`cd {repoPath} && npm run changelog:add -- changed "<one line summarizing the catalog refresh>"\`.
