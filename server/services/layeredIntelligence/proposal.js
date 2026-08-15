@@ -2,7 +2,8 @@
  * Layered Intelligence — reasoner-output validation & hand-off shaping
  * (#2842 split of layeredIntelligence.js).
  *
- * Validates the model's JSON into a `{ analysis, proposal, pause }` triple, resolves
+ * Validates the model's JSON into an `{ analysis, proposal, pause, invalidFields }`
+ * result (the usable triple plus the malformed-field report, #4166), resolves
  * the pause target, and decides whether/how a filed proposal becomes an autonomous
  * CoS hand-off task. Also the tracker→filer dispatch table.
  */
@@ -12,17 +13,32 @@ import { normalizeSlug } from './dedup.js';
 
 /**
  * Validate + normalize the reasoner's JSON. Returns
- * `{ analysis, proposal, pause }` with invalid pieces dropped (never throws):
+ * `{ analysis, proposal, pause, invalidFields }` with invalid pieces dropped
+ * (never throws):
+ *   - `analysis` kept only when it is a string.
  *   - `proposal` kept only when it has a recognized scope + a normalizable slug
  *     + a non-empty title. `slug` is normalized in place.
  *   - `pause` kept only when it has a reason AND a resolvable target: an integer
  *     issue number, or `"this"` WITH a surviving proposal to block on. A
  *     `pause.blockOnIssue: "this"` with a null proposal is invalid → dropped.
+ *
+ * `invalidFields` (#4166) names every envelope key that was SUPPLIED (present and
+ * non-null) but could not be used — the sentinel that separates "the reasoner
+ * emitted the wrong shape" from "the reasoner had nothing to say". Dropping is
+ * still lenient (callers that only want the usable pieces can ignore it), but a
+ * caller deciding whether a run was malformed must not have to re-derive per-field
+ * validity: `{"analysis": 7}` reads as a legitimate empty answer without this.
+ * `null`/`undefined` is ABSENT, not wrong-typed — an explicit `proposal: null` is
+ * the documented "nothing to propose" answer and never lands here. Deliberately
+ * ONLY `null`: the prompt documents `null` for "not proposing"/"not pausing", so a
+ * model emitting `false` or `"none"` instead is a wrong-typed field and is reported
+ * (this already matched the pre-#4166 treatment of a `false` proposal).
  */
 export function validateReasonerResponse(parsed) {
-  const out = { analysis: '', proposal: null, pause: null };
+  const out = { analysis: '', proposal: null, pause: null, invalidFields: [] };
   if (!parsed || typeof parsed !== 'object') return out;
   if (typeof parsed.analysis === 'string') out.analysis = parsed.analysis;
+  else if (parsed.analysis != null) out.invalidFields.push('analysis');
 
   const p = parsed.proposal;
   if (p && typeof p === 'object' && !Array.isArray(p)) {
@@ -43,8 +59,16 @@ export function validateReasonerResponse(parsed) {
       };
     }
   }
+  if (p != null && !out.proposal) out.invalidFields.push('proposal');
 
   const pause = parsed.pause;
+  // A well-formed `blockOnIssue: "this"` pause is dropped as COLLATERAL when the
+  // proposal it pointed at was itself supplied-but-invalid. The pause isn't the
+  // malformed part, so it doesn't earn its own `invalidFields` entry — one root
+  // cause, one report. With no proposal supplied at all, `"this"` points at nothing
+  // and the pause IS malformed. Either way `invalidFields` is already non-empty, so
+  // this only sharpens the report, never the malformed/clean verdict.
+  let pauseCollateral = false;
   if (pause && typeof pause === 'object' && !Array.isArray(pause)) {
     const reason = typeof pause.reason === 'string' ? pause.reason.trim() : '';
     const target = pause.blockOnIssue;
@@ -53,8 +77,12 @@ export function validateReasonerResponse(parsed) {
     // "this" requires a surviving proposal to block on; else an explicit issue number.
     if (reason && ((isThis && out.proposal) || num)) {
       out.pause = { blockOnIssue: isThis ? 'this' : num, reason };
+    } else if (reason && isThis) {
+      pauseCollateral = out.invalidFields.includes('proposal');
     }
   }
+  if (pause != null && !out.pause && !pauseCollateral) out.invalidFields.push('pause');
+
   return out;
 }
 

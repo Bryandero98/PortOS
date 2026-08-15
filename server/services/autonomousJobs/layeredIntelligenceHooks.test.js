@@ -18,7 +18,11 @@ vi.mock('../../lib/workTracker.js', async (importActual) => {
   };
 });
 
-vi.mock('../../lib/fileUtils.js', () => ({
+// Only `tryReadFile` is stubbed — the rest passes through so the real validator this
+// suite imports for the #4166 end-to-end case can load its own module graph (its
+// constants reach `PATHS`/`DAY` through here). fileUtils has no load-time side effects.
+vi.mock('../../lib/fileUtils.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   tryReadFile: vi.fn().mockResolvedValue(null)
 }));
 
@@ -51,7 +55,7 @@ vi.mock('../layeredIntelligence.js', () => ({
   listForgeIssues: vi.fn().mockResolvedValue({ ok: true, issues: [] }),
   listBlockingIssues: vi.fn().mockResolvedValue({ ok: true, issues: [] }),
   isAppParked: vi.fn(() => false),
-  validateReasonerResponse: vi.fn(() => ({ proposal: null, pause: null })),
+  validateReasonerResponse: vi.fn(() => ({ proposal: null, pause: null, invalidFields: [] })),
   isScopeAllowed: vi.fn(() => true),
   isProposalDuplicate: vi.fn(() => false),
   checkSemanticDuplicate: vi.fn().mockResolvedValue({ available: false, duplicate: false }),
@@ -133,6 +137,10 @@ import { resolveAppWorkTracker } from '../../lib/workTracker.js';
 import { tryReadFile } from '../../lib/fileUtils.js';
 import { getProviderById } from '../providers.js';
 import { getTaskInterval } from '../taskSchedule.js';
+// The REAL validator (its own module, so untouched by the `../layeredIntelligence.js`
+// mock above) — used by the #4166 end-to-end case so the envelope→reason verdict is
+// exercised through production validation, not a hand-written stub of it.
+import { validateReasonerResponse as realValidateReasonerResponse } from '../layeredIntelligence/proposal.js';
 
 const APP = { id: 'app-1', name: 'App One', repoPath: '/repo', taskTypeOverrides: {} };
 
@@ -158,6 +166,9 @@ beforeEach(() => {
   // so without this a test that arms the gate would leak into later ones.
   li.computeHardExclusionGate.mockReturnValue({ excluded: false, reason: null });
   li.computeHardExclusionNotice.mockReturnValue('');
+  // Same leak guard for the validator (#4166): a test that hands back a non-empty
+  // `invalidFields` would otherwise make every later run read as unparseable-response.
+  li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: [] });
 });
 
 describe('buildTaskInput', () => {
@@ -557,7 +568,7 @@ describe('processTaskOutput', () => {
   });
 
   it('records unparseable-response when the payload is null', async () => {
-    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null });
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: [] });
     const out = await processTaskOutput({ appId: 'app-1', success: true, payload: null });
     expect(out).toMatchObject({ action: 'no-op', reason: 'unparseable-response' });
   });
@@ -569,7 +580,7 @@ describe('processTaskOutput', () => {
     // indistinguishable from a correct empty answer and got recorded as a
     // successful run. `{}` is reachable: the sentinel envelope only requires
     // `payload` to be an object.
-    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null });
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: [] });
     for (const payload of ['just some prose', 42, ['a', 'b'], true, {}, { foo: 1 }]) {
       const out = await processTaskOutput({ appId: 'app-1', success: true, payload });
       expect(out).toMatchObject({ action: 'no-op', reason: 'unparseable-response' });
@@ -580,7 +591,7 @@ describe('processTaskOutput', () => {
     // The other side of the sentinel: the reasoner answered correctly and simply
     // had nothing to file. That is a successful run, not malformed output. Any ONE
     // documented key makes it a real answer.
-    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null });
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: [] });
     for (const payload of [{ analysis: 'nothing worth proposing', proposal: null }, { proposal: null }, { analysis: '' }]) {
       const out = await processTaskOutput({ appId: 'app-1', success: true, payload });
       expect(out).toMatchObject({ action: 'no-op', reason: 'no-proposal' });
@@ -591,13 +602,53 @@ describe('processTaskOutput', () => {
     // The reasoner ATTEMPTED a proposal and emitted the wrong shape (no scope/title,
     // bad slug). That is malformed output, not "I looked and found nothing" — both
     // used to land on `no-proposal` and count as a successful run.
-    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null });
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: ['proposal'] });
     const out = await processTaskOutput({ appId: 'app-1', success: true, payload: { analysis: 'x', proposal: { title: '' } } });
     expect(out).toMatchObject({ action: 'no-op', reason: 'unparseable-response' });
   });
 
+  it('records unparseable-response for a wrong-typed NON-deliverable field (#4166)', async () => {
+    // `{"analysis": 7}` is an envelope (it carries a documented key) that supplies a
+    // field it then gets wrong. Pre-#4166 the deliverable-only check let it through as
+    // `no-proposal`, i.e. a successful run indistinguishable from a correct empty
+    // answer. Any field validateReasonerResponse reports in `invalidFields` now counts.
+    for (const [payload, invalidFields] of [
+      [{ analysis: 7 }, ['analysis']],
+      [{ analysis: 'x', pause: { reason: 'no target' } }, ['pause']],
+      [{ analysis: [], pause: 3 }, ['analysis', 'pause']]
+    ]) {
+      li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields });
+      const out = await processTaskOutput({ appId: 'app-1', success: true, payload });
+      expect(out).toMatchObject({ action: 'no-op', reason: 'unparseable-response' });
+    }
+  });
+
+  it('reaches the same verdict through the REAL validator (#4166)', async () => {
+    // End-to-end over the two halves this suite otherwise stubs apart: the real
+    // envelope validation feeding the real reason classification.
+    li.validateReasonerResponse.mockImplementation(realValidateReasonerResponse);
+    for (const payload of [{ analysis: 7 }, { analysis: 'x', pause: { reason: 'no target' } }, { proposal: { title: '' } }]) {
+      const out = await processTaskOutput({ appId: 'app-1', success: true, payload });
+      expect(out).toMatchObject({ action: 'no-op', reason: 'unparseable-response' });
+    }
+    for (const payload of [{ analysis: 'nothing worth proposing', proposal: null }, { analysis: '' }]) {
+      const out = await processTaskOutput({ appId: 'app-1', success: true, payload });
+      expect(out).toMatchObject({ action: 'no-op', reason: 'no-proposal' });
+    }
+  });
+
+  it('logs which envelope fields were unusable (#4166)', async () => {
+    // `unparseable-response` alone can't tell an operator whether the model returned
+    // no JSON at all or one wrong-typed key — the offending names must reach the log.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: ['analysis', 'pause'] });
+    await processTaskOutput({ appId: 'app-1', success: true, payload: { analysis: 7, pause: 3 } });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('analysis, pause'));
+    warn.mockRestore();
+  });
+
   it('treats an explicit proposal:null as a legitimate empty answer, not malformed (#2727)', async () => {
-    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null });
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: [] });
     const out = await processTaskOutput({ appId: 'app-1', success: true, payload: { analysis: 'nothing to propose', proposal: null } });
     expect(out).toMatchObject({ action: 'no-op', reason: 'no-proposal' });
   });
@@ -606,7 +657,7 @@ describe('processTaskOutput', () => {
     // readIssues is an unbounded forge call and only the has-a-proposal branch
     // consumes it. Since the #2727 hoist the hook runs while the agent still holds
     // a CoS concurrency slot, so the common no-op path must not shell out to `gh`.
-    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null });
+    li.validateReasonerResponse.mockReturnValue({ proposal: null, pause: null, invalidFields: [] });
     li.listForgeIssues.mockClear();
     await processTaskOutput({ appId: 'app-1', success: true, payload: { analysis: 'nothing to do', proposal: null } });
     expect(li.listForgeIssues).not.toHaveBeenCalled();

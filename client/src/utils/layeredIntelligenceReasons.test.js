@@ -3,7 +3,7 @@ import { formatLiReason, liReasonTone, LI_NEUTRAL_REASONS } from './layeredIntel
 
 describe('formatLiReason', () => {
   it('glosses a plain reason token', () => {
-    expect(formatLiReason({ action: 'no-op', reason: 'unparseable-response' })).toMatch(/no usable JSON/i);
+    expect(formatLiReason({ action: 'no-op', reason: 'unparseable-response' })).toMatch(/no usable answer/i);
     expect(formatLiReason({ action: 'no-op', reason: 'no-provider' })).toMatch(/no AI provider/i);
   });
 

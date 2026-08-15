@@ -375,9 +375,10 @@ describe('validateReasonerResponse', () => {
   });
 
   it('handles garbage input without throwing', () => {
-    expect(validateReasonerResponse(null)).toEqual({ analysis: '', proposal: null, pause: null });
-    expect(validateReasonerResponse('nope')).toEqual({ analysis: '', proposal: null, pause: null });
-    expect(validateReasonerResponse({ proposal: [], pause: [] })).toEqual({ analysis: '', proposal: null, pause: null });
+    expect(validateReasonerResponse(null)).toEqual({ analysis: '', proposal: null, pause: null, invalidFields: [] });
+    expect(validateReasonerResponse('nope')).toEqual({ analysis: '', proposal: null, pause: null, invalidFields: [] });
+    expect(validateReasonerResponse({ proposal: [], pause: [] }))
+      .toEqual({ analysis: '', proposal: null, pause: null, invalidFields: ['proposal', 'pause'] });
   });
 
   it('normalizes proposal complexity + safe (defaults: null / false)', () => {
@@ -393,6 +394,67 @@ describe('validateReasonerResponse', () => {
     const junk = validateReasonerResponse({ proposal: { scope: 'app-improvement', slug: 'x', title: 'X', complexity: 'epic', safe: 'yes' } });
     expect(junk.proposal.complexity).toBe(null);
     expect(junk.proposal.safe).toBe(false);
+  });
+
+  describe('invalidFields (#4166)', () => {
+    it('reports a wrong-typed analysis and drops it', () => {
+      const r = validateReasonerResponse({ analysis: 7 });
+      expect(r.analysis).toBe('');
+      expect(r.invalidFields).toEqual(['analysis']);
+    });
+
+    it('reports a supplied-but-unusable proposal', () => {
+      expect(validateReasonerResponse({ proposal: { scope: 'nuke', slug: 'x', title: 'X' } }).invalidFields).toEqual(['proposal']);
+      expect(validateReasonerResponse({ proposal: 'do the thing' }).invalidFields).toEqual(['proposal']);
+    });
+
+    it('reports a supplied-but-unusable pause', () => {
+      expect(validateReasonerResponse({ pause: { blockOnIssue: 42, reason: '' } }).invalidFields).toEqual(['pause']);
+      expect(validateReasonerResponse({ pause: { reason: 'no target' } }).invalidFields).toEqual(['pause']);
+      // "this" with nothing to block on is malformed, not an empty answer.
+      expect(validateReasonerResponse({ proposal: null, pause: { blockOnIssue: 'this', reason: 'x' } }).invalidFields).toEqual(['pause']);
+    });
+
+    it('does not double-report a "this" pause dropped as collateral of an invalid proposal', () => {
+      // The pause is well-formed — it was dropped only because the proposal it pointed
+      // at failed validation. One root cause, one report.
+      const r = validateReasonerResponse({
+        proposal: { scope: 'nuke', slug: 'x', title: 'X' },
+        pause: { blockOnIssue: 'this', reason: 'block on the new one' }
+      });
+      expect(r.pause).toBe(null);
+      expect(r.invalidFields).toEqual(['proposal']);
+    });
+
+    it('still reports a "this" pause that is itself malformed alongside a bad proposal', () => {
+      // No reason → the pause is broken on its own terms, not collateral.
+      const r = validateReasonerResponse({
+        proposal: { scope: 'nuke', slug: 'x', title: 'X' },
+        pause: { blockOnIssue: 'this', reason: '' }
+      });
+      expect(r.invalidFields).toEqual(['proposal', 'pause']);
+    });
+
+    it('treats an absent or explicitly-null field as absent, never malformed', () => {
+      expect(validateReasonerResponse({ analysis: 'nothing to propose', proposal: null, pause: null }).invalidFields).toEqual([]);
+      expect(validateReasonerResponse({ proposal: null }).invalidFields).toEqual([]);
+      expect(validateReasonerResponse({ analysis: '' }).invalidFields).toEqual([]);
+      expect(validateReasonerResponse({}).invalidFields).toEqual([]);
+    });
+
+    it('stays empty for a fully valid envelope', () => {
+      const r = validateReasonerResponse({
+        analysis: 'a',
+        proposal: { scope: 'app-improvement', slug: 'x', title: 'X' },
+        pause: { blockOnIssue: 'this', reason: 'block on the new one' }
+      });
+      expect(r.invalidFields).toEqual([]);
+    });
+
+    it('collects every unusable field, in envelope order', () => {
+      const r = validateReasonerResponse({ analysis: [], proposal: {}, pause: 3 });
+      expect(r.invalidFields).toEqual(['analysis', 'proposal', 'pause']);
+    });
   });
 });
 
