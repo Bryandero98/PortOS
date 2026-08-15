@@ -34,6 +34,7 @@ const H3 = {
     { label: '768x1344', w: 768, h: 1344 },
   ],
   supportsNegativePrompt: false, supportsTiling: false, supportsDisableAudio: false,
+  samplerLocked: true,
   // Server-decorated per model (videoGen/local.js#decorateVideoModel) — the
   // client never derives this from a runtime name, so the fixture carries it
   // exactly as the /models payload does.
@@ -352,15 +353,16 @@ describe('useVideoGenForm', () => {
     // of a stock render must CLEAR a leftover selection rather than carry it
     // into a render the user asked to reproduce faithfully.
     it.each([
-      ['restores a recorded substitute', { textEncoderId: 'heretic-bf16' }, 'heretic-bf16'],
-      ['clears the selection when the record has none', {}, 'stock'],
-    ])('%s on remix', async (_label, extra, expected) => {
+      ['restores a recorded substitute', { textEncoderId: 'heretic-bf16' }, 'heretic-bf16', H3.id],
+      ['clears the selection when the record has none', {}, 'stock', MLX.id],
+    ])('%s on remix', async (_label, extra, expected, expectedModelId) => {
       const { result } = await renderWithH3();
       act(() => result.current.setTextEncoderId('heretic-bf16'));
       await waitFor(() => expect(result.current.textEncoderId).toBe('heretic-bf16'));
 
       act(() => result.current.applyRemix({ modelId: H3.id, prompt: 'a fox', ...extra }));
       await waitFor(() => expect(result.current.textEncoderId).toBe(expected));
+      expect(result.current.modelId).toBe(expectedModelId);
     });
 
     it('restores a resumed in-flight render’s conditioner', async () => {
@@ -683,6 +685,51 @@ describe('useVideoGenForm', () => {
     expect(result.current.selectedLoras).toEqual([
       { filename: 'v.safetensors', name: 'v.safetensors', scale: 0.5 },
     ]);
+  });
+
+  it('moves a fixed-profile remix to an editable model while preserving its restored controls', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+
+    act(() => result.current.applyRemix({
+      modelId: H3.id,
+      prompt: 'a fox in rain',
+      negativePrompt: 'blurry',
+      steps: 9,
+      guidanceScale: 0,
+    }));
+
+    await waitFor(() => expect(result.current.remixModelFallback).toEqual({
+      sourceName: H3.name,
+      targetName: MLX.name,
+      samplerLocked: true,
+      negativePromptUnsupported: true,
+    }));
+    expect(result.current.modelId).toBe(MLX.id);
+    expect(result.current.negativePrompt).toBe('blurry');
+    expect(result.current.steps).toBe('9');
+    expect(result.current.guidanceScale).toBe('0');
+  });
+
+  it('uses the same editable-model fallback for a cross-page Remix handoff', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+      url: `/media/video?modelId=${H3.id}&numFrames=124&steps=9&guidanceScale=0`,
+    });
+
+    await waitFor(() => expect(result.current.remixModelFallback).toEqual({
+      sourceName: H3.name,
+      targetName: MLX.name,
+      samplerLocked: true,
+      negativePromptUnsupported: true,
+    }));
+    expect(result.current.modelId).toBe(MLX.id);
+    expect(result.current.steps).toBe('9');
+    expect(result.current.guidanceScale).toBe('0');
   });
 
   it('applyRemix clears fields the record does not carry rather than leaving stale ones', async () => {
