@@ -1,11 +1,20 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { execFile } from 'child_process';
+import { ChildProcess, execFile } from 'child_process';
 import { promisify } from 'util';
 import { pinPlatform } from './testHelper.js';
+import { killProcessTree } from './bufferedSpawn.js';
 import { spawnDetached, reapDetached, reapAndCleanDetachedDirs, reattachDetached, isReattachable, isDetachedRunning } from './detachedSpawn.js';
+
+// Only the win32 fallback's kill() reaches killProcessTree, so stubbing it is
+// inert for every POSIX test here — and it lets the win32 test assert the
+// delegation on a platform where `taskkill` doesn't exist.
+vi.mock('./bufferedSpawn.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  killProcessTree: vi.fn(),
+}));
 
 const execFileAsync = promisify(execFile);
 
@@ -217,6 +226,44 @@ describe('spawnDetached', () => {
     } finally {
       restorePlatform();
     }
+  });
+
+  it('win32 fallback kill() tree-kills so the runner\'s children die with it', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const controlDir = await tmpControlDir();
+      const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir });
+      const closed = onClose(handle);
+      expect(handle.kill('SIGKILL')).toBe(true);
+      expect(handle.killed).toBe(true);
+      expect(killProcessTree).toHaveBeenCalledTimes(1);
+      const [target, signal, opts] = killProcessTree.mock.calls[0];
+      expect(signal).toBe('SIGKILL');
+      expect(opts).toEqual({ processGroup: true });
+      // The target must still be a real ChildProcess — killProcessTree's
+      // `taskkill /T /F` branch is gated on `instanceof ChildProcess` — and must
+      // carry Node's own kill, not the override, so its POSIX fall-through
+      // can't recurse back into it.
+      expect(target).toBeInstanceOf(ChildProcess);
+      expect(target.pid).toBe(handle.pid);
+      expect(target.kill).not.toBe(handle.kill);
+      // killProcessTree is stubbed, so nothing actually died — reap the sleeper.
+      target.kill('SIGKILL');
+      await closed;
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it.runIf(IS_POSIX)('leaves the POSIX path on its own pid/group signalling (no tree-kill)', async () => {
+    killProcessTree.mockClear();
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(handle.kill('SIGKILL')).toBe(true);
+    expect(killProcessTree).not.toHaveBeenCalled();
+    await onClose(handle);
   });
 
   describe('reapDetached', () => {

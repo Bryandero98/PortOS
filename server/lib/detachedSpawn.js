@@ -48,6 +48,7 @@ import { EventEmitter } from 'events';
 import { constants as osConstants } from 'os';
 import { join } from 'path';
 import { open, readFile, writeFile, rm, stat, readdir } from 'fs/promises';
+import { killProcessTree } from './bufferedSpawn.js';
 import { ensureDir, sleep } from './fileUtils.js';
 import { withSpawnCwdEnv } from './spawnCwd.js';
 
@@ -230,6 +231,7 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
  * @param {boolean} [opts.killProcessGroup] - signal `-pid` on cancel/reap so a
  *   group-leader wrapper and every runtime child terminate together. The job is
  *   responsible for establishing its own process group before spawning children.
+ *   POSIX-only — the win32 fallback's `kill` always tree-kills, group or not.
  * @returns {Promise<object>} ChildProcess-like handle (resolves once the PID is known)
  */
 export async function spawnDetached(bin, args = [], {
@@ -244,7 +246,27 @@ export async function spawnDetached(bin, args = [], {
   // exitCode / signalCode), so callers are unaffected. Surviving a pm2 restart
   // is a POSIX-only guarantee; Windows keeps its prior spawn semantics.
   if (process.platform === 'win32') {
-    return spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    // A bare `child.kill()` terminates ONLY the runner. Windows has no process
+    // group for the POSIX `-pid` trick `killProcessGroup` relies on, so whatever
+    // the runner spawned (the ffmpeg mux a CUDA video runtime shells out to, a
+    // model download) survives as an orphan still holding the output file and
+    // GPU memory. Delegate to the shared tree-killer instead — `taskkill /T /F`
+    // on Windows, the POSIX group signal elsewhere (#4171). Note `taskkill /T /F`
+    // ignores the requested signal and force-kills, so a SIGTERM cancel is not
+    // graceful here; that is killProcessTree's documented Windows contract.
+    const nativeKill = child.kill.bind(child);
+    // What we hand killProcessTree: inherits from `child` (so `pid` reads
+    // through and `instanceof ChildProcess` still holds — the taskkill branch is
+    // gated on it) but exposes Node's own kill, so killProcessTree's POSIX
+    // fall-through can never re-enter the override below.
+    const treeKillTarget = Object.create(child, { kill: { value: nativeKill } });
+    child.kill = (signal = 'SIGTERM') => {
+      child.killed = true;
+      killProcessTree(treeKillTarget, signal, { processGroup: true });
+      return true;
+    };
+    return child;
   }
 
   const handle = new EventEmitter();
