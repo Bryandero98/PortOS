@@ -523,6 +523,10 @@ export default function ChiefOfStaff() {
   // keep classifying `skipped > 0` as `critical`, or a reorder there would
   // silently drop the red signal while the tile still reads "N skipped".
   const learningSkipped = learningSummary?.skipped ?? 0;
+  // `!= null`, not truthiness — a real 0% success rate is the highest-signal
+  // state and must not render as the empty state. `null` is the sentinel each
+  // tile falls back from to its own (differently sized) empty-state string.
+  const learningRate = learningSummary?.overallSuccessRate != null ? `${learningSummary.overallSuccessRate}%` : null;
   const learningStatProps = {
     label: 'Learning',
     tone: learningSkipped > 0 ? 'critical' : (learningSummary?.status || 'default'),
@@ -563,7 +567,7 @@ export default function ChiefOfStaff() {
       />
       <StatCard
         {...learningStatProps}
-        value={learningSummary?.overallSuccessRate != null ? `${learningSummary.overallSuccessRate}%` : 'No data'}
+        value={learningRate ?? 'No data'}
         icon={<Brain className="w-4 h-4" />}
         compact
       />
@@ -886,7 +890,7 @@ export default function ChiefOfStaff() {
           {/* Learning Health - clickable to go to Learning tab */}
           <StatCard
             {...learningStatProps}
-            value={learningSummary?.overallSuccessRate != null ? `${learningSummary.overallSuccessRate}%` : '—'}
+            value={learningRate ?? '—'}
             icon={<Brain className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />}
             mini
           />
