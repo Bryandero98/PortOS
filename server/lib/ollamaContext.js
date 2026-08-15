@@ -57,6 +57,43 @@ export function resolveOllamaContextLength(provider, env = process.env) {
   return positiveInt(provider?.numCtx) ?? positiveInt(env?.[OLLAMA_CONTEXT_ENV_VAR])
 }
 
+/** `host:port` for comparing two Ollama base URLs, or null when unparseable. */
+function hostOf(baseUrl) {
+  const raw = String(baseUrl || '').trim()
+  if (!raw) return null
+  // A bare `host:port` (the OLLAMA_HOST convention) is not a valid URL, so give
+  // it a scheme before parsing rather than string-comparing the two spellings.
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`
+  // `URL.parse` returns null on invalid input instead of throwing (Node ≥22.1;
+  // the repo's engine floor is 22.12), so no try/catch is needed here.
+  const url = URL.parse(withScheme)
+  return url ? url.host.toLowerCase() : null
+}
+
+/**
+ * Whether `providerBaseUrl` names the same Ollama daemon as `managedBaseUrl`.
+ *
+ * `isOllamaBackedProvider` matches any provider whose tokens come from Ollama,
+ * including one pointed at a *remote* daemon — but PortOS can only start, stop,
+ * or hand a context window to the local one it manages. Reloading the local
+ * daemon for a provider served by another host would disrupt unrelated local
+ * work AND leave the provider's real daemon untouched, so the daemon-management
+ * path gates on this.
+ *
+ * Compares host + port only: scheme and `/v1` suffix vary between how a provider
+ * spells the endpoint and how `ollamaManager` normalizes it. Unparseable on
+ * either side → false, so an ambiguous value never authorizes a restart.
+ *
+ * @param {string|null|undefined} providerBaseUrl
+ * @param {string|null|undefined} managedBaseUrl
+ * @returns {boolean}
+ */
+export function isSameOllamaDaemon(providerBaseUrl, managedBaseUrl) {
+  const a = hostOf(providerBaseUrl)
+  const b = hostOf(managedBaseUrl)
+  return !!a && !!b && a === b
+}
+
 /**
  * Child env for `ollama serve`, carrying the resolved window. Returns `env`
  * untouched when `contextLength` is null so a PortOS-started daemon keeps

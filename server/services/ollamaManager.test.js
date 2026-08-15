@@ -561,7 +561,7 @@ describe('ollamaManager.startPersistentService bootstrap recovery (homebrew)', (
         return cb(null, { stdout: '', stderr: '' })
       }
       if (cmd === 'brew' && a === 'services stop ollama') return cb(null, { stdout: '', stderr: '' })
-      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started ilyaeivy ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist\n', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist\n', stderr: '' })
       return cb(new Error(`unexpected exec: ${cmd} ${a}`))
     }
 
@@ -588,7 +588,7 @@ describe('ollamaManager.startPersistentService bootstrap recovery (homebrew)', (
         return cb(e)
       }
       if (cmd === 'brew' && a === 'services stop ollama') { stopCalled = true; return cb(null, { stdout: '', stderr: '' }) }
-      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started ilyaeivy ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist\n', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist\n', stderr: '' })
       return cb(new Error(`unexpected exec: ${cmd} ${a}`))
     }
 
@@ -671,11 +671,6 @@ describe('ollamaManager context window', () => {
     expect(await ensureContextWindow(65536)).toMatchObject({ applied: false, reason: 'already-large-enough' })
   })
 
-  it('leaves an unmanaged daemon with nothing resident alone — an unknown window is not evidence', async () => {
-    stubPs([])
-    const { ensureContextWindow } = await loadManager()
-    expect(await ensureContextWindow(65536)).toMatchObject({ applied: false, reason: 'unknown-window' })
-  })
 })
 
 describe('ollamaManager context window — launch-at-login daemons', () => {
@@ -701,7 +696,7 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
       const a = (args || []).join(' ')
       calls.push(`${cmd} ${a}`)
       if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
-      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started antic plist\n', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
       if (cmd === 'launchctl' && a.startsWith('setenv OLLAMA_CONTEXT_LENGTH')) return cb(null, { stdout: '', stderr: '' })
       if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
       return cb(new Error(`unexpected exec: ${cmd} ${a}`))
@@ -716,6 +711,31 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
     expect(calls.some((c) => c.includes('services stop'))).toBe(false)
   })
 
+  // An idle daemon (nothing resident) is the NORMAL state between runs. Skipping
+  // it would make `numCtx` a no-op exactly when it matters: the window Ollama
+  // picks when the harness loads its model is the VRAM-based default the setting
+  // exists to override.
+  it('applies the window to an idle daemon rather than waiting for a model to be resident', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubPs([])
+    const calls = []
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { ensureContextWindow } = await loadManager()
+    const result = await ensureContextWindow(131072)
+
+    expect(result).toMatchObject({ applied: true, reason: 'service-restarted' })
+    expect(calls).toContain('launchctl setenv OLLAMA_CONTEXT_LENGTH 131072')
+  })
+
   it('does not reload twice for the same window once it has been handed over', async () => {
     restorePlatform = pinPlatform('darwin')
     stubPs([{ name: 'a', context_length: 32768 }])
@@ -723,7 +743,7 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
     execMock.impl = (cmd, args, opts, cb) => {
       const a = (args || []).join(' ')
       if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
-      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started antic plist\n', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
       if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
       if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
       return cb(new Error(`unexpected exec: ${cmd} ${a}`))

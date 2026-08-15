@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('./ollamaManager.js', () => ({
   ensureContextWindow: vi.fn(),
-  getRuntimeContextLength: vi.fn()
+  getRuntimeContextLength: vi.fn(),
+  getBaseUrl: vi.fn(() => 'http://localhost:11434')
 }))
 
 import { ensureContextWindow, getRuntimeContextLength } from './ollamaManager.js'
@@ -31,6 +32,16 @@ describe('ensureOllamaAgentContext', () => {
 
   it('skips a null provider', async () => {
     expect(await ensureOllamaAgentContext(null, { env: {} })).toEqual({ skipped: true })
+  })
+
+  // ollamaManager only ever manages the LOCAL daemon, so reloading it for a
+  // provider served by another host would disrupt unrelated local work and still
+  // leave that provider's real daemon at its old window.
+  it('skips a provider pointed at a remote Ollama host', async () => {
+    const remote = { ...claudeOllamaTui, numCtx: 131072, envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' } }
+    expect(await ensureOllamaAgentContext(remote, { env: {} })).toEqual({ skipped: true, reason: 'remote-daemon' })
+    expect(ensureContextWindow).not.toHaveBeenCalled()
+    expect(getRuntimeContextLength).not.toHaveBeenCalled()
   })
 
   it('holds the daemon at the provider window', async () => {

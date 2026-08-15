@@ -16,12 +16,17 @@
  */
 
 import { isOllamaBackedProvider } from './providers.js'
+// Straight from `internal/` on purpose: it is deliberately NOT re-exported from
+// providers.js, and re-deriving the normalization here is exactly the drift that
+// exclusion exists to prevent.
+import { ollamaBaseFromProvider } from '../lib/aiToolkit/internal/ollamaBacked.js'
 import {
   OLLAMA_AGENT_MIN_CONTEXT,
   describeOllamaContextTooSmall,
+  isSameOllamaDaemon,
   resolveOllamaContextLength
 } from '../lib/ollamaContext.js'
-import { ensureContextWindow, getRuntimeContextLength } from './ollamaManager.js'
+import { ensureContextWindow, getBaseUrl, getRuntimeContextLength } from './ollamaManager.js'
 
 /**
  * Prepare the Ollama daemon for an agent harness run.
@@ -40,6 +45,13 @@ import { ensureContextWindow, getRuntimeContextLength } from './ollamaManager.js
  */
 export async function ensureOllamaAgentContext(provider, { env = process.env } = {}) {
   if (!provider || !isOllamaBackedProvider(provider)) return { skipped: true }
+  // A provider can point at a REMOTE Ollama host. `ollamaManager` only ever
+  // starts, stops, and inspects the local daemon, so acting on one of those
+  // would reload an unrelated local daemon and still leave the provider's real
+  // daemon at its old window.
+  if (!isSameOllamaDaemon(ollamaBaseFromProvider(provider), getBaseUrl())) {
+    return { skipped: true, reason: 'remote-daemon' }
+  }
 
   const contextLength = resolveOllamaContextLength(provider, env)
   const providerName = provider.name || provider.id || null

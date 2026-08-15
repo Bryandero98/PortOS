@@ -448,11 +448,11 @@ async function getRuntimeContextLength() {
  * Hold the Ollama daemon at (at least) `contextLength` tokens, reloading it with
  * that window when it is running at a smaller one.
  *
- * Reloading a daemon is disruptive, so it happens only on positive evidence:
- * `/api/ps` reports a resident model below the target and this daemon has not
- * already been handed that window. An unmanaged daemon with nothing resident is
- * left alone — see {@link getRuntimeContextLength}, an unknown window is not a
- * small one — and the pre-spawn warning covers that case instead.
+ * Reloading a daemon is disruptive, so it happens at most once per daemon per
+ * window (the `appliedContextLength` latch) and never when a resident model is
+ * already at or above the target. It DOES happen when nothing is resident: an
+ * idle daemon has not committed to a window yet, and the one it will pick is
+ * the VRAM-based default `numCtx` exists to override.
  *
  * @param {number|null} contextLength
  * @returns {Promise<{ applied: boolean, reason: string, contextLength: number|null, runtimeContextLength?: number|null, error?: string }>}
@@ -471,13 +471,18 @@ async function ensureContextWindow(contextLength) {
     return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
   }
 
+  // `runtime == null` means nothing is resident, which is the NORMAL idle state
+  // between runs — not a reason to skip. The window Ollama will pick when the
+  // harness loads its model is its VRAM-based default, i.e. exactly the one the
+  // user set `numCtx` to override, so leaving it alone here would make the
+  // setting a no-op in the common case. Apply it; the `appliedContextLength`
+  // latch keeps this to one reload per daemon.
   const runtime = await getRuntimeContextLength()
-  if (runtime == null) return { applied: false, reason: 'unknown-window', contextLength: target, runtimeContextLength: null }
-  if (runtime >= target) {
+  if (runtime != null && runtime >= target) {
     return { applied: false, reason: 'already-large-enough', contextLength: target, runtimeContextLength: runtime }
   }
 
-  console.log(`🪟 Reloading Ollama at a ${target}-token context window (was ${runtime})`)
+  console.log(`🪟 Reloading Ollama at a ${target}-token context window (was ${runtime ?? 'unknown'})`)
 
   // A daemon the user registered to launch at login must keep that registration:
   // `stopServer` would route through `brew services stop` / `systemctl disable`,

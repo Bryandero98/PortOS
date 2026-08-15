@@ -4,6 +4,7 @@ import {
   OLLAMA_CONTEXT_ENV_VAR,
   describeOllamaContextOverflow,
   describeOllamaContextTooSmall,
+  isSameOllamaDaemon,
   parseOllamaContextOverflow,
   resolveOllamaContextLength,
   withOllamaContextEnv
@@ -104,5 +105,24 @@ describe('overflow descriptions', () => {
     expect(text).toContain('Claude Ollama TUI')
     expect(text).toContain('32K')
     expect(text).toContain(`${OLLAMA_AGENT_MIN_CONTEXT / 1024}K`)
+  })
+})
+
+describe('isSameOllamaDaemon', () => {
+  it('matches across scheme and /v1 spelling differences', () => {
+    expect(isSameOllamaDaemon('http://localhost:11434/v1', 'http://localhost:11434')).toBe(true)
+    expect(isSameOllamaDaemon('localhost:11434', 'http://localhost:11434')).toBe(true)
+    expect(isSameOllamaDaemon('https://LOCALHOST:11434/', 'http://localhost:11434')).toBe(true)
+  })
+
+  it('rejects a different host or port — PortOS only manages the daemon it points at', () => {
+    expect(isSameOllamaDaemon('http://192.0.2.10:11434', 'http://localhost:11434')).toBe(false)
+    expect(isSameOllamaDaemon('http://localhost:11435', 'http://localhost:11434')).toBe(false)
+  })
+
+  it('is false when either side is missing or unparseable, so nothing ambiguous authorizes a restart', () => {
+    expect(isSameOllamaDaemon('', 'http://localhost:11434')).toBe(false)
+    expect(isSameOllamaDaemon('http://localhost:11434', null)).toBe(false)
+    expect(isSameOllamaDaemon('http://', 'http://localhost:11434')).toBe(false)
   })
 })
