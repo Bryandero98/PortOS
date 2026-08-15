@@ -153,11 +153,13 @@ describe('Drawer', () => {
       const dialog = screen.getByRole('dialog');
       const backdrop = document.querySelector('[aria-hidden="true"]');
 
-      expect(document.body.contains(dialog)).toBe(true);
       expect(glassCard.contains(dialog)).toBe(false);
       // The backdrop is the trapped element the bug is named for — it must
       // escape too, or it renders as a card-sized scrim instead of covering
-      // the viewport.
+      // the viewport. Assert it EXISTS first: `Node.contains(null)` is `false`,
+      // so the escape assertion below would pass vacuously if the backdrop were
+      // dropped altogether.
+      expect(backdrop).not.toBeNull();
       expect(glassCard.contains(backdrop)).toBe(false);
       expect(container.querySelector('[role="dialog"]')).toBeNull();
       expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
