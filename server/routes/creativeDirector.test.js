@@ -4,6 +4,7 @@ import { request } from '../lib/testHelper.js';
 
 vi.mock('../services/creativeDirector/local.js', () => ({
   listProjects: vi.fn(async () => [{ id: 'cd-1', name: 'A' }]),
+  getProjectsByIds: vi.fn(async () => []),
   getProject: vi.fn(),
   createProject: vi.fn(),
   updateProject: vi.fn(async (id, patch) => ({ id, ...patch })),
@@ -58,6 +59,7 @@ import * as autoCast from '../services/creativeDirector/autoCast.js';
 import * as hook from '../services/creativeDirector/completionHook.js';
 import * as firstPass from '../services/creativeDirector/firstPassGen.js';
 import * as firstPassMusicBed from '../services/creativeDirector/firstPassMusicGen.js';
+import { CREATIVE_DIRECTOR_IDS_BATCH_MAX } from '../lib/creativeDirectorValidation.js';
 import creativeDirectorRoutes from './creativeDirector.js';
 
 describe('creativeDirector routes', () => {
@@ -88,6 +90,58 @@ describe('creativeDirector routes', () => {
       expect(r.body.total).toBe(5);
       expect(r.body.limit).toBe(2);
       expect(r.body.offset).toBe(1);
+    });
+
+    // #4148 — batch-by-id so a caller referencing a handful of projects doesn't
+    // pay for every project on the install.
+    it('with ?ids= resolves only the named projects and never lists them all', async () => {
+      cdService.getProjectsByIds.mockResolvedValueOnce([{ id: 'cd-2', name: 'B' }, { id: 'cd-9', name: 'I' }]);
+      const r = await request(app).get('/api/creative-director?ids=cd-2,cd-9');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual([{ id: 'cd-2', name: 'B' }, { id: 'cd-9', name: 'I' }]);
+      expect(cdService.getProjectsByIds).toHaveBeenCalledWith(['cd-2', 'cd-9']);
+      expect(cdService.listProjects).not.toHaveBeenCalled();
+    });
+
+    it('trims and drops blank ids, and falls back to the full list when all are blank', async () => {
+      cdService.getProjectsByIds.mockResolvedValueOnce([{ id: 'cd-2', name: 'B' }]);
+      await request(app).get('/api/creative-director?ids=%20cd-2%20,,');
+      expect(cdService.getProjectsByIds).toHaveBeenCalledWith(['cd-2']);
+
+      const r = await request(app).get('/api/creative-director?ids=%20,,');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual([{ id: 'cd-1', name: 'A' }]);
+      expect(cdService.listProjects).toHaveBeenCalled();
+    });
+
+    // Express hands `?ids=a&ids=b` over as an ARRAY — it must normalize through
+    // the same trim / blank-drop / cap path as the CSV form.
+    it('normalizes the repeated ?ids= array form identically to the CSV form', async () => {
+      cdService.getProjectsByIds.mockResolvedValueOnce([{ id: 'cd-2', name: 'B' }]);
+      await request(app).get('/api/creative-director?ids=%20cd-2%20&ids=&ids=cd-9');
+      expect(cdService.getProjectsByIds).toHaveBeenCalledWith(['cd-2', 'cd-9']);
+
+      const many = Array.from({ length: CREATIVE_DIRECTOR_IDS_BATCH_MAX + 1 }, (_, i) => `ids=cd-${i}`).join('&');
+      const over = await request(app).get(`/api/creative-director?${many}`);
+      expect(over.status).toBe(400);
+    });
+
+    // A project that arrived from a peer may carry any id the per-record sync
+    // contract accepts (recordId, max 120) — the batch must still resolve it.
+    it('accepts a peer-length (120-char) project id', async () => {
+      const longId = `cd-${'a'.repeat(117)}`;
+      cdService.getProjectsByIds.mockResolvedValueOnce([{ id: longId }]);
+      const r = await request(app).get(`/api/creative-director?ids=${longId}`);
+      expect(r.status).toBe(200);
+      expect(cdService.getProjectsByIds).toHaveBeenCalledWith([longId]);
+    });
+
+    it('rejects an over-cap ids batch instead of silently truncating it', async () => {
+      const ids = Array.from({ length: CREATIVE_DIRECTOR_IDS_BATCH_MAX + 1 }, (_, i) => `cd-${i}`).join(',');
+      const r = await request(app).get(`/api/creative-director?ids=${ids}`);
+      expect(r.status).toBe(400);
+      expect(cdService.getProjectsByIds).not.toHaveBeenCalled();
+      expect(cdService.listProjects).not.toHaveBeenCalled();
     });
   });
 

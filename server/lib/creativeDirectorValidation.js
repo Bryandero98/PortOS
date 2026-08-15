@@ -3,6 +3,7 @@ import { ASPECT_RATIOS, QUALITIES, PROJECT_STATUSES, SCENE_STATUSES, PLAN_STEP_S
 import { ARC_SHAPE_IDS, ARC_ROLES } from './storyArc.js';
 import { BIBLE_LIMITS } from './storyBible.js';
 import { emptyToUndefined } from './zodCompat.js';
+import { csvIdsParam } from './sharedSchemas.js';
 
 // =============================================================================
 // CREATIVE DIRECTOR + CREATE-SUITE IMPORTER SCHEMAS
@@ -212,6 +213,26 @@ export const creativeDirectorProjectUpdateSchema = z.object({
   // a blank stage inherits it. The whole object replaces the stored one.
   modelOverrides: creativeDirectorModelOverridesSchema.optional(),
 }).strict();
+
+// Max ids one `GET /creative-director?ids=` batch may resolve (#4148). Sized at
+// 2x the Creative Commission run cap (MAX_PERSISTED_RUNS = 50) — the batch's
+// heaviest caller resolves one project per persisted run — so the real consumer
+// never has to chunk while the request still stays bounded.
+export const CREATIVE_DIRECTOR_IDS_BATCH_MAX = 100;
+
+// Query params for `GET /creative-director` (#4148). `ids` is the shared
+// batch-by-id filter (see csvIdsParam) — an over-cap batch 400s rather than
+// truncating, so the client can't mistake a sliced result for missing projects.
+// An empty/all-blank value reads as absent and the route falls through to the
+// full list. Unknown keys (limit/offset) strip out of the parsed result — the
+// route reads those straight off `req.query` for paginateArray.
+export const creativeDirectorProjectQuerySchema = z.object({
+  // 120 matches the per-record peer-sync `recordId` bound (validation.js), not
+  // the helper's 64-char default: a locally-minted id is `cd-<uuid>` (39), but a
+  // project that arrived from a peer may carry anything that contract accepts,
+  // and such a project must still be resolvable through this batch.
+  ids: csvIdsParam({ max: CREATIVE_DIRECTOR_IDS_BATCH_MAX, maxIdLength: 120 }),
+});
 
 // One scene in the treatment, written by the agent on the treatment task.
 export const creativeDirectorSceneSchema = z.object({
