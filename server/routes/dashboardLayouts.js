@@ -17,17 +17,25 @@ const router = Router();
 // at the API boundary agree by construction.
 const idSchema = z.string().trim().min(1).max(svc.ID_MAX_LENGTH).regex(svc.ID_PATTERN, 'id must be lowercase kebab');
 
-// Grid items carry per-widget x/y/w/h so the dashboard can render a
-// free-form layout. Bounds mirror the service-layer sanitizeGridItem so
-// reads and writes agree by construction. The route enforces structural
-// validity here; cross-field invariants (id ∈ widgets, dedup, x+w ≤ cols)
-// are enforced by the .refine() on layoutSchema below and the service.
+// Grid items carry per-widget x/w columns plus an `order` (the reading and
+// packing sequence — the dashboard's only vertical coordinate). Bounds mirror
+// the service-layer sanitizeGridItem so reads and writes agree by
+// construction. The route enforces structural validity here; cross-field
+// invariants (id ∈ widgets, dedup, x+w ≤ cols) are enforced by the .refine()
+// on layoutSchema below and the service.
 const gridItemSchema = z.object({
   id: z.string().trim().min(1).max(svc.WIDGET_ID_MAX_LENGTH),
   x: z.number().int().min(0).max(svc.GRID_COLS - 1),
-  y: z.number().int().min(0).max(svc.GRID_ROW_MAX),
   w: z.number().int().min(1).max(svc.GRID_COLS),
-  h: z.number().int().min(1).max(svc.GRID_ITEM_H_MAX),
+  // Optional so a client that only knows the legacy `y` shape can still save;
+  // the service resolves whichever is present into a dense sequence.
+  order: z.number().int().min(0).max(svc.GRID_ORDER_MAX).optional(),
+  // Legacy row position, accepted from pre-#4133 clients and converted on
+  // read. Never written back.
+  y: z.number().int().min(0).max(svc.GRID_LEGACY_Y_MAX).optional(),
+  // First-paint / older-client fallback height in rows. Optional because the
+  // rendered height comes from measuring the widget, not from this.
+  h: z.number().int().min(1).max(svc.GRID_ITEM_H_MAX).optional(),
   // Set when the user pinned this cell's height by dragging it. Absent means
   // the dashboard sizes the cell to its content (and treats `h` as the
   // first-paint fallback) — see DashboardGrid.jsx.

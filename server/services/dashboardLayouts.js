@@ -28,12 +28,12 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 // to an unknown id, the client skips it gracefully.
 // Built-in layouts ship with a `grid` so they look right out-of-the-box
 // instead of falling back to the client's row-flow synthesis. `x`/`w` are
-// real: they place the widget in the 12 columns. `y` decides reading order —
-// and therefore the order the client packs in — while `h` is only the
+// real: they place the widget in the 12 columns. `order` decides reading
+// order — and therefore the order the client packs in — while `h` is only the
 // first-paint height, because the renderer measures each widget and floats it
-// up (see client/src/components/dashboard/DashboardGrid.jsx). So order these
-// grids by what should be seen first; do NOT budget above-the-fold space by
-// counting 80px rows, the arithmetic won't hold.
+// up (see client/src/components/dashboard/DashboardGrid.jsx). There is no row
+// coordinate: so order these grids by what should be seen first, and do NOT
+// budget above-the-fold space by counting 80px rows, the arithmetic won't hold.
 
 // Intent-named layouts shipped post-029. Exported so the migration that
 // seeds them into existing installs (scripts/migrations/030-…) imports
@@ -45,10 +45,10 @@ export const INTENT_LAYOUTS = [
     name: 'Deep Work',
     widgets: ['quick-task', 'upcoming-tasks', 'cos', 'decision-log'],
     grid: [
-      { id: 'quick-task',     x: 0, y: 0,  w: 6, h: 5 },
-      { id: 'upcoming-tasks', x: 6, y: 0,  w: 6, h: 10 },
-      { id: 'cos',            x: 0, y: 5,  w: 6, h: 3 },
-      { id: 'decision-log',   x: 0, y: 8,  w: 6, h: 3 },
+      { id: 'quick-task',     x: 0, w: 6, order: 0, h: 5 },
+      { id: 'upcoming-tasks', x: 6, w: 6, order: 1, h: 10 },
+      { id: 'cos',            x: 0, w: 6, order: 2, h: 3 },
+      { id: 'decision-log',   x: 0, w: 6, order: 3, h: 3 },
     ],
   },
   {
@@ -56,14 +56,14 @@ export const INTENT_LAYOUTS = [
     name: 'Health',
     widgets: ['death-clock', 'goal-progress', 'activity-streak', 'daily-post', 'quick-brain', 'hourly-activity', 'meatspace-streak'],
     grid: [
-      { id: 'death-clock',      x: 0, y: 0, w: 4, h: 3 },
-      { id: 'goal-progress',    x: 4, y: 0, w: 5, h: 5 },
-      { id: 'activity-streak',  x: 9, y: 0, w: 3, h: 3 },
-      { id: 'daily-post',       x: 9, y: 3, w: 3, h: 2 },
-      { id: 'quick-brain',      x: 0, y: 3, w: 4, h: 2 },
-      { id: 'hourly-activity',  x: 0, y: 5, w: 12, h: 4 },
+      { id: 'death-clock',      x: 0, w: 4,  order: 0, h: 3 },
+      { id: 'goal-progress',    x: 4, w: 5,  order: 1, h: 5 },
+      { id: 'activity-streak',  x: 9, w: 3,  order: 2, h: 3 },
+      { id: 'quick-brain',      x: 0, w: 4,  order: 3, h: 2 },
+      { id: 'daily-post',       x: 9, w: 3,  order: 4, h: 2 },
+      { id: 'hourly-activity',  x: 0, w: 12, order: 5, h: 4 },
       // Gated on any health log existing — hidden on installs with no logs.
-      { id: 'meatspace-streak', x: 0, y: 9, w: 4, h: 4 },
+      { id: 'meatspace-streak', x: 0, w: 4,  order: 6, h: 4 },
     ],
   },
   {
@@ -71,12 +71,12 @@ export const INTENT_LAYOUTS = [
     name: 'Agent Watch',
     widgets: ['cos', 'proactive-alerts', 'review-hub', 'while-away', 'system-health', 'decision-log'],
     grid: [
-      { id: 'cos',              x: 0, y: 0, w: 6, h: 5 },
-      { id: 'proactive-alerts', x: 6, y: 0, w: 3, h: 3 },
-      { id: 'review-hub',       x: 9, y: 0, w: 3, h: 3 },
-      { id: 'while-away',       x: 6, y: 3, w: 6, h: 5 },
-      { id: 'system-health',    x: 0, y: 5, w: 6, h: 5 },
-      { id: 'decision-log',     x: 6, y: 8, w: 6, h: 3 },
+      { id: 'cos',              x: 0, w: 6, order: 0, h: 5 },
+      { id: 'proactive-alerts', x: 6, w: 3, order: 1, h: 3 },
+      { id: 'review-hub',       x: 9, w: 3, order: 2, h: 3 },
+      { id: 'while-away',       x: 6, w: 6, order: 3, h: 5 },
+      { id: 'system-health',    x: 0, w: 6, order: 4, h: 5 },
+      { id: 'decision-log',     x: 6, w: 6, order: 5, h: 3 },
     ],
   },
 ];
@@ -98,39 +98,37 @@ const DEFAULT_LAYOUTS = [
     // forcing a "More options" click. Quick-brain stays small and
     // upcoming-tasks aligns with the taller capture cards.
     grid: [
-      // Row 0–4: capture row + tasks
-      { id: 'quick-brain',      x: 0,  y: 0,  w: 3, h: 2 },
-      { id: 'quick-image',      x: 0,  y: 2,  w: 3, h: 3 },
-      { id: 'quick-task',       x: 3,  y: 0,  w: 5, h: 5 },
-      { id: 'upcoming-tasks',   x: 8,  y: 0,  w: 4, h: 5 },
-      // Row 5–9: primary monitoring + alerts
-      { id: 'system-health',    x: 0,  y: 5,  w: 5, h: 5 },
-      { id: 'proactive-alerts', x: 5,  y: 5,  w: 3, h: 3 },
-      { id: 'death-clock',      x: 8,  y: 5,  w: 4, h: 2 },
-      { id: 'review-hub',       x: 5,  y: 8,  w: 3, h: 2 },
-      { id: 'activity-streak',  x: 8,  y: 7,  w: 4, h: 3 },
-      // Row 10–13: secondary widgets
-      { id: 'backup',           x: 0,  y: 10, w: 3, h: 4 },
-      { id: 'quick-stats',      x: 3,  y: 10, w: 3, h: 3 },
-      { id: 'goal-progress',    x: 6,  y: 10, w: 3, h: 4 },
-      { id: 'network-exposure', x: 9,  y: 10, w: 3, h: 5 },
-      // Row 14–17: lower-priority + cos. while-away fills the x9–11 column
-      // in rows 15–17 — below network-exposure (ends at row 14) and above
-      // hourly-activity (starts at row 18), so it overlaps neither.
-      { id: 'decision-log',     x: 0,  y: 14, w: 4, h: 2 },
-      { id: 'cos',              x: 4,  y: 14, w: 5, h: 4 },
-      { id: 'while-away',       x: 9,  y: 15, w: 3, h: 3 },
-      // Row 18+: full-width visualizations + apps
-      { id: 'hourly-activity',  x: 0,  y: 18, w: 12, h: 3 },
-      { id: 'apps',             x: 0,  y: 21, w: 12, h: 8 },
-      // Quick-idea (catalog) is positioned below apps so the seeded layout
-      // doesn't collide with the tightly-packed above-the-fold rows.
+      // Capture band + tasks
+      { id: 'quick-brain',      x: 0, w: 3,  order: 0,  h: 2 },
+      { id: 'quick-task',       x: 3, w: 5,  order: 1,  h: 5 },
+      { id: 'upcoming-tasks',   x: 8, w: 4,  order: 2,  h: 5 },
+      { id: 'quick-image',      x: 0, w: 3,  order: 3,  h: 3 },
+      // Primary monitoring + alerts
+      { id: 'system-health',    x: 0, w: 5,  order: 4,  h: 5 },
+      { id: 'proactive-alerts', x: 5, w: 3,  order: 5,  h: 3 },
+      { id: 'death-clock',      x: 8, w: 4,  order: 6,  h: 2 },
+      { id: 'activity-streak',  x: 8, w: 4,  order: 7,  h: 3 },
+      { id: 'review-hub',       x: 5, w: 3,  order: 8,  h: 2 },
+      // Secondary widgets
+      { id: 'backup',           x: 0, w: 3,  order: 9,  h: 4 },
+      { id: 'quick-stats',      x: 3, w: 3,  order: 10, h: 3 },
+      { id: 'goal-progress',    x: 6, w: 3,  order: 11, h: 4 },
+      { id: 'network-exposure', x: 9, w: 3,  order: 12, h: 5 },
+      // Lower-priority + cos
+      { id: 'decision-log',     x: 0, w: 4,  order: 13, h: 2 },
+      { id: 'cos',              x: 4, w: 5,  order: 14, h: 4 },
+      { id: 'while-away',       x: 9, w: 3,  order: 15, h: 3 },
+      // Full-width visualizations + apps
+      { id: 'hourly-activity',  x: 0, w: 12, order: 16, h: 3 },
+      { id: 'apps',             x: 0, w: 12, order: 17, h: 8 },
+      // Quick-idea (catalog) is sequenced below apps so the seeded layout
+      // doesn't crowd the tightly-packed above-the-fold band.
       // Reorderable via the Arrange button on the dashboard.
-      { id: 'quick-idea',       x: 0,  y: 29, w: 4,  h: 4 },
+      { id: 'quick-idea',       x: 0, w: 4,  order: 18, h: 4 },
       // Gated on the Tribe having people — hidden on installs that don't use it.
-      { id: 'tribe-care',       x: 4,  y: 29, w: 4,  h: 4 },
+      { id: 'tribe-care',       x: 4, w: 4,  order: 19, h: 4 },
       // Gated on having subscribed feeds — hidden on installs with none.
-      { id: 'feeds',            x: 8,  y: 29, w: 3,  h: 4 },
+      { id: 'feeds',            x: 8, w: 3,  order: 20, h: 4 },
     ],
   },
   {
@@ -143,9 +141,9 @@ const DEFAULT_LAYOUTS = [
     // upcoming-tasks tall on the right (the focus list); cos below
     // quick-task for streak/progress context.
     grid: [
-      { id: 'quick-task',     x: 0, y: 0, w: 6, h: 5 },
-      { id: 'upcoming-tasks', x: 6, y: 0, w: 6, h: 10 },
-      { id: 'cos',            x: 0, y: 5, w: 6, h: 5 },
+      { id: 'quick-task',     x: 0, w: 6, order: 0, h: 5 },
+      { id: 'upcoming-tasks', x: 6, w: 6, order: 1, h: 10 },
+      { id: 'cos',            x: 0, w: 6, order: 2, h: 5 },
     ],
   },
   {
@@ -159,16 +157,16 @@ const DEFAULT_LAYOUTS = [
     // review + goals fill the remaining quadrants. The Daily Driver (#2666) — the
     // first-visit-of-day sequence (POST → goal next-actions) — sits full-width in
     // a fresh row BELOW the scan quadrants: it self-hides once handled, and a
-    // gated-off widget's grid slot is dropped without compacting the rows above
-    // it, so placing it last (like the gated tribe-care/feeds widgets) means its
-    // absence leaves only harmless trailing space instead of a gap at the top.
+    // gated-off widget drops out of the sequence without disturbing what came
+    // before it, so sequencing it last (like the gated tribe-care/feeds
+    // widgets) means its absence leaves only harmless trailing space.
     grid: [
-      { id: 'proactive-alerts', x: 0, y: 0, w: 4, h: 4 },
-      { id: 'upcoming-tasks',   x: 4, y: 0, w: 5, h: 8 },
-      { id: 'death-clock',      x: 9, y: 0, w: 3, h: 2 },
-      { id: 'goal-progress',    x: 9, y: 2, w: 3, h: 4 },
-      { id: 'review-hub',       x: 0, y: 4, w: 4, h: 4 },
-      { id: 'daily-driver',     x: 0, y: 8, w: 12, h: 6 },
+      { id: 'proactive-alerts', x: 0, w: 4,  order: 0, h: 4 },
+      { id: 'upcoming-tasks',   x: 4, w: 5,  order: 1, h: 8 },
+      { id: 'death-clock',      x: 9, w: 3,  order: 2, h: 2 },
+      { id: 'goal-progress',    x: 9, w: 3,  order: 3, h: 4 },
+      { id: 'review-hub',       x: 0, w: 4,  order: 4, h: 4 },
+      { id: 'daily-driver',     x: 0, w: 12, order: 5, h: 6 },
     ],
   },
   {
@@ -181,12 +179,12 @@ const DEFAULT_LAYOUTS = [
     // status, backup + quick-stats stacked on the right, apps grid fills
     // the empty cell below cos so all 5 widgets fit above the fold.
     grid: [
-      { id: 'system-health',    x: 0, y: 0,  w: 6,  h: 5 },
-      { id: 'quick-stats',      x: 6, y: 0,  w: 6,  h: 3 },
-      { id: 'cos',              x: 6, y: 3,  w: 6,  h: 4 },
-      { id: 'backup',           x: 0, y: 5,  w: 3,  h: 3 },
-      { id: 'network-exposure', x: 3, y: 5,  w: 3,  h: 5 },
-      { id: 'apps',             x: 0, y: 10, w: 12, h: 11 },
+      { id: 'system-health',    x: 0, w: 6,  order: 0, h: 5 },
+      { id: 'quick-stats',      x: 6, w: 6,  order: 1, h: 3 },
+      { id: 'cos',              x: 6, w: 6,  order: 2, h: 4 },
+      { id: 'backup',           x: 0, w: 3,  order: 3, h: 3 },
+      { id: 'network-exposure', x: 3, w: 3,  order: 4, h: 5 },
+      { id: 'apps',             x: 0, w: 12, order: 5, h: 11 },
     ],
   },
   ...INTENT_LAYOUTS.map((l) => ({ ...l, builtIn: true })),
@@ -208,15 +206,18 @@ export const NAME_MAX_LENGTH = 80;
 export const WIDGETS_MAX = 50;
 export const WIDGET_ID_MAX_LENGTH = 80;
 
-// Grid placement bounds. The dashboard is a 12-column responsive grid; rows
-// are integer steps (each ~80px tall). GRID_ROW_MAX caps total layout depth so
-// a hand-edited file can't push `y` to absurd values — the renderer sorts by
-// it, so a runaway value is a nonsense ordering rather than a nonsense
-// position, but it stays clamped for the same reason `h` does: an older
-// client still reads both as literal geometry.
+// Grid placement bounds. The dashboard is a 12-column responsive grid whose
+// vertical placement is packed from measured content heights, so `x`/`w` are
+// the only real coordinates. `order` is the reading/packing sequence, bounded
+// by the widget count because a layout can never hold more entries than that.
+// `h` stays bounded because a pinned cell renders at exactly that many rows.
 export const GRID_COLS = 12;
-export const GRID_ROW_MAX = 200;
+export const GRID_ORDER_MAX = WIDGETS_MAX - 1;
 export const GRID_ITEM_H_MAX = 50;
+// Legacy `y` (pre-#4133 layouts and stale client bundles) is still accepted on
+// read and converted to `order`; this bounds how far a hand-edited value can
+// reach before it is discarded and resequenced.
+export const GRID_LEGACY_Y_MAX = 200;
 
 // Time-window auto-activation: HH:MM strings (24h). When a layout carries an
 // activateWindow and the local clock falls inside it, the dashboard
@@ -239,10 +240,16 @@ const sanitizeActivateWindow = (w) => {
   return { start: w.start, end: w.end };
 };
 
+const intOr = (v, fallback) => (Number.isFinite(v) ? Math.floor(v) : fallback);
+
 // Clamp a single grid item to valid bounds. Returns null when the entry is
 // unusable (missing id, non-numeric coords, etc.). Numeric fields are
 // floored before clamping so JSON containing decimals can't smuggle in
 // off-grid positions that break the snap math in the client renderer.
+//
+// The sequence field (`order`) is NOT resolved here — it's a property of the
+// grid as a whole, so `sequenceGrid` below assigns it once every entry has
+// been vetted and deduped.
 //
 // `fixedH` marks a cell whose height the user pinned by dragging it. Absent
 // (the default) means the client sizes the cell to its content and floats it
@@ -254,13 +261,47 @@ const sanitizeGridItem = (g, validIds) => {
   if (typeof g.id !== 'string') return null;
   const id = g.id.trim();
   if (!id || !validIds.has(id)) return null;
-  const numOr = (v, fallback) => (Number.isFinite(v) ? Math.floor(v) : fallback);
-  const x = Math.max(0, Math.min(GRID_COLS - 1, numOr(g.x, 0)));
-  const y = Math.max(0, Math.min(GRID_ROW_MAX, numOr(g.y, 0)));
-  const wRaw = Math.max(1, Math.min(GRID_COLS, numOr(g.w, 1)));
+  const x = Math.max(0, Math.min(GRID_COLS - 1, intOr(g.x, 0)));
+  const wRaw = Math.max(1, Math.min(GRID_COLS, intOr(g.w, 1)));
   const w = Math.min(wRaw, GRID_COLS - x);
-  const h = Math.max(1, Math.min(GRID_ITEM_H_MAX, numOr(g.h, 1)));
-  return { id, x, y, w, h, ...(g.fixedH === true ? { fixedH: true } : {}) };
+  const h = Math.max(1, Math.min(GRID_ITEM_H_MAX, intOr(g.h, 1)));
+  return { id, x, w, h, fixedH: g.fixedH === true };
+};
+
+// Resolve the layout's reading sequence and emit dense `order` values.
+//
+// Version-gated by SHAPE rather than by a stored version number, so a layout
+// that predates the conversion — an install that hasn't run migration 269, a
+// restored backup, a save posted by a stale client bundle — still yields
+// usable geometry instead of collapsing into one arbitrary order:
+//   - New shape: entries carry `order`; that's the sequence.
+//   - Legacy shape: entries carry a row position `y`, and the sequence is the
+//     reading order it implied — top-to-bottom, then left-to-right.
+//   - Mixed (a widget-seeding migration appending a legacy entry to an
+//     already-converted file) treats the layout as new-shape and puts the
+//     order-less entries last in file order, which is where those migrations
+//     mean to append.
+// Output is always renumbered 0..n-1, so gaps and duplicates in the input
+// can't survive a read.
+const sequenceGrid = (entries) => {
+  const anyOrder = entries.some((e) => e.order !== null);
+  const ranked = entries.map((e, idx) => ({
+    ...e,
+    idx,
+    rank: anyOrder ? (e.order ?? Number.MAX_SAFE_INTEGER) : (e.y ?? 0),
+    // Ties in legacy layouts are side-by-side cells: column decides. Ties in
+    // the new shape are corrupt data: file order decides.
+    tie: anyOrder ? idx : e.item.x,
+  }));
+  ranked.sort((a, b) => a.rank - b.rank || a.tie - b.tie || a.idx - b.idx);
+  return ranked.map(({ item }, order) => ({
+    id: item.id,
+    x: item.x,
+    w: item.w,
+    order,
+    h: item.h,
+    ...(item.fixedH ? { fixedH: true } : {}),
+  }));
 };
 
 // Sanitize a single layout entry — protect against hand-edits that produce
@@ -292,7 +333,7 @@ const sanitizeLayout = (l) => {
   // grid entry without a matching widget is dead data and would render
   // nothing. Dedup by id so two entries can't both claim the same widget.
   const validIds = new Set(widgets);
-  const grid = [];
+  const entries = [];
   const seenGrid = new Set();
   if (Array.isArray(l.grid)) {
     for (const g of l.grid) {
@@ -300,9 +341,17 @@ const sanitizeLayout = (l) => {
       if (!item) continue;
       if (seenGrid.has(item.id)) continue;
       seenGrid.add(item.id);
-      grid.push(item);
+      entries.push({
+        item,
+        // `null` = "this entry declares no sequence", distinct from a
+        // legitimate 0 — the shape probe in sequenceGrid depends on telling
+        // those apart.
+        order: Number.isFinite(g.order) ? Math.max(0, Math.min(GRID_ORDER_MAX, Math.floor(g.order))) : null,
+        y: Number.isFinite(g.y) ? Math.max(0, Math.min(GRID_LEGACY_Y_MAX, Math.floor(g.y))) : null,
+      });
     }
   }
+  const grid = sequenceGrid(entries);
   const activateWindow = sanitizeActivateWindow(l.activateWindow);
   return { id: l.id, name, builtIn: BUILTIN_IDS.has(l.id), widgets, grid, activateWindow };
 };
@@ -315,7 +364,7 @@ export const LIMITS = Object.freeze({
   widgetsMax: WIDGETS_MAX,
   widgetIdMaxLength: WIDGET_ID_MAX_LENGTH,
   gridCols: GRID_COLS,
-  gridRowMax: GRID_ROW_MAX,
+  gridOrderMax: GRID_ORDER_MAX,
   gridItemHeightMax: GRID_ITEM_H_MAX,
 });
 

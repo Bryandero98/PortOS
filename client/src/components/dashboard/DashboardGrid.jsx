@@ -19,29 +19,33 @@ import { GRID_COLS, GRID_DEFAULT_H, WIDTH_TO_COLS, WIDGETS_BY_ID } from './widge
 import useContainerWidth from '../../hooks/useContainerWidth';
 import { dndTransformToCss } from '../../lib/dndTransform';
 
-// Free-form 12-column grid with snap-to-grid drag, resize, and content-sized
-// cells that float up into whatever whitespace is above them.
+// Free-form 12-column grid with snap-to-column drag, resize, and
+// content-sized cells that float up into whatever whitespace is above them.
 //
-// Items: [{ id, x, y, w, h, fixedH? }] where x/y/w/h are integer grid units
-//   - x: 0..11 (column origin)
-//   - y: 0..n  (row origin; ordering/authoring coordinate — see below)
-//   - w: 1..12 (column span)
-//   - h: 1..n  (row span, each row ROW_HEIGHT_PX tall)
+// Items: [{ id, x, w, order, h?, fixedH? }]
+//   - x:     0..11 (column origin, integer grid units)
+//   - w:     1..12 (column span, integer grid units)
+//   - order: 0..n  (reading/packing order — the ONLY vertical coordinate)
+//   - h:     1..n  (row span, each row ROW_HEIGHT_PX tall — fallback only)
 //   - fixedH: the user dragged a height onto this cell; honor `h` exactly
+//
+// ONE VERTICAL COORDINATE. Horizontal placement is declared (x/w); vertical
+// placement is entirely owned by `packVertically`, which lays cells out in
+// PIXELS. `order` says which cell packs first, and nothing else — there is no
+// stored row position, no rectangle-collision pass, and no y-compaction. A
+// gesture therefore never has to reconcile "where the cell says it is" with
+// "where the cell is drawn," because only one of those exists.
 //
 // HEIGHT IS MEASURED, NOT DECLARED. A widget's card is only as tall as its
 // content, so `h` is not the rendered height — it's the pre-measurement
-// fallback (first paint, and what older clients read out of a saved layout).
-// Cells the user has explicitly resized carry `fixedH: true` and keep their
-// declared height, clipping content the way the whole grid used to.
+// fallback (first paint, and what an older client reads out of a saved
+// layout). Cells the user has explicitly resized carry `fixedH: true` and keep
+// their declared height, clipping content the way the whole grid used to.
 //
-// Columns are laid out from x/w in grid units; vertical position is packed in
-// PIXELS by `packVertically` — each cell drops as high as it can go without
-// landing on an already-placed cell that shares a column. That's what
-// reclaims dead whitespace: an 80px-tall card in a 5-row slot no longer
-// reserves 400px, and the cards below it float up through the gap. Stored `y`
-// still decides reading order (and therefore packing order), so the visual
-// result always matches the order the user arranged.
+// The pack is what reclaims dead whitespace: each cell drops as high as it can
+// go without landing on an already-placed cell that shares a column, so an
+// 80px-tall card in a 5-row slot no longer reserves 400px and the cards below
+// it float up through the gap.
 //
 // In edit mode each item exposes a top-right move handle and a bottom-right
 // resize handle — plus, on a cell that's already pinned, a bottom-left
@@ -61,14 +65,11 @@ import { dndTransformToCss } from '../../lib/dndTransform';
 // but the 1-D case is exactly dnd-kit's job, and going through it is what
 // buys touch, keyboard, multi-pointer and edge auto-scroll for free.
 //
-// Collision policy after drag/resize (`placeAndCompact`): pin the moved item
-// at its dropped position, then slot every other item into the smallest y that
-// doesn't collide with anything already placed (top-left items processed
-// first). Tetris-style compaction — same feel as react-grid-layout /
-// gridstack. This runs in GRID UNITS and settles what gets persisted; the
-// pixel pack above is what actually gets drawn. The two agree because a
-// commit first re-expresses the layout in pack space (`toPackSpace`), so the
-// y/h it compacts are the ones the pack produced.
+// Drop policy after a move (`insertAtOrder`): the dragged cell is re-inserted
+// into the reading sequence at the rank its dropped pixel position implies,
+// and every cell is renumbered 0..n-1 from there. The live preview runs the
+// same function on the same inputs, so what the drop lands on is exactly what
+// was previewed — no compaction pass, no round-trip between coordinate spaces.
 
 const ROW_HEIGHT_PX = 80;
 const GAP_PX = 16;
@@ -87,17 +88,36 @@ const EDIT_MIN_HEIGHT_PX = 48;
 // live gets it from `onLayoutModeChange`, because this threshold is measured
 // against the CONTAINER and re-deriving it outside would read the viewport.
 const MOBILE_BREAKPOINT_PX = 640;
+// Vertical slack, in pixels, within which two cells count as "the same row"
+// when a move drag is deciding where the dragged cell lands in the sequence.
+// Half a row: past that the cursor has clearly committed to above/below, and
+// inside it the column (x) is what orders them — which is what makes dragging
+// a card sideways past its row neighbour reorder the two.
+//
+// Must stay under EDIT_MIN_HEIGHT_PX + GAP_PX (the closest two stacked cells
+// can ever be in edit mode, which is the only mode a drag runs in). Above
+// that, two cells in the SAME column could read as "same row," and a cell
+// whose column ties would then re-rank itself on a zero-distance click.
+const SAME_ROW_PX = ROW_HEIGHT_PX / 2;
 
 function getColWidth(containerWidth) {
   return (containerWidth - GAP_PX * (GRID_COLS - 1)) / GRID_COLS;
 }
 
-// Reading order: top-to-bottom, then left-to-right. This is the order the
-// single-column mobile stack renders in, and the order `reflowToOrder`
-// consumes. `placeAndCompact` returns the moved item first regardless of
-// where it landed, so grid array order can't be trusted for this.
+// Reading order: `order`, then column as a tiebreak. This is the order the
+// single-column mobile stack renders in, the order `packVertically` consumes,
+// and the order `reflowToOrder` renumbers. The x tiebreak only matters while a
+// layout is momentarily sparse/duplicated (a widget appended by
+// `reconcileGrid` before the next resequence) — a settled grid is dense.
 function byReadingOrder(a, b) {
-  return a.y - b.y || a.x - b.x;
+  return (a.order ?? 0) - (b.order ?? 0) || a.x - b.x;
+}
+
+// Renumber `order` densely from the current reading order. Every function that
+// hands a grid back to the caller ends here, so the persisted sequence is
+// always 0..n-1 with no gaps and no duplicates.
+function resequence(items) {
+  return [...items].sort(byReadingOrder).map((it, i) => ({ ...it, order: i }));
 }
 
 // Grid rows ↔ pixels. A span of `h` rows covers h row boxes plus the gaps
@@ -113,7 +133,7 @@ export function pxToRows(px) {
 // Rendered height of one cell. Auto-height cells (the default) are exactly as
 // tall as they measured; `fixedH` cells keep the height the user dragged onto
 // them. `h` is the fallback until the first measurement lands — which is also
-// why every commit refreshes it (see `toPackSpace`).
+// why every commit refreshes it (see `withMeasuredHeights`).
 //
 // Keyed on PRESENCE, not truthiness: a widget that renders nothing (several
 // self-hide on empty data) measures a legitimate 0, and collapsing that into
@@ -127,9 +147,6 @@ export function itemHeightPx(item, heights = {}) {
 
 function shareColumns(a, b) {
   return !(a.x + a.w <= b.x || b.x + b.w <= a.x);
-}
-function shareRows(a, b) {
-  return !(a.y + a.h <= b.y || b.y + b.h <= a.y);
 }
 
 // Masonry float. Walk cells in reading order and drop each one as high as it
@@ -167,28 +184,66 @@ function columnRect(item, colWidth) {
   };
 }
 
-// Re-express the layout in the pack's own coordinate space: `y` becomes the
-// row the cell actually renders at and `h` the rows it actually occupies.
-// Once heights are measured, stored y/h are only an ordering hint and a
-// fallback — a drag that reasoned in them would move the cursor and the card
-// at different speeds, and would compare the dragged cell's position against
-// coordinates nothing is drawn at. Every commit goes through here, which is
-// also what keeps persisted y/h honest for the next cold load (and for a
-// client too old to know about `fixedH`).
-function toPackSpace(items, rects) {
+// Refresh each item's `h` from the height the pack actually gave it. `h` is
+// only a fallback now (first paint, and what a client too old to know about
+// `fixedH` renders), so it would rot without this — every commit goes through
+// here to keep the next cold load opening at roughly the right size. It is
+// also what makes a resize gesture start where the card is DRAWN: grabbing the
+// handle on an auto-height cell would otherwise snap it to a stale row count
+// before the pointer had moved.
+function withMeasuredHeights(items, rects) {
   return items.map((it) => {
     const rect = rects.get(it.id);
     if (!rect) return { ...it };
-    return { ...it, y: Math.round(rect.top / ROW_STEP_PX), h: pxToRows(rect.height) };
+    return { ...it, h: pxToRows(rect.height) };
   });
 }
 
-function overlaps(a, b) {
-  return shareColumns(a, b) && shareRows(a, b);
+// Where a cell dragged to pixel `top` in column `x` lands in the reading
+// sequence: the number of other cells that sort before it. Cells clearly above
+// or below (more than half a row away) are ordered by pixel position; cells on
+// the same row are ordered by column.
+function rankAtPixel(items, rects, movedId, top, x) {
+  let rank = 0;
+  for (const it of items) {
+    if (it.id === movedId) continue;
+    const otherTop = rects.get(it.id)?.top ?? 0;
+    const before = otherTop < top - SAME_ROW_PX
+      || (otherTop <= top + SAME_ROW_PX && it.x < x);
+    if (before) rank += 1;
+  }
+  return rank;
 }
 
-function sameRect(a, b) {
-  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+// Re-insert `movedId` into the reading sequence at `rank`, then renumber.
+// Both the live drag preview and the drop commit call this with the same
+// inputs, so the preview is the outcome rather than an approximation of it.
+function insertAtOrder(items, movedId, rank) {
+  const moved = items.find((it) => it.id === movedId);
+  if (!moved) return resequence(items);
+  const rest = [...items].filter((it) => it.id !== movedId).sort(byReadingOrder);
+  const next = [...rest.slice(0, rank), moved, ...rest.slice(rank)];
+  return next.map((it, i) => ({ ...it, order: i }));
+}
+
+// Has the gesture actually moved the cell? Compares everything a drag can
+// change — the column pair, the fallback height, and the sequence position.
+function samePlacement(a, b) {
+  return a.x === b.x && a.w === b.w && a.h === b.h && a.order === b.order;
+}
+
+// Fold the in-flight ghost back into the baseline. A move re-inserts at the
+// ghost's rank and renumbers; a resize touches only that cell's w/h, so the
+// sequence is left alone. `pin` marks the cell `fixedH` — always true while a
+// resize is in flight (the drag, not the content, defines the height for the
+// duration of the gesture) but only true on drop if the height really changed.
+function applyGhost(baseline, kind, ghost, pin) {
+  const swapped = baseline.map((it) => (it.id === ghost.id
+    ? { ...it, ...ghost, ...(pin ? { fixedH: true } : {}) }
+    : it));
+  return kind === 'resize'
+    ? resequence(swapped)
+    : insertAtOrder(swapped, ghost.id, ghost.order);
 }
 
 // Everything that differs between the three handles, on one row each. `kind`
@@ -238,58 +293,37 @@ function DragHandle({ kind, item, onPointerDown, onClick, handleProps }) {
   );
 }
 
-// Pin the moved item at its dropped position, then slide every other item
-// upward to the smallest y that doesn't collide with anything already
-// placed. Combines collision-resolve and compact in one pass: the moved
-// item goes first (so it acts as an obstacle for everyone else) and the
-// rest are processed in current (y, x) order so top-left items keep
-// precedence. Returns a new array — never mutates input.
-function placeAndCompact(items, movedId) {
-  const moved = items.find((i) => i.id === movedId);
-  if (!moved) return items.map((it) => ({ ...it }));
-  const rest = items.filter((i) => i.id !== movedId).sort(byReadingOrder);
-  const placed = [{ ...moved }];
-  for (const item of rest) {
-    let y = 0;
-    while (placed.some((p) => overlaps({ ...item, y }, p))) y += 1;
-    placed.push({ ...item, y });
-  }
-  return placed;
-}
-
-// Auto-place a new widget at the bottom of the grid, left-aligned. Used when
-// LayoutEditor adds a widget to a layout without specifying coordinates.
+// Auto-place a new widget at the end of the reading sequence, left-aligned.
+// Used when LayoutEditor adds a widget to a layout without specifying a
+// position. The pack decides where "the end" actually renders.
 export function placeNewWidget(items, widgetId) {
   const meta = WIDGETS_BY_ID[widgetId];
   const w = WIDTH_TO_COLS[meta?.width] ?? 4;
   const h = meta?.defaultH ?? GRID_DEFAULT_H;
-  const bottom = items.reduce((max, it) => Math.max(max, it.y + it.h), 0);
-  return [...items, { id: widgetId, x: 0, y: bottom, w, h }];
+  const last = items.reduce((max, it) => Math.max(max, (it.order ?? 0) + 1), 0);
+  return [...items, { id: widgetId, x: 0, w, h, order: last }];
 }
 
-// Row-flow items into the 12-column grid following `orderedIds`, preserving
+// Row-flow items into the 12 columns following `orderedIds`, preserving
 // each item's w/h and dropping anything not in the order. This is how a mobile
-// reorder becomes a grid: the single-column stack has no x/y to drop onto, so
-// the new stack order is re-flowed into fresh coordinates. Items that already
-// sit in flow order (the common case) come back with the same coordinates.
+// reorder becomes a grid: the single-column stack has no columns to drop onto,
+// so the new stack order is re-flowed into fresh x positions and a fresh
+// sequence. Items that already sit in flow order (the common case) come back
+// unchanged.
 export function reflowToOrder(items, orderedIds = items.map((it) => it.id)) {
   const byId = new Map(items.map((it) => [it.id, it]));
   const flowed = [];
   let cursorX = 0;
-  let cursorY = 0;
-  let rowMaxH = 0;
   for (const id of orderedIds) {
     const item = byId.get(id);
     if (!item) continue;
     const w = Math.min(item.w, GRID_COLS);
-    if (cursorX + w > GRID_COLS) {
-      cursorX = 0;
-      cursorY += rowMaxH;
-      rowMaxH = 0;
-    }
-    flowed.push({ ...item, x: cursorX, y: cursorY, w });
+    // Wrap to a fresh row when the widget no longer fits beside its
+    // predecessor. There is no row COORDINATE to advance — the pack derives
+    // the row from the sequence — only the column cursor to reset.
+    if (cursorX + w > GRID_COLS) cursorX = 0;
+    flowed.push({ ...item, x: cursorX, w, order: flowed.length });
     cursorX += w;
-    rowMaxH = Math.max(rowMaxH, item.h);
   }
   return flowed;
 }
@@ -323,7 +357,9 @@ export function reconcileGrid(grid, visibleIds) {
     if (present.has(id)) continue;
     kept = placeNewWidget(kept, id);
   }
-  return kept;
+  // Dropping entries leaves gaps in the sequence and appending can duplicate
+  // the last index; hand back a dense one so callers never have to care.
+  return resequence(kept);
 }
 
 // Reading order of a grid — what the mobile stack shows, and what a layout's
@@ -443,12 +479,13 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   // pointermove (would spam re-renders of every widget). React only learns
   // about the new ghost when we call setDrag, throttled by RAF.
   //
-  // `drag` is `{ kind, baseline, ghost }`. `baseline` is the layout as it
-  // stood when the gesture started, in pack space (see `toPackSpace`):
-  // everything the drag reasons about — the ghost, the live preview, the
-  // committed grid — is relative to it, not to the stored coordinates, which
-  // no longer describe where anything is drawn. `ghost` stays a plain grid
-  // item so the commit can spread it straight onto one.
+  // `drag` is `{ kind, baseline, baseRects, ghost }`. `baseline` is the layout
+  // as it stood when the gesture started with its `h` refreshed from the
+  // measurement (see `withMeasuredHeights`), and `baseRects` the pixel rects
+  // the pack had produced for it. Everything the drag reasons about — the
+  // ghost's rank, the live preview, the committed grid — is relative to that
+  // frozen snapshot, never to the live rects, which the preview itself moves.
+  // `ghost` stays a plain grid item so the commit can spread it straight on.
   const dragRef = useRef(null);
   const [drag, setDrag] = useState(null);
   // Measured natural heights, px, keyed by widget id.
@@ -476,14 +513,11 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   // cursor swapped for its snapped ghost, so every OTHER cell reflows live to
   // where it will land instead of waiting for the drop. A resize ghost packs
   // as a pinned cell — the drag is defining a height, so the preview must
-  // show that height and not the content's.
+  // show that height and not the content's. `applyGhost` is shared with the
+  // drop commit, so the preview IS the outcome rather than a lookalike of it.
   const previewItems = useMemo(() => {
     if (!drag) return ordered;
-    return drag.baseline
-      .map((it) => (it.id === drag.ghost.id
-        ? { ...it, ...drag.ghost, ...(drag.kind === 'resize' ? { fixedH: true } : {}) }
-        : it))
-      .sort(byReadingOrder);
+    return applyGhost(drag.baseline, drag.kind, drag.ghost, drag.kind === 'resize');
   }, [ordered, drag]);
 
   const rects = useMemo(
@@ -519,10 +553,13 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
     // never let the pointer leave the gesture.
     e.preventDefault();
     e.stopPropagation();
-    // Snapshot in pack space so the ghost starts exactly where the card is
-    // drawn — grabbing the resize handle on an auto-height cell would
-    // otherwise snap it to a stale row count before the pointer has moved.
-    const baseline = toPackSpace(items, rectsRef.current);
+    // Freeze the pack's output for the gesture: the ghost has to start exactly
+    // where the card is DRAWN (grabbing the resize handle on an auto-height
+    // cell would otherwise snap it to a stale row count before the pointer
+    // moved), and the rank math has to compare against positions the preview
+    // isn't simultaneously shifting.
+    const baseRects = rectsRef.current;
+    const baseline = withMeasuredHeights(items, baseRects);
     const found = baseline.find((it) => it.id === item.id) ?? item;
     // A resize gesture's floor applies to where the drag STARTS too. Without
     // it, a cell measuring under MIN_H rows (a widget rendering little or
@@ -533,10 +570,11 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
       id: item.id,
       kind,
       startPointer: { x: e.clientX, y: e.clientY },
+      startTop: baseRects.get(item.id)?.top ?? 0,
       startItem,
       ghost: { ...startItem },
     };
-    setDrag({ kind, baseline, ghost: { ...startItem } });
+    setDrag({ kind, baseline, baseRects, ghost: { ...startItem } });
   }, [editable, isMobile, items]);
 
   useEffect(() => {
@@ -545,7 +583,7 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
     // Both are fixed for the life of the gesture, and this effect re-installs
     // exactly when one starts — so capturing them here can't go stale, and the
     // per-snap `setDrag` doesn't have to re-bind the window listeners.
-    const { kind, baseline } = drag;
+    const { kind, baseline, baseRects } = drag;
     let raf = 0;
 
     const onPointerMove = (e) => {
@@ -559,8 +597,12 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
       let next;
       if (kind === 'move') {
         const newX = Math.max(0, Math.min(GRID_COLS - start.w, Math.round(start.x + dx / colStep)));
-        const newY = Math.max(0, Math.round(start.y + dy / ROW_STEP_PX));
-        next = { ...start, x: newX, y: newY };
+        // Vertical is read straight off the pointer in pixels and turned into
+        // a rank — there is no row coordinate to snap to, and the cursor and
+        // the card therefore travel at the same speed.
+        const top = gesture.startTop + dy;
+        const order = rankAtPixel(baseline, baseRects, gesture.id, top, newX);
+        next = { ...start, x: newX, order };
       } else {
         const newW = Math.max(MIN_W, Math.min(GRID_COLS - start.x, Math.round(start.w + dx / colStep)));
         const newH = Math.max(MIN_H, Math.round(start.h + dy / ROW_STEP_PX));
@@ -570,7 +612,7 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
       // when the cursor crosses a snap boundary. Skip the React update
       // when we're still inside the same snap cell — saves ~60 widget
       // re-renders per drag and keeps the rAF callback a no-op.
-      if (sameRect(gesture.ghost, next)) return;
+      if (samePlacement(gesture.ghost, next)) return;
       gesture.ghost = next;
       if (!raf) {
         raf = requestAnimationFrame(() => {
@@ -589,14 +631,11 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
       if (!gesture || !commit) return;
       // Skip the write entirely when nothing actually changed — avoids a
       // 200 OK on every accidental click on the drag handle.
-      if (sameRect(gesture.startItem, gesture.ghost)) return;
+      if (samePlacement(gesture.startItem, gesture.ghost)) return;
       // A resize that actually changed the HEIGHT is the user declaring one:
       // pin it. A width-only resize (or a move) leaves the cell auto-sized.
       const pins = kind === 'resize' && gesture.ghost.h !== gesture.startItem.h;
-      const updated = baseline.map((it) => (it.id === gesture.id
-        ? { ...it, ...gesture.ghost, ...(pins ? { fixedH: true } : {}) }
-        : it));
-      onChange(placeAndCompact(updated, gesture.id));
+      onChange(applyGhost(baseline, kind, gesture.ghost, pins));
     };
 
     const onPointerUp = () => finish(true);
@@ -638,14 +677,14 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   // unconstrained, the observer reports its natural height, and the pack
   // closes the gap on the next frame.
   const clearFixedHeight = useCallback((item) => {
-    const next = toPackSpace(items, rectsRef.current).map((it) => {
+    const next = withMeasuredHeights(items, rectsRef.current).map((it) => {
       if (it.id !== item.id) return it;
       // Drop the pin by omission rather than whitelisting the fields to keep,
       // so a field added to the grid item later doesn't get eaten here.
       const { fixedH: _pinned, ...rest } = it;
       return rest;
     });
-    onChange(placeAndCompact(next, item.id));
+    onChange(resequence(next));
   }, [items, onChange]);
 
   const sortable = editable && isMobile;
