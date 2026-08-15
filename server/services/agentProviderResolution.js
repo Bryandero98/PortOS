@@ -118,8 +118,8 @@ export async function resolveAgentProviderAndModel(task) {
   // child process that writes nothing to disk. Fail clearly instead. This catches
   // an api provider arriving via a task pin OR via the fallback chain (the default
   // fallback priority includes lmstudio/ollama). The fix for users: add a CLI
-  // coding provider — e.g. the "Claude Ollama" sample (a `claude` CLI/TUI pointed at
-  // Ollama) gives the full file-writing harness on a local model.
+  // coding provider — e.g. Claude Ollama, or OpenCode MTPLX when a separate
+  // MTPLX runtime is already running locally.
   if (provider.type === 'api') {
     return {
       ok: false,
@@ -130,7 +130,7 @@ export async function resolveAgentProviderAndModel(task) {
       // back from a CLI primary (directProviderType 'cli') is instead TRANSIENT:
       // the primary may recover, so the task stays retryable.
       permanent: directProviderType === 'api',
-      error: `Provider "${provider.id}" is an HTTP API provider with no file-writing harness — CoS agent tasks need a CLI/TUI coding provider (claude, codex, or the "Claude Ollama" Claude-on-Ollama sample).`,
+      error: `Provider "${provider.id}" is an HTTP API provider with no file-writing harness — CoS agent tasks need a CLI/TUI coding provider (claude, codex, "Claude Ollama", or "OpenCode MTPLX").`,
       providerId: provider.id
     };
   }

@@ -546,6 +546,10 @@ export function createProviderService(config = {}) {
         // Claude Ollama marker — preserve so adopting the sample via POST drives
         // ollama-backed model refresh (see isOllamaBackedProvider).
         ...(providerData.ollamaBacked === true ? { ollamaBacked: true } : {}),
+        // MTPLX's native MTP runtime is a separate local OpenAI-compatible
+        // backend. Preserve this marker so OpenCode receives the `mtplx/`
+        // namespace and model refresh probes its local endpoint.
+        ...(providerData.mtplxBacked === true ? { mtplxBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
         // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
         // persisted when true so existing keyless/local providers stay clean.
@@ -761,8 +765,9 @@ export function createProviderService(config = {}) {
       try {
         // A TUI provider's model is normally fixed by its CLI/config, so only
         // the vendors whose `--model` flag also applies to the interactive
-        // session carry a `tuiMatch` column in the table (ollama-backed,
-        // antigravity, cursor today). One lookup replaces the per-vendor
+        // session carry a `tuiMatch` column in the table (Ollama-backed,
+        // MTPLX-backed, Antigravity, Cursor today). One lookup replaces the
+        // per-vendor
         // `else if` chain this used to be — see internal/modelFetchers.js.
         const tuiFetcher = provider.type === 'tui' ? resolveModelFetcher(provider) : null;
 
@@ -1014,6 +1019,23 @@ export function createProviderService(config = {}) {
       if (Array.isArray(responseData.models)) return toModelIds(responseData.models, 'models');
 
       throw new Error('Model list response had no recognizable "data" or "models" array');
+    },
+
+    /**
+     * Fetch the catalog from a local MTPLX server for its OpenCode CLI/TUI
+     * wrappers. MTPLX publishes its active native-MTP model through the same
+     * OpenAI-compatible `/v1/models` contract as an API provider, so reuse the
+     * guarded generic parser instead of executing an OpenCode model-list command
+     * (which would inventory the harness, not the MTPLX runtime).
+     *
+     * This only runs from an explicit refresh request; seeding the disabled
+     * provider never starts MTPLX, downloads a model, or issues an LLM call.
+     *
+     * @param {object} provider
+     * @returns {Promise<string[]>}
+     */
+    async _fetchMtplxModels(provider) {
+      return this._refreshAPIProviderModels(provider);
     },
 
     async _refreshCLIProviderModels(provider) {

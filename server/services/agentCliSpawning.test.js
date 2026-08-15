@@ -259,6 +259,17 @@ describe('buildCliSpawnConfig', () => {
     expect(config.streamFormat).toBeUndefined();
   });
 
+  it('runs `opencode run -m mtplx/<model>` for a headless OpenCode MTPLX agent', () => {
+    const config = buildCliSpawnConfig(
+      { id: 'opencode-mtplx', command: 'opencode', args: ['run'], mtplxBacked: true },
+      'mtplx',
+    );
+
+    expect(config.command).toBe('opencode');
+    expect(config.args).toEqual(['run', '-m', 'mtplx/mtplx']);
+    expect(config.stdinMode).toBe('prompt');
+  });
+
   it('prepends the run subcommand for OpenCode even if saved args dropped it', () => {
     const config = buildCliSpawnConfig({ id: 'opencode-ollama', command: 'opencode', args: [], ollamaBacked: true }, 'qwen2.5:7b');
 

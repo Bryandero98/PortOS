@@ -282,6 +282,7 @@ describe('resolveEnabledFamilies', () => {
     { id: 'claude-code', enabled: true, type: 'cli', command: 'claude' },
     { id: 'claude-code-tui', enabled: true, type: 'tui', command: 'claude' },
     { id: 'claude-ollama', enabled: true, type: 'cli', command: 'claude', ollamaBacked: true },
+    { id: 'claude-mtplx', enabled: true, type: 'cli', command: 'claude', mtplxBacked: true },
     { id: 'codex', enabled: true, type: 'cli', command: 'codex' },
     { id: 'antigravity-cli', enabled: false, type: 'cli', command: 'agy' },
     { id: 'grok', enabled: true, type: 'api', endpoint: 'https://api.x.ai/v1' },
@@ -293,11 +294,14 @@ describe('resolveEnabledFamilies', () => {
     expect(families).toEqual(['claude', 'codex', 'grok']); // agy disabled; ollama maps to no family
   });
 
-  it('does not map ollama-backed wrappers to ANY family (local models have no subscription quota)', () => {
+  it('does not map local-runtime wrappers to ANY family (local models have no subscription quota)', () => {
     const families = resolveEnabledFamilies([
       { id: 'claude-ollama', enabled: true, type: 'cli', command: 'claude', ollamaBacked: true },
       { id: 'codex-ollama', enabled: true, type: 'cli', command: 'codex', ollamaBacked: true },
-      { id: 'grok-ollama', enabled: true, type: 'cli', command: 'grok', ollamaBacked: true }
+      { id: 'grok-ollama', enabled: true, type: 'cli', command: 'grok', ollamaBacked: true },
+      { id: 'claude-mtplx', enabled: true, type: 'cli', command: 'claude', mtplxBacked: true },
+      { id: 'codex-mtplx', enabled: true, type: 'cli', command: 'codex', mtplxBacked: true },
+      { id: 'grok-mtplx', enabled: true, type: 'cli', command: 'grok', mtplxBacked: true }
     ]);
     expect(families).toEqual([]);
   });

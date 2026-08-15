@@ -33,14 +33,14 @@ import { commandBasename } from '../../lib/providerModels.js';
  * Two exclusions, both about what a burn is FOR — spending a subscription window
  * that would otherwise expire unused:
  * - API-type providers bill per token rather than drawing down a window.
- * - Ollama-backed wrappers run a LOCAL model, so there is no window to spend and
+ * - Local-runtime wrappers run a LOCAL model, so there is no window to spend and
  *   burning through one accomplishes nothing. `resolveEnabledFamilies` drops
  *   them from the quota cards for exactly this reason; a `claude-ollama-tui`
  *   would otherwise be a perfectly good match for the `claude` family.
  */
 export function providerForFamily(providers, { familyId, providerId, prefer = 'tui' }) {
   const available = (providers || []).filter((provider) =>
-    provider?.enabled && provider.ollamaBacked !== true
+    provider?.enabled && provider.ollamaBacked !== true && provider.mtplxBacked !== true
     && (provider.type === 'cli' || provider.type === 'tui'));
   if (providerId) return available.find((provider) => provider.id === providerId) || null;
   const inFamily = available.filter((provider) => matchesFamily(provider, familyId));

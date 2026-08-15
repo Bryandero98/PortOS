@@ -17,8 +17,8 @@ const SHIPPED = JSON.parse(readFileSync(resolve(__dirname, '../../../../data.ref
 const SHIPPED_REFRESHABLE = [
   'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
   'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
-  'cursor-tui', 'grok', 'lmstudio', 'nvidia-kimi', 'ollama', 'opencode-ollama',
-  'opencode-ollama-tui',
+  'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
+  'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama', 'opencode-ollama-tui',
 ];
 const SHIPPED_NOT_REFRESHABLE = [
   'claude-code-tui', 'claude-code-tui-bedrock', 'codex', 'codex-tui',
@@ -124,6 +124,11 @@ describe('resolveModelFetcher — the ordering the old chains encoded in prose',
     expect(resolveModelFetcher(p).fetch).toBe('_fetchOllamaToolCapableModels');
   });
 
+  it('routes an MTPLX-backed OpenCode CLI to the MTPLX endpoint fetcher', () => {
+    const p = { id: 'opencode-mtplx', type: 'cli', command: 'opencode', mtplxBacked: true };
+    expect(resolveModelFetcher(p).fetch).toBe('_fetchMtplxModels');
+  });
+
   it('lets a command beat a display name — a renamed cursor still reaches cursor-agent', () => {
     // Renaming a cursor provider "Cursor Claude Opus" must not persist
     // Anthropic ids that cursor-agent will reject.
@@ -173,6 +178,11 @@ describe('resolveModelFetcher — the TUI arm never consults the display name', 
       .toBe('_fetchAntigravityModels');
     expect(resolveModelFetcher({ id: 'x', type: 'tui', command: 'cursor-agent' }).fetch)
       .toBe('_fetchCursorModels');
+  });
+
+  it('serves an MTPLX-backed OpenCode TUI from its local endpoint', () => {
+    expect(resolveModelFetcher({ id: 'opencode-mtplx-tui', type: 'tui', command: 'opencode', mtplxBacked: true }).fetch)
+      .toBe('_fetchMtplxModels');
   });
 
   it('admits a shipped TUI id repointed at a wrapper script', () => {

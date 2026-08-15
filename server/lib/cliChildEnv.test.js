@@ -17,6 +17,7 @@ const OLLAMA_OPENCODE = {
 };
 
 const declaredModels = (env) => Object.keys(JSON.parse(env.OPENCODE_CONFIG_CONTENT).provider.ollama.models);
+const declaredMtplxModels = (env) => Object.keys(JSON.parse(env.OPENCODE_CONFIG_CONTENT).provider.mtplx.models);
 
 describe('buildCliChildEnv — layering', () => {
   it('layers baseEnv < before < provider.envVars < extra', () => {
@@ -55,6 +56,16 @@ describe('buildCliChildEnv — layering', () => {
     expect(env.API_KEY).toBe('from-provider');
     // The stored base is merged, not clobbered.
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).permission).toBe('deny');
+  });
+
+  it('declares the MTPLX models map for a marked OpenCode provider', () => {
+    const env = buildCliChildEnv({
+      baseEnv: {},
+      provider: { command: 'opencode', mtplxBacked: true, models: ['mtplx'], envVars: {} },
+      model: 'mtplx',
+    });
+    expect(declaredMtplxModels(env)).toEqual(['mtplx']);
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).provider.mtplx.options.baseURL).toBe('http://127.0.0.1:8000/v1');
   });
 
   it('is a no-op OpenCode layer for a non-OpenCode provider', () => {
