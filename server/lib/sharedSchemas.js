@@ -56,6 +56,25 @@ export const recordRenderPinFields = {
   ),
 };
 
+// Batch-by-id query param — `?ids=a,b,c` on a list route (#4148). The wire form
+// is a CSV string, preprocessed into a trimmed, empties-dropped string[]; a
+// repeated `?ids=a&ids=b` arrives as an array and passes through untouched. An
+// empty/all-blank value collapses to `undefined` so the field reads cleanly as
+// absent (sentinel-not-empty) and the route falls through to its normal filters.
+//
+// `truncate` picks what an over-cap batch does. `false` (the default) rejects it
+// with a 400 — the caller learns its request was too big instead of receiving a
+// partial result it can't distinguish from "those ids don't exist". `true`
+// silently slices at `max`, which the catalog's ingredient list has done since
+// it shipped; kept as an option so this shared helper doesn't change that
+// route's established contract.
+export const csvIdsParam = ({ max, maxIdLength = 64, truncate = false } = {}) => z.preprocess((v) => {
+  if (typeof v !== 'string') return v;
+  const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+  const bounded = truncate ? parts.slice(0, max) : parts;
+  return bounded.length ? bounded : undefined;
+}, z.array(z.string().trim().min(1).max(maxIdLength)).max(max).optional());
+
 // subdirFilter is interpolated into an rsync `--include=${subdirFilter}/***`
 // arg (rsync runs shell:false, so this is not shell injection — but `*` would
 // expand to `--include=*/***` and defeat the filter chain, and `../foo` would

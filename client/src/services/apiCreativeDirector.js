@@ -1,4 +1,5 @@
 import { request } from './apiCore.js';
+import { fetchByIds } from './apiBatch.js';
 
 export const listCreativeDirectorProjects = (options = {}) => request('/creative-director', options);
 // Pass `{ slim: true }` to receive only the fields a polling consumer needs
@@ -11,16 +12,9 @@ export const getCreativeDirectorProject = (id, { slim = false } = {}) =>
 // endpoint, so the response is the same full, non-slim project shape previews
 // compute from. Used by surfaces that reference a known handful of projects
 // (the Creative Commission detail page's render history) instead of pulling
-// every project on the install. Empty/falsy ids are dropped; an all-empty list
-// short-circuits with no request. Ids that don't resolve are absent from the
-// result — callers index by `id` rather than assuming positional parity.
-export const getCreativeDirectorProjectsByIds = async (ids = [], options = {}) => {
-  const list = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean))];
-  if (list.length === 0) return [];
-  const params = new URLSearchParams({ ids: list.join(',') });
-  const res = await request(`/creative-director?${params}`, options);
-  return Array.isArray(res) ? res : (Array.isArray(res?.items) ? res.items : []);
-};
+// every project on the install. Server-side cap is 100 ids per batch.
+export const getCreativeDirectorProjectsByIds = (ids = [], options = {}) =>
+  fetchByIds('/creative-director', ids, options);
 export const createCreativeDirectorProject = (data, options = {}) => request('/creative-director', {
   method: 'POST',
   body: JSON.stringify(data),

@@ -70,6 +70,7 @@ export * from './apiRounds.js';
 export * from './apiSongbook.js';
 export * from './apiPeerSync.js';
 export * from './apiSyncReview.js';
+export * from './apiBatch.js';
 export * from './apiCreativeDirector.js';
 export * from './apiCreativeCommission.js';
 export * from './apiGames.js';

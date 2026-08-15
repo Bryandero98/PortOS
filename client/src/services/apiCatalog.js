@@ -1,4 +1,5 @@
 import { request } from './apiCore.js';
+import { fetchByIds } from './apiBatch.js';
 
 // Creative Ingredients Catalog API surface. Every helper takes an optional
 // `options` second arg so callers with their own `.catch` toast can pass
@@ -84,19 +85,16 @@ export const listCatalogIngredients = ({ type, tag, q, refKind, refId, unlinked,
 
 // Batch fetch ingredients by id (max 50 server-side) — used by the Story
 // Builder remix handoff to hydrate the catalog ingredients the user selected.
-// The `ids` filter rides the normal paged list endpoint, which returns the
-// `{ items, nextOffset }` envelope ordered created_at DESC; this unwraps to a
-// plain array AND re-orders it to the requested `ids` so chips + seed read in
-// the user's selection order (mirroring the server's resolveCatalogIngredients).
-// Empty/falsy ids are dropped before the request.
+// `fetchByIds` handles the shared `?ids=` mechanics (dedupe, empty-list
+// short-circuit, `{ items }` envelope unwrap); the extra step here is
+// re-ordering to the requested `ids` — the paged list returns created_at DESC,
+// and chips + seed must read in the user's selection order (mirroring the
+// server's resolveCatalogIngredients).
 export const listCatalogIngredientsByIds = async (ids = [], options) => {
   const list = (Array.isArray(ids) ? ids : []).filter(Boolean);
-  const params = new URLSearchParams();
-  params.set('ids', list.join(','));
-  const res = await request(`/catalog/ingredients?${params}`, options);
-  const items = Array.isArray(res) ? res : (Array.isArray(res?.items) ? res.items : []);
+  const items = await fetchByIds('/catalog/ingredients', list, options);
   const byId = new Map(items.map((ing) => [ing.id, ing]));
-  return list.map((id) => byId.get(id)).filter(Boolean);
+  return [...new Set(list)].map((id) => byId.get(id)).filter(Boolean);
 };
 
 export const getCatalogIngredient = (id, options) =>

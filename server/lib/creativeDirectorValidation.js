@@ -3,6 +3,7 @@ import { ASPECT_RATIOS, QUALITIES, PROJECT_STATUSES, SCENE_STATUSES, PLAN_STEP_S
 import { ARC_SHAPE_IDS, ARC_ROLES } from './storyArc.js';
 import { BIBLE_LIMITS } from './storyBible.js';
 import { emptyToUndefined } from './zodCompat.js';
+import { csvIdsParam } from './sharedSchemas.js';
 
 // =============================================================================
 // CREATIVE DIRECTOR + CREATE-SUITE IMPORTER SCHEMAS
@@ -219,22 +220,14 @@ export const creativeDirectorProjectUpdateSchema = z.object({
 // never has to chunk while the request still stays bounded.
 export const CREATIVE_DIRECTOR_IDS_BATCH_MAX = 100;
 
-// Query params for `GET /creative-director` (#4148). `ids` is the batch-by-id
-// filter: the wire form is a CSV string (`?ids=a,b,c`) preprocessed into a
-// trimmed, empties-dropped string[], mirroring catalogIngredientQuerySchema.
-// An empty/all-blank CSV collapses to `undefined` so it reads cleanly as absent
-// and the route falls through to the full list. Unlike the catalog schema this
-// does NOT silently slice at the cap — an over-cap request is a 400 rather than
-// a partial result the caller can't distinguish from "those ids don't exist".
-// A repeated `?ids=a&ids=b` form arrives as an array and is validated as-is.
-// Unknown keys (limit/offset) strip out of the parsed result — the route reads
-// those straight off `req.query` for paginateArray.
+// Query params for `GET /creative-director` (#4148). `ids` is the shared
+// batch-by-id filter (see csvIdsParam) — an over-cap batch 400s rather than
+// truncating, so the client can't mistake a sliced result for missing projects.
+// An empty/all-blank value reads as absent and the route falls through to the
+// full list. Unknown keys (limit/offset) strip out of the parsed result — the
+// route reads those straight off `req.query` for paginateArray.
 export const creativeDirectorProjectQuerySchema = z.object({
-  ids: z.preprocess((v) => {
-    if (typeof v !== 'string') return v;
-    const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
-    return parts.length ? parts : undefined;
-  }, z.array(z.string().trim().min(1).max(64)).max(CREATIVE_DIRECTOR_IDS_BATCH_MAX).optional()),
+  ids: csvIdsParam({ max: CREATIVE_DIRECTOR_IDS_BATCH_MAX }),
 });
 
 // One scene in the treatment, written by the agent on the treatment task.
