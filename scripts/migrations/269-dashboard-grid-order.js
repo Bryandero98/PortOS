@@ -23,11 +23,22 @@
  * disk say what the renderer means.
  */
 
+import {
+  GRID_COLS,
+  GRID_ORDER_MAX,
+  GRID_LEGACY_Y_MAX,
+} from '../../server/services/dashboardLayouts.js';
 import { readLayoutsDoc, writeLayoutsDoc } from './_lib.js';
 
 const LABEL = 'migration 269';
 
 const intOr = (v, fallback) => (Number.isFinite(v) ? Math.floor(v) : fallback);
+// Bounds come from the service (the migration-030 convention) rather than
+// being mirrored, so the two can't drift. The read path clamps BEFORE it
+// ranks: two entries at y 300 and y 500 both land on the ceiling there and
+// are separated by column instead, so ranking the raw values here would order
+// them differently than the server already does.
+const clamp = (v, max) => Math.max(0, Math.min(max, intOr(v, 0)));
 
 // Already-converted entries carry `order` and no `y`. Both halves matter: a
 // hand-merged file can carry `order` alongside a stale `y`, and that still
@@ -53,11 +64,11 @@ function toOrderedGrid(grid) {
       g,
       idx,
       rank: anyOrder
-        ? (Number.isFinite(g.order) ? Math.floor(g.order) : Number.MAX_SAFE_INTEGER)
-        : intOr(g.y, 0),
+        ? (Number.isFinite(g.order) ? clamp(g.order, GRID_ORDER_MAX) : Number.MAX_SAFE_INTEGER)
+        : clamp(g.y, GRID_LEGACY_Y_MAX),
       // Ties in legacy grids are side-by-side cells: column decides. Ties in
       // the new shape are corrupt data: file order decides.
-      tie: anyOrder ? idx : intOr(g.x, 0),
+      tie: anyOrder ? idx : clamp(g.x, GRID_COLS - 1),
     }))
     .sort((a, b) => a.rank - b.rank || a.tie - b.tie || a.idx - b.idx)
     .map(({ g }, order) => {

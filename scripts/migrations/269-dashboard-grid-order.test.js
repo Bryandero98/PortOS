@@ -150,6 +150,28 @@ describe('migration 269 — convert dashboard grids to the order-only shape', ()
       .toEqual([{ id: 'alpha', x: 2, w: 4, order: 0, h: 7 }]);
   });
 
+  // The read path clamps `y` to GRID_LEGACY_Y_MAX (200) before it ranks, so
+  // two out-of-range entries land on the same ceiling and are separated by
+  // column. Ranking the raw values here would order them the other way and
+  // the conversion would change a layout the server was already serving.
+  it('clamps an out-of-range legacy y the way the read path does', async () => {
+    writeJson(layoutsPath, {
+      activeLayoutId: 'default',
+      layouts: [{
+        id: 'default', name: 'Everything', builtIn: true, widgets: ['alpha', 'beta'],
+        grid: [
+          { id: 'alpha', x: 0, y: 500, w: 6, h: 2 },
+          { id: 'beta', x: 6, y: 300, w: 6, h: 2 },
+        ],
+      }],
+    });
+
+    expect((await migration.up({ rootDir })).updated).toBe(1);
+    // Both clamp to y 200, so the tie falls to column and alpha (x 0) leads.
+    // Ranking the raw values would have put beta (y 300) first.
+    expect(readJson(layoutsPath).layouts[0].grid.map((g) => g.id)).toEqual(['alpha', 'beta']);
+  });
+
   it('converts every layout in the file, and leaves empty grids alone', async () => {
     writeJson(layoutsPath, {
       activeLayoutId: 'focus',
