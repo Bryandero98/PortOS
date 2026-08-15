@@ -199,7 +199,7 @@ describe('reapMergedWorktrees', () => {
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('locked-br');
-    expect(skipReason(result, path)).toBe('locked');
+    expect(skipReason(result, path)).toBe('worktree-locked');
     expect(existsSync(path)).toBe(true);
   });
 
@@ -213,7 +213,7 @@ describe('reapMergedWorktrees', () => {
     });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('active-br');
-    expect(skipReason(result, path)).toBe('active-agent');
+    expect(skipReason(result, path)).toBe('worktree-active-agent');
     expect(existsSync(path)).toBe(true);
     // The main repo checkout is never reported as reaped or skipped-with-branch.
     expect(result.reaped.find(r => r.branch === 'main')).toBeUndefined();
