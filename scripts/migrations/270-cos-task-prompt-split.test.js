@@ -104,6 +104,60 @@ describe('splitPromptMetadata', () => {
     expect(markdown).toContain('Some prose the producer left behind.');
   });
 
+  // `parseMetadataLine` normalizes legacy Title-Case keys, so an old install's
+  // `- Context:` line reads back as `metadata.context`. A case-sensitive compare
+  // here would skip it, record the migration applied, and leave it unsplit
+  // forever.
+  it('migrates a legacy Title-Case Context key', () => {
+    const titleCase = [
+      '# Tasks',
+      '',
+      '## Pending',
+      '- [ ] #sys-1 | MEDIUM | AUTO | Improve Example App',
+      '  - Context: __json__:"line one\\nline two"',
+      '',
+    ].join('\n');
+    const { markdown, split } = splitPromptMetadata(titleCase, { stamp: STAMP });
+    expect(split).toEqual(['sys-1']);
+    expect(parseTasksMarkdown(markdown)[0].metadata.prompt).toBe('line one\nline two');
+  });
+
+  it('skips a task whose existing prompt is spelled Title-Case', () => {
+    const titleCase = [
+      '# Tasks',
+      '',
+      '## Pending',
+      '- [ ] #sys-1 | MEDIUM | AUTO | Improve Example App',
+      '  - Prompt: already split',
+      '  - context: __json__:"line one\\nline two"',
+      '',
+    ].join('\n');
+    expect(splitPromptMetadata(titleCase, { stamp: STAMP }))
+      .toEqual({ markdown: titleCase, split: [] });
+  });
+
+  // The payloads this migration targets are generated agent bodies whose
+  // continuation lines are markdown headings (`## Phase 1`). Ending the block
+  // scan at a `#` line would walk right past the `context:` line below it —
+  // and `parseTasksMarkdown` does not end a task there either.
+  it('reaches the metadata past a spilled description made of markdown headings', () => {
+    const spilled = [
+      '# Tasks',
+      '',
+      '## Pending',
+      '- [ ] #sys-1 | MEDIUM | AUTO | Improve Example App',
+      '',
+      '## Phase 1',
+      'Read PLAN.md.',
+      '  - context: __json__:"line one\\nline two"',
+      '',
+    ].join('\n');
+    const { markdown, split } = splitPromptMetadata(spilled, { stamp: STAMP });
+    expect(split).toEqual(['sys-1']);
+    expect(markdown).toContain('- prompt: __json__:"line one\\nline two"');
+    expect(markdown).toContain('## Phase 1');
+  });
+
   it('handles a legacy pre-sentinel escaped value', () => {
     const legacy = [
       '# Tasks',

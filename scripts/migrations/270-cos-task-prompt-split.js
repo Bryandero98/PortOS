@@ -127,23 +127,36 @@ export function splitPromptMetadata(markdown, { stamp }) {
 
   for (const line of lines) {
     const header = line.match(TASK_LINE);
-    // A task's block runs to the NEXT task header or section heading — not to
-    // the first non-metadata line. A description written with embedded newlines
-    // is interpolated into the file verbatim by `generateTasksMarkdown`, so a
-    // freshly-filed task can carry blank/prose lines between its header and its
-    // metadata (they are dropped on the next parse round-trip, but a migration
-    // may well run before that happens).
-    if (header || line.startsWith('#')) {
+    // A task's block runs to the NEXT task header — NOT to the first
+    // non-metadata line, and NOT to a `#` heading. Two reasons, both load-bearing
+    // for exactly the payloads this migration targets:
+    //   - A description written with embedded newlines is interpolated into the
+    //     file verbatim by `generateTasksMarkdown`, so a freshly-filed task can
+    //     carry blank/prose lines between its header and its metadata (they are
+    //     dropped on the next parse round-trip, but a migration may well run
+    //     before that happens).
+    //   - Those spilled lines are usually MARKDOWN HEADINGS (`## Phase 1` — the
+    //     generator's Phase 1–7 body is the canonical case). Ending the block at
+    //     a `#` line would walk right past the `context:` line below it.
+    // `parseTasksMarkdown` does the same: a `##` section heading advances the
+    // section but never clears `currentTask`, so metadata after one still
+    // attaches to the preceding task. Mirror it, or this rewrite and the parser
+    // would disagree about which task owns a line.
+    if (header) {
       finish();
       out.push(line);
-      if (header) taskId = header[2];
+      taskId = header[2];
       continue;
     }
     const meta = taskId ? line.match(METADATA_LINE) : null;
     if (meta) {
       indent = meta[1];
       lastMetaAt = out.length;
-      const key = meta[2];
+      // Normalize the key exactly as `parseMetadataLine` does — legacy
+      // Title-Case keys (`Context`, `Prompt`) are real on older installs and
+      // read back as the camelCase key, so a case-sensitive compare here would
+      // skip them, record the migration applied, and leave them unsplit forever.
+      const key = meta[2].charAt(0).toLowerCase() + meta[2].slice(1);
       if (key === TASK_PROMPT_KEY) hasPrompt = true;
       else if (key === TASK_CONTEXT_KEY) {
         const decoded = decodeMetadataValue(meta[3].trim());
