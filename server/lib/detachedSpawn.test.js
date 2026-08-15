@@ -230,13 +230,16 @@ describe('spawnDetached', () => {
 
   // A child that runs until a marker file appears, then exits with a code and
   // NO signal — the shape `taskkill /T /F` produces on Windows, where the kill
-  // happens out of band so libuv records no exit_signal.
-  const spawnWin32Fallback = async () => {
+  // happens out of band so libuv records no exit_signal. Driven by `node -e`
+  // rather than `sh -c` because these tests are NOT gated on IS_POSIX: they
+  // pin the platform and must run on a real Windows checkout, which has no
+  // guaranteed POSIX shell.
+  const spawnWin32Fallback = async (exitCode = 1) => {
     const controlDir = await tmpControlDir();
     const marker = join(controlDir, 'go');
     const handle = await spawnDetached(
-      'sh',
-      ['-c', 'while [ ! -f "$1" ]; do sleep 0.05; done; exit 1', 'sh', marker],
+      process.execPath,
+      ['-e', `const {existsSync}=require('fs');const t=setInterval(()=>{if(existsSync(process.argv[1])){clearInterval(t);process.exit(${exitCode});}},25);`, marker],
       { controlDir }
     );
     return { handle, terminate: () => writeFile(marker, '1') };
@@ -294,16 +297,10 @@ describe('spawnDetached', () => {
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const controlDir = await tmpControlDir();
-      const marker = join(controlDir, 'go');
-      const handle = await spawnDetached(
-        'sh',
-        ['-c', 'while [ ! -f "$1" ]; do sleep 0.05; done; exit 0', 'sh', marker],
-        { controlDir }
-      );
+      const { handle, terminate } = await spawnWin32Fallback(0);
       const closed = onClose(handle);
       handle.kill('SIGTERM');
-      await writeFile(marker, '1');
+      await terminate();
       const { code, signal } = await closed;
       expect(code).toBe(0);
       expect(signal).toBeNull();
@@ -364,14 +361,34 @@ describe('spawnDetached', () => {
     }
   });
 
+  it('win32 fallback rejects an unknown signal instead of force-killing the tree', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const { handle, terminate } = await spawnWin32Fallback();
+      const closed = onClose(handle);
+      // ChildProcess.kill() throws ERR_UNKNOWN_SIGNAL on a typo'd name; the
+      // override must not turn that into a silent whole-tree force-kill.
+      expect(() => handle.kill('SIGKLL')).toThrow();
+      expect(killProcessTree).not.toHaveBeenCalled();
+      await terminate();
+      await closed;
+    } finally {
+      restorePlatform();
+    }
+  });
+
   it.runIf(IS_POSIX)('leaves the POSIX path on its own pid/group signalling (no tree-kill)', async () => {
     killProcessTree.mockClear();
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });
+    // Attach the close listener BEFORE killing — the tail loop can fire 'close'
+    // as soon as the signal lands.
+    const closed = onClose(handle);
     await new Promise((r) => setTimeout(r, 50));
     expect(handle.kill('SIGKILL')).toBe(true);
     expect(killProcessTree).not.toHaveBeenCalled();
-    await onClose(handle);
+    await closed;
   });
 
   describe('reapDetached', () => {
