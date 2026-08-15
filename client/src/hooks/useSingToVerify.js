@@ -8,6 +8,7 @@ import { createPitchTracker } from '../lib/pitchDetect.js';
 import { parseScore } from '../lib/scoreNotation.js';
 import { alignSingToVerify } from '../lib/singToVerify.js';
 import useAudioSessionClaim from './useAudioSessionClaim.js';
+import useAsyncCaptureGuard from './useAsyncCaptureGuard.js';
 import useMounted from './useMounted.js';
 
 export const VERIFY_IDLE = 'idle';
@@ -33,8 +34,6 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
   const captureStartRef = useRef(0);
   const startBarRef = useRef(1);
   const capturingRef = useRef(false);
-  const startPendingRef = useRef(false);
-  const requestGenerationRef = useRef(0);
 
   const bpm = clampBpm(tempo ?? score.tempo) ?? DEFAULT_BPM;
 
@@ -55,15 +54,19 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
     capturingRef.current = false;
   }, [releaseSession]);
 
-  const cancel = useCallback(() => {
-    requestGenerationRef.current += 1;
-    startPendingRef.current = false;
-    teardown();
+  const resetAfterCancel = useCallback(() => {
     trackRef.current = [];
     if (!mountedRef.current) return;
     setPhase(VERIFY_IDLE);
     setBeat(null);
-  }, [teardown, mountedRef]);
+  }, [mountedRef]);
+
+  const {
+    tryStart,
+    settleStart,
+    isCurrent,
+    cancel,
+  } = useAsyncCaptureGuard({ teardown, onCancel: resetAfterCancel });
 
   const stop = useCallback(() => {
     if (phase === VERIFY_IDLE) return;
@@ -83,9 +86,9 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
   }, [phase, score, bpm, teardown, mountedRef]);
 
   const start = useCallback(async (startBar = 1) => {
-    if (phase !== VERIFY_IDLE || startPendingRef.current) return;
-    startPendingRef.current = true;
-    const requestGeneration = ++requestGenerationRef.current;
+    if (phase !== VERIFY_IDLE) return;
+    const requestGeneration = tryStart();
+    if (requestGeneration === null) return;
     setError(null);
     setRows([]);
     trackRef.current = [];
@@ -93,7 +96,7 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
 
     const getUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
     if (!getUserMedia) {
-      startPendingRef.current = false;
+      settleStart(requestGeneration);
       if (mountedRef.current) setError('Microphone access requires a secure browser connection');
       return;
     }
@@ -106,20 +109,19 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
     // superseded request would drop THAT claim instead of ours.
     claimSession();
     const stream = await getUserMedia({ audio: true }).catch((err) => {
-      if (requestGeneration === requestGenerationRef.current) {
-        startPendingRef.current = false;
+      if (settleStart(requestGeneration)) {
         releaseSession();
         if (mountedRef.current) setError(err?.message || 'Microphone access denied');
       }
       return null;
     });
     if (!stream) return;
-    if (!mountedRef.current || requestGeneration !== requestGenerationRef.current) {
+    if (!mountedRef.current || !isCurrent(requestGeneration)) {
       stream.getTracks().forEach((track) => track.stop());
-      if (requestGeneration === requestGenerationRef.current) releaseSession();
+      if (isCurrent(requestGeneration)) releaseSession();
       return;
     }
-    startPendingRef.current = false;
+    settleStart(requestGeneration);
     streamRef.current = stream;
 
     const graph = createStreamAnalyser(stream);
@@ -160,12 +162,12 @@ export default function useSingToVerify({ score: scoreText = '', tempo } = {}) {
       // reason: a cancel()/restart during this await already tore THIS request
       // down, so an ungated teardown() here would stop the newer request's mic
       // stream and release the session claim it now holds.
-      if (requestGeneration !== requestGenerationRef.current) return;
+      if (!isCurrent(requestGeneration)) return;
       if (mountedRef.current) setError(err?.message || 'Could not start audio');
       teardown();
       if (mountedRef.current) setPhase(VERIFY_IDLE);
     });
-  }, [phase, bpm, score.time.beats, score.time.beatValue, teardown, mountedRef, claimSession, releaseSession]);
+  }, [phase, bpm, score.time.beats, score.time.beatValue, teardown, mountedRef, claimSession, releaseSession, tryStart, settleStart, isCurrent]);
 
   const reset = useCallback(() => {
     setRows([]);

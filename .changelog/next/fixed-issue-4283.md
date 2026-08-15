@@ -1,0 +1,1 @@
+- **[issue-4283] Microphone capture now cleans up cancelled permission requests consistently across singing tools.**
