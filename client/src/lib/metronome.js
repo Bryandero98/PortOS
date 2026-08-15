@@ -43,11 +43,15 @@ export const clampBpm = (bpm) => {
   return Math.max(METRONOME_BPM_MIN, Math.min(METRONOME_BPM_MAX, Math.round(n)));
 };
 
-// One canonical reading of a time-signature numerator: a garbled, zero or
-// negative `beatsPerBar` falls back to 4/4 rather than producing a bar with no
-// beats in it. The scheduler and the visual pulse must agree on this or the
-// dots stop matching the clicks.
-export const normalizeBeatsPerBar = (beatsPerBar) => Math.max(1, Math.floor(beatsPerBar) || DEFAULT_BEATS_PER_BAR);
+// One canonical reading of a time-signature numerator: anything not a positive
+// finite count — absent, garbled, zero, negative, Infinity — falls back to 4/4
+// rather than producing a bar with no beats in it (or, for Infinity, a row of
+// dots `Array.from` refuses to build). The scheduler and the visual pulse must
+// agree on this or the dots stop matching the clicks.
+export const normalizeBeatsPerBar = (beatsPerBar) => {
+  const n = Math.floor(Number(beatsPerBar));
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_BEATS_PER_BAR;
+};
 
 // Seconds between beats at a given BPM (the beat unit is the time-signature
 // denominator, i.e. one click per notated beat).

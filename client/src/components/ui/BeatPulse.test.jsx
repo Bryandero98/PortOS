@@ -66,7 +66,7 @@ describe('BeatPulse', () => {
 
   // The scheduler reads a garbled numerator as 4/4 (`normalizeBeatsPerBar`), so
   // the dots have to land on the same count or they stop matching the clicks.
-  it.each([['absent', undefined], ['NaN', NaN], ['zero', 0]])(
+  it.each([['absent', undefined], ['NaN', NaN], ['zero', 0], ['negative', -3], ['infinite', Infinity]])(
     'falls back to 4 beats for a %s time signature, like the scheduler does',
     (_label, beatsPerBar) => {
       const { container } = render(<BeatPulse beatsPerBar={beatsPerBar} beat={null} />);
