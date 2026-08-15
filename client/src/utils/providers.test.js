@@ -840,13 +840,14 @@ describe('supportsModelRefresh', () => {
     expect(decorated.length).toBeGreaterThan(20);
 
     const withButton = decorated.filter(supportsModelRefresh).map((p) => p.id).sort();
-    // Frozen from the pre-#3620 dispatch chains — the refactor must not change
-    // WHICH shipped provider offers the button.
+    // Intentional shipped-catalog contract: a newly seeded provider must either
+    // have a usable fetcher or stay out of this list.
     expect(withButton).toEqual([
       'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
       'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
-      'cursor-tui', 'grok', 'lmstudio', 'nvidia-kimi', 'ollama',
-      'opencode-ollama', 'opencode-ollama-tui',
+      'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
+      'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama',
+      'opencode-ollama-tui',
     ]);
   });
 });

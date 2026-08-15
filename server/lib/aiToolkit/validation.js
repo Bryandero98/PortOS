@@ -96,6 +96,10 @@ export const providerSchema = z.object({
   // local Ollama daemon — the "Claude Ollama" pattern. Drives model refresh to
   // pull tool-use-capable Ollama models instead of the static Anthropic list.
   ollamaBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started MTPLX native-MTP
+  // server. This is intentionally distinct from `ollamaBacked`: model weights
+  // and runtime protocol configuration are not interchangeable.
+  mtplxBacked: z.boolean().optional(),
   // Explicit opt-in to attach the provider's API key to an arbitrary
   // (non-local, non-allowlisted) endpoint. Guards against SSRF / key
   // exfiltration to a hostile or mistyped host — see

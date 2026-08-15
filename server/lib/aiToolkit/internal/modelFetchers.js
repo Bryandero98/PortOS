@@ -61,6 +61,16 @@ export const MODEL_FETCHERS = [
     fetch: '_fetchOllamaToolCapableModels',
   },
   {
+    key: 'mtplx',
+    // MTPLX exposes the selected native-MTP model through its OpenAI-compatible
+    // endpoint. Its OpenCode CLI/TUI variants need that endpoint probe rather
+    // than `opencode models`, which describes the harness instead of its local
+    // provider.
+    cliMatch: (p) => p?.mtplxBacked === true,
+    tuiMatch: (p) => p?.mtplxBacked === true,
+    fetch: '_fetchMtplxModels',
+  },
+  {
     key: 'cursor',
     // No `cliNameMatch` on purpose — see the column notes above.
     cliMatch: (p) => isCursorCommand(p?.command),

@@ -638,6 +638,11 @@ describe('validation.js', () => {
       const result = providerSchema.safeParse(provider);
       expect(result.success).toBe(true);
     });
+
+    it('should allow the explicit MTPLX provider marker', () => {
+      const result = providerSchema.safeParse({ name: 'MTPLX', type: 'cli', mtplxBacked: true });
+      expect(result.success).toBe(true);
+    });
   });
 
   describe('runSchema', () => {

@@ -407,6 +407,9 @@ export const providerSchema = z.object({
   defaultModel: z.string().nullable().optional(),
   timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional(),
   enabled: z.boolean().optional(),
+  // Kept in schema parity with aiToolkit's provider schema. Marks OpenCode
+  // wrappers for a separately started local MTPLX native-MTP server.
+  mtplxBacked: z.boolean().optional(),
   // Explicit opt-in to attach the API key to an arbitrary (non-local,
   // non-allowlisted) endpoint — mirrors the aiToolkit providerSchema. Guards
   // SSRF / key exfiltration (server/lib/aiToolkit/internal/endpointGuard.js).

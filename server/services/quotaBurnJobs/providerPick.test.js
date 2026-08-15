@@ -64,12 +64,14 @@ describe('providerForFamily', () => {
     // unused. Same exclusion `resolveEnabledFamilies` applies to the cards.
     const providers = [
       { id: 'claude-ollama-tui', type: 'tui', enabled: true, ollamaBacked: true },
+      { id: 'opencode-mtplx-tui', type: 'tui', enabled: true, mtplxBacked: true },
       { id: 'claude-code-tui', type: 'tui', enabled: true },
       { id: 'claude-code', type: 'cli', enabled: true },
     ];
     expect(providerForFamily(providers, { familyId: 'claude' })?.id).toBe('claude-code-tui');
     // Not even by explicit pin — it cannot do the one thing the job is for.
     expect(providerForFamily(providers, { familyId: 'claude', providerId: 'claude-ollama-tui' })).toBeNull();
+    expect(providerForFamily(providers, { familyId: 'claude', providerId: 'opencode-mtplx-tui' })).toBeNull();
     expect(providerForFamily([providers[0]], { familyId: 'claude' })).toBeNull();
   });
 });

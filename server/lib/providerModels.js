@@ -425,19 +425,34 @@ export function isOpencodeCommand(command) {
  * (`hf.co/user/model:tag`) is namespaced as `ollama/hf.co/...` since OpenCode
  * splits provider/model on the FIRST slash only.
  *
- * Gated on the `ollamaBacked` marker, NOT just `command === 'opencode'`: a
+ * Gated on a local-runtime marker, NOT just `command === 'opencode'`: a
  * user-configured OpenCode provider pointed at a different backend stores an
  * already-qualified id (`openai/gpt-4o`, `anthropic/claude-sonnet`), and blindly
  * prefixing `ollama/` would route it to the wrong backend. No-op for
- * non-Ollama-backed / non-OpenCode providers and empty models.
- * @param {{command?:string, ollamaBacked?:boolean}} provider
+ * non-local / non-OpenCode providers and empty models.
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean}} provider
  * @param {string|null|undefined} model
  * @returns {string|null|undefined}
  */
 export function prefixOpencodeModel(provider, model) {
-  if (!isOpencodeCommand(provider?.command) || provider?.ollamaBacked !== true || !model) return model;
+  const namespace = getOpencodeLocalProviderNamespace(provider);
+  if (!isOpencodeCommand(provider?.command) || !namespace || !model) return model;
   const id = String(model);
-  return id.startsWith('ollama/') ? id : `ollama/${id}`;
+  return id.startsWith(`${namespace}/`) ? id : `${namespace}/${id}`;
+}
+
+/**
+ * OpenCode's local OpenAI-compatible provider namespace, if this provider has
+ * opted into one. Structural markers avoid deriving a backend from an editable
+ * display name or endpoint and preserve the legacy Ollama outcome if a malformed
+ * record carries both markers.
+ * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean}|null|undefined} provider
+ * @returns {'ollama'|'mtplx'|null}
+ */
+export function getOpencodeLocalProviderNamespace(provider) {
+  if (provider?.ollamaBacked === true) return 'ollama';
+  if (provider?.mtplxBacked === true) return 'mtplx';
+  return null;
 }
 
 /**
@@ -575,7 +590,7 @@ export function resolveBedrockCliModel(id, { env = process.env, providerId } = {
  * every shipped provider.)
  *
  * @param {string} model - the already-resolved (non-sentinel) model id
- * @param {{id?:string, command?:string, ollamaBacked?:boolean, envVars?:Record<string,string>}|null|undefined} provider
+ * @param {{id?:string, command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, envVars?:Record<string,string>}|null|undefined} provider
  * @param {string} [command] - resolved launch command (may differ from provider.command)
  * @returns {string}
  */

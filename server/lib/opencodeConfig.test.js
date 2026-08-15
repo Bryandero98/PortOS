@@ -19,6 +19,15 @@ describe('toBareModelIds', () => {
   it('keeps a slash-bearing id intact after stripping only the leading namespace', () => {
     expect(toBareModelIds('ollama/hf.co/user/model:tag')).toEqual(['hf.co/user/model:tag']);
   });
+
+  it('strips the MTPLX namespace without treating slash-bearing ids as providers', () => {
+    expect(toBareModelIds(['mtplx/mtplx', 'mtplx/qwen/model'], 'mtplx'))
+      .toEqual(['mtplx', 'qwen/model']);
+  });
+
+  it('rejects an unknown local provider key instead of silently using Ollama', () => {
+    expect(() => toBareModelIds('model', 'unknown')).toThrow(/unsupported opencode local provider/i);
+  });
 });
 
 describe('buildOpencodeConfig', () => {
@@ -75,6 +84,19 @@ describe('buildOpencodeConfig', () => {
     // does not mutate the caller's base object
     expect(base.provider.ollama.models['qwen2.5:7b']).toBeUndefined();
   });
+
+  it('declares MTPLX models under provider.mtplx with its local endpoint', () => {
+    const cfg = buildOpencodeConfig('mtplx/mtplx', null, 'mtplx');
+    expect(cfg.provider.ollama).toBeUndefined();
+    expect(cfg.provider.mtplx).toMatchObject({
+      npm: '@ai-sdk/openai-compatible',
+      name: 'MTPLX (local MTP)',
+      options: { baseURL: 'http://127.0.0.1:8000/v1' },
+    });
+    expect(cfg.provider.mtplx.models).toEqual({
+      mtplx: { name: 'mtplx', tool_call: true },
+    });
+  });
 });
 
 describe('buildOpencodeConfigContent', () => {
@@ -112,6 +134,13 @@ describe('buildOpencodeEnvVars', () => {
     expect(result.OPENCODE_CONFIG_CONTENT).toBeDefined();
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
     expect(cfg.provider.ollama.models['qwen2.5:7b']).toEqual({ name: 'qwen2.5:7b', tool_call: true });
+  });
+
+  it('declares the run model under provider.mtplx.models for MTPLX-backed OpenCode', () => {
+    const result = buildOpencodeEnvVars({ command: 'opencode', mtplxBacked: true, models: ['mtplx'] }, 'mtplx');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.mtplx.options.baseURL).toBe('http://127.0.0.1:8000/v1');
+    expect(cfg.provider.mtplx.models.mtplx).toEqual({ name: 'mtplx', tool_call: true });
   });
 
   it('unions the provider models, defaultModel, and the run model (deduped, bare)', () => {

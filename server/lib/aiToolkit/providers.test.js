@@ -139,6 +139,7 @@ describe('Provider Service', () => {
       contextWindow: 1000000,
       timeout: 600000,
       enabled: false,
+      mtplxBacked: true,
       envVars: { OPENAI_BASE_URL: 'https://example.com', LOG_LEVEL: 'debug' },
       secretEnvVars: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
       headlessArgs: ['--quiet', '--no-color'],
@@ -1174,6 +1175,38 @@ describe('Provider Service', () => {
       expect(err).toBeInstanceOf(Error);
       expect(err.message).toMatch(/not supported/i);
       expect(err.status).toBe(400);
+    });
+  });
+
+  describe('MTPLX model refresh', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('uses the local OpenAI-compatible model endpoint for both OpenCode modes', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'mtplx' }, { id: 'qwen3.8-mtp' }] }),
+      });
+      vi.stubGlobal('fetch', fetchSpy);
+
+      for (const [name, type] of [['OpenCode MTPLX', 'cli'], ['OpenCode MTPLX TUI', 'tui']]) {
+        const provider = await providerService.createProvider({
+          name,
+          type,
+          command: 'opencode',
+          endpoint: 'http://127.0.0.1:8000/v1',
+          mtplxBacked: true,
+          models: ['stale-model'],
+        });
+        const updated = await providerService.refreshProviderModels(provider.id);
+        expect(updated.models).toEqual(['mtplx', 'qwen3.8-mtp']);
+      }
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      for (const [url] of fetchSpy.mock.calls) {
+        expect(url).toBe('http://127.0.0.1:8000/v1/models');
+      }
     });
   });
 
