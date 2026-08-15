@@ -20,7 +20,7 @@ export const LI_NEUTRAL_REASONS = new Set([
 
 const LI_REASON_LABELS = {
   'no-provider': 'no AI provider is configured for it',
-  'unparseable-response': 'the reasoning model returned no usable JSON — try a non-reasoning model or an API provider',
+  'unparseable-response': 'the reasoning model returned no usable answer — no JSON at all, or an envelope field it got wrong (see the server log for which) — try a non-reasoning model or an API provider',
   'no-proposal': 'the loop had nothing to propose',
   'scope-suppressed': "the proposal's scope isn't allowed for this app",
   'hard-gate-excluded': "excluded before filing — the loop's own execution is degraded and this proposal maps to self-improve scope or a chronically-failing domain",

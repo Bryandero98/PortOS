@@ -415,6 +415,26 @@ describe('validateReasonerResponse', () => {
       expect(validateReasonerResponse({ proposal: null, pause: { blockOnIssue: 'this', reason: 'x' } }).invalidFields).toEqual(['pause']);
     });
 
+    it('does not double-report a "this" pause dropped as collateral of an invalid proposal', () => {
+      // The pause is well-formed — it was dropped only because the proposal it pointed
+      // at failed validation. One root cause, one report.
+      const r = validateReasonerResponse({
+        proposal: { scope: 'nuke', slug: 'x', title: 'X' },
+        pause: { blockOnIssue: 'this', reason: 'block on the new one' }
+      });
+      expect(r.pause).toBe(null);
+      expect(r.invalidFields).toEqual(['proposal']);
+    });
+
+    it('still reports a "this" pause that is itself malformed alongside a bad proposal', () => {
+      // No reason → the pause is broken on its own terms, not collateral.
+      const r = validateReasonerResponse({
+        proposal: { scope: 'nuke', slug: 'x', title: 'X' },
+        pause: { blockOnIssue: 'this', reason: '' }
+      });
+      expect(r.invalidFields).toEqual(['proposal', 'pause']);
+    });
+
     it('treats an absent or explicitly-null field as absent, never malformed', () => {
       expect(validateReasonerResponse({ analysis: 'nothing to propose', proposal: null, pause: null }).invalidFields).toEqual([]);
       expect(validateReasonerResponse({ proposal: null }).invalidFields).toEqual([]);

@@ -601,7 +601,17 @@ export async function processTaskOutput({ appId, success, payload, agentId } = {
   // A null envelope never reaches here with a non-empty list (the validator returns
   // the empty triple for it), and the ternary below short-circuits on it anyway; the
   // `= []` destructuring default keeps a stubbed validator from throwing.
+  //
+  // Asymmetry, unchanged from #2727 and deliberate: a SURVIVING proposal overwrites
+  // `reason` on every branch of the filing path below, so a junk `analysis` alongside
+  // a filed proposal records the filing outcome — but a surviving `pause` does NOT
+  // re-derive `reason`, so it still applies its blocking label while the run records
+  // `unparseable-response`. The proposal is the run's deliverable; a pause is a side
+  // effect, and a reasoner that got another field wrong is worth surfacing.
   const malformedEnvelope = invalidFields.length > 0
+  // Name the offending fields — `unparseable-response` alone can't tell an operator
+  // whether the model returned no JSON at all or one wrong-typed key.
+  if (malformedEnvelope) console.warn(`⚠️ Layered Intelligence: ${app.name} reasoner envelope has unusable fields: ${invalidFields.join(', ')}`)
 
   let filedNumber = null
   let filedKey = null

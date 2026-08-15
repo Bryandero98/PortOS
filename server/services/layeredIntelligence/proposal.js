@@ -2,7 +2,8 @@
  * Layered Intelligence — reasoner-output validation & hand-off shaping
  * (#2842 split of layeredIntelligence.js).
  *
- * Validates the model's JSON into a `{ analysis, proposal, pause }` triple, resolves
+ * Validates the model's JSON into an `{ analysis, proposal, pause, invalidFields }`
+ * result (the usable triple plus the malformed-field report, #4166), resolves
  * the pause target, and decides whether/how a filed proposal becomes an autonomous
  * CoS hand-off task. Also the tracker→filer dispatch table.
  */
@@ -28,7 +29,10 @@ import { normalizeSlug } from './dedup.js';
  * caller deciding whether a run was malformed must not have to re-derive per-field
  * validity: `{"analysis": 7}` reads as a legitimate empty answer without this.
  * `null`/`undefined` is ABSENT, not wrong-typed — an explicit `proposal: null` is
- * the documented "nothing to propose" answer and never lands here.
+ * the documented "nothing to propose" answer and never lands here. Deliberately
+ * ONLY `null`: the prompt documents `null` for "not proposing"/"not pausing", so a
+ * model emitting `false` or `"none"` instead is a wrong-typed field and is reported
+ * (this already matched the pre-#4166 treatment of a `false` proposal).
  */
 export function validateReasonerResponse(parsed) {
   const out = { analysis: '', proposal: null, pause: null, invalidFields: [] };
@@ -58,6 +62,13 @@ export function validateReasonerResponse(parsed) {
   if (p != null && !out.proposal) out.invalidFields.push('proposal');
 
   const pause = parsed.pause;
+  // A well-formed `blockOnIssue: "this"` pause is dropped as COLLATERAL when the
+  // proposal it pointed at was itself supplied-but-invalid. The pause isn't the
+  // malformed part, so it doesn't earn its own `invalidFields` entry — one root
+  // cause, one report. With no proposal supplied at all, `"this"` points at nothing
+  // and the pause IS malformed. Either way `invalidFields` is already non-empty, so
+  // this only sharpens the report, never the malformed/clean verdict.
+  let pauseCollateral = false;
   if (pause && typeof pause === 'object' && !Array.isArray(pause)) {
     const reason = typeof pause.reason === 'string' ? pause.reason.trim() : '';
     const target = pause.blockOnIssue;
@@ -66,9 +77,11 @@ export function validateReasonerResponse(parsed) {
     // "this" requires a surviving proposal to block on; else an explicit issue number.
     if (reason && ((isThis && out.proposal) || num)) {
       out.pause = { blockOnIssue: isThis ? 'this' : num, reason };
+    } else if (reason && isThis) {
+      pauseCollateral = out.invalidFields.includes('proposal');
     }
   }
-  if (pause != null && !out.pause) out.invalidFields.push('pause');
+  if (pause != null && !out.pause && !pauseCollateral) out.invalidFields.push('pause');
 
   return out;
 }
