@@ -19,7 +19,7 @@ describe('localLlmCatalog', () => {
       const ollama = getCatalog('ollama');
       const gemma = ollama.find((m) => m.key === 'gemma4-12b');
       expect(gemma.id).toBe('gemma4:12b');
-      expect(gemma.category).toBe('chat');
+      expect(gemma.category).toBe('general');
       const lms = getCatalog('lmstudio');
       const gemmaLms = lms.find((m) => m.key === 'gemma4-12b');
       expect(gemmaLms.id).toBe('lmstudio-community/gemma-4-12B-it-GGUF');
@@ -29,9 +29,14 @@ describe('localLlmCatalog', () => {
       expect(getCatalog('ollama').length).toBe(LOCAL_LLM_CATALOG.filter((e) => e.ollama).length);
     });
 
-    it('keeps every entry in a known category', () => {
+    it('keeps every primary and secondary recommendation category known', () => {
       const categories = new Set(LOCAL_LLM_CATEGORIES.map((c) => c.id));
       expect(LOCAL_LLM_CATALOG.every((entry) => categories.has(entry.category))).toBe(true);
+      expect(LOCAL_LLM_CATALOG.every((entry) => (
+        Array.isArray(entry.recommendedFor)
+        && entry.recommendedFor.includes(entry.category)
+        && entry.recommendedFor.every((category) => categories.has(category))
+      ))).toBe(true);
     });
 
     it('marks installed models (tag-insensitive for Ollama)', () => {
@@ -80,6 +85,16 @@ describe('localLlmCatalog', () => {
       expect(ollama.find((m) => m.key === 'glm-4.7-flash').contextLength).toBeNull();
     });
 
+    it('marks Qwen3.8 as the flagship general model without hiding its coding and vision use cases', () => {
+      const qwen = getCatalog('ollama').find((m) => m.key === 'qwen3.8-27b');
+      expect(qwen).toMatchObject({
+        category: 'general',
+        featured: { label: 'Best overall' },
+      });
+      expect(qwen.recommendedFor).toEqual(expect.arrayContaining(['general', 'coding', 'reasoning', 'vision']));
+      expect(qwen.capabilities).toEqual(expect.arrayContaining(['code', 'tools', 'vision']));
+    });
+
     it('never lists an Ollama `:cloud` tag — those manifests carry no local weights', () => {
       expect(LOCAL_LLM_CATALOG.every((e) => !/(?:^|:)cloud$/.test(e.ollama || ''))).toBe(true);
     });
@@ -91,6 +106,7 @@ describe('localLlmCatalog', () => {
     });
     it('filters by name, family, and description', () => {
       expect(searchCatalog('ollama', 'coding').some((m) => m.key === 'qwen3.6-35b-a3b')).toBe(true);
+      expect(searchCatalog('ollama', 'coding').some((m) => m.key === 'qwen3.8-27b')).toBe(true);
       expect(searchCatalog('ollama', 'vision').some((m) => m.key === 'qwen3-vl-8b')).toBe(true);
       expect(searchCatalog('ollama', 'embedding').some((m) => m.key === 'nomic-embed-text-v2-moe')).toBe(true);
       expect(searchCatalog('ollama', 'zzzznotamodel')).toEqual([]);

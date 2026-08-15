@@ -71,6 +71,9 @@ describe('huggingFaceCatalog', () => {
 
     expect(results[0].id).toBe('bartowski/Meta-Llama-3.1-8B-Instruct-GGUF')
     expect(results[0].installed).toBe(true)
+    // A non-specialized instruct model belongs in the broad start-here lane,
+    // not the narrower Chat & voice filter.
+    expect(results[0].category).toBe('general')
   })
 
   it('backfills file sizes from the per-model blobs endpoint when the search omits them', async () => {

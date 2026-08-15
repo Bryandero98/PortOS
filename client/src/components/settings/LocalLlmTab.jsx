@@ -24,17 +24,24 @@ const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
 const CATEGORY_LABELS = {
-  chat: 'Chat',
-  reasoning: 'Reasoning',
-  coding: 'Coding',
+  general: 'General purpose',
+  coding: 'Coding & agents',
+  reasoning: 'Reasoning & analysis',
   vision: 'Image Analysis',
+  chat: 'Chat & voice',
   audio: 'Audio & Music',
   embedding: 'Text Embeddings',
   lightweight: 'Small & Fast',
   multilingual: 'Multilingual'
 };
-const CATEGORY_ORDER = ['reasoning', 'coding', 'vision', 'audio', 'embedding', 'chat', 'lightweight', 'multilingual'];
+const CATEGORY_ORDER = ['general', 'coding', 'reasoning', 'vision', 'chat', 'lightweight', 'multilingual', 'embedding', 'audio'];
 const categoryLabel = (id) => CATEGORY_LABELS[id] || id;
+const primaryCategoryFor = (model) => model?.category || 'general';
+const recommendationCategoriesFor = (model) => {
+  const categories = model?.recommendedFor;
+  return Array.isArray(categories) && categories.length ? categories : [primaryCategoryFor(model)];
+};
+const isRecommendedForCategory = (model, category) => recommendationCategoriesFor(model).includes(category);
 
 // Render model capabilities as colored icons (LM Studio style) instead of text.
 // `cls` is the icon color; the bordered chip uses the same hue at low opacity.
@@ -429,12 +436,17 @@ export function LocalLlmTab() {
   const compareTargetKeys = useMemo(() => new Set(compareTargets.map(localLlmTargetKey)), [compareTargets]);
   const catalogCategories = useMemo(() => {
     const counts = new Map();
-    for (const model of catalog) counts.set(model.category || 'chat', (counts.get(model.category || 'chat') || 0) + 1);
+    for (const model of catalog) {
+      for (const category of recommendationCategoriesFor(model)) {
+        counts.set(category, (counts.get(category) || 0) + 1);
+      }
+    }
     // Hugging Face is searched per-category server-side, so a default GGUF query
     // never surfaces audio results — expose the full category set as filter
     // buttons (count shown only when known) so the user can navigate to
-    // categories like Audio & Music. The curated local catalog stays
-    // counts-driven (its categories are fixed and fully present).
+    // categories like Audio & Music. Curated counts include every lane a model
+    // is recommended for; the unfiltered groups below still use one primary
+    // lane per model, so broad models never duplicate in All.
     const ids = catalogSource === 'huggingface'
       ? CATEGORY_ORDER
       : CATEGORY_ORDER.filter((id) => counts.has(id));
@@ -443,13 +455,21 @@ export function LocalLlmTab() {
   const visibleCatalogGroups = useMemo(() => {
     const filterCategory = catalogSource === 'huggingface' ? 'all' : activeCategory;
     const categoryIds = filterCategory === 'all'
-      ? catalogCategories.map((c) => c.id)
+      ? CATEGORY_ORDER.filter((category) => catalog.some((model) => primaryCategoryFor(model) === category))
       : [filterCategory];
     return categoryIds
       .map((category) => ({
         category,
         label: categoryLabel(category),
-        models: catalog.filter((model) => (model.category || 'chat') === category)
+        // A featured recommendation leads every relevant lane, including the
+        // broad All view, instead of being buried by the catalog's source order.
+        models: catalog
+          .filter((model) => (
+            filterCategory === 'all'
+              ? primaryCategoryFor(model) === category
+              : isRecommendedForCategory(model, category)
+          ))
+          .sort((a, b) => Number(Boolean(b.featured)) - Number(Boolean(a.featured)))
       }))
       .filter((group) => group.models.length > 0);
   }, [activeCategory, catalog, catalogCategories, catalogSource]);
@@ -850,10 +870,18 @@ export function LocalLlmTab() {
                   const createdMs = new Date(m.createdAt).getTime();
                   const updatedMs = new Date(m.updatedAt).getTime();
                   return (
-                  <div key={m.key || m.id} className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-3 bg-port-bg border border-port-border rounded-lg p-3">
+                  <div key={m.key || m.id} className={`flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-3 rounded-lg p-3 ${m.featured ? 'bg-port-accent/5 border border-port-accent/60 ring-1 ring-port-accent/20' : 'bg-port-bg border border-port-border'}`}>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white break-words">
                         {m.name} <span className="text-xs text-gray-500">· {m.params}</span>
+                        {m.featured && (
+                          <span
+                            title={m.featured.description || 'Flagship local recommendation'}
+                            className="ml-1.5 align-middle inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded border border-port-accent/60 bg-port-accent/15 text-port-accent"
+                          >
+                            <Star size={9} className="fill-current" /> {m.featured.label || 'Featured'}
+                          </span>
+                        )}
                         {FORMAT_META[m.format] && (
                           <span
                             title={FORMAT_META[m.format].title}
@@ -873,6 +901,9 @@ export function LocalLlmTab() {
                       </div>
                       <div className="text-xs text-gray-500 break-all">{chosenId}</div>
                       <div className="text-xs text-gray-500 mt-0.5">{m.description}</div>
+                      {m.featured?.description && (
+                        <div className="text-xs text-port-accent mt-1">{m.featured.description}</div>
+                      )}
                       {m.note && <div className="text-[11px] text-port-warning/90 mt-0.5">{m.note}</div>}
                       {hasVariantPicker && (
                         <div className="flex items-center gap-1.5 flex-wrap mt-1">

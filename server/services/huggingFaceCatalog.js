@@ -23,6 +23,10 @@ const CATEGORY_IDS = new Set(LOCAL_LLM_CATEGORIES.map((c) => c.id))
 // keyword + 'gguf' so the default browse reliably returns the top-downloaded
 // matches for that category. The user's typed query overrides these entirely.
 const CATEGORY_SEARCH = {
+  // General purpose is the broad "start here" lane. Chat & voice remains a
+  // narrower workflow filter in the curated catalog, but the Hub has no
+  // reliable tag for that distinction, so it uses the same instruct search.
+  general: 'instruct gguf',
   chat: 'instruct gguf',
   reasoning: 'reasoning gguf',
   coding: 'coder gguf',
@@ -281,7 +285,7 @@ function classifyModel(model, requestedCategory) {
   if (/(reason|thinking|r1|qwq)/.test(haystack)) return 'reasoning'
   if (/(1b|2b|3b|4b|small|mini|tiny|smol)/.test(haystack)) return 'lightweight'
   if (/(multilingual|qwen|aya|bloom|command-r)/.test(haystack)) return 'multilingual'
-  return 'chat'
+  return 'general'
 }
 
 function capabilitiesFor(model, category) {
@@ -336,7 +340,7 @@ function scoreModel(model, category, file) {
   if (TRUSTED_PUBLISHERS.has(publisher)) score += 22
   if (file) score += 18
   if (/gguf/i.test(repoId) || tags.includes('gguf')) score += 10
-  if (category !== 'chat' && CATEGORY_SEARCH[category]?.split(/\s+/).some((term) => categoryText.includes(term))) score += 12
+  if (category !== 'general' && CATEGORY_SEARCH[category]?.split(/\s+/).some((term) => categoryText.includes(term))) score += 12
   if (licenseOf(model)) score += 4
   if (/(uncensored|abliterated|nsfw)/i.test(repoId)) score -= 12
   return Math.round(score)

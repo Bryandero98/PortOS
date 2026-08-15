@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../services/api', () => ({
@@ -85,5 +85,35 @@ describe('LocalLlmTab installed models', () => {
     // Size used to be its own fixed-width column competing with the name; it now
     // rides along with params/quant/family so nothing is squeezed out.
     expect(screen.getByText(/^34\.7B · Q6_K · qwen2 · [\d.]+ GB$/)).toBeTruthy();
+  });
+});
+
+describe('LocalLlmTab recommendations', () => {
+  it('highlights the flagship general model and surfaces it in its coding use-case filter', async () => {
+    getLocalLlmCatalog.mockResolvedValue({
+      models: [{
+        id: 'hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M',
+        key: 'qwen3.8-27b',
+        name: 'Qwen3.8 27B',
+        category: 'general',
+        recommendedFor: ['general', 'coding', 'reasoning', 'vision', 'multilingual'],
+        featured: {
+          label: 'Best overall',
+          description: 'Flagship local pick for general work, coding and agents, reasoning, and image analysis.',
+        },
+        params: '27B',
+        size: '17 GB',
+        description: 'A broad local model.',
+        capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision'],
+      }],
+    });
+
+    await renderTab();
+
+    expect(await screen.findByText('Best overall')).toBeTruthy();
+    expect(screen.getAllByText('General purpose').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Coding & agents (1)' }));
+    await waitFor(() => expect(screen.getByText('Qwen3.8 27B')).toBeTruthy());
   });
 });
