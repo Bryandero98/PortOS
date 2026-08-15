@@ -9,10 +9,11 @@
  * them with a different readout ("Bar 3", "2/8 bars", "5/12 chords"), so the
  * text stays with the host.
  *
- * Conventions the copies agreed on and this keeps:
- * - beat 1 is the downbeat and reads a size larger, matching the accented click;
- * - a count-in beat lights amber (`port-warning`) so "not yet" is unmistakable;
- * - unlit dots are `port-border`, i.e. the same weight as any inert chrome.
+ * What the copies already agreed on and this keeps: a count-in beat lights amber
+ * (`port-warning`) so "not yet" is unmistakable, and unlit dots are
+ * `port-border`, the same weight as any inert chrome. Newly canonical for every
+ * surface: beat 1 is drawn a size larger, matching the accented click — the
+ * Metronome had that downbeat accent and the transports didn't.
  *
  * `beat` is 1-based and nullish/`0` when stopped — the audible click is easy to
  * lose under a backing track, so "nothing lit" has to read as stopped. Hosts
@@ -20,15 +21,18 @@
  * lives here once rather than being re-typed at every call site.
  */
 
+import { normalizeBeatsPerBar } from '../../lib/metronome.js';
+
 // Lit dots are `port-success`, not `port-accent`: in the transport bars the
 // accent color already means "this control is engaged" (`activeCtrlClass`), and
 // a beat dot borrowing it competed with the play button. Green reads as
 // "sounding now" and stays clearly distinct from the amber count-in.
 const litTone = (countingIn) => (countingIn ? 'bg-port-warning' : 'bg-port-success');
 
-export default function BeatPulse({ beatsPerBar = 4, beat = null, countingIn = false }) {
-  // A malformed time signature must not blank the row out.
-  const beats = Number.isFinite(beatsPerBar) ? Math.max(1, Math.floor(beatsPerBar)) : 4;
+export default function BeatPulse({ beatsPerBar, beat = null, countingIn = false }) {
+  // Same normalization the scheduler applies, so a garbled `time:` header can't
+  // leave the dots disagreeing with the clicks.
+  const beats = normalizeBeatsPerBar(beatsPerBar);
   const label = countingIn
     ? `Counting in, beat ${beat || 1}`
     : (beat ? `Beat ${beat}` : 'Stopped');

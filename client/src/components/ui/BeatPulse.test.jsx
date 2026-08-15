@@ -64,13 +64,13 @@ describe('BeatPulse', () => {
     expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Stopped');
   });
 
-  it('falls back to 4 beats when the time signature is unusable', () => {
-    const { container } = render(<BeatPulse beatsPerBar={NaN} beat={null} />);
-    expect(dotsOf(container)).toHaveLength(4);
-  });
-
-  it('never renders an empty row for a zero or negative beat count', () => {
-    const { container } = render(<BeatPulse beatsPerBar={0} beat={null} />);
-    expect(dotsOf(container)).toHaveLength(1);
-  });
+  // The scheduler reads a garbled numerator as 4/4 (`normalizeBeatsPerBar`), so
+  // the dots have to land on the same count or they stop matching the clicks.
+  it.each([['absent', undefined], ['NaN', NaN], ['zero', 0]])(
+    'falls back to 4 beats for a %s time signature, like the scheduler does',
+    (_label, beatsPerBar) => {
+      const { container } = render(<BeatPulse beatsPerBar={beatsPerBar} beat={null} />);
+      expect(dotsOf(container)).toHaveLength(4);
+    },
+  );
 });

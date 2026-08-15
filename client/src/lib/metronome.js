@@ -43,6 +43,12 @@ export const clampBpm = (bpm) => {
   return Math.max(METRONOME_BPM_MIN, Math.min(METRONOME_BPM_MAX, Math.round(n)));
 };
 
+// One canonical reading of a time-signature numerator: a garbled, zero or
+// negative `beatsPerBar` falls back to 4/4 rather than producing a bar with no
+// beats in it. The scheduler and the visual pulse must agree on this or the
+// dots stop matching the clicks.
+export const normalizeBeatsPerBar = (beatsPerBar) => Math.max(1, Math.floor(beatsPerBar) || DEFAULT_BEATS_PER_BAR);
+
 // Seconds between beats at a given BPM (the beat unit is the time-signature
 // denominator, i.e. one click per notated beat).
 export const secondsPerBeat = (bpm) => 60 / (clampBpm(bpm) ?? DEFAULT_BPM);
@@ -66,7 +72,7 @@ export const timeSignatureFromScore = (score) => {
 // (default beat 1); `countIn` flags the lead-in bars (bar 0). Exported so the UI
 // and tests can reason about positions without driving the audio clock.
 export const beatDescriptor = (idx, { beatsPerBar = DEFAULT_BEATS_PER_BAR, countInBars = 0, accentBeat = 1 } = {}) => {
-  const perBar = Math.max(1, Math.floor(beatsPerBar) || DEFAULT_BEATS_PER_BAR);
+  const perBar = normalizeBeatsPerBar(beatsPerBar);
   const countInBeats = Math.max(0, Math.floor(countInBars) || 0) * perBar;
   if (idx < countInBeats) {
     const beat = (idx % perBar) + 1;
@@ -100,7 +106,7 @@ export function createMetronome({
   onCountInComplete = null,
 } = {}) {
   let currentBpm = clampBpm(bpm) ?? DEFAULT_BPM;
-  const perBar = Math.max(1, Math.floor(beatsPerBar) || DEFAULT_BEATS_PER_BAR);
+  const perBar = normalizeBeatsPerBar(beatsPerBar);
   const countIn = Math.max(0, Math.floor(countInBars) || 0);
   const descriptorOpts = { beatsPerBar: perBar, countInBars: countIn, accentBeat };
 
