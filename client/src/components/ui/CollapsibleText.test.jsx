@@ -300,6 +300,29 @@ describe('CollapsibleText children (max-height) variant', () => {
     expect(document.getElementById('c10')).not.toHaveClass('overflow-hidden');
   });
 
+  it('measures overflow live on focus rather than trusting the state flag', () => {
+    // The focus handler must not read `isOverflowing`, which a passive effect
+    // populates after commit. A descendant with `autoFocus` takes focus during
+    // the commit phase — before that effect has ever run — so the flag is still
+    // a stale `false` and the focused control is stranded inside the clipped,
+    // scrolled region. Simulated here by letting the element start out fitting
+    // and become overflowing with no re-measure in between.
+    const spy = forceOverflow();
+    spy.mockReturnValue(0);
+    render(
+      <CollapsibleText id="c12">
+        <a href="/r">buried link</a>
+      </CollapsibleText>
+    );
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+
+    spy.mockReturnValue(500);
+    fireEvent.focus(screen.getByRole('link', { name: 'buried link' }));
+
+    expect(screen.getByRole('button', { name: /Show less/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('c12')).not.toHaveClass('overflow-hidden');
+  });
+
   it('leaves fitting children alone when focus lands inside them', () => {
     // Nothing is clipped, so there is nothing to reveal — expanding here would
     // only mint a no-op "Show less" button into the tab order.

@@ -73,6 +73,11 @@ const CLAMP_CLASS = {
  *
  * `id` is required: it wires the toggle's `aria-controls` to the content it expands.
  */
+
+// The 1px slack absorbs sub-pixel line-height rounding, which otherwise reports
+// a phantom overflow on content that fits exactly.
+const overflows = el => el.scrollHeight > el.clientHeight + 1;
+
 export default function CollapsibleText({
   id,
   text,
@@ -105,7 +110,7 @@ export default function CollapsibleText({
     if (expanded) return;
     const el = ref.current;
     if (!el) return;
-    const measure = () => setIsOverflowing(el.scrollHeight > el.clientHeight + 1);
+    const measure = () => setIsOverflowing(overflows(el));
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
@@ -132,7 +137,10 @@ export default function CollapsibleText({
           // Expanding on focus keeps the claim honest and the target on screen.
           // Gated on real overflow: content that fits is never clipped, so
           // expanding it would only mint a no-op "Show less" into the tab order.
-          onFocus={() => { if (isOverflowing) setExpanded(true); }}
+          // Measured live rather than read off `isOverflowing`: a descendant with
+          // `autoFocus` takes focus during commit, before the passive measure
+          // effect has run, so the state flag is still false on that first focus.
+          onFocus={() => { if (ref.current && overflows(ref.current)) setExpanded(true); }}
         >
           <div ref={innerRef}>{children}</div>
         </div>
