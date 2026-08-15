@@ -837,7 +837,7 @@ describe('restoreSnapshot subdirFilter guard', () => {
       expect(spawn).toHaveBeenCalledWith(
         '/custom/bin/rsync',
         expect.arrayContaining(['--archive', '--itemize-changes', '--dry-run']),
-        { shell: false },
+        { shell: false, windowsHide: true },
       );
     } finally {
       if (previous === undefined) delete process.env.PORTOS_RSYNC;
