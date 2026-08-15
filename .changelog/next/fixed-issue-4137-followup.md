@@ -1,0 +1,1 @@
+- App detection no longer treats an index.html beside a client-side app.js/main.js as a served app, and PM2 standardization launched by app id now always targets that app's own repo

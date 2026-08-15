@@ -1142,7 +1142,6 @@ describe('classifyNonNodeType', () => {
     // — `server.mjs` is as much an entry point as `server.js`.
     for (const server of [
       'server.js', 'server.mjs', 'server.cjs', 'server.ts',
-      'app.js', 'app.mjs', 'main.js', 'main.ts',
       'ecosystem.config.js', 'ecosystem.config.cjs'
     ]) {
       expect(classifyNonNodeType(['index.html', server])).toBeNull();
@@ -1153,19 +1152,22 @@ describe('classifyNonNodeType', () => {
     // A containerized Node service is still a Node service — the entry point
     // outranks the packaging, the same way a language marker does.
     expect(classifyNonNodeType(['server.js', 'Dockerfile'])).toBeNull();
-    expect(classifyNonNodeType(['app.mjs', 'docker-compose.yml'])).toBeNull();
+    expect(classifyNonNodeType(['server.mjs', 'docker-compose.yml'])).toBeNull();
   });
 
-  it('still treats a client-side index.js as static, not a server', () => {
-    // In a static site an `index.js` is a browser script far more often than a
-    // server entry point, so it must not suppress the classification.
-    expect(classifyNonNodeType(['index.html', 'index.js', 'style.css'])).toBe('static');
+  it('treats ambiguous browser-script names as static, not as servers', () => {
+    // `index.js`, `app.js`, and `main.js` are at least as common as scripts a
+    // static page loads. Counting them as server evidence would leave real
+    // static sites unclassified and still offered the Node standardizer.
+    for (const script of ['index.js', 'app.js', 'main.js']) {
+      expect(classifyNonNodeType(['index.html', script, 'style.css'])).toBe('static');
+    }
   });
 
   it('keeps the language markers ahead of a Node entry point', () => {
-    // A Python repo with a stray `app.py`-adjacent `main.js` build script is
-    // still python — the language check runs first.
-    expect(classifyNonNodeType(['requirements.txt', 'main.js'])).toBe('python');
+    // A Python repo that also ships a `server.js` helper is still python —
+    // the language check runs first.
+    expect(classifyNonNodeType(['requirements.txt', 'server.js'])).toBe('python');
   });
 
   it('prefers the language over the packaging when both markers are present', () => {

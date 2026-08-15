@@ -28,11 +28,16 @@ const DOCKER_MARKERS = ['docker-compose.yml', 'docker-compose.yaml', 'compose.ym
  * package-less repo shipping `server.mjs` is a Node app someone containerized
  * (or that also serves a page), and classifying it `docker`/`static` would
  * withdraw standardization from an app that genuinely wants it — the exact
- * false negative this predicate exists to avoid. `index` is deliberately absent
- * from the basenames: next to an `index.html` it is far more often a
- * client-side script than a server entry point.
+ * false negative this predicate exists to avoid.
+ *
+ * The basename list is deliberately just `server`, the one name that can only
+ * mean a server. `index`, `app`, and `main` are all at least as common as
+ * browser scripts loaded by an `index.html`, and treating those as evidence
+ * would leave real static sites unclassified (and still offered the Node
+ * standardizer) — trading this rule's false negative for the very false
+ * positive the issue was filed about.
  */
-const SERVER_ENTRY_BASENAMES = ['server', 'app', 'main'];
+const SERVER_ENTRY_BASENAMES = ['server'];
 const SERVER_ENTRY_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts'];
 
 const hasNodeServerEntry = (present) =>
