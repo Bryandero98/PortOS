@@ -176,6 +176,20 @@ PortOS no longer falls back silently, so a misconfigured app now surfaces as one
 
 **Note for Windows**: use a real filesystem path with a drive letter (`C:\...`). Both `C:\Users\...` and `C:/Users/...` work, as does a leading `~`; a path inside OneDrive-redirected folders is fine as long as it exists locally.
 
+### "path is outside allowed directories" for a Repo on a Secondary Drive
+
+**Symptom**: Opening an app's **Submodules** tab (or another view that sends a repo path to the server) fails, and the server log shows:
+
+```
+❌ Route error [GET /api/git/submodules/status]: path is outside allowed directories
+```
+
+**Cause**: Routes that accept a caller-supplied filesystem path confine it to a set of allowed roots. Those defaults were POSIX-only (`/tmp`, `/Users`, `/Volumes`, `/opt`) — on Windows they resolve to whatever drive the process happens to be running from, so a repo on a second drive (`D:\code\myapp`) matched nothing, and on Linux a repo under `/mnt` or `/media` matched nothing either. Either way the request was rejected with a 403.
+
+**Solution**: Update PortOS. The defaults now cover wherever each platform mounts secondary volumes: `/Volumes` on macOS, `/mnt` and `/media` on Linux, and on Windows your home directory, the temp directory, and any lettered drive that isn't the system drive. The rest of the Windows system drive stays off-limits (`C:\Windows`, `C:\Program Files`), as do UNC paths (`\\server\share`) — map the share to a drive letter if you keep repos on it.
+
+For anywhere else, set `PORTOS_WORKSPACE_ROOTS`. Separate entries with `;` on Windows (`D:\repos;E:\projects`) — a colon would split the value at the drive letter. macOS/Linux still use `:` (`/srv/git:/data/projects`).
+
 ### Memory System Not Working
 
 **Symptom**: Memory search returns no results, embeddings fail.

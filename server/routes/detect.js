@@ -25,9 +25,9 @@ const router = Router();
 // confinement is required for safety.
 //
 // Operators who still want to confine detection to specific directories can set
-// PORTOS_WORKSPACE_ROOTS="/path1:/path2" (the same allow-list `routes/commands.js`
-// uses to scope command execution). When that env var is set, this route enforces
-// the allow-list too — a path outside the configured roots returns valid:false
+// PORTOS_WORKSPACE_ROOTS (see `.env.example` for the format — the same allow-list
+// `routes/commands.js` uses to scope command execution). When that env var is set,
+// this route enforces the allow-list too — a path outside the roots returns valid:false
 // rather than reading its files. When it is unset (the default), detection is
 // unrestricted, matching the pre-existing behavior.
 router.post('/repo', asyncHandler(async (req, res) => {
