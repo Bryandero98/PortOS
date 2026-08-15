@@ -954,13 +954,15 @@ describe('cos.js source — priority + capacity invariants', () => {
     // description onto a single `- [ ]` line and the parser only matches the
     // first line, so persisting a multi-line description corrupts the file
     // AND truncates the prompt on the next `dequeueNextTask` re-read. The
-    // queue path must move the body to `metadata.context` (which IS
+    // queue path must move the body to `metadata.prompt` (which IS
     // newline-escaped) so the agent prompt builder reconstitutes it on
-    // dispatch. Pin both halves of the split.
+    // dispatch. `prompt`, not `context` — the two were split in #4153 so a
+    // multi-thousand-character agent payload is distinguishable from the
+    // one-line human note. Pin both halves of the split.
     expect(
       fnBody,
-      'queue path must move multi-line description body to metadata.context (survives markdown round-trip)'
-    ).toMatch(/metadata\.context\s*=\s*\w+\.description/);
+      'queue path must move multi-line description body to metadata.prompt (survives markdown round-trip)'
+    ).toMatch(/metadata\.prompt\s*=\s*\w+\.description/);
     expect(
       fnBody,
       'queue path must collapse description to a single line via firstLine()'

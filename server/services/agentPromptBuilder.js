@@ -22,6 +22,7 @@ import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { doneSentinelName } from '../lib/agentSentinel.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow, resolveSlashdoInvocation, buildSlashdoSection, oversizedBodyPointer, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
+import { TASK_PROMPT_KEY, TASK_CONTEXT_KEY, taskContextBlock } from '../lib/cosTaskPrompt.js';
 import { detectForgeCli } from '../lib/gitForge.js';
 import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../lib/prDisposition.js';
 import * as jiraService from './jira.js';
@@ -378,32 +379,43 @@ function resolveTaskFileRef(ref) {
 /**
  * Undo the COS-TASKS.md round-trip split before rendering. The queue path in
  * `cosTaskGenerator.js` persists a generated multi-line prompt by moving the
- * full body into `metadata.context` and keeping only its first line as
- * `description`, so the markdown stays one-line-per-task. Coming back out,
- * `context` therefore *leads with a verbatim copy* of `description` — and every
+ * full body into `metadata.prompt` (`metadata.context` before the #4153 split)
+ * and keeping only its first line as
+ * `description`, so the markdown stays one-line-per-task. Coming back out, the
+ * payload therefore *leads with a verbatim copy* of `description` — and every
  * render path emits both (the task block, then the full body again under a
  * `### Context` header). For a swarm task that surfaces as the reported
  * double `# ⚡ SWARM MODE …` header; the same duplication hits any other
  * generated/scheduled/system task that round-trips through the queue.
  *
- * When the split signature is present (`context` is a string whose first
- * non-empty line equals `description`), fold `context` back into `description`
- * and drop the redundant `metadata.context` so the prompt renders once, as one
- * clean body with no spurious header. A genuinely-separate user-supplied
- * `context` (first line differs from `description`) is left untouched.
+ * When the split signature is present (the payload's first non-empty line
+ * equals `description`), fold it back into `description` and drop the redundant
+ * metadata key so the prompt renders once, as one clean body with no spurious
+ * header. A genuinely-separate user-supplied note (first line differs from
+ * `description`) is left untouched.
  *
  * Pure and idempotent: returns the same task when nothing matched, otherwise a
  * shallow clone (never mutates the caller's task, so the stored task keeps its
  * one-line `description` for the task-list UI).
  */
 export function reconcileSplitContext(task) {
-  const context = task?.metadata?.context;
-  if (typeof context !== 'string' || typeof task.description !== 'string') return task;
-  // Mirror firstLine() in cosTaskStore.js: first non-empty, trimmed line.
-  const firstNonEmpty = context.split('\n').map(l => l.trim()).find(Boolean) || '';
-  if (firstNonEmpty !== task.description.trim()) return task;
-  const { context: _dropped, ...restMeta } = task.metadata;
-  return { ...task, description: context, metadata: restMeta };
+  if (typeof task?.description !== 'string') return task;
+  const description = task.description.trim();
+  // `prompt` first: that is where the payload lives on a task written by
+  // current code (#4153). `context` stays in the loop so a task written before
+  // the split — or synced from a peer still on the old code — reconciles too.
+  // Only the key that CARRIED the payload is dropped, so a split task's short
+  // `metadata.context` note survives and still renders.
+  for (const key of [TASK_PROMPT_KEY, TASK_CONTEXT_KEY]) {
+    const payload = task.metadata?.[key];
+    if (typeof payload !== 'string') continue;
+    // Mirror firstLine() in cosTaskStore.js: first non-empty, trimmed line.
+    const firstNonEmpty = payload.split('\n').map(l => l.trim()).find(Boolean) || '';
+    if (firstNonEmpty !== description) continue;
+    const { [key]: _dropped, ...restMeta } = task.metadata;
+    return { ...task, description: payload, metadata: restMeta };
+  }
+  return task;
 }
 
 /**
@@ -1737,8 +1749,18 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   // template references — only the stock heading gates on this.
   const briefingApp = task.metadata?.app;
   const targetAppLabel = briefingApp && briefingApp !== PORTOS_APP_ID ? briefingApp : '';
+  // The task's prompt payload + human note as ONE string (#4153). Templates —
+  // the shipped `cos-agent-briefing.md` AND every copy an install has since
+  // customized — reference `{{task.metadata.context}}`, so the split is folded
+  // back into that key for rendering instead of being pushed out to every
+  // template on every install. `metadata.prompt` still travels untouched for a
+  // custom template that wants to address it directly.
+  const contextBlock = taskContextBlock(task);
+  const briefingTask = contextBlock === (task.metadata?.[TASK_CONTEXT_KEY] ?? null)
+    ? task
+    : { ...task, metadata: { ...task.metadata, [TASK_CONTEXT_KEY]: contextBlock } };
   const promptData = isReviewLoopFollowUp ? null : await buildPrompt('cos-agent-briefing', {
-    task,
+    task: briefingTask,
     targetAppLabel,
     config,
     memorySection,
@@ -1771,7 +1793,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
 ${memorySection || ''}
 
 ${taskBlock.description}
-${task.metadata?.context ? (task.metadata.context.includes('\n') ? `\n### Task Context\n\n${task.metadata.context.trimEnd()}\n` : `\n### Task Context\n\n${task.metadata.context}\n`) : ''}
+${contextBlock ? (contextBlock.includes('\n') ? `\n### Task Context\n\n${contextBlock.trimEnd()}\n` : `\n### Task Context\n\n${contextBlock}\n`) : ''}
 ${taskBlock.targetApp}
 ${taskBlock.screenshots}
 ${taskBlock.attachments}
@@ -1975,7 +1997,9 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   sections.push(taskBlock.description);
   if (taskBlock.targetApp) sections.push(taskBlock.targetApp);
 
-  const context = task.metadata?.context;
+  // The task's prompt payload + human note as one block (#4153), so the split is
+  // invisible here and a legacy `metadata.context`-as-prompt still renders.
+  const context = taskContextBlock(task);
   if (context) {
     sections.push(context.includes('\n')
       ? `### Context\n\n${context.trimEnd()}`

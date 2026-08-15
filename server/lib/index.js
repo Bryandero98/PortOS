@@ -235,6 +235,7 @@ export * from './vectorMath.js';
 export * from './htmlToText.js';
 export * from './jsonExtract.js';
 export * from './taskParser.js';
+export * from './cosTaskPrompt.js';
 export * from './taskPauseHold.js';
 export * from './taskBlockCategories.js';
 export * from './taskRequeue.js';

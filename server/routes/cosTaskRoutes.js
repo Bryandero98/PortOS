@@ -156,7 +156,7 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   //   through the same workTracker-aware logic the scheduled `claim-work` flow
   //   uses, so the manual button honors the app's per-app Work Tracker (PLAN.md /
   //   GitHub / GitLab / JIRA) instead of always draining PLAN.md. Its assembled
-  //   claim prompt IS the context, so it carries NO `slashdoCommand` — adding one
+  //   claim prompt IS the task prompt, so it carries NO `slashdoCommand` — adding one
   //   would append the whole `/do:next` body on top of the claim prompt.
   // - Every other command carries only the bare `slashdoCommand` and lets the
   //   prompt builder render the invocation + inline the body once the provider is
@@ -183,7 +183,9 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
       : `claim next ${workTrackerLabel(claim.tracker)} item`;
     shape = {
       description: `${workflow.label} for ${appObj.name} — ${scope} and ship a PR`,
-      context: claim.prompt,
+      // The claim body is the agent's PROMPT, not a human note (#4153) — see
+      // server/lib/cosTaskPrompt.js for the field split.
+      prompt: claim.prompt,
       // claim.taskMetadata overrides the catalog posture only where it carries a
       // key. All current claim flows (plan-task / claim-issue / claim-issue-gitlab
       // / claim-issue-jira) self-manage their worktree + MR/PR, so false/false
@@ -207,7 +209,7 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const taskData = {
     description: shape.description,
     app,
-    context: shape.context,
+    prompt: shape.prompt,
     slashdoCommand: shape.slashdoCommand,
     ...shape.taskMetadata,
     provider, model, effort,
@@ -247,7 +249,7 @@ router.post('/tasks/jira-ticket', asyncHandler(async (req, res) => {
   const taskData = {
     description: `Claim JIRA ticket ${key} for ${appObj.name} — implement and ship a PR`,
     app,
-    context: prompt,
+    prompt,
     ...taskMetadata,
     simplify: false,
     reviewLoop: false,
@@ -287,6 +289,7 @@ router.put('/tasks/:id', asyncHandler(async (req, res) => {
   if (fields.priority !== undefined) updates.priority = fields.priority;
   if (fields.status !== undefined) updates.status = fields.status;
   if (fields.context !== undefined) updates.context = fields.context;
+  if (fields.prompt !== undefined) updates.prompt = fields.prompt;
   if (fields.model !== undefined) updates.model = fields.model;
   if (fields.provider !== undefined) updates.provider = fields.provider;
   if (fields.effort !== undefined) updates.effort = fields.effort;

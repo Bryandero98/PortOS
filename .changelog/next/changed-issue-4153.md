@@ -1,0 +1,1 @@
+- CoS tasks: split the overloaded `metadata.context` into `metadata.prompt` (the full agent-facing payload) and `metadata.context` (a one-line human note), with a reader fallback for pre-split tasks and a migration for existing queues (#4153)

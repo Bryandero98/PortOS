@@ -10,6 +10,7 @@ import { suggestModelTier } from './taskLearning.js';
 // Imported from the store submodule (not the mocked barrel) so the spawn-time key
 // mirrors the exact same classification the completion records under.
 import { classifyUntypedTask } from './taskLearning/store.js';
+import { taskContextBlock } from '../lib/cosTaskPrompt.js';
 
 /**
  * Extract task type key for learning lookup.
@@ -48,7 +49,9 @@ export function extractTaskTypeKey(task) {
  */
 export async function selectModelForTask(task, provider, agent = {}) {
   const desc = (task.description || '').toLowerCase();
-  const context = task.metadata?.context || '';
+  // Prompt payload + human note (#4153) — complexity scales with everything the
+  // agent is handed, and a legacy `metadata.context`-as-prompt still counts.
+  const context = taskContextBlock(task) || '';
   const contextLen = context.length;
   const priority = task.priority || 'MEDIUM';
 

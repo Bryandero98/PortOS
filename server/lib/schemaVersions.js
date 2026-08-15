@@ -547,7 +547,18 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // reviewer CLI's default effort instead of the pinned tier, silently downgrading
   // a review the user deliberately strengthened. Per-category gate → only cos-tasks
   // sync pauses until the peer upgrades.
-  cosTasks: 4,
+  // v5 = the `metadata.prompt` / `metadata.context` split (#4153): the full
+  // agent-facing payload now rides `prompt` and `context` reverts to the
+  // one-line human note. Same EXECUTION-semantics break as v3/v4 — `prompt`
+  // rides the permissive `metadata` map, so a ≤v4 receiver validates and stores
+  // the task fine and then MIS-RUNS it: its prompt builder only knows
+  // `metadata.context`, so the agent is handed a one-line description with the
+  // entire Phase 1–7 body (or `/do:*` claim prompt) missing, does the wrong
+  // work, and LWW-pushes that damaged state back onto the v5 peer. Readers on
+  // v5 fall back to `metadata.context`, so the reverse direction degrades
+  // gracefully — the gate exists for the forward one. Per-category gate → only
+  // cos-tasks sync pauses until the peer upgrades.
+  cosTasks: 5,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

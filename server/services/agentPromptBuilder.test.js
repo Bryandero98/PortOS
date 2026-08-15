@@ -138,6 +138,32 @@ describe('reconcileSplitContext', () => {
     const task = { description: 'Title', metadata: {} };
     expect(reconcileSplitContext(task)).toBe(task);
   });
+
+  // #4153 — the payload now lands in `metadata.prompt`; `metadata.context`
+  // stays supported so a pre-split task (or a peer still on the old code)
+  // reconciles the same way.
+  it('folds metadata.prompt back into description and keeps the separate note', () => {
+    const body = 'Line one is the title\n\nLine two is the body.';
+    const task = { description: 'Line one is the title', metadata: { prompt: body, context: 'a note', app: 'comics' } };
+    const out = reconcileSplitContext(task);
+    expect(out.description).toBe(body);
+    expect(out.metadata.prompt).toBeUndefined();
+    expect(out.metadata.context).toBe('a note'); // the note is NOT the payload
+    expect(out.metadata.app).toBe('comics');
+  });
+
+  it('prefers metadata.prompt over a same-shaped legacy context', () => {
+    const body = 'Title\n\nNew body.';
+    const legacy = 'Title\n\nOld body.';
+    const out = reconcileSplitContext({ description: 'Title', metadata: { prompt: body, context: legacy } });
+    expect(out.description).toBe(body);
+    expect(out.metadata.context).toBe(legacy);
+  });
+
+  it('leaves a genuinely-separate prompt untouched', () => {
+    const task = { description: 'Add a button', metadata: { prompt: 'Do the thing\nsomehow' } };
+    expect(reconcileSplitContext(task)).toBe(task);
+  });
 });
 
 describe('no-code / API-action task completion (CD agents must NOT be told to /do:push)', () => {
@@ -251,8 +277,20 @@ describe('buildLightContextPrompt', () => {
       expect(multi).toMatch(/### Context\n\nline one\nline two/);
     });
 
-    it('does NOT double-render a queue-path split prompt (description == firstLine(context))', () => {
-      // The queue path stores `description = firstLine(body)` + `context = body`
+    // #4153 — the agent-facing payload lives in `metadata.prompt`; a legacy
+    // `metadata.context` payload must keep rendering identically.
+    it('renders metadata.prompt, and the note after it', () => {
+      const promptOnly = buildLightContextPrompt(
+        makeTask({ metadata: { prompt: 'line one\nline two' } }), '/r', null, isTruthyMeta);
+      expect(promptOnly).toMatch(/### Context\n\nline one\nline two/);
+
+      const both = buildLightContextPrompt(
+        makeTask({ metadata: { prompt: 'line one\nline two', context: 'a short note' } }), '/r', null, isTruthyMeta);
+      expect(both).toMatch(/### Context\n\nline one\nline two\n\na short note/);
+    });
+
+    it('does NOT double-render a queue-path split prompt (description == firstLine(payload))', () => {
+      // The queue path stores `description = firstLine(body)` + the body
       // so COS-TASKS.md stays one-line-per-task. Rendering both would print the
       // first line twice (the reported double `# ⚡ SWARM MODE …` header).
       const body = '# ⚡ SWARM MODE — claim and ship up to 3 independent issues in parallel\n\n**This run operates in slashdo mode.** Do the work.';
@@ -264,6 +302,14 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/### Context/);
       // The full body still renders (nothing dropped).
       expect(prompt).toMatch(/\*\*This run operates in slashdo mode\.\*\* Do the work\./);
+
+      // Same task written by post-#4153 code: payload in `metadata.prompt`.
+      const split = buildLightContextPrompt(
+        makeTask({ description: '# ⚡ SWARM MODE — claim and ship up to 3 independent issues in parallel', metadata: { prompt: body } }),
+        '/r', null, isTruthyMeta);
+      expect(split.match(/# ⚡ SWARM MODE/g)).toHaveLength(1);
+      expect(split).not.toMatch(/### Context/);
+      expect(split).toMatch(/\*\*This run operates in slashdo mode\.\*\* Do the work\./);
     });
 
     it('lists screenshot file paths so the agent can read them via its own tools', () => {
@@ -1573,6 +1619,29 @@ describe('buildAgentPrompt — provider type routing', () => {
     expect(context.targetAppLabel).toBe('comics');
     // task.metadata.app stays available for any custom template references.
     expect(context.task.metadata.app).toBe('comics');
+  });
+
+  // #4153 — every shipped AND user-customized `cos-agent-briefing.md` addresses
+  // `{{task.metadata.context}}`. Folding the split back into that key at render
+  // time is what keeps the payload reaching the agent without pushing a template
+  // change (and a prompt migration) onto every install.
+  it('folds metadata.prompt into the briefing template\'s task.metadata.context', async () => {
+    vi.mocked(buildPrompt).mockClear();
+    await buildAgentPrompt(
+      makeTask({ metadata: { prompt: 'the agent body\nsecond line', context: 'a short note' } }),
+      {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+    const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+    expect(context.task.metadata.context).toBe('the agent body\nsecond line\n\na short note');
+    // The raw field still travels for a custom template that addresses it.
+    expect(context.task.metadata.prompt).toBe('the agent body\nsecond line');
+  });
+
+  it('leaves a legacy context-only task untouched on the briefing template path', async () => {
+    vi.mocked(buildPrompt).mockClear();
+    const task = makeTask({ metadata: { context: 'legacy body\nsecond line' } });
+    await buildAgentPrompt(task, {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+    const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+    expect(context.task.metadata.context).toBe('legacy body\nsecond line');
   });
 
   it('passes an empty targetAppLabel to the api-path briefing template for the PortOS default app', async () => {
