@@ -18,6 +18,7 @@
  *   { outcome: 'ready', workspacePath, resolvedAppName, worktreeInfo, jiraTicket, jiraBranchName, explicitWorktree }
  *   { outcome: 'deferred', reason, deferReason, branch }   // git conflict — task re-queued
  *   { outcome: 'blocked', reason }                          // explicit worktree requested but creation failed
+ *                                                           // (`worktree-busy` blocks are a TIMED pause and revive themselves)
  *
  * An unexpected throw bubbles to the caller's widened try/catch the same way
  * the inline code did.
@@ -29,11 +30,11 @@ import { execGit } from '../lib/execGit.js';
 import { emitLog } from './cosEvents.js';
 import { updateTask, addTask } from './cos.js';
 import { getAppById } from './apps.js';
-import { isTruthyMeta, isFalsyMeta } from './agentState.js';
+import { isTruthyMeta, isFalsyMeta, getActiveAgentIds } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import * as git from './git.js';
 import { detectConflicts } from './taskConflict.js';
-import { createWorktree, adoptWorktree } from './worktreeManager.js';
+import { createWorktree, adoptWorktree, findAdoptableWorktreeForBranch, isBranchCheckedOutElsewhereError } from './worktreeManager.js';
 import { resolveSpawnCwd } from '../lib/spawnCwd.js';
 import { enforceSafeBranchUpstream } from '../lib/branchUpstreamGuard.js';
 import { getAppWorkspace, getAppDataForTask, createJiraTicketForTask } from './agentPromptBuilder.js';
@@ -51,7 +52,7 @@ const ROOT_DIR = PATHS.root;
  * it revivable once the config is fixed. Best-effort — the caller's block
  * outcome must stand even if the write fails.
  */
-async function blockTask(task, reason, blockedCategory) {
+async function blockTask(task, reason, blockedCategory, extraMetadata = {}) {
   await updateTask(task.id, {
     status: 'blocked',
     metadata: {
@@ -59,8 +60,101 @@ async function blockTask(task, reason, blockedCategory) {
       blockedReason: reason,
       blockedCategory,
       blockedAt: new Date().toISOString(),
+      ...extraMetadata,
     },
   }, task.taskType || 'user').catch(() => {});
+}
+
+// How long a task waits for another worktree to release the branch it needs, and
+// how many times it may wait. The producer of that contention is a cleanup
+// tearing down the previous agent's worktree, which finishes in seconds — but a
+// worktree `removeWorktree` REFUSED to delete (uncommitted changes) holds the
+// branch until a human clears it, so the wait has to be bounded. Past the cap the
+// task takes the ordinary `worktree-failed` block and the orphaned-PR notifier
+// raises its card.
+const WORKTREE_BUSY_COOLDOWN_MS = 2 * 60 * 1000;
+const WORKTREE_BUSY_MAX_ATTEMPTS = 5;
+
+/**
+ * The branch this task's worktree must attach to, or null to cut a fresh one.
+ *
+ * `existingBranch` is the pointer both producers write — a resume, and a
+ * review-loop/merge follow-up. It is also the key `updateTask` DROPS when a task
+ * reaches a terminal state, since a stale resume pointer would silently attach an
+ * unrelated re-run to a dead branch. That strip is keyed on `resumedFromAgentId`
+ * so a follow-up's copy — its CONFIGURATION, not a resume pointer — normally
+ * survives, but the exemption does not hold once the follow-up's OWN run fails:
+ * `resumePointerMetadata` stamps `resumedFromAgentId` onto any task with work left
+ * behind, and from then on the follow-up looks exactly like a resume and loses its
+ * branch. It then cut a worktree fresh off the default branch, so the fix it
+ * pushed for the PR went to a branch the PR never heard of.
+ *
+ * `reviewLoopPRBranch` is the same branch under the follow-up's own namespace,
+ * written by `spawnReviewLoopFollowUp` and never treated as a resume pointer, so
+ * it survives both the strip and the older records written before the exemption
+ * existed. Falling back to it makes the two copies impossible to disagree about.
+ */
+export function resolveTaskExistingBranch(metadata) {
+  if (metadata?.existingBranch) return metadata.existingBranch;
+  if (isTruthyMeta(metadata?.reviewLoopFollowUp) && metadata?.reviewLoopPRBranch) return metadata.reviewLoopPRBranch;
+  return null;
+}
+
+/**
+ * Agent ids whose worktree must not be taken out from under them, using the same
+ * definition the daily worktree reap protects on (`autonomousJobs/scriptHandlers.js`):
+ *
+ *   - the in-process maps, which are authoritative for THIS process;
+ *   - every persisted `running` agent, which is how a run that survived a server
+ *     restart (the maps are empty then) still counts;
+ *   - every persisted `paused` agent — pausing deliberately preserves the tree as
+ *     resume context, and a paused agent is absent from the maps.
+ *
+ * Under-counting here would move a directory another run is mid-edit in.
+ */
+async function getProtectedAgentIds() {
+  const { getAgents } = await import('./cos.js');
+  const ids = new Set(getActiveAgentIds());
+  for (const agent of await getAgents()) {
+    if (agent?.status === 'running' || agent?.status === 'paused') ids.add(agent.id);
+  }
+  return ids;
+}
+
+/**
+ * Take over the worktree that already holds `branchName`, for a task whose whole
+ * purpose is to run ON that branch (a merge/review-loop follow-up, a resume).
+ *
+ * Called only after `git worktree add` refused because the branch is checked out
+ * elsewhere. Routinely that holder is a cleanup's tree seconds from teardown — the
+ * caller's timed pause covers that — but a tree `removeWorktree` REFUSED to delete
+ * (uncommitted changes) holds the branch until a human intervenes, and waiting it
+ * out just strands the pull request the follow-up exists to land. Adoption is the
+ * shorter path in both cases and preserves whatever the previous run left behind.
+ *
+ * `findAdoptableWorktreeForBranch` refuses every holder PortOS doesn't own
+ * outright, so this can never move the user's checkout or a live agent's tree.
+ *
+ * @returns {Promise<{ worktreeInfo: object, adoptedFrom: string }|null>}
+ */
+async function adoptWorktreeHoldingBranch({ agentId, workspacePath, branchName, taskId }) {
+  // Fail CLOSED on an unreadable agent list: an empty protected set would read as
+  // "nothing is running", which is the one wrong answer here — it would move a
+  // live run's directory. The caller's timed pause is the safe outcome instead.
+  const activeAgentIds = await getProtectedAgentIds().catch(err => {
+    emitLog('warn', `🌳 Skipping worktree adoption for task ${taskId} — could not read the agent list: ${err.message}`, { taskId });
+    return null;
+  });
+  if (!activeAgentIds) return null;
+
+  const holder = await findAdoptableWorktreeForBranch(workspacePath, branchName, { activeAgentIds });
+  if (!holder) return null;
+
+  const worktreeInfo = await adoptWorktree(agentId, workspacePath, holder.path, branchName).catch(err => {
+    emitLog('warn', `🌳 Could not adopt ${holder.path} holding ${branchName} for task ${taskId}: ${err.message}`, { taskId });
+    return null;
+  });
+  return worktreeInfo ? { worktreeInfo, adoptedFrom: holder.agentId } : null;
 }
 
 /**
@@ -129,7 +223,8 @@ export async function prepareAgentWorkspace({ agentId, task }) {
   // conflict AUTO-detection resumes into the shared workspace on retry (conflict
   // detection returns `proceed` once the dead agent is gone) and silently
   // abandons the work the pointer was recorded to save.
-  const wantsWorktree = explicitWorktree || !!task.metadata?.existingBranch;
+  const existingBranch = resolveTaskExistingBranch(task.metadata);
+  const wantsWorktree = explicitWorktree || !!existingBranch;
 
   if (!isReadOnly) {
     // Pull latest from git before starting work
@@ -254,7 +349,6 @@ export async function prepareAgentWorkspace({ agentId, task }) {
     }
 
     if (wantsWorktree && !jiraBranchName) {
-      const existingBranch = task.metadata?.existingBranch || null;
       const { baseBranch: detectedBase } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
       if (existingBranch) {
         emitLog('info', `🌳 Worktree requested for task ${task.id} on existing branch ${existingBranch}`, {
@@ -288,19 +382,36 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         emitLog('warn', `🌳 Worktree ${resumeWorktreePath} could not be adopted and still holds ${existingBranch} — task ${task.id} starts from a clean branch`, { taskId: task.id });
       }
 
+      // Both read only by the block/pause decision below: the failure REASON
+      // decides whether the task is unrunnable or merely early, and `attempt` is
+      // which branch-busy wait this would be (TASKS.md round-trips metadata as
+      // strings, hence the coercion; never reset on revive, so the cap is the
+      // task's whole patience budget rather than a per-attempt one).
+      let worktreeError = null;
+      const attempt = (Number(task.metadata?.worktreeBusyAttempts) || 0) + 1;
       worktreeInfo = adopted || await createWorktree(agentId, workspacePath, task.id, {
         baseBranch: detectedBase || undefined,
         existingBranch: branchStillClaimed ? undefined : (existingBranch || undefined),
         planId: task.metadata?.planId || undefined
       }).catch(err => {
+        worktreeError = err;
         emitLog('warn', `🌳 Worktree creation failed, using shared workspace: ${err.message}`, { taskId: task.id });
         return null;
       });
 
+      // The branch this task exists to work on is checked out somewhere else. If
+      // that somewhere is a tree PortOS owns, take it over rather than burning
+      // cooldowns below on a teardown that may never come (see
+      // `adoptWorktreeHoldingBranch`).
+      const takeover = !worktreeInfo && existingBranch && isBranchCheckedOutElsewhereError(worktreeError?.message)
+        ? await adoptWorktreeHoldingBranch({ agentId, workspacePath, branchName: existingBranch, taskId: task.id })
+        : null;
+      if (takeover) worktreeInfo = takeover.worktreeInfo;
+
       if (worktreeInfo) {
         workspacePath = worktreeInfo.worktreePath;
         const origin = worktreeInfo.adopted
-          ? `adopted from ${task.metadata?.resumedFromAgentId || 'the interrupted run'}`
+          ? `adopted from ${takeover?.adoptedFrom || task.metadata?.resumedFromAgentId || 'the interrupted run'}`
           : `base: ${worktreeInfo.baseBranch}`;
         emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (${origin})`, {
           agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
@@ -312,6 +423,21 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         // degrade to that instead. The resume is lost (the leftover work stays on
         // disk for the next attempt), but the task still runs.
         emitLog('warn', `🌳 Worktree creation failed for task ${task.id}; resuming is not possible, continuing in the shared workspace`, { taskId: task.id });
+      } else if (isBranchCheckedOutElsewhereError(worktreeError?.message) && attempt <= WORKTREE_BUSY_MAX_ATTEMPTS) {
+        // The branch is checked out in ANOTHER worktree. Routinely that other
+        // worktree is the previous agent's, still being torn down by the very
+        // cleanup that spawned this task, so waiting it out lands the pull
+        // request a permanent block would have stranded. `worktree-busy` is a
+        // TIMED PAUSE (lib/taskBlockCategories.js): the cooldown sweeper revives
+        // it, and the pause keeps `existingBranch` so the revived attempt still
+        // attaches to the PR branch instead of cutting a fresh one off main.
+        const reason = `Branch ${existingBranch || 'for this task'} is still checked out in another worktree; retrying after a short cooldown`;
+        emitLog('info', `🌳 ${reason} (attempt ${attempt}/${WORKTREE_BUSY_MAX_ATTEMPTS})`, { taskId: task.id, branch: existingBranch || null });
+        await blockTask(task, `${reason}. ${worktreeError?.message || ''}`.trim(), 'worktree-busy', {
+          cooldownUntil: new Date(Date.now() + WORKTREE_BUSY_COOLDOWN_MS).toISOString(),
+          worktreeBusyAttempts: attempt,
+        });
+        return { outcome: 'blocked', reason };
       } else {
         // Isolation was EXPLICITLY requested (useWorktree/openPR) but the
         // worktree couldn't be created. Falling back to the shared workspace
@@ -323,7 +449,7 @@ export async function prepareAgentWorkspace({ agentId, task }) {
         // since there the worktree was only a recommendation, not a request.)
         const reason = `Worktree creation failed for task ${task.id}; refusing to run in the shared workspace because isolation was explicitly requested`;
         emitLog('warn', `🌳 ${reason}`, { taskId: task.id });
-        await blockTask(task, 'Worktree creation failed — isolation was explicitly requested', 'worktree-failed');
+        await blockTask(task, `Worktree creation failed — isolation was explicitly requested${worktreeError?.message ? `: ${worktreeError.message}` : ''}`, 'worktree-failed');
         return { outcome: 'blocked', reason };
       }
     } else if (!jiraBranchName && !isFalsyMeta(task.metadata?.useWorktree)) {

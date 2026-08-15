@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { moodBoardItemSrc, moodBoardItemVideoSrc } from './moodBoardItemSrc';
+import { moodBoardItemSrc, moodBoardItemVideoSrc, moodBoardItemAnalysisSource } from './moodBoardItemSrc';
 
 describe('moodBoardItemSrc', () => {
   it('prefers an explicit imageUrl', () => {
@@ -49,5 +49,37 @@ describe('moodBoardItemVideoSrc', () => {
     expect(moodBoardItemVideoSrc({ type: 'text', text: 'hi' })).toBeNull();
     expect(moodBoardItemVideoSrc({ type: 'video' })).toBeNull();
     expect(moodBoardItemVideoSrc(null)).toBeNull();
+  });
+});
+
+describe('moodBoardItemAnalysisSource (#4188 Phase 3)', () => {
+  it('resolves a video item to a filename video source with its poster', () => {
+    expect(moodBoardItemAnalysisSource({
+      type: 'video', mediaKey: 'video:clip.mp4', imageUrl: '/data/video-thumbnails/clip.jpg',
+    })).toEqual({ kind: 'video', filename: 'clip.mp4', previewUrl: '/data/video-thumbnails/clip.jpg' });
+  });
+  it('resolves an image item by media-key or a /data/images app path (decoded)', () => {
+    expect(moodBoardItemAnalysisSource({ type: 'image', mediaKey: 'image:ref.png' }))
+      .toEqual({ filename: 'ref.png', previewUrl: '/data/images/ref.png' });
+    expect(moodBoardItemAnalysisSource({ type: 'image', imageUrl: '/data/images/my%20render.png' }))
+      .toEqual({ filename: 'my render.png', previewUrl: '/data/images/my%20render.png' });
+  });
+  it('normalizes legacy bare refs and query/hash-suffixed gallery URLs (server imageUrlToAppAsset parity)', () => {
+    expect(moodBoardItemAnalysisSource({ type: 'image', imageUrl: 'render.png' }))
+      .toEqual({ filename: 'render.png', previewUrl: '/data/images/render.png' });
+    expect(moodBoardItemAnalysisSource({ type: 'image', imageUrl: '/data/images/ref.png?v=2#top' }))
+      .toEqual({ filename: 'ref.png', previewUrl: '/data/images/ref.png' });
+    // Query/hash strips BEFORE the basename — a suffix containing a slash
+    // must not swap in a different asset name.
+    expect(moodBoardItemAnalysisSource({ type: 'image', imageUrl: '/data/images/photo.png?source=/other.png' }))
+      .toEqual({ filename: 'photo.png', previewUrl: '/data/images/photo.png' });
+    expect(moodBoardItemAnalysisSource({ type: 'image', imageUrl: '/data/other/ref.png' })).toBeNull();
+  });
+  it('returns null for text items, external pins, and legacy video: pins on image items', () => {
+    expect(moodBoardItemAnalysisSource({ type: 'text', text: 'n' })).toBeNull();
+    expect(moodBoardItemAnalysisSource({ type: 'image', imageUrl: 'https://x/y.png' })).toBeNull();
+    expect(moodBoardItemAnalysisSource({ type: 'image', mediaKey: 'video:abc', imageUrl: 'https://x/t.jpg' })).toBeNull();
+    expect(moodBoardItemAnalysisSource({ type: 'video', mediaKey: null })).toBeNull();
+    expect(moodBoardItemAnalysisSource(null)).toBeNull();
   });
 });

@@ -343,7 +343,15 @@ export function synthesizeGrid(widgetIds) {
 // any widgets missing from the grid (auto-placed at the bottom) and drops
 // grid entries whose widget is no longer in the layout (gated off, deleted,
 // etc.). Keeps the renderer's input always coherent with what should display.
-export function reconcileGrid(grid, visibleIds) {
+//
+// `reorder` makes `visibleIds` authoritative for order as well as membership:
+// the reconciled grid is re-flowed to that order. Only pass it when the caller
+// KNOWS the list order is the edit (LayoutEditor's Move up/down — #4132).
+// Inferring it by comparing `visibleIds` against `readingOrderIds(grid)` would
+// be wrong: layouts arranged before `saveGridEdit` started syncing `widgets` to
+// reading order can already disagree, so a rename or a widget toggle would
+// silently re-pack a carefully arranged desktop layout.
+export function reconcileGrid(grid, visibleIds, { reorder = false } = {}) {
   const visible = new Set(visibleIds);
   const present = new Set();
   let kept = [];
@@ -357,9 +365,11 @@ export function reconcileGrid(grid, visibleIds) {
     if (present.has(id)) continue;
     kept = placeNewWidget(kept, id);
   }
-  // Dropping entries leaves gaps in the sequence and appending can duplicate
-  // the last index; hand back a dense one so callers never have to care.
-  return resequence(kept);
+  // Either way the sequence comes back dense — `reflowToOrder` renumbers from
+  // the list, and `resequence` closes the gaps that dropping entries leaves
+  // (appending can also duplicate the last index) — so callers never have to
+  // care.
+  return reorder ? reflowToOrder(kept, visibleIds) : resequence(kept);
 }
 
 // Reading order of a grid — what the mobile stack shows, and what a layout's

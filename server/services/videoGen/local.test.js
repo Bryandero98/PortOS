@@ -24,6 +24,8 @@ const MOCK_PATHS = {
 
 const isLtx2Python = (bin) => String(bin)
   .includes(join('.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3'));
+const isLtx25Python = (bin) => String(bin)
+  .includes(join('.portos', 'ltx-2.5-mlx', '.venv', 'bin', 'python3'));
 
 // The two chain helpers below used to sleep a flat 100ms for the timeline
 // stitch and then read the concat spawn / stitched history entry out of the
@@ -71,6 +73,12 @@ vi.mock('../settings.js', () => ({
 vi.mock('../../lib/mediaModels.js', () => ({
   getVideoModels: vi.fn(() => [
     { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2', repo: 'Lightricks/LTX-Video', steps: 30, guidance: 3.5 },
+    {
+      id: 'ltx25_mlx_q8', name: 'LTX-2.5 MLX Q8', runtime: 'ltx25',
+      repo: 'MrMofer/ltx-2.5-mlx-q8',
+      revision: 'f1b56e7dc89f71a9af2cddac787b89ed22a8b7fc',
+      steps: 8, guidance: 3,
+    },
     // bf16 LTX-2.x mlx_video model — LoRA-capable via the generate_av wrapper.
     { id: 'ltx23_unified', name: 'LTX-2.3 Unified Beta', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av', steps: 25, guidance: 3.0 },
     // quantized mlx_video model — NOT LoRA-capable (out of scope).
@@ -202,6 +210,13 @@ const { mockInspectModelCache, mockFindCachedRepoFile } = vi.hoisted(() => ({
 vi.mock('../../lib/hfCache.js', () => ({
   inspectModelCache: mockInspectModelCache,
   findCachedRepoFile: mockFindCachedRepoFile,
+  // Built on the singular mock rather than stubbed independently, mirroring the
+  // real helper — so a test that makes ONE file miss (the partial-download
+  // cases) still drives the plural probe's all-or-nothing verdict.
+  findCachedRepoFiles: async (repo, filenames, opts) => {
+    const paths = await Promise.all(filenames.map((name) => mockFindCachedRepoFile(repo, name, opts)));
+    return paths.every(Boolean) ? paths : null;
+  },
 }));
 
 vi.mock('fs', () => ({
@@ -1003,6 +1018,68 @@ describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
     expect(args).not.toContain('--stage2-steps');
     expect(args[args.indexOf('--steps') + 1]).toBe('30');
     expect(args[args.indexOf('--cfg-scale') + 1]).toBe('3.5');
+  });
+});
+
+describe('generateVideo — LTX-2.5 sibling runtime spawn', () => {
+  const renderLtxFamily = async (jobId, modelId) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId,
+      prompt: 'a quiet street at dusk',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+    });
+    return spawnMock.mock.calls;
+  };
+
+  it('spawns the 2.5 venv, omits the shared Gemma 3 encoder, and pins --model to the cached revision', async () => {
+    const calls = await renderLtxFamily('ltx25-spawn', 'ltx25_mlx_q8');
+    const renderCall = calls.find(
+      ([bin, args]) => isLtx25Python(bin)
+        && Array.isArray(args)
+        && args.includes('--mode')
+        && args.includes('text'),
+    );
+    expect(renderCall).toBeTruthy();
+    expect(renderCall[1]).not.toContain('--gemma');
+    expect(renderCall[1][renderCall[1].indexOf('--model') + 1]).toBe('/mock/hf/snap');
+    expect(renderCall[1]).not.toContain('MrMofer/ltx-2.5-mlx-q8');
+    expect(calls.some(([bin]) => isLtx2Python(bin))).toBe(false);
+  });
+
+  it('still threads --gemma through the 2.3 venv and leaves an unpinned repo id on --model', async () => {
+    const calls = await renderLtxFamily('ltx2-gemma-still', 'ltx2_unified');
+    const renderCall = calls.find(
+      ([bin, args]) => isLtx2Python(bin)
+        && Array.isArray(args)
+        && args.includes('--mode')
+        && args.includes('text'),
+    );
+    expect(renderCall).toBeTruthy();
+    expect(renderCall[1]).toEqual(expect.arrayContaining(['--gemma', 'some/text-encoder']));
+    expect(renderCall[1][renderCall[1].indexOf('--model') + 1]).toBe('Lightricks/LTX-Video');
+    expect(calls.some(([bin]) => isLtx25Python(bin))).toBe(false);
+  });
+
+  it('rejects a missing pinned 2.5 snapshot before spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    mockInspectModelCache.mockResolvedValueOnce({ cached: false, snapshotPath: null, sizeBytes: 0 });
+    await expect(generateVideo({
+      jobId: 'ltx25-uncached',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx25_mlx_q8',
+      prompt: 'a quiet street at dusk',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+    })).rejects.toMatchObject({ code: 'LTX2_MODEL_NOT_CACHED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 });
 
@@ -2265,6 +2342,54 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(args.flatMap((arg, i) => (arg === '--text-encoder-key-prefix' ? [args[i + 1]] : [])))
       .toEqual(['model.=model.language_model.', 'visual.=model.visual.']);
     expect(args[args.indexOf('--text-encoder-final-norm-key') + 1]).toBe('model.norm.weight');
+  });
+
+  // An upstream conditioner arrives as several shards, and the loader globs the
+  // shim directory — so every pinned shard has to reach the helper. Forwarding
+  // just the first would load a module tree with most of its layers missing.
+  it('forwards every shard of a multi-shard text encoder', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { downloadableVideoTextEncoder } = await import('../../lib/videoTextEncoders.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-multishard-encoder',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+      textEncoderId: 'huihui-abliterated',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    const forwarded = args.flatMap((arg, i) => (arg === '--text-encoder-file' ? [args[i + 1]] : []));
+    expect(forwarded).toEqual(
+      downloadableVideoTextEncoder('huihui-abliterated').files.map((name) => join('/mock/hf/snap', name)),
+    );
+    // Upstream namespace, own final norm — neither adapter is emitted.
+    expect(args).not.toContain('--text-encoder-key-prefix');
+    expect(args).not.toContain('--text-encoder-final-norm-key');
+  });
+
+  // A partially-cached multi-shard conditioner (one shard interrupted) must fail
+  // as a clean 400, not load a module tree with missing parameters.
+  it('rejects a multi-shard text encoder missing any one shard', async () => {
+    mockFindCachedRepoFile.mockImplementation(async (_repo, filename) => (
+      filename === 'model-00011-of-00014.safetensors' ? null : join('/mock/hf/snap', filename)
+    ));
+    try {
+      await expect(generateVideo({
+        jobId: 'h3-multishard-partial',
+        modelId: 'minimax_h3_8bit',
+        prompt: 'a fox watches the rain',
+        mode: 'text',
+        textEncoderId: 'huihui-abliterated',
+      })).rejects.toMatchObject({ status: 400, code: 'VIDEO_TEXT_ENCODER_NOT_CACHED' });
+    } finally {
+      mockFindCachedRepoFile.mockImplementation(async (_repo, filename) => join('/mock/hf/snap', filename));
+    }
   });
 
   // A ~48 GB weight that isn't downloaded must fail as a clean 400 on the

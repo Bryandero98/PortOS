@@ -84,6 +84,26 @@ export function isGitLockError(message) {
 }
 
 /**
+ * True when `git worktree add` refused because the branch is ALREADY checked out
+ * in some other worktree — `fatal: '<branch>' is already used by worktree at
+ * '<path>'` on current git, `is already checked out at '<path>'` on older ones.
+ *
+ * This is a TRANSIENT condition, not a misconfiguration: the only routine
+ * producer is a cleanup still tearing down the previous agent's worktree while
+ * the follow-up spawned to land its PR is already prepping (the two ran ~0.7s
+ * apart in the incident that motivated this). Callers use it to pause and retry
+ * rather than blocking the task, which stranded the pull request the follow-up
+ * existed to merge.
+ *
+ * Deliberately NOT folded into `isGitLockError`: that predicate drives the
+ * in-process add retry, whose budget is sized in milliseconds for bookkeeping
+ * locks. Waiting out another worktree's teardown belongs at the task level.
+ */
+export function isBranchCheckedOutElsewhereError(message) {
+  return /already (?:used by worktree|checked out) at/i.test(message || '');
+}
+
+/**
  * Run `git worktree add …` with retry on lock contention. Promise-chained
  * (no try/catch) so it stays idiomatic with the rest of the module: on a lock
  * error it backs off and recurses until WORKTREE_ADD_MAX_ATTEMPTS, then lets
@@ -468,6 +488,49 @@ async function createWorktreeUnlocked(agentId, sourceWorkspace, taskId, options 
   console.log(`🌳 Created worktree for ${agentId} at ${worktreePath} (branch: ${branchName}, base: ${baseRef})`);
 
   return { worktreePath, branchName, baseBranch, instanceId };
+}
+
+/**
+ * Locate the worktree that currently holds `branchName`, when it is one PortOS
+ * may take over — i.e. a tree `adoptWorktree` could legitimately move.
+ *
+ * `git worktree add` refuses to attach a second tree to a checked-out branch, so
+ * a task pointed at an existing branch (a review-loop/merge follow-up, a resume)
+ * cannot start while another tree holds it. Usually that holder is the finished
+ * run's own worktree, still there because `removeWorktree` won't delete a dirty
+ * tree — and it IS that branch's workspace, so adopting it is both the fastest
+ * path and the one that preserves the leftover work. Waiting for a teardown that
+ * is never coming just strands the pull request the follow-up exists to land.
+ *
+ * Refuses (returns null) for every holder PortOS doesn't own outright, because
+ * adoption MOVES the directory:
+ *   - the primary checkout, or any tree outside `data/cos/worktrees/` — moving
+ *     the user's own checkout out from under them is exactly the branch-jacking
+ *     guarded against everywhere else;
+ *   - a human `/claim` tree (`claim-*`), owned by the claim flow's cleanup;
+ *   - a tree whose agent is still running — it is mid-edit in that directory;
+ *   - a locked worktree, whose lock means "don't touch" regardless of owner.
+ *
+ * @param {string} sourceWorkspace - the parent git repository
+ * @param {string} branchName - branch to find a holder for (no `refs/heads/`)
+ * @param {object} [options]
+ * @param {Set<string>} [options.activeAgentIds] - agents currently running
+ * @returns {Promise<{ path: string, agentId: string }|null>}
+ */
+export async function findAdoptableWorktreeForBranch(sourceWorkspace, branchName, { activeAgentIds = new Set() } = {}) {
+  if (!sourceWorkspace || !branchName) return null;
+
+  const worktrees = await listWorktrees(sourceWorkspace).catch(() => []);
+  // Only one worktree can hold a branch, so the first match is the only match —
+  // a guard failing means "nobody may adopt this", not "keep looking".
+  const holder = worktrees.find(wt => wt.branch?.replace('refs/heads/', '') === branchName);
+  if (!holder?.path || holder.locked) return null;
+  if (!isPathInsideDir(WORKTREES_DIR, holder.path)) return null;
+
+  const agentId = worktreeAgentId(holder.path);
+  if (!agentId || isHumanClaimWorktree(agentId) || activeAgentIds.has(agentId)) return null;
+
+  return { path: holder.path, agentId };
 }
 
 /**

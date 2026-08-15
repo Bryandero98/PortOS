@@ -37,7 +37,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
-import { isMiniMaxH3Runtime } from '../lib/runnerFamilies';
+import { isMiniMaxH3Runtime, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -446,6 +446,21 @@ export default function VideoGen() {
   const textEncoderOptionStatus = textEncoderOptionDownloadId
     ? modelDownload.getStatus(textEncoderOptionDownloadId)
     : null;
+  // Choosing a substitute IS the request for its weights: it is unusable until
+  // resident and Generate is gated on it either way, so `startWhenIdle` turns
+  // the pick into the pull (it owns waiting for the cache verdict, skipping an
+  // already-downloaded one, and queueing behind an active download).
+  //
+  // Wired to the PICKER's onChange alone, deliberately — a Remix, a resumed
+  // render, and the snap-to-stock on a model change all reach `setTextEncoderId`
+  // too, and a multi-GB pull must follow a click the user just made rather than
+  // a state restore. Passing null for a built-in option clears any queued pull.
+  const { startWhenIdle: startEncoderWhenIdle } = modelDownload;
+  const handleTextEncoderChange = useCallback((id) => {
+    setTextEncoderId(id);
+    const option = textEncoderOptions.find((entry) => entry.id === id);
+    startEncoderWhenIdle(option && !option.builtIn ? textEncoderDownloadId(id) : null);
+  }, [setTextEncoderId, textEncoderOptions, startEncoderWhenIdle]);
   const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
   const modelWeightsBlocked = !isGrok
     && (statusLoading || !modelId || !currentModel || modelDownload.loading
@@ -1062,9 +1077,10 @@ export default function VideoGen() {
                 <TextEncoderPicker
                   options={textEncoderOptions}
                   value={textEncoderId}
-                  onChange={setTextEncoderId}
+                  onChange={handleTextEncoderChange}
                   status={textEncoderOptionStatus}
-                  onDownload={(id) => modelDownload.start(textEncoderDownloadId(id))}
+                  onDownload={() => modelDownload.start(textEncoderOptionDownloadId)}
+                  queued={modelDownload.queuedModelId === textEncoderOptionDownloadId}
                   onCancel={modelDownload.cancel}
                   disabled={generating}
                 />
@@ -1183,7 +1199,7 @@ export default function VideoGen() {
                     : textEncoderOptionBlocked ? `Download the ${selectedTextEncoder?.label || 'selected'} text encoder before generating`
                     : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before generating`
                     : extendModeBlocked ? 'Pick a prior render and wait for the last frame to extract before generating'
-                    : a2vModeBlocked ? (currentModel?.runtime !== 'ltx2'
+                    : a2vModeBlocked ? (!isLtx2FamilyRuntime(currentModel?.runtime)
                       ? 'a2v mode requires an ltx2-runtime model — pick one from the Model dropdown'
                       : 'Pick an audio file before generating')
                     : keyframesBlocked ? keyframesError
