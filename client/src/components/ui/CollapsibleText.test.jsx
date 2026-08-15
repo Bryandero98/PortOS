@@ -237,6 +237,106 @@ describe('CollapsibleText children (max-height) variant', () => {
     expect(observed).toContain(box.firstElementChild);
   });
 
+  it('measures children that arrive after mount', () => {
+    // Switching modes swaps the rendered element from <p> to the capped <div>,
+    // so an effect that doesn't re-run stays bound to the now-detached <p> —
+    // which has no layout and never gets a resize callback. The content would
+    // clip at maxHeight with no Show more affordance at all.
+    const spy = forceOverflow();
+    spy.mockReturnValue(0);
+    const { rerender } = render(<CollapsibleText id="c8">{null}</CollapsibleText>);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+
+    spy.mockReturnValue(500);
+    rerender(<CollapsibleText id="c8"><p>tall rendered markdown</p></CollapsibleText>);
+    expect(screen.getByRole('button', { name: /Show more/ })).toBeInTheDocument();
+  });
+
+  it('treats an empty child list as no children so the text fallback still renders', () => {
+    // `<CollapsibleText text={fallback}>{items.map(…)}</CollapsibleText>` over an
+    // empty list must not yield an empty capped box with `text` silently dropped.
+    render(<CollapsibleText id="c9" text="plain fallback">{[]}</CollapsibleText>);
+    expect(screen.getByText('plain fallback')).toBeInTheDocument();
+    expect(document.getElementById('c9')).toHaveClass('line-clamp-2');
+  });
+
+  it('treats a list of non-rendering children as no children', () => {
+    // `items.map(i => i.show ? <Row/> : null)` over an all-hidden list yields
+    // `[null]` — length 1, renders nothing. Counting array length would take the
+    // children path and drop `text` into an empty capped box.
+    render(
+      <CollapsibleText id="c9b" text="plain fallback">{[null, false, undefined, '  ']}</CollapsibleText>
+    );
+    expect(screen.getByText('plain fallback')).toBeInTheDocument();
+    expect(document.getElementById('c9b')).toHaveClass('line-clamp-2');
+  });
+
+  it('takes the children path when a list renders even one child', () => {
+    forceOverflow();
+    render(
+      <CollapsibleText id="c9c" text="plain fallback">{[null, <p key="a">real</p>]}</CollapsibleText>
+    );
+    expect(screen.getByText('real')).toBeInTheDocument();
+    expect(screen.queryByText('plain fallback')).not.toBeInTheDocument();
+    expect(document.getElementById('c9c')).not.toHaveClass('line-clamp-2');
+  });
+
+  it('expands when focus lands inside the capped region', () => {
+    // The cap is a scroll container with no visible scrollbar. Tabbing to a link
+    // below it would scroll the preview to reveal the target with no way back,
+    // while `aria-expanded="false"` claimed content that is fully in the tab
+    // order was hidden.
+    forceOverflow();
+    render(
+      <CollapsibleText id="c10">
+        <a href="/r">buried link</a>
+      </CollapsibleText>
+    );
+
+    expect(screen.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.focus(screen.getByRole('link', { name: 'buried link' }));
+
+    expect(screen.getByRole('button', { name: /Show less/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('c10')).not.toHaveClass('overflow-hidden');
+  });
+
+  it('measures overflow live on focus rather than trusting the state flag', () => {
+    // The focus handler must not read `isOverflowing`, which a passive effect
+    // populates after commit. A descendant with `autoFocus` takes focus during
+    // the commit phase — before that effect has ever run — so the flag is still
+    // a stale `false` and the focused control is stranded inside the clipped,
+    // scrolled region. Simulated here by letting the element start out fitting
+    // and become overflowing with no re-measure in between.
+    const spy = forceOverflow();
+    spy.mockReturnValue(0);
+    render(
+      <CollapsibleText id="c12">
+        <a href="/r">buried link</a>
+      </CollapsibleText>
+    );
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+
+    spy.mockReturnValue(500);
+    fireEvent.focus(screen.getByRole('link', { name: 'buried link' }));
+
+    expect(screen.getByRole('button', { name: /Show less/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('c12')).not.toHaveClass('overflow-hidden');
+  });
+
+  it('leaves fitting children alone when focus lands inside them', () => {
+    // Nothing is clipped, so there is nothing to reveal — expanding here would
+    // only mint a no-op "Show less" button into the tab order.
+    render(
+      <CollapsibleText id="c11">
+        <a href="/r">visible link</a>
+      </CollapsibleText>
+    );
+
+    fireEvent.focus(screen.getByRole('link', { name: 'visible link' }));
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(document.getElementById('c11')).toHaveClass('overflow-hidden');
+  });
+
   it('keeps the toggle when a resize fires against the uncapped container', () => {
     // Same in-flight-callback race as the line-clamp path: expanding removes the
     // cap, and a resize notification already in flight would otherwise measure

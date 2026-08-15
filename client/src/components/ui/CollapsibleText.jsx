@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { Children, useState, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
 // Tailwind scans source for literal class names, so the clamp variants must
@@ -55,7 +55,11 @@ const CLAMP_CLASS = {
  * never change its box and a resize callback bound to it alone would never fire;
  * the inner wrapper is uncapped, so its height tracks the real content and a
  * changed child re-measures without needing `children` (a fresh element object
- * every render) in the effect deps.
+ * every render, which would churn the observer on every parent re-render) in the
+ * effect deps. Switching *modes* still has to re-run it, though — the rendered
+ * element swaps between `<p>` and the capped `<div>`, so the effect's captured
+ * element would otherwise stay bound to the detached one and never measure.
+ * That's what `hasChildren` (a stable boolean) is doing in the deps.
  *
  * Two separate guards keep the toggle from vanishing mid-expand (which would
  * strand the user in the expanded wall of text with no way back): the effect
@@ -69,6 +73,11 @@ const CLAMP_CLASS = {
  *
  * `id` is required: it wires the toggle's `aria-controls` to the content it expands.
  */
+
+// The 1px slack absorbs sub-pixel line-height rounding, which otherwise reports
+// a phantom overflow on content that fits exactly.
+const overflows = el => el.scrollHeight > el.clientHeight + 1;
+
 export default function CollapsibleText({
   id,
   text,
@@ -84,13 +93,24 @@ export default function CollapsibleText({
   const [isOverflowing, setIsOverflowing] = useState(false);
   const ref = useRef(null);
   const innerRef = useRef(null);
-  const hasChildren = children != null && children !== false;
+  // An empty list or an empty string is *no* children, not "children that
+  // happen to be blank" — a caller doing `<CollapsibleText text={fallback}>
+  // {items.map(…)}</CollapsibleText>` over an empty list must get the text
+  // fallback, not an empty capped box with its `text` silently dropped.
+  // Array *length* is the wrong signal: `items.map(i => i.show ? <Row/> : null)`
+  // over an all-hidden list yields `[null]` — length 1, renders nothing.
+  // `Children.toArray` drops exactly those non-rendering placeholders (`null`,
+  // `undefined`, booleans) and flattens nested arrays; empty/whitespace strings
+  // survive it, so they're filtered here too.
+  const hasChildren = Children.toArray(children).some(
+    child => typeof child !== 'string' || child.trim() !== ''
+  );
 
   useEffect(() => {
     if (expanded) return;
     const el = ref.current;
     if (!el) return;
-    const measure = () => setIsOverflowing(el.scrollHeight > el.clientHeight + 1);
+    const measure = () => setIsOverflowing(overflows(el));
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
@@ -100,6 +120,7 @@ export default function CollapsibleText({
   }, [text, hasChildren, expanded]);
 
   const clamp = CLAMP_CLASS[lines] || CLAMP_CLASS[2];
+
   const renderContent = () => {
     if (hasChildren) {
       return (
@@ -108,6 +129,18 @@ export default function CollapsibleText({
           id={id}
           className={`break-words ${className} ${expanded ? '' : 'overflow-hidden'}`}
           style={expanded ? undefined : { maxHeight }}
+          // `overflow-hidden` is a scroll container with no visible scrollbar,
+          // and children may hold links, buttons or a horizontally-scrollable
+          // <pre>. Tabbing to one below the cap would scroll the preview to
+          // reveal it with no way to scroll back — and `aria-expanded="false"`
+          // would be a lie, since the content is fully in the tab order.
+          // Expanding on focus keeps the claim honest and the target on screen.
+          // Gated on real overflow: content that fits is never clipped, so
+          // expanding it would only mint a no-op "Show less" into the tab order.
+          // Measured live rather than read off `isOverflowing`: a descendant with
+          // `autoFocus` takes focus during commit, before the passive measure
+          // effect has run, so the state flag is still false on that first focus.
+          onFocus={() => { if (ref.current && overflows(ref.current)) setExpanded(true); }}
         >
           <div ref={innerRef}>{children}</div>
         </div>
