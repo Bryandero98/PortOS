@@ -172,9 +172,7 @@ async function runInitSpawner() {
   // exists to prevent. The socket reconnects forever with capped backoff, so it,
   // not the probe, is the standing authority on whether the runner is there.
   setUseRunner(await isRunnerAvailable());
-  console.log(useRunner
-    ? '🤖 Sub-agent spawner initialized (using CoS Runner)'
-    : '🤖 Sub-agent spawner initialized (direct mode — CoS Runner not up yet)');
+  console.log(`🤖 Sub-agent spawner initialized (${useRunner ? 'using CoS Runner' : 'direct mode — CoS Runner not up yet'})`);
 
   initCosRunnerConnection();
 
@@ -235,11 +233,16 @@ async function runInitSpawner() {
     reconnectDequeueTimer.unref?.();
   });
 
-  // Runner event handlers are registered unconditionally: they are inert in
-  // direct mode (each keys off `runnerAgents`, which only `spawnViaRunner`
-  // populates), and registering them only when the boot probe succeeded left a
-  // promoted process connected to a runner whose output/completions nothing was
-  // listening for.
+  // Runner event handlers are registered unconditionally. Registering them only
+  // when the boot probe succeeded left a promoted process connected to a runner
+  // whose output and completions nothing was listening for.
+  //
+  // Nothing fires before a promotion: these events only arrive over a connected
+  // socket, and the `connect` that carries them dispatches `connection:ready`
+  // first (same handler in `cosRunnerClient`), so this process is already in
+  // runner mode by the time any of them lands. A directly-spawned agent is safe
+  // regardless — the three per-agent handlers key off `runnerAgents`, which only
+  // `spawnViaRunner` populates.
   onCosRunnerEvent('agent:output', async (data) => {
     const { agentId, text } = data;
     // Drop output for an agent that's already finalized/removed. The runner
