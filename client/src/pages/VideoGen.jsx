@@ -142,7 +142,7 @@ export default function VideoGen() {
   const {
     backend, isGrok, handleBackendChange, grokDuration, setGrokDuration,
     mode, handleModeChange,
-    prompt, setPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset,
+    prompt, setPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset, remixModelFallback,
     modelId, handleModelChange, currentModel, visibleModels,
     loraFamily, videoLoras, loraUnavailableHint,
     selectedLoras, setSelectedLoras,
@@ -1036,6 +1036,15 @@ export default function VideoGen() {
                   value={modelId}
                   onChange={(e) => handleModelChange(e.target.value)}
                 />
+                {remixModelFallback && (
+                  <p className="mt-1 text-[11px] text-port-accent leading-snug" role="status">
+                    {remixModelFallback.sourceName} {remixModelFallback.samplerLocked && remixModelFallback.negativePromptUnsupported
+                      ? 'has fixed sampler controls and no negative prompt'
+                      : remixModelFallback.samplerLocked
+                        ? 'has fixed sampler controls'
+                        : 'does not support a negative prompt'}. This remix is using {remixModelFallback.targetName} so its negative prompt, Steps, and CFG Scale remain editable.
+                  </p>
+                )}
                 {modelStatus && (
                   <ModelDownloadBadge
                     status={modelStatus}
