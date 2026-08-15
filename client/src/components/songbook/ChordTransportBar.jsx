@@ -79,7 +79,7 @@ export default function ChordTransportBar({
 
         {/* Where you are: the visual pulse plus the chord counter */}
         <div className="flex items-center gap-2">
-          <BeatPulse beatsPerBar={beatsPerBar} beat={pulse?.beat ?? null} countingIn={!!pulse?.countingIn} />
+          <BeatPulse beatsPerBar={beatsPerBar} beat={pulse?.beat} countingIn={pulse?.countingIn} />
           <span className="text-xs text-gray-400 tabular-nums whitespace-nowrap">
             {pulse?.countingIn
               ? 'count-in'

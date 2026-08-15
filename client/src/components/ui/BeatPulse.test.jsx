@@ -55,6 +55,15 @@ describe('BeatPulse', () => {
     expect(screen.getByRole('status')).toHaveAttribute('aria-label', expected);
   });
 
+  it('reads an absent pulse as stopped, so hosts can pass `pulse?.beat` raw', () => {
+    const pulse = null;
+    const { container } = render(
+      <BeatPulse beatsPerBar={4} beat={pulse?.beat} countingIn={pulse?.countingIn} />,
+    );
+    dotsOf(container).forEach((dot) => expect(dot.className).toContain('bg-port-border'));
+    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Stopped');
+  });
+
   it('falls back to 4 beats when the time signature is unusable', () => {
     const { container } = render(<BeatPulse beatsPerBar={NaN} beat={null} />);
     expect(dotsOf(container)).toHaveLength(4);

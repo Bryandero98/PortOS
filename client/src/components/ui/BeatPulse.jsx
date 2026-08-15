@@ -14,8 +14,10 @@
  * - a count-in beat lights amber (`port-warning`) so "not yet" is unmistakable;
  * - unlit dots are `port-border`, i.e. the same weight as any inert chrome.
  *
- * `beat` is 1-based and `null`/`0` when stopped — the audible click is easy to
- * lose under a backing track, so "nothing lit" has to read as stopped.
+ * `beat` is 1-based and nullish/`0` when stopped — the audible click is easy to
+ * lose under a backing track, so "nothing lit" has to read as stopped. Hosts
+ * therefore pass `pulse?.beat` straight through: the nullish/boolean coercion
+ * lives here once rather than being re-typed at every call site.
  */
 
 // Lit dots are `port-success`, not `port-accent`: in the transport bars the
@@ -24,7 +26,7 @@
 // "sounding now" and stays clearly distinct from the amber count-in.
 const litTone = (countingIn) => (countingIn ? 'bg-port-warning' : 'bg-port-success');
 
-export default function BeatPulse({ beatsPerBar = 4, beat = null, countingIn = false, className = '' }) {
+export default function BeatPulse({ beatsPerBar = 4, beat = null, countingIn = false }) {
   // A malformed time signature must not blank the row out.
   const beats = Number.isFinite(beatsPerBar) ? Math.max(1, Math.floor(beatsPerBar)) : 4;
   const label = countingIn
@@ -33,7 +35,7 @@ export default function BeatPulse({ beatsPerBar = 4, beat = null, countingIn = f
 
   return (
     <div
-      className={`flex items-center gap-1.5 ${className}`.trim()}
+      className="flex items-center gap-1.5"
       role="status"
       aria-live="off"
       aria-label={label}

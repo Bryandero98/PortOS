@@ -109,7 +109,7 @@ export default function Metronome({ tempo = null, score = '', countInBars = 1 })
 
       {/* Visual beat pulse — shared with the SongBook play-along transports. */}
       <div className="flex items-center gap-2 mt-3">
-        <BeatPulse beatsPerBar={beatsPerBar} beat={activeBeat} countingIn={!!pulse?.countIn} />
+        <BeatPulse beatsPerBar={beatsPerBar} beat={activeBeat} countingIn={pulse?.countIn} />
         {running && (
           <span className="text-xs text-gray-500 ml-1">
             {pulse?.countIn ? 'Count-in…' : pulse?.bar ? `Bar ${pulse.bar}` : ''}
