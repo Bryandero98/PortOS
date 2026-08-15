@@ -14,15 +14,26 @@ const CLAMP_CLASS = {
 };
 
 /**
- * Long text collapsed to a few lines with a Show more / Show less toggle.
+ * Long content collapsed to a short preview with a Show more / Show less toggle.
  *
- * `lines` (default 2) picks the clamp depth; only the values in `CLAMP_CLASS`
- * are supported, since Tailwind needs the literal class name in source.
+ * Two clamp strategies, picked by which content prop you pass:
  *
- * `expandedContent` lets a caller swap in richer markup once the user opts in —
- * e.g. a card that previews arbitrary markdown as flattened plain text (so the
- * clamp works and foreign headings stay out of the page outline) but renders
- * the real markdown on expand. When omitted, expanding just unclamps `text`.
+ * 1. **`text` (line-clamp)** — the default. `lines` (default 2) picks the clamp
+ *    depth; only the values in `CLAMP_CLASS` are supported, since Tailwind needs
+ *    the literal class name in source.
+ * 2. **`children` (max-height)** — for content CSS `line-clamp` cannot clamp:
+ *    rendered markdown and anything else that emits *block* children, where
+ *    `line-clamp` applies to the container's own inline content and silently
+ *    does nothing. `maxHeight` (default `3.5rem`) caps the collapsed preview.
+ *    Passing `children` wins over `text`.
+ *
+ * `expandedContent` lets a `text` caller swap in richer markup once the user
+ * opts in — e.g. a card that previews arbitrary markdown as flattened plain text
+ * (so the clamp works and foreign headings stay out of the page outline) but
+ * renders the real markdown on expand. When omitted, expanding just unclamps
+ * `text`. It and `expandedClassName` are `text`-mode only: a `children` caller
+ * already holds the rich markup, and expanding simply lifts the height cap off
+ * it — the children stay mounted throughout, so there is nothing to swap in.
  *
  * `forceToggle` shows the toggle even when the preview fits. It exists for the
  * `expandedContent` case: there, the toggle is the ONLY route to the rich
@@ -32,11 +43,19 @@ const CLAMP_CLASS = {
  * the preview is lossy, not merely when it is truncated.
  *
  * The overflow measurement runs against the *clamped* element, so the toggle
- * only appears when the text actually spills. It is recomputed on the collapsed
- * path when the text changes, so an edit that shortens the text clears a stale
- * toggle. A ResizeObserver re-measures on width changes (sidebar collapse,
- * rotation, window resize) so text that wraps to a new line at a narrower width
- * still surfaces the toggle instead of silently clamping with no affordance.
+ * only appears when the content actually spills. It is recomputed on the
+ * collapsed path when `text` changes, so an edit that shortens the text clears a
+ * stale toggle. A ResizeObserver re-measures on width changes (sidebar collapse,
+ * rotation, window resize) so content that wraps to a new line at a narrower
+ * width still surfaces the toggle instead of silently clamping with no
+ * affordance.
+ *
+ * In `children` mode the observer is attached to the *inner* wrapper as well as
+ * the clamped outer one. The outer element is height-capped, so growing children
+ * never change its box and a resize callback bound to it alone would never fire;
+ * the inner wrapper is uncapped, so its height tracks the real content and a
+ * changed child re-measures without needing `children` (a fresh element object
+ * every render) in the effect deps.
  *
  * Two separate guards keep the toggle from vanishing mid-expand (which would
  * strand the user in the expanded wall of text with no way back): the effect
@@ -48,11 +67,13 @@ const CLAMP_CLASS = {
  * notification). Without the `|| expanded` term that in-flight callback can
  * measure the now-unclamped element, see no overflow, and drop the toggle.
  *
- * `id` is required: it wires the toggle's `aria-controls` to the text it expands.
+ * `id` is required: it wires the toggle's `aria-controls` to the content it expands.
  */
 export default function CollapsibleText({
   id,
   text,
+  children = null,
+  maxHeight = '3.5rem',
   className = '',
   lines = 2,
   expandedContent = null,
@@ -62,6 +83,7 @@ export default function CollapsibleText({
   const [expanded, setExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const ref = useRef(null);
+  const innerRef = useRef(null);
 
   useEffect(() => {
     if (expanded) return;
@@ -72,24 +94,43 @@ export default function CollapsibleText({
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
     observer.observe(el);
+    if (innerRef.current) observer.observe(innerRef.current);
     return () => observer.disconnect();
   }, [text, expanded]);
 
   const clamp = CLAMP_CLASS[lines] || CLAMP_CLASS[2];
+  const hasChildren = children != null && children !== false;
+
+  const renderContent = () => {
+    if (hasChildren) {
+      return (
+        <div
+          ref={ref}
+          id={id}
+          className={`break-words ${className} ${expanded ? '' : 'overflow-hidden'}`}
+          style={expanded ? undefined : { maxHeight }}
+        >
+          <div ref={innerRef}>{children}</div>
+        </div>
+      );
+    }
+    if (expanded && expandedContent) {
+      return <div id={id} className={`break-words ${className} ${expandedClassName}`}>{expandedContent}</div>;
+    }
+    return (
+      <p
+        ref={ref}
+        id={id}
+        className={`whitespace-pre-wrap break-words ${className} ${expanded ? '' : clamp}`}
+      >
+        {text}
+      </p>
+    );
+  };
 
   return (
     <>
-      {expanded && expandedContent ? (
-        <div id={id} className={`break-words ${className} ${expandedClassName}`}>{expandedContent}</div>
-      ) : (
-        <p
-          ref={ref}
-          id={id}
-          className={`whitespace-pre-wrap break-words ${className} ${expanded ? '' : clamp}`}
-        >
-          {text}
-        </p>
-      )}
+      {renderContent()}
       {(isOverflowing || expanded || forceToggle) && (
         <button
           type="button"
