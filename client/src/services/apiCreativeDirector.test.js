@@ -50,6 +50,18 @@ describe('getCreativeDirectorProjectsByIds', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  // A whitespace-only id survives a bare `filter(Boolean)` and serializes to
+  // `?ids=%20`, which the server trims back to ABSENT — i.e. it would return
+  // every project on the install, the exact over-fetch this helper removes.
+  it('trims ids, and treats an all-whitespace list as empty (no request)', async () => {
+    expect(await getCreativeDirectorProjectsByIds(['  ', '\t', 42])).toEqual([]);
+    expect(request).not.toHaveBeenCalled();
+
+    request.mockResolvedValue([]);
+    await getCreativeDirectorProjectsByIds([' cd-1 ', '  ', 'cd-2']);
+    expect(decodeURIComponent(request.mock.calls[0][0])).toContain('ids=cd-1,cd-2');
+  });
+
   it('unwraps a paginated { items } envelope and tolerates a junk response', async () => {
     request.mockResolvedValue({ items: [{ id: 'cd-1' }], total: 1 });
     expect(await getCreativeDirectorProjectsByIds(['cd-1'])).toEqual([{ id: 'cd-1' }]);

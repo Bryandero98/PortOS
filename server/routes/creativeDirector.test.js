@@ -114,6 +114,28 @@ describe('creativeDirector routes', () => {
       expect(cdService.listProjects).toHaveBeenCalled();
     });
 
+    // Express hands `?ids=a&ids=b` over as an ARRAY — it must normalize through
+    // the same trim / blank-drop / cap path as the CSV form.
+    it('normalizes the repeated ?ids= array form identically to the CSV form', async () => {
+      cdService.getProjectsByIds.mockResolvedValueOnce([{ id: 'cd-2', name: 'B' }]);
+      await request(app).get('/api/creative-director?ids=%20cd-2%20&ids=&ids=cd-9');
+      expect(cdService.getProjectsByIds).toHaveBeenCalledWith(['cd-2', 'cd-9']);
+
+      const many = Array.from({ length: CREATIVE_DIRECTOR_IDS_BATCH_MAX + 1 }, (_, i) => `ids=cd-${i}`).join('&');
+      const over = await request(app).get(`/api/creative-director?${many}`);
+      expect(over.status).toBe(400);
+    });
+
+    // A project that arrived from a peer may carry any id the per-record sync
+    // contract accepts (recordId, max 120) — the batch must still resolve it.
+    it('accepts a peer-length (120-char) project id', async () => {
+      const longId = `cd-${'a'.repeat(117)}`;
+      cdService.getProjectsByIds.mockResolvedValueOnce([{ id: longId }]);
+      const r = await request(app).get(`/api/creative-director?ids=${longId}`);
+      expect(r.status).toBe(200);
+      expect(cdService.getProjectsByIds).toHaveBeenCalledWith([longId]);
+    });
+
     it('rejects an over-cap ids batch instead of silently truncating it', async () => {
       const ids = Array.from({ length: CREATIVE_DIRECTOR_IDS_BATCH_MAX + 1 }, (_, i) => `cd-${i}`).join(',');
       const r = await request(app).get(`/api/creative-director?ids=${ids}`);

@@ -1,5 +1,5 @@
 import { request } from './apiCore.js';
-import { fetchByIds } from './apiBatch.js';
+import { fetchByIds, normalizeIds } from './apiBatch.js';
 
 // Creative Ingredients Catalog API surface. Every helper takes an optional
 // `options` second arg so callers with their own `.catch` toast can pass
@@ -91,10 +91,10 @@ export const listCatalogIngredients = ({ type, tag, q, refKind, refId, unlinked,
 // and chips + seed must read in the user's selection order (mirroring the
 // server's resolveCatalogIngredients).
 export const listCatalogIngredientsByIds = async (ids = [], options) => {
-  const list = (Array.isArray(ids) ? ids : []).filter(Boolean);
+  const list = normalizeIds(ids);
   const items = await fetchByIds('/catalog/ingredients', list, options);
   const byId = new Map(items.map((ing) => [ing.id, ing]));
-  return [...new Set(list)].map((id) => byId.get(id)).filter(Boolean);
+  return list.map((id) => byId.get(id)).filter(Boolean);
 };
 
 export const getCatalogIngredient = (id, options) =>

@@ -227,7 +227,11 @@ export const CREATIVE_DIRECTOR_IDS_BATCH_MAX = 100;
 // full list. Unknown keys (limit/offset) strip out of the parsed result — the
 // route reads those straight off `req.query` for paginateArray.
 export const creativeDirectorProjectQuerySchema = z.object({
-  ids: csvIdsParam({ max: CREATIVE_DIRECTOR_IDS_BATCH_MAX }),
+  // 120 matches the per-record peer-sync `recordId` bound (validation.js), not
+  // the helper's 64-char default: a locally-minted id is `cd-<uuid>` (39), but a
+  // project that arrived from a peer may carry anything that contract accepts,
+  // and such a project must still be resolvable through this batch.
+  ids: csvIdsParam({ max: CREATIVE_DIRECTOR_IDS_BATCH_MAX, maxIdLength: 120 }),
 });
 
 // One scene in the treatment, written by the agent on the treatment task.
