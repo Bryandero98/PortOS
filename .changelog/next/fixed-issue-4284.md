@@ -1,0 +1,1 @@
+- [issue-4284] Worktree cleanup now reports canonical ownership reasons consistently.

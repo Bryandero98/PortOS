@@ -1114,13 +1114,7 @@ export async function reapMergedWorktrees(sourceWorkspace, {
       requireKnownLiveness: true,
     });
     if (ownershipReason) {
-      const reason = {
-        'worktree-human-claim': 'human-claim',
-        'worktree-active-agent': 'active-agent',
-        'worktree-locked': 'locked',
-        'worktree-unmanaged-location': 'unmanaged-location',
-      }[ownershipReason] || ownershipReason;
-      skipped.push({ path: wt.path, reason });
+      skipped.push({ path: wt.path, reason: ownershipReason });
       continue;
     }
     if (isClaudeTree && !includeClaudeTrees) { skipped.push({ path: wt.path, reason: 'claude-tree-excluded' }); continue; }
