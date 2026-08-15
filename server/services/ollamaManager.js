@@ -30,6 +30,7 @@ import {
 import { buildHfAuthHeaders } from '../lib/huggingfaceLora.js'
 import { isEmbeddingModel } from '../lib/localModelHeuristics.js'
 import { commandExists } from '../lib/commandExists.js'
+import { OLLAMA_AGENT_MIN_CONTEXT, OLLAMA_CONTEXT_ENV_VAR, withOllamaContextEnv } from '../lib/ollamaContext.js'
 
 const execFileAsync = promisify(execFile)
 const AVAILABILITY_CACHE_TTL_MS = 30_000
@@ -84,6 +85,16 @@ let installedModels = null
 let lastCheckAt = null
 let managedProcess = null
 let managedProcessPid = null
+// The OLLAMA_CONTEXT_LENGTH PortOS handed the daemon that is up right now —
+// whether by spawning it or by restarting its launch-at-login service. Cleared
+// when the daemon goes away, so it always describes the live process.
+//
+// It is what stops `ensureContextWindow` from restarting in a loop: Ollama is
+// free to load a model at less than the requested window (it fits the KV cache
+// to VRAM), and re-reading a smaller `/api/ps` value as "not applied yet" would
+// bounce the daemon before every single agent spawn. Once a window has been
+// handed over, that request is done.
+let appliedContextLength = null
 
 const status = { lastError: null, lastSuccessAt: null, consecutiveErrors: 0 }
 
@@ -94,6 +105,7 @@ async function getServiceController() {
       manager: 'homebrew',
       start: ['brew', ['services', 'start', 'ollama']],
       stop: ['brew', ['services', 'stop', 'ollama']],
+      restart: ['brew', ['services', 'restart', 'ollama']],
       list: ['brew', ['services', 'list']]
     }
   }
@@ -186,6 +198,9 @@ async function checkOllamaAvailable(forceRefresh = false) {
     return true
   } catch (err) {
     isAvailable = false
+    // The daemon we handed a window to is gone; whatever comes up next has to
+    // be re-checked rather than credited with that window.
+    appliedContextLength = null
     status.lastError = err.message
     status.consecutiveErrors++
     lastCheckAt = now
@@ -232,9 +247,15 @@ async function terminateManagedProcess() {
 
 /**
  * Start the Ollama HTTP server via the local CLI.
+ *
+ * `contextLength` (when set) becomes the daemon-wide `OLLAMA_CONTEXT_LENGTH`.
+ * This is the only lever that reaches Ollama-backed *agent harnesses* — Claude
+ * Code and OpenCode talk to Ollama directly, so PortOS can't attach a
+ * per-request `num_ctx` the way the toolkit runner does for `api` providers.
+ * @param {{ contextLength?: number|null }} [options]
  * @returns {Promise<{ success: boolean, running?: boolean, alreadyRunning?: boolean, pid?: number, error?: string }>}
  */
-async function startServer() {
+async function startServer({ contextLength = null } = {}) {
   if (await checkOllamaAvailable(true)) {
     return { success: true, running: true, alreadyRunning: true }
   }
@@ -244,7 +265,7 @@ async function startServer() {
   const child = spawn('ollama', ['serve'], {
     detached: true,
     stdio: ['ignore', 'ignore', 'pipe'],
-    env: process.env
+    env: withOllamaContextEnv(process.env, contextLength)
   })
   rememberManagedProcess(child)
   child.stderr?.on('data', (chunk) => {
@@ -256,7 +277,9 @@ async function startServer() {
 
   const running = await waitForAvailability(true, START_TIMEOUT_MS)
   if (running) {
-    console.log(`▶️ Started Ollama server (pid ${child.pid})`)
+    appliedContextLength = contextLength || null
+    const window = contextLength ? ` (context ${contextLength})` : ''
+    console.log(`▶️ Started Ollama server (pid ${child.pid})${window}`)
     return { success: true, running: true, pid: child.pid }
   }
 
@@ -400,6 +423,128 @@ async function ensureRunning({ preferPersistent = false } = {}) {
     }
   }
   return startServer()
+}
+
+/**
+ * The context window the daemon actually loaded models at, read from `/api/ps`.
+ * Ollama reports it per resident model; we take the largest, since that is the
+ * window a request routed to an already-resident model will get.
+ *
+ * `null` means unknowable right now — no model is resident, so Ollama has not
+ * yet committed to a window. Callers must treat that as "no evidence", never as
+ * "too small": the daemon's own default may well be generous.
+ * @returns {Promise<number|null>}
+ */
+async function getRuntimeContextLength() {
+  if (!(await checkOllamaAvailable())) return null
+  const data = await ollamaRequest('/api/ps').catch(() => null)
+  const windows = (Array.isArray(data?.models) ? data.models : [])
+    .map((m) => Number(m?.context_length))
+    .filter((n) => Number.isFinite(n) && n > 0)
+  return windows.length ? Math.max(...windows) : null
+}
+
+/**
+ * Hold the Ollama daemon at (at least) `contextLength` tokens, reloading it with
+ * that window when it is running at a smaller one.
+ *
+ * Reloading a daemon is disruptive, so it happens at most once per daemon per
+ * window (the `appliedContextLength` latch) and never when a resident model is
+ * already at or above the target. It DOES happen when nothing is resident: an
+ * idle daemon has not committed to a window yet, and the one it will pick is
+ * the VRAM-based default `numCtx` exists to override.
+ *
+ * @param {number|null} contextLength
+ * @returns {Promise<{ applied: boolean, reason: string, contextLength: number|null, runtimeContextLength?: number|null, error?: string }>}
+ */
+async function ensureContextWindow(contextLength) {
+  const target = Number(contextLength) > 0 ? Math.floor(Number(contextLength)) : null
+  if (!target) return { applied: false, reason: 'not-configured', contextLength: null }
+  if (!(await checkOllamaAvailable(true))) {
+    const started = await startServer({ contextLength: target })
+    return started.success
+      ? { applied: true, reason: 'started', contextLength: target }
+      : { applied: false, reason: 'start-failed', contextLength: target, error: started.error }
+  }
+
+  if (Number(appliedContextLength) >= target) {
+    return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
+  }
+
+  // `runtime == null` means nothing is resident, which is the NORMAL idle state
+  // between runs — not a reason to skip. The window Ollama will pick when the
+  // harness loads its model is its VRAM-based default, i.e. exactly the one the
+  // user set `numCtx` to override, so leaving it alone here would make the
+  // setting a no-op in the common case. Apply it; the `appliedContextLength`
+  // latch keeps this to one reload per daemon.
+  const runtime = await getRuntimeContextLength()
+  if (runtime != null && runtime >= target) {
+    return { applied: false, reason: 'already-large-enough', contextLength: target, runtimeContextLength: runtime }
+  }
+
+  console.log(`🪟 Reloading Ollama at a ${target}-token context window (was ${runtime ?? 'unknown'})`)
+
+  // A daemon the user registered to launch at login must keep that registration:
+  // `stopServer` would route through `brew services stop` / `systemctl disable`,
+  // which un-registers it. Restart it in place instead (see restartServiceWithContext).
+  const service = await getServiceStatus().catch(() => null)
+  if (service?.runAtStartup) {
+    const viaService = await restartServiceWithContext(service, target)
+    return { ...viaService, contextLength: target, runtimeContextLength: runtime }
+  }
+
+  const stopped = await stopServer()
+  if (!stopped.success) {
+    return { applied: false, reason: 'stop-failed', contextLength: target, runtimeContextLength: runtime, error: stopped.error }
+  }
+  const started = await startServer({ contextLength: target })
+  return started.success
+    ? { applied: true, reason: 'restarted', contextLength: target, runtimeContextLength: runtime }
+    : { applied: false, reason: 'start-failed', contextLength: target, runtimeContextLength: runtime, error: started.error }
+}
+
+/**
+ * Restart a launch-at-login-registered Ollama at `contextLength`, WITHOUT
+ * un-registering it.
+ *
+ * macOS: `launchctl setenv` writes into the user's launchd domain, which every
+ * job launched afterwards inherits — so setting it and then
+ * `brew services restart ollama` carries the window into a plist PortOS cannot
+ * edit (Homebrew regenerates it from the formula on every start). The variable
+ * is scoped to Ollama's behavior, so exporting it session-wide is harmless.
+ *
+ * Linux: the equivalent is a `systemctl edit ollama` drop-in, which needs root.
+ * PortOS reports what to do rather than tearing the unit down to work around it.
+ */
+async function restartServiceWithContext(service, contextLength) {
+  if (service.manager !== 'homebrew') {
+    return {
+      applied: false,
+      reason: 'service-managed',
+      error: `Ollama runs as a ${service.manager} service, which PortOS can't hand a context window. ` +
+        `Add one with: sudo systemctl edit ollama → [Service] Environment="${OLLAMA_CONTEXT_ENV_VAR}=${contextLength}", then restart it.`
+    }
+  }
+
+  const controller = await getServiceController()
+  const setenv = await execFileAsync('launchctl', ['setenv', OLLAMA_CONTEXT_ENV_VAR, String(contextLength)], { timeout: SERVICE_COMMAND_TIMEOUT_MS })
+    .then(() => ({ success: true }))
+    .catch((err) => ({ success: false, error: err.stderr?.trim() || err.message }))
+  if (!setenv.success) return { applied: false, reason: 'setenv-failed', error: setenv.error }
+
+  resetAvailabilityCache()
+  const [cmd, args] = controller.restart
+  const restarted = await execFileAsync(cmd, args, { timeout: SERVICE_COMMAND_TIMEOUT_MS })
+    .then(() => ({ success: true }))
+    .catch((err) => ({ success: false, error: err.stderr?.trim() || err.stdout?.trim() || err.message }))
+  if (!restarted.success) return { applied: false, reason: 'restart-failed', error: restarted.error }
+
+  if (!(await waitForAvailability(true, START_TIMEOUT_MS))) {
+    return { applied: false, reason: 'restart-unreachable', error: 'Ollama restarted, but the API did not become reachable.' }
+  }
+  appliedContextLength = contextLength
+  console.log(`▶️ Restarted the Ollama ${service.manager} service at a ${contextLength}-token context window`)
+  return { applied: true, reason: 'service-restarted' }
 }
 
 function isOllamaProvider(provider) {
@@ -1105,6 +1250,15 @@ async function getStatus(forceRefresh = false) {
     modelCount: models.length,
     models,
     service,
+    // The window resident models were actually loaded at (null when nothing is
+    // resident — Ollama has not committed to one yet), plus the window PortOS
+    // handed this daemon. Surfaced so the Local LLM page can show why an agent
+    // harness overflowed at 32K on a 256K-capable model.
+    contextLength: {
+      runtime: available ? await getRuntimeContextLength().catch(() => null) : null,
+      applied: available ? appliedContextLength : null,
+      agentMinimum: OLLAMA_AGENT_MIN_CONTEXT
+    },
     lastError: status.lastError,
     consecutiveErrors: status.consecutiveErrors
   }
@@ -1123,6 +1277,8 @@ export {
   importModelFromGguf,
   startServer,
   stopServer,
+  ensureContextWindow,
+  getRuntimeContextLength,
   startPersistentService,
   stopPersistentService,
   ensureRunning,

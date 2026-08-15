@@ -61,6 +61,13 @@ vi.mock('./agentCompletion.js', () => ({
   processAgentCompletion: vi.fn().mockResolvedValue(undefined)
 }));
 
+// The Ollama-backed spawn path prepares the daemon's context window first, which
+// otherwise reaches a real localhost:11434 in this suite. Stub it to a no-op —
+// its own behavior is covered by services/ollamaAgentContext.test.js.
+vi.mock('./ollamaAgentContext.js', () => ({
+  ensureOllamaAgentContext: vi.fn().mockResolvedValue({ skipped: false, contextLength: null, applied: false, warning: null })
+}));
+
 vi.mock('./agentFinalization.js', () => ({
   persistSimplifySummaries: vi.fn().mockResolvedValue(undefined),
   finalizeAgent: vi.fn().mockResolvedValue(undefined),
@@ -221,6 +228,7 @@ import { releaseRetryHold } from './agentWorktreeCleanup.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import * as agentLifecycle from './agentFinalization.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
@@ -726,6 +734,23 @@ describe('spawnTuiAgent runtime', () => {
       prCreation: 'always',
       skipMerge: false,
     }));
+  });
+
+  it('prepares the Ollama context window only for Ollama-backed providers', async () => {
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-ollama-tui', name: 'Lean Claude TUI', type: 'tui', command: 'claude', ollamaBacked: true, envVars: {} },
+    });
+    await flushMicrotasks();
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+    expect(ensureOllamaAgentContext).toHaveBeenCalledTimes(1);
+
+    vi.mocked(ensureOllamaAgentContext).mockClear();
+    const cloudSpawn = runSpawn();
+    await flushMicrotasks();
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await cloudSpawn;
+    expect(ensureOllamaAgentContext).not.toHaveBeenCalled();
   });
 
   it('does not double-fire a PR owned by a slashdo-capable Claude TUI', async () => {

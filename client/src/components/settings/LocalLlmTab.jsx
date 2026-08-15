@@ -133,6 +133,13 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
   const statusColor = data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
   const startupService = backend.id === 'ollama' ? data?.service : null;
   const runsAtStartup = Boolean(startupService?.runAtStartup);
+  // The window resident models were ACTUALLY loaded at — Ollama picks it from
+  // VRAM (4K/32K/256K), and an agent harness that overruns it dies mid-task with
+  // a 400. Null while nothing is resident, since Ollama hasn't committed yet.
+  const runtimeContext = backend.id === 'ollama' ? data?.contextLength?.runtime ?? null : null;
+  const runtimeContextLabel = formatContextLength(runtimeContext);
+  const contextBelowAgentFloor = runtimeContext != null
+    && runtimeContext < (data?.contextLength?.agentMinimum ?? 0);
 
   return (
     <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
@@ -164,6 +171,16 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
           </span>
         )}
         {startupService?.supported && <> · {runsAtStartup ? 'runs at login' : 'startup off'}</>}
+        {runtimeContextLabel && (
+          <span
+            className={contextBelowAgentFloor ? 'text-port-warning' : undefined}
+            title={contextBelowAgentFloor
+              ? `Loaded models are running at ${runtimeContextLabel} — below what an agent harness (Claude Ollama / OpenCode Ollama) usually needs. Set "Local num_ctx" on that provider in AI Providers to reload Ollama at a larger window.`
+              : `Loaded models are running at ${runtimeContextLabel}`}
+          >
+            {' · '}{runtimeContextLabel}
+          </span>
+        )}
       </div>
 
       {!data?.installed && (

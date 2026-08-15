@@ -46,7 +46,8 @@ export const DEFAULT_COOLDOWN_MS = 60 * 1000;
 // its synthetic response-schema failure 'parse-error' so it lands in this tier
 // when it re-enters the cascade.
 const SCHEMA_TYPE_CATEGORIES = new Set([
-  'parse-error', 'bad-request', 'context-length', 'output-length', 'build-error', 'lint-error',
+  'parse-error', 'bad-request', 'context-length', 'ollama-context-window', 'output-length',
+  'build-error', 'lint-error',
 ]);
 export const isSchemaTypeCategory = (category) => SCHEMA_TYPE_CATEGORIES.has(category);
 

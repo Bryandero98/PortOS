@@ -117,3 +117,36 @@ describe('LocalLlmTab recommendations', () => {
     await waitFor(() => expect(screen.getByText('Qwen3.8 27B')).toBeTruthy());
   });
 });
+
+describe('LocalLlmTab runtime context window', () => {
+  // Ollama picks the runtime window from VRAM; a harness that overruns it dies
+  // mid-task, so the card has to make the loaded window visible.
+  const withContext = (contextLength) => {
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'ollama',
+      ollama: { installed: true, available: true, modelCount: 0, models: [], contextLength },
+      lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
+    });
+  };
+
+  it('flags a runtime window below the agent floor', async () => {
+    withContext({ runtime: 32768, applied: null, agentMinimum: 65536 });
+    await renderTab();
+    const badge = screen.getByTitle(/below what an agent harness/);
+    expect(badge.textContent).toContain('32K ctx');
+    expect(badge.className).toMatch(/text-port-warning/);
+  });
+
+  it('shows a generous window without the warning styling', async () => {
+    withContext({ runtime: 131072, applied: 131072, agentMinimum: 65536 });
+    await renderTab();
+    const badge = screen.getByTitle('Loaded models are running at 128K ctx');
+    expect(badge.className || '').not.toMatch(/text-port-warning/);
+  });
+
+  it('shows nothing while no model is resident — Ollama has not picked a window yet', async () => {
+    withContext({ runtime: null, applied: null, agentMinimum: 65536 });
+    await renderTab();
+    expect(screen.queryByTitle(/Loaded models are running at/)).toBeNull();
+  });
+});

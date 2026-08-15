@@ -77,6 +77,8 @@ import {
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
 import { execFile } from '../lib/childProcess.js';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
@@ -1417,6 +1419,17 @@ export async function spawnTuiAgent({
   const forgeTokenEnv = providerSuppliesGithubToken(provider)
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
+
+  // Ollama-backed harnesses talk to the daemon directly, so their context
+  // window is whatever Ollama loaded the model at — no per-request `num_ctx`
+  // reaches them. Hold the daemon at the provider's configured window (or warn
+  // when it's below what an agent harness needs) BEFORE the TUI starts: the
+  // failure mode otherwise is an hour of work lost to a 400 at 100% context.
+  // Gated on the predicate here (not just inside the helper) so a cloud-provider
+  // spawn — the overwhelmingly common case — takes no async hop at all.
+  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  if (ollamaContext?.warning) appendLine(ollamaContext.warning);
+  if (ollamaContext?.applied) appendLine(`🪟 Reloaded Ollama at a ${ollamaContext.contextLength}-token context window`);
 
   // A spawn failure here (a runner 400 for a command missing from its allowlist,
   // an unreachable runner, a PTY that won't open) used to propagate raw out of

@@ -3,7 +3,7 @@ import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
@@ -869,6 +869,17 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
   const plannedContextLabel = formatContextLength(
     effectiveModelContextWindow(formData, formData.defaultModel)
   );
+  // `num_ctx` is meaningful for any provider whose tokens come from Ollama, not
+  // just `api` ones: an `api` provider sends it on every request, while an
+  // Ollama-backed CLI/TUI (claude-ollama, opencode-ollama) talks to the daemon
+  // itself, so PortOS applies it by reloading Ollama at that window before the
+  // run (server/services/ollamaAgentContext.js). Gating the field to `api` left
+  // those providers stuck on Ollama's VRAM-based 32K auto-pick, which an agent
+  // harness overruns mid-task. Merged over the stored record rather than reading
+  // formData alone — the `ollamaBacked` marker (what identifies opencode-ollama,
+  // whose envVars carry no ANTHROPIC_BASE_URL) is not a form field, while
+  // endpoint/envVars edits must still count immediately.
+  const showsNumCtx = formData.type === 'api' || isOllamaBackedProvider({ ...provider, ...formData });
   const parseOptionalIntField = (value) => {
     const input = String(value ?? '').trim();
     if (!input) return null;
@@ -896,7 +907,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
       args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
       contextWindow: parseOptionalIntField(formData.contextWindow),
-      numCtx: formData.type === 'api' ? parseOptionalIntField(formData.numCtx) : null,
+      numCtx: showsNumCtx ? parseOptionalIntField(formData.numCtx) : null,
     };
     // The generation/fallback pickers filter out embedding-only models, so a
     // stored embedding (from an older config) would be hidden in the UI yet
@@ -1294,7 +1305,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
                 </p>
               </FormField>
 
-              {formData.type === 'api' && (
+              {showsNumCtx && (
                 <FormField label="Local num_ctx">
                   <input
                     type="number"
@@ -1307,7 +1318,9 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
                     className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    Sent to compatible local backends; used for planning when no model window is known.
+                    {formData.type === 'api'
+                      ? 'Sent to compatible local backends; used for planning when no model window is known.'
+                      : 'PortOS reloads the Ollama daemon at this window before the run — the CLI/TUI talks to Ollama directly, so nothing else can raise it. Leave blank to keep Ollama\'s VRAM-based auto-pick; make sure the model still fits at the larger size.'}
                   </p>
                 </FormField>
               )}
