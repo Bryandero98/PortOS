@@ -630,7 +630,7 @@ export function createProviderService(config = {}) {
         // Use execFile (no shell) so user-configured `provider.command` cannot
         // inject extra shell commands via metacharacters.
         const lookup = isWin32 ? 'where' : 'which';
-        const { stdout } = await execFileAsync(lookup, [provider.command])
+        const { stdout } = await execFileAsync(lookup, [provider.command], { windowsHide: true })
           .catch(() => ({ stdout: '', stderr: 'not found' }));
 
         // `where` lists every match (one per line); `which` prints one. Take the

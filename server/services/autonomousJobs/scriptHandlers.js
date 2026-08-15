@@ -29,7 +29,8 @@ function runMoltworldExploration() {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [scriptPath, durationMinutes], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env }
+      env: { ...process.env },
+      windowsHide: true,
     })
 
     const output = []

@@ -29,7 +29,7 @@ import { ensureDir, PATHS } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { findFfmpeg, safeUnder, generateThumbnail, probeVideoDuration } from '../../lib/ffmpeg.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { attachFfmpegRenderGuard } from '../../lib/ffmpegRenderGuard.js';
 import { loadHistory, mutateVideoHistory } from '../videoGen/local.js';
@@ -306,7 +306,7 @@ export async function renderMusicVideo(projectId) {
 
     console.log(`🎬 Rendering music video [${jobId.slice(0, 8)}]: project=${projectId.slice(0, 8)} clips=${clips.length} duration=${totalDuration.toFixed(2)}s`);
 
-    const proc = spawn(ffmpeg, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'ignore', 'pipe'] });
+    const proc = spawn(ffmpeg, args, safeChildProcessOptions({ stdio: ['ignore', 'ignore', 'pipe'] }));
     job.process = proc;
 
     let stderrBuf = '';

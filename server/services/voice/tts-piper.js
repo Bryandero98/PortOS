@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { expandPath, piperVoiceTildePath, voiceHome, IS_WIN, PIPER_BIN_NAME } from './config.js';
 import { PIPER_VOICES, findPiperVoice } from './piper-voices.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 
 const PIPER_TIMEOUT_MS = 30_000;
 const VOICES_DIR = join(voiceHome(), 'voices');
@@ -52,7 +53,7 @@ export const synthesizePiper = (text, cfg, signal) => {
         ? `${piperLib}${delimiter}${process.env.LD_LIBRARY_PATH}`
         : piperLib;
     }
-    const child = spawn(piperBin, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+    const child = spawn(piperBin, args, safeChildProcessOptions({ stdio: ['pipe', 'pipe', 'pipe'], env }));
     const chunks = [];
     let errBuf = '';
     let killed = false;

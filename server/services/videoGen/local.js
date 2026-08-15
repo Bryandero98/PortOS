@@ -39,7 +39,7 @@ import {
 } from '../../lib/videoContinuity.js';
 import { hfChildEnv } from '../../lib/hfToken.js';
 import { inspectModelCache, findCachedRepoFile, findCachedRepoFiles } from '../../lib/hfCache.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { safeChildProcessEnv, safeChildProcessOptions } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
 import { videoLoraFamily, isLtx2FamilyRuntime } from '../../lib/runners.js';
@@ -1280,7 +1280,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       '-vf', `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`,
       '-update', '1', '-frames:v', '1',
       '-y', resizedPath,
-    ], { env: safeChildProcessEnv(), timeout: 10000 }).catch((err) => ({ error: err }));
+    ], safeChildProcessOptions({ timeout: 10000 })).catch((err) => ({ error: err }));
     if (resizeResult.error) {
       console.log(`⚠️ Failed to resize ${tag} image, using original: ${resizeResult.error.message}`);
       return { resolved: srcPath, tempPath: null };
@@ -1388,7 +1388,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       '-r', String(parsedFps),
       '-pix_fmt', 'yuv420p', '-an',
       '-y', clipPaths[i],
-    ], { env: safeChildProcessEnv(), timeout: 30000 }).catch((err) => ({ error: err }))));
+    ], safeChildProcessOptions({ timeout: 30000 })).catch((err) => ({ error: err }))));
     const failedAt = encodes.findIndex((r) => r?.error);
     if (failedAt !== -1) {
       // Unlike the resizeImage fallback (which degrades to the original), there is
@@ -2368,7 +2368,7 @@ export async function extractLastFrame(historyId) {
     // sometimes still exiting 0 — leaving a phantom-success log + missing
     // file. The output file gets a -update 1 flag so ffmpeg overwrites
     // any partial file from a prior failed run instead of erroring.
-    const proc = spawn(ffmpeg, ['-sseof', '-1.0', '-i', videoPath, '-update', '1', '-vframes', '1', '-q:v', '2', '-y', framePath], { env: safeChildProcessEnv(), stdio: 'ignore' });
+    const proc = spawn(ffmpeg, ['-sseof', '-1.0', '-i', videoPath, '-update', '1', '-vframes', '1', '-q:v', '2', '-y', framePath], safeChildProcessOptions({ stdio: 'ignore' }));
     proc.on('close', async (code) => {
       // Wrap the body so a throw (e.g. writeSidecar) routes to reject() instead
       // of leaking an unhandled rejection AND leaving this Promise forever
@@ -2512,7 +2512,7 @@ export async function stitchVideos(videoIds, opts = {}) {
   // return, so a failure mid-encode would otherwise trail a run of them behind
   // the line that matters.
   const runFfmpeg = (args, { captureStderr = false } = {}) => new Promise((resolve, reject) => {
-    const proc = spawn(ffmpeg, args, { env: safeChildProcessEnv(), stdio: captureStderr ? ['ignore', 'ignore', 'pipe'] : 'ignore' });
+    const proc = spawn(ffmpeg, args, safeChildProcessOptions({ stdio: captureStderr ? ['ignore', 'ignore', 'pipe'] : 'ignore' }));
     let tail = '';
     proc.stderr?.on('data', (d) => { tail = `${tail}${d}`.slice(-400); });
     proc.on('close', (code) => code === 0

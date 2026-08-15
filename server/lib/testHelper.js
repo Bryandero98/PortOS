@@ -313,7 +313,7 @@ export function resolveTestPython() {
 
   return candidates.find((candidate) => {
     try {
-      execFileSync(candidate, ['-c', 'pass'], { stdio: 'ignore' });
+      execFileSync(candidate, ['-c', 'pass'], { stdio: 'ignore', windowsHide: true });
       return true;
     } catch {
       return false;

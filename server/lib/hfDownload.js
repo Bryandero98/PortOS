@@ -31,7 +31,7 @@ import {
 } from './pythonSetup.js';
 import { PATHS } from './fileUtils.js';
 import { getHfTokenInfo } from './hfToken.js';
-import { safeChildProcessEnv } from './processEnv.js';
+import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
 import { createLineReader } from './streamLines.js';
 import { getSettings } from '../services/settings.js';
 
@@ -222,7 +222,7 @@ export function downloadHfRepo({ repo, revision = null, only = null, pythonPath:
     });
 
     return new Promise((resolve) => {
-      proc = spawn(pythonPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      proc = spawn(pythonPath, args, safeChildProcessOptions({ env, stdio: ['ignore', 'pipe', 'pipe'] }));
       // Window: kill() could have fired between the second `if (killed)`
       // check and the spawn returning the proc handle. Re-check now that we
       // own a proc — if it raced, kill it immediately.

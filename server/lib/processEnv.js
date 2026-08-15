@@ -26,6 +26,14 @@ export function safeChildProcessEnv(extra = {}) {
   return stripDebugMallocEnv({ ...process.env, ...extra });
 }
 
+// Canonical options for background server subprocesses. PM2 detaches PortOS
+// from its launch terminal, so a Windows console executable spawned without
+// windowsHide asks the default terminal host to open a transient UI window.
+export function safeChildProcessOptions(options = {}) {
+  const { env = process.env, ...rest } = options;
+  return { ...rest, env: stripDebugMallocEnv(env), windowsHide: true };
+}
+
 // Resolve the first PATH hit for a binary via `which` (POSIX) / `where`
 // (Windows) — the "is this system tool installed, and where?" probe copied
 // inline across ytdlp/ffmpeg/pythonSetup/voice discovery. Returns the absolute
@@ -38,9 +46,9 @@ export function safeChildProcessEnv(extra = {}) {
 export function whichFirstSync(name) {
   const cmd = IS_WIN ? 'where' : 'which';
   try {
-    const stdout = execFileSync(cmd, [name], {
-      encoding: 'utf8', env: safeChildProcessEnv(), timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    const stdout = execFileSync(cmd, [name], safeChildProcessOptions({
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    }));
     return stdout.trim().split(/\r?\n/)[0] || null;
   } catch {
     return null; // not on PATH, or the probe itself failed
@@ -49,7 +57,7 @@ export function whichFirstSync(name) {
 
 export async function whichFirst(name) {
   const cmd = IS_WIN ? 'where' : 'which';
-  const { stdout } = await execFileAsync(cmd, [name], { env: safeChildProcessEnv(), timeout: 5000 })
+  const { stdout } = await execFileAsync(cmd, [name], safeChildProcessOptions({ timeout: 5000 }))
     .catch(() => ({ stdout: '' }));
   return stdout.trim().split(/\r?\n/)[0] || null;
 }

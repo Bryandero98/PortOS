@@ -244,6 +244,7 @@ async function startServer() {
   const child = spawn('ollama', ['serve'], {
     detached: true,
     stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
     env: process.env
   })
   rememberManagedProcess(child)

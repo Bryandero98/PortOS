@@ -89,6 +89,7 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces } = {}) {
     ? spawn(cmd, args, {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
         cwd: PATHS.root,
         env: childEnv
       })

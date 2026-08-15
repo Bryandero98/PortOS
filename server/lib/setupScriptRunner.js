@@ -17,7 +17,7 @@ import { spawn } from 'child_process';
 import { join } from 'path';
 import { PATHS } from './fileUtils.js';
 import { resolveBashBinary, toBashPath } from './bashResolver.js';
-import { safeChildProcessEnv } from './processEnv.js';
+import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
 import { detectVenvBasePythonSync } from './pythonSetup.js';
 import { killProcessTree } from './bufferedSpawn.js';
 
@@ -44,15 +44,14 @@ export function spawnSetupScript(envVars = {}) {
     const python = detectVenvBasePythonSync();
     if (python) env.PYTHON_BIN = toBashPath(python);
   }
-  return spawn(resolveBashBinary(), [toBashPath(SETUP_IMAGE_VIDEO_SCRIPT)], {
+  return spawn(resolveBashBinary(), [toBashPath(SETUP_IMAGE_VIDEO_SCRIPT)], safeChildProcessOptions({
     env: safeChildProcessEnv(env),
     stdio: ['ignore', 'pipe', 'pipe'],
     // POSIX only: its own process group is what lets a cancel reach uv / pip /
     // git (stopSetupScript signals the group). On Windows `detached` instead
     // means "own console window" and buys nothing — taskkill /T is the tree.
     detached: !IS_WIN,
-    windowsHide: true,
-  });
+  }));
 }
 
 /**
