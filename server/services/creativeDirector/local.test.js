@@ -32,7 +32,7 @@ vi.mock('./firstPassGen.js', () => ({
   enqueueFirstPassSceneFrames: vi.fn(async () => ({ mode: 'local', enqueued: [], skipped: [] })),
 }));
 
-const { setTreatment, recordRun, updateRun, trimRuns } = await import('./local.js');
+const { setTreatment, recordRun, updateRun, trimRuns, getProjectsByIds } = await import('./local.js');
 import * as firstPassGen from './firstPassGen.js';
 
 const VALID_TREATMENT = {
@@ -224,5 +224,37 @@ describe('runs[] cap enforced at saveAll chokepoint', () => {
     const patched = saved[0].runs.find((r) => r.runId === 'live-1');
     expect(patched).toBeTruthy();
     expect(patched.status).toBe('completed');
+  });
+});
+
+// #4148 — batch-by-id read (file backend, through the dispatcher). The Creative
+// Commission detail page resolves only the projects its runs reference instead
+// of listing every project on the install.
+describe('getProjectsByIds (#4148)', () => {
+  const STORED = [
+    { id: 'cd-1', name: 'One' },
+    { id: 'cd-2', name: 'Two' },
+    { id: 'cd-3', name: 'Three', deleted: true },
+  ];
+
+  it('returns only the requested live projects, ignoring unknown ids', async () => {
+    mockReadJSONFile.mockResolvedValue(STORED);
+    const found = await getProjectsByIds(['cd-2', 'cd-nope', 'cd-1']);
+    expect(found.map((p) => p.id)).toEqual(['cd-1', 'cd-2']);
+  });
+
+  it('omits tombstoned projects unless includeDeleted is set', async () => {
+    mockReadJSONFile.mockResolvedValue(STORED);
+    expect(await getProjectsByIds(['cd-3'])).toEqual([]);
+    const withDeleted = await getProjectsByIds(['cd-3'], { includeDeleted: true });
+    expect(withDeleted.map((p) => p.id)).toEqual(['cd-3']);
+  });
+
+  it('short-circuits an empty/blank id list without reading the store', async () => {
+    mockReadJSONFile.mockResolvedValue(STORED);
+    expect(await getProjectsByIds([])).toEqual([]);
+    expect(await getProjectsByIds([null, undefined, ''])).toEqual([]);
+    expect(await getProjectsByIds()).toEqual([]);
+    expect(mockReadJSONFile).not.toHaveBeenCalled();
   });
 });

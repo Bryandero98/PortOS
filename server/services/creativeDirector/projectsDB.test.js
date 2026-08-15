@@ -98,6 +98,24 @@ describe.skipIf(!dbReady)('projectsDB round-trip', () => {
     expect(all.find((p) => p.name === 'Legacy row')?.id).toBe(id);
   });
 
+  // #4148 — the batch-by-id read the Creative Commission detail page uses so it
+  // doesn't list every project on the install.
+  it('batch-fetches by id, skipping unknown ids and tombstoned projects', async () => {
+    const a = await db.createProject(CREATE_INPUT);
+    const b = await db.createProject(CREATE_INPUT);
+    const gone = await db.createProject(CREATE_INPUT);
+    created.push(a.id, b.id, gone.id);
+    await db.deleteProject(gone.id);
+
+    const batch = await db.getProjectsByIds([a.id, 'cd-does-not-exist', gone.id, b.id]);
+    expect(batch.map((p) => p.id).sort()).toEqual([a.id, b.id].sort());
+
+    expect(await db.getProjectsByIds([])).toEqual([]);
+    // includeDeleted opts the tombstone back in (the sync/GC read shape).
+    const withDeleted = await db.getProjectsByIds([gone.id], { includeDeleted: true });
+    expect(withDeleted.map((p) => p.id)).toEqual([gone.id]);
+  });
+
   it('applies a treatment and patches a scene', async () => {
     const p = await db.createProject(CREATE_INPUT);
     created.push(p.id);

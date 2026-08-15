@@ -27,7 +27,7 @@ import {
 } from '../components/creative-commission/commissionForm.js';
 import {
   getCommission, updateCommission, deleteCommission,
-  submitCommissionFeedback, runCommissionNow, listCreativeDirectorProjects,
+  submitCommissionFeedback, runCommissionNow, getCreativeDirectorProjectsByIds,
 } from '../services/api';
 
 export default function CreativeCommissionDetail() {
@@ -89,10 +89,11 @@ export default function CreativeCommissionDetail() {
     }
   }, [commission]);
 
-  // The set of CD projects referenced by this commission's runs. Fetch the full
-  // project list once (the list route returns non-slim payloads, so previews
-  // compute with no per-card fetch) and index the referenced ones. Re-runs when
-  // the projectId set changes (e.g. a Run Now appends a new render).
+  // The set of CD projects referenced by this commission's runs. Fetch ONLY
+  // those (#4148) — the batch `?ids=` filter costs one round trip sized to this
+  // commission's ≤50 persisted runs rather than to the install's total project
+  // count, and still returns the full non-slim payload previews compute from.
+  // Re-runs when the projectId set changes (e.g. a Run Now appends a render).
   const projectIdsKey = useMemo(() => {
     const ids = (commission?.runs || []).map((r) => r.projectId).filter(Boolean);
     return [...new Set(ids)].sort().join(',');
@@ -100,17 +101,15 @@ export default function CreativeCommissionDetail() {
 
   useEffect(() => {
     if (!projectIdsKey) { setProjectsById(new Map()); setProjectsLoading(false); return; }
-    const wanted = new Set(projectIdsKey.split(','));
     let cancelled = false;
     setProjectsLoading(true);
-    listCreativeDirectorProjects()
+    getCreativeDirectorProjectsByIds(projectIdsKey.split(','), { silent: true })
       .then((projects) => {
         if (cancelled) return;
-        const map = new Map();
-        for (const p of Array.isArray(projects) ? projects : []) {
-          if (wanted.has(p.id)) map.set(p.id, p);
-        }
-        setProjectsById(map);
+        // Index by id, not position: an id that no longer resolves (pruned
+        // project) is absent from the response, and its card degrades to the
+        // status-only placeholder.
+        setProjectsById(new Map((Array.isArray(projects) ? projects : []).map((p) => [p.id, p])));
       })
       .catch(() => { /* status-only cards degrade gracefully */ })
       .finally(() => { if (!cancelled) setProjectsLoading(false); });

@@ -113,6 +113,21 @@ export async function getProject(id, { includeDeleted = false } = {}) {
   return includeDeleted || !project.deleted ? project : null;
 }
 
+/**
+ * Batch fetch by id (#4148) — one round trip for a known id set, so a caller
+ * that only needs a handful of projects (the Creative Commission detail page
+ * resolving its runs' renders) doesn't pull the whole table. Unknown ids are
+ * simply absent from the result; order matches listProjects (created_at ASC).
+ */
+export async function getProjectsByIds(ids, { includeDeleted = false } = {}) {
+  const wanted = [...new Set((ids || []).filter(Boolean))];
+  if (wanted.length === 0) return [];
+  const result = includeDeleted
+    ? await query(`SELECT id, data FROM creative_director_projects WHERE id = ANY($1) ORDER BY created_at ASC`, [wanted])
+    : await query(`SELECT id, data FROM creative_director_projects WHERE id = ANY($1) AND deleted = FALSE ORDER BY created_at ASC`, [wanted]);
+  return result.rows.map(rowToProject);
+}
+
 /** Live project ids (or all when includeDeleted) — used by tombstone GC sweeps. */
 export async function listProjectIds({ includeDeleted = false } = {}) {
   const result = includeDeleted

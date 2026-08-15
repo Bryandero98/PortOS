@@ -63,6 +63,18 @@ export async function getProject(id, { includeDeleted = false } = {}) {
   return includeDeleted || !found.deleted ? found : null;
 }
 
+/**
+ * Batch fetch by id (#4148) — mirrors the PG backend's single-round-trip lookup
+ * so a caller with a known id set doesn't have to list every project. Unknown
+ * ids are simply absent from the result; order follows the stored append order.
+ */
+export async function getProjectsByIds(ids, { includeDeleted = false } = {}) {
+  const wanted = new Set((ids || []).filter(Boolean));
+  if (wanted.size === 0) return [];
+  const all = await loadAll();
+  return all.filter((p) => wanted.has(p.id) && (includeDeleted || !p.deleted));
+}
+
 /** Live project ids (or all when includeDeleted) — used by tombstone GC sweeps. */
 export async function listProjectIds({ includeDeleted = false } = {}) {
   const all = await loadAll();

@@ -213,6 +213,30 @@ export const creativeDirectorProjectUpdateSchema = z.object({
   modelOverrides: creativeDirectorModelOverridesSchema.optional(),
 }).strict();
 
+// Max ids one `GET /creative-director?ids=` batch may resolve (#4148). Sized at
+// 2x the Creative Commission run cap (MAX_PERSISTED_RUNS = 50) — the batch's
+// heaviest caller resolves one project per persisted run — so the real consumer
+// never has to chunk while the request still stays bounded.
+export const CREATIVE_DIRECTOR_IDS_BATCH_MAX = 100;
+
+// Query params for `GET /creative-director` (#4148). `ids` is the batch-by-id
+// filter: the wire form is a CSV string (`?ids=a,b,c`) preprocessed into a
+// trimmed, empties-dropped string[], mirroring catalogIngredientQuerySchema.
+// An empty/all-blank CSV collapses to `undefined` so it reads cleanly as absent
+// and the route falls through to the full list. Unlike the catalog schema this
+// does NOT silently slice at the cap — an over-cap request is a 400 rather than
+// a partial result the caller can't distinguish from "those ids don't exist".
+// A repeated `?ids=a&ids=b` form arrives as an array and is validated as-is.
+// Unknown keys (limit/offset) strip out of the parsed result — the route reads
+// those straight off `req.query` for paginateArray.
+export const creativeDirectorProjectQuerySchema = z.object({
+  ids: z.preprocess((v) => {
+    if (typeof v !== 'string') return v;
+    const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+    return parts.length ? parts : undefined;
+  }, z.array(z.string().trim().min(1).max(64)).max(CREATIVE_DIRECTOR_IDS_BATCH_MAX).optional()),
+});
+
 // One scene in the treatment, written by the agent on the treatment task.
 export const creativeDirectorSceneSchema = z.object({
   sceneId: z.string().min(1).max(64),
