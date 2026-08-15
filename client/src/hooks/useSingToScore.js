@@ -18,6 +18,7 @@ import { createPitchTracker } from '../lib/pitchDetect.js';
 import { createMetronome, clampBpm, timeSignatureFromScore, DEFAULT_BPM } from '../lib/metronome.js';
 import { transcribePitchTrack } from '../lib/singToScore.js';
 import useAudioSessionClaim from './useAudioSessionClaim.js';
+import useAsyncCaptureGuard from './useAsyncCaptureGuard.js';
 import useMounted from './useMounted.js';
 
 // Phases the UI renders distinct states for.
@@ -61,8 +62,6 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
   const trackRef = useRef([]);        // accumulated { tMs, hz, clarity } frames
   const captureStartRef = useRef(0);  // performance.now() at first music beat
   const capturingRef = useRef(false); // gate frames until the count-in completes
-  const startPendingRef = useRef(false);
-  const requestGenerationRef = useRef(0);
 
   // Held for exactly the window our own mic stream is open, symmetric with
   // `voiceClient` / `audioRecorder`. Sing-to-score is safe on `auto` only
@@ -84,18 +83,22 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     capturingRef.current = false;
   }, [releaseSession]);
 
-  // Invalidate an in-flight permission request before tearing down. A browser
-  // can resolve getUserMedia after this hook unmounts; that continuation owns
-  // its stream until it sees this generation change and stops it itself.
-  const cancel = useCallback(() => {
-    requestGenerationRef.current += 1;
-    startPendingRef.current = false;
-    teardown();
+  const resetAfterCancel = useCallback(() => {
     trackRef.current = [];
     if (!mountedRef.current) return;
     setPhase(SING_IDLE);
     setBeat(null);
-  }, [teardown, mountedRef]);
+  }, [mountedRef]);
+
+  // Invalidate an in-flight permission request before tearing down. A browser
+  // can resolve getUserMedia after this hook unmounts; that continuation owns
+  // its stream until it sees this generation change and stops it itself.
+  const {
+    tryStart,
+    settleStart,
+    isCurrent,
+    cancel,
+  } = useAsyncCaptureGuard({ teardown, onCancel: resetAfterCancel });
 
   // Finalize: stop everything, run the transcription over the captured track.
   const finish = useCallback(() => {
@@ -119,9 +122,9 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
   }, [phase, finish]);
 
   const start = useCallback(async () => {
-    if (phase !== SING_IDLE || startPendingRef.current) return;
-    startPendingRef.current = true;
-    const requestGeneration = ++requestGenerationRef.current;
+    if (phase !== SING_IDLE) return;
+    const requestGeneration = tryStart();
+    if (requestGeneration === null) return;
     setError(null);
     setResult(null);
     trackRef.current = [];
@@ -132,7 +135,7 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     // record-capable with no release left to call. Mirrors useSingToVerify.
     const getUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
     if (!getUserMedia) {
-      startPendingRef.current = false;
+      settleStart(requestGeneration);
       if (mountedRef.current) setError('Microphone access requires a secure browser connection');
       return;
     }
@@ -143,20 +146,19 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     // below is belt-and-suspenders: the hook already releases on unmount).
     claimSession();
     const src = await getUserMedia({ audio: true }).catch((err) => {
-      if (requestGeneration === requestGenerationRef.current) {
-        startPendingRef.current = false;
+      if (settleStart(requestGeneration)) {
         releaseSession();
         if (mountedRef.current) setError(err?.message || 'Microphone access denied');
       }
       return null;
     });
     if (!src) return;
-    if (!mountedRef.current || requestGeneration !== requestGenerationRef.current) {
+    if (!mountedRef.current || !isCurrent(requestGeneration)) {
       src.getTracks().forEach((track) => track.stop());
-      if (requestGeneration === requestGenerationRef.current) releaseSession();
+      if (isCurrent(requestGeneration)) releaseSession();
       return;
     }
-    startPendingRef.current = false;
+    settleStart(requestGeneration);
     streamRef.current = src;
 
     const graph = createStreamAnalyser(src);
@@ -202,12 +204,12 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     await metro.start().catch((err) => {
       // A cancellation or fresh request may have already torn this capture
       // down. Do not let its late failure tear down a newer session.
-      if (requestGeneration !== requestGenerationRef.current) return;
+      if (!isCurrent(requestGeneration)) return;
       if (mountedRef.current) setError(err?.message || 'Could not start audio');
       teardown();
       if (mountedRef.current) setPhase(SING_IDLE);
     });
-  }, [phase, bpm, timeSig.beats, timeSig.beatValue, teardown, mountedRef, claimSession, releaseSession]);
+  }, [phase, bpm, timeSig.beats, timeSig.beatValue, teardown, mountedRef, claimSession, releaseSession, tryStart, settleStart, isCurrent]);
 
   // Clear a produced result (after the user inserts or discards it).
   const reset = useCallback(() => {
