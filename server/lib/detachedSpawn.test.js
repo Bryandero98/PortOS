@@ -312,6 +312,24 @@ describe('spawnDetached', () => {
     }
   });
 
+  it('win32 fallback stamps a numeric signal as its NAME on close', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      const { handle, terminate } = await spawnWin32Fallback();
+      const closed = onClose(handle);
+      // kill() accepts a number; ChildProcess reports names, so a raw 9 would
+      // break every `signal === 'SIGKILL'` comparison downstream.
+      handle.kill(9);
+      await terminate();
+      const { code, signal } = await closed;
+      expect(code).toBeNull();
+      expect(signal).toBe('SIGKILL');
+      expect(handle.signalCode).toBe('SIGKILL');
+    } finally {
+      restorePlatform();
+    }
+  });
+
   it('win32 fallback refuses to tree-kill a child that already exited', async () => {
     const restorePlatform = pinPlatform('win32');
     try {

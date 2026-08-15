@@ -296,7 +296,12 @@ export async function spawnDetached(bin, args = [], {
       // Signal 0 is an existence PROBE, not a kill — hand it to Node so callers
       // keep that meaning instead of force-killing the tree.
       if (signal === 0 || signal === '0') return nativeKill(signal);
-      killSignal = signal;
+      // `kill()` also accepts a signal NUMBER, but ChildProcess reports signal
+      // NAMES on close — stamping the raw number would break every
+      // `signal === 'SIGKILL'` comparison. Reuse the same inverted table the
+      // POSIX handle decodes `wait` statuses with; an unrecognized number
+      // stamps nothing and leaves Node's own reporting alone.
+      killSignal = typeof signal === 'number' ? (SIGNAL_BY_NUMBER[signal] ?? null) : signal;
       child.killed = true;
       killProcessTree(treeKillTarget, signal, { processGroup: true });
       return true;
