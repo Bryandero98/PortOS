@@ -77,9 +77,9 @@ afterEach(() => {
 });
 
 const THREE = [
-  { id: 'a', x: 0, y: 0, w: 12, h: 2 },
-  { id: 'b', x: 0, y: 2, w: 12, h: 2 },
-  { id: 'c', x: 0, y: 4, w: 12, h: 2 },
+  { id: 'a', x: 0, w: 12, order: 0, h: 2 },
+  { id: 'b', x: 0, w: 12, order: 1, h: 2 },
+  { id: 'c', x: 0, w: 12, order: 2, h: 2 },
 ];
 
 function renderGrid(items = THREE) {
@@ -98,23 +98,23 @@ function renderGrid(items = THREE) {
 const cellFor = (id) => document.querySelector(`[data-widget-id="${id}"]`);
 
 describe('reflowToOrder', () => {
-  it('renumbers coordinates to match the requested order, keeping w/h', () => {
+  it('renumbers the sequence to match the requested order, keeping w/h', () => {
     const flowed = reflowToOrder(THREE, ['c', 'a', 'b']);
     expect(flowed.map((it) => it.id)).toEqual(['c', 'a', 'b']);
-    expect(flowed.map((it) => it.y)).toEqual([0, 2, 4]);
+    expect(flowed.map((it) => it.order)).toEqual([0, 1, 2]);
     expect(flowed.every((it) => it.w === 12 && it.h === 2)).toBe(true);
   });
 
   it('packs items that fit side by side into the same row', () => {
     const items = [
-      { id: 'a', x: 0, y: 0, w: 6, h: 3 },
-      { id: 'b', x: 6, y: 0, w: 6, h: 2 },
-      { id: 'c', x: 0, y: 3, w: 6, h: 2 },
+      { id: 'a', x: 0, w: 6, order: 0, h: 3 },
+      { id: 'b', x: 6, w: 6, order: 1, h: 2 },
+      { id: 'c', x: 0, w: 6, order: 2, h: 2 },
     ];
     expect(reflowToOrder(items, ['b', 'a', 'c'])).toEqual([
-      { id: 'b', x: 0, y: 0, w: 6, h: 2 },
-      { id: 'a', x: 6, y: 0, w: 6, h: 3 },
-      { id: 'c', x: 0, y: 3, w: 6, h: 2 },
+      { id: 'b', x: 0, w: 6, order: 0, h: 2 },
+      { id: 'a', x: 6, w: 6, order: 1, h: 3 },
+      { id: 'c', x: 0, w: 6, order: 2, h: 2 },
     ]);
   });
 
@@ -124,12 +124,12 @@ describe('reflowToOrder', () => {
   });
 
   it('drops ids with no matching item and ignores items absent from the order', () => {
-    expect(reflowToOrder(THREE, ['b', 'ghost'])).toEqual([{ id: 'b', x: 0, y: 0, w: 12, h: 2 }]);
+    expect(reflowToOrder(THREE, ['b', 'ghost'])).toEqual([{ id: 'b', x: 0, w: 12, order: 0, h: 2 }]);
   });
 
   it('still flows a widget whose stored width exceeds the grid', () => {
-    expect(reflowToOrder([{ id: 'a', x: 0, y: 0, w: 20, h: 2 }], ['a']))
-      .toEqual([{ id: 'a', x: 0, y: 0, w: 12, h: 2 }]);
+    expect(reflowToOrder([{ id: 'a', x: 0, w: 20, order: 0, h: 2 }], ['a']))
+      .toEqual([{ id: 'a', x: 0, w: 12, order: 0, h: 2 }]);
   });
 });
 
@@ -145,7 +145,7 @@ describe('row ↔ pixel conversion', () => {
 });
 
 describe('itemHeightPx', () => {
-  const item = { id: 'a', x: 0, y: 0, w: 6, h: 4 };
+  const item = { id: 'a', x: 0, w: 6, h: 4 };
 
   it('prefers the measured height so a short card stops reserving its whole slot', () => {
     expect(itemHeightPx(item, { a: 90 })).toBe(90);
@@ -174,8 +174,8 @@ describe('packVertically', () => {
     // under b rather than sitting at b's declared bottom edge.
     const rects = packVertically(
       [
-        { id: 'b', x: 0, y: 0, w: 12, h: 4 },
-        { id: 'c', x: 0, y: 4, w: 12, h: 2 },
+        { id: 'b', x: 0, w: 12, h: 4 },
+        { id: 'c', x: 0, w: 12, h: 2 },
       ],
       { b: 100, c: 100 }
     );
@@ -185,9 +185,9 @@ describe('packVertically', () => {
 
   it('only stacks cells that share a column', () => {
     const rects = packVertically([
-      { id: 'left', x: 0, y: 0, w: 6, h: 2 },
-      { id: 'right', x: 6, y: 0, w: 6, h: 2 },
-      { id: 'under', x: 6, y: 2, w: 6, h: 2 },
+      { id: 'left', x: 0, w: 6, h: 2 },
+      { id: 'right', x: 6, w: 6, h: 2 },
+      { id: 'under', x: 6, w: 6, h: 2 },
     ], { left: 400, right: 100, under: 100 });
     // `right` is beside `left`, not below it — a tall left column must not
     // push the whole right-hand stack down.
@@ -197,8 +197,8 @@ describe('packVertically', () => {
 
   it('lets a widget that renders nothing occupy nothing, and closes over it', () => {
     const rects = packVertically([
-      { id: 'empty', x: 0, y: 0, w: 12, h: 5 },
-      { id: 'below', x: 0, y: 5, w: 12, h: 2 },
+      { id: 'empty', x: 0, w: 12, h: 5 },
+      { id: 'below', x: 0, w: 12, h: 2 },
     ], { empty: 0, below: 100 });
     expect(rects.get('empty').height).toBe(0);
     expect(rects.get('below').top).toBe(16);
@@ -206,7 +206,7 @@ describe('packVertically', () => {
 
   it('floors cells to a grabbable height when edit mode asks for one', () => {
     const rects = packVertically(
-      [{ id: 'empty', x: 0, y: 0, w: 12, h: 5 }, { id: 'below', x: 0, y: 5, w: 12, h: 2 }],
+      [{ id: 'empty', x: 0, w: 12, h: 5 }, { id: 'below', x: 0, w: 12, h: 2 }],
       { empty: 0, below: 100 },
       48
     );
@@ -216,23 +216,33 @@ describe('packVertically', () => {
 
   it('clears every cell it overlaps, not just the last one placed', () => {
     const rects = packVertically([
-      { id: 'a', x: 0, y: 0, w: 4, h: 2 },
-      { id: 'b', x: 4, y: 0, w: 4, h: 2 },
-      { id: 'wide', x: 0, y: 2, w: 8, h: 2 },
+      { id: 'a', x: 0, w: 4, h: 2 },
+      { id: 'b', x: 4, w: 4, h: 2 },
+      { id: 'wide', x: 0, w: 8, h: 2 },
     ], { a: 300, b: 100, wide: 100 });
     expect(rects.get('wide').top).toBe(316);
   });
 });
 
 describe('readingOrderIds', () => {
-  it('sorts top-to-bottom then left-to-right without mutating the input', () => {
+  it('sorts by the stored sequence without mutating the input', () => {
     const grid = [
-      { id: 'c', x: 0, y: 4, w: 6, h: 2 },
-      { id: 'b', x: 6, y: 0, w: 6, h: 2 },
-      { id: 'a', x: 0, y: 0, w: 6, h: 2 },
+      { id: 'c', x: 0, w: 6, order: 2, h: 2 },
+      { id: 'b', x: 6, w: 6, order: 1, h: 2 },
+      { id: 'a', x: 0, w: 6, order: 0, h: 2 },
     ];
     expect(readingOrderIds(grid)).toEqual(['a', 'b', 'c']);
     expect(grid[0].id).toBe('c');
+  });
+
+  // A grid momentarily sharing an `order` (two entries appended by
+  // reconcileGrid before the next resequence) still has to come back in a
+  // stable left-to-right order rather than whatever the sort happened to do.
+  it('breaks a tied sequence by column', () => {
+    expect(readingOrderIds([
+      { id: 'right', x: 6, w: 6, order: 0, h: 2 },
+      { id: 'left', x: 0, w: 6, order: 0, h: 2 },
+    ])).toEqual(['left', 'right']);
   });
 });
 
@@ -247,13 +257,21 @@ describe('reconcileGrid', () => {
     expect(reconcileGrid(THREE, ['a', 'c']).map((it) => it.id)).toEqual(['a', 'c']);
   });
 
+  // Dropping the middle entry leaves a hole at order 1; a hand-back with gaps
+  // would drift further on every add/remove cycle.
+  it('hands back a dense sequence after dropping and appending', () => {
+    const next = reconcileGrid(THREE, ['a', 'c', 'apps']);
+    expect(next.map((it) => it.id)).toEqual(['a', 'c', 'apps']);
+    expect(next.map((it) => it.order)).toEqual([0, 1, 2]);
+  });
+
   // The arranged layout below deliberately disagrees with its widget list: `b`
-  // sits above `a` in the grid while the list still says `['a','b','c']`, which
-  // is exactly the pre-`saveGridEdit` state #4132 warns about.
+  // leads the sequence while the list still says `['a','b','c']`, which is
+  // exactly the pre-`saveGridEdit` state #4132 warns about.
   const ARRANGED = [
-    { id: 'b', x: 0, y: 0, w: 6, h: 3 },
-    { id: 'a', x: 6, y: 0, w: 6, h: 2 },
-    { id: 'c', x: 0, y: 3, w: 12, h: 2 },
+    { id: 'b', x: 0, w: 6, order: 0, h: 3 },
+    { id: 'a', x: 6, w: 6, order: 1, h: 2 },
+    { id: 'c', x: 0, w: 12, order: 2, h: 2 },
   ];
 
   it('leaves an arranged grid alone when the save is not a reorder', () => {
@@ -299,16 +317,16 @@ describe('DashboardGrid mobile reorder', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     const next = onChange.mock.calls[0][0];
     expect(next.map((it) => it.id)).toEqual(['b', 'c', 'a']);
-    expect(next.map((it) => it.y)).toEqual([0, 2, 4]);
+    expect(next.map((it) => it.order)).toEqual([0, 1, 2]);
   });
 
   it('reads the drag against reading order, not grid-array order', () => {
-    // placeAndCompact hoists the moved item to the front of the array, so a
-    // saved grid routinely arrives out of visual order.
+    // A saved grid routinely arrives out of visual order — nothing keeps the
+    // persisted array sorted, only `order` says what the sequence is.
     const onChange = renderGrid([
-      { id: 'c', x: 0, y: 4, w: 12, h: 2 },
-      { id: 'a', x: 0, y: 0, w: 12, h: 2 },
-      { id: 'b', x: 0, y: 2, w: 12, h: 2 },
+      { id: 'c', x: 0, w: 12, order: 2, h: 2 },
+      { id: 'a', x: 0, w: 12, order: 0, h: 2 },
+      { id: 'b', x: 0, w: 12, order: 1, h: 2 },
     ]);
     expect(screen.getAllByTestId(/^widget-/).map((el) => el.textContent)).toEqual(['a', 'b', 'c']);
 
@@ -352,8 +370,8 @@ describe('DashboardGrid cell sizing', () => {
 
   it('measures the widget free of the cell height, and stretches it when pinned', () => {
     renderGrid([
-      { id: 'a', x: 0, y: 0, w: 12, h: 3 },
-      { id: 'b', x: 0, y: 3, w: 12, h: 3, fixedH: true },
+      { id: 'a', x: 0, w: 12, order: 0, h: 3 },
+      { id: 'b', x: 0, w: 12, order: 1, h: 3, fixedH: true },
     ]);
     const measured = (id) => screen.getByTestId(`widget-${id}`).parentElement;
     expect(measured('a').className).toBe('flow-root');
@@ -361,14 +379,14 @@ describe('DashboardGrid cell sizing', () => {
   });
 
   it('honors an explicit height on a cell the user pinned', () => {
-    renderGrid([{ id: 'a', x: 0, y: 0, w: 12, h: 3, fixedH: true }]);
+    renderGrid([{ id: 'a', x: 0, w: 12, order: 0, h: 3, fixedH: true }]);
     expect(cellFor('a').style.height).toBe(`${rowsToPx(3)}px`);
   });
 
   it('offers the auto-fit handle only on pinned cells', () => {
     renderGrid([
-      { id: 'a', x: 0, y: 0, w: 12, h: 3, fixedH: true },
-      { id: 'b', x: 0, y: 3, w: 12, h: 3 },
+      { id: 'a', x: 0, w: 12, order: 0, h: 3, fixedH: true },
+      { id: 'b', x: 0, w: 12, order: 1, h: 3 },
     ]);
     expect(screen.getByLabelText('Auto-fit height a')).toBeInTheDocument();
     expect(screen.queryByLabelText('Auto-fit height b')).not.toBeInTheDocument();
@@ -376,12 +394,12 @@ describe('DashboardGrid cell sizing', () => {
 
   it('drops the pin — and keeps the last height as the new starting size — on auto-fit', () => {
     const onChange = renderGrid([
-      { id: 'a', x: 0, y: 0, w: 12, h: 3, fixedH: true },
-      { id: 'b', x: 0, y: 3, w: 12, h: 3 },
+      { id: 'a', x: 0, w: 12, order: 0, h: 3, fixedH: true },
+      { id: 'b', x: 0, w: 12, order: 1, h: 3 },
     ]);
     fireEvent.click(screen.getByLabelText('Auto-fit height a'));
     const next = onChange.mock.calls[0][0];
-    expect(next.find((it) => it.id === 'a')).toEqual({ id: 'a', x: 0, y: 0, w: 12, h: 3 });
+    expect(next.find((it) => it.id === 'a')).toEqual({ id: 'a', x: 0, w: 12, order: 0, h: 3 });
     expect(next.find((it) => it.id === 'b').fixedH).toBeUndefined();
   });
 });
@@ -407,7 +425,7 @@ describe('DashboardGrid resize pins the height', () => {
   });
 
   it('leaves a width-only resize auto-sized', () => {
-    const onChange = renderGrid([{ id: 'a', x: 0, y: 0, w: 12, h: 2 }]);
+    const onChange = renderGrid([{ id: 'a', x: 0, w: 12, order: 0, h: 2 }]);
     // Narrow by four columns; the height never moves.
     dragHandle('Resize a', { dx: -4 * (1200 - 16 * 11) / 12 - 4 * 16 });
     const moved = onChange.mock.calls[0][0].find((it) => it.id === 'a');
@@ -420,6 +438,73 @@ describe('DashboardGrid resize pins the height', () => {
     dragHandle('Move c', { dy: -ROW_STEP * 4 });
     expect(onChange).toHaveBeenCalled();
     for (const it of onChange.mock.calls[0][0]) expect(it.fixedH).toBeUndefined();
+  });
+});
+
+// The move gesture is the whole point of collapsing the two coordinate
+// systems: the drop position is read in pixels and turned straight into a
+// sequence position, with no row coordinate and no compaction pass in between.
+describe('DashboardGrid move re-sequences', () => {
+  beforeEach(() => { mockWidth = 1200; });
+
+  const dragHandle = (label, { dx = 0, dy = 0 }) => {
+    fireEvent.pointerDown(screen.getByLabelText(label), { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: dx, clientY: dy });
+    fireEvent.pointerUp(window);
+  };
+
+  // Each stacked cell measures 100px and sits 116px below the last, so
+  // dragging the bottom card up past both of them lands it at rank 0.
+  it('moves a card to the front when dragged above everything else', () => {
+    const onChange = renderGrid();
+    dragHandle('Move c', { dy: -400 });
+    expect(onChange.mock.calls[0][0].map((it) => it.id)).toEqual(['c', 'a', 'b']);
+    expect(onChange.mock.calls[0][0].map((it) => it.order)).toEqual([0, 1, 2]);
+  });
+
+  it('slots a card between its neighbours rather than on top of one', () => {
+    const onChange = renderGrid();
+    // Down past b's top edge (116) by more than the same-row slack — so a
+    // lands after b but well short of c (232).
+    dragHandle('Move a', { dy: 200 });
+    expect(onChange.mock.calls[0][0].map((it) => it.id)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('reorders side-by-side cards by the column they were dragged into', () => {
+    const onChange = renderGrid([
+      { id: 'a', x: 0, w: 4, order: 0, h: 2 },
+      { id: 'b', x: 4, w: 4, order: 1, h: 2 },
+      { id: 'c', x: 8, w: 4, order: 2, h: 2 },
+    ]);
+    // Eight columns right, no vertical movement: same row, so column decides.
+    const colStep = (1200 - 16 * 11) / 12 + 16;
+    dragHandle('Move a', { dx: colStep * 8 });
+    const next = onChange.mock.calls[0][0];
+    expect(next.map((it) => it.id)).toEqual(['b', 'a', 'c']);
+    expect(next.find((it) => it.id === 'a').x).toBe(8);
+  });
+
+  it('does not write when the card is dropped back where it started', () => {
+    const onChange = renderGrid();
+    dragHandle('Move b', { dy: 4 });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  // The pack places in sequence, but a cell sharing no column with anything
+  // before it lands at the top regardless — so `c` (order 2) is DRAWN above
+  // `b` (order 1). A gesture that compared its pixel-derived rank against the
+  // stored order would commit a reorder for a card the user only clicked.
+  it('does not write when a card drawn above its stored order is only clicked', () => {
+    const onChange = renderGrid([
+      { id: 'a', x: 0, w: 6, order: 0, h: 2 },
+      { id: 'b', x: 0, w: 6, order: 1, h: 2 },
+      { id: 'c', x: 6, w: 6, order: 2, h: 2 },
+    ]);
+    expect(cellFor('c').style.top).toBe('0px');
+    expect(cellFor('b').style.top).toBe(`${MEASURED_PX + 16}px`);
+
+    dragHandle('Move c', { dy: 0 });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

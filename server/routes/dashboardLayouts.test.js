@@ -12,7 +12,8 @@ vi.mock('../services/dashboardLayouts.js', () => ({
   WIDGETS_MAX: 50,
   WIDGET_ID_MAX_LENGTH: 80,
   GRID_COLS: 12,
-  GRID_ROW_MAX: 200,
+  GRID_ORDER_MAX: 49,
+  GRID_LEGACY_Y_MAX: 200,
   GRID_ITEM_H_MAX: 50,
   TIME_STRING_RE: /^([01]\d|2[0-3]):[0-5]\d$/,
   getState: vi.fn(),
@@ -115,8 +116,8 @@ describe('PUT /api/dashboard/layouts/:id', () => {
         name: 'Custom',
         widgets: ['apps', 'cos'],
         grid: [
-          { id: 'apps', x: 0, y: 0, w: 12, h: 4 },
-          { id: 'cos', x: 0, y: 4, w: 6, h: 3 },
+          { id: 'apps', x: 0, w: 12, order: 0, h: 4 },
+          { id: 'cos', x: 0, w: 6, order: 1, h: 3 },
         ],
       });
     expect(res.status).toBe(200);
@@ -125,10 +126,27 @@ describe('PUT /api/dashboard/layouts/:id', () => {
       name: 'Custom',
       widgets: ['apps', 'cos'],
       grid: [
-        { id: 'apps', x: 0, y: 0, w: 12, h: 4 },
-        { id: 'cos', x: 0, y: 4, w: 6, h: 3 },
+        { id: 'apps', x: 0, w: 12, order: 0, h: 4 },
+        { id: 'cos', x: 0, w: 6, order: 1, h: 3 },
       ],
     });
+  });
+
+  // A stale client bundle still posts the pre-#4133 `{ x, y, w, h }` shape;
+  // the route has to let it through so the service can convert it rather than
+  // 400-ing the user's save.
+  it('accepts a legacy grid item that carries `y` instead of `order`', async () => {
+    svc.saveLayout.mockResolvedValue({ activeLayoutId: 'default', layouts: [] });
+    const res = await request(makeApp())
+      .put('/api/dashboard/layouts/my-custom')
+      .send({
+        name: 'Custom',
+        widgets: ['apps'],
+        grid: [{ id: 'apps', x: 0, y: 4, w: 12, h: 4 }],
+      });
+    expect(res.status).toBe(200);
+    expect(svc.saveLayout.mock.calls[0][0].grid)
+      .toEqual([{ id: 'apps', x: 0, y: 4, w: 12, h: 4 }]);
   });
 
   it('rejects grid items that reference unknown widgets', async () => {
@@ -137,7 +155,7 @@ describe('PUT /api/dashboard/layouts/:id', () => {
       .send({
         name: 'Custom',
         widgets: ['apps'],
-        grid: [{ id: 'apps', x: 0, y: 0, w: 4, h: 4 }, { id: 'ghost', x: 4, y: 0, w: 4, h: 4 }],
+        grid: [{ id: 'apps', x: 0, w: 4, order: 0, h: 4 }, { id: 'ghost', x: 4, w: 4, order: 1, h: 4 }],
       });
     expect(res.status).toBe(400);
     expect(svc.saveLayout).not.toHaveBeenCalled();
@@ -149,7 +167,7 @@ describe('PUT /api/dashboard/layouts/:id', () => {
       .send({
         name: 'Custom',
         widgets: ['apps'],
-        grid: [{ id: 'apps', x: 6, y: 0, w: 8, h: 4 }],
+        grid: [{ id: 'apps', x: 6, w: 8, order: 0, h: 4 }],
       });
     expect(res.status).toBe(400);
     expect(svc.saveLayout).not.toHaveBeenCalled();
@@ -162,8 +180,8 @@ describe('PUT /api/dashboard/layouts/:id', () => {
         name: 'Custom',
         widgets: ['apps'],
         grid: [
-          { id: 'apps', x: 0, y: 0, w: 4, h: 4 },
-          { id: 'apps', x: 4, y: 0, w: 4, h: 4 },
+          { id: 'apps', x: 0, w: 4, order: 0, h: 4 },
+          { id: 'apps', x: 4, w: 4, order: 1, h: 4 },
         ],
       });
     expect(res.status).toBe(400);
