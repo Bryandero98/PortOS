@@ -172,6 +172,20 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(analysis.compaction?.needed).toBe(true);
   });
 
+  it('classifies an Ollama context overflow separately from a generic context-length error', () => {
+    const body = 'API Error: 400 {"error":{"code":400,"message":"request (32768 tokens) exceeds the available ' +
+      'context size (32768 tokens), try increasing it","type":"exceed_context_size_error",' +
+      '"n_prompt_tokens":32768,"n_ctx":32768}}';
+    const analysis = analyzeAgentFailure(withLead(body), { id: 't' }, 'qwen3.8:27b');
+    // NOT `context-length`: the task isn't too big, the daemon loaded the model
+    // at 32K. Splitting the task (that rule's advice) would lose the work again.
+    expect(analysis.category).toBe('ollama-context-window');
+    expect(analysis.actionable).toBe(true);
+    expect(analysis.affectedContextLength).toBe(32768);
+    expect(analysis.requestedTokens).toBe(32768);
+    expect(analysis.suggestedFix).toContain('num_ctx');
+  });
+
   it('falls back to an unknown, non-actionable category for unrecognized output', () => {
     const analysis = analyzeAgentFailure(withLead('The agent halted after an unrecognized condition with no diagnostic.'), { id: 't' }, 'x');
     expect(analysis.category).toBe('unknown');

@@ -149,6 +149,7 @@ const RAW_CATEGORY_TAXONOMY = new Map(Object.entries({
 
   // context — the agent lacked repo knowledge, or overran the context/turn budget.
   'context-length': 'context',
+  'ollama-context-window': 'context',
   'output-length': 'context',
   'turn-limit': 'context',
   'file-not-found': 'context',

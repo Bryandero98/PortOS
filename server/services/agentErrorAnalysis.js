@@ -11,6 +11,7 @@ import { cosEvents } from './cosEvents.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { redactOutput } from '../lib/commandSecurity.js';
 import { stripAnsi } from '../lib/ansiStrip.js';
+import { describeOllamaContextOverflow, parseOllamaContextOverflow } from '../lib/ollamaContext.js';
 import { retryHoldMetadata } from '../lib/taskRetryHold.js';
 import {
   INVESTIGATION_CIRCUIT_MAX_CREATIONS,
@@ -223,6 +224,32 @@ export const ERROR_PATTERNS = [
         suggestedFix: 'Provider usage limit reached. Using fallback provider or wait for limit reset.',
         waitTime,
         requiresFallback: true
+      };
+    }
+  },
+  {
+    // Ollama's own overflow rejection. Must sit AHEAD of `bad-request` (it
+    // arrives as `API Error: 400`) and of the generic `context-length` rule
+    // below, which misses it entirely — Ollama says "context size", not
+    // "context length". Worth its own category because the fix is the opposite
+    // of both: the task isn't too big and the request isn't malformed — a
+    // 256K-capable model was LOADED at 32K, because Ollama picks the runtime
+    // window from VRAM and an agent harness talking to it directly can't ask
+    // for more. Splitting the task (the generic rule's advice) just loses the
+    // work again next run; raising the provider's num_ctx is what fixes it.
+    // See server/lib/ollamaContext.js.
+    pattern: /exceed_context_size_error|exceeds the available context size/i,
+    category: 'ollama-context-window',
+    actionable: true,
+    origin: 'provider',
+    escalation: 'Approve raising the Ollama-backed provider\'s "Local num_ctx" (AI Providers → the provider → Context Window) so PortOS reloads the daemon at a larger window, then retry.',
+    extract: (match, output, task, model) => {
+      const overflow = parseOllamaContextOverflow(output) || {};
+      return {
+        message: `Ollama context window exhausted (${overflow.contextLength ?? 'unknown'} tokens)`,
+        suggestedFix: describeOllamaContextOverflow(overflow, { model }),
+        affectedContextLength: overflow.contextLength ?? null,
+        requestedTokens: overflow.promptTokens ?? null
       };
     }
   },

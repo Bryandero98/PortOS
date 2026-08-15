@@ -266,6 +266,7 @@ export * from './huggingfaceModel.js';
 export * from './localLlmCatalog.js';
 export * from './localLlmDisk.js';
 export * from './localModelHeuristics.js';
+export * from './ollamaContext.js';
 export * from './loraDataset.js';
 export * from './issueLength.js';
 export * from './investigationTasks.js';

@@ -106,6 +106,42 @@ claude --version
   - OpenAI: `gpt-5`, `gpt-5-mini`
   - Ollama: Model must be pulled first (`ollama pull llama3`)
 
+### Ollama-backed agent dies with "exceeds the available context size"
+
+**Symptom**: a Claude Ollama / OpenCode Ollama session works for a while, then
+stops with
+
+```
+API Error: 400 {"error":{"code":400,"message":"request (32768 tokens) exceeds the
+available context size (32768 tokens), try increasing it",
+"type":"exceed_context_size_error","n_prompt_tokens":32768,"n_ctx":32768}}
+```
+
+**Cause**: Ollama picks a model's runtime window from available VRAM
+(`OLLAMA_CONTEXT_LENGTH` documents the default as "4k/32k/256k based on VRAM"),
+so a 256K-capable model is commonly *loaded* at 32K. An agent harness ships a
+system prompt, tool schemas, and a growing transcript, and sizes its own
+compaction against the window it thinks it has — so it overruns the real one
+without warning. The task isn't too big; the window is too small.
+
+**Solution**: set **Local num_ctx** on the provider (AI Providers → the provider
+→ Context Window). PortOS reloads the Ollama daemon at that window before the
+next run, because a CLI/TUI harness talks to Ollama directly and nothing else
+can raise it. `OLLAMA_CONTEXT_LENGTH` in the environment works as a machine-wide
+fallback.
+
+Two caveats:
+
+- **Check the model still fits.** A larger window means a larger KV cache. Past
+  what VRAM allows, Ollama silently offloads layers to CPU and the model becomes
+  unusably slow rather than failing loudly. Raise it a step at a time.
+- **A background service can't inherit the setting.** A launchd/systemd-managed
+  `ollama serve` runs from its own unit file, so when a window is configured
+  PortOS starts (or restarts) Ollama itself.
+
+The Local LLM settings card shows the window loaded models are actually running
+at, and flags it when it's below what an agent harness needs.
+
 ## Chief of Staff Issues
 
 ### CoS Not Running

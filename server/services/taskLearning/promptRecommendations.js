@@ -170,6 +170,10 @@ function generateErrorInsight(category, percentage) {
       message: `${percentage}% of failures due to context length exceeded`,
       implication: 'Prompt or codebase references are too large; be more specific about which files to analyze'
     },
+    'ollama-context-window': {
+      message: `${percentage}% of failures due to the Ollama context window`,
+      implication: 'The local model was loaded with too small a window; raise the provider\'s num_ctx rather than shrinking the task'
+    },
     'tool-error': {
       message: `${percentage}% of failures due to tool execution errors`,
       implication: 'Add explicit error handling instructions for tool usage'

@@ -293,3 +293,57 @@ describe('CoS Agent Runner allowlist warning', () => {
     ));
   });
 });
+
+describe('Local num_ctx field', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getRuns.mockResolvedValue({ runs: [] });
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+  });
+
+  const openEditorFor = async (provider) => {
+    api.getProviders.mockResolvedValue({ providers: [provider], activeProvider: provider.id });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+  };
+
+  // An Ollama-backed TUI reaches the daemon itself, so num_ctx is the ONLY way
+  // to lift it off Ollama's VRAM-based auto-pick. It used to be `api`-only.
+  it('offers num_ctx on an Ollama-backed TUI provider and saves it', async () => {
+    await openEditorFor({
+      id: 'claude-ollama-tui',
+      name: 'Claude Ollama TUI',
+      type: 'tui',
+      command: 'claude',
+      enabled: true,
+      ollamaBacked: true,
+      models: [],
+      envVars: {},
+    });
+
+    const numCtx = await screen.findByLabelText('Local num_ctx');
+    fireEvent.change(numCtx, { target: { value: '131072' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'claude-ollama-tui',
+      expect.objectContaining({ numCtx: 131072 }),
+    ));
+  });
+
+  it('hides num_ctx on a cloud CLI provider, which has no Ollama daemon to reload', async () => {
+    await openEditorFor({
+      id: 'codex',
+      name: 'Codex',
+      type: 'cli',
+      command: 'codex',
+      enabled: true,
+      models: ['gpt-5'],
+      defaultModel: 'gpt-5',
+    });
+
+    await screen.findByLabelText('Planning Window');
+    expect(screen.queryByLabelText('Local num_ctx')).toBeNull();
+  });
+});

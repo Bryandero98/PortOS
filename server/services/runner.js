@@ -13,6 +13,8 @@ import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { createImmediateFallbackSignalDetector, ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn } from '../lib/bufferedSpawn.js';
 import { isHostShuttingDown } from '../lib/hostShutdown.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
 import {
   setAIToolkitInstance,
   getAIToolkitInstance,
@@ -284,6 +286,15 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   // cleanupPromptFile removes any temp file after the run (no-op otherwise).
   const { args, useStdin, cleanup: cleanupPromptFile } = prepareCliPrompt(provider.command, builtArgs, prompt);
   console.log(`🚀 Executing CLI: ${provider.command} (${prompt.length} chars via ${useStdin ? 'stdin' : 'argv'})`);
+
+  // Ollama-backed CLIs (claude-ollama, opencode-ollama) reach the daemon
+  // themselves, so the toolkit's per-request `num_ctx` never applies to them —
+  // hold the daemon at the provider's configured window (or warn) first. See
+  // services/ollamaAgentContext.js.
+  // Gated on the predicate here (not just inside the helper) so a cloud-provider
+  // run — the overwhelmingly common case — takes no async hop at all.
+  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  if (ollamaContext?.warning) onData?.(`${ollamaContext.warning}\n`);
 
   // Shared composition (provider.envVars + OpenCode models map + PWD pin +
   // CLAUDECODE strip) — see buildCliChildEnv. `guard: true` prepends the pm2
