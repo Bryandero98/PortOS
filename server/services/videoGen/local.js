@@ -40,7 +40,7 @@ import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
-import { videoLoraFamily } from '../../lib/runners.js';
+import { videoLoraFamily, isLtx2FamilyRuntime } from '../../lib/runners.js';
 import {
   publicVideoTextEncoderOptions, resolveVideoTextEncoder,
 } from '../../lib/videoTextEncoders.js';
@@ -49,7 +49,6 @@ import {
   assertIcReferenceCount, icResolutionIssue,
 } from '../../lib/icLoraWeights.js';
 import {
-  LTX2_VENV_PYTHON,
   LTX2_HELPER_SCRIPT,
   WAN22_VENV_PYTHON,
   WAN22_HELPER_SCRIPT,
@@ -294,7 +293,7 @@ export const resolveT2vTwoStageOverride = ({
 }) => {
   const enabled = ['1', 'true', 'yes', 'on']
     .includes(String(env.PORTOS_T2V_TWO_STAGE ?? '').trim().toLowerCase());
-  if (!enabled || runtime !== 'ltx2') return null;
+  if (!enabled || !isLtx2FamilyRuntime(runtime)) return null;
   // Only the default text mode — anything explicitly fflf/a2v/extend/image
   // is conditioned and out of scope for the T2V Standard experiment.
   if (mode != null && mode !== 'text') return null;
@@ -421,8 +420,8 @@ export const icLoraArgs = ({ mode, width, height, icReferencePaths, icLoraWeight
   return args;
 };
 
-const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
-  assertByovRuntimeInstalled('ltx2');
+const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+  assertByovRuntimeInstalled(model.runtime);
   // Map PortOS UI modes to the helper's subcommand. Native extend on ltx2
   // routes to ExtendPipeline.extend_from_video — conditions on the entire
   // source video's latent (motion + visual content) rather than just the
@@ -522,8 +521,7 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
     '--mode', helperMode,
     '--prompt', prompt,
     '--output', outputPath,
-    '--model', model.repo,
-    '--gemma', textEncoderRepo,
+    '--model', ltxModelPath || model.repo,
     '--width', String(width),
     '--height', String(height),
     '--num-frames', String(numFrames),
@@ -532,6 +530,10 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
     '--steps', String(steps),
     '--cfg-scale', String(guidance),
   ];
+  // LTX-2.5 packs ship Gemma 4 under text_encoder/. Passing the shared 2.3
+  // Gemma 3 encoder would either fail load or silently condition on the wrong
+  // model. The 2.3 runtime still needs the explicit shared encoder.
+  if (model.runtime === 'ltx2') args.push('--gemma', textEncoderRepo);
   // User LoRAs — fused into the transformer via the pipeline's _pending_loras
   // hook. Emitted as a JSON list of { path, strength }; generate_ltx2.py sets
   // pipe._pending_loras before generation so the deltas fuse at load time
@@ -582,7 +584,7 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
       icStrength, icAttentionStrength, icSkipStage2,
     }));
   }
-  return { bin: LTX2_VENV_PYTHON, args };
+  return { bin: BYOV_RUNTIME_INFO[model.runtime].venvPython, args };
 };
 
 // The render-side adapter for the shared mode/source contract: `prepareParams`
@@ -843,12 +845,12 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, textEncoder, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, textEncoder, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
-  if (model.runtime === 'ltx2') {
-    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
+  if (isLtx2FamilyRuntime(model.runtime)) {
+    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
   }
   // IC-LoRA remix modes are an LTX-2 primitive (ICLoraPipeline) — no other
   // runtime has an equivalent. The route guards this too, but a non-route
@@ -1082,6 +1084,21 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
         wanRequiredWeights.push({ path: paths[i], role: roles[i] });
       }
     }
+  }
+  // Pinned LTX family entries (LTX-2.5 today) must render the verified
+  // snapshot, not whatever `main` snapshot_download would follow. Unpinned
+  // 2.3 entries keep passing the repo id so the helper's existing Hub resolve
+  // stays unchanged.
+  let ltxModelPath = model.repo;
+  if (isLtx2FamilyRuntime(model.runtime) && typeof model.revision === 'string' && model.revision) {
+    const cache = await inspectModelCache(model.repo, { revision: model.revision });
+    if (!cache.cached || !cache.snapshotPath) {
+      throw new ServerError(
+        `${model.name} revision ${model.revision.slice(0, 8)} is not fully cached. Download or repair it in Video Gen before rendering.`,
+        { status: 400, code: 'LTX2_MODEL_NOT_CACHED' },
+      );
+    }
+    ltxModelPath = cache.snapshotPath;
   }
   // Substituted prompt conditioner (#4081). `resolveVideoTextEncoder` returns
   // null for the stock choice — the whole override path stays dormant then —
@@ -1466,7 +1483,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
