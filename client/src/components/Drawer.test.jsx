@@ -134,4 +134,68 @@ describe('Drawer', () => {
       expect(screen.getByRole('tabpanel').className).toContain('lg:grid-cols-2');
     });
   });
+
+  describe('portaled overlay', () => {
+    // A `backdrop-filter` ancestor becomes the containing block for
+    // position:fixed descendants. On the "glass" themes index.css gives every
+    // bordered/rounded `.bg-port-card` a backdrop-filter, so an inline drawer
+    // nested under such a card was sized to the card, not the viewport.
+    const renderInGlassCard = (props = {}) => render(
+      <div style={{ backdropFilter: 'blur(22px)' }} data-testid="glass-card">
+        <Drawer open onClose={() => {}} title="Edit App" {...props}><p>form body</p></Drawer>
+      </div>
+    );
+
+    it('portals both the backdrop and the panel out of a backdrop-filter ancestor', () => {
+      const { container } = renderInGlassCard();
+
+      const glassCard = screen.getByTestId('glass-card');
+      const dialog = screen.getByRole('dialog');
+      const backdrop = document.querySelector('[aria-hidden="true"]');
+
+      expect(document.body.contains(dialog)).toBe(true);
+      expect(glassCard.contains(dialog)).toBe(false);
+      // The backdrop is the trapped element the bug is named for — it must
+      // escape too, or it renders as a card-sized scrim instead of covering
+      // the viewport.
+      expect(glassCard.contains(backdrop)).toBe(false);
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
+      // The glass card keeps only its own (empty) subtree.
+      expect(glassCard).toBeEmptyDOMElement();
+    });
+
+    it('keeps backdrop + Esc dismissal working through the portal', () => {
+      const onClose = vi.fn();
+      render(
+        <div style={{ backdropFilter: 'blur(22px)' }}>
+          <Drawer open onClose={onClose} title="X">b</Drawer>
+        </div>
+      );
+      fireEvent.click(document.querySelector('[aria-hidden="true"]'));
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledTimes(2);
+    });
+
+    it('portals straight into <body> with no wrapper element by default', () => {
+      renderInGlassCard();
+      // Backdrop and panel are direct children of <body> — matching the shared
+      // Modal's portal shape.
+      expect(screen.getByRole('dialog').parentElement).toBe(document.body);
+      expect(document.querySelector('[aria-hidden="true"]').parentElement).toBe(document.body);
+    });
+
+    it('re-applies a page-scoped theming class inside the portal via portalClassName', () => {
+      // The City HUD palette remap in index.css is written as
+      // `.cybercity-themed <utility>` descendant selectors, which the portal
+      // would otherwise leave behind.
+      renderInGlassCard({ portalClassName: 'cybercity-themed' });
+
+      const wrapper = screen.getByRole('dialog').parentElement;
+      expect(wrapper.className).toBe('cybercity-themed');
+      expect(wrapper.parentElement).toBe(document.body);
+      // The backdrop shares the themed wrapper so the scrim is remapped too.
+      expect(wrapper.contains(document.querySelector('[aria-hidden="true"]'))).toBe(true);
+    });
+  });
 });
