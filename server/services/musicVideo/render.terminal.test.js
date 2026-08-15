@@ -49,7 +49,9 @@ vi.mock('../../lib/ffmpeg.js', () => ({
   generateThumbnail: vi.fn(async () => 'thumb.jpg'),
   probeVideoDuration: vi.fn(async () => 30),
 }));
-vi.mock('../../lib/processEnv.js', () => ({ safeChildProcessEnv: () => ({}) }));
+vi.mock('../../lib/processEnv.js', () => ({
+  safeChildProcessOptions: (options = {}) => ({ ...options, env: {}, windowsHide: true }),
+}));
 vi.mock('../../lib/killWithEscalation.js', () => ({ killWithEscalation: vi.fn() }));
 vi.mock('../videoGen/local.js', () => ({
   loadHistory: vi.fn(),
