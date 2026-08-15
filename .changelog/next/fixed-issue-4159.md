@@ -1,0 +1,1 @@
+- Creative Director plan render previews now sync to selected peers.

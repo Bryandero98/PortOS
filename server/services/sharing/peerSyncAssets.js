@@ -362,12 +362,12 @@ export async function buildTrackAssetManifest(track) {
  * VIDEO renders are NOT hashed here: they live in the project's linked media
  * collection, which federates as its own record and ships its bytes via that
  * collection's manifest — duplicating them here would double the transfer.
- * The music bed has no such alternate channel (unlike scene video, it isn't
- * filed into the linked collection), so without bundling it here a subscribed
- * peer would receive a dangling `musicBed.filename` reference — mirrors how
- * `buildTrackAssetManifest` / `buildMusicVideoAssetManifest` bundle their
- * `PATHS.music` audio. Each direct asset is missing-local-file skipped
- * silently (mirrors buildAuthorAssetManifest).
+ * Directive-plan render steps do not enter that collection, so their settled
+ * image/video job ids are bundled directly. The music bed has no alternate
+ * channel either, so without bundling it a subscribed peer would receive a
+ * dangling `musicBed.filename` reference — mirrors how `buildTrackAssetManifest`
+ * / `buildMusicVideoAssetManifest` bundle their `PATHS.music` audio. Each direct
+ * asset is missing-local-file skipped silently (mirrors buildAuthorAssetManifest).
  */
 export async function buildProjectAssetManifest(project) {
   const entries = [];
@@ -380,6 +380,28 @@ export async function buildProjectAssetManifest(project) {
   if (isStr(musicBedFilename)) {
     const musicEntry = await hashSimpleAsset(musicBedFilename, 'music', PATHS.music);
     if (musicEntry) entries.push(musicEntry);
+  }
+  const planSteps = Array.isArray(project?.plan?.steps) ? project.plan.steps : [];
+  const renderEntries = await Promise.all(planSteps.map((step) => {
+    const jobId = step?.status === 'done' && isStr(step?.result?.jobId) && step.result.jobId.trim()
+      ? step.result.jobId.trim()
+      : null;
+    if (!jobId) return null;
+    if (step.toolName === 'media_enqueueImageJob') {
+      return hashImageForManifest(`${jobId}.png`);
+    }
+    if (step.toolName === 'media_enqueueVideoJob') {
+      return hashSimpleAsset(`${jobId}.mp4`, 'video', PATHS.videos);
+    }
+    return null;
+  }));
+  const seen = new Set(entries.map((entry) => `${entry.kind}:${entry.filename}`));
+  for (const entry of renderEntries) {
+    const key = entry && `${entry.kind}:${entry.filename}`;
+    if (entry && !seen.has(key)) {
+      seen.add(key);
+      entries.push(entry);
+    }
   }
   return entries;
 }

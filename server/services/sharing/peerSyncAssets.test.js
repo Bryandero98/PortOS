@@ -162,6 +162,45 @@ describe('buildProjectAssetManifest — first-pass music bed (#1928)', () => {
     expect(manifest).toContainEqual(expect.objectContaining({ filename: 'music-gen-def.wav', kind: 'music', sha256: sha(musicBytes) }));
     expect(manifest).toHaveLength(2);
   });
+
+  it('bundles completed directive-plan image and video renders that have no collection channel (#4159)', async () => {
+    const imageBytes = Buffer.from('directive-image');
+    const videoBytes = Buffer.from('directive-video');
+    writeImage('plan-image.png', imageBytes);
+    writeVideo('plan-video.mp4', videoBytes);
+    const manifest = await buildProjectAssetManifest({
+      plan: {
+        steps: [
+          { toolName: 'media_enqueueImageJob', status: 'done', result: { jobId: 'plan-image' } },
+          { toolName: 'media_enqueueVideoJob', status: 'done', result: { jobId: 'plan-video' } },
+        ],
+      },
+    });
+    expect(manifest).toContainEqual(expect.objectContaining({
+      filename: 'plan-image.png', kind: 'image', sha256: sha(imageBytes),
+    }));
+    expect(manifest).toContainEqual({ filename: 'plan-video.mp4', kind: 'video', sha256: sha(videoBytes) });
+  });
+
+  it('ignores unfinished, non-render, missing, and duplicate directive-plan results', async () => {
+    const imageBytes = Buffer.from('one-render');
+    writeImage('done-image.png', imageBytes);
+    const manifest = await buildProjectAssetManifest({
+      plan: {
+        steps: [
+          { toolName: 'media_enqueueImageJob', status: 'done', result: { jobId: 'done-image' } },
+          { toolName: 'media_enqueueImageJob', status: 'done', result: { jobId: 'done-image' } },
+          { toolName: 'media_enqueueImageJob', status: 'done', result: { jobId: '   ' } },
+          { toolName: 'media_enqueueImageJob', status: 'running', result: { jobId: 'still-running' } },
+          { toolName: 'pipeline_createSeries', status: 'done', result: { jobId: 'not-media' } },
+          { toolName: 'media_enqueueVideoJob', status: 'done', result: { jobId: 'missing-video' } },
+        ],
+      },
+    });
+    expect(manifest).toEqual([expect.objectContaining({
+      filename: 'done-image.png', kind: 'image', sha256: sha(imageBytes),
+    })]);
+  });
 });
 
 describe('buildBoardAssetManifest — video items (#4188)', () => {
