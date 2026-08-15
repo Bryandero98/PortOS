@@ -107,7 +107,15 @@ function escapeCmdMetacharsIfUnquoted(value) {
   return str.replace(CMD_METACHAR_RE, '^$&');
 }
 
-const execFileAsync = promisify(execFile);
+// windowsHide is applied here rather than by importing server/lib/childProcess.js:
+// the aiToolkit is contractually self-contained (see aiToolkit/CLAUDE.md), so it
+// carries its own copy of the default. Without it, every CLI probe below spawns
+// a console from PortOS's console-less PM2 fork, which Windows hands off to
+// Windows Terminal as a focus-stealing window. See docs/WINDOWS_CONSOLE.md.
+// Spread last so an explicit windowsHide: false still wins, matching the
+// contract server/lib/childProcess.js states.
+const execFileAsync = (file, args, options) =>
+  promisify(execFile)(file, args, { windowsHide: true, ...options });
 
 // Tool-use (function-calling) capable model families. Inlined here because the
 // aiToolkit is self-contained (no imports out to server/lib). MIRROR of
