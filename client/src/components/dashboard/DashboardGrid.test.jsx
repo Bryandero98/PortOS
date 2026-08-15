@@ -461,6 +461,23 @@ describe('DashboardGrid move re-sequences', () => {
     dragHandle('Move b', { dy: 4 });
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  // The pack places in sequence, but a cell sharing no column with anything
+  // before it lands at the top regardless — so `c` (order 2) is DRAWN above
+  // `b` (order 1). A gesture that compared its pixel-derived rank against the
+  // stored order would commit a reorder for a card the user only clicked.
+  it('does not write when a card drawn above its stored order is only clicked', () => {
+    const onChange = renderGrid([
+      { id: 'a', x: 0, w: 6, order: 0, h: 2 },
+      { id: 'b', x: 0, w: 6, order: 1, h: 2 },
+      { id: 'c', x: 6, w: 6, order: 2, h: 2 },
+    ]);
+    expect(cellFor('c').style.top).toBe('0px');
+    expect(cellFor('b').style.top).toBe(`${MEASURED_PX + 16}px`);
+
+    dragHandle('Move c', { dy: 0 });
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
 
 describe('DashboardGrid scroll target', () => {

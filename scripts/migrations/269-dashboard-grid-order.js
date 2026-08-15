@@ -72,8 +72,18 @@ function applyToLayout(layout) {
   if (!layout || typeof layout !== 'object') return false;
   if (!Array.isArray(layout.grid) || layout.grid.length === 0) return false;
   // A non-object entry is unusable to the renderer either way; drop it here
-  // rather than carrying `undefined` ids into the converted shape.
-  const grid = layout.grid.filter((g) => g && typeof g === 'object' && typeof g.id === 'string');
+  // rather than carrying `undefined` ids into the converted shape. Duplicates
+  // are dropped keeping the FIRST occurrence in FILE order, which is what the
+  // read path does — deduping after the sort would let conversion hand a
+  // different rectangle to a hand-edited duplicate than the server was
+  // already serving for it.
+  const seen = new Set();
+  const grid = layout.grid.filter((g) => {
+    if (!g || typeof g !== 'object' || typeof g.id !== 'string') return false;
+    if (seen.has(g.id)) return false;
+    seen.add(g.id);
+    return true;
+  });
   if (grid.length === layout.grid.length && isConverted(grid)) return false;
   layout.grid = toOrderedGrid(grid);
   return true;

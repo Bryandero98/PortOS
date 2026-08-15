@@ -565,12 +565,22 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
     // it, a cell measuring under MIN_H rows (a widget rendering little or
     // nothing) has its height "changed" by the clamp alone — so a purely
     // horizontal drag would silently pin it.
-    const startItem = kind === 'resize' ? { ...found, h: Math.max(MIN_H, found.h) } : found;
+    //
+    // A move's start is expressed as the rank the cell ALREADY reads at, not
+    // its stored `order`. The two can differ: the pack places in sequence, but
+    // a cell sharing no column with any predecessor lands at the top anyway,
+    // so a later `order` can be DRAWN above an earlier one. Comparing a
+    // pixel-derived rank against a stored one there would "reorder" a card on
+    // a plain click of the handle — a write with nothing behind it.
+    const startTop = baseRects.get(item.id)?.top ?? 0;
+    const startItem = kind === 'resize'
+      ? { ...found, h: Math.max(MIN_H, found.h) }
+      : { ...found, order: rankAtPixel(baseline, baseRects, item.id, startTop, found.x) };
     dragRef.current = {
       id: item.id,
       kind,
       startPointer: { x: e.clientX, y: e.clientY },
-      startTop: baseRects.get(item.id)?.top ?? 0,
+      startTop,
       startItem,
       ghost: { ...startItem },
     };

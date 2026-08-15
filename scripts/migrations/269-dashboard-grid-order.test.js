@@ -130,6 +130,26 @@ describe('migration 269 — convert dashboard grids to the order-only shape', ()
     expect(grid.map((g) => g.order)).toEqual([0, 1, 2]);
   });
 
+  // The read path dedupes by id keeping the first entry in FILE order, so the
+  // conversion has to as well — deduping after the sort would hand the widget
+  // a different rectangle than the server was already serving for it.
+  it('keeps the first duplicate in file order, not the topmost one', async () => {
+    writeJson(layoutsPath, {
+      activeLayoutId: 'default',
+      layouts: [{
+        id: 'default', name: 'Everything', builtIn: true, widgets: ['alpha'],
+        grid: [
+          { id: 'alpha', x: 2, y: 10, w: 4, h: 7 },
+          { id: 'alpha', x: 0, y: 0, w: 12, h: 1 },
+        ],
+      }],
+    });
+
+    expect((await migration.up({ rootDir })).updated).toBe(1);
+    expect(readJson(layoutsPath).layouts[0].grid)
+      .toEqual([{ id: 'alpha', x: 2, w: 4, order: 0, h: 7 }]);
+  });
+
   it('converts every layout in the file, and leaves empty grids alone', async () => {
     writeJson(layoutsPath, {
       activeLayoutId: 'focus',
