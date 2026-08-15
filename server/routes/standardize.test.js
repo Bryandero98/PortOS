@@ -77,6 +77,20 @@ describe('standardize routes — target resolution and the refusal gate', () => 
     expectNoStandardizerWork();
   });
 
+  it('standardizes the checked app\'s own repo, ignoring a companion repoPath', async () => {
+    // Typing one record and then rewriting a different directory would make the
+    // gate decorative — a permitted Node appId could carry a Python or Docker
+    // repo straight past the refusal.
+    vi.mocked(getAppById).mockResolvedValue({ id: 'app-1', type: 'vite+express', repoPath: '/srv/example-app' });
+
+    const res = await request(makeApp())
+      .post('/api/standardize/analyze')
+      .send({ appId: 'app-1', repoPath: '/srv/some-python-service' });
+
+    expect(res.status).toBe(200);
+    expect(analyzeApp).toHaveBeenCalledWith('/srv/example-app', undefined);
+  });
+
   it('404s an appId with no app record', async () => {
     vi.mocked(getAppById).mockResolvedValue(null);
 
