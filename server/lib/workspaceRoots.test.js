@@ -1,12 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, delimiter } from 'path';
 import {
   isWithinRoot,
   isWithinAllowedRoots,
   ALLOWED_WORKSPACE_ROOTS,
   DEFAULT_WORKSPACE_ROOTS,
 } from './workspaceRoots.js';
+
+const IS_WINDOWS = process.platform === 'win32';
+const SYSTEM_DRIVE = (process.env.SystemDrive || 'C:').toUpperCase();
 
 describe('isWithinRoot', () => {
   it('returns true when the path IS the root', () => {
@@ -44,6 +47,30 @@ describe('isWithinAllowedRoots', () => {
   });
 });
 
+// Windows repos routinely live off the system drive (D:\code, E:\projects), and
+// the POSIX defaults (/tmp, /Users, /Volumes, /opt) resolve to nothing useful
+// there — so a non-system lettered drive is allowed, the way /Volumes is on macOS.
+describe('Windows non-system drives', () => {
+  const otherDrive = SYSTEM_DRIVE === 'Z:' ? 'Y:\\' : 'Z:\\';
+
+  it.runIf(IS_WINDOWS)('accepts a path on a non-system drive', () => {
+    expect(isWithinAllowedRoots(`${otherDrive}code\\myapp`)).toBe(true);
+  });
+
+  it.runIf(IS_WINDOWS)('rejects system-drive paths outside the allowed roots', () => {
+    expect(isWithinAllowedRoots(`${SYSTEM_DRIVE}\\Windows\\System32`)).toBe(false);
+  });
+
+  it.runIf(IS_WINDOWS)('rejects UNC paths', () => {
+    expect(isWithinAllowedRoots('\\\\server\\share\\repo')).toBe(false);
+  });
+
+  it.runIf(!IS_WINDOWS)('mounted-volume roots cover the Linux mount points', () => {
+    expect(isWithinAllowedRoots('/mnt/data/code')).toBe(true);
+    expect(isWithinAllowedRoots('/media/usb/repo')).toBe(true);
+  });
+});
+
 describe('ALLOWED_WORKSPACE_ROOTS', () => {
   it('includes every default root', () => {
     // Defaults are symlink-resolved, so compare on length/non-empty rather than
@@ -70,8 +97,10 @@ describe('PORTOS_WORKSPACE_ROOTS opt-in gate', () => {
     expect(mod.EXTRA_WORKSPACE_ROOTS).toEqual([]);
   });
 
-  it('parses colon-separated roots, trimming and dropping empties', async () => {
-    vi.stubEnv('PORTOS_WORKSPACE_ROOTS', ' /srv/repos : : /data/projects ');
+  it('splits on the platform path delimiter, trimming and dropping empties', async () => {
+    // `;` on Windows, `:` on POSIX — splitting a Windows value on `:` would cut
+    // `D:\repos` in half at the drive letter.
+    vi.stubEnv('PORTOS_WORKSPACE_ROOTS', ` /srv/repos ${delimiter}${delimiter} /data/projects `);
     vi.resetModules();
     const mod = await import('./workspaceRoots.js');
     expect(mod.WORKSPACE_ROOTS_CONFIGURED).toBe(true);
