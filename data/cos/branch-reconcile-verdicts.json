@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "branch": "claim/issue-4170",
+      "repoPath": "/Users/antic/github.com/atomantic/PortOS",
+      "verdict": "SUPERSEDED",
+      "tip": "62dc6747e3d29708f3beca4548aaf8882b3ed39b",
+      "dirtyPaths": [],
+      "collisionPaths": [
+        "client/src/components/ui/CollapsibleText.jsx",
+        "client/src/components/ui/CollapsibleText.test.jsx"
+      ],
+      "replacedBy": [
+        "660539960d68a28364448e4794c8753dfe489ece",
+        "4ff7306dfd70034d8175cb32c82604123d84ccd9",
+        "587c0aeab2bf73760fd1ee7b452c6e9fbef57cc8",
+        "c5e2bb865e823a2eec6f19399fa050f6c3de39ee"
+      ],
+      "replacedByNote": "CollapsibleText.jsx and CollapsibleText.test.jsx on main now remeasure mode changes, count renderable children, and measure overflow live on focus.",
+      "was": "Refresh CollapsibleText behavior for content-mode switches, empty child lists, and focus within clipped children.",
+      "decidedAt": "2026-08-15T06:05:05Z"
+    }
+  ]
+}
