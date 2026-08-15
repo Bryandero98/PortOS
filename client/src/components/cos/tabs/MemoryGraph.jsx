@@ -8,6 +8,7 @@ import { MEMORY_TYPES, MEMORY_TYPE_COLORS } from '../constants';
 import { buildGraph } from '../../../lib/graphSimulation';
 import BrailleSpinner from '../../BrailleSpinner';
 import useHoverTooltip from '../../../hooks/useHoverTooltip';
+import useFirstTouchHint from '../../../hooks/useFirstTouchHint';
 import { formatDateNumeric } from '../../../utils/formatters';
 
 // Widest the hover tooltip renders. Single source for both its max-width and
@@ -129,6 +130,7 @@ export default function MemoryGraph() {
   // Hover tooltip state + the ref-gated pointer tracking that keeps a plain
   // mouse move from re-rendering this component when nothing can paint.
   const { hoveredNode, tooltipPos, handleHover, handlePointerMove } = useHoverTooltip();
+  const { visible: touchHintVisible, showOnFirstTouch } = useFirstTouchHint();
   const [layoutKey, setLayoutKey] = useState(0);
   // Mobile-only: the legend auto-shows on a roomy viewport (CSS, not this flag).
   const [legendOpen, setLegendOpen] = useState(false);
@@ -230,7 +232,10 @@ export default function MemoryGraph() {
           desktop, floors at 240px so it stays usable on a short viewport. */}
       <div
         className="relative bg-port-card border border-port-border rounded-lg overflow-hidden h-[clamp(240px,45vh,500px)]"
-        onPointerDown={(e) => { dragStartRef.current = { x: e.clientX, y: e.clientY }; }}
+        onPointerDown={(e) => {
+          dragStartRef.current = { x: e.clientX, y: e.clientY };
+          if (e.target?.tagName === 'CANVAS') showOnFirstTouch(e);
+        }}
         onPointerMove={handlePointerMove}
       >
         {graph && (
@@ -249,6 +254,16 @@ export default function MemoryGraph() {
               onHover={handleHover}
             />
           </Canvas>
+        )}
+
+        {touchHintVisible && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute top-3 inset-x-3 z-20 flex justify-center pointer-events-none"
+          >
+            <span className="port-media-overlay rounded-lg px-3 py-2 text-xs">Drag to rotate</span>
+          </div>
         )}
 
         {/* Legend. Its ~200px blankets a short canvas, so it auto-shows only on
