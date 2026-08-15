@@ -13,7 +13,7 @@ import { join, resolve as resolvePath, sep as PATH_SEP, dirname } from 'path';
 import { randomUUID } from 'crypto';
 import { promisify } from 'util';
 import { ensureDir, PATHS } from './fileUtils.js';
-import { safeChildProcessEnv, whichFirst } from './processEnv.js';
+import { safeChildProcessOptions, whichFirst } from './processEnv.js';
 
 const execFileAsync = promisify(execFile);
 const IS_WIN = process.platform === 'win32';
@@ -77,7 +77,7 @@ export function runFfmpegProcess({ bin, args, signal, stderrTailBytes = 2000 } =
   }
   return new Promise((resolve) => {
     const stdio = stderrTailBytes > 0 ? ['ignore', 'ignore', 'pipe'] : 'ignore';
-    const proc = spawn(bin, args, { env: safeChildProcessEnv(), stdio });
+    const proc = spawn(bin, args, safeChildProcessOptions({ stdio }));
     let stderrTail = '';
     if (stderrTailBytes > 0 && proc.stderr) {
       proc.stderr.on('data', (chunk) => {
@@ -145,7 +145,7 @@ export const findFfprobe = async () => {
 const runFfprobe = async (args, timeout = 5000) => {
   const ffprobe = await findFfprobe();
   if (!ffprobe) return '';
-  const { stdout } = await execFileAsync(ffprobe, args, { env: safeChildProcessEnv(), timeout }).catch(() => ({ stdout: '' }));
+  const { stdout } = await execFileAsync(ffprobe, args, safeChildProcessOptions({ timeout })).catch(() => ({ stdout: '' }));
   return (stdout || '').trim();
 };
 
@@ -387,10 +387,9 @@ export const supportsSetparamsFilter = async () => {
   if (setparamsAvailable !== null) return setparamsAvailable;
   const ffmpeg = await findFfmpeg();
   if (!ffmpeg) return false;
-  const listing = await execFileAsync(ffmpeg, ['-hide_banner', '-filters'], {
-    env: safeChildProcessEnv(),
+  const listing = await execFileAsync(ffmpeg, ['-hide_banner', '-filters'], safeChildProcessOptions({
     maxBuffer: 4 * 1024 * 1024,
-  }).then((r) => String(r.stdout || ''), () => null);
+  })).then((r) => String(r.stdout || ''), () => null);
   if (listing === null) return false;
   setparamsAvailable = /(^|\s)setparams(\s|$)/m.test(listing);
   if (!setparamsAvailable) {

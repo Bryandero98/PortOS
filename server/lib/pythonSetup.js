@@ -4,7 +4,7 @@ import { arch, homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { PATHS } from './fileUtils.js';
-import { safeChildProcessEnv, whichFirst, whichFirstSync } from './processEnv.js';
+import { safeChildProcessOptions, whichFirst, whichFirstSync } from './processEnv.js';
 import { createLineReader } from './streamLines.js';
 import { getCudaCapability } from './cudaCapability.js';
 
@@ -124,7 +124,7 @@ const PYTHON_CANDIDATES = IS_WIN
 export async function probePythonArch(pythonPath) {
   const { stdout } = await execFileAsync(pythonPath, [
     '-c', 'import platform; print(platform.machine())'
-  ], { env: safeChildProcessEnv(), timeout: 10_000 }).catch(() => ({ stdout: '' }));
+  ], safeChildProcessOptions({ timeout: 10_000 })).catch(() => ({ stdout: '' }));
   return stdout.trim() || null;
 }
 
@@ -259,7 +259,7 @@ export async function isFlux2VenvHealthy() {
   if (cachedFlux2Healthy !== null) return cachedFlux2Healthy;
   const py = resolveFlux2Python();
   if (!py) { cachedFlux2Healthy = false; return false; }
-  const ok = await execFileAsync(py, ['-c', 'from diffusers import Flux2KleinPipeline'], { env: safeChildProcessEnv(), timeout: 30_000 })
+  const ok = await execFileAsync(py, ['-c', 'from diffusers import Flux2KleinPipeline'], safeChildProcessOptions({ timeout: 30_000 }))
     .then(() => true)
     .catch(() => false);
   cachedFlux2Healthy = ok;
@@ -527,7 +527,7 @@ export async function isMuscriptorRuntimeReady() {
   if (cachedMuscriptorReady) return true;
   const py = resolveMuscriptorPython();
   if (!py) return false;
-  const ok = await execFileAsync(py, ['-c', 'from muscriptor import TranscriptionModel'], { env: safeChildProcessEnv(), timeout: 30_000 })
+  const ok = await execFileAsync(py, ['-c', 'from muscriptor import TranscriptionModel'], safeChildProcessOptions({ timeout: 30_000 }))
     .then(() => true)
     .catch(() => false);
   cachedMuscriptorReady = ok;
@@ -568,7 +568,7 @@ export async function createVenv(basePython, targetDir) {
     ? join(targetDir, 'Scripts', 'python.exe')
     : join(targetDir, 'bin', 'python3');
   if (existsSync(venvPython)) return venvPython;
-  await execFileAsync(basePython, ['-m', 'venv', targetDir], { env: safeChildProcessEnv(), timeout: 120_000 });
+  await execFileAsync(basePython, ['-m', 'venv', targetDir], safeChildProcessOptions({ timeout: 120_000 }));
   if (!existsSync(venvPython)) {
     throw new Error(`Venv created but interpreter missing at ${venvPython}`);
   }
@@ -592,7 +592,7 @@ export async function probePythonHealth(pythonPath) {
     '  "imports": imports,',
     '}))',
   ].join('\n');
-  const { stdout } = await execFileAsync(pythonPath, ['-c', probe], { env: safeChildProcessEnv(), timeout: 30_000 });
+  const { stdout } = await execFileAsync(pythonPath, ['-c', probe], safeChildProcessOptions({ timeout: 30_000 }));
   const data = JSON.parse(stdout.trim().split(/\r?\n/).pop());
   const installed = [];
   const missing = [];
@@ -627,7 +627,7 @@ export async function checkPackages(pythonPath) {
 // live child handle so the caller's outer closure can track it for SIGTERM.
 function streamSpawn(bin, args, onLog, onProc) {
   return new Promise((resolve) => {
-    const proc = spawn(bin, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(bin, args, safeChildProcessOptions({ stdio: ['ignore', 'pipe', 'pipe'] }));
     onProc(proc);
     // `splitRe: /[\r\n]+/` so a torch/tqdm progress bar that redraws with a
     // bare `\r` surfaces each redraw as its own log line; the carry buffer

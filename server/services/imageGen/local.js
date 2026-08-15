@@ -31,6 +31,7 @@ import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { createLineReader } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { prepareLocalMemory } from '../../lib/localMemory.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 import { IMAGE_GEN_MODE, LOCAL_IMAGEGEN_DEFAULT_MODEL } from './modes.js';
 import { computePixelDelta } from './regen.js';
 import { parseByteProgress, formatDownloadMessage } from '../videoGen/generateVideoHelpers.js';
@@ -558,7 +559,7 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   imageGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps });
   activeJob = { ...meta, generationId: jobId, totalSteps: actualSteps, step: 0, progress: 0, currentImage: null, mode: IMAGE_GEN_MODE.LOCAL };
 
-  const proc = spawn(bin, args, { env: await hfChildEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(bin, args, safeChildProcessOptions({ env: await hfChildEnv(), stdio: ['ignore', 'pipe', 'pipe'] }));
   activeProcess = proc;
   await heavyClaim.handoffTo?.(proc.pid);
   // Spawn ENOENT (missing/non-executable pythonPath) fires BOTH 'error' and

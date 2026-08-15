@@ -48,7 +48,7 @@ import {
 import { getCudaCapability } from '../../lib/cudaCapability.js';
 import { inspectModelCache } from '../../lib/hfCache.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -336,10 +336,9 @@ export async function isEngineHealthy(engineId, { refresh = false } = {}) {
     engineHealthCache.set(engine.id, true);
     return true;
   }
-  const healthy = await execFileAsync(python, ['-c', engine.healthProbe], {
-    env: safeChildProcessEnv(),
+  const healthy = await execFileAsync(python, ['-c', engine.healthProbe], safeChildProcessOptions({
     timeout: 60_000,
-  }).then(() => true).catch(() => false);
+  })).then(() => true).catch(() => false);
   engineHealthCache.set(engine.id, healthy);
   return healthy;
 }

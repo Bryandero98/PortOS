@@ -120,7 +120,7 @@ export async function checkConnection({ codexPath } = {}) {
   // (which would consume the user's Codex quota); the settings UI just wants
   // "yes the binary exists and is reachable".
   const bin = codexPath || DEFAULT_BIN;
-  const proc = spawn(bin, ['--version'], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(bin, ['--version'], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let out = '';
   proc.stdout.on('data', (c) => { out += c.toString(); });
   proc.stderr.on('data', (c) => { out += c.toString(); });
@@ -304,7 +304,7 @@ export const noImageReason = (stdoutTail = '') => buildNoImageReason(stdoutTail,
 });
 
 async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { cleanC2PA = false, denoise = false } = {}) {
-  const proc = spawn(bin, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(bin, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   activeProcs.set(jobId, proc);
 
   let sessionId = null;

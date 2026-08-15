@@ -27,7 +27,7 @@
 
 import { spawn } from 'child_process';
 import { findFfmpeg } from '../../lib/ffmpeg.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 
 // Fixed analysis sample rate. 22.05kHz retains the 40Hz–8kHz spectral bands
 // used for onset work and halves the sample count vs 44.1kHz. Mono — beat
@@ -172,7 +172,7 @@ export async function decodeAudioToPcm(audioPath, { signal } = {}) {
       '-acodec', 'pcm_f32le',
       'pipe:1',
     ];
-    const proc = spawn(ffmpeg, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
+    const proc = spawn(ffmpeg, args, safeChildProcessOptions({ stdio: ['ignore', 'pipe', 'ignore'] }));
     const chunks = [];
     let onAbort = null;
     if (signal) {
