@@ -54,6 +54,7 @@ vi.mock('fs', () => ({ existsSync: vi.fn().mockReturnValue(false) }));
 import { initSpawner } from './subAgentSpawner.js';
 import { initCosRunnerConnection } from './cosRunnerClient.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
+import { emitLog } from './cosEvents.js';
 import * as agentState from './agentState.js';
 
 // Read through the module namespace: `useRunner` is reassigned by `setUseRunner`,
@@ -104,6 +105,16 @@ describe('subAgentSpawner — runner promotion (#4134)', () => {
     runnerHandlers.get('connection:ready')();
 
     expect(currentMode()).toBe(true);
+  });
+
+  it('announces the promotion on the CoS log stream, not just stdout', () => {
+    runnerHandlers.get('connection:ready')();
+
+    // The disconnect warning goes through emitLog, so the resolution must too —
+    // otherwise the UI shows an outage that never visibly ends.
+    const promotions = vi.mocked(emitLog).mock.calls.filter(([, message]) => /promoting/.test(message));
+    expect(promotions).toHaveLength(1);
+    expect(promotions[0][0]).toBe('info');
   });
 
   it('reconciles agents a runner that was already up owns, on promotion', () => {

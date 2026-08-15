@@ -204,7 +204,10 @@ async function runInitSpawner() {
     // the recovery sweep below refuses to adopt them.
     if (!useRunner) {
       setUseRunner(true);
-      console.log('🔼 CoS Runner came up — promoting agent spawning from direct to runner mode');
+      // Through `emitLog`, like the disconnect warning above: both edges belong
+      // in the CoS log stream the UI reads, or a remote install sees the outage
+      // reported and never its resolution.
+      emitLog('info', '🔼 CoS Runner came up — promoting agent spawning from direct to runner mode');
       recoverRunnerAgents().catch(err =>
         console.error(`❌ Failed to recover runner agents after promotion: ${err.message}`)
       );
