@@ -55,7 +55,11 @@ const CLAMP_CLASS = {
  * never change its box and a resize callback bound to it alone would never fire;
  * the inner wrapper is uncapped, so its height tracks the real content and a
  * changed child re-measures without needing `children` (a fresh element object
- * every render) in the effect deps.
+ * every render, which would churn the observer on every parent re-render) in the
+ * effect deps. Switching *modes* still has to re-run it, though — the rendered
+ * element swaps between `<p>` and the capped `<div>`, so the effect's captured
+ * element would otherwise stay bound to the detached one and never measure.
+ * That's what `hasChildren` (a stable boolean) is doing in the deps.
  *
  * Two separate guards keep the toggle from vanishing mid-expand (which would
  * strand the user in the expanded wall of text with no way back): the effect
@@ -84,7 +88,13 @@ export default function CollapsibleText({
   const [isOverflowing, setIsOverflowing] = useState(false);
   const ref = useRef(null);
   const innerRef = useRef(null);
-  const hasChildren = children != null && children !== false;
+  // An empty list or an empty string is *no* children, not "children that
+  // happen to be blank" — a caller doing `<CollapsibleText text={fallback}>
+  // {items.map(…)}</CollapsibleText>` over an empty list must get the text
+  // fallback, not an empty capped box with its `text` silently dropped.
+  const hasChildren = Array.isArray(children)
+    ? children.length > 0
+    : children != null && children !== false && children !== '';
 
   useEffect(() => {
     if (expanded) return;
@@ -100,6 +110,7 @@ export default function CollapsibleText({
   }, [text, hasChildren, expanded]);
 
   const clamp = CLAMP_CLASS[lines] || CLAMP_CLASS[2];
+
   const renderContent = () => {
     if (hasChildren) {
       return (
@@ -108,6 +119,15 @@ export default function CollapsibleText({
           id={id}
           className={`break-words ${className} ${expanded ? '' : 'overflow-hidden'}`}
           style={expanded ? undefined : { maxHeight }}
+          // `overflow-hidden` is a scroll container with no visible scrollbar,
+          // and children may hold links, buttons or a horizontally-scrollable
+          // <pre>. Tabbing to one below the cap would scroll the preview to
+          // reveal it with no way to scroll back — and `aria-expanded="false"`
+          // would be a lie, since the content is fully in the tab order.
+          // Expanding on focus keeps the claim honest and the target on screen.
+          // Gated on real overflow: content that fits is never clipped, so
+          // expanding it would only mint a no-op "Show less" into the tab order.
+          onFocus={() => { if (isOverflowing) setExpanded(true); }}
         >
           <div ref={innerRef}>{children}</div>
         </div>
