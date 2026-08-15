@@ -24,6 +24,7 @@ import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, isAgentPausedTask, resolveP
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
 import { isInvestigationTask } from '../lib/investigationTasks.js';
 import { PAUSED_BLOCKED_CATEGORIES, USER_DECISION_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
+import { splitTaskPromptFields } from '../lib/cosTaskPrompt.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
 import { CLAIM_METADATA_KEYS } from './cosTaskClaim.js';
@@ -60,10 +61,13 @@ export { PAUSED_BLOCKED_CATEGORIES };
 // both are legitimate execution outcomes worth recording).
 const isTerminalTaskStatus = (status) => status === 'completed' || status === 'blocked';
 
-// Legacy fields an `updateTask` patch may carry directly (vs nested under
-// `metadata`); they're normalized into `metadata` on write. Listed once so the
-// content-edit detector and the normalizer below can't drift apart.
-const LEGACY_DIRECT_FIELDS = ['context', 'model', 'provider', 'effort', 'app'];
+// Fields an `updateTask` patch may carry directly (vs nested under `metadata`);
+// they're normalized into `metadata` on write. Listed once so the content-edit
+// detector and the normalizer below can't drift apart. `prompt` joined the list
+// with the #4153 split so the task editor can edit the agent-facing payload the
+// same way it edits the human note — deliberately WITHOUT re-classification, so
+// a multi-line note edit can't overwrite the payload (see `splitTaskPromptFields`).
+const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'app'];
 
 // Equality for metadata values across a fresh markdown re-parse: primitives by
 // ===, arrays/objects (reviewers[], screenshots[], …) by JSON since the two
@@ -318,6 +322,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // Build metadata object
     const metadata = {};
     if (taskData.context) metadata.context = taskData.context;
+    // The full agent-facing payload, when the producer names it explicitly
+    // (#4153). Producers that still pass a multi-line `context` are classified
+    // by `splitTaskPromptFields` below, so both call shapes converge.
+    if (taskData.prompt) metadata.prompt = taskData.prompt;
     if (taskData.model) metadata.model = taskData.model;
     if (taskData.provider) metadata.provider = taskData.provider;
     if (taskData.effort) metadata.effort = taskData.effort;
@@ -490,6 +498,18 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
       section: 'pending'
     };
   }
+
+  // Route a multi-line context payload to `metadata.prompt` (#4153). Applied to
+  // BOTH branches — the raw path is how the generator, the reference-watch
+  // analysis, and the repo-study filer queue their pre-built tasks, and they
+  // carry the same kind of multi-thousand-character body the direct-write path
+  // does. One classification, at CREATE only: `updateTask` deliberately leaves
+  // both fields alone, because the task editor's textarea is seeded from the
+  // NOTE and re-classifying a multi-line edit of it would overwrite the task's
+  // real prompt. A producer that already wrote `metadata.prompt` wins over the
+  // inference. See `server/lib/cosTaskPrompt.js` for the full contract.
+  const splitMetadata = splitTaskPromptFields(newTask.metadata);
+  if (splitMetadata !== newTask.metadata) newTask = { ...newTask, metadata: splitMetadata };
 
   // Add task to top or bottom based on position parameter
   if (taskData.position === 'top') {

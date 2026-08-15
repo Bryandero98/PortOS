@@ -1613,7 +1613,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     task.priorityValue = PRIORITY_VALUES.LOW;
     task.id = `sys-${app.id.slice(0, 8)}-${nextType}-${Date.now().toString(36)}`;
 
-    // Move the generator's multi-line prompt into `metadata.context` so it
+    // Move the generator's multi-line prompt into `metadata.prompt` so it
     // survives the COS-TASKS.md round-trip. The on-demand path dispatches the
     // in-memory task immediately (cosEvents.emit('task:ready', task) with the
     // unparsed object), so it never round-trips through the markdown — but
@@ -1623,16 +1623,22 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // `parseTasksMarkdown` only matches the first line of a `- [ ]` block —
     // so any newline in `description` corrupts the file (stray `## Phase`
     // lines become section headers, `- ` lines become new tasks) AND silently
-    // strips the Phase 1–7 instructions on the re-read. `metadata.context` is
+    // strips the Phase 1–7 instructions on the re-read. Task metadata is
     // newline-escaped via `escapeNewlines`/`unescapeNewlines` (JSON-sentinel
     // encoding) so it round-trips losslessly. The agent prompt builder
     // (`cos-agent-briefing.md` + the built-in fallback in
-    // `agentPromptBuilder.js`) renders both `task.description` AND
-    // `task.metadata.context` into the agent's prompt, so the agent still
-    // sees the full Phase 1–7 body.
+    // `agentPromptBuilder.js`) renders both `task.description` AND the task's
+    // context block into the agent's prompt, so the agent still sees the full
+    // Phase 1–7 body.
+    //
+    // The payload lands in `metadata.prompt`, NOT `metadata.context` (#4153):
+    // `context` is the one-line human note, and overloading it made a
+    // multi-thousand-character agent prompt indistinguishable from one. Readers
+    // go through `getTaskPrompt` (server/lib/cosTaskPrompt.js), which falls back
+    // to `metadata.context` for tasks written before the split.
     if (typeof task.description === 'string' && task.description.includes('\n')) {
       task.metadata = task.metadata || {};
-      task.metadata.context = task.description;
+      task.metadata.prompt = task.description;
       task.description = firstLine(task.description);
     }
 

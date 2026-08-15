@@ -72,8 +72,16 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
     setEditingInternal(val);
     onEditingChange?.(val);
   }, [onEditingChange]);
+  // A task written since the #4153 split keeps its full agent-facing payload in
+  // `metadata.prompt` and only a short human note in `metadata.context`. Legacy
+  // tasks (and peers still on the old code) have no `prompt` at all — their
+  // payload is still in `context` — so the Prompt field is offered ONLY when the
+  // task actually carries one, and is omitted from the PATCH otherwise rather
+  // than writing an empty `prompt` key onto every task the user edits.
+  const hasPromptField = typeof task.metadata?.prompt === 'string';
   const [editData, setEditData] = useState({
     description: task.description,
+    prompt: task.metadata?.prompt || '',
     context: task.metadata?.context || '',
     model: task.metadata?.model || '',
     provider: task.metadata?.provider || ''
@@ -172,7 +180,9 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
   };
 
   const handleSave = async () => {
-    const result = await api.updateCosTask(task.id, { ...editData, type: taskSource }, { silent: true }).catch(err => {
+    const { prompt, ...rest } = editData;
+    const payload = hasPromptField ? { ...rest, prompt, type: taskSource } : { ...rest, type: taskSource };
+    const result = await api.updateCosTask(task.id, payload, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });
@@ -187,6 +197,7 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
   // changed something, so an unmodified Cancel still discards with no friction.
   const hasUnsavedEdits =
     editData.description !== task.description ||
+    (hasPromptField && editData.prompt !== (task.metadata?.prompt || '')) ||
     editData.context !== (task.metadata?.context || '') ||
     editData.model !== (task.metadata?.model || '') ||
     editData.provider !== (task.metadata?.provider || '');
@@ -207,6 +218,7 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
     confirmDiscard(() => {
       setEditData({
         description: task.description,
+        prompt: task.metadata?.prompt || '',
         context: task.metadata?.context || '',
         model: task.metadata?.model || '',
         provider: task.metadata?.provider || ''
@@ -339,13 +351,24 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
                 onChange={e => setEditData(d => ({ ...d, description: e.target.value }))}
                 className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
               />
-              {/* A textarea, not an input: for orchestrator tasks the context
-                  holds the task's entire multi-line prompt, which is unreadable
-                  and unnavigable in a single-line field. Bounded rows + its own
+              {/* A textarea, not an input: for orchestrator tasks this holds the
+                  task's entire multi-line prompt, which is unreadable and
+                  unnavigable in a single-line field. Bounded rows + its own
                   scroll so editing a long prompt doesn't stretch the card. */}
+              {hasPromptField && (
+                <textarea
+                  rows={4}
+                  placeholder="Prompt"
+                  aria-label="Task prompt"
+                  value={editData.prompt}
+                  onChange={e => setEditData(d => ({ ...d, prompt: e.target.value }))}
+                  className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm font-mono resize-y overflow-auto"
+                />
+              )}
               <textarea
                 rows={4}
                 placeholder="Context"
+                aria-label="Task context"
                 value={editData.context}
                 onChange={e => setEditData(d => ({ ...d, context: e.target.value }))}
                 className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm font-mono resize-y overflow-auto"
@@ -407,10 +430,18 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
                 text={task.description}
                 className="text-white"
               />
-              {/* The context often carries the task's full prompt (hundreds of
-                  lines for orchestrator tasks), so it gets the same clamp as the
-                  description — an unclamped one turns the pending list into a
-                  wall of text the user has to scroll past. */}
+              {/* The prompt runs to hundreds of lines for orchestrator tasks, so
+                  it gets the same clamp as the description — an unclamped one
+                  turns the pending list into a wall of text the user has to
+                  scroll past. The note below it gets the same treatment, since a
+                  legacy task still carries its payload there. */}
+              {task.metadata?.prompt && (
+                <CollapsibleText
+                  id={`task-prompt-${idScope}-${task.id}`}
+                  text={task.metadata.prompt}
+                  className="text-sm text-gray-500 mt-1"
+                />
+              )}
               {task.metadata?.context && (
                 <CollapsibleText
                   id={`task-context-${idScope}-${task.id}`}

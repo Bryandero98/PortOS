@@ -964,7 +964,11 @@ export const createCosTaskSchema = z.object({
   description: z.string().min(1),
   diagnostics: cosTaskDiagnosticsSchema.optional(),
   priority: z.string().optional(),
+  // `context` is the one-line human note; `prompt` is the full agent-facing
+  // payload (#4153). A producer that passes a multi-line `context` is still
+  // accepted — `cosTaskStore.addTask` routes it to `metadata.prompt`.
   context: z.string().optional(),
+  prompt: z.string().optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
   effort: effortInputSchema,
@@ -1074,6 +1078,7 @@ export const updateCosTaskSchema = z.object({
   priority: z.string().optional(),
   status: z.string().optional(),
   context: z.string().optional(),
+  prompt: z.string().optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
   effort: effortUpdateSchema,

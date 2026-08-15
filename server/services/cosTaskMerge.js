@@ -239,8 +239,10 @@ function pickContentBase(local, remote) {
   const rp = PRIORITY_VALUES[remote.priority] || 0;
   if (lp !== rp) return rp > lp ? remote : local;
   // Same status + priority: break the tie over ALL remaining editable content
-  // (description, approval flags, AND non-claim metadata — `app`, `context`,
-  // `reviewers`, `useWorktree`, … which all affect how a task is spawned) via a
+  // (description, approval flags, AND non-claim metadata — `app`, `prompt`,
+  // `context`, `reviewers`, `useWorktree`, … which all affect how a task is
+  // spawned; `contentSignature` walks every non-claim key, so the #4153
+  // prompt/note split needs no special case here) via a
   // canonical, side-independent signature so a content-only edit converges.
   // Claim metadata is excluded — it's resolved separately by lease in resolveClaim.
   const ls = contentSignature(local);

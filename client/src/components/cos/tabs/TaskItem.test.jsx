@@ -267,6 +267,68 @@ describe('TaskItem long-text clamping', () => {
   });
 });
 
+// #4153 — the agent-facing payload moved to `metadata.prompt`; `metadata.context`
+// is now the one-line human note. A task written before the split has no
+// `prompt` at all, so the field must not appear (and must not be PATCHed) then.
+describe('TaskItem prompt field (#4153)', () => {
+  const split = {
+    ...task,
+    id: 'sys-split',
+    metadata: { prompt: 'the agent body\nsecond line', context: 'a short note' },
+  };
+
+  it('renders the prompt and the note as separate blocks', () => {
+    render(<TaskItem task={split} isSystem onRefresh={vi.fn()} providers={providers} />);
+    expect(screen.getByText(/the agent body/)).toBeInTheDocument();
+    expect(screen.getByText('a short note')).toBeInTheDocument();
+  });
+
+  it('offers a Prompt textarea in edit mode and PATCHes the edit', async () => {
+    const onRefresh = vi.fn();
+    render(<TaskItem task={split} isSystem onRefresh={onRefresh} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    const promptField = screen.getByPlaceholderText('Prompt');
+    expect(promptField.tagName).toBe('TEXTAREA');
+    expect(promptField).toHaveValue('the agent body\nsecond line');
+
+    fireEvent.change(promptField, { target: { value: 'rewritten body' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-split',
+      expect.objectContaining({ prompt: 'rewritten body', context: 'a short note' }),
+      { silent: true }
+    ));
+  });
+
+  it('shows the confirm row when only the prompt field changed', () => {
+    render(<TaskItem task={split} isSystem onRefresh={vi.fn()} providers={providers} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByPlaceholderText('Prompt'), { target: { value: 'edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('group', { name: 'Confirm discard task edits' })).toBeInTheDocument();
+  });
+
+  // Writing `prompt: ''` onto every legacy task the user edits would create an
+  // empty key the markdown store then serializes — absent must stay absent.
+  it('omits the Prompt field, and the prompt key, for a legacy context-only task', async () => {
+    const legacy = { ...task, id: 'sys-legacy', metadata: { context: 'legacy body' } };
+    render(<TaskItem task={legacy} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    expect(screen.queryByPlaceholderText('Prompt')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Context'), { target: { value: 'edited note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    const [, payload] = api.updateCosTask.mock.calls.at(-1);
+    expect(payload).not.toHaveProperty('prompt');
+    expect(payload.context).toBe('edited note');
+  });
+});
+
 describe('TaskItem cancel-edit confirmation (#4037)', () => {
   it('discards immediately when Cancel is clicked with no unsaved changes', () => {
     render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);

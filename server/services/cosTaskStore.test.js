@@ -323,6 +323,74 @@ describe('cosTaskStore.addTask', () => {
     expect(mock.events.some(e => e.name === 'tasks:changed' && e.payload.action === 'added' && e.payload.type === 'user')).toBe(true);
   });
 
+  describe('prompt / context split (#4153)', () => {
+    const AGENT_BODY = 'Improve Example App\n\n## Phase 1\nRead PLAN.md.';
+
+    it('routes a multi-line context payload to metadata.prompt and round-trips it through markdown', async () => {
+      const created = await addTask({ description: 'Improve Example App', id: 'task-split', context: AGENT_BODY }, 'user');
+      expect(created.metadata.prompt).toBe(AGENT_BODY);
+      expect(created.metadata.context).toBeUndefined();
+      const reloaded = await getTaskById('task-split');
+      expect(reloaded.metadata.prompt).toBe(AGENT_BODY);
+      expect(reloaded.metadata.context).toBeUndefined();
+    });
+
+    it('leaves a one-line human note on metadata.context', async () => {
+      const created = await addTask({ description: 'job', id: 'task-note', context: 'Manually triggered job: nightly' }, 'user');
+      expect(created.metadata.context).toBe('Manually triggered job: nightly');
+      expect(created.metadata.prompt).toBeUndefined();
+    });
+
+    it('accepts an explicit prompt alongside a note and never re-classifies it', async () => {
+      const created = await addTask(
+        { description: 'claim', id: 'task-explicit', prompt: AGENT_BODY, context: 'one-line note' },
+        'user'
+      );
+      expect(created.metadata.prompt).toBe(AGENT_BODY);
+      expect(created.metadata.context).toBe('one-line note');
+    });
+
+    // The generator, the reference-watch filer and the repo-study filer all queue
+    // pre-built (raw) tasks carrying the same multi-thousand-character body.
+    it('classifies a raw pre-built task too, without mutating the caller object', async () => {
+      const raw = {
+        id: 'sys-raw',
+        status: 'pending',
+        priority: 'LOW',
+        priorityValue: 1,
+        description: 'Improve Example App',
+        autoApproved: true,
+        metadata: { context: AGENT_BODY, app: 'a1' },
+        section: 'pending',
+      };
+      const created = await addTask(raw, 'internal', { raw: true });
+      expect(created.metadata.prompt).toBe(AGENT_BODY);
+      expect(created.metadata.context).toBeUndefined();
+      expect(created.metadata.app).toBe('a1');
+      expect(raw.metadata.context).toBe(AGENT_BODY); // caller's object untouched
+    });
+
+    // The task editor's textarea is seeded from the NOTE; re-classifying a
+    // multi-line edit of it would silently overwrite the task's real prompt.
+    it('does NOT re-classify on update — a multi-line note edit stays a note', async () => {
+      await addTask({ description: 'claim', id: 'task-edit', prompt: AGENT_BODY, context: 'note' }, 'user');
+      const updated = await updateTask('task-edit', { context: 'note\nsecond line' }, 'user');
+      expect(updated.metadata.context).toBe('note\nsecond line');
+      expect(updated.metadata.prompt).toBe(AGENT_BODY);
+    });
+
+    it('treats prompt as a legacy direct field on update (edit stamp + clear)', async () => {
+      const T0 = Date.parse('2026-08-15T00:00:00.000Z');
+      const T1 = Date.parse('2026-08-15T06:00:00.000Z');
+      await addTask({ description: 'claim', id: 'task-prompt-edit', prompt: AGENT_BODY }, 'user', { now: T0 });
+      const edited = await updateTask('task-prompt-edit', { prompt: 'rewritten\nbody' }, 'user', { now: T1 });
+      expect(edited.metadata.prompt).toBe('rewritten\nbody');
+      expect(edited.metadata.updatedAt).toBe(new Date(T1).toISOString());
+      const cleared = await updateTask('task-prompt-edit', { prompt: '' }, 'user');
+      expect(cleared.metadata.prompt).toBe('');
+    });
+  });
+
   it('persists structured auto-fix diagnostics into metadata and round-trips them through markdown (#2328)', async () => {
     const diagnostics = {
       triggerEvent: 'AI_PROVIDER_EXECUTION_FAILED',

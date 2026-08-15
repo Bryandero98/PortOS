@@ -428,10 +428,13 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
   const description = overrides.description
     || task?.description
     || `Resume ${agentId}`;
-  const { context, provider, model, effort, app } = task?.metadata || {};
+  // `prompt` rides along with `context` (#4153): on a task written by current
+  // code the agent-facing payload lives there, and a replacement queued without
+  // it would run with nothing but the one-line description.
+  const { context, prompt, provider, model, effort, app } = task?.metadata || {};
   const created = await addTask({
     description,
-    context, provider, model, effort, app,
+    context, prompt, provider, model, effort, app,
     ...resumeOverrideMetadata(overrides, context)
   }, taskType);
   if (created?.error) {
@@ -446,9 +449,11 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
  * The dialog's edits as a task-metadata patch. Every field is "unchanged unless
  * supplied" — the dialog seeds its selects from the paused run, so a blank value
  * is absence rather than an intentional clear (CLAUDE.md's absent-vs-empty rule).
- * `context` APPENDS to `existingContext`: the task's own context is what the
+ * `context` APPENDS to `existingContext`: the task's own note is what the
  * original run was given, and dropping it would resume with less information than
- * the run that paused.
+ * the run that paused. It never touches `metadata.prompt` — the dialog edits the
+ * NOTE, and folding a note into the agent-facing payload would make the two
+ * indistinguishable again (#4153).
  */
 function resumeOverrideMetadata({ context, provider, model, effort, app, screenshots }, existingContext) {
   const patch = {};
