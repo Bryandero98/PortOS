@@ -254,8 +254,9 @@ const intOr = (v, fallback) => (Number.isFinite(v) ? Math.floor(v) : fallback);
 // `fixedH` marks a cell whose height the user pinned by dragging it. Absent
 // (the default) means the client sizes the cell to its content and floats it
 // up, using `h` only as the first-paint fallback — which is also what a
-// client too old to know about `fixedH` renders. Emitted only when true so a
-// hand-read layouts file stays terse.
+// client too old to know about `fixedH` renders. Normalized to a plain boolean
+// here for the intermediate entry; `sequenceGrid` is what drops it when false,
+// so a hand-read layouts file stays terse.
 const sanitizeGridItem = (g, validIds) => {
   if (!g || typeof g !== 'object') return null;
   if (typeof g.id !== 'string') return null;
@@ -282,7 +283,8 @@ const sanitizeGridItem = (g, validIds) => {
 //     order-less entries last in file order, which is where those migrations
 //     mean to append.
 // Output is always renumbered 0..n-1, so gaps and duplicates in the input
-// can't survive a read.
+// can't survive a read. This is also the one place the emitted item shape is
+// built, so `fixedH: false` is dropped rather than persisted.
 const sequenceGrid = (entries) => {
   const anyOrder = entries.some((e) => e.order !== null);
   const ranked = entries.map((e, idx) => ({
