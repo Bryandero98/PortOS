@@ -7,7 +7,10 @@ import CollapsibleText from './CollapsibleText';
 const forceOverflow = () =>
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(500);
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe('CollapsibleText', () => {
   it('clamps overflowing text and toggles the clamp on expand', () => {
@@ -156,5 +159,101 @@ describe('CollapsibleText', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show less/ }));
     expect(screen.getByText('flattened preview')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Foreign Heading' })).not.toBeInTheDocument();
+  });
+});
+
+describe('CollapsibleText children (max-height) variant', () => {
+  it('caps overflowing children and lifts the cap on expand', () => {
+    // `line-clamp` applies to a container's own inline content, so it silently
+    // does nothing to block children like rendered markdown. The max-height cap
+    // is the alternative clamp strategy for exactly that content.
+    forceOverflow();
+    render(
+      <CollapsibleText id="c1" maxHeight="3.5rem">
+        <h4>Rendered heading</h4>
+        <p>body</p>
+      </CollapsibleText>
+    );
+
+    const box = document.getElementById('c1');
+    expect(box).toHaveClass('overflow-hidden');
+    expect(box.style.maxHeight).toBe('3.5rem');
+    expect(box).not.toHaveClass('line-clamp-2');
+
+    fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
+    expect(box).not.toHaveClass('overflow-hidden');
+    expect(box.style.maxHeight).toBe('');
+    // Unlike the `expandedContent` swap, the children stay mounted throughout —
+    // expanding only removes the cap.
+    expect(screen.getByRole('heading', { name: 'Rendered heading' })).toBeInTheDocument();
+  });
+
+  it('renders no toggle when the children fit', () => {
+    render(<CollapsibleText id="c2"><p>short</p></CollapsibleText>);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(document.getElementById('c2')).toHaveClass('overflow-hidden');
+  });
+
+  it('wires the toggle to the capped container', () => {
+    forceOverflow();
+    render(<CollapsibleText id="c3"><p>long</p></CollapsibleText>);
+
+    const toggle = screen.getByRole('button');
+    expect(toggle).toHaveAttribute('aria-controls', 'c3');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('forwards a caller className onto the capped container', () => {
+    render(<CollapsibleText id="c4" className="text-sm"><p>hi</p></CollapsibleText>);
+    expect(document.getElementById('c4')).toHaveClass('text-sm', 'break-words');
+  });
+
+  it('prefers children over text so a caller cannot get a silently unclamped preview', () => {
+    render(
+      <CollapsibleText id="c5" text="plain fallback">
+        <p>rich body</p>
+      </CollapsibleText>
+    );
+    expect(screen.getByText('rich body')).toBeInTheDocument();
+    expect(screen.queryByText('plain fallback')).not.toBeInTheDocument();
+  });
+
+  it('observes the uncapped inner wrapper, not just the capped container', () => {
+    // The outer element is height-capped, so growing children never change its
+    // box — a resize callback bound to it alone would never fire and the toggle
+    // would never appear for content that arrives after mount.
+    const observed = [];
+    vi.stubGlobal('ResizeObserver', class {
+      observe(el) { observed.push(el); }
+      disconnect() {}
+    });
+
+    render(<CollapsibleText id="c6"><p>body</p></CollapsibleText>);
+
+    const box = document.getElementById('c6');
+    expect(observed).toContain(box);
+    expect(observed).toContain(box.firstElementChild);
+  });
+
+  it('keeps the toggle when a resize fires against the uncapped container', () => {
+    // Same in-flight-callback race as the line-clamp path: expanding removes the
+    // cap, and a resize notification already in flight would otherwise measure
+    // the now-uncapped element and drop the only way back.
+    let fire;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb) { fire = cb; }
+      observe() {}
+      disconnect() {}
+    });
+    const spy = forceOverflow();
+    render(<CollapsibleText id="c7"><p>long</p></CollapsibleText>);
+
+    fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
+    spy.mockReturnValue(0);
+    act(() => fire());
+
+    expect(screen.getByRole('button', { name: /Show less/ })).toBeInTheDocument();
   });
 });

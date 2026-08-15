@@ -262,3 +262,47 @@ describe('AgentCard kill confirmation (#4034)', () => {
   });
 });
 
+
+describe('AgentCard task description (#4170)', () => {
+  // jsdom reports 0 for both scrollHeight and clientHeight, so nothing measures
+  // as overflowing unless we force it.
+  const forceOverflow = () =>
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(500);
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('caps a long description behind an accessible Show more toggle', async () => {
+    const user = userEvent.setup();
+    forceOverflow();
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={agent} completed />
+      </MemoryRouter>
+    );
+
+    const box = document.getElementById(`agent-desc-${agent.id}`);
+    expect(box).toHaveClass('overflow-hidden');
+
+    // The bespoke implementation this replaced carried no aria wiring at all.
+    const toggle = screen.getByRole('button', { name: /Show more/ });
+    expect(toggle).toHaveAttribute('aria-controls', `agent-desc-${agent.id}`);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(toggle);
+    expect(box).not.toHaveClass('overflow-hidden');
+    expect(screen.getByRole('button', { name: /Show less/ })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('offers no toggle for a description that fits', () => {
+    // The replaced implementation gated on `text.length > 200`, so a 201-char
+    // description that fit in the cap still rendered a no-op "Show more".
+    render(
+      <MemoryRouter>
+        <AgentCard agent={{ ...agent, metadata: { ...agent.metadata, taskDescription: 'x'.repeat(300) } }} completed />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
+  });
+});

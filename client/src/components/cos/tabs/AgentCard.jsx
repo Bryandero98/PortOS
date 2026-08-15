@@ -28,6 +28,7 @@ import * as api from '../../../services/api';
 import OutputBlocks from '../OutputBlocks';
 import MarkdownOutput from '../MarkdownOutput';
 import Modal from '../../ui/Modal';
+import CollapsibleText from '../../ui/CollapsibleText';
 import toast from '../../ui/Toast';
 import { copyToClipboard } from '../../../lib/clipboard';
 import { extractCosTaskType } from '../../../lib/cosTaskType';
@@ -56,30 +57,20 @@ function normalizeDescriptionToMarkdown(text) {
     .trim();
 }
 
-// Truncated, markdown-rendered task description with expand toggle
-function TaskDescription({ text }) {
-  const [descExpanded, setDescExpanded] = useState(false);
+// Markdown-rendered task description, height-clamped behind a Show more toggle.
+// `line-clamp` can't clamp this — MarkdownOutput emits block children — so it
+// uses CollapsibleText's max-height variant, which measures the real overflow
+// instead of guessing from a character count.
+function TaskDescription({ id, text }) {
   const md = useMemo(() => normalizeDescriptionToMarkdown(text), [text]);
-  const isLong = text?.length > 200;
 
   if (!text) return null;
 
   return (
     <div className="mb-2">
-      <div className={`text-sm ${!descExpanded && isLong ? 'max-h-[3.5rem] overflow-hidden relative' : ''}`}>
+      <CollapsibleText id={`agent-desc-${id}`} className="text-sm">
         <MarkdownOutput content={md} />
-        {!descExpanded && isLong && (
-          <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-port-card to-transparent" />
-        )}
-      </div>
-      {isLong && (
-        <button
-          onClick={() => setDescExpanded(v => !v)}
-          className="text-xs text-port-accent hover:text-white transition-colors mt-0.5"
-        >
-          {descExpanded ? 'Show less' : 'Show more'}
-        </button>
-      )}
+      </CollapsibleText>
     </div>
   );
 }
@@ -626,7 +617,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             </span>
           )}
         </div>
-        <TaskDescription text={agent.metadata?.taskDescription || agent.taskId} />
+        <TaskDescription id={agent.id} text={agent.metadata?.taskDescription || agent.taskId} />
 
         {/* JIRA ticket info */}
         {agent.metadata?.jiraTicketId && (
