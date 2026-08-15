@@ -20,6 +20,23 @@
       "replacedByNote": "CollapsibleText.jsx and CollapsibleText.test.jsx on main now remeasure mode changes, count renderable children, and measure overflow live on focus.",
       "was": "Refresh CollapsibleText behavior for content-mode switches, empty child lists, and focus within clipped children.",
       "decidedAt": "2026-08-15T06:05:05Z"
+    },
+    {
+      "branch": "cos/sys-mstr08m7/agent-184bb093",
+      "repoPath": "/Users/adameivy/github.com/atomantic/PortOS",
+      "verdict": "SUPERSEDED",
+      "tip": "708422216e865e10278b2cb414a0382ec8f6e247",
+      "dirtyPaths": [],
+      "collisionPaths": [
+        "server/lib/primaryCheckoutGuard.js",
+        "server/lib/primaryCheckoutGuard.test.js"
+      ],
+      "replacedBy": [
+        "cf7f356a1c693282da5100b9bee40ab83ffd5d61"
+      ],
+      "replacedByNote": "server/lib/primaryCheckoutGuard.js now treats unrelated branch switches with strandedCount === 0 as unattributed instead of failing the run, and server/lib/primaryCheckoutGuard.test.js covers that behavior.",
+      "was": "Stop failing a worktree agent when another branch switch someone else made in the primary checkout left no attributable commits.",
+      "decidedAt": "2026-08-15T06:37:34Z"
     }
   ]
 }
