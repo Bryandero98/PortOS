@@ -489,12 +489,70 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.unattributed).toBe(true);
   });
 
-  it('detects a branch switch even with no new commits', async () => {
+  it('detects a branch switch onto the agent\'s OWN worktree branch, advising checkout not reset', async () => {
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await execGit(['push', 'origin', `main:${agentBranch}`], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // Only the agent parks the shared primary on the agent's own branch, so this
+    // stays a failure even though nothing was stranded to recover — and the
+    // recovery is the benign `git checkout`, with nothing to discard.
+    await execGit(['checkout', '-b', agentBranch, '--track', `origin/${agentBranch}`], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(true);
+    expect(verdict.commitCount).toBe(0);
+    expect(verdict.unpushedCount).toBe(0);
+    expect(verdict.message).toContain(`main → ${agentBranch}`);
+    expect(verdict.suggestedFix).toContain(`git -C ${repo} checkout main`);
+    expect(verdict.suggestedFix).not.toContain('reset --hard');
+  });
+
+  it('does not fail a run for a branch switch it did not make (#4231)', async () => {
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await execGit(['branch', agentBranch, 'origin/main'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // The HUMAN starts a feature branch in the shared primary mid-run and pushes
+    // it, so nothing at all is stranded. This used to skip attribution ENTIRELY
+    // and record the run `success: false` with an escalation to a human, under a
+    // recovery note that contradicted it ("No commits were stranded").
+    await execGit(['checkout', '-b', 'my-feature'], repo);
+    await commit('the human\'s own work');
+    await execGit(['push', '-u', 'origin', 'my-feature'], repo);
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.unpushedCount).toBe(0);
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    // Still surfaced: the next spawn baselines against wherever the primary is.
+    expect(verdict.message).toContain('main → my-feature');
+    expect(verdict.suggestedFix).toBeUndefined();
+  });
+
+  it('does not fail a run for an UNPUSHED branch the human started mid-run (#4231)', async () => {
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await execGit(['branch', agentBranch, 'origin/main'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    // Same shape, no upstream on the new branch — the human's commit IS stranded,
+    // but it is not patch-equivalent to anything on the agent's branch.
+    await execGit(['checkout', '-b', 'my-feature'], repo);
+    await commit('the human\'s own work');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+  });
+
+  it('does not fail a run for a branch switch when it carried no branch at all (#4231)', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     await execGit(['checkout', '-b', 'someone-elses-branch'], repo);
 
-    const verdict = await detectPrimaryCheckoutDrift(baseline);
-    expect(verdict.drifted).toBe(true);
+    // A read-only reasoner never branched, so it cannot have moved the checkout.
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch: null });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
     expect(verdict.commitCount).toBe(0);
     expect(verdict.message).toContain('main → someone-elses-branch');
   });
@@ -536,19 +594,6 @@ describe('detectPrimaryCheckoutDrift', () => {
     expect(verdict.unpushedCount).toBe(1);
     expect(verdict.suggestedFix).toContain('1 commit ');
     expect(verdict.suggestedFix).toContain(`git -C ${repo} reset --hard origin/main`);
-  });
-
-  it('advises checkout, not reset, for a branch switch that stranded nothing', async () => {
-    await addOrigin();
-    await execGit(['push', 'origin', 'main:someone-elses-branch'], repo);
-    const baseline = await capturePrimaryCheckoutState(repo);
-    await execGit(['checkout', '-b', 'someone-elses-branch', '--track', 'origin/someone-elses-branch'], repo);
-
-    const verdict = await detectPrimaryCheckoutDrift(baseline);
-    expect(verdict.drifted).toBe(true);
-    expect(verdict.unpushedCount).toBe(0);
-    expect(verdict.suggestedFix).toContain(`git -C ${repo} checkout main`);
-    expect(verdict.suggestedFix).not.toContain('reset --hard');
   });
 
   it('reports an attributed commit on a branch with no upstream to clear it against', async () => {

@@ -1,0 +1,1 @@
+- Worktree agents no longer fail when another actor switches the shared primary checkout to a different branch without stranding commits.

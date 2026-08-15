@@ -66,9 +66,20 @@
  * warn-logged (unreviewed commits on `main` are worth surfacing) but not failed.
  * The asymmetry is deliberate — a missed branch-jack still leaves a warn log and
  * recoverable commits, while a false failure escalates to a human and dents the
- * task type's success rate. (A checkout left on the WRONG BRANCH with nothing
- * local-only strands no commit to attribute, and still reports its benign
- * `git checkout <branch>` recovery as before — there is nothing to discard.)
+ * task type's success rate.
+ *
+ * A checkout left on the WRONG BRANCH with nothing local-only strands no commit to
+ * attribute, and for a long time that exempted it from the gate entirely: it failed
+ * the run outright, because there was supposedly "nothing to blame on anyone"
+ * (#4231). That inverted the gate — the shape carrying the LEAST evidence of a
+ * branch-jack was the only one never asked to prove authorship. The primary is
+ * shared, and a human running `git checkout -b my-feature` in it is ordinary work,
+ * so it failed every agent alive at that moment, with prose that contradicted
+ * itself: "No commits were stranded" as the recovery for "A worktree agent
+ * committed to the primary". With nothing stranded the only signal left is
+ * WHICH branch it landed on, so the agent's OWN worktree branch still fails (a
+ * shape only the agent produces) and every other branch is `unattributed` —
+ * worth surfacing, since the next spawn baselines against it, but not a failure.
  *
  * Two halves, deliberately split so they can sit on opposite ends of a run:
  * `capturePrimaryCheckoutState` stamps a baseline at spawn time (onto the agent
@@ -521,9 +532,7 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   // have produced them. Attribution runs whenever there is (or should be) a
   // stranded commit — a resolvable positive count, OR an UNRESOLVABLE count
   // (`null`: a pruned baseline or a wedged git), which must fail OPEN rather than
-  // manufacture a failure out of a check that could not run. Only a pure branch
-  // switch that stranded exactly zero commits skips it (nothing to blame on
-  // anyone) and keeps its benign `git checkout` report.
+  // manufacture a failure out of a check that could not run.
   // Prefer the patch-level verdict when there is one; a resolved empty set means
   // nothing is stranded even where the sha count disagrees. Null falls back to the
   // sha count, and a null THERE falls back to the movement count, which is
@@ -531,6 +540,27 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   const strandedCount = strandedByPatch
     ? strandedByPatch.length
     : (unpushedCount === null ? commitCount : unpushedCount);
+
+  // A BARE BRANCH SWITCH — the checkout is parked on a different branch and
+  // stranded exactly nothing (#4231). This used to skip attribution entirely and
+  // fail the run on the theory that there was "nothing to blame on anyone", which
+  // inverted the gate: the shape with the LEAST evidence of a branch-jack was the
+  // only one that never had to prove authorship. The primary is a shared checkout,
+  // and a human running `git checkout -b my-feature` in it is ordinary work — so
+  // every agent alive at that moment was failed, with a recovery note that
+  // contradicted its own escalation ("No commits were stranded" under "A worktree
+  // agent committed to the primary"). agent-8249579a was recorded
+  // `success: false` this way while its PR was merging.
+  //
+  // With nothing stranded there is no commit to attribute by patch-id, so the one
+  // signal left is WHICH branch the checkout landed on. The agent's OWN worktree
+  // branch is a shape only the agent produces, and it stays a failure. Any other
+  // branch is somebody else's business: warn-logged as `unattributed` (the primary
+  // being off `main` still matters — the next spawn baselines against it) but never
+  // a failure, per the fail-open asymmetry in the module header.
+  if (strandedCount === 0 && current.branch !== agentBranch) {
+    return { drifted: false, unattributed: true, baseline, current, commitCount, unpushedCount, message };
+  }
   if (strandedCount === null || strandedCount > 0) {
     const attributed = await isDriftAttributableToAgent(baseline.path, {
       runBase: baseline.head,
@@ -600,7 +630,7 @@ export function formatDriftMessage({ baseline, current, commitCount, baselineRew
 export function formatDriftRecovery({ current, baseline = null, commitCount, unpushedCount = null, strandedCount = null, agentBranch, upstreamRef = null }) {
   if (unpushedCount === 0 && baseline?.branch && baseline.branch !== current.branch) {
     return [
-      `A worktree-isolated agent left the PRIMARY checkout on \`${current.branch}\` instead of \`${baseline.branch}\`.`,
+      `A worktree-isolated agent left the PRIMARY checkout on its own worktree branch \`${current.branch}\` instead of \`${baseline.branch}\`.`,
       `No commits were stranded — \`${current.branch}\` carries nothing its upstream lacks — so restore it with \`git -C ${current.path} checkout ${baseline.branch}\`.`,
     ].join(' ');
   }
