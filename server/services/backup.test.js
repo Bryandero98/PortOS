@@ -858,7 +858,7 @@ describe('restoreSnapshot subdirFilter guard', () => {
       await restore;
 
       expect(spawn.mock.calls[0][0]).toBe('rsync');
-      expect(spawn.mock.calls[0][2]).toEqual({ shell: false });
+      expect(spawn.mock.calls[0][2]).toEqual({ shell: false, windowsHide: true });
     } finally {
       if (previous === undefined) delete process.env.PORTOS_RSYNC;
       else process.env.PORTOS_RSYNC = previous;
