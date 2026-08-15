@@ -244,7 +244,8 @@ export async function spawnDetached(bin, args = [], {
   // back to a normal child process: a real ChildProcess already satisfies the
   // handle contract (pid / stdout / stderr / on('close',code,signal) / kill /
   // exitCode / signalCode), so callers are unaffected. Surviving a pm2 restart
-  // is a POSIX-only guarantee; Windows keeps its prior spawn semantics.
+  // is a POSIX-only guarantee; Windows keeps its prior spawn semantics apart
+  // from `kill`, which is replaced with a tree-kill below.
   if (process.platform === 'win32') {
     const child = spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     // A bare `child.kill()` terminates ONLY the runner. Windows has no process
@@ -261,7 +262,26 @@ export async function spawnDetached(bin, args = [], {
     // gated on it) but exposes Node's own kill, so killProcessTree's POSIX
     // fall-through can never re-enter the override below.
     const treeKillTarget = Object.create(child, { kill: { value: nativeKill } });
+    // `taskkill` terminates the tree OUT OF BAND, so libuv never records an
+    // exit_signal and the child reports `close(1, null)` where Node's own
+    // `kill()` reported `close(null, 'SIGKILL')`. Callers classify on exactly
+    // that signal — videoGen's watchdog-success test keeps a finished .mp4 only
+    // when `signal === 'SIGKILL'`, and `describeSignalDeath` reads it for the
+    // failure reason — so re-stamp the signal we asked for onto the terminal
+    // events, matching both a native kill and the POSIX handle's decoded close.
+    // A concurrent clean exit (code 0) is left alone: the job really did finish.
+    let killSignal = null;
+    const nativeEmit = child.emit.bind(child);
+    child.emit = (event, ...rest) => {
+      if (killSignal && (event === 'close' || event === 'exit') && rest[1] == null && rest[0] !== 0) {
+        child.exitCode = null;
+        child.signalCode = killSignal;
+        return nativeEmit(event, null, killSignal);
+      }
+      return nativeEmit(event, ...rest);
+    };
     child.kill = (signal = 'SIGTERM') => {
+      killSignal = signal;
       child.killed = true;
       killProcessTree(treeKillTarget, signal, { processGroup: true });
       return true;

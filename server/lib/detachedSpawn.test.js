@@ -228,12 +228,25 @@ describe('spawnDetached', () => {
     }
   });
 
+  // A child that runs until a marker file appears, then exits with a code and
+  // NO signal — the shape `taskkill /T /F` produces on Windows, where the kill
+  // happens out of band so libuv records no exit_signal.
+  const spawnWin32Fallback = async () => {
+    const controlDir = await tmpControlDir();
+    const marker = join(controlDir, 'go');
+    const handle = await spawnDetached(
+      'sh',
+      ['-c', 'while [ ! -f "$1" ]; do sleep 0.05; done; exit 1', 'sh', marker],
+      { controlDir }
+    );
+    return { handle, terminate: () => writeFile(marker, '1') };
+  };
+
   it('win32 fallback kill() tree-kills so the runner\'s children die with it', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const controlDir = await tmpControlDir();
-      const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir });
+      const { handle, terminate } = await spawnWin32Fallback();
       const closed = onClose(handle);
       expect(handle.kill('SIGKILL')).toBe(true);
       expect(handle.killed).toBe(true);
@@ -248,9 +261,52 @@ describe('spawnDetached', () => {
       expect(target).toBeInstanceOf(ChildProcess);
       expect(target.pid).toBe(handle.pid);
       expect(target.kill).not.toBe(handle.kill);
-      // killProcessTree is stubbed, so nothing actually died — reap the sleeper.
-      target.kill('SIGKILL');
+      await terminate();
       await closed;
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it('win32 fallback reports the requested signal on close (taskkill kills out of band)', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const { handle, terminate } = await spawnWin32Fallback();
+      const closed = onClose(handle);
+      handle.kill('SIGKILL');
+      // The stubbed tree-kill didn't terminate anything; let the child exit the
+      // way a taskkill'd one does — a plain non-zero code, no signal.
+      await terminate();
+      const { code, signal } = await closed;
+      // Without the re-stamp this is (1, null) and videoGen discards a finished
+      // render as "Exit code 1" instead of honoring the watchdog kill.
+      expect(code).toBeNull();
+      expect(signal).toBe('SIGKILL');
+      expect(handle.exitCode).toBeNull();
+      expect(handle.signalCode).toBe('SIGKILL');
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it('win32 fallback leaves a clean exit alone when a cancel races completion', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const controlDir = await tmpControlDir();
+      const marker = join(controlDir, 'go');
+      const handle = await spawnDetached(
+        'sh',
+        ['-c', 'while [ ! -f "$1" ]; do sleep 0.05; done; exit 0', 'sh', marker],
+        { controlDir }
+      );
+      const closed = onClose(handle);
+      handle.kill('SIGTERM');
+      await writeFile(marker, '1');
+      const { code, signal } = await closed;
+      expect(code).toBe(0);
+      expect(signal).toBeNull();
     } finally {
       restorePlatform();
     }
