@@ -11,11 +11,11 @@
 import { Router } from 'express';
 import { existsSync } from 'fs';
 import { readdir, stat, rm } from 'fs/promises';
-import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { PATHS, formatBytes, dirSize } from '../lib/fileUtils.js';
+import { getHfCacheRoot } from '../lib/hfCache.js';
 import {
   getImageModels,
   getVideoModels,
@@ -24,19 +24,19 @@ import {
   patchUserModelEntry,
   removeUserModelEntry,
 } from '../lib/mediaModels.js';
+import { publicTextEncoderOption, videoTextEncoderOptions } from '../lib/videoTextEncoders.js';
 import { mapWithConcurrency } from '../lib/mapWithConcurrency.js';
 import { emptyToUndefined, validateRequest } from '../lib/validation.js';
 import { ADDABLE_IMAGE_RUNNERS, ADDABLE_VIDEO_RUNTIMES, searchHuggingfaceModels } from '../lib/huggingfaceModel.js';
 import { addModelFromHuggingface } from '../services/mediaModelInstall.js';
 
 const router = Router();
-const HF_DEFAULT_HUB = join(homedir(), '.cache', 'huggingface', 'hub');
 
-// HF stores its hub cache under <HF_HOME>/hub/models--<org>--<name>. Honor
-// HF_HOME if the user set one, otherwise fall back to HF's own default
-// (~/.cache/huggingface/hub).
-const HF_HUB_DIR = () =>
-  process.env.HF_HOME ? join(process.env.HF_HOME, 'hub') : HF_DEFAULT_HUB;
+// Keep the manager's directory listing/deletion root identical to the cache
+// status probes. In particular, HF_HUB_CACHE and XDG_CACHE_HOME are valid
+// Hugging Face overrides too — listing one root while status checks another
+// would make a downloaded encoder impossible to delete from this UI.
+const HF_HUB_DIR = getHfCacheRoot;
 
 // Friendly labels for known models, derived from the media-models registry.
 // HF stores cache dirs as `models--<org>--<name>` (slashes replaced with --).
@@ -121,10 +121,12 @@ router.get('/', asyncHandler(async (_req, res) => {
 
 // GET /registry — the media-model registry as the manager UI needs it:
 // every image + video entry flattened with a `builtIn` flag so the page can
-// render built-ins read-only and user-added entries editable/removable. This
-// is distinct from `GET /` (which reports on-disk HF *cache* usage) — this
-// reports the model *catalog* (what can be picked), including entries whose
-// weights aren't downloaded yet.
+// render built-ins read-only and user-added entries editable/removable. It also
+// includes the prompt-conditioner choices exposed by installed video runtimes
+// (currently MiniMax H3), so their separate multi-GB downloads can be managed
+// alongside the models that consume them. This is distinct from `GET /` (which
+// reports on-disk HF *cache* usage) — it reports what can be picked, including
+// entries whose weights aren't downloaded yet.
 router.get('/registry', asyncHandler(async (_req, res) => {
   const flatten = (list, kind) =>
     (Array.isArray(list) ? list : []).map((m) => ({
@@ -142,14 +144,33 @@ router.get('/registry', asyncHandler(async (_req, res) => {
       source: m.source || null,
       installedAt: m.installedAt || null,
     }));
+  // One encoder can be offered by more than one model. Keep one management row
+  // per encoder while retaining the model ids it is compatible with, rather
+  // than rendering duplicate rows (or arbitrarily hiding one relationship).
+  const videoModels = getVideoModels();
+  const textEncoderMap = new Map();
+  for (const model of videoModels) {
+    for (const option of videoTextEncoderOptions(model)) {
+      const existing = textEncoderMap.get(option.id);
+      if (existing) {
+        existing.modelIds.push(model.id);
+      } else {
+        textEncoderMap.set(option.id, {
+          ...publicTextEncoderOption(option),
+          modelIds: [model.id],
+        });
+      }
+    }
+  }
   // Use the CURRENT platform's video list (getVideoModels) rather than
   // flattening both macos+windows — that matches what's actually pickable here
   // and avoids showing duplicate rows when a shared media-models.json holds the
   // same custom id in both platform lists (macOS+Windows peer). Image entries
   // are single-list.
   res.json({
-    video: flatten(getVideoModels(), 'video'),
+    video: flatten(videoModels, 'video'),
     image: flatten(getImageModels(), 'image'),
+    textEncoders: [...textEncoderMap.values()],
   });
 }));
 
