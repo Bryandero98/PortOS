@@ -1,0 +1,1 @@
+- Layered Intelligence now records a wrong-typed reasoner envelope field (e.g. a non-string `analysis`, an unresolvable `pause`) as `unparseable-response` instead of counting it as a successful `no-proposal` run

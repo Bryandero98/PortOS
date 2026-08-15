@@ -589,20 +589,24 @@ export async function processTaskOutput({ appId, success, payload, agentId } = {
   // envelope only requires `payload` to be an object, and salvageSentinelPayload's
   // lenient extractor can surface a non-envelope object out of prose.
   const envelope = isTaskOutputPayload(payload) ? payload : null
-  const { proposal, pause } = validateReasonerResponse(envelope)
+  const { proposal, invalidFields = [], pause } = validateReasonerResponse(envelope)
 
-  // A reasoner that SUPPLIED a non-null proposal which then failed validation
-  // (missing/unknown scope, no title, unnormalizable slug) did not "look and find
-  // nothing" — it tried to propose and emitted the wrong shape. Both used to land
-  // on `no-proposal` → success. `proposal: null` stays the legitimate empty answer.
-  // Narrow on purpose: validateReasonerResponse is documented to drop invalid
-  // pieces leniently, and this only reclassifies the field that IS the deliverable.
-  const proposalAttemptedButInvalid = envelope != null && !proposal && envelope.proposal != null
+  // A reasoner that SUPPLIED an envelope field which then failed validation did not
+  // "look and find nothing" — it tried to answer and emitted the wrong shape. That
+  // used to land on `no-proposal` → success. Originally (#2727) only the `proposal`
+  // field was reclassified; #4166 extends it to every supplied-but-unusable field
+  // (`{"analysis": 7}`, a `pause` with no resolvable target), since
+  // validateReasonerResponse now reports them all in `invalidFields`. A `null` field
+  // is ABSENT, not malformed, so `proposal: null` stays the legitimate empty answer.
+  // A null envelope never reaches here with a non-empty list (the validator returns
+  // the empty triple for it), and the ternary below short-circuits on it anyway; the
+  // `= []` destructuring default keeps a stubbed validator from throwing.
+  const malformedEnvelope = invalidFields.length > 0
 
   let filedNumber = null
   let filedKey = null
   let filedAction = 'no-op'
-  let reason = envelope == null || proposalAttemptedButInvalid ? 'unparseable-response' : 'no-proposal'
+  let reason = envelope == null || malformedEnvelope ? 'unparseable-response' : 'no-proposal'
   let handedOff = false
   // §4 (#2764): when the deterministic routing gate files-for-human instead of
   // auto-handing-off a trivial+safe proposal, surface WHY on the returned result.

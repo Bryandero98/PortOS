@@ -12,17 +12,29 @@ import { normalizeSlug } from './dedup.js';
 
 /**
  * Validate + normalize the reasoner's JSON. Returns
- * `{ analysis, proposal, pause }` with invalid pieces dropped (never throws):
+ * `{ analysis, proposal, pause, invalidFields }` with invalid pieces dropped
+ * (never throws):
+ *   - `analysis` kept only when it is a string.
  *   - `proposal` kept only when it has a recognized scope + a normalizable slug
  *     + a non-empty title. `slug` is normalized in place.
  *   - `pause` kept only when it has a reason AND a resolvable target: an integer
  *     issue number, or `"this"` WITH a surviving proposal to block on. A
  *     `pause.blockOnIssue: "this"` with a null proposal is invalid → dropped.
+ *
+ * `invalidFields` (#4166) names every envelope key that was SUPPLIED (present and
+ * non-null) but could not be used — the sentinel that separates "the reasoner
+ * emitted the wrong shape" from "the reasoner had nothing to say". Dropping is
+ * still lenient (callers that only want the usable pieces can ignore it), but a
+ * caller deciding whether a run was malformed must not have to re-derive per-field
+ * validity: `{"analysis": 7}` reads as a legitimate empty answer without this.
+ * `null`/`undefined` is ABSENT, not wrong-typed — an explicit `proposal: null` is
+ * the documented "nothing to propose" answer and never lands here.
  */
 export function validateReasonerResponse(parsed) {
-  const out = { analysis: '', proposal: null, pause: null };
+  const out = { analysis: '', proposal: null, pause: null, invalidFields: [] };
   if (!parsed || typeof parsed !== 'object') return out;
   if (typeof parsed.analysis === 'string') out.analysis = parsed.analysis;
+  else if (parsed.analysis != null) out.invalidFields.push('analysis');
 
   const p = parsed.proposal;
   if (p && typeof p === 'object' && !Array.isArray(p)) {
@@ -43,6 +55,7 @@ export function validateReasonerResponse(parsed) {
       };
     }
   }
+  if (p != null && !out.proposal) out.invalidFields.push('proposal');
 
   const pause = parsed.pause;
   if (pause && typeof pause === 'object' && !Array.isArray(pause)) {
@@ -55,6 +68,8 @@ export function validateReasonerResponse(parsed) {
       out.pause = { blockOnIssue: isThis ? 'this' : num, reason };
     }
   }
+  if (pause != null && !out.pause) out.invalidFields.push('pause');
+
   return out;
 }
 
