@@ -820,6 +820,29 @@ K:  o - - - - - o -`;
   });
 
   describe('unsaved-edit guard (#3902)', () => {
+    const settleSongLinksEditor = () => act(async () => {});
+
+    // SongLinksEditor starts its picker loads when edit mode mounts. Drain its
+    // mount promises inside act so their state updates cannot spill into a
+    // later guard case on a slower CI runner (#4226).
+    const renderEditPage = async (path = '/songbook/abc?mode=edit', options) => {
+      const page = renderPage(path, options);
+      await screen.findByLabelText('Content');
+      await settleSongLinksEditor();
+      return page;
+    };
+
+    // Model the picker results arriving after the edit form has rendered, as
+    // they can on a slower CI runner. The helper above must settle both loads.
+    beforeEach(() => {
+      api.listRounds.mockImplementation(() => Promise.resolve().then(() => ({
+        rounds: [{ id: 'r1', title: 'Example Round' }],
+      })));
+      api.listTracks.mockImplementation(() => Promise.resolve().then(() => [
+        { id: 't1', title: 'Example Track' },
+      ]));
+    });
+
     const editSheet = async (value = 'Edited sheet text') => {
       const textarea = await screen.findByLabelText('Content');
       fireEvent.change(textarea, { target: { value } });
@@ -827,8 +850,8 @@ K:  o - - - - - o -`;
     };
 
     it('switches straight to play mode when the draft is clean', async () => {
-      renderPage('/songbook/abc?mode=edit');
-      fireEvent.click(await screen.findByRole('button', { name: 'View' }));
+      await renderEditPage();
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
       // The edit-mode PREVIEW renders the sheet text too, so "we left edit
       // mode" is asserted on the form going away, not on the sheet appearing.
       await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
@@ -837,7 +860,7 @@ K:  o - - - - - o -`;
     });
 
     it('confirms before the View toggle discards unsaved edits', async () => {
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
       // Still in edit mode, with the discard confirm armed.
@@ -855,11 +878,12 @@ K:  o - - - - - o -`;
       await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
       expect((await screen.findByLabelText('Content')).value).toBe(SHEET);
+      await settleSongLinksEditor();
       expect(api.updateSong).not.toHaveBeenCalled();
     });
 
     it('confirms before the All songs link leaves with unsaved edits', async () => {
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('link', { name: /All songs/ }));
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -868,8 +892,8 @@ K:  o - - - - - o -`;
     });
 
     it('treats a retyped capo value as clean (number input round-trip)', async () => {
-      renderPage('/songbook/abc?mode=edit');
-      const capo = await screen.findByLabelText('Capo');
+      await renderEditPage();
+      const capo = screen.getByLabelText('Capo');
       fireEvent.change(capo, { target: { value: '3' } });
       fireEvent.change(capo, { target: { value: '2' } });
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
@@ -879,8 +903,8 @@ K:  o - - - - - o -`;
 
     it('treats tag whitespace and a trailing comma as clean (parseTags round-trip)', async () => {
       api.getSong.mockResolvedValue(song({ tags: ['campfire', 'fingerstyle'] }));
-      renderPage('/songbook/abc?mode=edit');
-      const tags = await screen.findByLabelText('Tags (comma-separated)');
+      await renderEditPage();
+      const tags = screen.getByLabelText('Tags (comma-separated)');
       expect(tags.value).toBe('campfire, fingerstyle');
       // Same saved value — different raw text.
       fireEvent.change(tags, { target: { value: 'campfire,fingerstyle,' } });
@@ -894,7 +918,7 @@ K:  o - - - - - o -`;
       api.updateSong.mockImplementation((_id, patch) => new Promise((resolve) => {
         resolveSave = () => resolve(song({ ...patch }));
       }));
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -911,7 +935,7 @@ K:  o - - - - - o -`;
     });
 
     it('lets a modified click open All songs in a new tab without prompting', async () => {
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       // ⌘/Ctrl-click opens a second tab and leaves this editor standing — there
       // is no unsaved work at risk, so the guard must not swallow it.
@@ -924,7 +948,7 @@ K:  o - - - - - o -`;
     // palette jump, a voice ui_navigate, the browser Back button. They all
     // reach the router the same way, so driving router.navigate covers them.
     it('confirms before a sidebar/⌘K navigation leaves with unsaved edits', async () => {
-      const { router } = renderPage('/songbook/abc?mode=edit');
+      const { router } = await renderEditPage();
       await editSheet();
       await navigate(router, '/songbook');
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -939,7 +963,7 @@ K:  o - - - - - o -`;
     });
 
     it('discards and completes the parked navigation on confirm', async () => {
-      const { router } = renderPage('/songbook/abc?mode=edit');
+      const { router } = await renderEditPage();
       await editSheet();
       await navigate(router, '/songbook');
       fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
@@ -948,7 +972,7 @@ K:  o - - - - - o -`;
     });
 
     it('confirms before the browser Back button leaves with unsaved edits', async () => {
-      const { router } = renderPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
+      const { router } = await renderEditPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
       await editSheet();
       await navigate(router, -1);
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -957,7 +981,7 @@ K:  o - - - - - o -`;
 
     it('lets a navigation through once the draft is saved clean', async () => {
       api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
-      const { router } = renderPage('/songbook/abc?mode=edit');
+      const { router } = await renderEditPage();
       await editSheet();
       await navigate(router, '/songbook');
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -969,7 +993,7 @@ K:  o - - - - - o -`;
 
     it('drops the armed confirm once a save settles the draft', async () => {
       api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
