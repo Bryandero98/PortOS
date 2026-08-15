@@ -569,3 +569,30 @@ describe('isEnginePlatformSupported', () => {
     expect(spawnCalls).toHaveLength(0);
   });
 });
+
+describe('instrumental lyrics fallback', () => {
+  const base = { pythonPath: '/venv/bin/python3', prompt: 'cinematic electronic instrumental', durationSec: 60, outputPath: '/tmp/out.wav' };
+  const lyricsArg = (args) => args[args.indexOf('--lyrics') + 1];
+
+  it('substitutes the documented [instrumental] tag when MiniMax Music 3 gets no lyrics', () => {
+    // The checkpoint's tokenize step raises on an empty string, so an
+    // instrumental prompt used to die with "`lyrics` must be a non-empty
+    // string" after the model had already loaded.
+    for (const lyrics of [undefined, '', '   ', '\n\t ']) {
+      const { args } = buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', lyrics });
+      expect(lyricsArg(args), `lyrics=${JSON.stringify(lyrics)}`).toBe('[instrumental]');
+    }
+  });
+
+  it('never touches lyrics the caller actually supplied', () => {
+    const words = '[verse]\nExample words here';
+    const { args } = buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', lyrics: words });
+    expect(lyricsArg(args)).toBe(words);
+  });
+
+  it('leaves ACE-Step empty — it renders an instrumental from empty lyrics itself', () => {
+    expect(ENGINES.acestep.instrumentalLyrics).toBeUndefined();
+    const { args } = buildSidecarArgs({ ...base, engineId: 'acestep', repo: 'ACE-Step/ACE-Step-v1-3.5B', lyrics: '' });
+    expect(lyricsArg(args)).toBe('');
+  });
+});

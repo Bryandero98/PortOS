@@ -204,6 +204,13 @@ export const ENGINES = Object.freeze({
     installEnv: 'INSTALL_MINIMAX_MUSIC3',
     healthProbe: 'import torch; from diffusers import ModularPipeline',
     lyrics: true,
+    // This checkpoint REJECTS empty lyrics — its tokenize step raises
+    // "`lyrics` must be a non-empty string" before generation starts, so an
+    // instrumental prompt cannot simply omit them. The model card's contract is
+    // a structure-tag-only lyric sheet, and `[Instrumental]` is one of its
+    // documented section tags. Engines without this field (ACE-Step) accept an
+    // empty string and render an instrumental themselves.
+    instrumentalLyrics: '[instrumental]',
     customModels: false,
     fixedModelInstall: true,
     cudaRequired: true,
@@ -345,7 +352,13 @@ export function buildSidecarArgs({ engineId = DEFAULT_ENGINE_ID, pythonPath, scr
     '--output', outputPath,
     '--runtime-dir', runtimeDir ?? engine.runtimeDir,
   ];
-  if (engine.lyrics) args.push('--lyrics', typeof lyrics === 'string' ? lyrics : '');
+  if (engine.lyrics) {
+    // Preserve the caller's string verbatim when they supplied one; substitute
+    // only when it is absent or whitespace, and only for an engine that cannot
+    // accept empty lyrics (see instrumentalLyrics).
+    const provided = typeof lyrics === 'string' ? lyrics : '';
+    args.push('--lyrics', provided.trim() ? provided : (engine.instrumentalLyrics || ''));
+  }
   return { bin: pythonPath, args };
 }
 

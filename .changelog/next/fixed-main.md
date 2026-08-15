@@ -9,3 +9,4 @@
 - Local music runtimes now build on a standalone Python instead of a conda base on Windows, where torch installs but cannot load (WinError 1114); an already-broken venv is rebuilt automatically
 - MusicGen is now shown as unavailable on non-Apple-Silicon machines rather than offering an Install button whose installer skips and reports a confusing failure
 - Installing MiniMax Music 3's model weights now actually downloads — the request was aborted before its first byte and the UI reported the no-op as a successful install
+- Generating an instrumental with MiniMax Music 3 no longer fails — the model requires a lyric sheet, so an empty one is now sent as its documented [instrumental] section tag
