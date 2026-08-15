@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { Children, useState, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
 // Tailwind scans source for literal class names, so the clamp variants must
@@ -92,9 +92,14 @@ export default function CollapsibleText({
   // happen to be blank" — a caller doing `<CollapsibleText text={fallback}>
   // {items.map(…)}</CollapsibleText>` over an empty list must get the text
   // fallback, not an empty capped box with its `text` silently dropped.
-  const hasChildren = Array.isArray(children)
-    ? children.length > 0
-    : children != null && children !== false && children !== '';
+  // Array *length* is the wrong signal: `items.map(i => i.show ? <Row/> : null)`
+  // over an all-hidden list yields `[null]` — length 1, renders nothing.
+  // `Children.toArray` drops exactly those non-rendering placeholders (`null`,
+  // `undefined`, booleans) and flattens nested arrays; empty/whitespace strings
+  // survive it, so they're filtered here too.
+  const hasChildren = Children.toArray(children).some(
+    child => typeof child !== 'string' || child.trim() !== ''
+  );
 
   useEffect(() => {
     if (expanded) return;

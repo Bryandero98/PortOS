@@ -260,6 +260,27 @@ describe('CollapsibleText children (max-height) variant', () => {
     expect(document.getElementById('c9')).toHaveClass('line-clamp-2');
   });
 
+  it('treats a list of non-rendering children as no children', () => {
+    // `items.map(i => i.show ? <Row/> : null)` over an all-hidden list yields
+    // `[null]` — length 1, renders nothing. Counting array length would take the
+    // children path and drop `text` into an empty capped box.
+    render(
+      <CollapsibleText id="c9b" text="plain fallback">{[null, false, undefined, '  ']}</CollapsibleText>
+    );
+    expect(screen.getByText('plain fallback')).toBeInTheDocument();
+    expect(document.getElementById('c9b')).toHaveClass('line-clamp-2');
+  });
+
+  it('takes the children path when a list renders even one child', () => {
+    forceOverflow();
+    render(
+      <CollapsibleText id="c9c" text="plain fallback">{[null, <p key="a">real</p>]}</CollapsibleText>
+    );
+    expect(screen.getByText('real')).toBeInTheDocument();
+    expect(screen.queryByText('plain fallback')).not.toBeInTheDocument();
+    expect(document.getElementById('c9c')).not.toHaveClass('line-clamp-2');
+  });
+
   it('expands when focus lands inside the capped region', () => {
     // The cap is a scroll container with no visible scrollbar. Tabbing to a link
     // below it would scroll the preview to reveal the target with no way back,
