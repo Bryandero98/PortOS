@@ -375,8 +375,9 @@ export const deleteLora = (filename, options = {}) => request(`/image-video/mode
 
 // Media-model REGISTRY (the catalog of pickable image/video base models,
 // distinct from listCachedModels which reports on-disk HF cache usage). Returns
-// `{ video: [...], image: [...] }` with a `builtIn` flag per entry so the
-// manager renders built-ins read-only and user-added entries editable.
+// `{ video: [...], image: [...], textEncoders: [...] }`, each with a `builtIn`
+// flag. Text encoders also identify the compatible video-model ids so the
+// manager can install/delete their separate prompt-conditioner pulls.
 export const listMediaModelRegistry = () => request('/image-video/models/registry');
 
 // Search the HuggingFace Hub for candidate base-model repos. `pipeline` scopes

@@ -8,6 +8,7 @@ import { errorMiddleware, ServerError } from '../lib/errorHandler.js';
 // live HuggingFace fetch or on-disk registry write.
 const VIDEO_LIST = [
   { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Q4', repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3 },
+  { id: 'minimax_h3_8bit', name: 'MiniMax H3', repo: 'pipenetwork/MiniMax-H3-MLX-8bit', runtime: 'minimax_h3', steps: 9, guidance: 0 },
   { id: 'hf-mine', name: 'Mine', repo: 'me/mine', runtime: 'ltx2', steps: 8, guidance: 3, source: 'user' },
 ];
 const IMAGE_LIST = [
@@ -35,6 +36,25 @@ vi.mock('../services/mediaModelInstall.js', () => ({
   })),
 }));
 
+const H3_TEXT_ENCODERS = [
+  { id: 'stock', label: 'Stock — MiniMax H3 Qwen3-VL-32B', builtIn: true },
+  {
+    id: 'heretic-bf16', label: 'Ultra-Heretic', repo: 'example/ultra-heretic',
+    description: 'Alternative prompt conditioner', sizeBytes: 51_000_000_000,
+  },
+];
+vi.mock('../lib/videoTextEncoders.js', () => ({
+  videoTextEncoderOptions: (model) => model?.runtime === 'minimax_h3' ? H3_TEXT_ENCODERS : [],
+  publicTextEncoderOption: (entry) => ({
+    id: entry.id,
+    label: entry.label,
+    description: entry.description,
+    builtIn: !!entry.builtIn,
+    ...(entry.repo ? { repo: entry.repo } : {}),
+    ...(entry.sizeBytes ? { sizeBytes: entry.sizeBytes } : {}),
+  }),
+}));
+
 // Avoid touching the real HF cache dir in GET / (not under test here).
 vi.mock('../lib/fileUtils.js', async (orig) => {
   const actual = await orig();
@@ -59,12 +79,24 @@ describe('GET /registry', () => {
   it('flattens video + image entries with a builtIn flag', async () => {
     const res = await request(makeApp()).get('/api/image-video/models/registry');
     expect(res.status).toBe(200);
-    expect(res.body.video).toHaveLength(2);
+    expect(res.body.video).toHaveLength(3);
     expect(res.body.image).toHaveLength(1);
     const builtIn = res.body.video.find((m) => m.id === 'ltx23_distilled_q4');
     const user = res.body.video.find((m) => m.id === 'hf-mine');
     expect(builtIn.builtIn).toBe(true);
     expect(user.builtIn).toBe(false);
+  });
+
+  it('includes the current platform\'s MiniMax H3 text-encoder choices once each', async () => {
+    const res = await request(makeApp()).get('/api/image-video/models/registry');
+    expect(res.status).toBe(200);
+    expect(res.body.textEncoders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'stock', builtIn: true, modelIds: ['minimax_h3_8bit'] }),
+      expect.objectContaining({
+        id: 'heretic-bf16', repo: 'example/ultra-heretic', sizeBytes: 51_000_000_000,
+        modelIds: ['minimax_h3_8bit'],
+      }),
+    ]));
   });
 });
 

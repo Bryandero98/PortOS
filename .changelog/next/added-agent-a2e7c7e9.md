@@ -1,0 +1,1 @@
+- Manage MiniMax H3 text encoder downloads in Media Models
