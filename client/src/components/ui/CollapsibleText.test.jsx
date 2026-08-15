@@ -7,7 +7,10 @@ import CollapsibleText from './CollapsibleText';
 const forceOverflow = () =>
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(500);
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe('CollapsibleText', () => {
   it('clamps overflowing text and toggles the clamp on expand', () => {

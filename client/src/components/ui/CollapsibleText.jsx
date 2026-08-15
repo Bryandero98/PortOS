@@ -84,6 +84,7 @@ export default function CollapsibleText({
   const [isOverflowing, setIsOverflowing] = useState(false);
   const ref = useRef(null);
   const innerRef = useRef(null);
+  const hasChildren = children != null && children !== false;
 
   useEffect(() => {
     if (expanded) return;
@@ -96,11 +97,9 @@ export default function CollapsibleText({
     observer.observe(el);
     if (innerRef.current) observer.observe(innerRef.current);
     return () => observer.disconnect();
-  }, [text, expanded]);
+  }, [text, hasChildren, expanded]);
 
   const clamp = CLAMP_CLASS[lines] || CLAMP_CLASS[2];
-  const hasChildren = children != null && children !== false;
-
   const renderContent = () => {
     if (hasChildren) {
       return (
