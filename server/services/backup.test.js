@@ -1238,7 +1238,7 @@ describe('runBackup lifecycle', () => {
     // --- rsync invocation -------------------------------------------------
     const [bin, args, opts] = spawn.mock.calls[0];
     expect(bin).toBe('rsync');
-    expect(opts).toEqual({ shell: false });
+    expect(opts).toEqual({ shell: false, windowsHide: true });
     expect(args.slice(0, 2)).toEqual(['--archive', '--itemize-changes']);
     // Source is PATHS.data with a trailing slash (copy contents, not the dir);
     // destination is the snapshot's data/ subdir.
