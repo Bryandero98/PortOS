@@ -21,6 +21,23 @@ import {
   textEncoderIdFromRecord,
 } from '../lib/videoGenParams.js';
 
+// A Remix is an editing starting point. A fixed sampler profile (for example,
+// MiniMax H3) cannot honor a negative prompt, steps, or CFG override, so
+// restoring it as the active model leaves the very values Remix just loaded
+// trapped behind disabled inputs. Prefer an editable text-to-video model in
+// that case; the source model stays available in the picker for a faithful
+// re-render.
+const hasEditableRemixControls = (model) => (
+  model?.samplerLocked !== true && model?.supportsNegativePrompt !== false
+);
+
+const editableRemixModel = (models, defaultModelId) => {
+  const candidates = models.filter((model) => (
+    isModelAllowedForMode(model, 'text') && hasEditableRemixControls(model)
+  ));
+  return candidates.find((model) => model.id === defaultModelId) || candidates[0] || null;
+};
+
 /**
  * VideoGen form state + request shaping (issue #3291).
  *
@@ -58,6 +75,14 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   const [negativePrompt, setNegativePrompt] = useState(incomingNegativePrompt || '');
   const [stylePreset, setStylePreset] = useState(null);
   const [modelId, setModelId] = useState('');
+  // Source model awaiting the catalog load. Both cross-page and in-page Remix
+  // arrive before/after models independently, so this state gives them one
+  // reconciliation path once the model capabilities are known. Recorded
+  // model-specific conditioning (a substitute text encoder or LoRAs) cannot
+  // survive a model swap, so it explicitly keeps that source model selected
+  // for a faithful remix.
+  const [remixSourceModel, setRemixSourceModel] = useState(null);
+  const [remixModelFallback, setRemixModelFallback] = useState(null);
   const [width, setWidth] = useState(768);
   const [height, setHeight] = useState(512);
   // Set once the size has been chosen deliberately — the user picking a preset,
@@ -200,7 +225,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     const present = remixGateKeys.filter((k) => searchParams.get(k) != null);
     if (present.length === 0) return;
     const get = (k) => searchParams.get(k);
-    if (get('modelId')) setModelId(get('modelId'));
+    if (get('modelId')) {
+      setModelId(get('modelId'));
+      setRemixSourceModel({ id: get('modelId'), preserveConditioning: false });
+    }
     const nf = Number(get('numFrames'));
     if (Number.isFinite(nf) && nf > 0) setNumFrames(nf);
     const f = Number(get('fps'));
@@ -396,6 +424,32 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
 
   const currentModel = models.find((m) => m.id === modelId);
 
+  // A source model can reach this hook either through a URL handoff before
+  // /status has populated `models`, or from the in-page gallery after it has.
+  // Resolve both cases here. The fallback is deliberately limited to models
+  // that can run a text remix and expose all restored prompt/sampler controls;
+  // if no such model is installed we leave the source selected rather than
+  // silently changing a faithful re-render.
+  useEffect(() => {
+    if (!remixSourceModel || models.length === 0) return;
+    const source = models.find((model) => model.id === remixSourceModel.id);
+    if (source && !remixSourceModel.preserveConditioning && !hasEditableRemixControls(source)) {
+      const target = editableRemixModel(models, status?.defaultModel);
+      if (target) {
+        setModelId(target.id);
+        setRemixModelFallback({
+          sourceName: source.name || source.id,
+          targetName: target.name || target.id,
+          samplerLocked: source.samplerLocked === true,
+          negativePromptUnsupported: source.supportsNegativePrompt === false,
+        });
+      }
+    } else {
+      setRemixModelFallback(null);
+    }
+    setRemixSourceModel(null);
+  }, [remixSourceModel, models, status?.defaultModel]);
+
   // Until the user deliberately chooses a size, model changes carry their own
   // native default canvas. This is material for H3: the shared 768x512 default
   // is an off-distribution wiring-test size, while its trained 16:9 canvas is
@@ -559,7 +613,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // Switching model drops the sampler overrides — steps/guidanceScale are
   // per-model defaults, and carrying one model's numbers onto another is
   // usually wrong.
-  const handleModelChange = applyModelSelection;
+  const handleModelChange = (nextId) => {
+    setRemixSourceModel(null);
+    setRemixModelFallback(null);
+    applyModelSelection(nextId);
+  };
 
   const dropSourceImageParam = () => {
     if (!incomingSourceImage) return;
@@ -843,12 +901,16 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   };
 
   // Remix a prior render: hand all its params back into the form so the user
-  // can iterate (tweak the prompt, swap seeds, etc.) without re-typing.
+  // can iterate (tweak the prompt, sampler, seed, etc.) without re-typing.
+  // Fixed-profile sources reconcile to an editable compatible model above;
+  // otherwise the original model remains selected for a faithful re-render.
   // Mirrors ImageGen.handleRemix — in-page state set so the form jumps to
   // the new values without a navigation. The `item` is the raw video sidecar
   // (not the normalized MediaPreview shape).
-  const applyRemix = (item) => {
+  const applyRemix = (item, { preferEditableModel = true } = {}) => {
     if (!item) return;
+    setRemixSourceModel(null);
+    setRemixModelFallback(null);
     setStylePreset(null);
     // prompt: always set explicitly. Legacy entries can be missing `prompt`
     // (normalizeVideo surfaces them as '(no prompt)') — clear the form instead
@@ -866,7 +928,17 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // (race on initial mount), this avoids dropping the value silently — the
     // post-load validation effect (`Validate modelId once models are loaded`)
     // will fall back to defaultModel if the id doesn't end up in the catalog.
-    if (item.modelId) setModelId(item.modelId);
+    if (item.modelId) {
+      setModelId(item.modelId);
+      setRemixSourceModel(preferEditableModel
+        ? {
+          id: item.modelId,
+          preserveConditioning: !!item.textEncoderId
+            || (Array.isArray(item.loraFilenames) && item.loraFilenames.length > 0),
+        }
+        : null);
+      if (!preferEditableModel) setRemixModelFallback(null);
+    }
     if (item.width) { setWidth(item.width); sizeManuallySetRef.current = true; }
     if (item.height) { setHeight(item.height); sizeManuallySetRef.current = true; }
     if (item.numFrames) setNumFrames(item.numFrames);
@@ -962,12 +1034,14 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // press Generate, so no provider call fires off a gallery click.
   const applyFinish = (item, deliveryModelId) => {
     if (!item || !deliveryModelId) return;
-    applyRemix(item);
+    applyRemix(item, { preferEditableModel: false });
     // Force the local backend: the delivery model is a local registry entry, so
     // finishing while the form happens to be on the Grok backend would leave
     // `isGrok` true and submit a Grok payload that ignores the model entirely.
     setBackend('local');
     setModelId(deliveryModelId);
+    setRemixSourceModel(null);
+    setRemixModelFallback(null);
     setSteps('');
     setGuidanceScale('');
   };
@@ -1257,6 +1331,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     prompt, setPrompt,
     negativePrompt, setNegativePrompt,
     stylePreset, setStylePreset,
+    remixModelFallback,
     // Model
     modelId, handleModelChange, currentModel, visibleModels,
     loraFamily, videoLoras, loraUnavailableHint,
