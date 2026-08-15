@@ -48,6 +48,7 @@ import {
 import { getCudaCapability } from '../../lib/cudaCapability.js';
 import { inspectModelCache } from '../../lib/hfCache.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { stripMarkdownEmphasis } from '../../lib/markdownText.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
 
 const execFileAsync = promisify(execFile);
@@ -245,7 +246,10 @@ export const ENGINES = Object.freeze({
     // a structure-tag-only lyric sheet, and `[Instrumental]` is one of its
     // documented section tags. Engines without this field (ACE-Step) accept an
     // empty string and render an instrumental themselves.
-    instrumentalLyrics: '[instrumental]',
+    //
+    // The sheet is built per-render rather than fixed, because `audio_duration`
+    // is only a CEILING for this engine — see buildMinimaxInstrumentalLyrics.
+    instrumentalLyrics: buildMinimaxInstrumentalLyrics,
     customModels: false,
     fixedModelInstall: true,
     cudaRequired: true,
@@ -367,6 +371,45 @@ export function clampDuration(durationSec, engineId = DEFAULT_ENGINE_ID) {
   return Math.max(engine.minDurationSec, Math.min(engine.maxDurationSec, n));
 }
 
+// Section tags for a MiniMax Music 3 instrumental body, cycled to pad the sheet
+// out. Restricted to the tags the model card documents, and to the ones that
+// don't imply a vocal line ([verse]/[chorus] would) — an instrumental render
+// should not coax the model into singing.
+const MINIMAX_INSTRUMENTAL_BODY = Object.freeze(['instrumental', 'bridge', 'instrumental', 'solo']);
+// Roughly how much audio one body section buys. Deliberately pessimistic:
+// `audio_duration` still truncates hard at the requested length, so an
+// over-provisioned sheet costs nothing while an under-provisioned one is the
+// bug this exists to fix.
+const MINIMAX_SEC_PER_SECTION = 20;
+const MINIMAX_MAX_BODY_SECTIONS = 12;
+
+/**
+ * Build MiniMax Music 3's structure-tag lyric sheet for an instrumental render,
+ * sized to the requested duration.
+ *
+ * MiniMax Music 3 treats `audio_duration` as an UPPER BOUND, not a target: its
+ * global LLM emits `<|audio_end|>` whenever it decides the piece is finished
+ * and the autoregressive loop breaks there (see the diffusers
+ * `MiniMaxMusic3AutoregressiveStep` — "The language model may stop earlier").
+ * What actually paces the song is the lyric sheet's section tags. A one-tag
+ * sheet is one section long, so a 60s request came back at 25s. Giving
+ * the model a section count proportionate to the ask is the only lever the
+ * architecture exposes — and per the model card, tags are "generative control
+ * rather than strict symbolic guarantees", so this raises the expected length
+ * without promising it.
+ */
+export function buildMinimaxInstrumentalLyrics(durationSec) {
+  const seconds = clampDuration(durationSec, 'minimax-music3');
+  // The intro and outro carry their own runtime, so only the remainder needs
+  // body sections. At least one body section always survives the floor.
+  const bodyCount = Math.min(
+    MINIMAX_MAX_BODY_SECTIONS,
+    Math.max(1, Math.ceil((seconds - MINIMAX_SEC_PER_SECTION) / MINIMAX_SEC_PER_SECTION)),
+  );
+  const body = Array.from({ length: bodyCount }, (_, i) => MINIMAX_INSTRUMENTAL_BODY[i % MINIMAX_INSTRUMENTAL_BODY.length]);
+  return ['intro', ...body, 'outro'].map((tag) => `[${tag}]`).join('\n');
+}
+
 /**
  * Build the `{ bin, args }` for a backend's sidecar. Pure — unit-tested without
  * spawning Python. All sidecars share the same base flag contract
@@ -378,20 +421,29 @@ export function clampDuration(durationSec, engineId = DEFAULT_ENGINE_ID) {
  */
 export function buildSidecarArgs({ engineId = DEFAULT_ENGINE_ID, pythonPath, scriptPath, runtimeDir, repo, prompt, lyrics, durationSec, outputPath }) {
   const engine = getEngine(engineId);
+  const seconds = clampDuration(durationSec, engine.id);
   const args = [
     scriptPath ?? engine.scriptPath,
     '--model', repo,
-    '--text', prompt,
-    '--duration', String(clampDuration(durationSec, engine.id)),
+    // Prompts are authored in a plain textarea that many users type markdown
+    // into out of habit. Every backend's text encoder tokenizes `**` and `_`
+    // as literal content, so the emphasis markers become conditioning noise —
+    // strip them and keep the words.
+    '--text', stripMarkdownEmphasis(prompt).trim(),
+    '--duration', String(seconds),
     '--output', outputPath,
     '--runtime-dir', runtimeDir ?? engine.runtimeDir,
   ];
   if (engine.lyrics) {
     // Preserve the caller's string verbatim when they supplied one; substitute
     // only when it is absent or whitespace, and only for an engine that cannot
-    // accept empty lyrics (see instrumentalLyrics).
+    // accept empty lyrics (see instrumentalLyrics). The substitute may be a
+    // builder that sizes the sheet to the render length.
     const provided = typeof lyrics === 'string' ? lyrics : '';
-    args.push('--lyrics', provided.trim() ? provided : (engine.instrumentalLyrics || ''));
+    const fallback = typeof engine.instrumentalLyrics === 'function'
+      ? engine.instrumentalLyrics(seconds)
+      : (engine.instrumentalLyrics || '');
+    args.push('--lyrics', provided.trim() ? provided : fallback);
   }
   return { bin: pythonPath, args };
 }
