@@ -312,6 +312,40 @@ describe('spawnDetached', () => {
     }
   });
 
+  it('win32 fallback refuses to tree-kill a child that already exited', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      const { handle, terminate } = await spawnWin32Fallback();
+      const closed = onClose(handle);
+      await terminate();
+      await closed;
+      // Windows recycles PIDs, so a late escalation must not taskkill whatever
+      // inherited the number.
+      killProcessTree.mockClear();
+      expect(handle.kill('SIGKILL')).toBe(false);
+      expect(killProcessTree).not.toHaveBeenCalled();
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it('win32 fallback treats signal 0 as an existence probe, not a kill', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const { handle, terminate } = await spawnWin32Fallback();
+      const closed = onClose(handle);
+      // Node's own kill(0) answers the probe (and sets `killed`, as it always
+      // has); what matters is that no taskkill went out.
+      expect(handle.kill(0)).toBe(true);
+      expect(killProcessTree).not.toHaveBeenCalled();
+      await terminate();
+      await closed;
+    } finally {
+      restorePlatform();
+    }
+  });
+
   it.runIf(IS_POSIX)('leaves the POSIX path on its own pid/group signalling (no tree-kill)', async () => {
     killProcessTree.mockClear();
     const controlDir = await tmpControlDir();

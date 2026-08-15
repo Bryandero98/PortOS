@@ -270,6 +270,12 @@ export async function spawnDetached(bin, args = [], {
     // failure reason — so re-stamp the signal we asked for onto the terminal
     // events, matching both a native kill and the POSIX handle's decoded close.
     // A concurrent clean exit (code 0) is left alone: the job really did finish.
+    // The stamp records the signal we ASKED for without waiting to confirm the
+    // tree died from it — exactly what Node's own `kill()` does (libuv stamps
+    // exit_signal at request time), and the guard above already refuses to fire
+    // at an exited child, so the only ambiguity left is a nonzero exit racing
+    // our kill by microseconds. Both readings mean "cancelled", so no async
+    // taskkill-completion plumbing is warranted here.
     let killSignal = null;
     const nativeEmit = child.emit.bind(child);
     child.emit = (event, ...rest) => {
@@ -281,6 +287,15 @@ export async function spawnDetached(bin, args = [], {
       return nativeEmit(event, ...rest);
     };
     child.kill = (signal = 'SIGTERM') => {
+      // `taskkill /T /F` is destructive and Windows recycles PIDs freely, so it
+      // must never fire at a child that already exited — a late escalation
+      // (killWithEscalation's 8s SIGKILL) would tree-kill whatever inherited the
+      // number. Node's own kill is safe there because it holds a process HANDLE,
+      // not a pid; taskkill only gets the pid.
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) return false;
+      // Signal 0 is an existence PROBE, not a kill — hand it to Node so callers
+      // keep that meaning instead of force-killing the tree.
+      if (signal === 0 || signal === '0') return nativeKill(signal);
       killSignal = signal;
       child.killed = true;
       killProcessTree(treeKillTarget, signal, { processGroup: true });
