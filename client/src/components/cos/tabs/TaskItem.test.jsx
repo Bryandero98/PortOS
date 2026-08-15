@@ -327,6 +327,26 @@ describe('TaskItem prompt field (#4153)', () => {
     expect(payload).not.toHaveProperty('prompt');
     expect(payload.context).toBe('edited note');
   });
+
+  it('refreshes the prompt draft when a mounted legacy task gains split metadata', async () => {
+    const legacy = { ...task, id: 'sys-refresh', metadata: { context: 'legacy body' } };
+    const splitTask = {
+      ...legacy,
+      metadata: { prompt: 'the refreshed body\nsecond line', context: 'a short note' },
+    };
+    const { rerender } = render(<TaskItem task={legacy} isSystem onRefresh={vi.fn()} providers={providers} />);
+    rerender(<TaskItem task={splitTask} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    await waitFor(() => expect(screen.getByPlaceholderText('Prompt')).toHaveValue('the refreshed body\nsecond line'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-refresh',
+      expect.objectContaining({ prompt: 'the refreshed body\nsecond line', context: 'a short note' }),
+      { silent: true }
+    ));
+  });
 });
 
 describe('TaskItem cancel-edit confirmation (#4037)', () => {

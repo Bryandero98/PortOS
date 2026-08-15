@@ -79,10 +79,14 @@ export function getTaskContextNote(task) {
  * neither. Every prompt-building path uses this so the split is invisible to the
  * templates (including the ones an install has customized): a legacy task
  * renders exactly what it rendered before, and a split task renders its payload
- * followed by its note.
+ * followed by its note. A queue-round-tripped task may already have folded the
+ * prompt into `description`; in that shape, omit the duplicate prompt here while
+ * retaining any separate note.
  */
 export function taskContextBlock(task) {
-  const parts = [getTaskPrompt(task), getTaskContextNote(task)]
+  const prompt = getTaskPrompt(task);
+  const promptIsAlreadyDescription = typeof prompt === 'string' && task?.description === prompt;
+  const parts = [promptIsAlreadyDescription ? null : prompt, getTaskContextNote(task)]
     .filter(v => typeof v === 'string' && v.trim() !== '');
   return parts.length ? parts.join('\n\n') : null;
 }

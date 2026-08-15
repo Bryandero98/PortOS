@@ -1,0 +1,1 @@
+- CoS tasks preserve cleared prompts, keep customized prompt templates supplied, and retain prompt edits after queue refreshes.

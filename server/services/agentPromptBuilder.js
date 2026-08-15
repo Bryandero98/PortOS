@@ -389,10 +389,12 @@ function resolveTaskFileRef(ref) {
  * generated/scheduled/system task that round-trips through the queue.
  *
  * When the split signature is present (the payload's first non-empty line
- * equals `description`), fold it back into `description` and drop the redundant
- * metadata key so the prompt renders once, as one clean body with no spurious
- * header. A genuinely-separate user-supplied note (first line differs from
- * `description`) is left untouched.
+ * equals `description`), fold it back into `description` so the prompt renders
+ * once, as one clean body with no spurious header. The split `prompt` key stays
+ * available to customized briefing templates; the legacy `context` payload key
+ * is dropped because it is already represented by `description`. A genuinely-
+ * separate user-supplied note (first line differs from `description`) is left
+ * untouched.
  *
  * Pure and idempotent: returns the same task when nothing matched, otherwise a
  * shallow clone (never mutates the caller's task, so the stored task keeps its
@@ -404,14 +406,15 @@ export function reconcileSplitContext(task) {
   // `prompt` first: that is where the payload lives on a task written by
   // current code (#4153). `context` stays in the loop so a task written before
   // the split — or synced from a peer still on the old code — reconciles too.
-  // Only the key that CARRIED the payload is dropped, so a split task's short
-  // `metadata.context` note survives and still renders.
+  // Keep the new prompt key available to customized templates. Drop only the
+  // legacy context key, whose payload is already represented by description.
   for (const key of [TASK_PROMPT_KEY, TASK_CONTEXT_KEY]) {
     const payload = task.metadata?.[key];
     if (typeof payload !== 'string') continue;
     // Mirror firstLine() in cosTaskStore.js: first non-empty, trimmed line.
     const firstNonEmpty = payload.split('\n').map(l => l.trim()).find(Boolean) || '';
     if (firstNonEmpty !== description) continue;
+    if (key === TASK_PROMPT_KEY) return { ...task, description: payload };
     const { [key]: _dropped, ...restMeta } = task.metadata;
     return { ...task, description: payload, metadata: restMeta };
   }

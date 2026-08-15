@@ -147,7 +147,7 @@ describe('reconcileSplitContext', () => {
     const task = { description: 'Line one is the title', metadata: { prompt: body, context: 'a note', app: 'comics' } };
     const out = reconcileSplitContext(task);
     expect(out.description).toBe(body);
-    expect(out.metadata.prompt).toBeUndefined();
+    expect(out.metadata.prompt).toBe(body); // customized templates can still address the raw field
     expect(out.metadata.context).toBe('a note'); // the note is NOT the payload
     expect(out.metadata.app).toBe('comics');
   });
@@ -1634,6 +1634,20 @@ describe('buildAgentPrompt — provider type routing', () => {
     expect(context.task.metadata.context).toBe('the agent body\nsecond line\n\na short note');
     // The raw field still travels for a custom template that addresses it.
     expect(context.task.metadata.prompt).toBe('the agent body\nsecond line');
+  });
+
+  it('keeps a queue-path prompt available to a customized briefing template', async () => {
+    vi.mocked(buildPrompt).mockClear();
+    await buildAgentPrompt(
+      makeTask({
+        description: 'the agent body',
+        metadata: { prompt: 'the agent body\nsecond line', context: 'a short note' },
+      }),
+      {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+    const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+    expect(context.task.description).toBe('the agent body\nsecond line');
+    expect(context.task.metadata.prompt).toBe('the agent body\nsecond line');
+    expect(context.task.metadata.context).toBe('a short note');
   });
 
   it('leaves a legacy context-only task untouched on the briefing template path', async () => {

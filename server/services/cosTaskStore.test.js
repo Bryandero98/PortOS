@@ -350,6 +350,19 @@ describe('cosTaskStore.addTask', () => {
       expect(created.metadata.context).toBe('one-line note');
     });
 
+    it('preserves an explicitly cleared prompt alongside a note', async () => {
+      const created = await addTask(
+        { description: 'claim', id: 'task-empty-prompt', prompt: '', context: 'one-line note' },
+        'user'
+      );
+      expect(created.metadata).toHaveProperty('prompt', '');
+      expect(created.metadata.context).toBe('one-line note');
+
+      const reloaded = await getTaskById('task-empty-prompt');
+      expect(reloaded.metadata).toHaveProperty('prompt', '');
+      expect(reloaded.metadata.context).toBe('one-line note');
+    });
+
     // The generator, the reference-watch filer and the repo-study filer all queue
     // pre-built (raw) tasks carrying the same multi-thousand-character body.
     it('classifies a raw pre-built task too, without mutating the caller object', async () => {

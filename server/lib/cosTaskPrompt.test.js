@@ -67,6 +67,14 @@ describe('taskContextBlock', () => {
     expect(taskContextBlock({ metadata: { [TASK_CONTEXT_KEY]: AGENT_BODY } })).toBe(AGENT_BODY);
   });
 
+  it('does not repeat a queue prompt already folded into description', () => {
+    const task = {
+      description: AGENT_BODY,
+      metadata: { [TASK_PROMPT_KEY]: AGENT_BODY, [TASK_CONTEXT_KEY]: 'a note' },
+    };
+    expect(taskContextBlock(task)).toBe('a note');
+  });
+
   it('returns null when the task carries neither', () => {
     expect(taskContextBlock({ metadata: {} })).toBeNull();
     expect(taskContextBlock({ metadata: { [TASK_PROMPT_KEY]: '   ' } })).toBeNull();

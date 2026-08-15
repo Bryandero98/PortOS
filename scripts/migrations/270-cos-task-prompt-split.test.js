@@ -76,8 +76,8 @@ describe('splitPromptMetadata', () => {
       .toEqual(['sys-b', 'sys-i', 'sys-p', 'sys-x']);
   });
 
-  it('ignores a JSON-encoded array value that happens to serialize with a newline escape', () => {
-    const md = queue(task('sys-1', { context: 'short note', reviewers: ['claude', 'codex'] }));
+  it('ignores a JSON-encoded context array that happens to serialize with a newline escape', () => {
+    const md = queue(task('sys-1', { context: ['line one\nline two'] }));
     expect(splitPromptMetadata(md, { stamp: STAMP })).toEqual({ markdown: md, split: [] });
   });
 

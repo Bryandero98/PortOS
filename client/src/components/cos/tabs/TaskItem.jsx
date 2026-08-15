@@ -49,6 +49,14 @@ const APPROVAL_REASON_HINTS = {
   'investigation-loop:failure-storm': 'Held for you: this hour is nearly out of investigation budget — failures are cascading, not isolated.'
 };
 
+const getTaskEditData = (task) => ({
+  description: task.description,
+  prompt: task.metadata?.prompt || '',
+  context: task.metadata?.context || '',
+  model: task.metadata?.model || '',
+  provider: task.metadata?.provider || ''
+});
+
 // Get success rate styling based on percentage
 function getSuccessRateStyle(rate) {
   if (rate >= 70) return { bg: 'bg-port-success/15', text: 'text-port-success', label: 'high' };
@@ -79,13 +87,11 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
   // task actually carries one, and is omitted from the PATCH otherwise rather
   // than writing an empty `prompt` key onto every task the user edits.
   const hasPromptField = typeof task.metadata?.prompt === 'string';
-  const [editData, setEditData] = useState({
-    description: task.description,
-    prompt: task.metadata?.prompt || '',
-    context: task.metadata?.context || '',
-    model: task.metadata?.model || '',
-    provider: task.metadata?.provider || ''
-  });
+  const taskPrompt = task.metadata?.prompt || '';
+  const taskContext = task.metadata?.context || '';
+  const taskModel = task.metadata?.model || '';
+  const taskProvider = task.metadata?.provider || '';
+  const [editData, setEditData] = useState(() => getTaskEditData(task));
   const [showBlockedModal, setShowBlockedModal] = useState(false);
   const [blockedReason, setBlockedReason] = useState('');
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
@@ -102,6 +108,13 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
       blockedInputRef.current.focus();
     }
   }, [showBlockedModal]);
+
+  // Queue refreshes can replace a legacy task with its split form while this
+  // component stays mounted under the same task id. Keep the draft current
+  // whenever it is safe to do so, but never overwrite an active edit.
+  useEffect(() => {
+    if (!editing) setEditData(getTaskEditData(task));
+  }, [editing, task.id, task.description, taskPrompt, taskContext, taskModel, taskProvider, task]);
 
   // Get models for selected provider in edit mode
   const editProvider = providers?.find(p => p.id === editData.provider);
@@ -212,17 +225,10 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
 
   // Discarding must actually revert the draft, not just hide it — without this,
   // reopening Edit after a confirmed discard would show the just-discarded text
-  // again instead of the task's real values, since editData is otherwise only
-  // ever seeded once at mount.
+  // again instead of the task's real values.
   const handleConfirmDiscard = () => {
     confirmDiscard(() => {
-      setEditData({
-        description: task.description,
-        prompt: task.metadata?.prompt || '',
-        context: task.metadata?.context || '',
-        model: task.metadata?.model || '',
-        provider: task.metadata?.provider || ''
-      });
+      setEditData(getTaskEditData(task));
       setEditing(false);
     });
   };

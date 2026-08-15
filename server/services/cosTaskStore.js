@@ -325,7 +325,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // The full agent-facing payload, when the producer names it explicitly
     // (#4153). Producers that still pass a multi-line `context` are classified
     // by `splitTaskPromptFields` below, so both call shapes converge.
-    if (taskData.prompt) metadata.prompt = taskData.prompt;
+    if (typeof taskData.prompt === 'string') metadata.prompt = taskData.prompt;
     if (taskData.model) metadata.model = taskData.model;
     if (taskData.provider) metadata.provider = taskData.provider;
     if (taskData.effort) metadata.effort = taskData.effort;
