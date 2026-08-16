@@ -35,6 +35,7 @@ describe('huggingFaceCatalog', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   it('maps GGUF search results to Ollama hf.co install ids with preferred quants', async () => {
@@ -1058,10 +1059,8 @@ describe('huggingFaceCatalog', () => {
 
     // A durable answer IS worth caching — the counterpart to the test above, so a
     // fix for one can't quietly disable the other.
-    it.each([
-      ['a 404 (repo gone)', 404],
-      ['a 403 (gated)', 403]
-    ])('caches %s as a durable "no data" answer', async (_label, status) => {
+    it('caches a 404 (repo gone) as a durable "no data" answer', async () => {
+      const status = 404
       const repo = `permanent-${status}/Repo-GGUF`
       const { writeCachedRepoModel } = await import('./huggingFaceRepoCache.js')
 
@@ -1077,6 +1076,41 @@ describe('huggingFaceCatalog', () => {
       })
 
       expect(writeCachedRepoModel.mock.calls).toEqual([[repo, null]])
+    })
+
+    it('re-fetches a gated repo after credentials are configured', async () => {
+      const repo = 'gated-auth/Repo-GGUF'
+      const { writeCachedRepoModel } = await import('./huggingFaceRepoCache.js')
+      let blobsCalls = 0
+      vi.stubEnv('HUGGINGFACE_TOKEN', '')
+      vi.stubEnv('HF_TOKEN', '')
+      fetch.mockImplementation(async (url, options) => {
+        if (!String(url).includes('blobs=true')) return response([])
+        blobsCalls += 1
+        if (blobsCalls === 1) {
+          expect(options.headers.Authorization).toBeUndefined()
+          return { ok: false, status: 403, json: vi.fn(), text: vi.fn(async () => 'gated') }
+        }
+        expect(options.headers.Authorization).toBe('Bearer test-token')
+        return response({ id: repo, siblings: [{ rfilename: 'G-Q4_K_M.gguf', size: 4_000_000_000 }] })
+      })
+
+      const first = [{ id: repo, key: 'gated-first', name: 'Gated', category: 'chat', size: '2.0 GB' }]
+      await enrichCatalogWithVariants(first, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+      expect(first[0].variants).toBeUndefined()
+      expect(writeCachedRepoModel.mock.calls).toEqual([])
+
+      vi.stubEnv('HUGGINGFACE_TOKEN', 'test-token')
+      const second = [{ id: repo, key: 'gated-second', name: 'Gated', category: 'chat', size: '2.0 GB' }]
+      await enrichCatalogWithVariants(second, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+
+      expect(blobsCalls).toBe(2)
+      expect(second[0].variants).toHaveLength(1)
+      expect(writeCachedRepoModel.mock.calls).toEqual([[repo, expect.any(Object)]])
     })
 
     // The gate must bound open CONNECTIONS, not just header waits — releasing the
