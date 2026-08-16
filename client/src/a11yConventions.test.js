@@ -559,9 +559,10 @@ function* jsxScanner(src, { from = 0, mode: startMode = 'code' } = {}) {
       if (c !== '>') continue;
       if (tag.closing) {
         // A closing tag can outnumber the opens in a slice that starts mid-
-        // element, so the pop may come back empty — fall back to JavaScript.
+        // element, so the pop may come back empty — return to the mode that
+        // described the slice rather than assuming its body was JavaScript.
         const entry = jsxStack.pop();
-        mode = entry?.root ? 'code' : (jsxStack.length ? 'jsx-text' : 'code');
+        mode = entry?.root ? 'code' : (jsxStack.length ? 'jsx-text' : startMode);
       } else if (before >= from && src[before] === '/') {
         mode = tag.parentMode;
       } else {
@@ -2447,6 +2448,16 @@ describe('a11y conventions', () => {
     expect(tagsStripped).toContain('Visible');
     expect(tagsStripped).not.toContain('<span');
     expect(tagsStripped).not.toContain('</span>');
+
+    // Closing the only tag must also return to the slice's JSX-text context.
+    // Otherwise the later apostrophe opens a fake JavaScript string and hides
+    // the second tag from both the tag stripper and hidden-content pass.
+    const apostropheAfterTag = "Before <span>Visible</span> don't <span>Later</span>";
+    const afterCloseTagsStripped = stripJsxTags(apostropheAfterTag);
+    expect(afterCloseTagsStripped).not.toContain('<span');
+    expect(afterCloseTagsStripped).not.toContain('</span>');
+    const visibleThenHidden = "Before <span>Visible</span> don't <span aria-hidden=\"true\">Hidden later</span>";
+    expect(stripHiddenElementContent(visibleThenHidden)).not.toContain('Hidden later');
 
     // An expression can contain a string that looks like a tag. It is still
     // one direct child of FormField, so the clone reaches the real input; only
