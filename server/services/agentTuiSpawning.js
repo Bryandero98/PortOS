@@ -240,6 +240,12 @@ function shellHasLiveChild(shellPid) {
   });
 }
 
+// Local-runtime models can spend many minutes between TUI output chunks while
+// generating. Their separate max-runtime ceiling still bounds a genuinely stuck
+// session, but silence must not be treated as completion or failure.
+const isLocalModelProvider = (provider) =>
+  isOllamaBackedProvider(provider) || provider?.mtplxBacked === true;
+
 export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, effort = null } = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
@@ -261,7 +267,9 @@ export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, 
     args,
     commandLine: [command, ...args].map(shellQuote).join(' '),
     promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS,
-    idleTimeoutMs: provider?.tuiIdleTimeoutMs || DEFAULT_TUI_IDLE_TIMEOUT_MS,
+    idleTimeoutMs: isLocalModelProvider(provider)
+      ? null
+      : provider?.tuiIdleTimeoutMs || DEFAULT_TUI_IDLE_TIMEOUT_MS,
     maxRuntimeMs: provider?.tuiMaxRuntimeMs || DEFAULT_TUI_MAX_RUNTIME_MS
   };
 }
@@ -723,6 +731,10 @@ export async function spawnTuiAgent({
   const doneSentinelPath = resolveDoneSentinelPath(workspacePath, agentId);
   const promptPreview = prompt.replace(/\s+/g, ' ').slice(0, 100);
   const commandName = tuiConfig.command.split('/').pop();
+  // Derive this again at the enforcement point so a caller that supplied a
+  // stale/pre-built config cannot accidentally re-arm the idle reaper for a
+  // local model.
+  const idleTimeoutMs = isLocalModelProvider(provider) ? null : tuiConfig.idleTimeoutMs;
 
   let finalized = false;
   let immediateFallbackAnalysis = null;
@@ -1707,7 +1719,7 @@ export async function spawnTuiAgent({
     // of a drifting inline copy. This body just executes what it returns.
     const decision = decideIdleReap({
       idle,
-      baseIdleTimeoutMs: tuiConfig.idleTimeoutMs,
+      baseIdleTimeoutMs: idleTimeoutMs,
       mergeQueueActive: mergeQueue.active,
       reviewLoopActive: reviewLoop.active,
       backgroundShellActive: backgroundShell.active,
@@ -1721,7 +1733,7 @@ export async function spawnTuiAgent({
     // synchronously by the NEXT tick's decision). Keyed on the base window, not
     // the extended one, precisely because the extended one is the bug: a merge
     // follow-up latches the merge-queue grace off its own echoed prompt.
-    if (idle >= tuiConfig.idleTimeoutMs) refreshFollowUpPrState();
+    if (Number.isFinite(idleTimeoutMs) && idle >= idleTimeoutMs) refreshFollowUpPrState();
     // Once within the LEAD window of the (possibly extended) reap deadline, keep
     // a reachability reading fresh (throttled, non-blocking) so the gate below
     // can read it synchronously and won't reap an agent that's only silent
@@ -1936,7 +1948,7 @@ export async function spawnTuiAgent({
       tuiSessionId: sessionId,
       tuiCommand: tuiConfig.commandLine,
       tuiKind,
-      tuiIdleTimeoutMs: tuiConfig.idleTimeoutMs,
+      tuiIdleTimeoutMs: idleTimeoutMs,
       tuiMaxRuntimeMs: tuiConfig.maxRuntimeMs
     }
   });

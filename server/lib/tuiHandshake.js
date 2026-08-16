@@ -1127,26 +1127,29 @@ export function createBackgroundShellTracker() {
  *     prompt QUOTES `gh pr checks` / `gh pr merge` / `--delete-branch`, so the
  *     TUI's echo of that prompt latches `mergeQueueActive` before any work runs,
  *     and the agent — which is told to "Exit", makes no commit, and on
- *     Antigravity often skips the sentinel — then idles into (4)'s
+ *     Antigravity often skips the sentinel — then idles into (4)/(5)'s
  *     needs-manual-finish verdict 15 minutes later, gets retried twice more, and
  *     lands in Blocked with a HIGH "PR left open" card naming an already-merged
  *     PR (task sys-rl-msr1j1a5, PR #3909, 2026-08-13).
- *  2. Not yet at the (possibly extended) deadline → keep waiting.
- *  3–4. The extended-grace reaps: a latched merge queue / multi-reviewer loop
+ *  2. A null base timeout (local-runtime model) → keep waiting indefinitely;
+ *     `tuiMaxRuntimeMs` remains the separate wall-clock backstop.
+ *  3. Not yet at the (possibly extended) deadline → keep waiting.
+ *  4–5. The extended-grace reaps: a latched merge queue / multi-reviewer loop
  *     that blew even its 15-minute window is a needs-manual-finish FAILURE
  *     (#2074, PR #2084) — the run really did go dark mid-merge.
- *  5. `idle-no-activity` (#1229) — provider renders a work counter and it never
+ *  6. `idle-no-activity` (#1229) — provider renders a work counter and it never
  *     advanced: the prompt never submitted.
- *  6. Otherwise the pre-existing permissive `idle-complete`, which the caller
+ *  7. Otherwise the pre-existing permissive `idle-complete`, which the caller
  *     still gates on worktree evidence (#2191) before recording success.
  *
  * Note `backgroundShellActive` extends the deadline but carries NO verdict of
  * its own — a background-shell wait that blows its window falls through to the
- * ordinary (5)/(6) reasoning, unchanged.
+ * ordinary (6)/(7) reasoning, unchanged.
  *
  * @param {Object} signals
  * @param {number} signals.idle - ms since the last PTY output
- * @param {number} signals.baseIdleTimeoutMs - the run's configured idle window
+ * @param {number|null} signals.baseIdleTimeoutMs - the run's configured idle
+ *   window, or null to disable idle reaping for a local-runtime model
  * @param {boolean} [signals.mergeQueueActive]
  * @param {boolean} [signals.reviewLoopActive]
  * @param {boolean} [signals.backgroundShellActive]
@@ -1165,17 +1168,22 @@ export function decideIdleReap({
   workActive = false,
   rendersCounter = false,
 } = {}) {
-  const effectiveIdleTimeoutMs = mergeQueueActive
-    ? Math.max(baseIdleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
-    : reviewLoopActive
-      ? Math.max(baseIdleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
-      : backgroundShellActive
-        ? Math.max(baseIdleTimeoutMs, BACKGROUND_SHELL_IDLE_TIMEOUT_MS)
-        : baseIdleTimeoutMs;
-  if (prFollowUpMerged && idle >= baseIdleTimeoutMs) {
+  const idleTimeoutDisabled = baseIdleTimeoutMs === null;
+  const effectiveIdleTimeoutMs = idleTimeoutDisabled
+    ? Infinity
+    : mergeQueueActive
+      ? Math.max(baseIdleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
+      : reviewLoopActive
+        ? Math.max(baseIdleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
+        : backgroundShellActive
+          ? Math.max(baseIdleTimeoutMs, BACKGROUND_SHELL_IDLE_TIMEOUT_MS)
+          : baseIdleTimeoutMs;
+  if (!idleTimeoutDisabled && prFollowUpMerged && idle >= baseIdleTimeoutMs) {
     return { action: 'reap', success: true, reason: 'pr-follow-up-merged', effectiveIdleTimeoutMs };
   }
-  if (idle < effectiveIdleTimeoutMs) return { action: 'wait', effectiveIdleTimeoutMs };
+  if (idleTimeoutDisabled || idle < effectiveIdleTimeoutMs) {
+    return { action: 'wait', effectiveIdleTimeoutMs };
+  }
   if (mergeQueueActive) {
     return { action: 'reap', success: false, reason: 'merge-queue-idle-timeout', effectiveIdleTimeoutMs };
   }
