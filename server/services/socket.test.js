@@ -144,6 +144,24 @@ describe('socket.js — initSocket', () => {
     expect(socket.emitted.some(([ev]) => ev === 'cos:unsubscribed')).toBe(true);
   });
 
+  it('forwards task lifecycle changes with the task payload to CoS subscribers', () => {
+    const socket = makeSocket('task-events');
+    createdSockets.push(socket);
+    io.connect(socket);
+    socket.handlers['cos:subscribe']();
+
+    const listener = cosEvents.on.mock.calls.find(([event]) => event === 'tasks:changed')?.[1];
+    const payload = {
+      type: 'user',
+      action: 'updated',
+      previousStatus: 'pending',
+      task: { id: 'task-1', status: 'in_progress' }
+    };
+    listener(payload);
+
+    expect(socket.emitted).toContainEqual(['cos:tasks:changed', payload]);
+  });
+
   // ===========================================================================
   // broadcast: two subscribed sockets both receive the event
   // Tested via the subscription ack — the internal Set membership is observable

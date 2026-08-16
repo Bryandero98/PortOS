@@ -194,7 +194,13 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
       // claim flow derives it from the app's RESOLVED work tracker (a file
       // tracker commits its checklist, a forge tracker doesn't), which is more
       // specific than the catalog's commit-shaped default, so the spread wins.
-      taskMetadata: { useWorktree, openPR, worktreeChangesExpected, ...claim.taskMetadata },
+      taskMetadata: {
+        useWorktree,
+        openPR,
+        worktreeChangesExpected,
+        ...(claim.target ? { claimTarget: claim.target } : {}),
+        ...claim.taskMetadata
+      },
     };
   } else {
     shape = {

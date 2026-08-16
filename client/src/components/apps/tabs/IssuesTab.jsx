@@ -12,9 +12,25 @@ import ProviderModelSelector from '../../ProviderModelSelector';
 import useProviderModels from '../../../hooks/useProviderModels';
 import { isProcessProvider } from '../../../utils/providers';
 import * as api from '../../../services/api';
+import socket from '../../../services/socket';
 import { timeAgo } from '../../../utils/formatters';
 
 const FORGE_LABEL = { github: 'GitHub', gitlab: 'GitLab' };
+
+const CLAIM_STATUS_RANK = { queuing: 0, queued: 1, active: 2, completed: 3, blocked: 3 };
+const CLAIM_STATUS_LABEL = {
+  queued: 'Queued — view',
+  active: 'Active — view',
+  completed: 'Completed — view',
+  blocked: 'Blocked — view'
+};
+
+const claimStatusForTask = (status) => ({
+  pending: 'queued',
+  in_progress: 'active',
+  completed: 'completed',
+  blocked: 'blocked'
+}[status] || null);
 
 // Module-scoped so `useProviderModels` sees a stable predicate — an inline
 // arrow would be a new identity every render, re-firing the hook's fetch
@@ -73,10 +89,11 @@ export default function IssuesTab({ appId, appName }) {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState(() => new Set());
-  // Per-issue claim lifecycle: 'queuing' while the POST is in flight, 'queued'
-  // once the CoS task exists. Keyed by issue number so one claim can't disable
+  // Per-issue claim lifecycle: 'queuing' while the POST is in flight, then the
+  // task's live CoS state. Keyed by issue number so one claim can't disable
   // every other row's button.
   const [claims, setClaims] = useState({});
+  const claimsRef = useRef({});
   // Generation guard: a forge list can take seconds, so a Refresh (or a switch to
   // a different app, which updates this component in place rather than
   // remounting it) can leave an older request in flight. Without this, that older
@@ -96,6 +113,95 @@ export default function IssuesTab({ appId, appName }) {
     setSelectedProviderId, setSelectedModel
   } = useProviderModels({ filter: enabledProcessProviderFilter, allowDefault: true, silent: true, withEffort: true });
   const [effort, setEffort] = useState('');
+
+  // Keep the event-driven path based on the latest claims without putting a
+  // mutable state snapshot in its effect dependencies. Socket callbacks can
+  // arrive between the POST response and the next React render.
+  const replaceClaims = useCallback((updater) => {
+    const next = updater(claimsRef.current);
+    claimsRef.current = next;
+    setClaims(next);
+  }, []);
+
+  useEffect(() => {
+    claimsRef.current = {};
+    setClaims({});
+  }, [appId]);
+
+  useEffect(() => {
+    const subscribe = () => socket.emit('cos:subscribe');
+    if (socket.connected) subscribe();
+    socket.on('connect', subscribe);
+
+    const applyTaskUpdate = (task) => {
+      if (!task?.id) return;
+      const nextStatus = claimStatusForTask(task.status);
+      if (!nextStatus) return;
+
+      const currentClaims = claimsRef.current;
+      const nextClaims = { ...currentClaims };
+      const transitions = [];
+
+      for (const [issueNumber, rawClaim] of Object.entries(currentClaims)) {
+        const claim = typeof rawClaim === 'string' ? { status: rawClaim } : rawClaim;
+        const matchesTask = claim.taskId === task.id || (
+          !claim.taskId && task.metadata?.app === appId &&
+          String(task.metadata?.claimTarget) === issueNumber
+        );
+        if (!matchesTask) continue;
+
+        const currentStatus = claim.status || 'queuing';
+        if ((CLAIM_STATUS_RANK[nextStatus] ?? 0) < (CLAIM_STATUS_RANK[currentStatus] ?? 0)) continue;
+        if (claim.taskId === task.id && currentStatus === nextStatus) continue;
+
+        nextClaims[issueNumber] = { ...claim, taskId: claim.taskId || task.id, status: nextStatus };
+        transitions.push({ issueNumber, from: currentStatus, to: nextStatus });
+      }
+
+      if (transitions.length === 0) return;
+      replaceClaims(() => nextClaims);
+
+      for (const { issueNumber, from, to } of transitions) {
+        if (to === 'active' && from !== 'active') toast(`Claim #${issueNumber} is now active`, { icon: '▶️' });
+        if (to === 'completed' && from !== 'completed') toast.success(`Claim #${issueNumber} completed`);
+        if (to === 'blocked' && from !== 'blocked') toast.error(`Claim #${issueNumber} was blocked`);
+      }
+    };
+
+    const handleTaskChanged = (data) => applyTaskUpdate(data?.task);
+    const handleTaskListChanged = (data) => {
+      for (const task of data?.tasks || []) applyTaskUpdate(task);
+    };
+    const handleTaskCompleted = (data) => {
+      for (const task of data?.tasks || []) applyTaskUpdate(task);
+    };
+    const handleAgentSpawned = (agent) => {
+      if (agent?.taskId) applyTaskUpdate({ id: agent.taskId, status: 'in_progress' });
+    };
+    const handleAgentCompleted = (agent) => {
+      // A failed agent can be requeued or blocked by its completion path, so
+      // only the success signal is safe as an early terminal hint. The task
+      // lifecycle event below remains authoritative for all outcomes.
+      if (agent?.taskId && agent.result?.success === true) {
+        applyTaskUpdate({ id: agent.taskId, status: 'completed' });
+      }
+    };
+
+    socket.on('cos:tasks:changed', handleTaskChanged);
+    socket.on('cos:tasks:user:changed', handleTaskListChanged);
+    socket.on('cos:tasks:user:completed', handleTaskCompleted);
+    socket.on('cos:agent:spawned', handleAgentSpawned);
+    socket.on('cos:agent:completed', handleAgentCompleted);
+
+    return () => {
+      socket.off('connect', subscribe);
+      socket.off('cos:tasks:changed', handleTaskChanged);
+      socket.off('cos:tasks:user:changed', handleTaskListChanged);
+      socket.off('cos:tasks:user:completed', handleTaskCompleted);
+      socket.off('cos:agent:spawned', handleAgentSpawned);
+      socket.off('cos:agent:completed', handleAgentCompleted);
+    };
+  }, [appId, replaceClaims]);
 
   const load = useCallback(async () => {
     const generation = requestRef.current + 1;
@@ -147,7 +253,7 @@ export default function IssuesTab({ appId, appName }) {
   });
 
   const handleClaim = async (issue) => {
-    setClaims(prev => ({ ...prev, [issue.number]: 'queuing' }));
+    replaceClaims(prev => ({ ...prev, [issue.number]: { status: 'queuing', taskId: null } }));
     const result = await api.createSlashdoTask('next', appId, {
       target: String(issue.number),
       provider: selectedProviderId || undefined,
@@ -159,14 +265,29 @@ export default function IssuesTab({ appId, appName }) {
         return null;
       });
     if (!result) {
-      setClaims(prev => {
+      replaceClaims(prev => {
         const next = { ...prev };
         delete next[issue.number];
         return next;
       });
       return;
     }
-    setClaims(prev => ({ ...prev, [issue.number]: 'queued' }));
+    replaceClaims(prev => {
+      const current = prev[issue.number];
+      const currentStatus = typeof current === 'string' ? current : current?.status;
+      const resultStatus = claimStatusForTask(result.status) || 'queued';
+      const status = (CLAIM_STATUS_RANK[resultStatus] ?? 0) >= (CLAIM_STATUS_RANK[currentStatus] ?? 0)
+        ? resultStatus
+        : currentStatus;
+      return {
+        ...prev,
+        [issue.number]: {
+          ...(typeof current === 'object' ? current : {}),
+          status,
+          taskId: current?.taskId || result.id || null
+        }
+      };
+    });
     toast.success(`Queued a CoS agent to claim #${issue.number}`);
   };
 
@@ -264,7 +385,8 @@ export default function IssuesTab({ appId, appName }) {
         <div className="border border-port-border rounded-lg divide-y divide-port-border overflow-hidden">
           {issues.map(issue => {
             const isOpen = expanded.has(issue.number);
-            const claimState = claims[issue.number];
+            const claim = claims[issue.number];
+            const claimState = typeof claim === 'string' ? claim : claim?.status;
             return (
               <div key={issue.number} className="bg-port-card">
                 <div className="flex flex-col sm:flex-row sm:items-start gap-3 p-3">
@@ -322,12 +444,12 @@ export default function IssuesTab({ appId, appName }) {
                   </div>
 
                   <div className="shrink-0">
-                    {claimState === 'queued' ? (
+                    {claimState && claimState !== 'queuing' ? (
                       <Link
                         to="/cos/agents"
                         className="px-3 py-1.5 bg-port-success/20 text-port-success hover:bg-port-success/30 border border-port-border rounded-lg text-xs flex items-center gap-1.5 transition-colors"
                       >
-                        <Rocket size={14} /> Queued — view
+                        <Rocket size={14} /> {CLAIM_STATUS_LABEL[claimState] || 'Queued — view'}
                       </Link>
                     ) : (
                       <button
