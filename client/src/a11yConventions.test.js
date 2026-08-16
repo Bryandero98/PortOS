@@ -118,6 +118,12 @@ function openingTagAt(src, index) {
 // pattern, so a `$` in one can no longer compile to an anchor that matches
 // nothing and silently hides the controls that wrapper names.
 const TAG_NAME_PATTERN = '[A-Za-z][\\w$.-]*';
+// The two case-specific readers derive from the one spelling above instead of
+// drifting into their own almost-the-same character classes.
+const COMPONENT_TAG_NAME_PATTERN = TAG_NAME_PATTERN.replace('A-Za-z', 'A-Z');
+const HOST_TAG_NAME_PATTERN = TAG_NAME_PATTERN.replace('A-Za-z', 'a-z');
+const COMPONENT_TAG_NAME = new RegExp(`^${COMPONENT_TAG_NAME_PATTERN}$`);
+const HOST_TAG_NAME = new RegExp(`^${HOST_TAG_NAME_PATTERN}$`);
 
 // The element name starting at `from` (the index just past `<` or `</`), or
 // null. Sticky rather than `src.slice(from).match(…)`: every caller runs this
@@ -146,23 +152,28 @@ function tagNameAt(src, from) {
  * its half-read tag across brace frames, so `tagStart` pairs each `>` with the
  * `<` it really closes rather than with whatever the innermost open tag is.
  *
- * Each entry is `{ closing, name, index, tag, contentStart, selfClosing }`.
+ * Each entry is `{ closing, name, index, tag, contentStart, selfClosing,
+ * parent, matchingClose }`. The structural links are assigned after
+ * lexing, once every opener knows whether it was self-closing.
  * An unterminated tag keeps `tag: null` — the walk reports it rather than
  * dropping it, because "is there a tag here" and "should an unreadable one
  * count" are different questions and only the caller knows the second.
  *
- * Keyed by SOURCE, not by path, so it is a pure-function cache with nothing to
- * invalidate: a probe's stand-in source and the real file it stands in for are
- * different strings, and no entry can ever answer for the other.
+ * Keyed by SOURCE and its starting mode, not by path, so it is a pure-function
+ * cache with nothing to invalidate: a probe's stand-in source and the real file
+ * it stands in for are different strings, and no entry can ever answer for the
+ * other. A JSX-text slice is not code, even when its characters equal another
+ * slice that a caller reads as code.
  */
 const tagIndexBySource = new Map();
 
-function tagIndexOf(src) {
-  const cached = tagIndexBySource.get(src);
+function tagIndexOf(src, { startMode = 'code' } = {}) {
+  const indexesByStartMode = tagIndexBySource.get(src);
+  const cached = indexesByStartMode?.get(startMode);
   if (cached) return cached;
   const nodes = [];
   const openByStart = new Map();
-  for (const token of jsxScanner(src)) {
+  for (const token of jsxScanner(src, { mode: startMode })) {
     if (token.kind !== 'char') continue;
     if (token.opensTag) {
       const closing = src.startsWith('</', token.index);
@@ -173,6 +184,9 @@ function tagIndexOf(src) {
         tag: null,
         contentStart: null,
         selfClosing: false,
+        parent: null,
+        fragment: false,
+        matchingClose: null,
       };
       // Pushed at its `<`, so entries stay in ascending `index` even though a
       // tag nested in an attribute expression is COMPLETED first — which
@@ -188,14 +202,38 @@ function tagIndexOf(src) {
     node.contentStart = token.index + 1;
     node.selfClosing = token.selfClosing;
   }
-  tagIndexBySource.set(src, nodes);
+
+  // The tag index is more than a flat list: callers that answer child-order
+  // questions need the lexer-established element structure, not another
+  // cursor walk that guesses which `<` starts a tag. Fragments participate in
+  // the stack too, even though they have no name, because they are real React
+  // children and cloning an id onto one does not reach its descendants.
+  const openElements = [];
+  for (const node of nodes) {
+    if (node.tag === null) continue;
+    node.fragment = node.name === null && node.tag === (node.closing ? '</>' : '<>');
+    if (node.closing) {
+      const open = openElements.at(-1);
+      const matches = open && open.name === node.name
+        && (node.name !== null || (open.fragment && node.fragment));
+      if (!matches) continue;
+      open.matchingClose = node;
+      openElements.pop();
+      continue;
+    }
+    node.parent = openElements.at(-1) ?? null;
+    if (!node.selfClosing) openElements.push(node);
+  }
+  const cache = indexesByStartMode ?? new Map();
+  cache.set(startMode, nodes);
+  tagIndexBySource.set(src, cache);
   return nodes;
 }
 
 // Every tag named `name` — closers and unterminated tags included. Omit `name`
 // to walk every element; a name is matched literally against the name the
 // scanner read, never as a pattern.
-function* forEachTag(src, name) {
+function* forEachTag(src, name, { startMode = 'code' } = {}) {
   // Lexing a whole file to look for a name that does not occur in it is the
   // one cost this walk added over the regex it replaced: a named regex walk
   // scanned natively and boundary-scanned only its own matches, where the index
@@ -204,7 +242,7 @@ function* forEachTag(src, name) {
   // there, the substring is — and it skips the ~30% of tracked files that hold
   // no `<button` or `<input` at all.
   if (name !== undefined && !src.includes(name)) return;
-  for (const node of tagIndexOf(src)) {
+  for (const node of tagIndexOf(src, { startMode })) {
     if (name === undefined || node.name === name) yield node;
   }
 }
@@ -215,8 +253,8 @@ function* forEachTag(src, name) {
 // unreadable tag to contribute a `false` rather than vanish — and both walk
 // `forEachTag` instead. Keeping that choice in a filter rather than inside the
 // walk is what let the last hand-rolled scanner fold onto this one.
-function* forEachOpeningTag(src, name) {
-  for (const node of forEachTag(src, name)) {
+function* forEachOpeningTag(src, name, options) {
+  for (const node of forEachTag(src, name, options)) {
     if (!node.closing && node.tag !== null) yield node;
   }
 }
@@ -521,9 +559,10 @@ function* jsxScanner(src, { from = 0, mode: startMode = 'code' } = {}) {
       if (c !== '>') continue;
       if (tag.closing) {
         // A closing tag can outnumber the opens in a slice that starts mid-
-        // element, so the pop may come back empty — fall back to JavaScript.
+        // element, so the pop may come back empty — return to the mode that
+        // described the slice rather than assuming its body was JavaScript.
         const entry = jsxStack.pop();
-        mode = entry?.root ? 'code' : (jsxStack.length ? 'jsx-text' : 'code');
+        mode = entry?.root ? 'code' : (jsxStack.length ? 'jsx-text' : startMode);
       } else if (before >= from && src[before] === '/') {
         mode = tag.parentMode;
       } else {
@@ -589,7 +628,11 @@ function soleTopLevelNode(rawBody) {
     const boundary = tagBoundaryAt(s, 0);
     if (!boundary) return null;
     if (s.slice(boundary.end).trim() !== '') return null; // more than one top-level node
-    return { kind: 'element', raw: s.slice(0, boundary.end), selfClosing: boundary.selfClosing };
+    return {
+      kind: 'element',
+      name: tagNameAt(s, 1),
+      selfClosing: boundary.selfClosing,
+    };
   }
   if (s[0] === '{') {
     const end = matchingBraceEnd(s, 0);
@@ -623,6 +666,13 @@ const topLevelOperatorIn = (inner, char, from) => {
   return -1;
 };
 
+const isSelfClosingIconNode = (node) => (
+  node?.kind === 'element'
+  && node.selfClosing
+  && node.name !== null
+  && COMPONENT_TAG_NAME.test(node.name)
+);
+
 function matchTernaryIcons(inner) {
   const qIdx = topLevelOperatorIn(inner, '?', 0);
   if (qIdx === -1) return false;
@@ -630,8 +680,23 @@ function matchTernaryIcons(inner) {
   if (cIdx === -1) return false;
   const a = inner.slice(qIdx + 1, cIdx).trim();
   const b = inner.slice(cIdx + 1).trim();
-  const iconRe = /^<[A-Z][\w.]*(\s[\s\S]*)?\/>$/;
-  return iconRe.test(a) && iconRe.test(b);
+  return isSelfClosingIconNode(soleTopLevelNode(a)) && isSelfClosingIconNode(soleTopLevelNode(b));
+}
+
+function lastTopLevelAndIn(inner) {
+  let from = 0;
+  let result = -1;
+  while (from < inner.length) {
+    const index = topLevelOperatorIn(inner, '&', from);
+    if (index === -1) break;
+    if (inner[index + 1] === '&') {
+      result = index;
+      from = index + 2;
+    } else {
+      from = index + 1;
+    }
+  }
+  return result;
 }
 
 // Unwrap presentational wrappers: a button whose body is `<span><X/></span>`
@@ -642,11 +707,11 @@ function matchTernaryIcons(inner) {
 function unwrapPresentational(rawBody, depth = 0) {
   if (depth > 4) return rawBody;
   const s = stripJsxComments(rawBody).trim();
-  const m = s.match(/^<([a-z][\w-]*)\b/);
-  if (!m) return s;
+  const name = tagNameAt(s, 1);
+  if (!name || !HOST_TAG_NAME.test(name)) return s;
   const boundary = tagBoundaryAt(s, 0);
   if (!boundary || boundary.selfClosing) return s;
-  const close = `</${m[1]}>`;
+  const close = `</${name}>`;
   if (!s.endsWith(close)) return s;
   return unwrapPresentational(s.slice(boundary.end, s.length - close.length), depth + 1);
 }
@@ -655,12 +720,11 @@ function isIconOnlyBody(rawBodyIn) {
   const rawBody = unwrapPresentational(rawBodyIn);
   const node = soleTopLevelNode(rawBody);
   if (!node) return false;
-  if (node.kind === 'element') return node.selfClosing && /^<[A-Z]/.test(node.raw);
+  if (node.kind === 'element') return isSelfClosingIconNode(node);
   const inner = node.inner;
   if (matchTernaryIcons(inner)) return true;
-  const andMatch = inner.match(/^.*&&\s*(<[A-Z][\w.]*(\s[\s\S]*)?\/>)\s*$/s);
-  if (!andMatch) return false;
-  return /^<[A-Z][\w.]*(\s[\s\S]*)?\/>$/.test(andMatch[1].trim());
+  const andIndex = lastTopLevelAndIn(inner);
+  return andIndex !== -1 && isSelfClosingIconNode(soleTopLevelNode(inner.slice(andIndex + 2)));
 }
 
 // Buttons don't nest in valid HTML/JSX, so the first `</button>` after the
@@ -769,6 +833,20 @@ function maskComments(src, { startMode = 'code' } = {}) {
   return chars.join('');
 }
 
+// Keep the source's offsets and line breaks intact while making spans inert.
+// The tag index reports source indexes, so preserving that coordinate system
+// lets several consumers share one structural read without compensating for
+// prior replacements.
+function blankSourceSpans(src, spans) {
+  const chars = src.split('');
+  for (const { start, end } of spans) {
+    for (let index = start; index < end; index++) {
+      if (chars[index] !== '\n') chars[index] = ' ';
+    }
+  }
+  return chars.join('');
+}
+
 function hasMatchingLabelElement(src, id) {
   for (const node of forEachOpeningTag(src, 'label')) {
     const htmlFor = normalizedAttributeValue(attributeValue(node.tag, 'htmlFor'));
@@ -824,11 +902,17 @@ function forwardsLabelForId(src, { id }, { idProp, labelProp }, name) {
   return false;
 }
 
+const HIDDEN_ACCESSIBILITY_ATTRIBUTE = new RegExp(String.raw`(?:^|\s)(?:aria-hidden\s*=\s*(?:["']true["']|\{\s*true\s*\})|hidden(?:\s*=\s*(?:["']true["']|\{\s*true\s*\}))?)(?=\s|/|>)`, 'i');
+const isHiddenFromAccessibility = (tag) => HIDDEN_ACCESSIBILITY_ATTRIBUTE.test(tag);
+
 function stripHiddenElementContent(body) {
-  const hiddenAttribute = String.raw`(?:aria-hidden\s*=\s*(?:["']true["']|\{\s*true\s*\})|\bhidden(?:\s*=\s*(?:["']true["']|\{\s*true\s*\}))?)`;
-  return body
-    .replace(new RegExp(`<(${TAG_NAME_PATTERN})\\b[^>]*${hiddenAttribute}[^>]*/\\s*>`, 'gi'), ' ')
-    .replace(new RegExp(`<(${TAG_NAME_PATTERN})\\b[^>]*${hiddenAttribute}[^>]*>[\\s\\S]*?<\\/\\1\\s*>`, 'gi'), ' ');
+  const spans = [];
+  for (const node of forEachOpeningTag(body, undefined, { startMode: 'jsx-text' })) {
+    if (!isHiddenFromAccessibility(node.tag)) continue;
+    const end = node.selfClosing ? node.contentStart : node.matchingClose?.contentStart;
+    if (end !== undefined) spans.push({ start: node.index, end });
+  }
+  return blankSourceSpans(body, spans);
 }
 
 // `node` is a tag-index entry: its `selfClosing` and `name` come from the
@@ -836,15 +920,14 @@ function stripHiddenElementContent(body) {
 // self-closing element on unmasked source the way a `/\/\s*>$/` re-derivation
 // did.
 function hasUsableElementText(src, node) {
-  const { tag, index, name, selfClosing } = node;
+  const { tag, contentStart, name, selfClosing } = node;
   if (hasUsableAccessibleNameAttribute(tag, 'aria-label')) return true;
   if (selfClosing) return false;
   if (!name) return false;
-  const closeIndex = src.indexOf(`</${name}>`, index + tag.length);
-  if (closeIndex === -1) return false;
+  const closing = node.matchingClose;
+  if (!closing) return false;
   // The slice is the element's BODY — JSX text, not code. See `maskComments`.
-  const body = stripHiddenElementContent(maskComments(src.slice(index + tag.length, closeIndex), { startMode: 'jsx-text' }))
-    .replace(/<\/?[A-Za-z][^>]*>/g, ' ')
+  const body = stripJsxTags(stripHiddenElementContent(maskComments(src.slice(contentStart, closing.index), { startMode: 'jsx-text' })))
     .trim();
   if (!body) return false;
   const staticText = body.replace(/\{[^{}]*\}/g, ' ').trim();
@@ -906,30 +989,15 @@ function isEnclosedInListCall(src, start, index) {
   return false;
 }
 
-function isDirectElementInExpression(src, start, index) {
-  if (isEnclosedInListCall(src, start, index)) return false;
-  let depth = 0;
-  let cursor = start;
-  while (cursor < index) {
-    // Only an element start matters here; a bare `<` is a comparison operator
-    // (`{count < 3 ? <input/> : null}`) and must not open a phantom element.
-    if (src[cursor] !== '<' || !/^<\/?[A-Za-z]/.test(src.slice(cursor, cursor + 3))) {
-      cursor++;
-      continue;
-    }
-    if (src.startsWith('</', cursor)) {
-      const close = src.indexOf('>', cursor);
-      if (close === -1) return false;
-      if (depth > 0) depth--;
-      cursor = close + 1;
-      continue;
-    }
-    const tag = tagBoundaryAt(src, cursor);
-    if (!tag) return false;
-    if (!tag.selfClosing) depth++;
-    cursor = tag.end;
+function isDirectElementInExpression(src, start, node) {
+  if (isEnclosedInListCall(src, start, node.index)) return false;
+  // A tag opened after the expression began is a real ancestor of this node,
+  // so React sees the ancestor — not the control — as the expression result.
+  // The parent links come from jsxScanner's tag stack, including fragments.
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (parent.index >= start) return false;
   }
-  return depth === 0;
+  return true;
 }
 
 // Which instances of `<Name>` are still open at `index`? Both ancestor-based
@@ -955,8 +1023,8 @@ function openWrapperInstancesAt(src, name, index) {
   return open;
 }
 
-// Is the control at `index` the FIRST direct child of the wrapper whose body
-// starts at `openContentStart`? A cloning wrapper clones its id onto its first
+// Is the control at `index` the FIRST direct child of `wrapper`? A cloning
+// wrapper clones its id onto its first
 // React child only, so a later control (DataDog's optional custom-site input)
 // must remain actionable. The question is only ever "did ANYTHING precede the
 // control" — a boolean, not the preceding node's identity, so that a control
@@ -965,17 +1033,17 @@ function openWrapperInstancesAt(src, name, index) {
 // can legitimately precede or contain the control inside a wrapper body:
 // whitespace and text nodes, `{expr}` children, fragments, self-closing tags.
 //
-// PRECONDITION: the instance must still be OPEN at `index` — feed this only a
-// `contentStart` from `openWrapperInstancesAt`. It deliberately treats a
-// depth-0 closing tag as stray markup to skip (a wrapper body can contain one),
-// so a CLOSED wrapper's body start would walk straight past its own `</Name>`
-// and report the next control as its first child. The shared stack is what
-// rules that out; a hand-rolled `indexOf` for the wrapper would not, and would
-// fail silent — the control just drops off the offender list.
-function isFirstDirectChild(src, openContentStart, index) {
-  let depth = 0;
+// PRECONDITION: `wrapper` is still OPEN at `index` — feed this only a node from
+// `openWrapperInstancesAt`. Its scanner-derived parent link is the proof that
+// the control is a child of this instance, rather than a tag a cursor happened
+// to cross after the wrapper had closed.
+function isFirstDirectChild(src, wrapper, index) {
+  const nodesByIndex = new Map(tagIndexOf(src).map((node) => [node.index, node]));
+  const node = nodesByIndex.get(index);
+  if (!node || node.closing || node.parent !== wrapper) return false;
+
   let sawPrecedingChild = false;
-  let cursor = openContentStart;
+  let cursor = wrapper.contentStart;
   while (cursor < index) {
     if (/\s/.test(src[cursor])) {
       cursor++;
@@ -986,7 +1054,7 @@ function isFirstDirectChild(src, openContentStart, index) {
       if (end === -1) return false;
       if (end >= index) {
         // The control lives inside this expression rather than after it.
-        return depth === 0 && !sawPrecedingChild && isDirectElementInExpression(src, cursor + 1, index);
+        return !sawPrecedingChild && isDirectElementInExpression(src, cursor + 1, node);
       }
       if (src.slice(cursor + 1, end).trim()) sawPrecedingChild = true;
       cursor = end + 1;
@@ -1000,44 +1068,31 @@ function isFirstDirectChild(src, openContentStart, index) {
         nextExpression === -1 ? index : nextExpression,
         index,
       );
-      if (depth === 0 && src.slice(cursor, next).trim()) sawPrecedingChild = true;
+      if (src.slice(cursor, next).trim()) sawPrecedingChild = true;
       cursor = next;
       continue;
     }
 
-    const closing = src.startsWith('</', cursor);
-    const name = tagNameAt(src, cursor + (closing ? 2 : 1));
-    if (!name) {
-      if (src.startsWith('<>', cursor)) {
-        if (depth === 0) sawPrecedingChild = true;
-        depth++;
-        cursor += 2;
-        continue;
-      }
-      if (src.startsWith('</>', cursor)) {
-        depth = Math.max(0, depth - 1);
-        cursor += 3;
-        continue;
-      }
+    const current = nodesByIndex.get(cursor);
+    if (!current) {
       cursor++;
       continue;
     }
-    if (closing) {
-      const end = src.indexOf('>', cursor);
-      if (end === -1) return false;
-      if (depth > 0) depth--;
-      cursor = end + 1;
+    if (current.closing) {
+      cursor = current.contentStart;
       continue;
     }
-    const tag = tagBoundaryAt(src, cursor);
-    if (!tag) return false;
-    if (depth === 0) sawPrecedingChild = true;
-    if (!tag.selfClosing) depth++;
-    cursor = tag.end;
+    if (current.parent === wrapper) sawPrecedingChild = true;
+    if (current.selfClosing) {
+      cursor = current.contentStart;
+      continue;
+    }
+    if (!current.matchingClose) return false;
+    cursor = current.matchingClose.contentStart;
   }
   // `cursor === index` matters as much as the rest: a walk that broke out early
   // or overshot never proved anything about the control.
-  return depth === 0 && !sawPrecedingChild && cursor === index;
+  return !sawPrecedingChild && cursor === index;
 }
 
 // The "cloned" shape: the wrapper generates the id itself and clones it onto
@@ -1045,8 +1100,8 @@ function isFirstDirectChild(src, openContentStart, index) {
 // without either side writing a `<label htmlFor>` next to it.
 function isNestedInLabeledCloner(src, { index }, { labelProp }, wrapperName) {
   if (index === undefined) return false;
-  return openWrapperInstancesAt(src, wrapperName, index).some(({ tag, contentStart }) => (
-    hasUsableLabelProp(tag, labelProp) && isFirstDirectChild(src, contentStart, index)
+  return openWrapperInstancesAt(src, wrapperName, index).some((wrapper) => (
+    hasUsableLabelProp(wrapper.tag, labelProp) && isFirstDirectChild(src, wrapper, index)
   ));
 }
 
@@ -1147,22 +1202,18 @@ function* labelElements(body) {
 
 // Strip JSX tags, leaving only what renders as text. A quoted attribute value
 // or a `{…}` expression can hold a `>` (`<span title=">" data-tooltip={label}/>`),
-// so the scan tracks both rather than stopping at the first one — otherwise the
-// tail of a tag survives as "text" and its attributes read as rendered props.
+// so the shared tag index tracks both rather than stopping at the first one —
+// otherwise the tail of a tag survives as "text" and its attributes read as
+// rendered props.
 function stripJsxTags(source) {
-  let out = '';
-  let cursor = 0;
-  while (cursor < source.length) {
-    const open = source.indexOf('<', cursor);
-    if (open === -1) return out + source.slice(cursor);
-    out += source.slice(cursor, open);
-    const end = tagEndAt(source, open);
-    // An unterminated tag swallows the rest: nothing after it is text.
-    if (end === -1) return `${out} `;
-    out += ' ';
-    cursor = end + 1;
-  }
-  return out;
+  const nodes = tagIndexOf(source, { startMode: 'jsx-text' });
+  const incomplete = nodes.find((node) => node.tag === null);
+  const spans = nodes
+    .filter((node) => node.tag !== null)
+    .map((node) => ({ start: node.index, end: node.contentStart }));
+  // An unterminated tag swallows the rest: nothing after it is text.
+  if (incomplete) spans.push({ start: incomplete.index, end: source.length });
+  return blankSourceSpans(source, spans);
 }
 
 // `Children.map(children, (child, i) => …)` — proof that `cloneTarget` is the
@@ -1564,7 +1615,7 @@ function hasUsableAriaLabelledByReference(src, tag) {
   return value.split(/\s+/).every((id) => {
     for (const node of forEachOpeningTag(src)) {
       if (normalizedAttributeValue(attributeValue(node.tag, 'id')) !== id) continue;
-      if (/\baria-hidden\s*=\s*['"`]true['"`]/.test(node.tag)) return false;
+      if (isHiddenFromAccessibility(node.tag)) return false;
       if (hasUsableElementText(src, node)) return true;
     }
     return false;
@@ -2360,6 +2411,62 @@ describe('a11y conventions', () => {
     expect(selfClosed.selfClosing).toBe(true);
     expect(isUnnamedIconOnlyButton('<button />', selfClosed)).toBe(false);
     expect(isNamed('<label htmlFor="rounds" />\n<input id="rounds" type="text" />')).toBe(false);
+  });
+
+  it('derives every remaining lexical fact from the shared tag index (#4343)', () => {
+    // A raw `/>` suffix is not proof of a self-closing JSX node: this is an
+    // opening component tag whose comment happens to end in `/>`. The icon
+    // rule must leave that malformed-but-readable shape out of its match.
+    expect(isIconOnlyBody('{on ? <IconA /* note */> : <IconB />}')).toBe(false);
+    expect(isIconOnlyBody('{on && <IconA /* note */>}')).toBe(false);
+
+    // `$` is part of the tag spelling everywhere else. Ternary, &&, and a
+    // presentational host wrapper must agree instead of each carrying a
+    // narrower ad-hoc class.
+    expect(isIconOnlyBody('{on ? <Ic$n /> : <IconB />}')).toBe(true);
+    expect(isIconOnlyBody('{on && <Ic$n />}')).toBe(true);
+    expect(isIconOnlyBody('<spa$n><IconA /></spa$n>')).toBe(true);
+
+    // A nested hidden subtree must remain hidden through its ACTUAL matching
+    // close, not only through the first same-named closer a non-greedy regex
+    // reaches. A quoted `>` likewise stays inside its opening tag and cannot
+    // leak an attribute quote back as rendered label text.
+    expect(isNamed('<label htmlFor="x"><span aria-hidden="true"><span>Hidden</span>still hidden</span></label>\n<input id="x" />')).toBe(false);
+    expect(isNamed('<label htmlFor="x"><span title=">"></span></label>\n<input id="x" />')).toBe(false);
+    expect(isNamed('<label htmlFor="x"><span title=">">Rounds</span></label>\n<input id="x" />')).toBe(true);
+    expect(isNamed('<span id="x" aria-hidden={true}>Hidden</span>\n<input aria-labelledby="x" />')).toBe(false);
+
+    // These helpers receive an element BODY, so their first character is JSX
+    // text rather than JavaScript. An apostrophe there must not open a fake
+    // string and hide the structural tags that follow it.
+    const apostropheThenHidden = "don't <span aria-hidden=\"true\">Hidden</span>";
+    const hiddenStripped = stripHiddenElementContent(apostropheThenHidden);
+    expect(hiddenStripped).not.toContain('Hidden');
+    expect(hiddenStripped).not.toContain('<span');
+    const tagsStripped = stripJsxTags("don't <span>Visible</span>");
+    expect(tagsStripped).toContain("don't");
+    expect(tagsStripped).toContain('Visible');
+    expect(tagsStripped).not.toContain('<span');
+    expect(tagsStripped).not.toContain('</span>');
+
+    // Closing the only tag must also return to the slice's JSX-text context.
+    // Otherwise the later apostrophe opens a fake JavaScript string and hides
+    // the second tag from both the tag stripper and hidden-content pass.
+    const apostropheAfterTag = "Before <span>Visible</span> don't <span>Later</span>";
+    const afterCloseTagsStripped = stripJsxTags(apostropheAfterTag);
+    expect(afterCloseTagsStripped).not.toContain('<span');
+    expect(afterCloseTagsStripped).not.toContain('</span>');
+    const visibleThenHidden = "Before <span>Visible</span> don't <span aria-hidden=\"true\">Hidden later</span>";
+    expect(stripHiddenElementContent(visibleThenHidden)).not.toContain('Hidden later');
+
+    // An expression can contain a string that looks like a tag. It is still
+    // one direct child of FormField, so the clone reaches the real input; only
+    // the scanner can distinguish that string from a nested JSX ancestor.
+    const field = (child) => `import FormField from '../ui/FormField';\n<FormField label="Rounds">${child}</FormField>`;
+    expect(isNamed(field('{enabled && "<div>" && <input type="number" />}'))).toBe(true);
+    // A Fragment, by contrast, is its own React child. Cloning the Fragment's
+    // id does not forward it to the input inside.
+    expect(isNamed(field('<><input type="number" /></>'))).toBe(false);
   });
 
   it('sees a component whose name holds a `$` (#4341)', () => {
