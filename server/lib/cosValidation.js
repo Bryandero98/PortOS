@@ -975,6 +975,17 @@ const slashdoCommandSchema = z.string().refine(isValidSlashdoCommand, {
   message: 'must be a bare slashdo command name (lowercase, digits, hyphens)',
 });
 
+// The app Issues tab already fetched the selected forge issue while listing the
+// page. Keep that payload bounded when it is carried into a manual claim so the
+// prompt cannot be inflated by a hand-crafted request. The generator truncates
+// direct service calls too; this is the route boundary for browser requests.
+const prefetchedIssueContextSchema = z.object({
+  number: z.number().int().positive(),
+  title: z.string().max(1000).optional(),
+  body: z.string().max(12_000).optional(),
+  url: z.string().max(2048).optional(),
+});
+
 export const createCosTaskSchema = z.object({
   description: z.string().min(1),
   diagnostics: cosTaskDiagnosticsSchema.optional(),
@@ -1424,7 +1435,8 @@ export const SWARM_COUNT_MAX = 6;
 // preprocessors). `command` is only shape-checked here — the route owns the
 // allowed-command map and its 400 message. The remaining fields are `/do:next`
 // specific: `target` pins the run to ONE work item (empty ⇒ the agent picks),
-// and `issueAuthorFilter` overrides the app's configured claim-work gate.
+// `issueContext` carries title/body already fetched by the app Issues tab, and
+// `issueAuthorFilter` overrides the app's configured claim-work gate.
 export const slashdoTaskSchema = createCosTaskSchema
   .pick({
     model: true, provider: true, effort: true, simplify: true,
@@ -1435,6 +1447,10 @@ export const slashdoTaskSchema = createCosTaskSchema
     command: z.string().min(1),
     app: z.string().min(1),
     target: z.preprocess(emptyToUndefined, z.string().trim().max(80).optional()),
+    // Content already fetched by the managed-app Issues tab for a manually
+    // targeted forge claim. `buildClaimWorkTask` embeds it in the agent prompt;
+    // scheduled/self-claim flows omit it and continue to read live issue state.
+    issueContext: prefetchedIssueContextSchema.optional(),
     issueAuthorFilter: z.enum(ISSUE_AUTHOR_FILTERS).optional(),
   });
 

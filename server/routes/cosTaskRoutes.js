@@ -114,7 +114,9 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 // The body carries the run settings the app-overview drawer collects: the
 // provider/model/effort pin and `simplify` apply to every command; `target`,
 // `issueAuthorFilter`, and the reviewer choices are `/do:next`-only (they shape
-// the claim prompt, which self-manages its own PR + review loop).
+// the claim prompt, which self-manages its own PR + review loop). `issueContext`
+// is the selected issue's content already fetched by the managed-app Issues tab;
+// it avoids making the agent retrieve the same title/body again.
 //
 // The launchable-command allowlist is the shared catalog in
 // `server/lib/slashdoCatalog.js` (#3114) — the CoS quick templates read the same
@@ -122,7 +124,8 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const {
     command, app, provider, model, effort, simplify,
-    target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts
+    target, issueContext, issueAuthorFilter, reviewers, usernames, optionalReviewers,
+    reviewerMaxRounds, reviewerModels, reviewerEfforts
   } = validateRequest(slashdoTaskSchema, req.body);
 
   const workflow = getSlashdoWorkflow(command);
@@ -177,7 +180,17 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const { useWorktree, openPR, worktreeChangesExpected } = workflow.settings;
   let shape;
   if (command === 'next') {
-    const claim = await buildClaimWorkTask(appObj, { target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts });
+    const claim = await buildClaimWorkTask(appObj, {
+      target,
+      issueContext,
+      issueAuthorFilter,
+      reviewers,
+      usernames,
+      optionalReviewers,
+      reviewerMaxRounds,
+      reviewerModels,
+      reviewerEfforts
+    });
     const scope = claim.target
       ? `claim ${workTrackerLabel(claim.tracker)} item ${claim.target}`
       : `claim next ${workTrackerLabel(claim.tracker)} item`;

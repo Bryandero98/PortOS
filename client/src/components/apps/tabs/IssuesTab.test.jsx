@@ -95,13 +95,21 @@ describe('IssuesTab', () => {
     await waitFor(() => expect(screen.queryByText(/Repro: open the editor/)).not.toBeInTheDocument());
   });
 
-  it('claims an issue by queuing the /do:next task pinned to that issue number', async () => {
+  it('claims an issue with its prefetched content pinned to the /do:next task', async () => {
     renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
 
     await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledWith(
-      'next', 'app-1', { target: '42' }, { silent: true }
+      'next', 'app-1', {
+        target: '42',
+        issueContext: {
+          number: 42,
+          title: 'Crash on save',
+          body: 'Repro: open the editor and hit save.',
+          url: 'https://github.com/acme/widget/issues/42'
+        }
+      }, { silent: true }
     ));
     expect(await screen.findByRole('link', { name: /Queued/ })).toBeInTheDocument();
   });
@@ -160,7 +168,18 @@ describe('IssuesTab', () => {
 
     await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledWith(
       'next', 'app-1',
-      { target: '42', provider: 'claude', model: 'claude-opus-5', effort: undefined },
+      {
+        target: '42',
+        issueContext: {
+          number: 42,
+          title: 'Crash on save',
+          body: 'Repro: open the editor and hit save.',
+          url: 'https://github.com/acme/widget/issues/42'
+        },
+        provider: 'claude',
+        model: 'claude-opus-5',
+        effort: undefined
+      },
       { silent: true }
     ));
   });
