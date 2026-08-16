@@ -10,6 +10,7 @@
     "dev": "node --watch index.js",
     "start": "node index.js",
     "test": "vitest run",
+    "test:fast": "vitest run",
     "test:watch": "vitest",
     "test:ci": "vitest run --bail=1 --silent=passed-only --reporter=default --reporter=github-actions",
     "test:coverage": "vitest run --coverage",

@@ -6,6 +6,9 @@
  * on git's own `commit-tree` + `cherry` patch-id behavior — a hand-mirrored copy
  * wouldn't catch git-version quirks, and that detection is the safety gate the
  * reaper trusts before deleting anything.
+ *
+ * Repos are copied from the shared `gitTestRepo.js` template. The whole file
+ * is excluded from `npm run test:fast` (`VITEST_FAST=1`).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises';
@@ -13,6 +16,7 @@ import { existsSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execGit } from '../lib/execGit.js';
+import { materializeGitRepo, SKIP_HEAVY_INTEGRATION } from '../lib/gitTestRepo.js';
 import { isBranchMergedInto } from './git.js';
 import { reapMergedWorktrees } from './worktreeManager.js';
 
@@ -37,21 +41,16 @@ async function initRepo() {
   // `git worktree list` records the canonical /private/var path, which would
   // break the reaper's startsWith() location checks and our path assertions.
   const created = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-')));
-  await execGit(['init', '-b', 'main'], created);
+  await materializeGitRepo(created, { identity: { email: 'test@example.com', name: 'Test' } });
   // Adopt git's spelling of the root. `git worktree list` reports paths the way
   // git normalized them, and the reaper's containment check compares those
   // against a root derived from this value — so any disagreement (8.3 short
   // names like C:\\Users\\RUNNER~1, drive-letter case) makes every worktree look
   // like it lives somewhere unmanaged and nothing is reaped.
-  const dir = (await execGit(['rev-parse', '--show-toplevel'], created)).stdout.trim() || created;
-  await execGit(['config', 'user.email', 'test@example.com'], dir);
-  await execGit(['config', 'user.name', 'Test'], dir);
-  await execGit(['config', 'commit.gpgsign', 'false'], dir);
-  await commitFile(dir, 'base.txt', 'base\n', 'base');
-  return dir;
+  return (await execGit(['rev-parse', '--show-toplevel'], created)).stdout.trim() || created;
 }
 
-describe('isBranchMergedInto', () => {
+describe.skipIf(SKIP_HEAVY_INTEGRATION)('isBranchMergedInto', () => {
   let dir;
   beforeEach(async () => { dir = await initRepo(); });
   afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
@@ -114,7 +113,7 @@ describe('isBranchMergedInto', () => {
   });
 });
 
-describe('reapMergedWorktrees', () => {
+describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
   let dir;
   beforeEach(async () => { dir = await initRepo(); });
   afterEach(async () => { await rm(dir, { recursive: true, force: true }); });

@@ -4,6 +4,9 @@
  * with tamper checks, walk-set finalization + immutability, and the loop
  * trimmer. The queue and the deterministic postprocess are mocked — the
  * postprocess itself is covered by walkPostprocess.test.js.
+ *
+ * Anchor candidates share the cached PNG encoder in `spriteTestFixtures.js`.
+ * Excluded from `npm run test:fast` (`VITEST_FAST=1`).
  */
 
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';

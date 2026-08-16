@@ -1,6 +1,11 @@
 import { defineConfig } from 'vitest/config';
-
 import { vitestCiPool } from '../scripts/vitestCiPool.js';
+
+// `npm run test:fast` is the Windows-safe way to set the flag (a
+// `VITEST_FAST=1 vitest` script is parsed as an executable name on cmd.exe).
+if (process.env.npm_lifecycle_event === 'test:fast') {
+  process.env.VITEST_FAST = '1';
+}
 
 export default defineConfig({
   test: {
@@ -44,9 +49,20 @@ export default defineConfig({
     // The slashdo submodule ships its own node:test suites; vitest can't
     // parse them and the broad `../lib/**` glob would otherwise pick them up
     // as "no test suite found" failures that break --bail=1 CI runs.
+    // Heavy disk/git/Sharp integration suites. `npm run test:fast`
+    // (VITEST_FAST=1) drops them so a unit-only loop stays cheap; `npm test`
+    // and CI keep the full run. The git-guard files are NOT listed here —
+    // their real-git describes honor SKIP_HEAVY_INTEGRATION, and the leftover
+    // pure-logic cases still run under --fast.
     exclude: [
       '**/node_modules/**',
       '../lib/slashdo/**',
+      ...(process.env.VITEST_FAST ? [
+        'services/worktreeReap.test.js',
+        'services/sprites/atlas.test.js',
+        'services/sprites/walk.test.js',
+        'lib/gitTestRepo.test.js',
+      ] : []),
     ],
     coverage: {
       provider: 'v8',

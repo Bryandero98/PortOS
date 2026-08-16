@@ -10,19 +10,39 @@
  * synthetic registry row: a new span field (or a new required registry field)
  * would otherwise be a six-file edit, and any file that missed it would go
  * green on a stale shape.
+ *
+ * `writeCandidatePng` / `writeWalkFramePng` cache the Sharp-encoded buffer
+ * per unique pixel config so atlas/walk/reference suites don't re-encode the
+ * same 64×64 (or 40×40) fixture for every candidate and walk frame.
  */
 import { join } from 'path';
 import sharp from 'sharp';
 import { mkdir, writeFile } from 'fs/promises';
 import { SPRITE_DIRECTIONS } from './prompts.js';
 
-// A green/teal character rectangle on a magenta background — the legacy
-// Pioneer shape, so auto chroma-key selection keeps magenta.
-export async function writeCandidatePng(path, {
+// Sharp PNG encoding is the expensive part; the same raw pixels show up in
+// dozens of tests. Cache the encoded buffer per unique pixel config and
+// `writeFile` it — still a real PNG, just not re-encoded every time.
+const candidatePngCache = new Map();
+const walkFramePngCache = new Map();
+
+function candidateCacheKey({
   bg = { r: 255, g: 0, b: 255 },
   fg = { r: 23, g: 107, b: 101 },
   rect = { x0: 20, x1: 30, y0: 10, y1: 40 },
 } = {}) {
+  return JSON.stringify({ bg, fg, rect });
+}
+
+async function encodeCandidatePng(opts = {}) {
+  const key = candidateCacheKey(opts);
+  const hit = candidatePngCache.get(key);
+  if (hit) return hit;
+  const {
+    bg = { r: 255, g: 0, b: 255 },
+    fg = { r: 23, g: 107, b: 101 },
+    rect = { x0: 20, x1: 30, y0: 10, y1: 40 },
+  } = opts;
   const w = 64; const h = 64;
   const buf = Buffer.alloc(w * h * 3);
   for (let y = 0; y < h; y++) {
@@ -33,8 +53,53 @@ export async function writeCandidatePng(path, {
       buf[i] = c.r; buf[i + 1] = c.g; buf[i + 2] = c.b;
     }
   }
+  const png = await sharp(buf, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
+  candidatePngCache.set(key, png);
+  return png;
+}
+
+// A green/teal character rectangle on a magenta background — the legacy
+// Pioneer shape, so auto chroma-key selection keeps magenta.
+export async function writeCandidatePng(path, opts = {}) {
+  const png = await encodeCandidatePng(opts);
   await mkdir(join(path, '..'), { recursive: true });
-  await sharp(buf, { raw: { width: w, height: h, channels: 3 } }).png().toFile(path);
+  await writeFile(path, png);
+}
+
+/**
+ * Transparent 40×40 RGBA frame with an opaque 20×30 figure.
+ *
+ * `armX` (optional) adds a protruding block at that column — a stand-in for a
+ * swinging limb, so a direction's frames differ in SILHOUETTE and not just in
+ * tint. Registration bugs (#3021) only show up across differing silhouettes:
+ * with the identical-shape default, every placement rule agrees and an
+ * inter-cell assertion would pass vacuously.
+ *
+ * `speck` paints a lone opaque pixel below the sole — the despill survivor /
+ * dropped shadow that used to drag the whole frame's grounding down with it.
+ */
+export async function writeWalkFramePng(path, tint, armX = null, speck = false) {
+  const key = `${tint}|${armX}|${speck}`;
+  let png = walkFramePngCache.get(key);
+  if (!png) {
+    const w = 40; const h = 40;
+    const buf = Buffer.alloc(w * h * 4);
+    for (let y = 5; y < 35; y++) {
+      for (let x = 10; x < 30; x++) {
+        buf.set([tint, 107, 101, 255], (y * w + x) * 4);
+      }
+    }
+    if (armX !== null) {
+      for (let y = 12; y < 20; y++) {
+        for (let x = armX; x < armX + 6; x++) buf.set([tint, 107, 101, 255], (y * w + x) * 4);
+      }
+    }
+    if (speck) buf.set([tint, 107, 101, 255], (35 * w + 20) * 4);
+    png = await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+    walkFramePngCache.set(key, png);
+  }
+  await mkdir(join(path, '..'), { recursive: true });
+  await writeFile(path, png);
 }
 
 export async function placeCandidate(testRoot, recordId, target, name, opts = {}) {

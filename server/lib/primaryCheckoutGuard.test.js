@@ -5,13 +5,21 @@
  * `execGit`: the whole value of this module is that it reads git state
  * correctly, and a mock that returns whatever the test author expected `git
  * rev-parse` to print proves nothing about that.
+ *
+ * Sandboxes come from `gitTestRepo.js` (one template per worker, then copied).
+ * `VITEST_FAST=1` skips the real-git describes and keeps the prose helpers.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
-import { tmpdir } from 'os';
+import { rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { execGit } from './execGit.js';
+import {
+  makeGitSandbox,
+  attachBareOrigin,
+  destroyGitSandbox,
+  SKIP_HEAVY_INTEGRATION,
+} from './gitTestRepo.js';
 import {
   capturePrimaryCheckoutState,
   detectPrimaryCheckoutDrift,
@@ -37,10 +45,7 @@ async function commit(subject) {
  * network, no mocked `rev-parse`).
  */
 async function addOrigin() {
-  const remote = join(scratch, 'origin.git');
-  await execGit(['init', '--bare', '-b', 'main', remote], scratch);
-  await execGit(['remote', 'add', 'origin', remote], repo);
-  await execGit(['push', '-u', 'origin', 'main'], repo);
+  await attachBareOrigin(scratch, repo);
 }
 
 /** Land a commit on the remote and fast-forward `repo` onto it, as a pull would. */
@@ -56,21 +61,18 @@ async function pullFromOrigin(subject) {
   await execGit(['pull', '--ff-only'], repo);
 }
 
-beforeEach(async () => {
-  scratch = await mkdtemp(join(tmpdir(), 'portos-branch-jack-'));
-  repo = join(scratch, 'primary');
-  await execGit(['init', '-b', 'main', repo], scratch);
-  // Local identity so the suite doesn't depend on (or read) the host's git config.
-  await execGit(['config', 'user.email', 'agent@example.com'], repo);
-  await execGit(['config', 'user.name', 'Example Agent'], repo);
-  await commit('initial');
-});
+function useGitSandbox() {
+  beforeEach(async () => {
+    ({ scratch, repo } = await makeGitSandbox({ prefix: 'portos-branch-jack-' }));
+  });
+  afterEach(async () => {
+    await destroyGitSandbox(scratch);
+  });
+}
 
-afterEach(async () => {
-  await rm(scratch, { recursive: true, force: true }).catch(() => {});
-});
+describe.skipIf(SKIP_HEAVY_INTEGRATION)('capturePrimaryCheckoutState', () => {
+  useGitSandbox();
 
-describe('capturePrimaryCheckoutState', () => {
   it('reads the current branch and HEAD', async () => {
     const state = await capturePrimaryCheckoutState(repo);
     expect(state.path).toBe(repo);
@@ -86,7 +88,9 @@ describe('capturePrimaryCheckoutState', () => {
   });
 });
 
-describe('detectPrimaryCheckoutDrift', () => {
+describe.skipIf(SKIP_HEAVY_INTEGRATION)('detectPrimaryCheckoutDrift', () => {
+  useGitSandbox();
+
   it('reports no drift when the primary checkout is untouched', async () => {
     const baseline = await capturePrimaryCheckoutState(repo);
     // Simulate the run happening entirely elsewhere: nothing touches `repo`.

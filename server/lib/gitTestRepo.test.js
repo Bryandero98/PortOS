@@ -1,0 +1,91 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtemp, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { execGit } from './execGit.js';
+import {
+  makeGitSandbox,
+  attachBareOrigin,
+  materializeGitRepo,
+  destroyGitSandbox,
+} from './gitTestRepo.js';
+
+describe('template exit hook', () => {
+  it('registers a single process-exit listener across module re-imports', async () => {
+    // First sandbox builds the worker template and should arm the hook.
+    const box = await makeGitSandbox({ prefix: 'portos-git-fx-hook-' });
+    sandboxes.push(box.scratch);
+    const before = process.listenerCount('exit');
+    // A second build in this same module uses the cached template promise
+    // and must not add another listener. The watch-mode case (fresh module
+    // cache) is the same function: rememberTemplate no-ops once hooked.
+    const box2 = await makeGitSandbox({ prefix: 'portos-git-fx-hook2-' });
+    sandboxes.push(box2.scratch);
+    expect(process.listenerCount('exit')).toBe(before);
+    expect(globalThis.__portosGitTemplateExitHooked).toBe(true);
+    expect(Array.isArray(globalThis.__portosGitTemplateDirs)).toBe(true);
+    expect(globalThis.__portosGitTemplateDirs.length).toBeGreaterThan(0);
+  });
+});
+
+const sandboxes = [];
+afterEach(async () => {
+  await Promise.all(sandboxes.splice(0).map((s) => destroyGitSandbox(s)));
+});
+
+describe('makeGitSandbox', () => {
+  it('yields a real repo on main with the template commit and no origin by default', async () => {
+    const box = await makeGitSandbox({ prefix: 'portos-git-fx-' });
+    sandboxes.push(box.scratch);
+    expect((await execGit(['rev-parse', '--abbrev-ref', 'HEAD'], box.repo)).stdout.trim()).toBe('main');
+    expect((await execGit(['log', '-1', '--pretty=%s'], box.repo)).stdout.trim()).toBe('initial');
+    const remotes = (await execGit(['remote'], box.repo)).stdout.trim();
+    expect(remotes).toBe('');
+  });
+
+  it('rewrites origin to the sandbox copy so two sandboxes cannot share a remote', async () => {
+    const a = await makeGitSandbox({ origin: true, prefix: 'portos-git-fx-a-' });
+    const b = await makeGitSandbox({ origin: true, prefix: 'portos-git-fx-b-' });
+    sandboxes.push(a.scratch, b.scratch);
+
+    const urlA = (await execGit(['remote', 'get-url', 'origin'], a.repo)).stdout.trim();
+    const urlB = (await execGit(['remote', 'get-url', 'origin'], b.repo)).stdout.trim();
+    expect(urlA).toBe(a.origin);
+    expect(urlB).toBe(b.origin);
+    expect(urlA).not.toBe(urlB);
+
+    await writeFile(join(a.repo, 'only-a.txt'), 'a');
+    await execGit(['add', '-A'], a.repo);
+    await execGit(['commit', '-m', 'only a'], a.repo);
+    await execGit(['push', 'origin', 'main'], a.repo);
+
+    const inB = await execGit(['cat-file', '-e', 'origin/main:only-a.txt'], b.repo, { ignoreExitCode: true });
+    expect(inB.exitCode).not.toBe(0);
+  });
+});
+
+describe('attachBareOrigin / materializeGitRepo', () => {
+  it('publishes commits made before the origin was attached', async () => {
+    const box = await makeGitSandbox({ prefix: 'portos-git-fx-att-' });
+    sandboxes.push(box.scratch);
+    await writeFile(join(box.repo, 'ahead.txt'), 'ahead');
+    await execGit(['add', '-A'], box.repo);
+    await execGit(['commit', '-m', 'ahead of origin'], box.repo);
+
+    const origin = await attachBareOrigin(box.scratch, box.repo);
+    expect(existsSync(origin)).toBe(true);
+    expect((await execGit(['log', '-1', '--pretty=%s', 'origin/main'], box.repo)).stdout.trim())
+      .toBe('ahead of origin');
+  });
+
+  it('fills an existing directory as a standalone repo root', async () => {
+    const dest = await mkdtemp(join(tmpdir(), 'portos-git-fx-mat-'));
+    sandboxes.push(dest);
+    await materializeGitRepo(dest, { identity: { email: 'test@example.com', name: 'Test' } });
+    const top = (await execGit(['rev-parse', '--show-toplevel'], dest)).stdout.trim();
+    expect(top).toBeTruthy();
+    expect((await execGit(['log', '-1', '--pretty=%s'], dest)).stdout.trim()).toBe('initial');
+    expect((await execGit(['config', 'user.email'], dest)).stdout.trim()).toBe('test@example.com');
+  });
+});
