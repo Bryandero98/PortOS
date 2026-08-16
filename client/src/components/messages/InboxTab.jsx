@@ -173,7 +173,7 @@ export default function InboxTab({ accounts }) {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedAccount, setSelectedAccount] = useState('');
-  const [selectedMessage, setSelectedMessage] = useState(null);
+  const [loadedMessage, setLoadedMessage] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   // accountId -> ISO timestamp for syncs that succeeded in this session, so the
@@ -187,6 +187,8 @@ export default function InboxTab({ accounts }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTriage = searchParams.get('triage');
+  const messageId = searchParams.get('message');
+  const messageAccountId = searchParams.get('account');
   const VALID_TRIAGE_KEYS = TRIAGE_TABS.map(t => t.key);
   const activeTab = VALID_TRIAGE_KEYS.includes(rawTriage) ? rawTriage : 'all';
   const setActiveTab = (key) => {
@@ -195,6 +197,20 @@ export default function InboxTab({ accounts }) {
     else p.set('triage', key);
     setSearchParams(p, { replace: true });
   };
+
+  const openMessage = (message) => {
+    const p = new URLSearchParams(searchParams);
+    p.set('message', message.id);
+    p.set('account', message.accountId);
+    setSearchParams(p);
+  };
+
+  const closeMessage = useCallback(() => {
+    const p = new URLSearchParams(searchParams);
+    p.delete('message');
+    p.delete('account');
+    setSearchParams(p, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     clearTimeout(debounceRef.current);
@@ -215,6 +231,43 @@ export default function InboxTab({ accounts }) {
   useEffect(() => {
     fetchMessages();
   }, [fetchMessages]);
+
+  // The URL is the source of truth for the open message. Resolve it from the
+  // current list when possible, then fetch it directly for a filtered-out or
+  // not-yet-loaded message so a copied URL still opens on a fresh load.
+  useEffect(() => {
+    if (!messageId) {
+      setLoadedMessage(null);
+      return undefined;
+    }
+
+    const listed = messages.find(message => (
+      String(message.id) === messageId
+      && (!messageAccountId || String(message.accountId) === messageAccountId)
+    ));
+    if (listed) {
+      setLoadedMessage(listed);
+      return undefined;
+    }
+    if (loadedMessage?.id === messageId && String(loadedMessage.accountId) === messageAccountId) {
+      return undefined;
+    }
+    if (!messageAccountId) {
+      if (!loading) closeMessage();
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLoadedMessage(null);
+    api.getMessageDetail(messageAccountId, messageId)
+      .then(message => {
+        if (!cancelled) setLoadedMessage(message);
+      })
+      .catch(() => {
+        if (!cancelled) closeMessage();
+      });
+    return () => { cancelled = true; };
+  }, [messageId, messageAccountId, messages, loading, loadedMessage, closeMessage]);
 
   // Stream messages into the list as they arrive during sync
   useEffect(() => {
@@ -363,12 +416,18 @@ export default function InboxTab({ accounts }) {
     setActiveTab('all');
   };
 
-  if (selectedMessage) {
+  const selectedMessage = loadedMessage
+    && String(loadedMessage.id) === messageId
+    && (!messageAccountId || String(loadedMessage.accountId) === messageAccountId)
+    ? loadedMessage
+    : null;
+
+  if (messageId && selectedMessage) {
     return (
       <MessageDetail
         message={selectedMessage}
         accounts={accountList}
-        onBack={() => { setSelectedMessage(null); fetchMessages(); }}
+        onBack={() => { closeMessage(); fetchMessages(); }}
       />
     );
   }
@@ -515,7 +574,7 @@ export default function InboxTab({ accounts }) {
 
               {/* Message content — clickable */}
               <button
-                onClick={() => setSelectedMessage(msg)}
+                onClick={() => openMessage(msg)}
                 className="flex-1 min-w-0 text-left"
               >
                 <div className="flex items-center gap-2">
@@ -546,10 +605,10 @@ export default function InboxTab({ accounts }) {
                   const onClick = actionKey === 'reply'
                     ? (e) => handleQuickReply(msg, e)
                     : actionKey === 'review'
-                      ? (e) => { e.stopPropagation(); setSelectedMessage(msg); }
+                      ? (e) => { e.stopPropagation(); openMessage(msg); }
                       : isActionable
                         ? (e) => handleAction(msg, actionKey, e)
-                        : (e) => { e.stopPropagation(); setSelectedMessage(msg); };
+                        : (e) => { e.stopPropagation(); openMessage(msg); };
 
                   const title = isRecommended && ev?.reason
                     ? `AI: ${cfg.label} — ${ev.reason}`
@@ -583,4 +642,3 @@ export default function InboxTab({ accounts }) {
     </div>
   );
 }
-
