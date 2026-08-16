@@ -22,7 +22,7 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerPins, buildReviewerEffortNote, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS } from '../lib/validation.js';
+import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerPins, buildReviewerEffortNote, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS, CLAIM_OVERRIDE_CONTEXT_MAX_CHARS } from '../lib/validation.js';
 import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
@@ -425,7 +425,8 @@ export async function buildClaimWorkTask(app, {
   reviewerModels,
   reviewerEfforts,
   target,
-  issueContext
+  issueContext,
+  overrideContext
 } = {}) {
   const { resolveAppWorkTracker, trackerToClaimTaskType } = await import('../lib/workTracker.js');
   const { getTaskPrompt } = await import('./taskPromptService.js');
@@ -497,6 +498,7 @@ export async function buildClaimWorkTask(app, {
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
     + appendTargetWorkItemBlock(promptTaskType, targetRef)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
+    + appendClaimOverrideContext(overrideContext)
     + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts);
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
@@ -640,6 +642,32 @@ ${body || '(empty)'}
 /** The same block with the leading blank-line separator used by prompt appends. */
 const appendPrefetchedIssueContext = (promptTaskType, target, issueContext) => {
   const block = buildPrefetchedIssueContextBlock(promptTaskType, target, issueContext);
+  return block ? `\n\n${block}` : '';
+};
+
+/**
+ * Render optional guidance entered by the user on the managed-app Issues tab.
+ * This is deliberately an appended section rather than a template placeholder:
+ * customized claim templates from older installs still receive the guidance.
+ * Keep the claim workflow's safety and delivery requirements in force even when
+ * the user asks for a different implementation focus.
+ */
+export function buildClaimOverrideContextBlock(overrideContext) {
+  if (typeof overrideContext !== 'string') return '';
+  const context = overrideContext.trim().slice(0, CLAIM_OVERRIDE_CONTEXT_MAX_CHARS);
+  if (!context) return '';
+
+  return `## Claim Override Context
+
+The following guidance was entered by the user for this claim. Apply it when it helps complete the selected work item, but it does not replace the claim workflow's safety, ownership, verification, reviewer, or PR requirements.
+
+<portos-claim-override>
+${context}
+</portos-claim-override>`;
+}
+
+const appendClaimOverrideContext = (overrideContext) => {
+  const block = buildClaimOverrideContextBlock(overrideContext);
   return block ? `\n\n${block}` : '';
 };
 

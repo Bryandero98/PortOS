@@ -986,6 +986,15 @@ const prefetchedIssueContextSchema = z.object({
   url: z.string().max(2048).optional(),
 });
 
+// Optional guidance entered on the managed-app Issues tab. It is appended to
+// the selected claim prompt, not stored as the task's human note, so it reaches
+// the agent even though the claim prompt is assembled before queueing.
+export const CLAIM_OVERRIDE_CONTEXT_MAX_CHARS = 4_000;
+const claimOverrideContextSchema = z.preprocess(
+  v => typeof v === 'string' ? (v.trim() || undefined) : v,
+  z.string().max(CLAIM_OVERRIDE_CONTEXT_MAX_CHARS).optional()
+);
+
 export const createCosTaskSchema = z.object({
   description: z.string().min(1),
   diagnostics: cosTaskDiagnosticsSchema.optional(),
@@ -1436,7 +1445,9 @@ export const SWARM_COUNT_MAX = 6;
 // allowed-command map and its 400 message. The remaining fields are `/do:next`
 // specific: `target` pins the run to ONE work item (empty ⇒ the agent picks),
 // `issueContext` carries title/body already fetched by the app Issues tab, and
-// `issueAuthorFilter` overrides the app's configured claim-work gate.
+// `issueAuthorFilter` overrides the app's configured claim-work gate. The
+// optional `overrideContext` is user guidance appended to the selected claim
+// prompt, rather than the queue's one-line human note.
 export const slashdoTaskSchema = createCosTaskSchema
   .pick({
     model: true, provider: true, effort: true, simplify: true,
@@ -1451,6 +1462,7 @@ export const slashdoTaskSchema = createCosTaskSchema
     // targeted forge claim. `buildClaimWorkTask` embeds it in the agent prompt;
     // scheduled/self-claim flows omit it and continue to read live issue state.
     issueContext: prefetchedIssueContextSchema.optional(),
+    overrideContext: claimOverrideContextSchema,
     issueAuthorFilter: z.enum(ISSUE_AUTHOR_FILTERS).optional(),
   });
 

@@ -184,6 +184,25 @@ describe('IssuesTab', () => {
     ));
   });
 
+  it('sends optional override context with the selected claim', async () => {
+    renderTab();
+
+    await screen.findByText('Crash on save');
+    fireEvent.change(screen.getByLabelText(/Override context or instructions/), {
+      target: { value: 'Prefer a small, focused fix and add a regression test.' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Claim/ }));
+
+    await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledWith(
+      'next', 'app-1',
+      expect.objectContaining({
+        target: '42',
+        overrideContext: 'Prefer a small, focused fix and add a regression test.'
+      }),
+      { silent: true }
+    ));
+  });
+
   it('re-enables the Claim button when queuing fails, instead of stranding it', async () => {
     api.createSlashdoTask.mockRejectedValue(new Error('CoS is not running'));
     renderTab();

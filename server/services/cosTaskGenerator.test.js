@@ -48,6 +48,7 @@ import {
   normalizeWorkItemRef,
   buildTargetWorkItemBlock,
   buildPrefetchedIssueContextBlock,
+  buildClaimOverrideContextBlock,
   resolveTaskInputHook,
   resolveReconcileDrainGate,
   applyPerpetualDrainCap
@@ -426,9 +427,30 @@ describe('work-item target', () => {
     });
   });
 
+  describe('buildClaimOverrideContextBlock', () => {
+    it('renders user guidance as a delimited, safety-preserving prompt section', () => {
+      const block = buildClaimOverrideContextBlock('  Focus on the smallest safe fix.  ');
+
+      expect(block).toContain('## Claim Override Context');
+      expect(block).toContain('Focus on the smallest safe fix.');
+      expect(block).toContain('<portos-claim-override>');
+      expect(block).toContain('</portos-claim-override>');
+      expect(block).toContain('safety, ownership, verification, reviewer, or PR requirements');
+    });
+
+    it('omits blank guidance and caps direct service payloads', () => {
+      expect(buildClaimOverrideContextBlock('   ')).toBe('');
+
+      const block = buildClaimOverrideContextBlock('x'.repeat(8_000));
+      expect(block).toContain('x'.repeat(4_000));
+      expect(block).not.toContain('x'.repeat(4_001));
+    });
+  });
+
   it('wires the prefetch block into the manual claim prompt assembly', () => {
     const claimBuilder = GEN_SRC.slice(GEN_SRC.indexOf('export async function buildClaimWorkTask('));
     expect(claimBuilder).toContain('appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)');
+    expect(claimBuilder).toContain('appendClaimOverrideContext(overrideContext)');
   });
 });
 

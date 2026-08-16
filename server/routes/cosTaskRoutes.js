@@ -116,7 +116,8 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 // `issueAuthorFilter`, and the reviewer choices are `/do:next`-only (they shape
 // the claim prompt, which self-manages its own PR + review loop). `issueContext`
 // is the selected issue's content already fetched by the managed-app Issues tab;
-// it avoids making the agent retrieve the same title/body again.
+// it avoids making the agent retrieve the same title/body again. The optional
+// `overrideContext` is user guidance appended to that claim prompt.
 //
 // The launchable-command allowlist is the shared catalog in
 // `server/lib/slashdoCatalog.js` (#3114) — the CoS quick templates read the same
@@ -124,7 +125,7 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const {
     command, app, provider, model, effort, simplify,
-    target, issueContext, issueAuthorFilter, reviewers, usernames, optionalReviewers,
+    target, issueContext, overrideContext, issueAuthorFilter, reviewers, usernames, optionalReviewers,
     reviewerMaxRounds, reviewerModels, reviewerEfforts
   } = validateRequest(slashdoTaskSchema, req.body);
 
@@ -183,6 +184,7 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
     const claim = await buildClaimWorkTask(appObj, {
       target,
       issueContext,
+      ...(overrideContext !== undefined ? { overrideContext } : {}),
       issueAuthorFilter,
       reviewers,
       usernames,
