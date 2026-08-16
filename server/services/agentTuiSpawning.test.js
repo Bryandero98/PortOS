@@ -399,6 +399,25 @@ describe('agent TUI spawning', () => {
     expect(config.idleTimeoutMs).toBe(180000);
   });
 
+  it('disables idle reaping for local-runtime TUI providers', () => {
+    const ollama = buildTuiSpawnConfig({
+      id: 'claude-ollama-tui', type: 'tui', command: 'claude', ollamaBacked: true,
+      tuiIdleTimeoutMs: 30000,
+    }, 'qwen3:35b');
+    expect(ollama.idleTimeoutMs).toBeNull();
+
+    const mtplx = buildTuiSpawnConfig({
+      id: 'opencode-mtplx-tui', type: 'tui', command: 'opencode', mtplxBacked: true,
+      tuiIdleTimeoutMs: 30000,
+    }, 'mtplx');
+    expect(mtplx.idleTimeoutMs).toBeNull();
+
+    const cloud = buildTuiSpawnConfig({
+      id: 'codex-tui', type: 'tui', command: 'codex', tuiIdleTimeoutMs: 30000,
+    }, 'gpt-5.6-terra');
+    expect(cloud.idleTimeoutMs).toBe(30000);
+  });
+
   it('omits the --model flag when model is null/empty', () => {
     const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui', args: [] }, null);
     expect(config.args).toEqual(['--dangerously-bypass-approvals-and-sandbox', '-c', 'check_for_update_on_startup=false']);
@@ -881,6 +900,45 @@ describe('spawnTuiAgent runtime', () => {
         success: true,
         completionReason: 'idle-complete',
       })
+    );
+  });
+
+  it('does not idle-reap an Ollama-backed TUI while a local model is silent', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+    const checkOnlineFn = vi.fn().mockResolvedValue(true);
+
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-ollama-tui', name: 'Claude Ollama TUI', type: 'tui', command: 'claude', ollamaBacked: true, envVars: {} },
+      checkOnlineFn,
+    });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Claude Code booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await vi.advanceTimersByTimeAsync(800);
+    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+
+    // The supplied config has a 50ms idle window, but local-runtime providers
+    // disable it at the enforcement point. The max-runtime ceiling is hours out.
+    await vi.advanceTimersByTimeAsync(21000);
+    await flushMicrotasks();
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+    expect(checkOnlineFn).not.toHaveBeenCalled();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+    await completeDone;
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, completionReason: 'shell-exit' })
     );
   });
 
@@ -2635,6 +2693,20 @@ describe('spawnTuiAgent runtime', () => {
 // fake-timer harness above, not by this pure function.
 describe('agentTuiSpawning — idle reap decision (#2074)', () => {
   const BASE = 180000;
+
+  it('waits indefinitely when a local-runtime model disables idle reaping', () => {
+    const r = decideIdleReap({
+      idle: Number.MAX_SAFE_INTEGER,
+      baseIdleTimeoutMs: null,
+      mergeQueueActive: true,
+      reviewLoopActive: true,
+      backgroundShellActive: true,
+      workActive: false,
+      rendersCounter: true,
+    });
+    expect(r.action).toBe('wait');
+    expect(r.effectiveIdleTimeoutMs).toBe(Infinity);
+  });
 
   it('does NOT reap at the 3-min default while in a merge queue — grace extends to 15min', () => {
     const r = decideIdleReap({ idle: BASE + 5000, baseIdleTimeoutMs: BASE, mergeQueueActive: true, workActive: true, rendersCounter: true });
