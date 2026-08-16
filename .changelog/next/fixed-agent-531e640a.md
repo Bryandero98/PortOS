@@ -1,0 +1,1 @@
+- CoS TUI agents no longer have a wall-clock runtime limit and remain attached until their completion sentinel, process exit, or an explicit failure.

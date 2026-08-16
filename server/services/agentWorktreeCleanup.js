@@ -365,7 +365,8 @@ async function runCleanupAgentWorktree(agentId, success, { prCreation = PR_CREAT
 
   // A run that owned its PR workflow and FAILED may still have opened the PR
   // before it died — the prompt has it open one at step 3 and merge at step 4,
-  // so a forced termination in between (max-runtime, spend limit, host shutdown)
+  // so a forced termination in between (legacy runtime guard, spend limit,
+  // host shutdown)
   // leaves a real PR with nothing watching it (#3733). The old flow could not
   // produce this: PortOS opened the PR only on success and spawned the follow-up
   // in the same breath. The retry adopts the PR ("if `gh` reports the pull

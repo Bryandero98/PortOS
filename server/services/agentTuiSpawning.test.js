@@ -209,7 +209,6 @@ import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import {
-  MAX_RUNTIME_WRAP_UP_GRACE_MS,
   SELF_CLEARING_RESUBMIT_INTERVAL_MS,
 } from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
@@ -317,7 +316,7 @@ describe('agent TUI spawning', () => {
     expect(config.args).toEqual(['--dangerously-skip-permissions']);
   });
 
-  it('quotes TUI arguments and carries prompt/runtime timing config', () => {
+  it('quotes TUI arguments and carries prompt timing config without a runtime limit', () => {
     const config = buildTuiSpawnConfig({
       id: 'claude-code-tui',
       name: 'Claude TUI',
@@ -337,7 +336,7 @@ describe('agent TUI spawning', () => {
     ]);
     expect(config.commandLine).toBe("claude --dangerously-skip-permissions --add-dir '/tmp/with space' --model claude-sonnet");
     expect(config.promptDelayMs).toBe(1000);
-    expect(config.maxRuntimeMs).toBe(7200000);
+    expect(config).not.toHaveProperty('maxRuntimeMs');
     expect(config).not.toHaveProperty('idleTimeoutMs');
   });
 
@@ -365,10 +364,10 @@ describe('agent TUI spawning', () => {
     expect(claudeConfig.command).toBe('claude');
   });
 
-  it('applies default prompt delay and max runtime when the provider omits them', () => {
+  it('applies the default prompt delay and omits a runtime limit', () => {
     const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui' }, null);
     expect(config.promptDelayMs).toBe(2500);
-    expect(config.maxRuntimeMs).toBe(10800000);
+    expect(config).not.toHaveProperty('maxRuntimeMs');
     expect(config).not.toHaveProperty('idleTimeoutMs');
   });
 
@@ -480,9 +479,6 @@ describe('spawnTuiAgent runtime', () => {
     args: [],
     commandLine: 'codex',
     promptDelayMs: 100,
-    // Large so the wall-clock backstop never fires during the modest fake-timer
-    // advances the paste/handshake tests perform (the max-runtime test overrides it).
-    maxRuntimeMs: 3600000
   };
 
   function runSpawn(overrides = {}) {
@@ -830,171 +826,51 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
-  // ── Absolute wall-clock backstop reaps a busy-or-silent stuck agent ──────────
-  // The max-runtime timer fires from submission
-  // regardless of PTY chatter and, with no .agent-done sentinel present,
-  // finalizes as a needs-manual-finish FAILURE.
-  it('max-runtime: reaps a still-chattering agent as failure once the wall-clock ceiling elapses', async () => {
+  // ── No wall-clock stop ─────────────────────────────────────────────────────
+  // A provider can legitimately spend more than a day on one task. Advancing
+  // well past the old three-hour ceiling must not send a wrap-up prompt or
+  // finalize the agent; completion remains sentinel-, exit-, or failure-driven.
+  it('keeps a submitted OpenCode agent attached beyond 24 hours', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
 
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, maxRuntimeMs: 30000 } });
+    const spawnPromise = runSpawn({
+      provider: { ...defaultProvider, id: 'opencode-tui', name: 'OpenCode TUI' },
+      tuiConfig: { ...defaultTuiConfig, command: 'opencode', commandLine: 'opencode' },
+    });
     await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await capturedOnData(Buffer.from('OpenCode booting...\n'));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
-
-    // Prompt echo → paste verification passes → submit-Enter fires → the
-    // max-runtime timer is armed.
     await capturedOnData(Buffer.from('do the thing\n'));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(3600);
     await flushMicrotasks();
 
-    // A busy agent that keeps chattering still reaches the same wall-clock ceiling.
-    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(31000);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
     await flushMicrotasks();
 
-    // The ceiling PRODS rather than reaping (#3167): it pastes a wrap-up message
-    // and opens a grace window, so the agent is NOT finalized yet.
     expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+    expect(shellService.pasteToSession).not.toHaveBeenCalledWith(
       SESSION_ID,
-      expect.stringContaining('you have hit your maximum runtime'),
+      expect.anything(),
       { label: '[cosAgents] max-runtime wrap-up' },
     );
 
-    // No sentinel ever appears → the grace window expires → NOW it reaps.
-    await vi.advanceTimersByTimeAsync(MAX_RUNTIME_WRAP_UP_GRACE_MS + 2000);
-    await flushMicrotasks();
-
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
     vi.useRealTimers();
     await completeDone;
 
-    // Reaped under the DISTINCT reason: it was asked to wrap up and didn't, which
-    // means a wedged provider — not "raise the runtime budget".
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'agent-1',
-        success: false,
-        completionReason: 'max-runtime-no-wrap-up',
+        success: true,
+        completionReason: 'shell-exit',
       })
     );
-  });
-
-  // The whole point of the grace window: an agent that was SECONDS from writing
-  // its sentinel when the ceiling landed must finalize as a SUCCESS, not be
-  // reaped. This is the agent-d2ae0352 shape (PR merged 01:32:29, killed
-  // 01:32:59) that made a fresh agent redo already-shipped work.
-  it('max-runtime: an agent that wraps up during the grace window finalizes as success', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // Ceiling fires → prod + grace window, no finalize.
-    await vi.advanceTimersByTimeAsync(31000);
-    await flushMicrotasks();
-    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-
-    // The prod works: the agent writes .agent-done well inside the grace window.
-    vi.mocked(existsSync).mockReturnValue(true);
-    await vi.advanceTimersByTimeAsync(4000);
-    await flushMicrotasks();
-
-    vi.useRealTimers();
-    await completeDone;
-
-    // Finalized as a SUCCESS via the ordinary sentinel path — never reaped.
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: 'agent-1', success: true })
-    );
-    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
-      expect.objectContaining({ completionReason: 'max-runtime-timeout' })
-    );
-  });
-
-  // A dead session can't be prodded, so the grace window is pointless — reap
-  // immediately rather than idling the full window for a message nobody reads.
-  it('max-runtime: reaps immediately (no grace) when the TUI session is already gone', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // Session died before the ceiling landed.
-    vi.mocked(shellService.getSession).mockReturnValue(null);
-    await vi.advanceTimersByTimeAsync(31000);
-    await flushMicrotasks();
-
-    vi.useRealTimers();
-    await completeDone;
-
-    // Never prodded, so this keeps the plain-ceiling reason (not no-wrap-up).
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'max-runtime-timeout' })
-    );
-  });
-
-  // ── 1d. A written .agent-done sentinel is never overridden by a FAILURE reap ─
-  // If the agent wrote .agent-done, the run truly finished — the max-runtime
-  // ceiling firing would be a false failure. The 2s sentinel poll normally
-  // finalizes it as success first; the max-runtime timer's own salvage branch
-  // (existsSync check) is the boundary backstop mirroring the one-shot runner's
-  // response-file salvage. Either way, with the sentinel present the run must
-  // finalize as SUCCESS — never as a max-runtime FAILURE.
-  it('max-runtime does not fail a run whose .agent-done sentinel exists', async () => {
-    vi.mocked(existsSync).mockReturnValue(true);
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    vi.useRealTimers();
-    await completeDone;
-
-    const call = vi.mocked(agentLifecycle.finalizeAgent).mock.calls.at(-1)?.[0];
-    expect(call?.success).toBe(true);
-    expect(call?.completionReason).not.toBe('max-runtime-timeout');
   });
 
   // ── 1b. Command exited before the prompt → don't paste into the bare shell ───
@@ -1043,12 +919,9 @@ describe('spawnTuiAgent runtime', () => {
   });
 
   // ── 1c. claude waits for bracketed-paste mode (input ready) before pasting ───
-  const claudeTuiConfig = { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100, maxRuntimeMs: 3600000 };
+  const claudeTuiConfig = { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100 };
   // Antigravity (agy) gets the SAME positive input-ready gate as claude (#2705).
-  // maxRuntimeMs is explicit for the same reason defaultTuiConfig pins it: left
-  // undefined, the wall-clock backstop is a `setTimeout(…, undefined)` that fires
-  // on the next tick and prods every one of these runs to wrap up.
-  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100, maxRuntimeMs: 3600000 };
+  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100 };
   const pasteCount = () => vi.mocked(shellService.writeToSession).mock.calls
     .filter(([, d]) => typeof d === 'string' && d.includes('\x1b[200~')).length;
   // The launch shell turns bracketed-paste OFF to run the command, then claude
@@ -1567,7 +1440,7 @@ describe('spawnTuiAgent runtime', () => {
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
 
-    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100, maxRuntimeMs: 3600000 } });
+    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100 } });
     await flushMicrotasks();
     // Same banner text codex prints — but this is a gemini session.
     await capturedOnData(Buffer.from('Starting MCP servers (0/3): a, b, c\n'));

@@ -108,10 +108,7 @@ export const providerSchema = z.object({
   envVars: z.record(z.string()).optional(),
   secretEnvVars: z.array(z.string()).optional(),
   headlessArgs: z.array(z.string()).optional(),
-  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
-  // Absolute wall-clock ceiling for a long-running TUI agent. Min 1min, max 12h
-  // to cover the longest legitimate multi-hour orchestration.
-  tuiMaxRuntimeMs: z.number().int().min(60000).max(43200000).optional()
+  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional()
 });
 
 // PUT /api/providers/active — set the active provider by id. Constrain to the

@@ -686,16 +686,16 @@ function resolvePatternOrigin(errorDef, analysisOutput) {
  * Runner-resolved completion reasons → the failure they actually describe.
  *
  * When the spawner's own finalize path already KNOWS why a run ended (a legacy
- * idle reaper fired, max runtime elapsed, or the shell session never came up),
- * that is a structural signal about the process — strictly better evidence than a regex
+ * forced-stop was applied, or the shell session never came up), that is a
+ * structural signal about the process — strictly better evidence than a regex
  * sweep over the transcript. Keyed by the `reason` each `finish()` call passes;
  * see `server/services/agentTuiSpawning.js`. Categories are deliberately reused
  * from ERROR_PATTERNS so downstream taxonomies (task-learning metrics,
  * layeredIntelligenceExecutionFailures) keep classifying them without a new token.
  */
-// Legacy idle-out reasons remain readable for archived agent records and retries;
-// the current CoS TUI path completes by sentinel, process exit, explicit provider
-// failure, or its wall-clock runtime ceiling.
+// Legacy idle-out and forced-stop reasons remain readable for archived agent
+// records and retries; the current CoS TUI path completes by sentinel, process
+// exit, or explicit provider failure.
 export const COMPLETION_REASON_ANALYSES = {
   'idle-no-changes': {
     category: 'no-changes',
@@ -760,18 +760,16 @@ export const COMPLETION_REASON_ANALYSES = {
   'max-runtime-timeout': {
     category: 'timeout',
     actionable: false,
-    message: 'Agent exceeded its maximum runtime',
-    suggestedFix: 'Task took longer than the configured max runtime. Break it into smaller subtasks or raise the runtime budget.'
+    message: 'Agent was stopped by a retired maximum-runtime limit',
+    suggestedFix: 'This result came from an older PortOS runtime guard; current CoS TUI agents have no wall-clock runtime ceiling.'
   },
-  // Distinct from the bare ceiling above: this agent was explicitly ASKED to wrap
-  // up and write its sentinel (see MAX_RUNTIME_WRAP_UP_GRACE_MS) and never did, so
-  // "raise the runtime budget" is the wrong advice — a session that can't answer a
-  // direct prompt in five minutes is wedged, not merely slow.
+  // Historical counterpart for runs that were asked to wrap up during the
+  // retired wall-clock guard and never did.
   'max-runtime-no-wrap-up': {
     category: 'timeout',
     actionable: false,
-    message: 'Agent did not wrap up when asked at its max runtime',
-    suggestedFix: 'The agent was asked to write its completion sentinel and did not respond within the grace window — its provider/CLI is likely wedged rather than merely slow. Check the raw transcript for a stalled request, and check for open or merged-but-uncleaned PRs it left behind.'
+    message: 'Agent was stopped by a retired maximum-runtime wrap-up limit',
+    suggestedFix: 'This result came from an older PortOS runtime guard; current CoS TUI agents have no wall-clock runtime ceiling.'
   },
   // The PTY was terminated by a signal rather than exiting on its own — almost
   // always pm2's TreeKill taking portos-server's descendants down with it on a

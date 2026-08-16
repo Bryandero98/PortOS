@@ -13,7 +13,7 @@ import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
 import { updateAgent } from './cosAgentLifecycle.js';
 import { createOutputSpooler } from './agentTuiSpawning/outputSpooler.js';
-import { captureWorktreeDiff, resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
+import { resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
@@ -34,9 +34,6 @@ import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDet
 import { isAntigravityCommand } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
-  DEFAULT_TUI_MAX_RUNTIME_MS,
-  MAX_RUNTIME_WRAP_UP_GRACE_MS,
-  buildWrapUpProdMessage,
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
   PASTE_MARKER_POLL_MS,
@@ -73,14 +70,14 @@ import { execFile } from '../lib/childProcess.js';
 const PROVIDER_SIGNAL_POLL_MS = 5000;
 
 // Output buffering/spooling (createOutputSpooler) and failure-analysis /
-// worktree-inspection helpers (captureWorktreeDiff, resolveErrorAnalysis,
+// worktree-inspection and failure-analysis helpers (resolveErrorAnalysis,
 // RAW_TAIL_ANALYSIS_BYTES) live in
 // ./agentTuiSpawning/ so spawnTuiAgent stays a thin orchestrator.
 
 // Sentinel-file polling. TUI agents write `.agent-done` in their workspace
 // when they've finished /simplify + /do:pr (or /do:push) — we poll for it
 // here so the agent gets cleanly finalized as soon as the work is done,
-// without waiting for a runtime ceiling or a shell exit.
+// without waiting for a shell exit.
 // The filename is per agent instance — see doneSentinelName in ../lib/agentSentinel.js.
 const DONE_POLL_INTERVAL_MS = 2000;
 
@@ -221,27 +218,23 @@ export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, 
     command,
     args,
     commandLine: [command, ...args].map(shellQuote).join(' '),
-    promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS,
-    maxRuntimeMs: provider?.tuiMaxRuntimeMs || DEFAULT_TUI_MAX_RUNTIME_MS
+    promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS
   };
 }
 
-// Paste + submit-Enter + max-runtime retry machinery for spawnTuiAgent's
+// Paste + submit-Enter retry machinery for spawnTuiAgent's
 // prompt delivery. Separated from spawnTuiAgent so retries don't re-run the
 // liveness guard or re-set the outer promptSentAt (see `sendPrompt` below) —
 // the cluster spawnTuiAgent's own comments already described as one cohesive
 // concern. Owns the paste-attempt counter, the post-paste accumulator, the
-// paste-marker/verify timers, the submit-Enter backstop timer, the
-// max-runtime wall-clock timer, and the wrap-up grace window it opens instead
-// of reaping immediately.
+// paste-marker/verify timers, and the submit-Enter backstop timer.
 //
 // `isFinalized`/`markPromptSent`/`markPromptSubmitted` are accessors into
 // spawnTuiAgent's own `finalized`/`promptSentAt`/`promptSubmittedAt` — those
 // are read by handleData and the provider-signal timer well outside this
 // cluster, so they stay owned by spawnTuiAgent and are threaded through rather
-// than duplicated here. `finish`/`finishStartupFailure`/`appendLine`/
-// `sentinelPresent` are likewise spawnTuiAgent's own closures, passed in
-// rather than re-implemented.
+// than duplicated here. `finishStartupFailure`/`appendLine` are likewise
+// spawnTuiAgent's own closures, passed in rather than re-implemented.
 function createPasteRetryController({
   agentId,
   sessionId,
@@ -249,15 +242,11 @@ function createPasteRetryController({
   useDurableRunner,
   prompt,
   tuiConfig,
-  cwd,
-  agentDir,
   mcpBoot,
   appendLine,
-  sentinelPresent,
   isFinalized,
   markPromptSent,
   markPromptSubmitted,
-  finish,
   finishStartupFailure,
 }) {
   // Markers already present in the prompt text itself (a transcript-analysis task
@@ -282,14 +271,6 @@ function createPasteRetryController({
   let pasteEnterTimer = null;
   let pasteVerifyTimer = null;
   let submitEnterTimer = null;
-  // Absolute wall-clock backstop — armed once the prompt is SUBMITTED, cleared
-  // by cancel(). This bounds the total run so a hung provider/CLI can't run
-  // unbounded. See DEFAULT_TUI_MAX_RUNTIME_MS for the incident.
-  let maxRuntimeTimer = null;
-  // Deadline for the wrap-up grace window the max-runtime ceiling opens instead of
-  // reaping immediately (see MAX_RUNTIME_WRAP_UP_GRACE_MS). Cleared by cancel()
-  // alongside every other timer.
-  let wrapUpTimer = null;
   let pasteAttempt = 0;
   // Wall-clock of the FIRST paste attempt — the anchor for the MCP-boot-aware
   // retry deadline (retries are time-bounded, not attempt-count-bounded, while
@@ -333,84 +314,6 @@ function createPasteRetryController({
     });
     submitEnterTimer = handle || null;
     return !!handle;
-  };
-
-  // Reap the run as a max-runtime failure. Shared by the wrap-up grace window's
-  // expiry and its own "session already died" branch so both produce the same
-  // record: uncommitted work captured for post-mortem, then a
-  // needs-manual-finish error (the same recovery guidance as any stalled
-  // orchestrator — it may have left
-  // PRs/worktrees behind).
-  const finishMaxRuntimeFailure = (detail, reason = 'max-runtime-timeout') => {
-    captureWorktreeDiff(cwd, agentDir).catch(() => {});
-    finish({
-      success: false,
-      exitCode: 124,
-      error: `TUI agent exceeded its max runtime of ${Math.round(tuiConfig.maxRuntimeMs / 60000)}min — ${detail} check for open or merged-but-uncleaned PRs and finish them manually.`,
-      reason,
-    }).catch(err => {
-      emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime: ${err.message}`, { agentId });
-    });
-  };
-
-  // Max-runtime wrap-up grace: prod the agent to land its sentinel, then watch
-  // for it before reaping (see MAX_RUNTIME_WRAP_UP_GRACE_MS). The prod goes in
-  // over the same bracketed-paste + delayed-Enter channel `sendBtwToAgent` uses,
-  // so from the agent's side it is indistinguishable from the user typing it.
-  //
-  // Success here finalizes through the ordinary sentinel path — we do NOT call
-  // finish() ourselves on the happy path, because the 2s doneSentinelTimer is
-  // still running and owns that transition; racing it would just be a second
-  // caller into the same `finalized` guard. This poll exists to bound the WAIT
-  // and to reap when the prod doesn't work.
-  const startWrapUpGrace = () => {
-    if (isFinalized() || wrapUpTimer) return;
-    // A dead session can't be prodded — nothing will ever write the sentinel, so
-    // skip the grace window rather than waiting out the full 5min.
-    if (!sessionId || !shellService.getSession(sessionId)) {
-      finishMaxRuntimeFailure('the TUI session was already gone, so it could not be asked to wrap up;');
-      return;
-    }
-    const graceMin = Math.round(MAX_RUNTIME_WRAP_UP_GRACE_MS / 60000);
-    appendLine(`⏳ Max runtime reached — asking the agent to wrap up and write its sentinel (${graceMin}min grace)`);
-    emitLog('warn', `TUI agent ${agentId} hit max runtime — prodding it to wrap up with ${graceMin}min of grace before reaping`, { agentId, phase: 'wrap-up' });
-    updateAgent(agentId, { metadata: { phase: 'wrap-up' } }).catch(err => {
-      emitLog('warn', `Failed to mark TUI agent ${agentId} as wrapping up: ${err.message}`, { agentId });
-    });
-
-    // Clear any prior submit-Enter interval first: hours after submission the
-    // prompt's own is long finished, but overwriting a live handle would leak
-    // it past finish().
-    if (submitEnterTimer) clearInterval(submitEnterTimer);
-    submitEnterTimer = shellService.pasteToSession(
-      sessionId,
-      // The agent's OWN sentinel name — the bare `.agent-done` is a path no
-      // poller is watching.
-      buildWrapUpProdMessage(MAX_RUNTIME_WRAP_UP_GRACE_MS, doneSentinelName(agentId)),
-      { label: '[cosAgents] max-runtime wrap-up' },
-    );
-
-    // A single deadline, NOT a poll: the 2s doneSentinelTimer is already watching
-    // this exact path at this exact cadence and owns the success transition (and
-    // cancel() clears this handle), so polling here would just double the
-    // existsSync syscalls for 5 minutes to learn something the other timer acts on
-    // first. All this needs to do is fire once at the end of the window.
-    wrapUpTimer = setTimeout(() => {
-      try {
-        wrapUpTimer = null;
-        if (isFinalized()) return;
-        // The sentinel landed right at the boundary — the prod worked after all.
-        // Let the sentinel path finalize it as the success it is.
-        if (sentinelPresent()) return;
-        finishMaxRuntimeFailure(
-          `it did not wrap up within ${graceMin}min of being asked, so the provider/CLI likely hung (the wall-clock ceiling is the remaining backstop);`,
-          'max-runtime-no-wrap-up',
-        );
-      } catch (err) {
-        // setTimeout callback: an uncaught throw here would crash the process.
-        console.error(`❌ wrapUpTimer callback failed: ${err.message}`);
-      }
-    }, MAX_RUNTIME_WRAP_UP_GRACE_MS);
   };
 
   const sendPrompt = async (reason) => {
@@ -470,38 +373,6 @@ function createPasteRetryController({
         () => shellService.writeToSession(sessionId, '\r'),
         () => isFinalized()
       );
-      // Arm the absolute wall-clock backstop from submission (once — a paste
-      // retry re-enters submitEnter but must not stack timers). This timer is
-      // the ceiling regardless of how much or how little PTY output arrives.
-      if (!maxRuntimeTimer) {
-        maxRuntimeTimer = setTimeout(() => {
-          try {
-            if (isFinalized()) return;
-            // Salvage net: if the agent already wrote its .agent-done sentinel the
-            // run truly finished (the TUI just never wrote the sentinel/exited), so complete as
-            // success — mirrors the one-shot runner's response-file salvage. The
-            // 2s doneSentinelTimer normally catches this first; this covers the
-            // boundary where it lands right at the deadline.
-            if (sentinelPresent()) {
-              finish({ success: true, exitCode: 0, reason: 'max-runtime-sentinel' }).catch(err => {
-                emitLog('error', `Failed to finalize TUI agent ${agentId} at max-runtime salvage: ${err.message}`, { agentId });
-              });
-              return;
-            }
-            // No sentinel yet — but a wall-clock deadline lands wherever it lands,
-            // including on an agent seconds from writing one (see
-            // MAX_RUNTIME_WRAP_UP_GRACE_MS for the measured 30s miss). PROD it to
-            // wrap up and keep watching for the sentinel through the grace window
-            // before reaping. Only then does this become a real failure.
-            startWrapUpGrace();
-          } catch (err) {
-            // setTimeout callback: an uncaught throw here (e.g. a PTY write racing
-            // a dead session) would crash the whole process, killing every other
-            // in-flight agent, not just this one.
-            console.error(`❌ maxRuntimeTimer callback failed: ${err.message}`);
-          }
-        }, tuiConfig.maxRuntimeMs);
-      }
     };
 
     // Confirms the TUI actually received the paste before we submit. The
@@ -631,8 +502,6 @@ function createPasteRetryController({
     if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
     if (pasteVerifyTimer) { clearInterval(pasteVerifyTimer); pasteVerifyTimer = null; }
     if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
-    if (maxRuntimeTimer) { clearTimeout(maxRuntimeTimer); maxRuntimeTimer = null; }
-    if (wrapUpTimer) { clearTimeout(wrapUpTimer); wrapUpTimer = null; }
     postPasteBuffer = null;
   };
 
@@ -671,7 +540,7 @@ export async function spawnTuiAgent({
   // the sentinel watcher below) and then stops — it does NOT run `/quit` (that
   // is a UI command the agent can't invoke). The 2s poll is the primary
   // finalize path; finish() also ingests the sentinel directly so the summary
-  // is captured even if some other path (shell exit/max-runtime) finalizes first. Computed
+  // is captured even if some other path (shell exit) finalizes first. Computed
   // up front so both the watcher AND finish() can read it (see ingestDoneSentinel).
   // Resolved from the shared helper, so this is byte-identical to the path the
   // prompt told the agent to write (see resolveSentinelPath).
@@ -744,10 +613,10 @@ export async function spawnTuiAgent({
   // only as a recovery path, never duplicated into raw.txt.
   let receivedTuiOutput = false;
 
-  // The paste-attempt / max-runtime / wrap-up-grace machinery (postPasteBuffer,
-  // pasteEnterTimer, pasteVerifyTimer, submitEnterTimer, maxRuntimeTimer,
-  // wrapUpTimer) lives in createPasteRetryController rather than this closure
-  // — see its own comment for why that cluster is separated out.
+  // The paste-attempt / submit-Enter machinery (postPasteBuffer, pasteEnterTimer,
+  // pasteVerifyTimer, submitEnterTimer) lives in createPasteRetryController
+  // rather than this closure — see its own comment for why that cluster is
+  // separated out.
   // `pasteController` is created once sessionId/pid are known (below) and torn
   // down from stopRunMachinery via `pasteController?.cancel()`.
   let pasteController = null;
@@ -769,10 +638,9 @@ export async function spawnTuiAgent({
   // finalize chokepoint); idempotent via `sentinelIngested` so it reads at most
   // once. Capped at 4 KB so an agent that pasted the whole diff into the
   // sentinel can't blow up the record.
-  // Has the agent written its completion sentinel? One predicate for every path
-  // that asks (the 2s watcher, the max-runtime salvage, the wrap-up grace poll,
-  // and ingestDoneSentinel) so "the run finished" can't mean subtly different
-  // things in four places.
+  // Has the agent written its completion sentinel? One predicate for the 2s
+  // watcher and ingestDoneSentinel so "the run finished" can't mean subtly
+  // different things in two places.
   const sentinelPresent = () => !!doneSentinelPath && existsSync(doneSentinelPath);
 
   const ingestDoneSentinel = async () => {
@@ -805,17 +673,16 @@ export async function spawnTuiAgent({
    * Shared by the two paths that end a run — `finish()` (records an outcome) and
    * `abandonForHostShutdown()` (records none). Every timer here is created inside
    * this closure, so a teardown site that falls behind leaks an interval holding
-   * the closure and the PTY handle alive; this file has already grown two new
-   * timers since it was written (maxRuntime + wrapUp), which is exactly the drift
-   * a single teardown prevents.
+   * the closure and the PTY handle alive, which is exactly the drift a single
+   * teardown prevents.
    */
   const stopRunMachinery = () => {
     const agentData = activeAgents.get(agentId);
     if (agentData?.providerSignalTimer) clearInterval(agentData.providerSignalTimer);
     if (agentData?.promptTimer) clearInterval(agentData.promptTimer);
     if (agentData?.doneSentinelTimer) clearInterval(agentData.doneSentinelTimer);
-    // Cancels the paste-attempt/max-runtime/wrap-up timers and releases the
-    // post-paste accumulator even when the run ends mid-paste-window — see
+    // Cancels the paste-attempt timers and releases the post-paste accumulator
+    // even when the run ends mid-paste-window — see
     // createPasteRetryController's own cancel() for why each is safe to clear
     // unconditionally (a run that ends from elsewhere — shell-exit,
     // command-not-found, user termination, a host restart — never gets a
@@ -856,8 +723,8 @@ export async function spawnTuiAgent({
     // lands in outputBuffer/output.txt regardless of WHICH path finalized the
     // agent. The completion workflow writes the sentinel and stops; the 2s
     // doneSentinelTimer poll is what normally calls finish(). Reading it here
-    // (not just in the poll) keeps the resolution captured even when a
-    // different path (shell-exit, max-runtime) finalizes first. Idempotent
+    // (not just in the poll) keeps the resolution captured even when shell exit
+    // finalizes first. Idempotent
     // via `sentinelIngested`.
     await ingestDoneSentinel();
 
@@ -1375,8 +1242,8 @@ export async function spawnTuiAgent({
     });
   };
 
-  // Owns the paste-attempt counter, the post-paste accumulator, the paste
-  // timers and the max-runtime/wrap-up machinery — see
+  // Owns the paste-attempt counter, the post-paste accumulator, and the paste
+  // timers — see
   // createPasteRetryController's own comment for why that cluster lives
   // outside this closure. `isFinalized`/`markPromptSent`/`markPromptSubmitted`
   // are accessors into THIS closure's `finalized`/`promptSentAt`/
@@ -1389,15 +1256,11 @@ export async function spawnTuiAgent({
     useDurableRunner,
     prompt,
     tuiConfig,
-    cwd,
-    agentDir,
     mcpBoot,
     appendLine,
-    sentinelPresent,
     isFinalized: () => finalized,
     markPromptSent: () => { promptSentAt = Date.now(); },
     markPromptSubmitted: () => { if (promptSubmittedAt === null) promptSubmittedAt = Date.now(); },
-    finish,
     finishStartupFailure,
   });
 
@@ -1518,8 +1381,8 @@ export async function spawnTuiAgent({
   // INTERVAL_MS of the sentinel appearing, and finish()'s own cleanup kills
   // the still-running TUI session. The actual sentinel READ happens in finish()
   // (via ingestDoneSentinel) so the resolution is captured no matter which path
-  // finalizes. A normal shell exit, explicit provider failure, or max-runtime
-  // wrap-up handles agents that do not write the sentinel.
+  // finalizes. A normal shell exit or explicit provider failure handles agents
+  // that do not write the sentinel.
   const doneSentinelTimer = doneSentinelPath ? setInterval(() => {
     try {
       if (finalized) return;
@@ -1561,7 +1424,6 @@ export async function spawnTuiAgent({
       tuiSessionId: sessionId,
       tuiCommand: tuiConfig.commandLine,
       tuiKind,
-      tuiMaxRuntimeMs: tuiConfig.maxRuntimeMs
     }
   });
 

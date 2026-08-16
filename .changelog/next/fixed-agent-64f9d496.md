@@ -1,1 +1,1 @@
-- CoS TUI agents no longer finalize or fail solely because provider output is idle; retain the wall-clock max-runtime backstop.
+- CoS TUI agents no longer finalize or fail solely because provider output is idle; they stay attached until the completion sentinel, process exit, or explicit failure.
