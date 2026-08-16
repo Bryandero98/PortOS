@@ -14,6 +14,7 @@ import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkGhHealth } from '../services/github.js';
 import { isAuthEnabled } from '../services/auth.js';
 import { getHttpsEnabledAtBoot } from '../lib/httpsState.js';
+import { getActiveProcessing } from '../services/activeProcessing.js';
 
 // Defaults are tuned for a real dev machine: memory routinely sits in the
 // 75-85% band on a host with a couple of LLMs loaded, and big SSDs commonly
@@ -39,6 +40,10 @@ async function loadThresholds() {
 }
 
 const router = Router();
+
+router.get('/processing', asyncHandler(async (req, res) => {
+  res.json(await getActiveProcessing());
+}));
 
 router.get('/health', asyncHandler(async (req, res) => {
   const [self, version, authRequired] = await Promise.all([

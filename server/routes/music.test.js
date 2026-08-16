@@ -14,6 +14,7 @@ const gen = vi.hoisted(() => ({
   healthyByEngine: null,
   unsupportedPlatform: null,
 }));
+const mediaQueue = vi.hoisted(() => ({ jobs: [], enqueue: vi.fn() }));
 const cuda = vi.hoisted(() => ({ status: 'available' }));
 vi.mock('../lib/cudaCapability.js', () => ({
   getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: null, error: null })),
@@ -49,6 +50,12 @@ vi.mock('../services/pipeline/musicGen.js', () => {
     generateMusic: gen.generateMusic,
   };
 });
+vi.mock('../services/mediaJobQueue/index.js', () => ({
+  enqueueJob: (...args) => mediaQueue.enqueue(...args),
+  listJobs: () => mediaQueue.jobs,
+  JOB_KINDS: ['video', 'image', 'training', 'audio'],
+  JOB_STATUSES: ['queued', 'running', 'completed', 'failed', 'canceled'],
+}));
 
 // The install route shells out to scripts/setup-image-video.sh. Stand in a child
 // that closes immediately so the SSE stream terminates instead of running a real
@@ -147,6 +154,8 @@ describe('music routes', () => {
     // clears call history) — otherwise an unconsumed mockResolvedValueOnce on
     // generateMusic leaks into the next test.
     gen.generateMusic.mockReset();
+    mediaQueue.enqueue.mockReset().mockImplementation(() => ({ jobId: 'job-1', position: 1, status: 'queued' }));
+    mediaQueue.jobs = [];
     models.list.mockReset();
     // add/remove return promises by default so the route's `.catch()` chains
     // don't throw on an undefined return (mockReset clears the impl).
@@ -503,22 +512,17 @@ describe('music routes', () => {
     expect(models.remove).toHaveBeenCalledWith({ engine: 'musicgen', id: 'facebook/musicgen-large' });
   });
 
-  it('POST /generate creates a new track from the result', async () => {
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'music-gen-x.wav', durationSec: 61.4, engine: 'acestep', modelId: 'a' });
+  it('POST /generate queues a new track render', async () => {
     const r = await request(app).post('/api/music/generate').send({
       prompt: 'warm folk', lyrics: '[verse] hi', engine: 'acestep', title: 'My Song',
     });
-    expect(r.status).toBe(201);
-    expect(gen.generateMusic).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'warm folk', lyrics: '[verse] hi', engine: 'acestep' }));
-    expect(tracks.createTrack).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'My Song', audioFilename: 'music-gen-x.wav', engine: 'acestep', modelId: 'a', durationSec: 61, lyrics: '[verse] hi',
+    expect(r.status).toBe(202);
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'audio', params: expect.objectContaining({ prompt: 'warm folk', lyrics: '[verse] hi', engine: 'acestep' }),
     }));
-    expect(r.body.track.id).toBe('track-new');
-    expect(r.body.filename).toBe('music-gen-x.wav');
   });
 
-  it('POST /generate forwards MiniMax auto duration mode to the generator', async () => {
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'music-gen-auto.wav', durationSec: 148, engine: 'minimax-music3', modelId: 'minimax-music3' });
+  it('POST /generate forwards MiniMax auto duration mode to the queue', async () => {
     const r = await request(app).post('/api/music/generate').send({
       prompt: 'warm folk',
       lyrics: `[verse]\n${'word '.repeat(180)}\n[outro]`,
@@ -526,65 +530,49 @@ describe('music routes', () => {
       durationMode: 'auto',
     });
 
-    expect(r.status).toBe(201);
-    expect(gen.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+    expect(r.status).toBe(202);
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      params: expect.objectContaining({
       engine: 'minimax-music3',
       lyrics: expect.stringContaining('[verse]'),
       durationMode: 'auto',
+      }),
     }));
   });
 
-  it('POST /generate with trackId updates the existing track (200)', async () => {
+  it('POST /generate queues an existing-track render', async () => {
     tracks.getTrack.mockResolvedValueOnce({ id: 'track-1', title: 'Existing' });
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'music-gen-y.wav', durationSec: 30, engine: 'musicgen', modelId: 'm' });
     const r = await request(app).post('/api/music/generate').send({ prompt: 'beat', trackId: 'track-1' });
-    expect(r.status).toBe(200);
-    expect(tracks.updateTrack).toHaveBeenCalledWith('track-1', expect.objectContaining({ audioFilename: 'music-gen-y.wav' }));
-    expect(tracks.createTrack).not.toHaveBeenCalled();
+    expect(r.status).toBe(202);
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ musicStudio: expect.objectContaining({ trackId: 'track-1' }) }) }));
   });
 
-  it('POST /generate on a non-lyric engine does NOT write lyrics (no erasure)', async () => {
+  it('POST /generate marks non-lyric jobs as not lyric-enabled', async () => {
     tracks.getTrack.mockResolvedValueOnce({ id: 'track-1', title: 'Has Lyrics', lyrics: 'keep me' });
     gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 12, engine: 'musicgen', modelId: 'm' });
     // MusicGen is not lyric-aware; even if the client sends lyrics:'' the update must omit lyrics.
     await request(app).post('/api/music/generate').send({ prompt: 'bed', lyrics: '', engine: 'musicgen', trackId: 'track-1' });
-    const patch = tracks.updateTrack.mock.calls[0][1];
-    expect(patch).not.toHaveProperty('lyrics');
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ musicStudio: expect.objectContaining({ lyricsEnabled: false }) }) }));
   });
 
-  it('POST /generate on a lyric engine with ABSENT lyrics leaves the track lyrics untouched', async () => {
+  it('POST /generate records the empty conditioning snapshot when lyrics are absent', async () => {
     tracks.getTrack.mockResolvedValueOnce({ id: 'track-1', title: 'Song', lyrics: 'old words' });
     gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 60, engine: 'acestep', modelId: 'a' });
     await request(app).post('/api/music/generate').send({ prompt: 'folk', engine: 'acestep', trackId: 'track-1' }); // no lyrics field
-    const patch = tracks.updateTrack.mock.calls[0][1];
-    expect(patch).not.toHaveProperty('lyrics');
-    // The sidecar still renders (with empty lyrics) — engine.lyrics coalesces to ''.
-    expect(gen.generateMusic).toHaveBeenCalledWith(expect.objectContaining({ lyrics: '' }));
-    // The render SNAPSHOT records the lyrics that actually conditioned it ('' —
-    // generated without lyrics), NOT the track's stale saved lyrics. Otherwise
-    // the card would falsely advertise conditioning text the audio wasn't built from.
-    expect(tracks.buildRenderAppend).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lyrics: '' }));
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ lyrics: '', musicStudio: expect.objectContaining({ lyricsEnabled: true }) }) }));
   });
 
-  it('POST /generate appends the render onto the FRESHEST track state (re-reads after the render)', async () => {
-    // A render added to the same track WHILE this multi-minute generation ran
-    // must not be dropped: the append must use the post-render track, not the
-    // pre-render snapshot.
-    const stale = { id: 'track-1', title: 'S', renders: [{ id: 'r-old', audioFilename: 'old.wav' }] };
-    const fresh = { id: 'track-1', title: 'S', renders: [{ id: 'r-old', audioFilename: 'old.wav' }, { id: 'r-concurrent', audioFilename: 'concurrent.wav' }] };
-    tracks.getTrack.mockResolvedValueOnce(stale).mockResolvedValueOnce(fresh);
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 12, engine: 'musicgen', modelId: 'm' });
+  it('POST /generate keeps the track destination in the job snapshot', async () => {
+    tracks.getTrack.mockResolvedValueOnce({ id: 'track-1' });
     await request(app).post('/api/music/generate').send({ prompt: 'beat', engine: 'musicgen', trackId: 'track-1' });
-    expect(tracks.getTrack).toHaveBeenCalledTimes(2); // validate, then re-read after the render
-    expect(tracks.buildRenderAppend).toHaveBeenCalledWith(fresh, expect.objectContaining({ audioFilename: 'm.wav' }));
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ musicStudio: expect.objectContaining({ trackId: 'track-1' }) }) }));
   });
 
-  it('POST /generate on a lyric engine with an EXPLICIT empty lyrics persists the clear', async () => {
+  it('POST /generate preserves an explicit lyric clear in the job snapshot', async () => {
     tracks.getTrack.mockResolvedValueOnce({ id: 'track-1', title: 'Song', lyrics: 'old words' });
     gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 60, engine: 'acestep', modelId: 'a' });
     await request(app).post('/api/music/generate').send({ prompt: 'instrumental', lyrics: '', engine: 'acestep', trackId: 'track-1' });
-    const patch = tracks.updateTrack.mock.calls[0][1];
-    expect(patch.lyrics).toBe(''); // audio was rendered WITHOUT lyrics → persist the clear
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ lyrics: '', musicStudio: expect.objectContaining({ lyricsEnabled: true }) }) }));
   });
 
   it('POST /generate validates trackId BEFORE rendering (no wasted render)', async () => {
@@ -594,14 +582,13 @@ describe('music routes', () => {
     expect(gen.generateMusic).not.toHaveBeenCalled(); // render never started
   });
 
-  it('POST /generate resolves a USER-INSTALLED model id to its repo for the sidecar', async () => {
+  it('POST /generate resolves a USER-INSTALLED model id to the queued job', async () => {
     models.list.mockResolvedValueOnce([
       { id: 'm', name: 'M', userAdded: false },
       { id: 'someorg/big-musicgen', name: 'Big', repo: 'someorg/big-musicgen', userAdded: true },
     ]);
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 12, engine: 'musicgen', modelId: 'someorg/big-musicgen' });
     await request(app).post('/api/music/generate').send({ prompt: 'x', engine: 'musicgen', modelId: 'someorg/big-musicgen' });
-    expect(gen.generateMusic).toHaveBeenCalledWith(expect.objectContaining({ repo: 'someorg/big-musicgen', modelId: 'someorg/big-musicgen' }));
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ repo: 'someorg/big-musicgen', modelId: 'someorg/big-musicgen' }) }));
   });
 
   it('POST /generate rejects an unknown modelId BEFORE rendering', async () => {
@@ -612,41 +599,60 @@ describe('music routes', () => {
     expect(gen.generateMusic).not.toHaveBeenCalled();
   });
 
-  it('POST /generate creating a track with albumId appends it to the album tracklist', async () => {
-    albums.getAlbum.mockResolvedValueOnce({ id: 'album-1', trackIds: ['track-0'] });
-    tracks.createTrack.mockResolvedValueOnce({ id: 'track-gen', title: 'x', albumId: 'album-1' });
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 12, engine: 'musicgen', modelId: 'm' });
+  it('POST /generate carries album metadata to the queued job', async () => {
     await request(app).post('/api/music/generate').send({ prompt: 'x', engine: 'musicgen', albumId: 'album-1' });
-    expect(albums.updateAlbum).toHaveBeenCalledWith('album-1', { trackIds: ['track-0', 'track-gen'] });
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ musicStudio: expect.objectContaining({ albumId: 'album-1' }) }) }));
   });
 
-  it('POST /generate with an unknown trackId 404s and does not create', async () => {
+  it('POST /generate with an unknown trackId 404s and does not queue', async () => {
     tracks.getTrack.mockResolvedValueOnce(null);
-    gen.generateMusic.mockResolvedValueOnce({ filename: 'm.wav', durationSec: 10, engine: 'musicgen', modelId: 'm' });
     const r = await request(app).post('/api/music/generate').send({ prompt: 'x', trackId: 'track-missing' });
     expect(r.status).toBe(404);
     expect(tracks.updateTrack).not.toHaveBeenCalled();
-    expect(tracks.createTrack).not.toHaveBeenCalled();
+    expect(mediaQueue.enqueue).not.toHaveBeenCalled();
   });
 
-  it('POST /generate rejects an unknown engine before rendering (no wrong-backend output)', async () => {
+  it('POST /generate rejects an unknown engine before queueing (no wrong-backend output)', async () => {
     const r = await request(app).post('/api/music/generate').send({ prompt: 'x', engine: 'acestep-v2' });
     expect(r.status).toBe(400);
     expect(r.body.code).toBe('PIPELINE_MUSIC_UNKNOWN_ENGINE');
-    expect(gen.generateMusic).not.toHaveBeenCalled();
+    expect(mediaQueue.enqueue).not.toHaveBeenCalled();
   });
 
   it('POST /generate rejects a missing prompt', async () => {
     const r = await request(app).post('/api/music/generate').send({ engine: 'acestep' });
     expect(r.status).toBe(400);
-    expect(gen.generateMusic).not.toHaveBeenCalled();
+    expect(mediaQueue.enqueue).not.toHaveBeenCalled();
   });
 
-  it('POST /generate surfaces a 503 when the engine venv is missing', async () => {
-    gen.generateMusic.mockRejectedValueOnce(new ServerError('ACE-Step runtime not found. Run `INSTALL_ACESTEP=1 …`', { status: 503, code: 'PIPELINE_MUSIC_RUNTIME_MISSING' }));
+  it('POST /generate acknowledges even when rendering will later report a runtime failure', async () => {
     const r = await request(app).post('/api/music/generate').send({ prompt: 'x', engine: 'acestep' });
-    expect(r.status).toBe(503);
-    expect(r.body.code).toBe('PIPELINE_MUSIC_RUNTIME_MISSING');
-    expect(tracks.createTrack).not.toHaveBeenCalled();
+    expect(r.status).toBe(202);
+    expect(mediaQueue.enqueue).toHaveBeenCalled();
+  });
+
+  it('POST /generate returns a queued audio job with the Music Studio destination tag', async () => {
+    const r = await request(app).post('/api/music/generate').send({
+      prompt: 'warm folk', lyrics: '[verse] hi', engine: 'acestep', title: 'My Song', albumId: 'album-1',
+    });
+    expect(r.status).toBe(202);
+    expect(r.body).toEqual({ jobId: 'job-1', position: 1, status: 'queued' });
+    expect(mediaQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'audio',
+      params: expect.objectContaining({
+        prompt: 'warm folk', lyrics: '[verse] hi', engine: 'acestep',
+        musicStudio: expect.objectContaining({ trackId: null, title: 'My Song', albumId: 'album-1', lyricsEnabled: true }),
+      }),
+    }));
+  });
+
+  it('POST /generate rejects a duplicate live render for the same track', async () => {
+    mediaQueue.jobs = [{ id: 'existing-job', kind: 'audio', status: 'running', params: { musicStudio: { trackId: 'track-1' } } }];
+    tracks.getTrack.mockResolvedValueOnce({ id: 'track-1' });
+    const r = await request(app).post('/api/music/generate').send({ prompt: 'beat', trackId: 'track-1' });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('PIPELINE_MUSIC_BUSY');
+    expect(r.body.context.jobId).toBe('existing-job');
+    expect(mediaQueue.enqueue).not.toHaveBeenCalled();
   });
 });

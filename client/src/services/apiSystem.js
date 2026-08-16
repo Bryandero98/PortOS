@@ -33,6 +33,7 @@ export const triageSystemResources = (payload, options = {}) => request('/system
   body: JSON.stringify(payload),
   ...options,
 });
+export const getActiveProcessing = (options) => request('/system/processing', options);
 export const getNetworkExposure = (options) => request('/network-exposure/status', options);
 export const getCapabilities = (options) => request('/capabilities', options);
 export const updateHealthThresholds = (thresholds, options = {}) => request('/system/health/thresholds', {

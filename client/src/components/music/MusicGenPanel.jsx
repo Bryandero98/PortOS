@@ -22,12 +22,14 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import useMounted from '../../hooks/useMounted';
+import useMediaJobProgress from '../../hooks/useMediaJobProgress';
+import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 import { Loader2, Wand2, Download, X } from 'lucide-react';
 import toast from '../ui/Toast';
 import { analyzeMusicLyrics } from '../../lib/musicDuration.js';
 import { formatDurationSec } from '../../utils/formatters.js';
 import {
-  listMusicEngines, generateMusic, installAudioModel, removeAudioModel,
+  listMusicEngines, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
 } from '../../services/api';
 import { formatDownloadGb } from '../../utils/formatters';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
@@ -84,6 +86,8 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const [durationSec, setDurationSec] = useState(null);
   const [durationMode, setDurationMode] = useState('auto');
   const [generating, setGenerating] = useState(false);
+  const [activeJob, setActiveJob] = useState(null);
+  const [activeJobId, setActiveJobId] = useState(null);
   const [generationElapsedSec, setGenerationElapsedSec] = useState(0);
   // Inline HF model install.
   const [installRepo, setInstallRepo] = useState('');
@@ -96,6 +100,51 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const [runtimeInstallEngine, setRuntimeInstallEngine] = useState(null);
   const [userSelectedEngine, setUserSelectedEngine] = useState(false);
   const mountedRef = useMounted();
+
+  const refreshActiveJob = async () => {
+    const snapshot = await getActiveProcessing({ silent: true });
+    if (!mountedRef.current) return;
+    const jobs = snapshot?.jobs || [];
+    const found = jobs.find((job) => {
+      const tag = job.params?.musicStudio;
+      return job.kind === 'audio' && (track?.id ? tag?.trackId === track.id : tag && !tag.trackId);
+    });
+    if (found) {
+      setActiveJob(found);
+      setActiveJobId(found.id);
+      setGenerating(true);
+    } else if (progress.status !== 'completed') {
+      setActiveJob(null);
+      setActiveJobId(null);
+    }
+  };
+
+  useAutoRefetch(refreshActiveJob, 3000, { pollOnly: true });
+  const progress = useMediaJobProgress(activeJobId, { kind: 'audio' });
+  const isGenerating = generating || ['queued', 'running'].includes(activeJob?.status) || ['queued', 'running'].includes(progress.status);
+
+  useEffect(() => {
+    if (!activeJobId || progress.status !== 'completed') return undefined;
+    let canceled = false;
+    const finish = async () => {
+      const job = await getMediaJob(activeJobId).catch(() => null);
+      const targetId = track?.id || job?.result?.trackId || progress.trackId;
+      if (!targetId || canceled) return;
+      let updated = null;
+      for (let attempt = 0; attempt < 4 && !updated && !canceled; attempt += 1) {
+        updated = await getTrack(targetId, { silent: true }).catch(() => null);
+        if (!updated && attempt < 3) await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (canceled || !mountedRef.current) return;
+      setGenerating(false);
+      setActiveJob(null);
+      setActiveJobId(null);
+      if (updated) onGenerated?.(updated);
+      toast.success('Track generated');
+    };
+    finish();
+    return () => { canceled = true; };
+  }, [activeJobId, progress.status, progress.trackId, track?.id]);
 
   // Returns the freshly-fetched list as well as storing it: the post-runtime
   // chain below needs the NEW engine record, and reading `engine` off state
@@ -118,14 +167,14 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   useEffect(() => { loadEngines(); }, []);
 
   useEffect(() => {
-    if (!generating) return undefined;
-    const startedAt = Date.now();
-    setGenerationElapsedSec(0);
+    if (!isGenerating) return undefined;
+    const startedAt = activeJob?.startedAt ? Date.parse(activeJob.startedAt) : Date.now();
+    setGenerationElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
     const timer = setInterval(() => {
       if (mountedRef.current) setGenerationElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     return () => clearInterval(timer);
-  }, [generating]);
+  }, [isGenerating, activeJob?.startedAt]);
 
   const engine = useMemo(() => engines.find((e) => e.id === engineId) || null, [engines, engineId]);
   const selectedModel = engine?.models?.find((item) => item.id === modelId)
@@ -180,7 +229,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
-  const canGenerate = !!engine?.ready && selectedModelReady && !!prompt?.trim() && !generating;
+  const canGenerate = !!engine?.ready && selectedModelReady && !!prompt?.trim() && !isGenerating;
   const selectedModelSizeGb = engine?.modelSizeGbById?.[selectedModelId] ?? null;
   const setup = engineSetupState(engine, selectedModelReady, selectedModelSizeGb);
 
@@ -256,10 +305,28 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     else if (Number.isFinite(durationSec)) body.durationSec = durationSec;
     const res = await generateMusic(body, { silent: true }).catch((err) => { toast.error(err.message || 'Generation failed'); return null; });
     if (!mountedRef.current) return;
-    setGenerating(false);
     if (res?.track) {
+      // Compatibility with an older server during a rolling upgrade. New
+      // servers always return the queued job acknowledgement below.
+      setGenerating(false);
       onGenerated?.(res.track);
       toast.success('Track generated');
+    } else if (res?.jobId) {
+      setActiveJob({ id: res.jobId, status: res.status, queuedAt: new Date().toISOString(), params: { musicStudio: { trackId: track?.id || null } } });
+      setActiveJobId(res.jobId);
+    } else {
+      setGenerating(false);
+      toast.error('Music generation did not return a job');
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!activeJobId) return;
+    await cancelMediaJob(activeJobId, { silent: true }).catch((err) => toast.error(err.message || 'Cancel failed'));
+    if (mountedRef.current) {
+      setGenerating(false);
+      setActiveJob(null);
+      setActiveJobId(null);
     }
   };
 
@@ -432,8 +499,8 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           title={!prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Complete engine setup first' : !selectedModelReady ? 'Install the selected model first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
         >
-          {generating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-          {generating ? 'Generating…' : track?.id ? 'Generate' : 'Generate track'}
+          {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+          {isGenerating ? 'Generating…' : track?.id ? 'Generate' : 'Generate track'}
         </button>
         {selectedUserModel ? (
           <button
@@ -446,11 +513,11 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           </button>
         ) : null}
       </div>
-      {generating ? (
+      {isGenerating ? (
         <div role="status" className="rounded-lg border border-port-accent/30 bg-port-accent/10 px-3 py-2">
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className="text-gray-300">
-              {engine?.cudaRequired ? 'Processing on the GPU' : 'Rendering audio'}
+              {activeJob?.status === 'queued' ? `Queued${activeJob.position ? ` · position ${activeJob.position}` : ''}` : engine?.cudaRequired ? 'Processing on the GPU' : 'Rendering audio'}
             </span>
             <span className="font-mono tabular-nums text-port-accent">
               {Math.floor(generationElapsedSec / 60)}:{String(generationElapsedSec % 60).padStart(2, '0')} elapsed
@@ -466,6 +533,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
                 ? 'MiniMax Music 3 MLX does not report an exact percentage yet; the first render includes model loading.'
                 : 'Generation is still active. Longer requested durations take more time.'}
           </p>
+          {activeJobId ? <button type="button" onClick={handleCancel} className="mt-2 text-[11px] text-port-warning hover:text-white">Cancel render</button> : null}
         </div>
       ) : null}
 

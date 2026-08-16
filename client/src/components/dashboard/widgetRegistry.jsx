@@ -28,6 +28,7 @@ const FeedsWidget           = lazyWithReload(() => import('./builtins/FeedsWidge
 const MeatSpaceStreakWidget = lazyWithReload(() => import('./builtins/MeatSpaceStreakWidget'));
 const AutoFixMetricsWidget  = lazyWithReload(() => import('./builtins/AutoFixMetricsWidget'));
 const DailyDriverWidget     = lazyWithReload(() => import('./builtins/DailyDriverWidget'));
+const ActiveProcessingWidget = lazyWithReload(() => import('./ActiveProcessingWidget'));
 
 // Each entry: { id, label, Component, width, defaultH?, gate? }.
 // `gate(state) => bool` skips the widget when it has nothing useful to show.
@@ -66,6 +67,7 @@ export const WIDGETS = [
   { id: 'feeds',             label: 'Feeds Digest',          Component: FeedsWidget,            width: 'quarter', defaultH: 4, gate: (s) => (s.feeds?.totalFeeds ?? 0) > 0 },
   { id: 'meatspace-streak',  label: 'Health Logging Streak', Component: MeatSpaceStreakWidget,  width: 'third',   defaultH: 4, gate: (s) => (s.meatspaceLogging?.totalLogged ?? 0) > 0 },
   { id: 'autofix-metrics',   label: 'Auto-Fix Telemetry',    Component: AutoFixMetricsWidget,   width: 'quarter', defaultH: 5 },
+  { id: 'active-processing', label: 'Active Processing',     Component: ActiveProcessingWidget, width: 'half',    defaultH: 5 },
 ];
 
 export const WIDGETS_BY_ID = Object.fromEntries(WIDGETS.map((w) => [w.id, w]));

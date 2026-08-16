@@ -38,6 +38,8 @@ const INITIAL_STATE = Object.freeze({
   filename: null,
   path: null,
   error: null,
+  startedAt: null,
+  trackId: null,
 });
 
 export default function useMediaJobProgress(jobId, { kind = 'image' } = {}) {
@@ -78,6 +80,8 @@ export default function useMediaJobProgress(jobId, { kind = 'image' } = {}) {
         filename: job.result?.filename || prev.filename,
         path: job.result?.path || prev.path,
         error: job.error || prev.error,
+        startedAt: job.startedAt || prev.startedAt,
+        trackId: job.result?.trackId || prev.trackId,
       }));
     }).catch(() => {
       // 404 (job past 24h archive TTL) and any other failure stay silent;
@@ -136,6 +140,7 @@ export default function useMediaJobProgress(jobId, { kind = 'image' } = {}) {
         statusMsg: 'Completed',
         filename: data.filename ?? prev.filename,
         path: data.path ?? prev.path,
+        trackId: data.trackId ?? prev.trackId,
       }));
     };
     const onFailed = (data) => {

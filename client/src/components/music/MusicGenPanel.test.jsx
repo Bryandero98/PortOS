@@ -7,6 +7,10 @@ import * as api from '../../services/api';
 vi.mock('../../services/api', () => ({
   listMusicEngines: vi.fn(),
   generateMusic: vi.fn(),
+  getActiveProcessing: vi.fn(),
+  getMediaJob: vi.fn(),
+  getTrack: vi.fn(),
+  cancelMediaJob: vi.fn(),
   installAudioModel: vi.fn(),
   removeAudioModel: vi.fn(),
 }));
@@ -57,6 +61,7 @@ const minimax = (overrides) => engine({
 describe('MusicGenPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.getActiveProcessing.mockResolvedValue({ jobs: [] });
   });
 
   it('does not show a missing-runtime warning immediately for an empty saved track', async () => {
@@ -177,6 +182,18 @@ describe('MusicGenPanel', () => {
     }), { silent: true }));
     expect(api.generateMusic.mock.calls[0][0]).not.toHaveProperty('trackId');
     expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
+  });
+
+  it('rehydrates a running Music Studio job when the panel remounts', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getActiveProcessing.mockResolvedValue({ jobs: [{
+      id: 'job-remounted', kind: 'audio', status: 'running', startedAt: new Date(Date.now() - 5000).toISOString(),
+      params: { musicStudio: { trackId: 'track-1' } },
+    }] });
+    api.getMediaJob.mockResolvedValue({ status: 'running', startedAt: new Date(Date.now() - 5000).toISOString() });
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="warm folk" lyrics="" />);
+    expect(await screen.findByText(/processing on the gpu|rendering audio/i)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(/elapsed/);
   });
 
   it('suggests a lyric-aware MiniMax ceiling and sends Auto mode', async () => {

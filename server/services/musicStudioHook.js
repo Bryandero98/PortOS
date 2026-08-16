@@ -1,0 +1,87 @@
+/**
+ * Files completed Music Studio audio jobs onto their track, even when the
+ * browser that started the render has unmounted (#4353).
+ */
+import { createMediaJobImageHook } from './mediaJobImageHook.js';
+import { updateJobResult } from './mediaJobQueue/index.js';
+import * as tracks from './tracks/index.js';
+import * as albums from './albums/index.js';
+
+const hook = createMediaJobImageHook({
+  label: 'Music Studio',
+  initLog: '🎵 Music Studio completion hook initialized',
+  kind: 'audio',
+  tagKey: 'musicStudio',
+  identify: (tag) => (tag && (tag.trackId === null || typeof tag.trackId === 'string')
+    ? { trackId: tag.trackId || null } : null),
+  serializeKey: ({ trackId }) => trackId || 'standalone',
+  describe: ({ trackId }) => trackId || 'standalone',
+  extractResult: (job) => {
+    const filename = job.result?.filename;
+    if (typeof filename !== 'string' || !filename) return null;
+    const tag = job.params.musicStudio;
+    return {
+      filename,
+      durationSec: Number.isFinite(job.result?.durationSec) ? Math.round(job.result.durationSec) : null,
+      engine: typeof job.result?.engine === 'string' ? job.result.engine : null,
+      modelId: typeof job.result?.modelId === 'string' ? job.result.modelId : null,
+      prompt: job.params.prompt,
+      lyrics: job.params.lyrics,
+      lyricsEnabled: tag.lyricsEnabled === true,
+      lyricsProvided: tag.lyricsProvided === true,
+      title: tag.title,
+      artistId: tag.artistId,
+      artist: tag.artist,
+      albumId: tag.albumId,
+    };
+  },
+  attach: async ({ job, trackId, filename, durationSec, engine, modelId, prompt, lyrics, lyricsEnabled, lyricsProvided, title, artistId, artist, albumId }) => {
+    const current = trackId ? await tracks.getTrack(trackId) : null;
+    // A deleted target is a successful render but no longer an attach target.
+    if (trackId && !current) return null;
+    const { renders } = tracks.buildRenderAppend(current, {
+      audioFilename: filename,
+      prompt,
+      lyrics: lyricsEnabled ? lyrics : '',
+      engine,
+      modelId,
+      durationSec,
+    });
+    const meta = {
+      audioFilename: filename,
+      engine,
+      modelId,
+      durationSec,
+      prompt,
+      renders,
+    };
+    if (lyricsEnabled && lyricsProvided) meta.lyrics = lyrics;
+    const track = trackId
+      ? await tracks.updateTrack(trackId, meta)
+      : await tracks.createTrack({
+        title: title || prompt.slice(0, 60),
+        artistId,
+        artist,
+        albumId,
+        ...(lyricsEnabled && lyricsProvided ? { lyrics } : {}),
+        ...meta,
+      });
+    if (!trackId && track?.albumId) {
+      const album = await albums.getAlbum(track.albumId).catch(() => null);
+      if (album && !(album.trackIds || []).includes(track.id)) {
+        await albums.updateAlbum(track.albumId, { trackIds: [...(album.trackIds || []), track.id] }).catch(() => {});
+      }
+    }
+    await updateJobResult(job.id, { trackId: track.id });
+    return track;
+  },
+  onAttached: ({ trackId, filename }, track) => {
+    console.log(`🎵 Music Studio ${trackId || track?.id || 'new'} ← ${filename}`);
+  },
+});
+
+export function initMusicStudioHook() {
+  hook.init();
+}
+
+export const __testing = hook.__testing;
