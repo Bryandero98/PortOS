@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   listRelatedCwd,
   parseVitestListOutput,
+  recordVitestDuration,
   shouldSkipRelatedList,
   toRunnerPath,
   unionSelectors,
@@ -86,5 +90,27 @@ describe('toRunnerPath', () => {
     expect(toRunnerPath('client', 'client/src/lib/index.test.js')).toBe('./src/lib/index.test.js');
     expect(toRunnerPath('server', 'server/lib/index.test.js')).toBe('./lib/index.test.js');
     expect(toRunnerPath('server', 'scripts/changelogFragments.test.js')).toBe('../scripts/changelogFragments.test.js');
+  });
+});
+
+describe('recordVitestDuration', () => {
+  const originalSummary = process.env.GITHUB_STEP_SUMMARY;
+  let summaryDir;
+
+  afterEach(() => {
+    if (originalSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+    else process.env.GITHUB_STEP_SUMMARY = originalSummary;
+    if (summaryDir) {
+      rmSync(summaryDir, { recursive: true, force: true });
+      summaryDir = undefined;
+    }
+  });
+
+  it('writes wall time to the GitHub step summary when one is configured', () => {
+    summaryDir = mkdtempSync(join(tmpdir(), 'vitest-duration-'));
+    const summaryPath = join(summaryDir, 'summary.md');
+    process.env.GITHUB_STEP_SUMMARY = summaryPath;
+    recordVitestDuration('server', 'full suite', Date.now() - 1500);
+    expect(readFileSync(summaryPath, 'utf8')).toMatch(/^⏱ server full suite: 1\.\ds\n$/);
   });
 });

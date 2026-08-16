@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { vitestCiPool } from '../scripts/vitestCiPool.js';
 
 // `npm run test:fast` is the Windows-safe way to set the flag (a
 // `VITEST_FAST=1 vitest` script is parsed as an executable name on cmd.exe).
@@ -8,6 +9,7 @@ if (process.env.npm_lifecycle_event === 'test:fast') {
 
 export default defineConfig({
   test: {
+    ...vitestCiPool(),
     testTimeout: process.platform === 'win32' ? 30000 : 10000,
     // hookTimeout tracks testTimeout for the same reason: Windows fs + module
     // resolution is markedly slower, and vitest's 10s DEFAULT applies to hooks

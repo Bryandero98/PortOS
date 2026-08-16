@@ -15,6 +15,7 @@ const FULL_TRIGGER_RULES = [
   { re: /^\.github\/workflows\//, reason: 'workflow definition changed' },
   { re: /^(?:package|server\/package|client\/package)(?:-lock)?\.json$/, reason: 'dependency manifest changed' },
   { re: /^(?:server|client)\/vitest\.config(?:\.db)?\.js$/, reason: 'test runner configuration changed' },
+  { re: /^scripts\/vitestCiPool(?:\.test)?\.js$/, reason: 'test runner pool configuration changed' },
   { re: /^server\/vitest\.setup\.js$/, reason: 'server test setup changed' },
   { re: /^client\/src\/test\/setup\.js$/, reason: 'client test setup changed' },
   // Biome config + its GritQL plugins (the former client/eslint.config.js). The
