@@ -84,6 +84,7 @@ function LabelChip({ label }) {
  */
 export default function IssuesTab({ appId, appName }) {
   const searchId = useId();
+  const overrideContextId = useId();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -113,6 +114,7 @@ export default function IssuesTab({ appId, appName }) {
     setSelectedProviderId, setSelectedModel
   } = useProviderModels({ filter: enabledProcessProviderFilter, allowDefault: true, silent: true, withEffort: true });
   const [effort, setEffort] = useState('');
+  const [overrideContext, setOverrideContext] = useState('');
 
   // Keep the event-driven path based on the latest claims without putting a
   // mutable state snapshot in its effect dependencies. Socket callbacks can
@@ -126,6 +128,7 @@ export default function IssuesTab({ appId, appName }) {
   useEffect(() => {
     claimsRef.current = {};
     setClaims({});
+    setOverrideContext('');
   }, [appId]);
 
   useEffect(() => {
@@ -254,6 +257,7 @@ export default function IssuesTab({ appId, appName }) {
 
   const handleClaim = async (issue) => {
     replaceClaims(prev => ({ ...prev, [issue.number]: { status: 'queuing', taskId: null } }));
+    const trimmedOverrideContext = overrideContext.trim();
     const result = await api.createSlashdoTask('next', appId, {
       target: String(issue.number),
       issueContext: {
@@ -265,6 +269,7 @@ export default function IssuesTab({ appId, appName }) {
       provider: selectedProviderId || undefined,
       model: selectedModel || undefined,
       effort: effort || undefined,
+      ...(trimmedOverrideContext ? { overrideContext: trimmedOverrideContext } : {}),
     }, { silent: true })
       .catch(err => {
         toast.error(err?.message || `Failed to queue a claim for #${issue.number}`);
@@ -337,25 +342,44 @@ export default function IssuesTab({ appId, appName }) {
         </button>
       </div>
 
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-2 bg-port-card border border-port-border rounded-lg">
-        <span className="flex items-center gap-1.5 text-xs text-gray-500 uppercase tracking-wide shrink-0">
-          <Bot size={14} /> Claim with
-        </span>
-        <div className="flex-1">
-          <ProviderModelSelector
-            providers={providers}
-            selectedProviderId={selectedProviderId}
-            selectedModel={selectedModel}
-            availableModels={availableModels}
-            onProviderChange={(id) => { setSelectedProviderId(id); setEffort(''); }}
-            onModelChange={setSelectedModel}
-            effort={effort}
-            onEffortChange={setEffort}
-            emptyProviderOption="Auto (default)"
-            emptyModelOption="Default model"
-            compact
-            highlightToolUse
+      <div className="space-y-3 px-3 py-2 bg-port-card border border-port-border rounded-lg">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <span className="flex items-center gap-1.5 text-xs text-gray-500 uppercase tracking-wide shrink-0">
+            <Bot size={14} /> Claim with
+          </span>
+          <div className="flex-1">
+            <ProviderModelSelector
+              providers={providers}
+              selectedProviderId={selectedProviderId}
+              selectedModel={selectedModel}
+              availableModels={availableModels}
+              onProviderChange={(id) => { setSelectedProviderId(id); setEffort(''); }}
+              onModelChange={setSelectedModel}
+              effort={effort}
+              onEffortChange={setEffort}
+              emptyProviderOption="Auto (default)"
+              emptyModelOption="Default model"
+              compact
+              highlightToolUse
+            />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <label htmlFor={overrideContextId} className="block text-xs text-gray-400">
+            Override context or instructions <span className="text-gray-600">(optional)</span>
+          </label>
+          <textarea
+            id={overrideContextId}
+            value={overrideContext}
+            onChange={e => setOverrideContext(e.target.value)}
+            maxLength={4000}
+            rows={2}
+            placeholder="Add guidance for this claim, such as a preferred implementation focus…"
+            className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm placeholder:text-gray-600 focus:border-port-accent focus:outline-hidden resize-y"
           />
+          <p className="text-xs text-gray-600">
+            Appended to the selected claim&apos;s instructions; blank leaves the claim prompt unchanged.
+          </p>
         </div>
       </div>
 

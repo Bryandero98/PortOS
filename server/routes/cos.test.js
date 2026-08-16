@@ -1159,6 +1159,7 @@ describe('CoS Routes', () => {
             body: 'Capture the request timing in the health endpoint.',
             url: 'https://github.com/acme/widget/issues/412'
           },
+          overrideContext: 'Prefer the smallest safe fix and include a regression test.',
           reviewers: ['claude', 'codex'], usernames: ['alice'], optionalReviewers: ['codex'],
           reviewerMaxRounds: { codex: 2, ollama: 1 },
           provider: 'claude-cli', model: 'claude-opus-5', effort: 'high', simplify: true
@@ -1175,6 +1176,7 @@ describe('CoS Routes', () => {
             body: 'Capture the request timing in the health endpoint.',
             url: 'https://github.com/acme/widget/issues/412'
           },
+          overrideContext: 'Prefer the smallest safe fix and include a regression test.',
           issueAuthorFilter: 'any',
           reviewers: ['claude', 'codex'],
           usernames: ['alice'],
@@ -1214,6 +1216,15 @@ describe('CoS Routes', () => {
           target: '412',
           issueContext: { number: 412, body: 'x'.repeat(12_001) }
         });
+
+      expect(response.status).toBe(400);
+      expect(buildClaimWorkTask).not.toHaveBeenCalled();
+    });
+
+    it('rejects oversized claim override context at the route boundary', async () => {
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command: 'next', app: 'my-app', overrideContext: 'x'.repeat(4_001) });
 
       expect(response.status).toBe(400);
       expect(buildClaimWorkTask).not.toHaveBeenCalled();
