@@ -345,6 +345,8 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | GET | `/digital-twin/gaps` | Get enrichment recommendations |
 | GET | `/digital-twin/completeness` | Get completeness validation |
 | POST | `/digital-twin/contradictions` | Detect contradictions |
+| POST | `/digital-twin/import/spotify/browser/open` | Open Spotify privacy page in the managed browser |
+| POST | `/digital-twin/import/spotify/browser/import` | Request/read the Spotify browser export and analyze it |
 | POST | `/digital-twin/import/analyze` | Analyze external data import |
 | POST | `/digital-twin/import/save` | Save analyzed import as document |
 

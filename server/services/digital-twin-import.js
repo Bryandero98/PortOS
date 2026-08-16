@@ -464,7 +464,8 @@ export function getImportSources() {
       name: 'Spotify',
       description: 'Import listening history to analyze music preferences and emotional patterns',
       format: 'JSON',
-      instructions: 'Go to Account > Privacy Settings > Download your data. Request "Extended streaming history". Extract the JSON files.'
+      interactive: true,
+      instructions: 'Use the PortOS managed browser to sign in and request Extended Streaming History, or upload the JSON export manually.'
     },
     {
       id: 'letterboxd',

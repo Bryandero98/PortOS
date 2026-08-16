@@ -6,11 +6,13 @@ vi.mock('./apiCore.js', () => ({
 
 let request;
 let detectDigitalTwinContradictions;
+let openDigitalTwinSpotifyBrowser;
+let importDigitalTwinSpotifyBrowser;
 
 beforeEach(async () => {
   vi.resetModules();
   ({ request } = await import('./apiCore.js'));
-  ({ detectDigitalTwinContradictions } = await import('./apiDigitalTwin.js'));
+  ({ detectDigitalTwinContradictions, openDigitalTwinSpotifyBrowser, importDigitalTwinSpotifyBrowser } = await import('./apiDigitalTwin.js'));
   request.mockReset();
 });
 
@@ -38,5 +40,29 @@ describe('detectDigitalTwinContradictions', () => {
     const [, options] = request.mock.calls[0];
     expect(options.silent).toBeUndefined();
     expect(options.method).toBe('POST');
+  });
+});
+
+describe('interactive Spotify import wrappers', () => {
+  it('opens the managed browser without accepting a caller URL', async () => {
+    request.mockResolvedValue({ status: 'ready' });
+
+    await openDigitalTwinSpotifyBrowser({ silent: true });
+
+    const [path, options] = request.mock.calls[0];
+    expect(path).toBe('/digital-twin/import/spotify/browser/open');
+    expect(options).toMatchObject({ method: 'POST', silent: true });
+    expect(options.body).toBeUndefined();
+  });
+
+  it('sends only the selected provider and model for browser analysis', async () => {
+    request.mockResolvedValue({ status: 'complete' });
+
+    await importDigitalTwinSpotifyBrowser('local', 'example-model', { silent: true });
+
+    const [path, options] = request.mock.calls[0];
+    expect(path).toBe('/digital-twin/import/spotify/browser/import');
+    expect(options).toMatchObject({ method: 'POST', silent: true });
+    expect(JSON.parse(options.body)).toEqual({ providerId: 'local', model: 'example-model' });
   });
 });
