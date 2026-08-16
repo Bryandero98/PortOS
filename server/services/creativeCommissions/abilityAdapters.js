@@ -30,6 +30,7 @@
  */
 
 import { renderFeedbackDigest, composeDirectiveGoal } from './directive.js';
+import { renderMusicTasteRecipePrompt } from './musicTasteRecipe.js';
 import {
   ABILITY_GENERATION_SPEC, GENERATION_KEY_DEFS, CREATIVE_COMMISSION_ABILITIES,
   COMMISSION_RENDER_BACKEND_AUTO,
@@ -190,10 +191,12 @@ const musicAdapter = {
   label: 'Music',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('music', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission) {
+  buildDirective(commission, { tasteRecipe } = {}) {
     const secs = genValue(commission, 'lengthSeconds');
     const lead = `Compose an original ~${secs}s music / audio piece. Use the music generation tools; do NOT plan a video or image render.`;
     const { lines, digest, constraints } = briefContext(commission, lead);
+    const tastePrompt = renderMusicTasteRecipePrompt(tasteRecipe);
+    if (tastePrompt) lines.push(tastePrompt);
     return { goal: composeDirectiveGoal(lines, digest), deliverables: [`One ~${secs}s music track matching the brief`], constraints };
   },
 };
@@ -272,7 +275,7 @@ export function getAbilityAdapter(ability) {
  * defensive. Shape matches `creativeDirectorDirectiveSchema`
  * (goal/deliverables/constraints) so it round-trips into `createProject`.
  */
-export function buildCommissionDirective(commission) {
+export function buildCommissionDirective(commission, options = {}) {
   const adapter = getAbilityAdapter(commission?.targetAbility) || videoAdapter;
-  return adapter.buildDirective(commission);
+  return adapter.buildDirective(commission, options);
 }
