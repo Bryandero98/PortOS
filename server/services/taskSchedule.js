@@ -247,8 +247,8 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
 //     `readOnly: true` is NOT a substitute: it gates worktree CREATION
 //     (agentWorkspacePrep.js) but the PR-claim check reads `metadata.openPR`
 //     directly (agentTuiSpawning.js).
-//   * `worktreeChangesExpected` — a clean tree IS the success shape here, so the
-//     TUI idle-complete changes gate must not read it as "produced no work".
+  //   * `worktreeChangesExpected` — a clean tree IS the success shape here, so the
+  //     task's deliverable posture must record that this is not code work.
 // A guard test in taskSchedule.test.js asserts every member of that set carries
 // this posture, so a new coordinator type can't be added to one list only.
 const NON_COMMITTING_COORDINATOR_METADATA = { useWorktree: false, openPR: false, worktreeChangesExpected: false };
@@ -465,7 +465,7 @@ export const MANAGED_AGENT_OPTIONS = {
   // `taskMetadata: null` clear — loadSchedule preserves that null (skipping the
   // defaults deep-merge), and enforceManagedAgentOptions rebuilds only the MANAGED
   // fields, so an unmanaged `worktreeChangesExpected` would silently go absent and the
-  // TUI idle-complete gate would fail the run as `idle-no-changes`.
+  // task bookkeeping would otherwise treat the clean worktree as missing code work.
   ...Object.fromEntries(
     ['branch-reconcile', 'branch-cleanup', 'issue-reconcile', 'jira-status-report']
       .map((t) => [t, ['useWorktree', 'openPR', 'worktreeChangesExpected']])

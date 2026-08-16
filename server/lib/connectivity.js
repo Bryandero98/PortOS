@@ -1,9 +1,8 @@
 /**
  * Internet-reachability probe.
  *
- * A liveness signal answering "does this machine currently have internet?" —
- * used by the CoS TUI idle reaper so a dropped connection doesn't get mistaken
- * for a hung or finished agent (a silenced TUI looks identical either way).
+ * A liveness signal answering "does this machine currently have internet?" for
+ * callers that need to distinguish a local outage from an unreachable service.
  *
  * This is deliberately a bare TCP *connect* to well-known anycast endpoints on
  * :443 — NOT a DNS lookup (we dial IPs directly, so a broken resolver can't read
@@ -14,9 +13,8 @@
  * Assumes normal outbound egress (the single-user private-machine model PortOS
  * targets). In a locked-down, proxy-only network where both anycast IPs are
  * blocked, a machine with working internet would read as offline — the caller
- * (the TUI idle reaper) treats that as "defer the reap", which its independent
- * max-runtime backstop still bounds, so the failure mode is a delayed reap, not
- * a wedged agent.
+ * callers should treat that as an indeterminate reachability result rather than
+ * a definitive statement about the remote service.
  */
 
 import net from 'net';

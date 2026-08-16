@@ -111,8 +111,8 @@ export async function run({ params, job, family, candidate, context } = {}) {
     // on a no-worktree job, tells it to `/do:push` to the branch it is standing
     // on, which is the app's default branch.
     noCodeOutput: landsNoCode,
-    // A run that correctly changed nothing must not be failed by the
-    // idle-complete gate, which otherwise requires a dirty tree.
+    // A run that correctly changed nothing must retain its report-shaped
+    // deliverable posture instead of being treated like code work.
     worktreeChangesExpected: !landsNoCode,
     reviewLoop: false,
     // Burn provenance, read back after the task round-trips through

@@ -144,7 +144,6 @@ describe('Provider Service', () => {
       secretEnvVars: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
       headlessArgs: ['--quiet', '--no-color'],
       tuiPromptDelayMs: 5000,
-      tuiIdleTimeoutMs: 120000,
     };
 
     const created = await providerService.createProvider(seed);

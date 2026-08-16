@@ -29,7 +29,7 @@ export const PASTE_DEADLINE_MS = 10000;
 // How long to wait for claude's POSITIVE input-ready footer (createInputReadyTracker)
 // before giving up and surfacing a startup failure. Generous because a cold
 // claude start can spend many seconds on banner + MCP-server + model init
-// (still well under the 180s idle timeout). Used only on the input-ready-gated
+// (well within the normal startup budget). Used only on the input-ready-gated
 // path; the non-claude providers use PASTE_DEADLINE_MS.
 export const TUI_INPUT_READY_DEADLINE_MS = 45000;
 
@@ -393,111 +393,10 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
   };
 }
 
-// "The model is actively processing a submitted prompt" signal. A TUI repaints
-// its banner/status line continuously even with an UNSUBMITTED prompt sitting in
-// the input box, so "any PTY output after the paste" cannot distinguish real
-// work from chrome churn — that conflation is what finalized a never-submitted
-// agent as `success: idle-complete` (issue #1229).
-//
-// We key on the TUI's elapsed-time WORKING COUNTER — `(1s · …` (Claude Code) /
-// `(57s • …` (Codex) — which renders only while a request is in flight and
-// INCREMENTS as the model works. This is the most model-agnostic signal (present
-// in both providers, absent on the stuck screen) AND the only one that's
-// echo-proof. The prompt is echoed into the input box BEFORE submission (and
-// `promptSentAt` is set when the paste starts, before Enter), so word-matching
-// `thinking`/`esc to interrupt` — or even a bare `(5s)` — could be tripped by a
-// task description that merely contains those tokens (both flagged in review of
-// #1229). Two defenses make the counter immune to the echo:
-//   1. We require the counter's trailing bullet separator (`· ` / `• `, U+00B7 /
-//      U+2022) — `(\d+s` alone matches log lines and durations in prose, but
-//      `(\d+s ·` is the TUI's specific status-line format and effectively never
-//      appears in a pasted prompt. (The bullet survives ANSI stripping intact —
-//      verified in real transcripts: `(1s · thinking…`.)
-//   2. We require ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT second-counts — the live
-//      counter passes through many values; a static echoed literal is just one.
-// There is one residual echo vector even with the bullet requirement: a task
-// that asks the agent to ANALYZE A TUI TRANSCRIPT can paste content that itself
-// contains two distinct bulleted counters (`(1s · …` and `(2s · …`), and the
-// whole prompt is echoed at paste time — before Enter is known to have submitted
-// (flagged in review of #1229). The defining difference is TIMING: the live
-// counter is rendered ONE value at a time as wall-clock seconds pass, whereas an
-// echoed transcript's counters all arrive together in the paste render. So the
-// tracker activates only once it has seen ≥ MIN_WORK_COUNTER_SAMPLES distinct
-// values whose observations SPAN ≥ MIN_WORK_COUNTER_SPAN_MS of real time — a
-// span a single paste-render burst can't fake. `observe()` therefore takes the
-// current timestamp.
-// Verified against real transcripts: the working run cycled through many counter
-// values across its runtime; the two confirmed stuck runs (`agent-92ed2c56`,
-// `agent-30a3ab56`) had none. Heuristic by nature, so it gates only the FALLBACK
-// idle-complete path on the long-running agent path — the authoritative success
-// signal remains the `.agent-done` sentinel. (The one-shot runner is deliberately
-// NOT gated: its idle-complete legitimately captures inline output that may carry
-// no counter, and its authoritative path is the response file.)
+
+// Claude Code and Codex render a bulleted elapsed counter while a model request
+// is in flight; agy uses its own `Generating…` indicator.
 export const WORK_COUNTER_PATTERN = /\(\s*(\d+)\s*s\s*[·•]/g;
-export const MIN_WORK_COUNTER_SAMPLES = 2;
-export const MIN_WORK_COUNTER_SPAN_MS = 750;
-
-/**
- * Extract every elapsed-second value from the TUI working counter in
- * `strippedText` (e.g. `(1s · …` → 1, `(57s • …` → 57). Matches only the TUI's
- * bullet-suffixed status-line counter, not a bare `(5s)` in prose. Callers MUST
- * pass ANSI-stripped output. Returns an array (possibly empty); non-string input
- * yields `[]`.
- *
- * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
- * @returns {number[]}
- */
-export function extractWorkCounterSeconds(strippedText) {
-  if (typeof strippedText !== 'string' || !strippedText) return [];
-  const out = [];
-  // Fresh matcher state per call — a module-level /g regex carries lastIndex
-  // across calls and would skip matches on the next invocation.
-  const re = new RegExp(WORK_COUNTER_PATTERN.source, 'g');
-  let m;
-  while ((m = re.exec(strippedText)) !== null) out.push(Number(m[1]));
-  return out;
-}
-
-/**
- * Stateful tracker for the "model is actively working" signal. Feed it each
- * ANSI-stripped post-paste chunk via `observe(strippedText, nowMs)`; it becomes
- * (and stays) `active` once it has seen ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT
- * bulleted elapsed-second counter values whose observations span ≥
- * MIN_WORK_COUNTER_SPAN_MS of wall-clock time — i.e. the live counter actually
- * ticked across real seconds, which neither a static echoed prompt nor an echoed
- * transcript's counters (all rendered in one paste burst) can fake. Used by the
- * long-running agent path; lives here so the echo-proof logic is unit-testable.
- *
- * @returns {{ observe: (strippedText: string, nowMs: number) => boolean, readonly active: boolean }}
- */
-export function createWorkActivityTracker() {
-  const seconds = new Set();
-  let firstSeenAt = null; // wall-clock ms when the FIRST distinct counter appeared
-  let active = false;
-  return {
-    observe(strippedText, nowMs) {
-      if (active) return true;
-      for (const s of extractWorkCounterSeconds(strippedText)) {
-        if (seconds.has(s)) continue;
-        seconds.add(s);
-        if (firstSeenAt === null) {
-          firstSeenAt = nowMs;
-        } else if (
-          seconds.size >= MIN_WORK_COUNTER_SAMPLES &&
-          typeof nowMs === 'number' && typeof firstSeenAt === 'number' &&
-          nowMs - firstSeenAt >= MIN_WORK_COUNTER_SPAN_MS
-        ) {
-          // A later distinct value, far enough after the first — the live counter
-          // advanced across wall-clock time. A one-shot paste-render burst can't.
-          active = true;
-          return true;
-        }
-      }
-      return active;
-    },
-    get active() { return active; },
-  };
-}
 
 // Chrome a TUI paints only while a model request is actually IN FLIGHT. agy
 // renders an animated `Generating…` for exactly as long as the request runs;
@@ -512,8 +411,8 @@ export function createWorkActivityTracker() {
 // receipt: parked on the eligibility banner, a `/usage` scrape opened the palette
 // in its session, the palette footer read as "the provider recovered", and the
 // gate latched — which disarms BOTH the re-submission and the fail-over, so the
-// run sat at the banner until the 180s idle reaper finalized it as a bogus
-// `idle-no-changes`. That is the failure this whole mechanism exists to prevent,
+// run sat at the banner until an old silent-session fallback finalized it as a
+// bogus success. That is the failure this whole mechanism exists to prevent,
 // and no local feature separates the two footers.
 //
 // Dropping it costs nothing measurable: across every agy transcript on disk, each
@@ -524,8 +423,7 @@ export const GENERATION_ACTIVITY_PATTERN =
   new RegExp(`Generating\\s*[.·•…]|${WORK_COUNTER_PATTERN.source}`, 'i');
 
 // Carry-over kept across chunks so in-flight chrome split by a PTY chunk boundary
-// (`Generat` + `ing…`) still matches. The sibling trackers below each learned
-// this the hard way — see createReviewLoopTracker's docblock.
+// (`Generat` + `ing…`) still matches.
 //
 // Only needs to span the longest pattern alternative, because `observe` tests the
 // FULL `carry + chunk` window and trims only afterwards (see below) — the cap
@@ -538,8 +436,8 @@ const GENERATION_ACTIVITY_CARRY_CAP = 64;
  * `active` once any in-flight chrome appears, and returns true on the call that
  * flipped it (so a caller can react to the transition).
  *
- * Unlike `createWorkActivityTracker` this does not try to be echo-proof by
- * construction — the gate that owns it handles the one case where the prompt can
+ * This does not try to be echo-proof by construction — the gate that owns it
+ * handles the one case where the prompt can
  * re-enter the stream (a re-submission; see SELF_CLEARING_RESUBMIT_ECHO_MS).
  *
  * It is NOT, however, a "match anything that looks alive" pattern, which is how
@@ -547,7 +445,7 @@ const GENERATION_ACTIVITY_CARRY_CAP = 64;
  * The cost asymmetry runs the other way now that the grace window re-submits: a
  * false "still stuck" merely re-asks a provider that was about to answer, while a
  * false "recovered" latches, disarming the retry AND the fail-over and leaving
- * the run to idle-reap into a reported success it never earned. Only chrome that
+ * the run to complete as a reported success it never earned. Only chrome that
  * a TUI paints EXCLUSIVELY while a request is in flight belongs here.
  *
  * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
@@ -599,7 +497,7 @@ export const SELF_CLEARING_RESUBMIT_INTERVAL_MS = 20000;
 // phase), `takeResubmit` refuses, and that attempt is silently forfeited for a
 // whole interval. Polling faster than the cadence leaves the gate the single
 // authority on timing — the same shape the agent path gets for free by folding
-// the question into its existing 5s idle poll.
+// the question into its existing 5s provider-signal poll.
 export const SELF_CLEARING_RESUBMIT_POLL_MS = 5000;
 
 // How long after a re-submission the gate ignores output when deciding whether
@@ -610,7 +508,7 @@ export const SELF_CLEARING_RESUBMIT_POLL_MS = 5000;
 // `Generating…` (a task about this very failure mode does) echoes straight into
 // the tracker and latches a bogus recovery — strictly worse than the expiry it
 // replaced, because a recovered gate neither retries nor fails over, leaving the
-// run to idle-reap into a false success. 3s covers the paste and its spaced
+// run to remain latched as a false recovery. 3s covers the paste and its spaced
 // submit-Enters (~1.4s).
 //
 // Applied to every re-submission rather than only to prompts whose text could
@@ -632,16 +530,15 @@ export const SELF_CLEARING_RESUBMIT_ECHO_MS = 3000;
  * banner rejected the submission), disarm the moment the provider is
  * demonstrably generating again, and hand back a verdict at the deadline. Each
  * consumer keeps only its own timing mechanism — `agentTuiSpawning` folds the
- * deadline and the retry cadence into its existing 5s idle poll, while
+ * deadline and the retry cadence into its existing 5s provider-signal timer, while
  * `tuiPromptRunner` needs its own timers because its idle watcher is created
  * lazily on the first post-prompt chunk and may not exist yet when the banner
  * paints.
  *
  * Usage per chunk: `gate.observe(stripped, now)` then, on a match,
- * `gate.arm(analysis, now)`. `gate.armed` is the idle-suppression
- * predicate — a session waiting out a handshake is silent by design, and letting
- * an idle reaper finalize it would report a bogus success that scrapes the
- * banner as the answer. `gate.takeResubmit(Date.now())` returns the 1-based
+ * `gate.arm(analysis, now)`. `gate.armed` tells the provider-signal timer that
+ * the handshake is still active; a session waiting out a handshake is silent by
+ * design. `gate.takeResubmit(Date.now())` returns the 1-based
  * attempt number when it is time to re-send the prompt (0 otherwise), and
  * `gate.takeExpired(Date.now())` returns the analysis to fail over with, or null
  * while still waiting / after a recovery.
@@ -664,7 +561,7 @@ export function createSelfClearingSignalGate() {
   // the exact bug the grace window exists to prevent (and it would now re-paste
   // the prompt into a working session on the way there). A genuine second banner
   // is therefore ignored rather than re-waited; the provider has demonstrably
-  // worked once, and the idle reaper remains the backstop if it truly wedges.
+  // worked once, and the caller's normal failure/runtime handling remains in charge.
   let recovered = false;
   return {
     get armed() { return armed !== null; },
@@ -738,7 +635,7 @@ export function createSelfClearingSignalGate() {
 // A SINGLE Enter after a large bracketed paste is unreliable: the TUI can still
 // be processing/reflowing the multi-line paste when the `\r` arrives and
 // swallow it, leaving the whole prompt sitting unsent in the input box. The
-// agent then idles out and is falsely finalized as success — observed as the
+// old fallback could then falsely finalize the run as success — observed as the
 // "the prompt was typed but I had to hit Enter myself" bug. (The marker fast
 // path above now fires again once matched against stripped output — see
 // detectPasteMarker — but the marker only renders for large multi-line pastes;
@@ -784,26 +681,14 @@ export function scheduleSubmitEnters(write, isFinalized) {
 }
 
 // Defaults the consumer applies when the provider config doesn't pin
-// per-provider values (provider.tuiPromptDelayMs / .tuiIdleTimeoutMs).
+// per-provider prompt timing values (provider.tuiPromptDelayMs).
 export const DEFAULT_TUI_PROMPT_DELAY_MS = 2500;
-export const DEFAULT_TUI_IDLE_TIMEOUT_MS = 180000;
 
 // Absolute wall-clock ceiling for a long-running TUI agent, applied from prompt
-// submission. This is the honest backstop the idle reaper CAN'T be: the reaper
-// resets on every PTY chunk, but Claude Code repaints its `(Ns · …)` working
-// counter ~1×/sec while ANY tool/API call is in flight — INCLUDING one stuck
-// retrying a stalled Bedrock/network operation. A "busy-but-stuck" agent keeps
-// `lastOutputAt` advancing forever, so idle-reap never fires and the run has NO
-// ceiling at all (real incident 2026-07-06: agent-b1c56083 churned the counter
-// for 98min on a `/do:next --swarm` claim-issue task before Claude Code's OWN
-// internal "Operation timed out" finally stopped it — had the CLI not self-
-// terminated, the agent would have run unbounded, holding a lane, blocking the
-// app's cooldown, and leaking a shell session). The one-shot runner already has
-// this backstop (tuiPromptRunner.js `hardTimeoutTimer`); the agent path omitted
-// it. 3h sits comfortably above the longest legitimate single run observed
-// (swarm claim-issue orchestrations routinely take 40–98min, and the merge-queue
-// / review-loop idle windows are 15min each) while bounding a genuinely-stuck
-// agent. Provider-configurable via `tuiMaxRuntimeMs`.
+// submission. CoS agents intentionally have no output-idle completion/reap: a
+// slow provider may be silent while it works. This ceiling is the remaining
+// automatic backstop for a genuinely wedged provider/CLI and is configurable via
+// `tuiMaxRuntimeMs`.
 export const DEFAULT_TUI_MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
 
 // Grace window opened when the max-runtime ceiling fires, BEFORE the agent is
@@ -853,348 +738,6 @@ export function buildWrapUpProdMessage(graceMs, sentinelName) {
   ].join('\n');
 }
 
-// Extended idle threshold applied ONLY while a `/do:next --swarm` orchestrator
-// is in its Phase C serialized merge queue (issue #2074). Merging PRs one at a
-// time makes each subsequent PR rebase onto the new `main` and re-run required
-// CI — several minutes of *silent* TUI output per PR (`gh pr checks --watch`
-// shows a static "pending" screen with no repaint). That quiet window routinely
-// blows past the 3-minute default and the runner reaps the still-working
-// orchestrator as `idle-complete`, leaving PRs merged-but-uncleaned or unmerged
-// while `state.json` records `status: completed`. 15 minutes comfortably covers
-// one CI run's silent gap while still bounding a genuinely-dead orchestrator's
-// reap (see MERGE_QUEUE_IDLE_TIMEOUT reap path in agentTuiSpawning.js).
-export const MERGE_QUEUE_IDLE_TIMEOUT_MS = 900000;
-
-// Distinctive markers the swarm orchestrator's TUI prints once it enters the
-// Phase C merge queue. Detection is deliberately conservative: a false POSITIVE
-// only *extends* the idle window (bounded, low-cost), and a false NEGATIVE just
-// preserves the pre-#2074 behavior (no regression) — so this is nothing like the
-// fragile completion-detection regexes we avoid for FINALIZING a run. Matched
-// against ANSI-stripped output. Kept lower-cased for case-insensitive testing.
-const MERGE_QUEUE_MARKERS = [
-  'merge queue',
-  'serialized merge',
-  'phase c',
-  'gh pr merge',
-  'gh pr checks',
-  '--delete-branch',
-];
-
-/**
- * True when a chunk of ANSI-stripped TUI output shows the swarm orchestrator has
- * entered its Phase C serialized merge queue. Callers MUST pass stripped output.
- * Non-string / empty input yields false.
- *
- * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
- * @returns {boolean}
- */
-export function isMergeQueueSignal(strippedText) {
-  if (typeof strippedText !== 'string' || !strippedText) return false;
-  const lower = strippedText.toLowerCase();
-  return MERGE_QUEUE_MARKERS.some((marker) => lower.includes(marker));
-}
-
-/**
- * Latching tracker for "this agent is in a serialized merge queue" (issue
- * #2074). Feed it each ANSI-stripped post-submit chunk via `observe(text)`; it
- * becomes `active` the first time a merge-queue marker appears and STAYS active
- * thereafter. Latching (not a sliding window) is deliberate: the whole failure
- * mode is a *silent* CI wait — no markers print during the quiet gap — so a
- * recency window would age the flag out exactly when the extended idle grace is
- * needed. Once latched, the idle reaper uses MERGE_QUEUE_IDLE_TIMEOUT_MS instead
- * of the 3-minute default. Lives here so the detection logic is unit-testable.
- *
- * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
- */
-export function createMergeQueueTracker() {
-  let active = false;
-  return {
-    observe(strippedText) {
-      if (active) return true;
-      if (isMergeQueueSignal(strippedText)) active = true;
-      return active;
-    },
-    get active() { return active; },
-  };
-}
-
-// Extended idle threshold applied while a `/do:release`, `/do:pr`, or `/do:rpr`
-// multi-reviewer loop is waiting on a slow external reviewer (a Copilot cloud
-// review, a headless codex/agy/claude review pass, an Ollama pass, or an
-// arbitrary @<login> human reviewer). Observed 2026-07-02 (agent-61508f36): the
-// review loop correctly backgrounds the reviewer and polls for it rather than
-// blocking — but the reviewer itself can go silent in the wrapped TUI for well
-// over the 3-minute default while it works (e.g. codex reading a large diff),
-// and the runner reaped the still-waiting release agent as `idle-complete` (a
-// false SUCCESS) before it ever reached the merge gate, leaving the release PR
-// open and unmerged. Mirrors the merge-queue grace (#2074) exactly: 15 minutes
-// comfortably covers one reviewer's silent working stretch while still
-// bounding a genuinely-dead agent's reap.
-export const REVIEW_LOOP_IDLE_TIMEOUT_MS = 900000;
-
-// Distinctive markers the multi-reviewer loop (do:release/do:pr/do:rpr) prints
-// once it starts waiting on a reviewer pass. Detection is deliberately
-// conservative, same rationale as MERGE_QUEUE_MARKERS above: a false POSITIVE
-// only extends the (bounded) idle window, and a false NEGATIVE just preserves
-// prior behavior. Matched against ANSI-stripped output.
-//
-// Both patterns are anchored to the literal RENDERED shape rather than a bare
-// substring, because this repo bundles the slashdo docs that DESCRIBE these
-// banners — `lib/slashdo/lib/multi-reviewer-loop.md` alone contains the word
-// "multi-reviewer" dozens of times, the literal phrase "Review plan:" once
-// (inside its own instruction text), AND a fully-rendered example of its own
-// aggregate-report heading ("## Multi-Reviewer Summary", in the doc's sample
-// output block) — so a THIRD marker keyed on that heading alone would latch
-// on any agent reading/quoting that one doc file (codex review flagged this
-// exact collision; verified via `grep -rn "multi-reviewer summary"
-// lib/slashdo/` — it's the only bundled doc containing that literal string).
-// This project's CLAUDE.md convention text is also "run a simplify/
-// self-review pass before committing", whose substring "review pass" would
-// otherwise latch on ANY CoS agent's ordinary narration — not just an actual
-// do:release/do:pr/do:rpr run. Anchoring on the shape only the runtime output
-// actually has (a rendered `[...]` agent list, or a digit/slash pass counter)
-// — verified clean against every bundled slashdo doc — keeps the
-// false-positive rate low without weakening true-positive detection: the
-// review-plan banner alone is a complete, sufficient signal (it prints once,
-// unconditionally, before ANY reviewer pass begins) and the tracker latches
-// permanently once set, so the pass-banner pattern only needs to catch the
-// (rare) case where the plan banner itself was missed.
-const REVIEW_PLAN_PATTERN = /review plan:\s*\[/i;
-const REVIEW_PASS_BANNER_PATTERN = /review pass\s+\d+\s*\/\s*\d+/i;
-
-/**
- * True when a chunk of ANSI-stripped TUI output shows the multi-reviewer loop
- * (do:release/do:pr/do:rpr) has started a reviewer pass. Callers MUST pass
- * stripped output. Non-string / empty input yields false.
- *
- * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
- * @returns {boolean}
- */
-export function isReviewLoopSignal(strippedText) {
-  if (typeof strippedText !== 'string' || !strippedText) return false;
-  return REVIEW_PLAN_PATTERN.test(strippedText) || REVIEW_PASS_BANNER_PATTERN.test(strippedText);
-}
-
-// Rolling tail cap for createReviewLoopTracker's cross-chunk buffer (below).
-// The banner text itself is well under 100 chars (e.g. "Review plan: [claude,
-// codex] (mode: series, stop-mode: all)" is ~62), so this is generous
-// headroom for intervening chrome without letting the buffer grow unbounded
-// over a long-running session.
-const REVIEW_LOOP_TAIL_CAP = 512;
-
-/**
- * Latching tracker for "this agent is waiting inside a multi-reviewer loop"
- * (do:release/do:pr/do:rpr). Feed it each ANSI-stripped post-submit chunk via
- * `observe(text)`; it becomes `active` the first time a review-loop marker
- * appears and STAYS active thereafter (same latching rationale as
- * createMergeQueueTracker — the failure mode is a silent external-reviewer
- * wait, so a recency window would age the flag out exactly when the extended
- * grace is needed). Once latched, the idle reaper uses
- * REVIEW_LOOP_IDLE_TIMEOUT_MS instead of the 3-minute default.
- *
- * Keeps a small rolling buffer of the most recent REVIEW_LOOP_TAIL_CAP
- * characters (codex review finding, iteration 2): a real TUI can deliver the
- * one-shot `Review plan: [` / `Review pass N/M` banner split across two
- * `onData` chunks — plausible during token-by-token streaming — so checking
- * only the current chunk in isolation would miss it if the split lands
- * mid-marker. Concatenating each new chunk onto the tail before testing means
- * a marker split across a chunk boundary still appears whole on the very next
- * observation.
- *
- * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
- */
-export function createReviewLoopTracker() {
-  let active = false;
-  let tail = '';
-  return {
-    observe(strippedText) {
-      if (active) return true;
-      if (typeof strippedText !== 'string' || !strippedText) return active;
-      tail = (tail + strippedText).slice(-REVIEW_LOOP_TAIL_CAP);
-      if (isReviewLoopSignal(tail)) active = true;
-      return active;
-    },
-    get active() { return active; },
-  };
-}
-
-// Extended idle threshold applied while the wrapped TUI still has BACKGROUND
-// SHELL COMMANDS outstanding. Observed 2026-08-09 (task-mslczmtr, three
-// consecutive attempts): the agent finished the feature, committed, pushed,
-// then ran `/do:pr`, which backgrounds each self-review reviewer (an Ollama
-// per-file pass, a headless `codex` pass over the branch diff) and waits to be
-// re-invoked on completion. Between those completions the model has NOTHING to
-// do, so it returns to the `❯` prompt and the TUI goes completely silent — no
-// spinner, no repaint, no PTY output at all. `idle` is measured off
-// `lastOutputAt`, so that legitimate wait is indistinguishable from a dead
-// session and the 3-minute default reaped all three attempts mid-review. The
-// branch ended up with three commits pushed and NO PR, twice recorded as
-// `pr-missing` and once as the actively misleading `idle-no-changes`.
-//
-// This is deliberately NOT covered by REVIEW_LOOP_IDLE_TIMEOUT_MS above: that
-// tracker keys on the multi-reviewer LOOP's banners (`Review plan: [`,
-// `Review pass N/M`), which only print when `configReviewLoop` is on. This run
-// had `configReviewLoop: false` — the reviewers came from `/do:pr`'s ordinary
-// self-review gate, which prints no such banner (verified: zero marker hits
-// across all three transcripts). Keying on the outstanding-shell footer covers
-// that gap and generalizes to ANY long background command, which is the real
-// invariant — an agent with async work still in flight is waiting, not dead.
-// 15 minutes mirrors the two graces above.
-export const BACKGROUND_SHELL_IDLE_TIMEOUT_MS = 900000;
-
-// The rendered footer Claude Code shows while background commands are still in
-// flight: `✻ Baked for 20s · 2 shells still running`. Anchored on the
-// digit-plus-noun shape rather than the bare phrase "still running" for the
-// same reason the review-loop patterns are anchored (see above) — a bare
-// substring would latch on any agent narrating about a running process. The
-// `\s*` between the count and the noun is not cosmetic: the TUI repaints
-// DIFFERENTIALLY, so a redraw that rewrites only the changed cells can drop
-// the separating space and emit `1shell still running` (exactly what the
-// 2026-08-09 agent-839255ca transcript contains — its ONLY rendering of the
-// footer). Requiring a literal space there would have missed that run entirely.
-//
-// Verified collision-free against the tracked tree (`git grep -niE
-// '[0-9]+ shells? still running'` matches nothing outside this feature's own
-// files), and a false positive would only extend the bounded idle window.
-const BACKGROUND_SHELL_PATTERN = /\d+\s*shells?\s+still\s+running/i;
-
-// Rolling tail cap for createBackgroundShellTracker's cross-chunk buffer. The
-// marker itself is ~22 chars, so this leaves generous headroom for intervening
-// chrome without growing unbounded over a long session.
-const BACKGROUND_SHELL_TAIL_CAP = 512;
-
-/**
- * True when a chunk of ANSI-stripped TUI output shows the wrapped agent still
- * has background shell commands in flight. Callers MUST pass stripped output.
- * Non-string / empty input yields false.
- *
- * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
- * @returns {boolean}
- */
-export function isBackgroundShellSignal(strippedText) {
-  if (typeof strippedText !== 'string' || !strippedText) return false;
-  return BACKGROUND_SHELL_PATTERN.test(strippedText);
-}
-
-/**
- * Latching tracker for "this agent has background shell commands outstanding".
- * Feed it each ANSI-stripped post-submit chunk via `observe(text)`; it becomes
- * `active` the first time the outstanding-shell footer appears and STAYS active
- * thereafter.
- *
- * Latching (rather than clearing when the shells finish) is deliberate and
- * matches createMergeQueueTracker / createReviewLoopTracker: the failure mode
- * is a session that goes ENTIRELY silent while waiting, so there is no later
- * output in which to observe the footer's disappearance — a recency window
- * would age the flag out at exactly the moment the grace is needed. The cost of
- * over-latching is bounded on both ends: the extended window is still finite,
- * and `tuiMaxRuntimeMs` remains the hard backstop.
- *
- * Uses the same rolling tail buffer as createReviewLoopTracker so a marker
- * split across two `onData` chunks still appears whole on the next observation.
- *
- * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
- */
-export function createBackgroundShellTracker() {
-  let active = false;
-  let tail = '';
-  return {
-    observe(strippedText) {
-      if (active) return true;
-      if (typeof strippedText !== 'string' || !strippedText) return active;
-      tail = (tail + strippedText).slice(-BACKGROUND_SHELL_TAIL_CAP);
-      if (isBackgroundShellSignal(tail)) active = true;
-      return active;
-    },
-    get active() { return active; },
-  };
-}
-
-/**
- * The idle reaper's verdict, as a pure function of the signals the spawner has
- * already latched. Lives here (not inline in the interval body) so the branch
- * matrix is unit-testable against the REAL implementation — `agentTuiSpawning`
- * calls this and executes what it returns.
- *
- * Priority order, highest first:
- *  1. `prFollowUpMerged` — a PR follow-up run (`reviewLoopFollowUp`) exists to
- *     land ONE pull request. Once that PR reads MERGED and the session has been
- *     silent for the BASE window, the deliverable is provably in hand and there
- *     is nothing left to wait for. This outranks everything below because those
- *     branches all measure proxies (silence, worktree churn, a merge-queue
- *     latch) for a question this one answers directly. Without it a merge
- *     follow-up that did its whole job in 60s was recorded as a FAILURE: its
- *     prompt QUOTES `gh pr checks` / `gh pr merge` / `--delete-branch`, so the
- *     TUI's echo of that prompt latches `mergeQueueActive` before any work runs,
- *     and the agent — which is told to "Exit", makes no commit, and on
- *     Antigravity often skips the sentinel — then idles into (4)/(5)'s
- *     needs-manual-finish verdict 15 minutes later, gets retried twice more, and
- *     lands in Blocked with a HIGH "PR left open" card naming an already-merged
- *     PR (task sys-rl-msr1j1a5, PR #3909, 2026-08-13).
- *  2. A null base timeout (local-runtime model) → keep waiting indefinitely;
- *     `tuiMaxRuntimeMs` remains the separate wall-clock backstop.
- *  3. Not yet at the (possibly extended) deadline → keep waiting.
- *  4–5. The extended-grace reaps: a latched merge queue / multi-reviewer loop
- *     that blew even its 15-minute window is a needs-manual-finish FAILURE
- *     (#2074, PR #2084) — the run really did go dark mid-merge.
- *  6. `idle-no-activity` (#1229) — provider renders a work counter and it never
- *     advanced: the prompt never submitted.
- *  7. Otherwise the pre-existing permissive `idle-complete`, which the caller
- *     still gates on worktree evidence (#2191) before recording success.
- *
- * Note `backgroundShellActive` extends the deadline but carries NO verdict of
- * its own — a background-shell wait that blows its window falls through to the
- * ordinary (6)/(7) reasoning, unchanged.
- *
- * @param {Object} signals
- * @param {number} signals.idle - ms since the last PTY output
- * @param {number|null} signals.baseIdleTimeoutMs - the run's configured idle
- *   window, or null to disable idle reaping for a local-runtime model
- * @param {boolean} [signals.mergeQueueActive]
- * @param {boolean} [signals.reviewLoopActive]
- * @param {boolean} [signals.backgroundShellActive]
- * @param {boolean} [signals.prFollowUpMerged] - this is a PR follow-up AND its PR reads MERGED
- * @param {boolean} [signals.workActive] - the work counter advanced post-submit
- * @param {boolean} [signals.rendersCounter] - this provider renders a work counter at all
- * @returns {{ action: 'wait'|'reap', effectiveIdleTimeoutMs: number, success?: boolean, reason?: string }}
- */
-export function decideIdleReap({
-  idle,
-  baseIdleTimeoutMs,
-  mergeQueueActive = false,
-  reviewLoopActive = false,
-  backgroundShellActive = false,
-  prFollowUpMerged = false,
-  workActive = false,
-  rendersCounter = false,
-} = {}) {
-  const idleTimeoutDisabled = baseIdleTimeoutMs === null;
-  const effectiveIdleTimeoutMs = idleTimeoutDisabled
-    ? Infinity
-    : mergeQueueActive
-      ? Math.max(baseIdleTimeoutMs, MERGE_QUEUE_IDLE_TIMEOUT_MS)
-      : reviewLoopActive
-        ? Math.max(baseIdleTimeoutMs, REVIEW_LOOP_IDLE_TIMEOUT_MS)
-        : backgroundShellActive
-          ? Math.max(baseIdleTimeoutMs, BACKGROUND_SHELL_IDLE_TIMEOUT_MS)
-          : baseIdleTimeoutMs;
-  if (!idleTimeoutDisabled && prFollowUpMerged && idle >= baseIdleTimeoutMs) {
-    return { action: 'reap', success: true, reason: 'pr-follow-up-merged', effectiveIdleTimeoutMs };
-  }
-  if (idleTimeoutDisabled || idle < effectiveIdleTimeoutMs) {
-    return { action: 'wait', effectiveIdleTimeoutMs };
-  }
-  if (mergeQueueActive) {
-    return { action: 'reap', success: false, reason: 'merge-queue-idle-timeout', effectiveIdleTimeoutMs };
-  }
-  if (reviewLoopActive) {
-    return { action: 'reap', success: false, reason: 'review-loop-idle-timeout', effectiveIdleTimeoutMs };
-  }
-  if (!workActive && rendersCounter) {
-    return { action: 'reap', success: false, reason: 'idle-no-activity', effectiveIdleTimeoutMs };
-  }
-  return { action: 'reap', success: true, reason: 'idle-complete', effectiveIdleTimeoutMs };
-}
 
 // ─── Codex MCP-server boot detection ──────────────────────────────────────
 //
@@ -1223,8 +766,8 @@ export function decideIdleReap({
 // and a paste finally lands its marker, up to MCP_BOOT_PASTE_DEADLINE_MS. The
 // spawner (agentTuiSpawning.js) consumes `createMcpBootTracker` for exactly that.
 //
-// Matched against ANSI-stripped output. Detection is deliberately conservative,
-// same rationale as MERGE_QUEUE_MARKERS: a false POSITIVE only extends the
+// Matched against ANSI-stripped output. Detection is deliberately conservative:
+// a false POSITIVE only extends the
 // (bounded) retry window, and a false NEGATIVE just preserves the pre-fix 3-retry
 // behavior. The two phrases are anchored to codex's literal boot banners rather
 // than a bare "mcp server" substring so an agent whose prompt/output merely
@@ -1233,9 +776,8 @@ const MCP_BOOT_MARKERS = ['booting mcp server', 'starting mcp servers'];
 
 // Covers a `node_repl` with the documented `startup_timeout_sec = 120` plus an
 // `npx`-fetched server's cold download and margin, while still bounding a
-// genuinely-hung boot's failure. Kept under the 180s default idle-reap window so
-// the boot-retry loop resolves (succeeds or fails cleanly) before the idle
-// reaper can race it.
+// genuinely-hung boot's failure. The deadline is independent of CoS agent
+// runtime handling so a slow MCP boot gets its full retry budget.
 export const MCP_BOOT_PASTE_DEADLINE_MS = 150000;
 // Spacing between paste retries while codex is booting MCP servers. A swallowed
 // mid-boot paste renders nothing, so a re-paste every few seconds is a cheap
@@ -1243,8 +785,8 @@ export const MCP_BOOT_PASTE_DEADLINE_MS = 150000;
 // marker-wait + verify window (~5.5s), so the effective cadence is ~10s.
 export const MCP_BOOT_PASTE_RETRY_DELAY_MS = 5000;
 
-// Rolling tail cap for createMcpBootTracker's cross-chunk buffer, same rationale
-// as REVIEW_LOOP_TAIL_CAP: a boot banner can split across two onData chunks
+// Rolling tail cap for createMcpBootTracker's cross-chunk buffer: a boot banner
+// can split across two onData chunks
 // during streaming, so concatenate onto a short tail before testing.
 const MCP_BOOT_TAIL_CAP = 256;
 
@@ -1333,27 +875,6 @@ export const RAW_SPOOL_MAX_BYTES = 256 * 1024 * 1024;
 export { inferTuiCommand };
 
 /**
- * True when the given TUI command renders the elapsed working counter
- * (`(Ns ·` / `(Ns •`) that `createWorkActivityTracker` keys on. Only Claude
- * Code and Codex are known to render it; Antigravity/Gemini/other TUIs do not.
- *
- * The work-activity idle gate (issue #1229) must consult this before
- * downgrading a sentinel-less idle-out to failure: on a provider that never
- * renders the counter, absence of the signal proves nothing, so the original
- * permissive idle-complete=success behavior must be preserved (otherwise every
- * sentinel-less completion on those providers would falsely fail).
- *
- * @param {string} commandName — the spawned binary's basename (e.g. `claude`,
- *   `codex`, `agy`, `gemini`).
- * @returns {boolean}
- */
-export function rendersWorkCounter(commandName) {
-  if (typeof commandName !== 'string') return false;
-  const lower = commandName.toLowerCase();
-  return lower.includes('claude') || lower.includes('codex');
-}
-
-/**
  * TUI posture-flag dispatch (approval/trust bypass per vendor). Defined in
  * providerVendors.js (the PROVIDER_VENDORS registry, #3618); re-exported here
  * for existing importers of this module.
@@ -1389,7 +910,7 @@ export function buildTuiInvocation(provider, model) {
 /**
  * Returns true when the stripped chunk looks like a `command not found`
  * error for our spawned TUI binary. Used as an early-fail probe so a typo'd
- * provider.command surfaces in seconds instead of after the idle timeout.
+ * provider.command surfaces in seconds instead of after a completion timeout.
  */
 export function detectMissingTuiBinary(strippedText, commandName) {
   const lower = strippedText.toLowerCase();

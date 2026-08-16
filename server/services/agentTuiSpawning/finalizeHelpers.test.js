@@ -6,9 +6,7 @@ import { join } from 'path';
 // git + failure analyzer are mocked; fs/promises stays REAL so readFileTail /
 // captureWorktreeDiff are exercised against actual temp files.
 vi.mock('../git.js', () => ({
-  getStatus: vi.fn(),
   getDiff: vi.fn(),
-  execGit: vi.fn(),
 }));
 vi.mock('../agentErrorAnalysis.js', () => ({
   analyzeAgentFailure: vi.fn(),
@@ -24,9 +22,7 @@ import { analyzeAgentFailure } from '../agentErrorAnalysis.js';
 import { commitsSince as commitsSinceMock } from '../../lib/gitCommitProbe.js';
 import {
   readFileTail,
-  worktreeHasChanges,
   commitsSince,
-  worktreeHasWorkEvidence,
   captureWorktreeDiff,
   resolveErrorAnalysis,
   RAW_TAIL_ANALYSIS_BYTES,
@@ -72,29 +68,6 @@ describe('finalizeHelpers', () => {
     });
   });
 
-  describe('worktreeHasChanges', () => {
-    it('is true when git reports an unclean worktree', async () => {
-      vi.mocked(git.getStatus).mockResolvedValue({ clean: false });
-      expect(await worktreeHasChanges('/tmp/ws')).toBe(true);
-    });
-
-    it('is false when git reports a clean worktree', async () => {
-      vi.mocked(git.getStatus).mockResolvedValue({ clean: true });
-      expect(await worktreeHasChanges('/tmp/ws')).toBe(false);
-    });
-
-    it('is falsy (never throws) when getStatus rejects', async () => {
-      vi.mocked(git.getStatus).mockRejectedValue(new Error('not a repo'));
-      expect(await worktreeHasChanges('/tmp/ws')).toBeFalsy();
-    });
-
-    it('is false for a non-string / empty path without touching git', async () => {
-      expect(await worktreeHasChanges(null)).toBe(false);
-      expect(await worktreeHasChanges('')).toBe(false);
-      expect(git.getStatus).not.toHaveBeenCalled();
-    });
-  });
-
   // The probe's own behavior (git args, exit-code/timeout handling) is covered by
   // server/lib/gitCommitProbe.test.js — its new home (#3637). What matters HERE is
   // that this module's historical entry point still resolves to it.
@@ -102,37 +75,6 @@ describe('finalizeHelpers', () => {
     vi.mocked(commitsSinceMock).mockResolvedValue(3);
     expect(await commitsSince('/tmp/ws', 1)).toBe(3);
     expect(commitsSince).toBe(commitsSinceMock);
-  });
-
-  describe('worktreeHasWorkEvidence', () => {
-    const SINCE = Date.parse('2026-08-08T18:23:30.000Z');
-
-    it('is true on a dirty tree without consulting the commit log', async () => {
-      vi.mocked(git.getStatus).mockResolvedValue({ clean: false });
-      expect(await worktreeHasWorkEvidence('/tmp/ws', SINCE)).toBe(true);
-      expect(commitsSinceMock).not.toHaveBeenCalled();
-    });
-
-    // The release-run regression: commit + push + open PR leaves a CLEAN tree,
-    // which the uncommitted-changes-only gate scored as "produced no work".
-    it('is true on a clean tree when the run committed something', async () => {
-      vi.mocked(git.getStatus).mockResolvedValue({ clean: true });
-      vi.mocked(commitsSinceMock).mockResolvedValue(1);
-      expect(await worktreeHasWorkEvidence('/tmp/ws', SINCE)).toBe(true);
-      expect(commitsSinceMock).toHaveBeenCalledWith('/tmp/ws', SINCE);
-    });
-
-    it('is false on a clean tree with no in-window commits', async () => {
-      vi.mocked(git.getStatus).mockResolvedValue({ clean: true });
-      vi.mocked(commitsSinceMock).mockResolvedValue(0);
-      expect(await worktreeHasWorkEvidence('/tmp/ws', SINCE)).toBe(false);
-    });
-
-    it('falls back to the dirty-tree signal alone when no window is given', async () => {
-      vi.mocked(git.getStatus).mockResolvedValue({ clean: true });
-      vi.mocked(commitsSinceMock).mockResolvedValue(0);
-      expect(await worktreeHasWorkEvidence('/tmp/ws')).toBe(false);
-    });
   });
 
   describe('captureWorktreeDiff', () => {
@@ -205,7 +147,7 @@ describe('finalizeHelpers', () => {
     });
 
     it('forwards the finalize path\'s own completion verdict to the analyzer', async () => {
-      // The idle reaper / max-runtime timer already knows WHY the run ended;
+      // The finalize path already knows WHY the run ended;
       // that structural signal must reach analyzeAgentFailure so a stray keyword
       // in the transcript can't outrank it.
       const p = join(dir, 'raw.txt');

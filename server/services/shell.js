@@ -309,7 +309,7 @@ export function createShellSession(socket, options = {}) {
  * so without this a TUI run stays "watched" (and its completion stays paused)
  * after the user switches to another tab. When a socket starts viewing a
  * different session, drop its binding to any OTHER external (TUI-run) view so
- * that run resumes normal idle/timeout completion. Interactive shells keep their
+ * that run resumes normal completion handling. Interactive shells keep their
  * lingering binding (the registry's one-socket-many-shells model is unchanged).
  */
 function releaseExternalViews(socket, exceptId = null) {

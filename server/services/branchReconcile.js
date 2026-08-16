@@ -946,7 +946,7 @@ const verifyGate = 'Rebase onto the default branch before opening or updating a 
 // placeholder the agent fills in after opening it.
 const driveToMerge = (pr) => [
   'Opening (or approving) the PR is NOT the end state — a green PR left open is still an unfinished branch that this task will simply re-drive on its next run.',
-  `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s — each poll prints output, which keeps this run clear of the idle reaper the way a silent \`--watch\` does not. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
+  `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s so the run stays observable while CI is pending. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
   'If a required check FAILS, fix it on the branch, push, and re-poll (max 3 rounds); if it is still red after that, leave the PR open and report exactly which check failed.',
   `Once every required check is green AND the PR is MERGEABLE, merge it — from the repo root, NOT from inside the branch's worktree (\`gh\` can't delete a branch that is checked out elsewhere): \`gh pr merge ${pr} --merge --delete-branch\`. Repos differ in which methods they allow, so on a "not allowed" error retry with \`--squash\`, then \`--rebase\`. Never \`--auto\`: a queued auto-merge outlives this run, so a check that goes red afterward has nobody left to fix it.`,
   'After the merge, remove the branch\'s worktree first, then delete the local branch — the delete fails while a worktree still has it checked out.'

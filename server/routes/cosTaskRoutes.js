@@ -171,8 +171,8 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   // PortOS-managed worktree gets one. `worktreeChangesExpected` declares the
   // workflow's deliverable: false for the report-shaped four (plan-task /
   // replan / review / scan), whose output is a filed issue or a printed report,
-  // so the TUI idle reaper doesn't score their clean tree `idle-no-changes`
-  // (#3636). `simplify` comes from the request (the run drawer's toggle), not
+  // so downstream task bookkeeping does not score their clean tree as missing
+  // code work (#3636). `simplify` comes from the request (the run drawer's toggle), not
   // the catalog.
   const { useWorktree, openPR, worktreeChangesExpected } = workflow.settings;
   let shape;

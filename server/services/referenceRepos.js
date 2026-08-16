@@ -649,8 +649,8 @@ export async function triggerReferenceAnalysis(app, ref, snapshot) {
       // agent actually received: the PLAN.md path commits checklist items (dirty
       // tree), while the github/gitlab/jira paths file issues/tickets and — per
       // the prompt's "no source-code edits" contract — leave the tree CLEAN.
-      // Without this the TUI idle reaper records a run that did its whole job as
-      // `idle-no-changes` failure (#3102).
+      // Without this downstream task bookkeeping treats a report-shaped run that
+      // did its whole job with a clean worktree as missing code work (#3102).
       worktreeChangesExpected: isFileTracker(workTracker.resolved),
       // A multi-line payload here is the agent PROMPT, not the one-line human
       // note — `cosTaskStore.addTask` routes it to `metadata.prompt` on write

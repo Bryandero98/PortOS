@@ -575,7 +575,6 @@ describe('validation.js', () => {
         type: 'tui',
         command: 'codex',
         tuiPromptDelayMs: 2500,
-        tuiIdleTimeoutMs: 180000
       };
       const result = providerSchema.safeParse(provider);
       expect(result.success).toBe(true);
