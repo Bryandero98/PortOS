@@ -1,0 +1,1 @@
+- Accessibility checks now accurately handle nested hidden content and label names.

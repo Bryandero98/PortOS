@@ -548,6 +548,7 @@ export default function ConfigTab({ accounts, setAccounts }) {
                             <label className="relative w-4 h-4 shrink-0 cursor-pointer" title="Change color">
                               <div className="w-4 h-4 rounded-full border border-port-border" style={{ backgroundColor: sc.color || DEFAULT_AVATAR_COLOR }} />
                               <input
+                                aria-label={`Change color for ${sc.name}`}
                                 type="color"
                                 value={sc.color || DEFAULT_AVATAR_COLOR}
                                 onInput={(e) => handleSubcalendarLocal(account, sc.calendarId, 'color', e.target.value)}

@@ -1222,6 +1222,7 @@ export default function Tribe() {
                   <label className="relative min-w-0 flex-1">
                     <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" aria-hidden="true" />
                     <input
+                      aria-label="Search relationships"
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
                       className="w-full rounded border border-port-border bg-port-card py-2 pl-9 pr-3 text-sm text-white outline-none focus:border-port-accent"
@@ -1231,6 +1232,7 @@ export default function Tribe() {
                   <label className="relative sm:w-44">
                     <Filter size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" aria-hidden="true" />
                     <select
+                      aria-label="Filter relationships by ring"
                       value={ringFilter}
                       onChange={(event) => setRingFilter(event.target.value)}
                       className="w-full rounded border border-port-border bg-port-card py-2 pl-9 pr-3 text-sm text-white outline-none focus:border-port-accent"
