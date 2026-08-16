@@ -237,6 +237,51 @@ const fetchHead = async (ref) => {
 // against the user's notes; the user can pin lastReviewedSha forward
 // to drop older items if needed.
 const COMMIT_LIST_CAP = 200;
+const LAST_KNOWN_GOOD_SNAPSHOT_VERSION = 1;
+const SNAPSHOT_AUTHOR_MAX_LENGTH = 200;
+const SNAPSHOT_SUBJECT_MAX_LENGTH = 500;
+
+const boundedText = (value, maxLength) => (
+  typeof value === 'string' ? value.slice(0, maxLength) : ''
+);
+
+// The live snapshot contains a clone working directory because the internal
+// reference-watch prompt needs it. The persisted fallback deliberately does
+// not: clone paths are machine-local implementation details, and commit email
+// addresses are not needed to explain a reference change to the user.
+const persistableSnapshot = (snapshot, fetchedAt) => ({
+  schemaVersion: LAST_KNOWN_GOOD_SNAPSHOT_VERSION,
+  fetchedAt,
+  head: snapshot.head,
+  headShort: snapshot.headShort,
+  sinceSha: snapshot.sinceSha,
+  sinceShort: snapshot.sinceShort,
+  branch: snapshot.branch,
+  commitCount: snapshot.commitCount,
+  truncated: snapshot.truncated === true,
+  totalCommitCount: snapshot.totalCommitCount,
+  commits: snapshot.commits.slice(0, COMMIT_LIST_CAP).map((commit) => ({
+    sha: commit.sha,
+    author: boundedText(commit.author, SNAPSHOT_AUTHOR_MAX_LENGTH),
+    date: commit.date,
+    subject: boundedText(commit.subject, SNAPSHOT_SUBJECT_MAX_LENGTH),
+  })),
+});
+
+const lastKnownGoodSnapshot = (ref) => {
+  const snapshot = ref?.lastKnownGoodSnapshot;
+  if (
+    !snapshot
+    || snapshot.schemaVersion !== LAST_KNOWN_GOOD_SNAPSHOT_VERSION
+    || !SHA_RE.test(snapshot.head || '')
+    || typeof snapshot.fetchedAt !== 'string'
+    || !Number.isFinite(Date.parse(snapshot.fetchedAt))
+    || !Array.isArray(snapshot.commits)
+  ) return null;
+  return snapshot;
+};
+
+const staleAgeMs = (fetchedAt) => Math.max(0, Date.now() - Date.parse(fetchedAt));
 
 // Returns { commits, truncated, totalCommitCount } where:
 //   - commits.length <= COMMIT_LIST_CAP
@@ -295,6 +340,7 @@ export async function addReferenceRepo(appId, { name, repoUrl, branch, notes }) 
     lastCheckedAt: null,
     status: 'needs-clone',
     lastError: null,
+    lastKnownGoodSnapshot: null,
     createdAt: new Date().toISOString(),
   };
   await updateApp(appId, { referenceRepos: [...existing, ref] });
@@ -470,19 +516,41 @@ export async function checkReferenceRepo(appId, refId) {
       commits,
       cwd,
       branch: ref.branch || 'main',
+      fetchedAt: checkedAt,
+      stale: false,
     };
   } catch (err) {
     nextStatus = 'error';
     nextError = err instanceof ServerError ? err.message : String(err.message || err);
     originalError = err;
   }
+  const storedSnapshot = snapshot ? persistableSnapshot(snapshot, checkedAt) : null;
+  const fallbackSnapshot = lastKnownGoodSnapshot(ref);
+  const errorCode = originalError instanceof ServerError
+    ? originalError.code || 'REFERENCE_REPO_CHECK_FAILED'
+    : 'REFERENCE_REPO_CHECK_FAILED';
   // Persist status + lastCheckedAt regardless of success — UI surfaces the
-  // error inline so the user can fix bad URL / branch.
+  // error inline so the user can fix bad URL / branch. A failed refresh keeps
+  // the last successful snapshot untouched so it remains a trustworthy fallback.
   const next = refs.map((r) => (r.id === refId
-    ? { ...r, status: nextStatus, lastError: nextError, lastCheckedAt: checkedAt }
+    ? {
+      ...r,
+      status: nextStatus === 'error' && fallbackSnapshot ? 'stale' : nextStatus,
+      lastError: nextError,
+      lastCheckedAt: checkedAt,
+      ...(storedSnapshot ? { lastKnownGoodSnapshot: storedSnapshot } : {}),
+    }
     : r));
   await updateApp(appId, { referenceRepos: next });
   if (nextStatus === 'error') {
+    if (fallbackSnapshot) {
+      return {
+        ...fallbackSnapshot,
+        stale: true,
+        staleAgeMs: staleAgeMs(fallbackSnapshot.fetchedAt),
+        error: { code: errorCode, message: nextError },
+      };
+    }
     // Preserve the original ServerError's status/code (e.g. 400
     // REFERENCE_REPO_LOCAL_MISSING) so user-fixable config problems don't
     // become opaque 500s. Fall back to a generic 500 only for truly
@@ -594,6 +662,9 @@ export { formatTrackerInstructions };
  * when the task can't be created (e.g. no commits, app not found).
  */
 export async function triggerReferenceAnalysis(app, ref, snapshot) {
+  if (snapshot?.stale) {
+    return { queued: false, reason: 'stale-snapshot' };
+  }
   if (!snapshot || snapshot.commitCount === 0) {
     return { queued: false, reason: 'no-new-commits' };
   }
