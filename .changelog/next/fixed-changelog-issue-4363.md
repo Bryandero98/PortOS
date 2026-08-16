@@ -1,0 +1,1 @@
+- GitLab-aware manual completion prompts now carry merge requests through review and merge (#4363).
