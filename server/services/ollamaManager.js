@@ -96,6 +96,11 @@ let managedProcessPid = null
 // bounce the daemon before every single agent spawn. Once a window has been
 // handed over, that request is done.
 let appliedContextLength = null
+// When the latch was established while a model was resident, an empty /api/ps
+// response is evidence that the daemon was replaced behind PortOS's back. An
+// idle daemon has no such evidence, so preserve its latch to avoid restarting
+// on every pre-spawn while no model is loaded.
+let appliedWhileModelResident = false
 
 const status = { lastError: null, lastSuccessAt: null, consecutiveErrors: 0 }
 
@@ -202,6 +207,7 @@ async function checkOllamaAvailable(forceRefresh = false) {
     // The daemon we handed a window to is gone; whatever comes up next has to
     // be re-checked rather than credited with that window.
     appliedContextLength = null
+    appliedWhileModelResident = false
     status.lastError = err.message
     status.consecutiveErrors++
     lastCheckAt = now
@@ -427,23 +433,40 @@ async function ensureRunning({ preferPersistent = false } = {}) {
   return startServer()
 }
 
-/**
- * The context window the daemon actually loaded models at, read from `/api/ps`.
- * Ollama reports it per resident model; we take the largest, since that is the
- * window a request routed to an already-resident model will get.
- *
- * `null` means unknowable right now — no model is resident, so Ollama has not
- * yet committed to a window. Callers must treat that as "no evidence", never as
- * "too small": the daemon's own default may well be generous.
- * @returns {Promise<number|null>}
- */
-async function getRuntimeContextLength() {
+async function getRuntimeModels() {
   if (!(await checkOllamaAvailable())) return null
   const data = await ollamaRequest('/api/ps').catch(() => null)
-  const windows = (Array.isArray(data?.models) ? data.models : [])
-    .map((m) => Number(m?.context_length))
+  return Array.isArray(data?.models) ? data.models : []
+}
+
+const modelNames = (model) => [model?.name, model?.model]
+  .filter((name) => typeof name === 'string' && name.trim())
+  .map((name) => name.trim())
+
+/**
+ * The context window the daemon actually loaded at, read from `/api/ps`.
+ * Ollama reports it per resident model. When a model is selected, only that
+ * model is considered; without a selection, the smallest resident window is
+ * used so a large sibling model cannot hide a smaller model's limit.
+ *
+ * If a selected model is not resident yet, the fallback is the smallest window
+ * among all resident models: every relevant resident model must meet the target
+ * before the daemon can be treated as safe. `null` means no model is resident.
+ * @param {string|null} [selectedModel]
+ * @returns {Promise<number|null>}
+ */
+async function getRuntimeContextLength(selectedModel = null) {
+  const models = await getRuntimeModels()
+  if (models == null) return null
+  const wanted = typeof selectedModel === 'string' ? selectedModel.trim() : ''
+  const selected = wanted
+    ? models.filter((model) => modelNames(model).includes(wanted))
+    : []
+  const resident = selected.length ? selected : models
+  const windows = resident
+    .map((model) => Number(model?.context_length))
     .filter((n) => Number.isFinite(n) && n > 0)
-  return windows.length ? Math.max(...windows) : null
+  return windows.length ? Math.min(...windows) : null
 }
 
 /**
@@ -457,9 +480,10 @@ async function getRuntimeContextLength() {
  * the VRAM-based default `numCtx` exists to override.
  *
  * @param {number|null} contextLength
+ * @param {string|null} [selectedModel] - model the next request will use
  * @returns {Promise<{ applied: boolean, reason: string, contextLength: number|null, runtimeContextLength?: number|null, error?: string }>}
  */
-async function ensureContextWindow(contextLength) {
+async function ensureContextWindow(contextLength, selectedModel = null) {
   const target = Number(contextLength) > 0 ? Math.floor(Number(contextLength)) : null
   if (!target) return { applied: false, reason: 'not-configured', contextLength: null }
   if (!(await checkOllamaAvailable(true))) {
@@ -470,7 +494,17 @@ async function ensureContextWindow(contextLength) {
   }
 
   if (Number(appliedContextLength) >= target) {
-    return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
+    // Availability alone cannot identify an Ollama process: an external
+    // restart can become reachable before PortOS observes a failed probe. A
+    // daemon that had a resident model and now has none is the positive live
+    // evidence needed to invalidate the old process's latch. Keep the latch
+    // for an idle daemon, because /api/ps is normally empty between runs.
+    const residentRuntime = await getRuntimeContextLength()
+    if (residentRuntime != null || !appliedWhileModelResident) {
+      return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
+    }
+    appliedContextLength = null
+    appliedWhileModelResident = false
   }
 
   // `runtime == null` means nothing is resident, which is the NORMAL idle state
@@ -479,7 +513,7 @@ async function ensureContextWindow(contextLength) {
   // user set `numCtx` to override, so leaving it alone here would make the
   // setting a no-op in the common case. Apply it; the `appliedContextLength`
   // latch keeps this to one reload per daemon.
-  const runtime = await getRuntimeContextLength()
+  const runtime = await getRuntimeContextLength(selectedModel)
   if (runtime != null && runtime >= target) {
     return { applied: false, reason: 'already-large-enough', contextLength: target, runtimeContextLength: runtime }
   }
@@ -492,6 +526,7 @@ async function ensureContextWindow(contextLength) {
   const service = await getServiceStatus().catch(() => null)
   if (service?.runAtStartup) {
     const viaService = await restartServiceWithContext(service, target)
+    if (viaService.applied) appliedWhileModelResident = runtime != null
     return { ...viaService, contextLength: target, runtimeContextLength: runtime }
   }
 
@@ -500,6 +535,7 @@ async function ensureContextWindow(contextLength) {
     return { applied: false, reason: 'stop-failed', contextLength: target, runtimeContextLength: runtime, error: stopped.error }
   }
   const started = await startServer({ contextLength: target })
+  if (started.success) appliedWhileModelResident = runtime != null
   return started.success
     ? { applied: true, reason: 'restarted', contextLength: target, runtimeContextLength: runtime }
     : { applied: false, reason: 'start-failed', contextLength: target, runtimeContextLength: runtime, error: started.error }

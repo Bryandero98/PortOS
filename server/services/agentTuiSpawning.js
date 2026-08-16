@@ -1125,7 +1125,9 @@ export async function spawnTuiAgent({
   // failure mode otherwise is an hour of work lost to a 400 at 100% context.
   // Gated on the predicate here (not just inside the helper) so a cloud-provider
   // spawn — the overwhelmingly common case — takes no async hop at all.
-  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  const ollamaContext = isOllamaBackedProvider(provider)
+    ? await ensureOllamaAgentContext(provider, { model })
+    : null;
   if (ollamaContext?.warning) appendLine(ollamaContext.warning);
   if (ollamaContext?.applied) appendLine(`🪟 Reloaded Ollama at a ${ollamaContext.contextLength}-token context window`);
 

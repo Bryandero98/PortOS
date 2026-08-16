@@ -1,0 +1,1 @@
+- Ollama context-window management now canonicalizes loopback aliases, respects the selected model's runtime limit, and recovers after daemon restarts.
