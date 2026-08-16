@@ -154,6 +154,100 @@ describe('MusicGenPanel', () => {
     expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
   });
 
+  it('suggests a lyric-aware MiniMax ceiling and sends Auto mode', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3',
+        name: 'MiniMax Music 3 (CUDA only)',
+        autoDuration: true,
+        lyrics: true,
+        maxDurationSec: 300,
+        defaultDurationSec: 60,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-auto' } });
+
+    const lyrics = `[verse]\n${'word '.repeat(150)}\n[outro]`;
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="warm cinematic pop" lyrics={lyrics} />);
+
+    expect(await screen.findByRole('combobox', { name: /duration mode/i })).toHaveValue('auto');
+    expect(screen.getByLabelText(/duration \(s\)/i)).toHaveValue(120);
+    expect(screen.getByText(/ceiling from 150 lyric words/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      durationMode: 'auto',
+    }), { silent: true }));
+    expect(api.generateMusic.mock.calls[0][0]).not.toHaveProperty('durationSec');
+  });
+
+  it('does not advertise Auto mode when the server omits the capability', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3',
+        name: 'MiniMax Music 3 (CUDA only)',
+        lyrics: true,
+        maxDurationSec: 300,
+        defaultDurationSec: 60,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="warm cinematic pop" lyrics="Long lyric text" />);
+
+    await screen.findByRole('combobox', { name: /engine/i });
+    expect(screen.queryByRole('combobox', { name: /duration mode/i })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/duration \(s\)/i)).not.toBeDisabled();
+  });
+
+  it('warns when lyric text has no structure tags for MiniMax to pace', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3',
+        name: 'MiniMax Music 3 (CUDA only)',
+        autoDuration: true,
+        lyrics: true,
+        maxDurationSec: 300,
+        defaultDurationSec: 60,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="warm cinematic pop" lyrics="plain lyric text without sections" />);
+
+    expect(await screen.findByText(/no structured lyric sections detected/i)).toBeInTheDocument();
+  });
+
+  it('warns when a manual MiniMax duration is shorter than the lyric recommendation', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3',
+        name: 'MiniMax Music 3 (CUDA only)',
+        autoDuration: true,
+        lyrics: true,
+        maxDurationSec: 300,
+        defaultDurationSec: 60,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+
+    const lyrics = `[verse]\n${'word '.repeat(150)}\n[outro]`;
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="warm cinematic pop" lyrics={lyrics} />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /duration mode/i }), { target: { value: 'manual' } });
+    fireEvent.change(screen.getByLabelText(/duration \(s\)/i), { target: { value: '60' } });
+    expect(screen.getByText(/shorter than the lyric estimate/i)).toBeInTheDocument();
+  });
+
   it('names the host requirement and hides Install for a platform-gated engine', async () => {
     // MusicGen is MLX-only. Before this, a Windows/Linux user got an Install
     // button whose installer skipped and exited 0, surfaced as 'installer exited

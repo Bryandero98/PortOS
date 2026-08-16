@@ -49,6 +49,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `runnerFamilies.js` | Mirror of `server/lib/runners.js`. |
 | `slashdoCatalog.js` | Mirror of `server/lib/slashdoCatalog.js` — the launchable slashdo workflows (`SLASHDO_WORKFLOWS`, `slashdoWorkflowsForApp(isSwiftApp)`, `SLASHDO_APP_TYPES`) driving the app-overview Agent Operations buttons. Adds only the per-button Tailwind classes; pinned by `server/lib/slashdoCatalog.test.js`. |
 | `issueLength.js` | Mirror of `server/lib/issueLength.js`. |
+| `musicDuration.js` | Lyric-aware MiniMax Music 3 duration analysis: section/word detection, ending-cushioned auto-duration recommendations, and cap warnings. Mirrors `server/lib/musicDuration.js`. |
 
 ## Pipeline / image-gen defaults
 

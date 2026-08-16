@@ -38,6 +38,7 @@ export * from './imageTo3dReasons.js';
 export * from './importerDeepLink.js';
 export * from './letteringDensity.js';
 export * from './issueLength.js';
+export * from './musicDuration.js';
 export * from './muscriptorModels.js';
 export * from './pipelineImageDefaults.js';
 export * from './reverseOutlineGrid.js';

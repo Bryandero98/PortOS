@@ -10,6 +10,7 @@ import { request, maybeRedirectToLogin } from './apiCore.js';
 export const listMusicEngines = (options = {}) => request('/music/engines', options);
 
 // Generate a track. body: { prompt, lyrics?, engine?, modelId?, durationSec?,
+// durationMode?: 'auto'|'manual',
 // trackId? (update) | title?/artistId?/artist?/albumId? (create) }. Resolves to
 // { track, filename, durationSec, engine, modelId }. Long renders hold the
 // request open — callers should own their loading UI and pass `{ silent: true }`.

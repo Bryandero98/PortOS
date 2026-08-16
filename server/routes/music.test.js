@@ -23,7 +23,7 @@ vi.mock('../services/pipeline/musicGen.js', () => {
     musicgen: { id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }], defaultModelId: 'm', minDurationSec: 1, maxDurationSec: 30, defaultDurationSec: 12, installEnv: 'INSTALL_MUSICGEN', venvDefault: '/v/mg', resolvePython: () => (gen.ready ? '/v/mg/bin/python3' : null), customModels: true },
     acestep: { id: 'acestep', name: 'ACE-Step', models: [{ id: 'a', name: 'A' }], defaultModelId: 'a', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP', venvDefault: '/v/ace', resolvePython: () => (gen.ready ? '/v/ace/bin/python3' : null), lyrics: true, customModels: false },
     acestep15: { id: 'acestep15', name: 'ACE-Step 1.5', models: [{ id: 'ace-step-v1.5', repo: 'ACE-Step/Ace-Step1.5', name: 'ACE-Step 1.5' }], defaultModelId: 'ace-step-v1.5', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP15', venvDefault: '/v/ace15', resolvePython: () => (gen.ready ? '/v/ace15/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true },
-    'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true },
+    'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true, autoDuration: true },
   };
   return {
     ENGINES,
@@ -271,6 +271,7 @@ describe('music routes', () => {
     const mg = r.body.engines.find((e) => e.id === 'musicgen');
     expect(mg.lyrics).toBe(false);
     expect(mg.customModels).toBe(true);
+    expect(r.body.engines.find((e) => e.id === 'minimax-music3').autoDuration).toBe(true);
   });
 
   it('GET /engines reports readiness per engine', async () => {
@@ -440,6 +441,23 @@ describe('music routes', () => {
     }));
     expect(r.body.track.id).toBe('track-new');
     expect(r.body.filename).toBe('music-gen-x.wav');
+  });
+
+  it('POST /generate forwards MiniMax auto duration mode to the generator', async () => {
+    gen.generateMusic.mockResolvedValueOnce({ filename: 'music-gen-auto.wav', durationSec: 148, engine: 'minimax-music3', modelId: 'minimax-music3' });
+    const r = await request(app).post('/api/music/generate').send({
+      prompt: 'warm folk',
+      lyrics: `[verse]\n${'word '.repeat(180)}\n[outro]`,
+      engine: 'minimax-music3',
+      durationMode: 'auto',
+    });
+
+    expect(r.status).toBe(201);
+    expect(gen.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      engine: 'minimax-music3',
+      lyrics: expect.stringContaining('[verse]'),
+      durationMode: 'auto',
+    }));
   });
 
   it('POST /generate with trackId updates the existing track (200)', async () => {
