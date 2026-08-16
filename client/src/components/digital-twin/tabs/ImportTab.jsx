@@ -5,6 +5,8 @@ import {
   Music,
   Film,
   Calendar,
+  Globe2,
+  Loader2,
   RefreshCw,
   Check,
   FileText,
@@ -41,6 +43,9 @@ export default function ImportTab() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [spotifyBrowserState, setSpotifyBrowserState] = useState(null);
+  const [openingSpotifyBrowser, setOpeningSpotifyBrowser] = useState(false);
+  const [importingSpotifyBrowser, setImportingSpotifyBrowser] = useState(false);
 
   useEffect(() => {
     loadSources();
@@ -100,6 +105,47 @@ export default function ImportTab() {
     setAnalyzing(false);
   };
 
+  const handleOpenSpotifyBrowser = async () => {
+    setOpeningSpotifyBrowser(true);
+    const result = await api.openDigitalTwinSpotifyBrowser({ silent: true })
+      .catch(e => ({ status: 'error', error: e.message }));
+    setSpotifyBrowserState(result);
+    if (result.status === 'error' || result.status === 'unavailable') {
+      toast.error(result.error || result.message || 'Could not open Spotify in the managed browser');
+    } else if (result.status === 'auth-required') {
+      toast.warning(result.message);
+    } else if (result.status === 'ready') {
+      toast.success('Spotify privacy page is ready in the PortOS browser');
+    }
+    setOpeningSpotifyBrowser(false);
+  };
+
+  const handleImportSpotifyBrowser = async () => {
+    if (!selectedProvider) {
+      toast.error('Choose an analysis provider first');
+      return;
+    }
+
+    setImportingSpotifyBrowser(true);
+    const result = await api.importDigitalTwinSpotifyBrowser(
+      selectedProvider.providerId,
+      selectedProvider.model,
+      { silent: true },
+    ).catch(e => ({ status: 'error', error: e.message }));
+    setSpotifyBrowserState(result);
+    if (result.status === 'complete') {
+      setAnalysisResult(result);
+      toast.success('Spotify history imported and analyzed');
+    } else if (result.status === 'pending') {
+      toast.warning(result.message);
+    } else if (result.status === 'auth-required') {
+      toast.warning(result.message);
+    } else {
+      toast.error(result.error || result.message || 'Spotify import failed');
+    }
+    setImportingSpotifyBrowser(false);
+  };
+
   const handleSaveDocument = async (suggestedDoc) => {
     setSaving(true);
 
@@ -127,6 +173,7 @@ export default function ImportTab() {
     setSelectedSource(null);
     setFileContent('');
     setAnalysisResult(null);
+    setSpotifyBrowserState(null);
   };
 
   return (
@@ -192,7 +239,9 @@ export default function ImportTab() {
               })()}
               <div>
                 <h3 className="font-semibold text-white">{selectedSource.name}</h3>
-                <span className="text-xs text-gray-500">{selectedSource.format} file</span>
+                <span className="text-xs text-gray-500">
+                  {selectedSource.id === 'spotify' ? 'Managed browser or JSON file' : `${selectedSource.format} file`}
+                </span>
               </div>
             </div>
             <button
@@ -203,16 +252,64 @@ export default function ImportTab() {
             </button>
           </div>
 
-          {/* Instructions */}
-          <div className="mb-6 p-4 bg-port-bg rounded-lg border border-port-border">
-            <h4 className="text-sm font-medium text-white mb-2">How to export your data</h4>
-            <p className="text-sm text-gray-400">{selectedSource.instructions}</p>
-          </div>
+          {/* Spotify's privacy export can be linked through the persistent CDP browser. */}
+          {selectedSource.id === 'spotify' && (
+            <div className="mb-6 p-4 bg-port-bg rounded-lg border border-port-border">
+              <div className="flex items-start gap-3">
+                <Globe2 className="w-5 h-5 text-port-accent shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h4 className="text-sm font-medium text-white mb-2">Import from the PortOS browser</h4>
+                  <p className="text-sm text-gray-400 mb-4">
+                    PortOS opens Spotify&apos;s privacy page in its managed browser, where you can sign in once.
+                    It never receives your Spotify password or API credentials. The downloaded archive is processed
+                    locally and removed after analysis.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleOpenSpotifyBrowser}
+                      disabled={openingSpotifyBrowser}
+                      className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg text-sm transition-colors disabled:opacity-40"
+                    >
+                      {openingSpotifyBrowser ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe2 className="w-4 h-4" />}
+                      {openingSpotifyBrowser ? 'Opening Spotify...' : 'Open Spotify in PortOS'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleImportSpotifyBrowser}
+                      disabled={importingSpotifyBrowser || !selectedProvider || spotifyBrowserState?.status === 'auth-required'}
+                      className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-bg border border-port-border hover:border-port-accent text-gray-200 rounded-lg text-sm transition-colors disabled:opacity-40"
+                      title={!selectedProvider ? 'Choose an analysis provider first' : undefined}
+                    >
+                      {importingSpotifyBrowser ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                      {importingSpotifyBrowser ? 'Checking Spotify...' : 'Request and import history'}
+                    </button>
+                  </div>
+                  {spotifyBrowserState && (
+                    <div className="mt-4 text-sm text-gray-400" role="status">
+                      <span className={spotifyBrowserState.status === 'ready' ? 'text-port-success' : 'text-port-warning'}>
+                        {spotifyBrowserState.status === 'ready' ? '● Ready' : `● ${spotifyBrowserState.status}`}
+                      </span>{' '}
+                      {spotifyBrowserState.message}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Instructions for the manual sources, plus Spotify's explicit fallback. */}
+          {selectedSource.id !== 'spotify' && (
+            <div className="mb-6 p-4 bg-port-bg rounded-lg border border-port-border">
+              <h4 className="text-sm font-medium text-white mb-2">How to export your data</h4>
+              <p className="text-sm text-gray-400">{selectedSource.instructions}</p>
+            </div>
+          )}
 
           {/* File Upload */}
-          <div className="mb-6">
+          <div className={`mb-6 ${selectedSource.id === 'spotify' ? 'p-4 bg-port-bg rounded-lg border border-port-border' : ''}`}>
             <span className="block text-sm font-medium text-gray-400 mb-2">
-              Upload {selectedSource.format} File
+              {selectedSource.id === 'spotify' ? 'Manual fallback — upload a Spotify JSON file' : `Upload ${selectedSource.format} File`}
             </span>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
               <FilePickerButton

@@ -52,7 +52,18 @@ Gap recommendations identify the lowest-confidence aspects, generate specific qu
 - **Letterboxd** film export
 - **iCal** calendar files — event categorization and recurring-pattern analysis (routines)
 
-Routes: `GET /import/sources`, `POST /import/analyze`, `POST /import/save`.
+Spotify can also be imported interactively from the Digital Twin Import tab.
+PortOS opens Spotify's fixed Account Privacy page in the persistent managed CDP
+browser, preserves the browser's own login session, and requests the extended
+history package when the page exposes the matching controls. A completed ZIP or
+JSON download is parsed locally, sent through the existing analysis path, and
+removed from the browser download cache afterward. The flow never accepts an
+arbitrary destination or Spotify password/API credential; if Spotify requires a
+login, confirmation, or time to prepare the package, the UI reports that state
+and can be retried. Manual JSON upload remains available as a fallback.
+
+Routes: `GET /import/sources`, `POST /import/analyze`, `POST /import/save`,
+`POST /import/spotify/browser/open`, and `POST /import/spotify/browser/import`.
 
 ## Transcript & Image Analysis
 
