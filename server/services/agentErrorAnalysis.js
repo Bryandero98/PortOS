@@ -299,6 +299,33 @@ export const ERROR_PATTERNS = [
 
   // ===== Context & Token Errors =====
   {
+    // Claude Code's own terminal output-ceiling banner. This exact wording is
+    // structured harness chrome, so it may override an idle-reaper verdict;
+    // otherwise the empty composer that follows gets blamed on whichever phase
+    // marker happened to be latched from the repainted prompt. Keep this ahead
+    // of the generic token/context patterns and require the env-var guidance so
+    // ordinary agent prose about output limits stays an output-scan match.
+    pattern: /Claude's response exceeded the \d+ output token maximum[\s\S]{0,240}?CLAUDE_CODE_MAX_OUTPUT_TOKENS/i,
+    category: 'output-length',
+    actionable: false,
+    origin: 'provider',
+    structuredMarker: /API Error:\s*Claude's response exceeded the \d+ output token maximum[\s\S]{0,240}?CLAUDE_CODE_MAX_OUTPUT_TOKENS/i,
+    extract: (match, output) => ({
+      message: 'Output length exceeded',
+      suggestedFix: 'Claude Code exhausted its response ceiling. Retry with a larger CLAUDE_CODE_MAX_OUTPUT_TOKENS value or reduce the requested response.',
+      compaction: {
+        needed: true,
+        reason: 'output-limit',
+        outputSize: Buffer.byteLength(output || ''),
+        retryHints: [
+          'Limit output to changed files and a brief summary only',
+          'Do not echo file contents back — just reference file paths and line numbers',
+          'Combine related changes into single descriptions'
+        ]
+      }
+    })
+  },
+  {
     pattern: /context.?length|max.?tokens|token.?limit|context.?window/i,
     category: 'context-length',
     actionable: true,

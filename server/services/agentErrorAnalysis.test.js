@@ -172,6 +172,27 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(analysis.compaction?.needed).toBe(true);
   });
 
+  it('lets Claude Code\'s structured output-ceiling banner override a false idle phase', () => {
+    const banner = "API Error: Claude's response exceeded the 32000 output token maximum.\nTo configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.";
+    const analysis = analyzeAgentFailure(withLead(banner), { id: 't' }, 'local-model', {
+      completionReason: 'merge-queue-idle-timeout',
+    });
+    expect(analysis.category).toBe('output-length');
+    expect(analysis.origin).toBe('provider');
+    expect(analysis.actionable).toBe(false);
+    expect(analysis.compaction).toMatchObject({ needed: true, reason: 'output-limit' });
+    expect(analysis.completionReason).toBe('merge-queue-idle-timeout');
+  });
+
+  it('does not promote ordinary prose about Claude Code output limits to provider origin', () => {
+    const prose = "The prior run said Claude's response exceeded the 32000 output token maximum and named CLAUDE_CODE_MAX_OUTPUT_TOKENS.";
+    const analysis = analyzeAgentFailure(withLead(prose), { id: 't' }, 'local-model', {
+      completionReason: 'idle-no-changes',
+    });
+    expect(analysis.category).toBe('no-changes');
+    expect(analysis.origin).toBe('runner');
+  });
+
   it('classifies an Ollama context overflow separately from a generic context-length error', () => {
     const body = 'API Error: 400 {"error":{"code":400,"message":"request (32768 tokens) exceeds the available ' +
       'context size (32768 tokens), try increasing it","type":"exceed_context_size_error",' +
