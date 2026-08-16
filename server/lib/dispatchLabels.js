@@ -236,3 +236,51 @@ export const JIRA_DISPATCH_HINT_GUIDANCE = [
   'Also apply contributor labels when the work actually fits them — independently of the dispatch axes: `good-first-issue` (self-contained, a new contributor can ship it) and `help-wanted` (extra hands welcome, scoped enough to pick up cold). A `model-light` 40-file sweep is NOT a good-first-issue.',
   'Preserve existing category/scope labels. Never relabel a ticket you skipped as a duplicate.',
 ].join('\n');
+
+/**
+ * Current PortOS scope-label vocabulary. The forge remains the source of truth
+ * at filing time (`gh label list --search area:` / `glab label list`), while this
+ * list keeps autonomous prompts aware of the established labels instead of
+ * inventing a new area for every reference study.
+ */
+export const PORTOS_AREA_LABELS = Object.freeze([
+  'area:database',
+  'area:songs',
+  'area:federation',
+  'area:pipeline',
+  'area:story-builder',
+  'area:writers-room',
+  'area:create',
+  'area:cybercity',
+  'area:brain',
+  'area:cos-agents',
+  'area:identity',
+  'area:content',
+  'area:devtools',
+  'area:ui',
+  'area:post',
+  'area:privacy',
+  'area:life-tracking',
+  'area:media',
+]);
+
+/** Shared scope guidance for the one-shot repo-study label contract. */
+export const PORTOS_AREA_LABEL_GUIDANCE = [
+  'Scope labels (`area:*`) are required for repo-study issues. Inspect the target files and apply every relevant existing area label, preferring the narrowest label rather than a generic guess.',
+  `The current PortOS area vocabulary is: ${PORTOS_AREA_LABELS.join(', ')}. Re-check the forge with \`gh label list --search area:\` or \`glab label list\` before filing; create a genuinely missing, clearly scoped area label before applying it instead of omitting scope (GitHub: \`gh label create <name> --color 0366D6 --description \"…\" --force\`; GitLab: \`glab label create --name <name> --color \"#0366D6\" --description \"…\"\`).`,
+].join('\n');
+
+/**
+ * Repo studies have enough target-code evidence to make all three routing
+ * decisions. Keep this contract separate from the general guidance, where the
+ * model/effort axes are intentionally optional for other issue producers.
+ */
+export const REPO_STUDY_LABEL_CONTRACT = Object.freeze({
+  forgeFlags: '--label area:<area> --label model:<tier> --label effort:<level>',
+  jiraFlags: '`area:<area>` + `model-<tier>` + `effort-<level>`',
+  instructions: [
+    '**Repo-study complete-label contract (mandatory):** every NEW proposal must carry `repo-study`, `plan`, at least one relevant `area:*`, exactly one justified model label (`model:*` on GitHub/GitLab, `model-*` on JIRA), and exactly one justified effort label (`effort:*` on GitHub/GitLab, `effort-*` on JIRA). The dispatch axes are independent: choose them from the inspected PortOS files and proposed implementation, never by stamping `medium` on both.',
+    PORTOS_AREA_LABEL_GUIDANCE,
+    'If a proposal cannot be classified defensibly on all three axes, do not file that proposal; filing an incomplete issue is not a valid fallback. After each NEW issue, read its labels back and repair any missing required label before continuing; never relabel a duplicate you skipped. Contributor labels remain optional and must follow the shared guidance.',
+  ].join('\n'),
+});
