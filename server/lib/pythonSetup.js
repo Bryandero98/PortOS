@@ -20,7 +20,7 @@ export const REQUIRED_PACKAGES = IS_DARWIN
   ? ['mflux', 'mlx', 'mlx_vlm', 'mlx_video', 'transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm']
   : IS_WIN
     ? ['transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm', 'torch', 'diffusers']
-    : ['mflux', 'transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm'];
+    : ['mflux', 'transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm', 'torch', 'diffusers'];
 
 // Some package identifiers in REQUIRED_PACKAGES need to be probed via a
 // deeper submodule import to distinguish two PyPI packages that publish the

@@ -11,7 +11,7 @@ const REL_PATH = 'data/media-models.json';
 
 const isLegacyLtx = (entry) => (
   entry?.id === 'ltx_video'
-  && entry.runtime === 'mlx_video'
+  && (entry.runtime === undefined || entry.runtime === 'mlx_video')
   && entry.repo === undefined
 );
 

@@ -1264,6 +1264,17 @@ describe('video bucket selection is an MLX/CUDA axis, not an OS one', () => {
     expect(routesToWindowsHelper(model)).toBe(true);
   });
 
+  it('upgrades a pre-runtime-field LTX entry in the CUDA bucket', async () => {
+    const legacyLtx = { id: 'ltx_video', name: 'Legacy LTX', steps: 25, guidance: 3.0 };
+    writeFileSync(registryFile, JSON.stringify({
+      ...CANONICAL,
+      video: { ...CANONICAL.video, cuda: [legacyLtx], defaultCuda: legacyLtx.id },
+    }));
+    asPlatform('linux');
+    const { getVideoModels } = await import('./mediaModels.js');
+    expect(getVideoModels().find((entry) => entry.id === legacyLtx.id)?.runtime).toBe('cuda_video');
+  });
+
   for (const [shape, registry] of [['canonical mlx/cuda keys', CANONICAL], ['legacy macos/windows keys', LEGACY]]) {
     describe(shape, () => {
       it('serves the MLX list on darwin', async () => {

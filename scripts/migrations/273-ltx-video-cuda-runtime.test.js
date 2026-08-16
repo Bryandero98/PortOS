@@ -11,6 +11,18 @@ const writeRegistry = (rootDir, video) => {
 };
 
 describe('273-ltx-video-cuda-runtime', () => {
+  it('upgrades an entry persisted before the runtime field existed', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'portos-migration-'));
+    try {
+      writeRegistry(rootDir, { cuda: [{ id: 'ltx_video' }] });
+      await migration.up({ rootDir });
+      const saved = JSON.parse(readFileSync(join(rootDir, 'data', 'media-models.json'), 'utf8'));
+      expect(saved.video.cuda[0].runtime).toBe('cuda_video');
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it('upgrades the uncustomized CUDA LTX entry', async () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'portos-migration-'));
     try {

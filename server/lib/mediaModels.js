@@ -903,7 +903,7 @@ const upgradeLegacyCudaLtxRuntime = (list) => {
   return list.map((entry) => (
     isPlainObject(entry)
       && entry.id === 'ltx_video'
-      && entry.runtime === 'mlx_video'
+      && (entry.runtime === undefined || entry.runtime === 'mlx_video')
       && entry.repo === undefined
       ? { ...entry, runtime: 'cuda_video' }
       : entry
