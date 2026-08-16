@@ -49,6 +49,7 @@ import { getCudaCapability } from '../../lib/cudaCapability.js';
 import { inspectModelCache } from '../../lib/hfCache.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { stripMarkdownEmphasis } from '../../lib/markdownText.js';
+import { recommendMinimaxDurationSec } from '../../lib/musicDuration.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
 
 const execFileAsync = promisify(execFile);
@@ -250,6 +251,9 @@ export const ENGINES = Object.freeze({
     // The sheet is built per-render rather than fixed, because `audio_duration`
     // is only a CEILING for this engine — see buildMinimaxInstrumentalLyrics.
     instrumentalLyrics: buildMinimaxInstrumentalLyrics,
+    // Auto mode sizes that ceiling from lyric words/sections and leaves room
+    // for an ending. MiniMax may still stop earlier by design.
+    autoDuration: true,
     customModels: false,
     fixedModelInstall: true,
     cudaRequired: true,
@@ -476,7 +480,7 @@ export function buildMusicGenArgs({ pythonPath, scriptPath = SIDECAR_SCRIPT, run
  * flat timeout. Callers outside the queue (the Pipeline Audio routes) omit it
  * and behave exactly as before.
  */
-export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT_ENGINE_ID, durationSec, modelId, repo, signal, onActivity } = {}) {
+export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT_ENGINE_ID, durationSec, durationMode, modelId, repo, signal, onActivity } = {}) {
   const text = (prompt || '').trim();
   if (!text) {
     throw new ServerError('prompt is required', { status: 400, code: 'PIPELINE_MUSIC_EMPTY_PROMPT' });
@@ -491,7 +495,12 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
   const model = repo
     ? { id: modelId || repo, repo, name: modelId || repo }
     : shippedModel;
-  const resolvedDuration = durationSec ?? engine.defaultDurationSec;
+  const resolvedDuration = durationMode === 'auto' && engine.autoDuration
+    ? recommendMinimaxDurationSec(lyrics, {
+      minDurationSec: engine.defaultDurationSec,
+      maxDurationSec: engine.maxDurationSec,
+    })
+    : durationSec ?? engine.defaultDurationSec;
   const pythonPath = engine.resolvePython();
   if (engine.cudaRequired) {
     const cuda = await getCudaCapability();

@@ -4,6 +4,14 @@ import { join } from 'path';
 import { rm, readdir } from 'fs/promises';
 import { writeFileSync, mkdtempSync } from 'fs';
 
+vi.mock('../../lib/cudaCapability.js', () => ({
+  getCudaCapability: vi.fn(async () => ({ status: 'available', gpus: [], maxVramGb: null, error: null })),
+}));
+
+vi.mock('../../lib/hfCache.js', () => ({
+  inspectModelCache: vi.fn(async () => ({ cached: true })),
+}));
+
 // ---- Pure-helper tests (no mocks needed) ---------------------------------
 import {
   buildMusicGenArgs,
@@ -301,6 +309,7 @@ const h = vi.hoisted(() => ({
   mockWriteOutput: true,
   musicgenPython: '/fake/venv-musicgen/bin/python3',
   audioldm2Python: '/fake/venv-audioldm2/bin/python3',
+  minimaxMusic3Python: '/fake/venv-minimax-music3/bin/python3',
   // isEngineHealthy's import probe: which interpreters it ran, and whether the
   // import succeeded (a half-built venv exits non-zero).
   probeCalls: [],
@@ -379,6 +388,7 @@ vi.mock('../../lib/pythonSetup.js', async () => {
     ...actual,
     resolveMusicgenPython: () => h.musicgenPython,
     resolveAudioldm2Python: () => h.audioldm2Python,
+    resolveMinimaxMusic3Python: () => h.minimaxMusic3Python,
   };
 });
 
@@ -393,6 +403,7 @@ beforeEach(() => {
   h.mockStdout = 'STAGE:done\nRESULT:{"output":"x","durationSec":12.5,"sampleRate":32000}\n';
   h.musicgenPython = '/fake/venv-musicgen/bin/python3';
   h.audioldm2Python = '/fake/venv-audioldm2/bin/python3';
+  h.minimaxMusic3Python = '/fake/venv-minimax-music3/bin/python3';
   h.probeCalls.length = 0;
   h.probeOk = true;
   h.osPlatform = 'darwin';
@@ -415,6 +426,18 @@ describe('generateMusic backend selection', () => {
     expect(res.engine).toBe('musicgen');
     expect(res.modelId).toBe(DEFAULT_MUSICGEN_MODEL_ID);
     expect(res.filename).toMatch(/^music-gen-.*\.wav$/);
+  });
+
+  it('sizes MiniMax auto mode from lyric length instead of using the 60-second default', async () => {
+    await generateMusic({
+      prompt: 'warm cinematic pop',
+      lyrics: `[verse]\n${'word '.repeat(150)}\n[outro]`,
+      engine: 'minimax-music3',
+      durationMode: 'auto',
+    });
+
+    const duration = spawnCalls[0].args[spawnCalls[0].args.indexOf('--duration') + 1];
+    expect(duration).toBe('120');
   });
 
   it('routes to the audioldm2 sidecar + venv when engine=audioldm2', async () => {

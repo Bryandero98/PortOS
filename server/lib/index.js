@@ -269,6 +269,7 @@ export * from './localModelHeuristics.js';
 export * from './ollamaContext.js';
 export * from './loraDataset.js';
 export * from './issueLength.js';
+export * from './musicDuration.js';
 export * from './investigationTasks.js';
 export * from './learningVerdict.js';
 export * from './mediaItemKey.js';

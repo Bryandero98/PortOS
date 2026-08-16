@@ -46,9 +46,9 @@ import * as albums from '../services/albums/index.js';
 const router = Router();
 
 // GET /api/music/engines — every selectable backend with its models (shipped +
-// user-installed, merged), duration window, lyric capability, and a `ready` flag
-// (the opt-in venv is provisioned). The UI gates its Generate affordance + shows
-// the install hint from this.
+// user-installed, merged), duration window, lyric capability, auto-duration
+// support, and a `ready` flag (the opt-in venv is provisioned). The UI gates its
+// Generate affordance + shows the install hint from this.
 router.get('/engines', asyncHandler(async (_req, res) => {
   const cuda = await getCudaCapability();
   const engines = await Promise.all(Object.values(ENGINES).map(async (engine) => {
@@ -66,6 +66,7 @@ router.get('/engines', asyncHandler(async (_req, res) => {
       maxDurationSec: engine.maxDurationSec,
       defaultDurationSec: engine.defaultDurationSec,
       lyrics: engine.lyrics === true,
+      autoDuration: engine.autoDuration === true,
       // Whether this engine can render an arbitrary HuggingFace checkpoint (gates
       // the "install/select model" UI). ACE-Step resolves a single foundation
       // checkpoint via checkpoint_dir, so custom repos don't apply to it.
@@ -359,6 +360,7 @@ const generateSchema = z.object({
   engine: z.string().trim().max(60).optional(),
   modelId: z.string().trim().max(120).optional(),
   durationSec: z.number().positive().max(600).optional(),
+  durationMode: z.enum(['auto', 'manual']).optional(),
   // Attach the result to an existing track (else a new one is created). The
   // title seeds a freshly-created track; ignored when trackId is given.
   trackId: z.string().trim().max(80).optional(),
@@ -420,6 +422,7 @@ router.post('/generate', asyncHandler(async (req, res) => {
     modelId: body.modelId,
     repo,
     durationSec: body.durationSec,
+    durationMode: body.durationMode,
   });
 
   // Persist the audio + gen metadata. Lyrics follow the audio that was actually

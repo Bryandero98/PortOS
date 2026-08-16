@@ -16,6 +16,8 @@ import { useEffect, useMemo, useState } from 'react';
 import useMounted from '../../hooks/useMounted';
 import { Loader2, Wand2, Download, X } from 'lucide-react';
 import toast from '../ui/Toast';
+import { analyzeMusicLyrics } from '../../lib/musicDuration.js';
+import { formatDurationSec } from '../../utils/formatters.js';
 import {
   listMusicEngines, generateMusic, installAudioModel, removeAudioModel,
 } from '../../services/api';
@@ -33,12 +35,20 @@ function engineSetupMessage(engine) {
   return `${engine.name} is not installed yet. Install the runtime to enable generation.`;
 }
 
+function supportsAutoDuration(engine) {
+  // The server capability is authoritative: an older server may know the
+  // MiniMax engine but will silently fall back to its fixed default when it
+  // receives no lyric-aware duration implementation.
+  return engine?.autoDuration === true;
+}
+
 export default function MusicGenPanel({ track, title = '', artistId = '', artist = '', albumId = '', prompt, lyrics, onGenerated, remix }) {
   const [engines, setEngines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [engineId, setEngineId] = useState('');
   const [modelId, setModelId] = useState('');
   const [durationSec, setDurationSec] = useState(null);
+  const [durationMode, setDurationMode] = useState('auto');
   const [generating, setGenerating] = useState(false);
   const [generationElapsedSec, setGenerationElapsedSec] = useState(0);
   // Inline HF model install.
@@ -76,6 +86,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   }, [generating]);
 
   const engine = useMemo(() => engines.find((e) => e.id === engineId) || null, [engines, engineId]);
+  const autoDurationAvailable = supportsAutoDuration(engine);
+  const lyricDuration = useMemo(() => analyzeMusicLyrics(lyrics, {
+    minDurationSec: Math.max(60, engine?.defaultDurationSec || 60),
+    maxDurationSec: engine?.maxDurationSec || 300,
+  }), [lyrics, engine?.defaultDurationSec, engine?.maxDurationSec]);
+  const usingAutoDuration = autoDurationAvailable && durationMode === 'auto';
 
   // Remix: seed the engine / model / duration from a past render. Keyed on
   // `remix.nonce` (bumped per Remix click) so re-clicking the SAME render
@@ -88,7 +104,11 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     if (!remix) return;
     if (remix.engineId) setEngineId(remix.engineId);
     if (remix.modelId) setModelId(remix.modelId);
-    if (remix.durationSec != null) setDurationSec(remix.durationSec);
+    if (remix.durationSec != null) {
+      setDurationSec(remix.durationSec);
+      // Remix means "recreate this take"; preserve its exact manual ceiling.
+      setDurationMode('manual');
+    }
   }, [remix?.nonce]);
 
   // Keep the model selection valid for the current engine: reset to the engine
@@ -142,7 +162,8 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
       body.artist = artist;
       body.albumId = albumId;
     }
-    if (Number.isFinite(durationSec)) body.durationSec = durationSec;
+    if (usingAutoDuration) body.durationMode = 'auto';
+    else if (Number.isFinite(durationSec)) body.durationSec = durationSec;
     const res = await generateMusic(body, { silent: true }).catch((err) => { toast.error(err.message || 'Generation failed'); return null; });
     if (!mountedRef.current) return;
     setGenerating(false);
@@ -229,19 +250,68 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         </label>
       </div>
 
-      <label className="block">
-        <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">
-          Duration (s){engine ? ` — ${engine.minDurationSec}–${engine.maxDurationSec}` : ''}
-        </span>
-        <input
-          type="number"
-          value={durationSec ?? ''}
-          min={engine?.minDurationSec}
-          max={engine?.maxDurationSec}
-          onChange={(e) => setDurationSec(e.target.value === '' ? null : Number(e.target.value))}
-          className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-        />
-      </label>
+      <div className={autoDurationAvailable ? 'grid grid-cols-2 gap-2' : undefined}>
+        {autoDurationAvailable ? (
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Duration mode</span>
+            <select
+              id="musicgen-duration-mode"
+              value={durationMode}
+              onChange={(e) => setDurationMode(e.target.value)}
+              className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+            >
+              <option value="auto">Auto — let MiniMax choose</option>
+              <option value="manual">Manual</option>
+            </select>
+          </label>
+        ) : null}
+        <label className="block">
+          <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">
+            Duration (s){engine ? ` — ${engine.minDurationSec}–${engine.maxDurationSec}` : ''}
+          </span>
+          <input
+            id="musicgen-duration"
+            type="number"
+            value={usingAutoDuration ? lyricDuration.suggestedDurationSec : (durationSec ?? '')}
+            min={engine?.minDurationSec}
+            max={engine?.maxDurationSec}
+            disabled={usingAutoDuration}
+            onChange={(e) => {
+              setDurationMode('manual');
+              setDurationSec(e.target.value === '' ? null : Number(e.target.value));
+            }}
+            className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm disabled:opacity-70"
+          />
+        </label>
+      </div>
+
+      {autoDurationAvailable ? (
+        <div className="rounded-lg border border-port-accent/20 bg-port-accent/5 px-3 py-2 text-[11px]">
+          {lyricDuration.hasLyrics ? (
+            <p className="text-gray-300">
+              Auto sets a <span className="font-medium text-port-accent">{formatDurationSec(lyricDuration.suggestedDurationSec)}</span> ceiling from {lyricDuration.wordCount} lyric words {lyricDuration.sectionCount > 0 ? <>across {lyricDuration.sectionCount} tagged section{lyricDuration.sectionCount === 1 ? '' : 's'}</> : 'with no tagged sections detected'}, with room for the ending. MiniMax may finish earlier when the composition resolves.
+            </p>
+          ) : (
+            <p className="text-gray-300">
+              Auto uses a {formatDurationSec(lyricDuration.suggestedDurationSec)} ceiling because there is no lyric text to measure; MiniMax may finish earlier.
+            </p>
+          )}
+          {lyricDuration.sectionCount === 0 && lyricDuration.hasLyrics ? (
+            <p className="mt-1 text-gray-500">No structured lyric sections detected. Add tags such as [intro], [verse], [chorus], and [outro] so MiniMax can pace the composition more reliably.</p>
+          ) : null}
+          {lyricDuration.sectionCount > 0 && !lyricDuration.hasOutro && lyricDuration.hasLyrics ? (
+            <p className="mt-1 text-gray-500">No [outro] section detected. Auto leaves extra room, but an explicit [outro] marker gives the ending clearer structure.</p>
+          ) : null}
+          {lyricDuration.isCapped ? (
+            <p className="mt-1 text-port-warning">These lyrics estimate beyond MiniMax’s five-minute limit, so the final lines may still need to be shortened or split into another render.</p>
+          ) : null}
+        </div>
+      ) : null}
+      {autoDurationAvailable && !usingAutoDuration && lyricDuration.hasLyrics && Number.isFinite(durationSec) && durationSec < lyricDuration.suggestedDurationSec ? (
+        <p className="text-[11px] text-port-warning">
+          This manual ceiling is shorter than the lyric estimate ({formatDurationSec(lyricDuration.suggestedDurationSec)}); the last section or outro may be cut off.
+        </p>
+      ) : null}
 
       {showRuntimeInstallHint ? (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-port-warning/30 bg-port-warning/10 px-3 py-2">
