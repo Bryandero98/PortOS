@@ -92,7 +92,7 @@ vi.mock('./codeReview.js', () => ({
   getCodeReviewDefaults: vi.fn().mockResolvedValue({ reviewers: ['copilot'] }),
 }));
 
-import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, getClaudeMdContext, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
+import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, getClaudeMdContext, detectSkillTemplates, loadSkillTemplates, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
 import { getCodeReviewDefaults } from './codeReview.js'; // mocked above — control the configured default
 import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
@@ -108,6 +108,38 @@ function makeTask(overrides = {}) {
     ...overrides,
   };
 }
+
+describe('composable skill template routing', () => {
+  it('appends the Three.js guide after the primary feature template', () => {
+    expect(detectSkillTemplates(makeTask({
+      description: 'Implement a React Three Fiber product preview scene',
+    }))).toEqual(['feature', 'threejs-visual']);
+  });
+
+  it('does not route generic WebGL work through the scene guide', () => {
+    expect(detectSkillTemplates(makeTask({
+      description: 'Add WebGL capability reporting to the diagnostics panel',
+    }))).toEqual(['feature']);
+  });
+
+  it('keeps security guidance ahead of one visual domain guide on a collision', () => {
+    expect(detectSkillTemplates(makeTask({
+      description: 'Security audit the Three.js scene asset pipeline',
+    }))).toEqual(['security-audit', 'threejs-visual']);
+  });
+
+  it('joins templates in routing order and tolerates an unavailable domain guide', async () => {
+    const loadTemplate = vi.fn(async (name) => ({
+      'security-audit': 'Security lifecycle guidance',
+      'threejs-visual': null,
+    })[name]);
+
+    await expect(loadSkillTemplates(['security-audit', 'threejs-visual'], loadTemplate))
+      .resolves.toBe('Security lifecycle guidance');
+    expect(loadTemplate).toHaveBeenNthCalledWith(1, 'security-audit');
+    expect(loadTemplate).toHaveBeenNthCalledWith(2, 'threejs-visual');
+  });
+});
 
 describe('reconcileSplitContext', () => {
   it('folds context back into description when it is the queue-path split', () => {
