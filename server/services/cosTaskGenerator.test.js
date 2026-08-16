@@ -25,7 +25,7 @@ vi.mock('./taskPromptService.js', async (importActual) => ({
 }));
 vi.mock('./codeReview.js', async (importActual) => ({
   ...(await importActual()),
-  getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['copilot'], usernames: ['alice'], optionalReviewers: [] })),
+  getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['ollama'], usernames: ['alice'], optionalReviewers: [] })),
 }));
 // emitOnDemandEmpty's gh-health read spawns `gh api rate_limit` for real. Stub it
 // so the transient-verdict tests assert OUR branching, not the machine's gh.
@@ -49,6 +49,8 @@ import {
   buildTargetWorkItemBlock,
   buildPrefetchedIssueContextBlock,
   buildClaimOverrideContextBlock,
+  buildLocalReviewerInstructions,
+  normalizeClaimReviewers,
   resolveTaskInputHook,
   resolveReconcileDrainGate,
   applyPerpetualDrainCap
@@ -63,6 +65,26 @@ const COS_SRC = readFileSync(join(__dirname, 'cos.js'), 'utf-8');
 
 const task = (id, metadata = {}) => ({ id, metadata });
 const noCooldown = () => Promise.resolve(false);
+
+describe('claim reviewer resolution', () => {
+  it('uses codex instead of resurrecting Copilot when claim settings are absent or Copilot-only', () => {
+    expect(normalizeClaimReviewers({}, undefined)).toEqual(['codex']);
+    expect(normalizeClaimReviewers({ reviewers: ['copilot'] }, ['copilot'])).toEqual(['codex']);
+  });
+
+  it('keeps local reviewers and emits forge-specific, fail-closed endpoint commands', () => {
+    const github = buildLocalReviewerInstructions('claim-issue', ['ollama'], { ollama: 'example-model' }, { ollama: 'high' });
+    expect(github).toContain('gh pr diff "$PR_NUMBER"');
+    expect(github).toContain("--arg backend 'ollama'");
+    expect(github).toContain("--arg model 'example-model'");
+    expect(github).toContain("--arg effort 'high'");
+    expect(github).toContain('missing/empty findings is INCONCLUSIVE');
+
+    const gitlab = buildLocalReviewerInstructions('claim-issue-gitlab', ['lmstudio']);
+    expect(gitlab).toContain('glab mr diff "$MR_NUMBER"');
+    expect(gitlab).not.toContain('gh pr diff');
+  });
+});
 
 // The unit tests above exercise selectDryRunAutoApproved with synthetic hooks;
 // these source-level guards pin that each ENGINE wires the hook set matching
@@ -214,25 +236,19 @@ describe('isCooldownExemptTask', () => {
 // agent which reviewers to run (the prompt drives the review loop directly, so
 // this IS the operative reviewer list, not just display). It must fall back to
 // the user's PortOS Code Review Defaults when the task didn't pin reviewers —
-// not the bare `normalizeReviewers(metadata)` call, which silently reverts to
-// hardcoded copilot. This guard pins the wiring against that regression.
+// not the bare `normalizeReviewers(metadata)` call. The claim-specific wrapper
+// also prevents the retired Copilot fallback from reappearing.
 describe('{reviewers} interpolation honors Code Review Defaults', () => {
-  it('resolves getCodeReviewDefaults and passes them as the normalizeReviewers fallback', () => {
+  it('resolves getCodeReviewDefaults and passes them through the claim reviewer normalizer', () => {
     expect(GEN_SRC).toContain("import { getCodeReviewDefaults } from './codeReview.js'");
-    expect(GEN_SRC).toContain('normalizeReviewers(metadata, codeReviewDefaults?.reviewers)');
-    // The bare two-arg-less form (which silently reverts to hardcoded copilot)
-    // is the bug we are guarding against. `(?!,)` lets the legitimate two-arg
-    // call through while still catching a regression to `normalizeReviewers(metadata)`.
+    expect(GEN_SRC).toContain('normalizeClaimReviewers(metadata, codeReviewDefaults?.reviewers)');
     expect(GEN_SRC).not.toMatch(/normalizeReviewers\(metadata\)(?!,)/);
   });
 
-  it('filters local-LLM reviewers out of the prompt token (no invocation instructions in claim/plan prompts)', () => {
-    // lmstudio/ollama defaults must not reach {reviewers}: the claim/plan
-    // prompts can't drive them, so the loop would stall. The filtered list flows
-    // into buildReviewersCsv, which owns the fallback to the hardcoded copilot
-    // default when the filter empties the list (unit-tested in validation.test.js).
-    expect(GEN_SRC).toContain('.filter((r) => !LOCAL_LLM_REVIEWERS.includes(r))');
+  it('keeps local-LLM reviewers and appends their fail-closed invocation procedure', () => {
+    expect(GEN_SRC).not.toContain('.filter((r) => !LOCAL_LLM_REVIEWERS.includes(r))');
     expect(GEN_SRC).toContain('buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts)');
+    expect(GEN_SRC).toContain('appendLocalReviewerInstructions(promptTaskType, promptReviewers');
   });
 
   it('threads per-reviewer ~max round caps into the prompt CSV on both claim paths', () => {
@@ -332,8 +348,9 @@ describe('claim-work single-source routing', () => {
     const fn = GEN_SRC.slice(GEN_SRC.indexOf('export async function buildClaimWorkTask('));
     expect(fn).toMatch(/resolveClaimWorkMetadata\(app\)/);
     expect(fn).toMatch(/resolveClaimAuthorFilter\(issueAuthorFilter, metadata\)/);
-    // reviewers fall back to Code Review Defaults via normalizeReviewers, dropping local-LLM reviewers.
-    expect(fn).toMatch(/normalizeReviewers\(metadata, codeReviewDefaults\?\.reviewers\)/);
+    // reviewers fall back to Code Review Defaults through the claim-specific
+    // normalizer, which keeps local LLMs and excludes the retired Copilot path.
+    expect(fn).toMatch(/normalizeClaimReviewers\(metadata, codeReviewDefaults\?\.reviewers\)/);
     expect(fn).toMatch(/LOCAL_LLM_REVIEWERS\.includes/);
     // A direct claim-work prompt customization overrides the tracker body, same
     // as the scheduled router's promptKeyForBody selection.
@@ -468,7 +485,9 @@ describe('buildJiraTicketTask', () => {
     // {reviewers} substituted (no literal placeholder left) with the Code Review
     // Defaults reviewer + @username token.
     expect(prompt).not.toContain('{reviewers}');
-    expect(prompt).toContain('copilot');
+    expect(prompt).toContain('ollama');
+    expect(prompt).toContain('Local Reviewer Procedure');
+    expect(prompt).not.toContain('copilot');
     expect(prompt).toContain('@alice');
     // Target-ticket constraint pins the uppercased key.
     expect(prompt).toContain('## Target Ticket Constraint');
