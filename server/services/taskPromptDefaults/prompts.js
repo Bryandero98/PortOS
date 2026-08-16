@@ -641,13 +641,18 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\
 3. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
 4. **Wait for each configured reviewer's valid findings BEFORE merging.** Invoke CLI reviewers headless against the PR diff; invoke local LLM reviewers through the appended endpoint procedure. Apply fixes, run tests, and re-push, capped at 3 rounds per reviewer. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review or merge; comment on the PR naming the failure, remove only the worktree, and leave the branch and PR for reconciliation.
 
-5. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`:
+5. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
    \`\`\`bash
    PR_URL=$(gh pr view <num> --json url -q .url)
-   gh pr merge "$PR_URL" --merge --delete-branch
-   gh pr view "$PR_URL" --json state -q .state
+   gh pr merge "$PR_URL" --merge --delete-branch || {
+     [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ] || \
+       gh pr merge "$PR_URL" --squash --delete-branch || \
+       gh pr merge "$PR_URL" --rebase --delete-branch
+   }
+   STATE=$(gh pr view "$PR_URL" --json state -q .state)
+   [ "$STATE" = "MERGED" ] || { echo "Expected MERGED, got $STATE" >&2; exit 1; }
    \`\`\`
-   The final command must return \`MERGED\`. Investigate and retry on \`OPEN\`; \`CLOSED\` is not success. Do not enter Phase 7 until remote state is exactly \`MERGED\`.
+   The exact comparison must succeed. Investigate and retry on \`OPEN\`; \`CLOSED\` is not success. Do not enter Phase 7 until remote state is exactly \`MERGED\`.
 
 ## Phase 7 — Clean up (post-merge ONLY)
 
@@ -767,13 +772,18 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\
 2. **Wait for each configured reviewer's findings BEFORE merging.** Run the reviewers in the listed order (\`{reviewers}\`). Invoke CLI reviewers headless against the PR diff and local LLM reviewers through the appended endpoint procedure; apply fixes, run tests, and re-push — capped at 3 rounds — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review or merge; comment on the PR naming the failure and stop.
 
    **Review-stuck cleanup** (after 3 unresolved rounds): post one summarizing PR comment (\`gh pr comment\`), then run the worktree-only cleanup (\`cd {repoPath} && git worktree remove "\${WORKTREE}"\`). Leave the local branch, the open PR, the assignee, and the \`in-progress\` label in place so the human picks up cold. Do NOT run Phase 7.
-3. **Merge immediately via \`gh pr merge\`** — NEVER a local \`git merge\` and NEVER \`--auto\`, which can return successfully while leaving the PR queued and OPEN:
+3. **Merge immediately via \`gh pr merge\`** — NEVER a local \`git merge\` and NEVER \`--auto\`, which can return successfully while leaving the PR queued and OPEN. Prefer a true merge commit, with squash/rebase fallbacks for repositories that disallow it:
    \`\`\`bash
    PR_URL=$(gh pr view <pr-num> --json url -q .url)
-   gh pr merge "$PR_URL" --merge --delete-branch
-   gh pr view "$PR_URL" --json state -q .state
+   gh pr merge "$PR_URL" --merge --delete-branch || {
+     [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ] || \
+       gh pr merge "$PR_URL" --squash --delete-branch || \
+       gh pr merge "$PR_URL" --rebase --delete-branch
+   }
+   STATE=$(gh pr view "$PR_URL" --json state -q .state)
+   [ "$STATE" = "MERGED" ] || { echo "Expected MERGED, got $STATE" >&2; exit 1; }
    \`\`\`
-   The final command MUST return \`MERGED\`. \`OPEN\` means CI, review, or branch protection still blocks the merge; investigate, fix, and retry. \`CLOSED\` is also not success. Do not enter Phase 7 until remote GitHub state is exactly \`MERGED\`.
+   The exact comparison MUST succeed. \`OPEN\` means CI, review, or branch protection still blocks the merge; investigate, fix, and retry. \`CLOSED\` is also not success. Do not enter Phase 7 until remote GitHub state is exactly \`MERGED\`.
 
 ## Phase 7 — Clean up (post-merge ONLY)
 
@@ -903,7 +913,10 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\
 3. **Merge immediately via \`glab mr merge\`** — NEVER a local \`git merge\`. \`glab mr merge\` takes the **MR IID**, which is NOT the issue number — resolve it from the source branch first, merge, then verify remote state:
    \`\`\`bash
    MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" -F json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
-   glab mr merge "\${MR_IID}" --yes --remove-source-branch
+   glab mr merge "\${MR_IID}" --yes --remove-source-branch || {
+     glab mr view "\${MR_IID}" -F json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null || \
+       glab mr merge "\${MR_IID}" --yes --squash --remove-source-branch
+   }
    glab mr view "\${MR_IID}" -F json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
    \`\`\`
    The verification command must succeed and print a merged state. An opened/closed state or missing value is not success; investigate CI, review, and branch protection, then retry. Do not enter Phase 7 until the forge confirms the MR is merged.

@@ -44,6 +44,8 @@ import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
 import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
+import { PATHS } from '../lib/fileUtils.js';
+import { shellQuote } from '../lib/shellQuote.js';
 
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
@@ -697,23 +699,24 @@ export function buildLocalReviewerInstructions(promptTaskType, reviewers, review
   const localReviewers = (reviewers || []).filter((reviewer) => LOCAL_LLM_REVIEWERS.includes(reviewer));
   if (!localReviewers.length) return '';
 
+  const gitlabDiff = `MR_IID="$(glab mr list --source-branch "$(git branch --show-current)" -F json | jq -er '.[0].iid)'"\nglab mr diff "$MR_IID"`;
   const diffCommand = promptTaskType === 'claim-issue-gitlab'
-    ? 'glab mr diff "$MR_NUMBER"'
+    ? gitlabDiff
     : promptTaskType === 'claim-issue'
-      ? 'gh pr diff "$PR_NUMBER"'
-      : '<gh pr diff "$PR_NUMBER" OR glab mr diff "$MR_NUMBER">';
+      ? 'gh pr diff'
+      : `if command -v gh >/dev/null 2>&1 && gh pr view --json url -q .url >/dev/null 2>&1; then\n  gh pr diff\nelif command -v glab >/dev/null 2>&1; then\n  ${gitlabDiff.replace(/\n/g, '\n  ')}\nelse\n  echo "No supported forge CLI can resolve the current branch's review diff" >&2\n  exit 1\nfi`;
+  const reviewScript = shellQuote(join(PATHS.root, 'server/scripts/run-local-code-review.mjs'));
   const commands = localReviewers.map((reviewer) => {
     const pinned = {
       backend: reviewer,
       ...(reviewerModels[reviewer] ? { model: reviewerModels[reviewer] } : {}),
       ...(reviewerEfforts[reviewer] ? { effort: reviewerEfforts[reviewer] } : {}),
     };
-    const shellQuote = (value) => `'${String(value).replaceAll("'", "'\"'\"'")}'`;
     const jqArgs = Object.entries(pinned)
       .map(([key, value]) => `--arg ${key} ${shellQuote(value)}`)
       .join(' ');
     const jqObject = Object.keys(pinned).map((key) => `${key}: $${key}`).join(', ');
-    return `### ${reviewer}\n\n\`\`\`bash\nREVIEW_RESPONSE=$(mktemp)\n${diffCommand} | jq -Rs ${jqArgs} '{ ${jqObject}, diff: . }' | curl -sS -X POST http://localhost:5555/api/code-review/local -H 'Content-Type: application/json' -d @- > "$REVIEW_RESPONSE"\nif ! jq -er '.findings | select(type == "string" and length > 0)' "$REVIEW_RESPONSE" > "\${REVIEW_RESPONSE}.findings"; then\n  echo "Local reviewer failed: $(jq -r '.error // "missing .findings in reviewer response"' "$REVIEW_RESPONSE")" >&2\n  exit 1\nfi\ncat "\${REVIEW_RESPONSE}.findings"\n\`\`\``;
+    return `### ${reviewer}\n\n\`\`\`bash\nREVIEW_DIFF=$(mktemp)\nREVIEW_RESPONSE=$(mktemp)\ntrap 'rm -f "$REVIEW_DIFF" "$REVIEW_RESPONSE" "\${REVIEW_RESPONSE}.findings"' EXIT\nif ! { ${diffCommand}; } > "$REVIEW_DIFF"; then\n  echo "Unable to resolve the current branch's review diff" >&2\n  exit 1\nfi\njq -Rs ${jqArgs} '{ ${jqObject}, diff: . }' < "$REVIEW_DIFF" | node ${reviewScript} > "$REVIEW_RESPONSE"\nif ! jq -er '.findings | select(type == "string" and length > 0)' "$REVIEW_RESPONSE" > "\${REVIEW_RESPONSE}.findings"; then\n  echo "Local reviewer failed: $(jq -r '.error // "missing .findings in reviewer response"' "$REVIEW_RESPONSE")" >&2\n  exit 1\nfi\ncat "\${REVIEW_RESPONSE}.findings"\n\`\`\``;
   }).join('\n\n');
 
   return `\n\n## Local Reviewer Procedure\n\nRun each configured local reviewer in its listed order using the command below. Only a successfully extracted non-empty \`.findings\` string is a review result. Timeout, transport failure, malformed JSON, an error response, or missing/empty findings is INCONCLUSIVE: do not merge or substitute a self-review.\n\n${commands}`;

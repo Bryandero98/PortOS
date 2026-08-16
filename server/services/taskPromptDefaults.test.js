@@ -37,7 +37,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
       expect(prompt.toLowerCase()).not.toContain('copilot');
       expect(prompt).not.toMatch(/^\s*gh pr merge[^\n]*--auto/m);
       expect(prompt).toContain('--json state -q .state');
-      expect(prompt).toContain('MERGED');
+      expect(prompt).toContain('[ "$STATE" = "MERGED" ]');
+      expect(prompt).toContain('--squash --delete-branch');
+      expect(prompt).toContain('--rebase --delete-branch');
       expect(prompt).toContain('Never force-delete with `-D`');
     }
 
@@ -45,6 +47,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(gitlab.toLowerCase()).not.toContain('copilot');
     expect(gitlab).toContain('glab mr view');
     expect(gitlab).toContain('ascii_downcase');
+    expect(gitlab).toContain('--squash --remove-source-branch');
     expect(gitlab).toContain('Never force-delete with `-D`');
   });
 

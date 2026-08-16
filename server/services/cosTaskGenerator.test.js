@@ -72,17 +72,27 @@ describe('claim reviewer resolution', () => {
     expect(normalizeClaimReviewers({ reviewers: ['copilot'] }, ['copilot'])).toEqual(['codex']);
   });
 
-  it('keeps local reviewers and emits forge-specific, fail-closed endpoint commands', () => {
+  it('keeps local reviewers and emits forge-specific, fail-closed service commands', () => {
     const github = buildLocalReviewerInstructions('claim-issue', ['ollama'], { ollama: 'example-model' }, { ollama: 'high' });
-    expect(github).toContain('gh pr diff "$PR_NUMBER"');
-    expect(github).toContain("--arg backend 'ollama'");
-    expect(github).toContain("--arg model 'example-model'");
-    expect(github).toContain("--arg effort 'high'");
+    expect(github).toContain('gh pr diff');
+    expect(github).not.toContain('$PR_NUMBER');
+    expect(github).toContain('--arg backend ollama');
+    expect(github).toContain('--arg model example-model');
+    expect(github).toContain('--arg effort high');
+    expect(github).toContain('run-local-code-review.mjs');
+    expect(github).not.toContain('localhost:5555');
     expect(github).toContain('missing/empty findings is INCONCLUSIVE');
 
     const gitlab = buildLocalReviewerInstructions('claim-issue-gitlab', ['lmstudio']);
-    expect(gitlab).toContain('glab mr diff "$MR_NUMBER"');
+    expect(gitlab).toContain('glab mr list --source-branch');
+    expect(gitlab).toContain('glab mr diff "$MR_IID"');
+    expect(gitlab).not.toContain('$MR_NUMBER');
     expect(gitlab).not.toContain('gh pr diff');
+
+    const generic = buildLocalReviewerInstructions('plan-task', ['ollama']);
+    expect(generic).toContain('command -v gh');
+    expect(generic).toContain('command -v glab');
+    expect(generic).not.toContain('<gh pr diff');
   });
 });
 
