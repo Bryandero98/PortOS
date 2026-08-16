@@ -610,6 +610,22 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
     });
 
+    it('a slashdo-free GitLab TUI captures MR variables and keeps the lifecycle on glab', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['ollama'] } }),
+        '/r',
+        { branchName: 'claim/issue-4363', worktreePath: '/tmp/wt', baseBranch: 'main', forgeCli: 'glab' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
+
+      expect(prompt).toMatch(/PR_URL=\$\(glab mr create --source-branch claim\/issue-4363 --target-branch main/);
+      expect(prompt).toMatch(/PR_NUMBER=\$\(glab mr view "\$PR_URL" -F json \| jq -r \.iid\)/);
+      expect(prompt).toMatch(/glab mr diff \$PR_NUMBER/);
+      expect(prompt).toMatch(/glab mr merge "\$PR_NUMBER" --yes --remove-source-branch/);
+      expect(prompt).toMatch(/glab mr view "\$PR_NUMBER"/);
+      expect(prompt).not.toMatch(/gh pr (create|diff|merge|view|checks)/);
+    });
+
     it('a slashdo-free OpenCode TUI with no reviewer gets the CI merge gate, not a review loop', () => {
       const prompt = buildLightContextPrompt(
         makeTask({ metadata: { simplify: true, openPR: true } }),

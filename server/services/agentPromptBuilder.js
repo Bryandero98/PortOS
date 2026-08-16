@@ -24,6 +24,7 @@ import { canTypeSlashCommands, agentOwnsPrWorkflow, resolveSlashdoInvocation, bu
 import { shellQuote } from '../lib/shellQuote.js';
 import { TASK_PROMPT_KEY, TASK_CONTEXT_KEY, taskContextBlock } from '../lib/cosTaskPrompt.js';
 import { detectForgeCli } from '../lib/gitForge.js';
+import { forgeCliForTracker, resolveRepoForgeTarget } from '../lib/workTracker.js';
 import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../lib/prDisposition.js';
 import * as jiraService from './jira.js';
 import { emitLog } from './cosEvents.js';
@@ -42,6 +43,29 @@ const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
  */
 function resolveSentinelPath(worktreeInfo, workspaceDir, agentId) {
   return `${worktreeInfo?.worktreePath || workspaceDir}/${doneSentinelName(agentId)}`;
+}
+
+function normalizeForgeCli(value) {
+  if (value === 'glab' || value === 'gitlab') return 'glab';
+  if (value === 'gh' || value === 'github') return 'gh';
+  return null;
+}
+
+function manualForgeCli(forgeCli, worktreeInfo) {
+  return normalizeForgeCli(forgeCli)
+    || normalizeForgeCli(worktreeInfo?.forgeCli)
+    || forgeCliForTracker(worktreeInfo?.forge)
+    || 'gh';
+}
+
+async function resolveManualForgeCli(workspaceDir, worktreeInfo, task) {
+  const explicit = manualForgeCli(null, worktreeInfo);
+  if (explicit !== 'gh') return explicit;
+  const preferredForge = normalizeForgeCli(task?.metadata?.workTracker);
+  const target = await resolveRepoForgeTarget(worktreeInfo?.worktreePath || workspaceDir, {
+    preferredForge: preferredForge === 'glab' ? 'gitlab' : preferredForge === 'gh' ? 'github' : null,
+  }).catch(() => null);
+  return forgeCliForTracker(target?.forge) || explicit;
 }
 
 // Appended to every agent briefing. PortOS shares ONE pm2 daemon across many
@@ -607,7 +631,7 @@ function isMergeOnlyFollowUp(metadata = {}) {
  *   stay byte-identical so the two callers can't drift.
  * @returns {string}
  */
-export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false, rprBody = null, localAgentLoopBody = null, localAgentLoopBodyPath = null, inlineExitStep = null } = {}) {
+export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false, rprBody = null, localAgentLoopBody = null, localAgentLoopBodyPath = null, inlineExitStep = null, forgeCli = null } = {}) {
   // One parameter, not two: an `inline` boolean alongside it could disagree with
   // it, and the disagreement renders silently — `inline` with a blank exit step
   // emits a bare "6." and a truncated merge-gate hand-back.
@@ -618,6 +642,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const prOwner = metadata.reviewLoopPROwner ?? '';
   const prRepo = metadata.reviewLoopPRRepo ?? '';
   const sourceTaskId = metadata.sourceTaskId || 'unknown';
+  const reviewForgeCli = normalizeForgeCli(forgeCli)
+    || (detectForgeCli(metadata.reviewLoopPRHost) === 'glab' ? 'glab' : 'gh');
   // Merge-only follow-up (Review Loop off): no reviewer to wait on or invoke —
   // the whole job is CI-gate → fix → merge. Branch before any reviewer defaulting
   // below, which would otherwise resolve the empty list back to `[copilot]`.
@@ -625,6 +651,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     return buildMergeFollowUpSection({
       prUrl, prBranch, prNumber, prOwner, prRepo, sourceTaskId, verbose, inlineExitStep,
       prHost: metadata.reviewLoopPRHost ?? '',
+      forgeCli: reviewForgeCli,
     });
   }
   // Arbitrary GitHub reviewer usernames (gate-only PR reviewers), appended to
@@ -796,10 +823,13 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     ...(localLlmPins.some(p => p.effort) ? ['effort: "…"'] : []),
     'diff: .'
   ].join(', ');
+  const diffCommand = reviewForgeCli === 'glab'
+    ? `glab mr diff ${prNumber || '<MR_NUMBER>'}`
+    : `gh pr diff ${prNumber || '<PR_NUMBER>'}`;
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
-gh pr diff ${prNumber || '<PR_NUMBER>'} | jq -Rs '{ backend: "<lmstudio|ollama>", diff: . }' | curl -sS -X POST http://localhost:5555/api/code-review/local -H 'Content-Type: application/json' -d @- > "$REVIEW_RESPONSE"
+${diffCommand} | jq -Rs '{ backend: "<lmstudio|ollama>", diff: . }' | curl -sS -X POST http://localhost:5555/api/code-review/local -H 'Content-Type: application/json' -d @- > "$REVIEW_RESPONSE"
 if ! jq -er '.findings | select(type == "string" and length > 0)' "$REVIEW_RESPONSE" > "\${REVIEW_RESPONSE}.findings"; then
   echo "Local reviewer failed: $(jq -r '.error // "missing .findings in reviewer response"' "$REVIEW_RESPONSE")" >&2
   STATUS=cli-error # Never treat an absent or malformed response as clean.
@@ -814,7 +844,9 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   // Instruct the agent to request each username reviewer as a PR reviewer and
   // gate the merge on their approval. `gh pr edit --add-reviewer` takes the bare
   // login, so strip the `@`.
-  const githubUsersInvocation = `request ${usernames.map(u => `\`@${u}\``).join(', ')} as PR reviewer${usernames.length > 1 ? 's' : ''} (\`gh pr edit ${prNumber || '<PR_NUMBER>'} --add-reviewer <user>\`, drop the \`@\`), then wait for their review (poll every 5–15s) and address any findings; their approval gates the merge.`;
+  const githubUsersInvocation = reviewForgeCli === 'glab'
+    ? `request ${usernames.map(u => `\`@${u}\``).join(', ')} as MR reviewer${usernames.length > 1 ? 's' : ''} using the GitLab project UI or API, then inspect \`glab mr view ${prNumber || '<MR_NUMBER>'}\` for their review and address any findings; their approval gates the merge.`
+    : `request ${usernames.map(u => `\`@${u}\``).join(', ')} as PR reviewer${usernames.length > 1 ? 's' : ''} (\`gh pr edit ${prNumber || '<PR_NUMBER>'} --add-reviewer <user>\`, drop the \`@\`), then wait for their review (poll every 5–15s) and address any findings; their approval gates the merge.`;
   const multiBullets = [
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
@@ -940,11 +972,17 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     : [
       `4. When the reviewer list is exhausted (or the stop mode triggers), merge the PR **immediately** with this exact command (flags: \`--merge --delete-branch\`, nothing else — a true merge commit keeps the branch tip in main's history so automated worktree cleanup can prove the branch is merged):`,
       '   ```bash',
-      `   gh pr merge "${prUrl}" --merge --delete-branch`,
+      reviewForgeCli === 'glab'
+        ? `   glab mr merge "${prNumber || '<MR_NUMBER>'}" --yes --remove-source-branch`
+        : `   gh pr merge "${prUrl}" --merge --delete-branch`,
       '   ```',
-      prOwner && prRepo && prNumber ? `   (Equivalent: \`gh pr merge ${prNumber} --repo ${prOwner}/${prRepo} --merge --delete-branch\`.)` : null,
+      reviewForgeCli === 'glab'
+        ? null
+        : (prOwner && prRepo && prNumber ? `   (Equivalent: \`gh pr merge ${prNumber} --repo ${prOwner}/${prRepo} --merge --delete-branch\`.)` : null),
       '   You have already verified the review is clean, so force the immediate merge. Adding any merge-deferral flag would leave the PR open after you exit.',
-      `5. Confirm the PR is actually merged before exiting: \`gh pr view "${prUrl}" --json state -q .state\` must return \`MERGED\`. If it returns \`OPEN\` or \`CLOSED\`, investigate (a check is failing, a thread is still unresolved, or branch protection is blocking) — fix and retry the merge. Do NOT exit until state is \`MERGED\`.`,
+      reviewForgeCli === 'glab'
+        ? `5. Confirm the MR is actually merged before exiting: \`glab mr view "${prNumber || '<MR_NUMBER>'}"\` must show it merged. If it is still open or was closed unmerged, investigate (a check is failing, a thread is still unresolved, or branch protection is blocking) — fix and retry the merge. Do NOT exit until it is merged.`
+        : `5. Confirm the PR is actually merged before exiting: \`gh pr view "${prUrl}" --json state -q .state\` must return \`MERGED\`. If it returns \`OPEN\` or \`CLOSED\`, investigate (a check is failing, a thread is still unresolved, or branch protection is blocking) — fix and retry the merge. Do NOT exit until state is \`MERGED\`.`,
       exitStep,
     ].filter(Boolean);
 
@@ -1087,7 +1125,7 @@ function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>', forge 
  * @param {Object} opts - PR coordinates + `verbose` (full/api path) vs compact.
  * @returns {string}
  */
-function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false, inlineExitStep = null }) {
+function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false, inlineExitStep = null, forgeCli = null }) {
   const inline = inlineExitStep !== null;
   // PortOS opens GitLab MRs via `glab` too, so a GitLab host must not be handed
   // `gh` commands (the host is persisted by spawnReviewLoopFollowUp). Classify
@@ -1095,13 +1133,15 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
   // bare `host !== 'github.com'` test would get wrong.
   //
   // An INLINE gate has no persisted host to classify — its PR does not exist yet
-  // — so it takes the `unknown` posture and emits both CLIs, matching the
-  // create step that feeds it. Reading the empty host as `github` would print a
-  // gh-only merge gate under a create step that offers `glab mr create`.
+  // — so the caller supplies the forge already selected for the create step.
+  // Falling back to GitHub preserves the historical manual workflow when no
+  // remote metadata is available.
   const gate = buildCiMergeGateSteps(1, {
     prRef: `"${prUrl}"`,
     mrRef: prNumber !== '' ? `${prNumber}` : '<MR_NUMBER>',
-    forge: inline ? 'unknown' : (detectForgeCli(prHost) === 'glab' ? 'gitlab' : 'github'),
+    forge: inline
+      ? (normalizeForgeCli(forgeCli) === 'glab' ? 'gitlab' : 'github')
+      : (detectForgeCli(prHost) === 'glab' ? 'gitlab' : 'github'),
     // An inline run reached this gate through plain `git`/`gh` — it never ran
     // `/do:pr`, so a saved slashdo merge default can't have landed the PR for it.
     alreadyMergedHint: inline ? '' : undefined,
@@ -1482,7 +1522,8 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
     : null;
 
   if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
-    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody, localAgentLoopBodyPath };
+    const forgeCli = await resolveManualForgeCli(workspaceDir, worktreeInfo, task);
+    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody, localAgentLoopBodyPath, forgeCli };
     return options.split === true
       ? buildLightContextPromptParts(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions)
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);
@@ -1914,7 +1955,7 @@ export function buildLightContextPromptParts(task, workspaceDir, worktreeInfo, i
 
 const BEGIN_WORKING_LINE = 'Begin working on the task now.';
 
-function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null, localAgentLoopBodyPath = null } = {}) {
+function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null, localAgentLoopBodyPath = null, forgeCli = null } = {}) {
   // Idempotent with the reconcile in buildAgentPrompt; also protects the
   // directly-exported buildLightContextPrompt/Parts entry points.
   task = reconcileSplitContext(task);
@@ -1949,6 +1990,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
     : (codeReviewDefaults?.reviewerApplies === true);
+  const resolvedForgeCli = manualForgeCli(forgeCli, worktreeInfo);
   // Can this session TYPE a Claude Code slash command (`/do:pr`, `/do:push`,
   // `/simplify`)? One predicate, both prompt paths (#3114): `canTypeSlashCommands`
   // derives from `resolveSlashdoStyle` with the spawners' blank-command posture,
@@ -2087,7 +2129,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReviewLoopFollowUp) {
-    sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody }));
+    sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody, forgeCli: resolvedForgeCli }));
     if (isTui) {
       const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
       const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
@@ -2106,10 +2148,11 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
-      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies
+      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies,
+      forgeCli: resolvedForgeCli
     }));
   } else {
-    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies }));
+    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion
@@ -2135,6 +2178,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       reviewerEfforts: lightReviewerEfforts,
       reviewStopMode: lightReviewStopMode,
       reviewerApplies: lightReviewerApplies,
+      forgeCli: resolvedForgeCli,
     }));
   }
 
@@ -2275,14 +2319,14 @@ function buildSentinelWriteSteps(stepNumber, sentinelPath, sentinelTail) {
  * return this IS a Claude session, so `/simplify` and `/do:pr` are both safe to
  * emit without a second provider check.
  */
-function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, ownsPrWorkflow = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, ownsPrWorkflow = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh' }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (slashdoFree) {
     // Plain `git`/`gh` instead of `/do:pr` — but still the whole lifecycle when
     // the session is a real coding harness (`ownsPrWorkflow`); the reviewer
     // procedure it needs is inlined in the Review Loop section that follows.
-    return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen, ownsPrWorkflow });
+    return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen, ownsPrWorkflow, forgeCli });
   }
   const cmd = willOpenPR ? '/do:pr' : '/do:push';
   // `/do:pr` may inherit a saved `review-with` default. Explicitly opt out
@@ -2355,22 +2399,31 @@ function promptRef(ref, fallback) {
  * inline review-loop and merge-gate sections address the PR by those names —
  * they are rendered before the PR exists, so a literal URL is impossible.
  */
-function buildManualPrCreateStep(step, { branchName, baseBranch }) {
+function buildManualPrCreateStep(step, { branchName, baseBranch, forgeCli = 'gh' }) {
   const branch = promptRef(branchName, '<branch>');
   const base = promptRef(baseBranch, '<base-branch>');
+  const gitlab = forgeCli === 'glab';
   return [
     `${step}. Push the branch and open the pull request yourself, capturing its URL and number — the section below addresses the PR by these shell variables:`,
     '',
     '   ```bash',
     `   git push -u origin ${branch}`,
-    `   PR_URL=$(gh pr create --base ${base} --head ${branch} --title "<conventional title>" --body "<description>")`,
-    '   PR_NUMBER=$(gh pr view "$PR_URL" --json number -q .number)',
+    gitlab
+      ? `   PR_URL=$(glab mr create --source-branch ${branch} --target-branch ${base} --title "<conventional title>" --description "<description>" | grep -Eo 'https?://[^[:space:]]+' | tail -n 1)`
+      : `   PR_URL=$(gh pr create --base ${base} --head ${branch} --title "<conventional title>" --body "<description>")`,
+    gitlab
+      ? '   PR_NUMBER=$(glab mr view "$PR_URL" -F json | jq -r .iid)'
+      : '   PR_NUMBER=$(gh pr view "$PR_URL" --json number -q .number)',
     '   ```',
     // `--fill` on a one-line commit produces an empty description; PortOS used
     // to generate the body server-side, so spell out what it must contain now
     // that the agent writes it.
-    '   Write a real `--body`: a **Summary** section and a **Test plan** section, no AI-attribution footer. Do NOT use `--fill`. If `gh` reports the pull request already exists, adopt it instead of failing: `PR_URL=$(gh pr view --json url -q .url)`.',
-    `   On a GitLab remote use \`glab mr create --source-branch ${branch} --target-branch ${base} --title "…" --description "…"\` and read the MR URL/IID back with \`glab mr view\`.`,
+    gitlab
+      ? '   Write a real `--description`: a **Summary** section and a **Test plan** section, with no AI-attribution footer. If `glab` reports the merge request already exists, adopt its URL and IID before continuing.'
+      : '   Write a real `--body`: a **Summary** section and a **Test plan** section, no AI-attribution footer. Do NOT use `--fill`. If `gh` reports the pull request already exists, adopt it instead of failing: `PR_URL=$(gh pr view --json url -q .url)`.',
+    gitlab
+      ? '   The GitLab MR URL and IID are captured in `$PR_URL` and `$PR_NUMBER`; use those variables for every review, merge, and verification command below.'
+      : `   On a GitLab remote use \`glab mr create --source-branch ${branch} --target-branch ${base} --title "…" --description "…"\` and read the MR URL/IID back with \`glab mr view\`.`,
   ];
 }
 
@@ -2388,7 +2441,7 @@ function buildManualPrCreateStep(step, { branchName, baseBranch }) {
  * `ownsPrWorkflow: false` (lean mode) keeps the original handoff: commit and
  * stop, PortOS owns the post-exit push / PR / review / merge lifecycle.
  */
-function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false, ownsPrWorkflow = false }) {
+function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false, ownsPrWorkflow = false, forgeCli = 'gh' }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   // `ownsPrWorkflow` already folds in `willOpenPR`, the worktree, and the
@@ -2403,7 +2456,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
   const lines = [
     '## Completion Workflow',
     drivesOwnPr
-      ? 'This provider does NOT have slashdo (`/do:*`) commands, so drive the handoff with plain `git` and `gh`. **You own this PR end to end — nothing else will open, review, or merge it.** Run these in order:'
+      ? `This provider does NOT have slashdo (\`/do:*\`) commands, so drive the handoff with plain \`git\` and \`${forgeCli}\`. **You own this ${forgeCli === 'glab' ? 'MR' : 'PR'} end to end — nothing else will open, review, or merge it.** Run these in order:`
       : 'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git`. Run these in order:',
     '',
     simplifyStep,
@@ -2417,7 +2470,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
 
   let step = 3;
   if (drivesOwnPr) {
-    lines.push(...buildManualPrCreateStep(step++, { branchName, baseBranch }));
+    lines.push(...buildManualPrCreateStep(step++, { branchName, baseBranch, forgeCli }));
     lines.push(`${step++}. Work through the **${runsReviewLoop ? 'Review Loop' : 'Merge Gate'}** section below in full — it ends by merging the PR. Come back here when it is done.`);
   } else if (willOpenPR) {
     const handoff = policyLeavesOpen
@@ -2492,7 +2545,7 @@ export function inlinePrLifecycleSection(task, { providerType, providerId, provi
  */
 function buildInlineReviewLoopSection({
   taskId, branchName, runsReviewLoop, leaveOpen, localAgentLoopBody, localAgentLoopBodyPath = null, writesSentinel = false,
-  reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies,
+  reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies, forgeCli = 'gh',
 }) {
   // Where control goes after the merge. A TUI run still owes PortOS its
   // `.agent-done` sentinel — telling it to "exit" here is how a finished merge
@@ -2517,7 +2570,7 @@ function buildInlineReviewLoopSection({
     // exactly as the merge-only follow-up gets.
     reviewLoopMergeOnly: !runsReviewLoop,
     sourceTaskId: taskId || 'unknown',
-  }, { verbose: false, localAgentLoopBody, localAgentLoopBodyPath, inlineExitStep });
+  }, { verbose: false, localAgentLoopBody, localAgentLoopBodyPath, inlineExitStep, forgeCli });
 }
 
 /**
@@ -2530,7 +2583,7 @@ function buildInlineReviewLoopSection({
  * CLI providers fall through to the legacy commit-only block where PortOS
  * handles push+PR on exit.
  */
-function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, ownsPrWorkflow = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, ownsPrWorkflow = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh' }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (hasSlashdo && worktreeInfo && willOpenPR) {
@@ -2587,6 +2640,7 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
     lines.push(...buildManualPrCreateStep(step++, {
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
+      forgeCli,
     }));
     lines.push(`${step}. Work through the **${runsReviewLoop ? 'Review Loop' : 'Merge Gate'}** section below in full — it ends by merging the PR.`);
     return lines.join('\n');
