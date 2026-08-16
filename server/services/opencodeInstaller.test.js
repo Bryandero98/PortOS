@@ -35,15 +35,25 @@ describe('OpenCode installer', () => {
 
     spawnOpenCodeInstaller({ spawnImpl });
 
-    expect(spawnImpl).toHaveBeenCalledWith(
-      'npm',
-      OPENCODE_NPM_INSTALL_ARGS,
-      expect.objectContaining({
-        shell: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-      }),
-    );
+    const [command, args, options] = spawnImpl.mock.calls[0];
+    if (process.platform === 'win32') {
+      // Windows must launch npm's .cmd shim through cmd.exe because Node
+      // rejects direct .cmd spawns when shell:false.
+      expect(command).toBe('cmd.exe');
+      expect(args).toEqual([
+        '/c',
+        expect.stringMatching(/npm\.cmd$/i),
+        ...OPENCODE_NPM_INSTALL_ARGS,
+      ]);
+    } else {
+      expect(command).toBe('npm');
+      expect(args).toEqual(OPENCODE_NPM_INSTALL_ARGS);
+    }
+    expect(options).toEqual(expect.objectContaining({
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    }));
     expect(OPENCODE_NPM_INSTALL_ARGS).toContain('--no-progress');
   });
 });
