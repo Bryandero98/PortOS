@@ -54,7 +54,7 @@ describe('migration 237 — video model disclosure metadata', () => {
     writeJson(path, baseRegistry());
     await migration.up({ rootDir });
     const entry = readJson(path).video.windows.find((e) => e.id === 'ltx_video');
-    expect(entry.disclosure.runtimeLicense.name).toBe('MIT');
+    expect(entry.disclosure.runtimeLicense.name).toBe('Apache-2.0');
     // No repo → no model card and no weights license we can attribute.
     expect('modelCardUrl' in entry.disclosure).toBe(false);
     expect('weightsLicense' in entry.disclosure).toBe(false);
