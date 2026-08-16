@@ -33,10 +33,11 @@ export const PASTE_DEADLINE_MS = 10000;
 // path; the non-claude providers use PASTE_DEADLINE_MS.
 export const TUI_INPUT_READY_DEADLINE_MS = 45000;
 
-// Claude Code emits `[Pasted text #N +M lines]`, while Codex emits
-// `[Pasted Content N chars]`, after committing a paste. Watch for either
-// marker (or fall back after PASTE_TO_ENTER_FALLBACK_MS) before sending `\r`
-// so Enter doesn't get swallowed mid-paste-commit.
+// Claude Code emits `[Pasted text #N +M lines]`, Codex emits
+// `[Pasted Content N chars]`, and OpenCode emits `[Pasted ~N lines]` after
+// committing a paste. Watch for any of these markers (or fall back after
+// PASTE_TO_ENTER_FALLBACK_MS) before sending `\r` so Enter doesn't get
+// swallowed mid-paste-commit.
 //
 // CRITICAL: the marker must be matched against ANSI-STRIPPED output, never the
 // raw PTY stream. Claude Code renders the marker by positioning each token with
@@ -62,7 +63,7 @@ export const PASTE_RETRY_MAX_ATTEMPTS = 3;
 export const PASTE_RETRY_BASE_DELAY_MS = 800;
 // Minimum prefix length for verification (shorter prompts verify whole-text)
 const MIN_VERIFIABLE_PREFIX_LEN = 15;
-export const PASTE_MARKER_PATTERN = /\[Pasted\s*(?:text\s*#\d+[^\]]*|content\s*\d+\s*chars)\]/i;
+export const PASTE_MARKER_PATTERN = /\[Pasted\s*(?:text\s*#\d+[^\]]*|content\s*\d+\s*chars|~\s*\d+\s*lines?)\]/i;
 export const PASTE_TO_ENTER_MIN_DELAY_MS = 200;
 export const PASTE_TO_ENTER_FALLBACK_MS = 3500;
 
@@ -124,7 +125,8 @@ export function verifyPasteRendered(strippedBuffer, prefix) {
 }
 
 /**
- * Count the `[Pasted text #N …]` paste-commit markers in `strippedText`.
+ * Count paste-commit markers from Claude Code, Codex, or OpenCode in
+ * `strippedText`.
  * Callers MUST pass ANSI-STRIPPED output (see PASTE_MARKER_PATTERN above for why
  * the raw stream never matches). Shared by both TUI consumers so the
  * strip-then-match contract can't drift between them.
@@ -200,12 +202,12 @@ export function isCollapsedPasteChip(strippedText) {
  * paste — the gate before sending the submit Enter(s). Two independent signals,
  * checked in priority order:
  *
- *   1. The TUI's own paste-commit MARKER (`[Pasted text #N]`) count exceeds the
- *      count the prompt itself carried (promptMarkerCount). This is AUTHORITATIVE
- *      and is checked FIRST because Claude Code collapses a multi-line bracketed
- *      paste INTO that chip and HIDES the pasted body text from the buffer — so on
- *      every multi-line prompt the literal text is genuinely absent even though
- *      the paste landed perfectly. Real incident (2026-07-05): every
+ *   1. The TUI's own paste-commit marker count exceeds the count the prompt
+ *      itself carried (promptMarkerCount). This is AUTHORITATIVE and is checked
+ *      FIRST because Claude Code collapses a multi-line bracketed paste into a
+ *      chip and HIDES the pasted body text from the buffer — so on every
+ *      multi-line prompt the literal text is genuinely absent even though the
+ *      paste landed perfectly. Real incident (2026-07-05): every
  *      claude-code-tui CoS agent failed `paste-not-rendered` after 3 retries
  *      because #2192's text-only check never saw the collapsed body — while the
  *      marker was sitting right there. (agent-656efa6e et al.)
