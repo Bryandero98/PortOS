@@ -21,7 +21,7 @@ function JobRow({ job, onCancel }) {
       <span className="min-w-0 flex-1 truncate text-gray-200">{label}</span>
       <span className="shrink-0 font-mono text-gray-500">{job.status === 'queued' ? `#${job.position || '—'}` : elapsed(job.startedAt)}{eta(job.etaMs) ? ` · ${eta(job.etaMs)}` : ''}</span>
       {target ? <Link to={target} title="Open track" className="text-gray-500 hover:text-port-accent"><ExternalLink size={13} /></Link> : null}
-      <button type="button" onClick={() => onCancel(job.id)} title="Cancel render" className="text-gray-500 hover:text-port-warning"><X size={13} /></button>
+      <button type="button" onClick={() => onCancel(job.id)} title="Cancel render" aria-label="Cancel render" className="text-gray-500 hover:text-port-warning"><X size={13} /></button>
     </div>
   );
 }
