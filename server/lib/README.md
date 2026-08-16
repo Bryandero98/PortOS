@@ -379,6 +379,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 
 | Module | Purpose |
 |---|---|
+| `gitTestRepo.js` | Shared real-git sandbox for integration tests (#4394): one initialized template (working tree + bare origin) per worker, then `fs.cp` into a fresh temp dir. `makeGitSandbox({ origin })`, `attachBareOrigin(scratch, repo)`, `materializeGitRepo(dest)`, `destroyGitSandbox`, plus `SKIP_HEAVY_INTEGRATION` (`VITEST_FAST=1`). Still real git — just not rebuilt from `init`+`commit`+`push` in every `beforeEach`. |
 | `mirrorParity.js` | Source-comparison primitives for the `*.mirror.test.js` server↔client parity tests: `stripCommentsAndNormalize` (so per-side commentary may diverge but logic may not), `extractDeclaration(src, name)` (balanced `{}`/`()`/`[]` walk over `function` / `async function` / `const`), and `compareDeclaration(serverSrc, clientSrc, name)`. Use these instead of hand-rolling a brace-walker per mirror. Pure — no `vitest` import — so callers own the assertions. |
 | `mockPathsDataRoot.js` | Shared Vitest helpers for `PATHS.data → temp dir` and no-peer record creation guards. |
 | `settingsTestUtil.js` | `bindSettingsFile(dataRoot)` → `writeSettingsFile`/`mergeSettingsFile`: direct settings.json disk writes that also drop the `getSettings()` read cache (dynamic-import reset) so a stale cache can't survive a bypass-`save()` write. |
