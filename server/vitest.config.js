@@ -1,5 +1,11 @@
 import { defineConfig } from 'vitest/config';
 
+// `npm run test:fast` is the Windows-safe way to set the flag (a
+// `VITEST_FAST=1 vitest` script is parsed as an executable name on cmd.exe).
+if (process.env.npm_lifecycle_event === 'test:fast') {
+  process.env.VITEST_FAST = '1';
+}
+
 export default defineConfig({
   test: {
     testTimeout: process.platform === 'win32' ? 30000 : 10000,
@@ -53,6 +59,7 @@ export default defineConfig({
         'services/worktreeReap.test.js',
         'services/sprites/atlas.test.js',
         'services/sprites/walk.test.js',
+        'lib/gitTestRepo.test.js',
       ] : []),
     ],
     coverage: {

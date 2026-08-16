@@ -11,13 +11,14 @@
  * Pure-logic tests should not call these helpers at all.
  */
 import { mkdtemp, rm, writeFile, cp, mkdir, readdir } from 'fs/promises';
+import { rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execGit } from './execGit.js';
 
 export const SKIP_HEAVY_INTEGRATION = ['1', 'true', 'yes'].includes(
   String(process.env.VITEST_FAST || '').toLowerCase(),
-);
+) || process.env.npm_lifecycle_event === 'test:fast';
 
 const TEMPLATE_PREFIX = 'portos-git-template-';
 const DEFAULT_IDENTITY = Object.freeze({
@@ -48,6 +49,11 @@ async function stripOrigin(repo) {
   await execGit(['branch', '--unset-upstream'], repo, { ignoreExitCode: true });
 }
 
+function wipeSync(scratch) {
+  if (!scratch) return;
+  try { rmSync(scratch, { recursive: true, force: true }); } catch { /* already gone */ }
+}
+
 async function buildTemplate() {
   const scratch = await mkdtemp(join(tmpdir(), TEMPLATE_PREFIX));
   const repo = join(scratch, 'primary');
@@ -60,6 +66,10 @@ async function buildTemplate() {
   await execGit(['init', '--bare', '-b', 'main', origin], scratch);
   await execGit(['remote', 'add', 'origin', origin], repo);
   await execGit(['push', '-u', 'origin', 'main'], repo);
+  // Copied sandboxes are torn down per-test; the template itself lives for
+  // the worker. Wipe it on process exit so watch-mode / repeated runs do
+  // not accumulate repos under os.tmpdir().
+  process.on('exit', () => wipeSync(scratch));
   return { scratch, repo, origin };
 }
 
