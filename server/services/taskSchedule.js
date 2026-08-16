@@ -356,8 +356,13 @@ export const DEFAULT_TASK_INTERVALS = {
   //     `cleanupAgentWorktree`'s auto-merge into whatever the source repo's HEAD is on (clobbering a TUI user's in-flight claim branch).
   //   * `openPR: false` — keeps the cos.js "openPR implies useWorktree" invariant from forcing useWorktree back on. The agent opens its own PR via `gh pr create`
   //     and merges via `gh pr merge`, so CoS doesn't need to.
+  // `claimFlow: true` is the lifecycle marker. It is deliberately separate from
+  // `openPR`: the former tells prompt/completion handling that the claim prompt
+  // owns push → PR/MR → review → merge/cleanup, while the latter tells CoS whether
+  // it should provision and publish a managed worktree. Conflating them sent
+  // claim agents into the generic commit-only handoff (#4153).
   // The agent runs in the source repo's working directory; `git worktree add` doesn't touch that working tree, so it's safe even with uncommitted user changes.
-  'plan-task':           { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true } },
+  'plan-task':           { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true } },
   // claim-issue drives the /claim --issues flow — the agent creates its OWN
   // claim/issue-<num> worktree, opens the PR (Closes #<num>), merges via
   // `gh pr merge`, and cleans up. Both `useWorktree` and `openPR` are OFF on the
@@ -370,7 +375,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // access (GitHub collaborators / GitLab project members); 'owner' only claims
   // issues the repo owner filed; 'any' claims any open issue. Per-app override
   // supported via taskTypeOverrides.
-  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true, issueAuthorFilter: 'self' } },
+  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
   // claim-work is the SINGLE-SOURCE router: one toggle per app that ships the
   // next work item from whatever tracker the app is configured for
   // (app.workTracker, default 'auto' → resolved from the git origin host). At
@@ -384,7 +389,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // hide the claim slug and trigger cleanupAgentWorktree's auto-merge).
   // `issueAuthorFilter` applies only when the resolved tracker is a forge
   // (github/gitlab); it's inert for plan/jira.
-  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true, issueAuthorFilter: 'self' } },
+  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
   'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
   'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
   'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null },
@@ -455,7 +460,7 @@ export const DEFAULT_TASK_INTERVALS = {
 // (e.g., plan-task's prompt creates its own claim/<slug> worktree, so a
 // CoS-managed worktree would clobber it).
 export const MANAGED_AGENT_OPTIONS = {
-  'plan-task': ['useWorktree', 'openPR'],
+  'plan-task': ['useWorktree', 'openPR', 'claimFlow'],
   // The non-committing coordinators (NON_COMMITTING_COORDINATOR_METADATA above) all
   // run in the app's LIVE checkout and ship no code, so a CoS-managed worktree is at
   // best unused and at worst harmful — branch-reconcile needs to see the sibling
@@ -478,10 +483,10 @@ export const MANAGED_AGENT_OPTIONS = {
   ),
   // claim-issue's prompt creates its own claim/issue-<num> worktree (same
   // rationale as plan-task), so CoS must not pre-create one or open the PR.
-  'claim-issue': ['useWorktree', 'openPR'],
+  'claim-issue': ['useWorktree', 'openPR', 'claimFlow'],
   // claim-work delegates to one of the above prompt bodies, each of which
   // creates its own worktree + PR — so the same lock applies to the router.
-  'claim-work': ['useWorktree', 'openPR'],
+  'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
   // ux's deliverable is tracker issues, not code — it never edits source, so a
   // worktree/PR would only produce an empty branch. Lock both off.
   'ux': ['useWorktree', 'openPR']

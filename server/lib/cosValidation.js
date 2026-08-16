@@ -1395,7 +1395,7 @@ export const MAX_TOTAL_SPAWNS = 5;
 // override can disable an individual rectification behavior and survive
 // sanitizeTaskMetadata.
 const ALLOWED_TASK_METADATA_KEYS = [
-  ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly',
+  ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly', 'claimFlow',
   'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'finishAbandoned', 'autoClose',
   // Throwaway-worktree posture for programmatic-I/O reasoning tasks (layered-
   // intelligence): the worktree is discarded without a merge or PR so a reasoning
@@ -1486,7 +1486,8 @@ export const resumeCosAgentSchema = createCosTaskSchema
 
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags
- * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`reviewerApplies`)
+ * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`claimFlow`/
+ * `reviewerApplies`)
  * are kept only when actually boolean; constrained values include `prCompletion`,
  * reviewers, reviewer usernames, and `reviewStopMode` — plus a validated pipeline
  * object. Prevents prototype pollution and reserved-field overrides.

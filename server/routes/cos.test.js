@@ -1091,6 +1091,7 @@ describe('CoS Routes', () => {
       // prompt builder append the whole /do:next body on top of the claim prompt).
       expect(taskData.slashdoCommand).toBeUndefined();
       expect(taskData.description).not.toContain('/do:');
+      expect(taskData.claimFlow).toBe(true);
     });
 
     // `next` is commit-shaped in the catalog, but the claim flow resolves the
@@ -1299,6 +1300,7 @@ describe('CoS Routes', () => {
       // claim-issue-jira self-manages its worktree + PR.
       expect(taskData.useWorktree).toBe(false);
       expect(taskData.openPR).toBe(false);
+      expect(taskData.claimFlow).toBe(true);
     });
 
     it('uppercases the ticket key', async () => {

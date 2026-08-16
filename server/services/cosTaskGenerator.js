@@ -47,6 +47,14 @@ import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js
 import { PATHS } from '../lib/fileUtils.js';
 import { shellQuote } from '../lib/shellQuote.js';
 
+// Claim prompts create and manage their own claim/<item> worktree and
+// push/PR/MR/review lifecycle. This marker is separate from `openPR: false`,
+// which is the CoS provisioning posture that prevents a nested worktree. Keep
+// the type list here as a backstop for old schedules that predate claimFlow.
+const CLAIM_FLOW_TASK_TYPES = new Set([
+  'plan-task', 'claim-issue', 'claim-issue-gitlab', 'claim-issue-jira', 'claim-work'
+]);
+
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
  */
@@ -397,8 +405,10 @@ export function resolveClaimAuthorFilter(explicit, metadata) {
  * the scheduled `claim-work` router below. Resolves the tracker, delegates to the
  * matching claim prompt body (plan-task / claim-issue / claim-issue-gitlab /
  * claim-issue-jira), substitutes the standard placeholders, and surfaces the
- * delegated flow's worktree/PR posture (all four claim prompts self-manage their
- * own worktree + MR/PR, so the self-managed false/false posture is correct).
+ * delegated flow's worktree/PR posture. `claimFlow` separately marks that the
+ * prompt owns its worktree + MR/PR lifecycle; false/false remains the correct
+ * CoS provisioning posture because a nested CoS worktree would conflict with
+ * the claim branch.
  *
  * `issueAuthorFilter` and the reviewer options default to the app's *configured*
  * `claim-work` behavior (global schedule metadata → per-app override → Code
@@ -504,7 +514,7 @@ export async function buildClaimWorkTask(app, {
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
   const delegatedMeta = taskSchedule.DEFAULT_TASK_INTERVALS[promptTaskType]?.taskMetadata || {};
-  const taskMetadata = {};
+  const taskMetadata = { claimFlow: true };
   if ('useWorktree' in delegatedMeta) taskMetadata.useWorktree = delegatedMeta.useWorktree;
   if ('openPR' in delegatedMeta) taskMetadata.openPR = delegatedMeta.openPR;
 
@@ -736,10 +746,11 @@ const appendLocalReviewerInstructions = (promptTaskType, reviewers, reviewerMode
  * a target-ticket constraint that pins the agent to `ticketKey` while keeping
  * every claim safety check. `ticketKey` is normalized to upper-case (`PROJ-1234`).
  *
- * claim-issue-jira self-manages its worktree + MR/PR, so `taskMetadata` stays
- * `false/false` (matching the `/do:next` slashdo default for the JIRA tracker).
+ * claim-issue-jira self-manages its worktree + MR/PR. `claimFlow` records that
+ * lifecycle ownership while `useWorktree/openPR` stay `false/false` so CoS does
+ * not provision a nested worktree.
  *
- * @returns {Promise<{ ticketKey: string, prompt: string, taskMetadata: { useWorktree: boolean, openPR: boolean } }>}
+ * @returns {Promise<{ ticketKey: string, prompt: string, taskMetadata: { useWorktree: boolean, openPR: boolean, claimFlow: boolean } }>}
  */
 export async function buildJiraTicketTask(app, ticketKey) {
   const { getTaskPrompt } = await import('./taskPromptService.js');
@@ -764,7 +775,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
     + effortBlock
     + localReviewerBlock;
 
-  return { ticketKey: key, prompt, taskMetadata: { useWorktree: false, openPR: false } };
+  return { ticketKey: key, prompt, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true } };
 }
 
 /**
@@ -2235,6 +2246,14 @@ async function buildImprovementTaskMetadata(taskType, app, interval, taskSchedul
   if (sanitizedAppMeta) {
     Object.assign(metadata, sanitizedAppMeta);
   }
+
+  // Derive the marker from the task type as well as the shipped schedule
+  // metadata. This keeps pre-migration/custom schedule records from losing the
+  // claim-owned lifecycle when they still carry the legacy false/false flags.
+  // Do this after schedule and app overrides so the claim contract cannot be
+  // disabled by stale or malformed metadata.
+  if (CLAIM_FLOW_TASK_TYPES.has(taskType)) metadata.claimFlow = true;
+
   return metadata;
 }
 
@@ -2281,6 +2300,7 @@ export async function resolveTaskInputHook(app, taskType, taskSchedule, { ignore
  */
 async function resolveClaimWorkRouting(app, taskType, metadata, taskSchedule) {
   if (taskType !== 'claim-work') return taskType;
+  metadata.claimFlow = true;
   const { resolveAppWorkTracker, trackerToClaimTaskType } = await import('../lib/workTracker.js');
   const wt = await resolveAppWorkTracker(app);
   const promptTaskType = trackerToClaimTaskType(wt.resolved) || 'plan-task';
