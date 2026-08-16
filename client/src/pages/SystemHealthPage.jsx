@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router';
-import { Activity, AlertTriangle, CheckCircle, XCircle, HardDrive, Cpu, Database, ServerCog, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, XCircle, HardDrive, Cpu, Database, ServerCog, Zap, RefreshCw } from 'lucide-react';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
 import PageSkeleton from '../components/ui/PageSkeleton';
@@ -49,6 +49,7 @@ function barTone(pct, warn, critical) {
 export default function SystemHealthPage() {
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   // Tracks whether the user has acquired an editable draft. Cleared after a
   // successful save so the next refetch re-seeds with the persisted thresholds.
   const draftSeededRef = useRef(false);
@@ -57,6 +58,13 @@ export default function SystemHealthPage() {
     () => api.getSystemHealth({ silent: true }),
     15_000,
   );
+
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  };
 
   // Seed the editable draft from server state on first load and after each save.
   useEffect(() => {
@@ -77,7 +85,7 @@ export default function SystemHealthPage() {
     if (result) {
       toast.success('Thresholds saved');
       draftSeededRef.current = false;
-      refetch();
+      await handleRefresh();
     }
   };
 
@@ -120,16 +128,29 @@ export default function SystemHealthPage() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <ServerCog size={20} />
             System Health
           </h2>
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border border-current/20 ${style.color} ${style.bg}`}>
-            <StatusIcon size={16} />
-            <span className="font-semibold">{style.label}</span>
-            <span className="text-gray-500">·</span>
-            <span className="text-gray-400 text-sm">{health.system.uptimeFormatted}</span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-port-border bg-port-card px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              title="Refresh system health"
+              aria-label={refreshing ? 'Refreshing system health' : 'Refresh system health'}
+            >
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} aria-hidden="true" />
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border border-current/20 ${style.color} ${style.bg}`}>
+              <StatusIcon size={16} />
+              <span className="font-semibold">{style.label}</span>
+              <span className="text-gray-500">·</span>
+              <span className="text-gray-400 text-sm">{health.system.uptimeFormatted}</span>
+            </div>
           </div>
         </div>
 
