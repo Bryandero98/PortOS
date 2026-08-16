@@ -363,7 +363,7 @@ max_memory_restart: '500M'
 **Symptom**: Frontend changes require manual refresh.
 
 **Solution**:
-- Check Vite is running: `pm2 logs portos-client`
+- Check Vite is running: `pm2 logs portos-ui`
 - Ensure file watchers aren't exhausted: `fs.inotify.max_user_watches`
 
 ### Tests Failing
@@ -374,7 +374,7 @@ cd server
 npm test
 
 # For specific test file
-npm test -- taskParser.test.js
+npm test -- lib/taskParser.test.js
 
 # Watch mode for development
 npm run test:watch

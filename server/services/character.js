@@ -15,7 +15,7 @@
 
 import crypto from 'crypto';
 import path from 'path';
-import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, readJSONFile, PATHS, sleep } from '../lib/fileUtils.js';
 import * as jiraService from './jira.js';
 import * as cosService from './cos.js';
 import { getBirthDateStrict } from './meatspace.js';
@@ -376,8 +376,6 @@ export async function addEvent(event) {
   return { character: saved, event: logEntry, leveledUp: false };
 }
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
-
 export async function syncJiraXP() {
   const character = await loadRawCharacter();
   const config = await jiraService.getInstances();
@@ -395,7 +393,7 @@ export async function syncJiraXP() {
     }
 
     for (let i = 0; i < projects.length; i++) {
-      if (i > 0) await delay(500); // Rate-limit JIRA API calls
+      if (i > 0) await sleep(500); // Rate-limit JIRA API calls
       const project = projects[i];
       let tickets;
       try {

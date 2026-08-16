@@ -15,8 +15,7 @@ import { z } from 'zod';
 export const MUSIC_VIDEO_MODES = ['director', 'autonomous'];
 
 // Lifecycle. `draft` → has scenes/analysis → `ready` → `rendering` → `complete`
-// (or `failed`). `analyzed` marks "beat map cached but not yet arranged". The
-// render states land with Phase 2; Phase 1 only reaches up to `ready`.
+// (or `failed`). `analyzed` marks "beat map cached but not yet arranged".
 export const MUSIC_VIDEO_STATUSES = ['draft', 'analyzed', 'ready', 'rendering', 'complete', 'failed'];
 
 // Optional global visual direction for the whole video.

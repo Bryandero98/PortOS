@@ -19,7 +19,7 @@ Building a native companion client? See [COMPANION_APP_API.md](./COMPANION_APP_A
 PortOS is designed for personal/developer use on trusted networks. It implements the following security measures:
 
 - **Network isolation**: By default, access should be restricted to trusted networks (e.g., Tailscale VPN, localhost)
-- **Command allowlist**: Shell command execution is restricted to an approved allowlist (see `server/lib/commandAllowlist.js`)
+- **Command allowlist**: Shell command execution is restricted to an approved allowlist (see `server/lib/commandSecurity.js`)
 - **Input validation**: All API inputs are validated using Zod schemas
 - **Opt-in authentication**: Off by default (trusting private network/Tailscale), PortOS supports opt-in instance password authentication (enforced by `server/lib/authGate.js`) gating `/api/*`, `/data/*`, and `/sdapi/*` via session cookies, Bearer tokens, or HTTP Basic credentials
 
@@ -536,6 +536,38 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/openclaw` | OpenClaw operator chat |
 | `/api/rounds` | Rounds (music + Morse training) |
 | `/api/ask` | Ask (LLM Q&A) |
+| `/api/quota-burn` | Quota-burn plan, catalog, and runs |
+| `/api/timeline` | Human-activity timeline (day + events) |
+| `/api/games` | Game projects |
+| `/api/sprites` | Sprite catalog / export |
+| `/api/threejs-models` | Procedural Three.js models |
+| `/api/image-to-3d` | Image-to-3D conversion |
+| `/api/privacy` | PII vault / trusted-org / broker opt-out |
+| `/api/shell` | Browser PTY shells |
+| `/api/workspace-contexts` | Per-app workspace save/restore |
+| `/api/ports` | Port scan / allocation |
+| `/api/logs` | PM2 process logs |
+| `/api/detect` | App-repo detection |
+| `/api/scaffold` | App scaffolding |
+| `/api/usage` | Provider usage / quota |
+| `/api/daily-driver` | Daily-driver snapshot |
+| `/api/media/sketches` | Media annotation sketches |
+| `/api/attachments` | Task / CoS file attachments |
+| `/api/autofix` | Autofixer metrics |
+| `/api/uploads` | Generic uploads |
+| `/api/agents` | Agent process management (personalities, accounts, schedules, activity, tools) |
+| `/api/cos` | Chief of Staff |
+| `/api/memory` | Memory CRUD / search |
+| `/api/brain` | Brain (second brain) |
+| `/api/media` | Media library |
+| `/api/imessage`, `/api/contacts`, `/api/signal`, `/api/spotify`, `/api/youtube` | Personal-data ingest |
+| `/api/notifications` | Notification stream |
+| `/api/standardize` | App PM2 standardizer |
+| `/api/stacker-news`, `/api/x` | Social integrations |
+| `/api/model-personality` | LLM personality tests |
+| `/api/browser` | Managed Chromium |
+| `/api/creative-commission` | Creative commissions |
+| `/api/midi-runtime` | MIDI runtime |
 
 ## WebSocket Events
 

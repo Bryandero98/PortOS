@@ -11,15 +11,13 @@ import { randomUUID } from 'crypto';
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
-import { PATHS } from './fileUtils.js';
+import { PATHS, sleep } from './fileUtils.js';
 
 export const HEAVY_LOCAL_JOB_CLAIM_PATH = join(PATHS.data, 'heavy-local-job.claim.json');
 export const HEAVY_LOCAL_JOB_STALE_MS = 24 * 60 * 60 * 1000;
 
 const heldClaims = new Map();
 let exitCleanupInstalled = false;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;

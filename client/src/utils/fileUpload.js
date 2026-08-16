@@ -42,9 +42,10 @@ export const ATTACHMENT_ACCEPT = [
 ].join(',');
 
 /**
- * Largest raw file the server can accept. Every helper here POSTs its payload
- * base64-encoded inside a JSON body, so the express body limit is the real
- * ceiling — advertising anything larger just produces an opaque 413.
+ * Largest raw file the upload endpoints can accept. Callers POST the payload
+ * base64-encoded inside a JSON body (see `apiMedia.js`), so the express body
+ * limit is the real ceiling — advertising anything larger just produces an
+ * opaque 413. This module itself does no I/O.
  *
  * Mirror of `MAX_BASE64_UPLOAD_BYTES` in `server/lib/uploadLimits.js`, which
  * owns the derivation and the rationale (the client can't import server

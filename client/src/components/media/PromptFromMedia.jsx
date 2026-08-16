@@ -11,6 +11,7 @@ import { FormField } from '../ui/FormField';
 import { promptFromMedia } from '../../services/apiMediaJobs';
 import { isVisionCapableCliProvider, visionLocalModelFilter } from '../../utils/providers';
 import { copyToClipboard } from '../../lib/clipboard';
+import { safeReadStorage, safeRemoveStorage, safeWriteStorage } from '../../lib/safeStorage';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 
@@ -72,9 +73,7 @@ export default function PromptFromMedia({
   const [videoPickerOpen, setVideoPickerOpen] = useState(false);
   const [wantImage, setWantImage] = useState(kindDefault !== 'video');
   const [wantVideo, setWantVideo] = useState(kindDefault !== 'image');
-  const [effort, setEffort] = useState(() => {
-    try { return localStorage.getItem(LS_KEY_EFFORT) || ''; } catch { return ''; }
-  });
+  const [effort, setEffort] = useState(() => safeReadStorage(LS_KEY_EFFORT) || '');
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const { idsByProvider: visionIds } = useVisionModelIds(isOpen);
@@ -100,14 +99,12 @@ export default function PromptFromMedia({
 
   useEffect(() => {
     if (providersLoading || !providers.length) return;
-    try {
-      const savedProvider = localStorage.getItem(LS_KEY_PROVIDER);
-      const savedModel = localStorage.getItem(LS_KEY_MODEL);
-      if (savedProvider && providers.some((p) => p.id === savedProvider)) {
-        setSelectedProviderId(savedProvider);
-        if (savedModel) setSelectedModel(savedModel);
-      }
-    } catch { /* ignore */ }
+    const savedProvider = safeReadStorage(LS_KEY_PROVIDER);
+    const savedModel = safeReadStorage(LS_KEY_MODEL);
+    if (savedProvider && providers.some((p) => p.id === savedProvider)) {
+      setSelectedProviderId(savedProvider);
+      if (savedModel) setSelectedModel(savedModel);
+    }
   }, [providers, providersLoading, setSelectedProviderId, setSelectedModel]);
 
   useEffect(() => {
@@ -117,12 +114,10 @@ export default function PromptFromMedia({
   }, [initialSource]);
 
   const persistProvider = (id) => {
-    try {
-      if (id) localStorage.setItem(LS_KEY_PROVIDER, id);
-      else localStorage.removeItem(LS_KEY_PROVIDER);
-      localStorage.removeItem(LS_KEY_MODEL);
-      localStorage.removeItem(LS_KEY_EFFORT);
-    } catch { /* ignore */ }
+    if (id) safeWriteStorage(LS_KEY_PROVIDER, id);
+    else safeRemoveStorage(LS_KEY_PROVIDER);
+    safeRemoveStorage(LS_KEY_MODEL);
+    safeRemoveStorage(LS_KEY_EFFORT);
   };
 
   const handleProviderChange = (id) => {
@@ -133,19 +128,15 @@ export default function PromptFromMedia({
 
   const handleModelChange = (model) => {
     setSelectedModel(model);
-    try {
-      if (selectedProviderId) localStorage.setItem(LS_KEY_PROVIDER, selectedProviderId);
-      if (model) localStorage.setItem(LS_KEY_MODEL, model);
-      else localStorage.removeItem(LS_KEY_MODEL);
-    } catch { /* ignore */ }
+    if (selectedProviderId) safeWriteStorage(LS_KEY_PROVIDER, selectedProviderId);
+    if (model) safeWriteStorage(LS_KEY_MODEL, model);
+    else safeRemoveStorage(LS_KEY_MODEL);
   };
 
   const handleEffortChange = (val) => {
     setEffort(val);
-    try {
-      if (val) localStorage.setItem(LS_KEY_EFFORT, val);
-      else localStorage.removeItem(LS_KEY_EFFORT);
-    } catch { /* ignore */ }
+    if (val) safeWriteStorage(LS_KEY_EFFORT, val);
+    else safeRemoveStorage(LS_KEY_EFFORT);
   };
 
   const targets = [
