@@ -1,0 +1,1 @@
+- Ollama-backed Claude agent runs no longer lose long responses at the default output token ceiling.
