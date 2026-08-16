@@ -1,7 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
+import { vitestCiPool } from '../scripts/vitestCiPool.js';
+
 export default defineConfig({
   test: {
+    ...vitestCiPool(),
     testTimeout: process.platform === 'win32' ? 30000 : 10000,
     // hookTimeout tracks testTimeout for the same reason: Windows fs + module
     // resolution is markedly slower, and vitest's 10s DEFAULT applies to hooks
