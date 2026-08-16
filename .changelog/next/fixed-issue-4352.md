@@ -1,0 +1,1 @@
+- Reject boolean aria-label expressions in the accessibility guard (#4352)
