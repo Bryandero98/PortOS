@@ -8,10 +8,9 @@
  * see `slashdoInvocation.js` for the sibling module covering invocation-style
  * resolution (how a workflow is TYPED per host CLI) rather than loading.
  */
-import { readFile } from 'fs/promises';
 import { createHash } from 'crypto';
 import { join } from 'path';
-import { atomicWrite, PATHS } from './fileUtils.js';
+import { atomicWrite, PATHS, tryReadFile } from './fileUtils.js';
 
 /**
  * The include name (`<name>` of `lib/<name>.md`) for a matched `!`cat`` directive,
@@ -43,7 +42,7 @@ async function resolveSlashdoIncludes(content, libDir, { skipInclude = null } = 
       if (skipInclude?.(name)) {
         return { pattern: match[0], content: `_(\`${name}\` omitted — not applicable to this run.)_` };
       }
-      const libContent = await readFile(join(libDir, match[1]), 'utf-8').catch(() => null);
+      const libContent = await tryReadFile(join(libDir, match[1]));
       return { pattern: match[0], content: libContent };
     }));
     let changed = false;
@@ -126,7 +125,7 @@ export async function loadSlashdoFile(commandName, { stripFrontmatter = false, s
   if (slashdoFileCache.has(cacheKey)) return slashdoFileCache.get(cacheKey);
 
   const cmdPath = join(PATHS.slashdo, 'commands/do', `${commandName}.md`);
-  let content = await readFile(cmdPath, 'utf-8').catch(() => null);
+  let content = await tryReadFile(cmdPath);
   if (!content) return null;
   if (stripFrontmatter) {
     content = content.replace(/^---[\s\S]*?---\s*/, '');
@@ -207,7 +206,7 @@ export async function loadSlashdoLib(libName, { teams = false } = {}) {
   if (slashdoLibCache.has(cacheKey)) return slashdoLibCache.get(cacheKey);
 
   const libDir = join(PATHS.slashdo, 'lib');
-  let content = await readFile(join(libDir, `${libName}.md`), 'utf-8').catch(() => null);
+  let content = await tryReadFile(join(libDir, `${libName}.md`));
   // Cache the MISS too. An install whose `lib/slashdo` submodule was never
   // initialized (`npm run install:all` is what fetches it) would otherwise
   // re-attempt the read on every spawn that asks — and since #3733 that is every

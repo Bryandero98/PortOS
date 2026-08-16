@@ -44,11 +44,16 @@ CI runs tests and linting. No version changes.
 git checkout main
 git pull
 
-# Make changes, commit, push
+# Make changes, then record a changelog fragment (do not edit NEXT.md by hand)
+npm run changelog:add -- fixed "Daily log no longer double-saves on blur."
+
+# Commit, push
 git add [changed files]
-git commit -m "fix: resolve issue"
+git commit -m "fix: daily log no longer double-saves on blur"
 git pull --rebase --autostash && git push
 ```
+
+See [`.changelog/README.md`](../.changelog/README.md) for the fragment convention.
 
 ### Creating a Release
 

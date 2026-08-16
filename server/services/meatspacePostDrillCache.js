@@ -10,7 +10,7 @@
 
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { atomicWrite, ensureDir, PATHS, safeJSONParse } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, PATHS, safeJSONParse, sleep } from '../lib/fileUtils.js';
 import { generateLlmDrill } from './meatspacePostLlm.js';
 
 const CACHE_FILE = join(PATHS.data, 'meatspace', 'post-drill-cache.json');
@@ -21,8 +21,6 @@ const MAX_PER_TYPE = 10;
 export const CACHEABLE_TYPES = [
   'compound-chain', 'bridge-word', 'double-meaning', 'idiom-twist',
 ];
-
-const delay = ms => new Promise(r => setTimeout(r, ms));
 
 let cache = {}; // { type: [drill, drill, ...] }
 let replenishing = new Map(); // type -> Promise (in-flight replenishment)
@@ -92,7 +90,7 @@ function replenishType(type, providerId, model) {
     let consecutiveFailures = 0;
     try {
       for (let i = 0; i < needed; i++) {
-        if (i > 0) await delay(2000); // avoid LLM rate limits
+        if (i > 0) await sleep(2000); // avoid LLM rate limits
         const drill = await generateLlmDrill(type, { count: 5 }, providerId, model).catch(err => {
           console.log(`⚠️ POST cache: failed to generate ${type}: ${err.message}`);
           return null;

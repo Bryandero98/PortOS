@@ -972,19 +972,6 @@ export function getDateString(date = new Date()) {
 }
 
 /**
- * Format a duration in milliseconds to a human-readable string.
- * Outputs the most appropriate unit (minutes, hours, days) based on size.
- *
- * @param {number} ms - Duration in milliseconds
- * @returns {string} Formatted duration (e.g., "5m", "2h 30m", "3d 5h")
- *
- * @example
- * formatDuration(30000)    // "0m"
- * formatDuration(300000)   // "5m"
- * formatDuration(7200000)  // "2h 0m"
- * formatDuration(90000000) // "1d 1h"
- */
-/**
  * UUID v4 regex pattern for validating account/entity IDs.
  */
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1035,6 +1022,19 @@ export function filterBySearch(items, search, fields) {
   );
 }
 
+/**
+ * Format a duration in milliseconds to a human-readable string.
+ * Outputs the most appropriate unit (minutes, hours, days) based on size.
+ *
+ * @param {number} ms - Duration in milliseconds
+ * @returns {string} Formatted duration (e.g., "5m", "2h 30m", "3d 5h")
+ *
+ * @example
+ * formatDuration(30000)    // "0m"
+ * formatDuration(300000)   // "5m"
+ * formatDuration(7200000)  // "2h 0m"
+ * formatDuration(90000000) // "1d 1h"
+ */
 export function formatDuration(ms) {
   if (!ms) return '0m';
   const mins = Math.floor(ms / 60000);

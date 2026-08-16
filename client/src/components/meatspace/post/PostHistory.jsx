@@ -9,6 +9,7 @@ import useChartColors from '../../../hooks/useChartColors.js';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import { todayKeyInTimezone, shiftDayKey } from '../../../utils/timezone.js';
 import { DRILL_TO_DOMAIN, DRILL_LABELS, domainLabel } from './constants';
+import { clickableProps } from '../../../lib/a11yKeyboard.js';
 
 const RANGES = [
   { label: '7d', days: 7 },
@@ -263,15 +264,9 @@ export default function PostHistory({ onBack }) {
               return (
                 <tr
                   key={s.id}
-                  role="button"
-                  tabIndex={0}
+                  {...clickableProps(open)}
                   aria-label={`Session ${s.date}, score ${s.score}. Open details.`}
                   onClick={open}
-                  onKeyDown={(e) => {
-                    if (e.key !== 'Enter' && e.key !== ' ') return;
-                    e.preventDefault();
-                    open();
-                  }}
                   className="border-b border-port-border/50 hover:bg-port-bg/50 cursor-pointer focus:outline-none focus:ring-2 focus:ring-port-accent focus:ring-inset"
                 >
                   <td className="px-4 py-2 text-gray-500">

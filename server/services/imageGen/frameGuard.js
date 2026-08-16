@@ -21,8 +21,9 @@
  * PNG lands, so each of them calls the gate from its own completion handler.
  */
 
-import { readFile, unlink } from 'fs/promises';
+import { unlink } from 'fs/promises';
 import { basename } from 'path';
+import { tryReadFile } from '../../lib/fileUtils.js';
 import { describeFrameStats, isDegenerateFrame } from '../../lib/imageFrameStats.js';
 import { describeDegenerateFrame } from './noImageReason.js';
 
@@ -34,7 +35,7 @@ export async function degenerateFrameReason(pngPath) {
   if (!pngPath) return null;
   // A missing file is not this gate's verdict to give — the providers already
   // have a "no image was written" path with far better narration.
-  const buffer = await readFile(pngPath).catch(() => null);
+  const buffer = await tryReadFile(pngPath, null);
   if (!buffer) return null;
   const stats = await describeFrameStats(buffer);
   if (!isDegenerateFrame(stats)) return null;

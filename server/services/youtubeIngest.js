@@ -42,7 +42,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { ServerError } from '../lib/errorHandler.js';
-import { atomicWrite, ensureDir, PATHS, readJSONFile, shortId } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, PATHS, readJSONFile, shortId, tryReadFile } from '../lib/fileUtils.js';
 import { findFfmpeg } from '../lib/ffmpeg.js';
 import { findYtDlp } from '../lib/ytdlp.js';
 import { killWithEscalation } from '../lib/killWithEscalation.js';
@@ -216,7 +216,7 @@ export async function getIngest(videoId) {
 export async function getTranscript(videoId) {
   const record = await getIngest(videoId);
   if (!record?.transcript?.path) return null;
-  return readFile(record.transcript.path, 'utf-8').catch(() => null);
+  return tryReadFile(record.transcript.path);
 }
 
 /**

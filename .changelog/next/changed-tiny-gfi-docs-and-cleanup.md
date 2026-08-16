@@ -1,0 +1,1 @@
+- Documented changelog:add, fixed stale docs pointers, and collapsed a handful of duplicated helpers.

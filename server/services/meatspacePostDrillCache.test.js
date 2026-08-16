@@ -13,6 +13,7 @@ vi.mock('../lib/fileUtils.js', () => ({
   safeJSONParse: (str, defaultValue) => {
     try { return JSON.parse(str); } catch { return defaultValue; }
   },
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }));
 
 vi.mock('./meatspacePostLlm.js', () => ({
