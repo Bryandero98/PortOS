@@ -1563,79 +1563,81 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   }
   const releaseHeavyClaim = () => heavyClaim.release()
     .catch((err) => console.error(`❌ Video generation claim release [${jobId.slice(0, 8)}]: ${err.message}`));
-  const memoryReport = await prepareLocalMemory();
-  if (memoryReport.unloaded.length) console.log(`🧹 Video generation [${jobId.slice(0, 8)}] freed ${memoryReport.unloaded.length} resident model(s)`);
-
-  // History-calibrated wall-clock estimate (#3801). `null` when this install
-  // has never measured a render on this model — an explicit "no estimate"
-  // sentinel the UI must render as "unknown", never as 0 or a guess. Stamped
-  // on the job so every progress frame can carry it alongside step progress.
-  const etaEstimate = estimateRenderMs({
-    history: await loadHistory(),
-    modelId,
-    width: w,
-    height: h,
-    numFrames: parsedNumFrames,
-    steps: actualSteps,
-  });
-  job.etaMs = etaEstimate ? etaEstimate.etaMs : null;
-  const etaFields = etaEstimate
-    ? { etaMs: etaEstimate.etaMs, etaBasis: etaEstimate.basis, etaSampleCount: etaEstimate.sampleCount }
-    : { etaMs: null };
-  job.renderStartedAtMs = Date.now();
-
-  console.log(`🎬 Generating video [${jobId.slice(0, 8)}]: ${modelId} ${w}x${h} frames=${parsedNumFrames} steps=${actualSteps} eta=${etaEstimate ? `${Math.round(etaEstimate.etaMs / 1000)}s (${etaEstimate.basis}, n=${etaEstimate.sampleCount})` : 'unknown'}`);
-  videoGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps, ...meta, ...etaFields });
-
-  // Clear PYTHONPATH so the child uses the venv's own site-packages instead
-  // of the parent shell's PYTHONPATH. Setting to `undefined` in a spread does
-  // NOT unset the var — Node coerces it to the literal string "undefined" —
-  // so build the env explicitly and `delete`.
-  // Build the complete HF child env so the Wan 2.2 / HunyuanVideo
-  // python helpers can authenticate snapshot_download() against gated repos
-  // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
-  // a gated repo, but the merge is harmless when no token is configured.
-  const childEnv = runtimeIsCacheOnly(model.runtime)
-    ? safeChildProcessEnv()
-    : await hfChildEnv();
-  delete childEnv.PYTHONPATH;
-  // Force unbuffered Python I/O so tqdm + loguru + our own STAGE: prints flush
-  // immediately. Without this, child stdio is line-buffered against a pipe and
-  // long inference loops emit nothing to handleLine() for minutes — the UI
-  // looks dead even when the model is making progress.
-  childEnv.PYTHONUNBUFFERED = '1';
-  if (runtimeIsCacheOnly(model.runtime)) {
-    // A cache-only runner never reaches the network. Do not hand it an ambient
-    // saved HF credential it neither needs nor may transmit.
-    delete childEnv.HF_TOKEN;
-    delete childEnv.HUGGING_FACE_HUB_TOKEN;
-    childEnv.HF_HUB_DISABLE_IMPLICIT_TOKEN = '1';
-    childEnv.HF_HUB_OFFLINE = '1';
-    childEnv.TRANSFORMERS_OFFLINE = '1';
-  }
-  // `spawnDetached` double-forks the render child so it reparents to init
-  // (PPID=1) and leaves pm2's process tree — without this a `pm2 restart
-  // portos-server` (e.g. on the memory ceiling) SIGINTs the in-flight render
-  // mid-inference, since pm2's TreeKill walks PPIDs. (This child previously had
-  // no detach at all, so it was fully exposed.) Output streams through on-disk
-  // log files under `data/videos/.detached/<jobId>` that the server tails; we
-  // still `proc.kill()` it directly by PID on cancel / watchdog. `cleanup: true`
-  // lets the helper drop that scratch dir on every terminal path (close/error)
-  // so it can't accumulate under data/videos.
   let proc;
+  let claimHandedOff = false;
   try {
+    const memoryReport = await prepareLocalMemory();
+    if (memoryReport.unloaded.length) console.log(`🧹 Video generation [${jobId.slice(0, 8)}] freed ${memoryReport.unloaded.length} resident model(s)`);
+
+    // History-calibrated wall-clock estimate (#3801). `null` when this install
+    // has never measured a render on this model — an explicit "no estimate"
+    // sentinel the UI must render as "unknown", never as 0 or a guess. Stamped
+    // on the job so every progress frame can carry it alongside step progress.
+    const etaEstimate = estimateRenderMs({
+      history: await loadHistory(),
+      modelId,
+      width: w,
+      height: h,
+      numFrames: parsedNumFrames,
+      steps: actualSteps,
+    });
+    job.etaMs = etaEstimate ? etaEstimate.etaMs : null;
+    const etaFields = etaEstimate
+      ? { etaMs: etaEstimate.etaMs, etaBasis: etaEstimate.basis, etaSampleCount: etaEstimate.sampleCount }
+      : { etaMs: null };
+    job.renderStartedAtMs = Date.now();
+
+    console.log(`🎬 Generating video [${jobId.slice(0, 8)}]: ${modelId} ${w}x${h} frames=${parsedNumFrames} steps=${actualSteps} eta=${etaEstimate ? `${Math.round(etaEstimate.etaMs / 1000)}s (${etaEstimate.basis}, n=${etaEstimate.sampleCount})` : 'unknown'}`);
+    videoGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps, ...meta, ...etaFields });
+
+    // Clear PYTHONPATH so the child uses the venv's own site-packages instead
+    // of the parent shell's PYTHONPATH. Setting to `undefined` in a spread does
+    // NOT unset the var — Node coerces it to the literal string "undefined" —
+    // so build the env explicitly and `delete`.
+    // Build the complete HF child env so the Wan 2.2 / HunyuanVideo
+    // python helpers can authenticate snapshot_download() against gated repos
+    // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
+    // a gated repo, but the merge is harmless when no token is configured.
+    const childEnv = runtimeIsCacheOnly(model.runtime)
+      ? safeChildProcessEnv()
+      : await hfChildEnv();
+    delete childEnv.PYTHONPATH;
+    // Force unbuffered Python I/O so tqdm + loguru + our own STAGE: prints flush
+    // immediately. Without this, child stdio is line-buffered against a pipe and
+    // long inference loops emit nothing to handleLine() for minutes — the UI
+    // looks dead even when the model is making progress.
+    childEnv.PYTHONUNBUFFERED = '1';
+    if (runtimeIsCacheOnly(model.runtime)) {
+      // A cache-only runner never reaches the network. Do not hand it an ambient
+      // saved HF credential it neither needs nor may transmit.
+      delete childEnv.HF_TOKEN;
+      delete childEnv.HUGGING_FACE_HUB_TOKEN;
+      childEnv.HF_HUB_DISABLE_IMPLICIT_TOKEN = '1';
+      childEnv.HF_HUB_OFFLINE = '1';
+      childEnv.TRANSFORMERS_OFFLINE = '1';
+    }
+    // `spawnDetached` double-forks the render child so it reparents to init
+    // (PPID=1) and leaves pm2's process tree — without this a `pm2 restart
+    // portos-server` (e.g. on the memory ceiling) SIGINTs the in-flight render
+    // mid-inference, since pm2's TreeKill walks PPIDs. (This child previously had
+    // no detach at all, so it was fully exposed.) Output streams through on-disk
+    // log files under `data/videos/.detached/<jobId>` that the server tails; we
+    // still `proc.kill()` it directly by PID on cancel / watchdog. `cleanup: true`
+    // lets the helper drop that scratch dir on every terminal path (close/error)
+    // so it can't accumulate under data/videos.
     proc = await spawnDetached(bin, args, {
       env: childEnv,
       controlDir: join(PATHS.videos, '.detached', jobId),
       cleanup: true,
       killProcessGroup: runtimeNeedsProcessGroupKill(model.runtime),
     });
+    activeProcess = proc;
+    await heavyClaim.handoffTo?.(proc.pid);
+    claimHandedOff = true;
   } catch (err) {
-    await releaseHeavyClaim();
+    if (!claimHandedOff) await releaseHeavyClaim();
     throw err;
   }
-  activeProcess = proc;
-  await heavyClaim.handoffTo?.(proc.pid);
 
   // Panel-side completion watchdog. Armed once we see the render's completion
   // marker on stdout; SIGKILLs the child if it hasn't exited after the grace

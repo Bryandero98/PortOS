@@ -553,16 +553,24 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   }
   const releaseHeavyClaim = () => heavyClaim.release()
     .catch((err) => console.error(`❌ Image generation claim release [${jobId.slice(0, 8)}]: ${err.message}`));
-  const memoryReport = await prepareLocalMemory();
-  if (memoryReport.unloaded.length) console.log(`🧹 Image generation [${jobId.slice(0, 8)}] freed ${memoryReport.unloaded.length} resident model(s)`);
+  let proc;
+  let claimHandedOff = false;
+  try {
+    const memoryReport = await prepareLocalMemory();
+    if (memoryReport.unloaded.length) console.log(`🧹 Image generation [${jobId.slice(0, 8)}] freed ${memoryReport.unloaded.length} resident model(s)`);
 
-  console.log(`🎨 Generating image [${jobId.slice(0, 8)}] local: ${modelId} ${width}x${height} steps=${actualSteps}`);
-  imageGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps });
-  activeJob = { ...meta, generationId: jobId, totalSteps: actualSteps, step: 0, progress: 0, currentImage: null, mode: IMAGE_GEN_MODE.LOCAL };
+    console.log(`🎨 Generating image [${jobId.slice(0, 8)}] local: ${modelId} ${width}x${height} steps=${actualSteps}`);
+    imageGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps });
+    activeJob = { ...meta, generationId: jobId, totalSteps: actualSteps, step: 0, progress: 0, currentImage: null, mode: IMAGE_GEN_MODE.LOCAL };
 
-  const proc = spawn(bin, args, safeChildProcessOptions({ env: await hfChildEnv(), stdio: ['ignore', 'pipe', 'pipe'] }));
-  activeProcess = proc;
-  await heavyClaim.handoffTo?.(proc.pid);
+    proc = spawn(bin, args, safeChildProcessOptions({ env: await hfChildEnv(), stdio: ['ignore', 'pipe', 'pipe'] }));
+    activeProcess = proc;
+    await heavyClaim.handoffTo?.(proc.pid);
+    claimHandedOff = true;
+  } catch (err) {
+    if (!claimHandedOff) await releaseHeavyClaim();
+    throw err;
+  }
   // Spawn ENOENT (missing/non-executable pythonPath) fires BOTH 'error' and
   // 'close' on Node — without this guard, a typo'd pythonPath emits two
   // 'failed' events to imageGenEvents and two SSE error frames to the

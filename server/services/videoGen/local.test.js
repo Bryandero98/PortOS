@@ -10,12 +10,15 @@ import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
 
-const { heavyClaimRelease } = vi.hoisted(() => ({ heavyClaimRelease: vi.fn(async () => {}) }));
+const { heavyClaimRelease, mockPrepareLocalMemory } = vi.hoisted(() => ({
+  heavyClaimRelease: vi.fn(async () => {}),
+  mockPrepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
+}));
 vi.mock('../../lib/heavyJobClaim.js', () => ({
   claimHeavyLocalJob: vi.fn(async () => ({ ok: true, holder: {}, release: heavyClaimRelease })),
 }));
 vi.mock('../../lib/localMemory.js', () => ({
-  prepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
+  prepareLocalMemory: mockPrepareLocalMemory,
 }));
 
 // ─── dep mocks (must be declared before the module import) ───────────────────
@@ -2089,6 +2092,23 @@ describe('generateVideo — LoRA history-record contract (Remix round-trip)', ()
     expect(startedMeta.loraFilenames).toEqual(['a.safetensors', 'b.safetensors']);
     expect(startedMeta.loraScales).toEqual([0.7, 1.0]);
     expect(startedMeta.loras).toBeUndefined();
+  });
+});
+
+describe('generateVideo — heavy claim setup cleanup (#4364)', () => {
+  it('releases the claim when local setup fails before spawn', async () => {
+    mockPrepareLocalMemory.mockRejectedValueOnce(new Error('memory setup failed'));
+
+    await expect(generateVideo({
+      jobId: 'claim-setup-failure',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+    })).rejects.toThrow('memory setup failed');
+
+    expect(heavyClaimRelease).toHaveBeenCalledTimes(1);
   });
 });
 
