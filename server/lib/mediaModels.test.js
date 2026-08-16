@@ -1254,6 +1254,16 @@ describe('video bucket selection is an MLX/CUDA axis, not an OS one', () => {
     return { ids: getVideoModels().map((m) => m.id), defaultId: getDefaultVideoModelId() };
   };
 
+  it('routes Linux’s shipped default through the CUDA helper runtime', async () => {
+    asPlatform('linux');
+    const { getDefaultVideoModelId, getVideoModels } = await import('./mediaModels.js');
+    const { routesToWindowsHelper } = await import('../services/videoGen/runtimes.js');
+    const model = getVideoModels().find((entry) => entry.id === getDefaultVideoModelId());
+
+    expect(model).toMatchObject({ id: 'ltx_video', runtime: 'cuda_video' });
+    expect(routesToWindowsHelper(model)).toBe(true);
+  });
+
   for (const [shape, registry] of [['canonical mlx/cuda keys', CANONICAL], ['legacy macos/windows keys', LEGACY]]) {
     describe(shape, () => {
       it('serves the MLX list on darwin', async () => {

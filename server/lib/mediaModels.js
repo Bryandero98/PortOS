@@ -487,7 +487,7 @@ const DEFAULT_REGISTRY = {
       },
     ])),
     cuda: applyVideoFinishProfiles(applyVideoDisclosures([
-      { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
+      { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'cuda_video', steps: 25, guidance: 3.0 },
       // MiniMax H3 on NVIDIA, through diffusers' MiniMaxH3ModularPipeline —
       // the same joint video+audio model the MLX list runs on Apple Silicon, so it
       // shares H3's canvas grid, its fixed 24 fps, its locked CFG-distilled
@@ -883,7 +883,7 @@ const appendNewlyShippedEntries = (userList, defaultList, shippedIds) => {
 // 'ltx2_unified' is retired (see RETIRED_VIDEO_MODELS) but stays here: an
 // install that re-pointed its entry at a fork keeps that entry, and it still
 // needs the runtime backfill.
-const LEGACY_MLX_VIDEO_IDS = new Set(['ltx2_unified', 'ltx23_unified', 'ltx23_distilled_q4', 'ltx_video']);
+const LEGACY_MLX_VIDEO_IDS = new Set(['ltx2_unified', 'ltx23_unified', 'ltx23_distilled_q4']);
 const backfillRuntime = (list) => {
   if (!Array.isArray(list)) return list;
   return list.map((entry) => {
@@ -892,6 +892,22 @@ const backfillRuntime = (list) => {
     if (LEGACY_MLX_VIDEO_IDS.has(entry.id)) return { ...entry, runtime: 'mlx_video' };
     return entry;
   });
+};
+
+// `ltx_video` is the legacy diffusers CUDA helper, not an MLX runtime. It
+// shipped in the CUDA bucket before the bucket names made that mismatch
+// obvious, so correct an untouched persisted entry during the same early load
+// that still precedes migrations. A custom repo is deliberately left alone.
+const upgradeLegacyCudaLtxRuntime = (list) => {
+  if (!Array.isArray(list)) return list;
+  return list.map((entry) => (
+    isPlainObject(entry)
+      && entry.id === 'ltx_video'
+      && entry.runtime === 'mlx_video'
+      && entry.repo === undefined
+      ? { ...entry, runtime: 'cuda_video' }
+      : entry
+  ));
 };
 
 // Built-in video models that were delivered to installs and have since been
@@ -1045,11 +1061,15 @@ const normalizeRegistry = (parsed) => {
   // after the user's own entries are merged in) so an edge that points at a
   // model this install deleted — or a hand-edited typo — is dropped with a
   // warning instead of surfacing a Finish button targeting nothing.
-  const videoEntries = (entries) => sanitizeFinishProfiles(applyVideoFinishProfiles(
-    applyVideoDisclosures(backfillRuntime(upgradeMiniMaxH3OutputControls(dropRetiredEntries(entries)))),
-  ));
+  const videoEntries = (entries, { upgradeLegacyCudaLtx = false } = {}) => {
+    const normalized = backfillRuntime(upgradeMiniMaxH3OutputControls(dropRetiredEntries(entries)));
+    const upgraded = upgradeLegacyCudaLtx ? upgradeLegacyCudaLtxRuntime(normalized) : normalized;
+    return sanitizeFinishProfiles(applyVideoFinishProfiles(applyVideoDisclosures(upgraded)));
+  };
   const normalizedBuckets = Object.fromEntries(
-    VIDEO_BUCKETS.map((bucket) => [bucket, videoEntries(bucketResults[bucket].entries)]),
+    VIDEO_BUCKETS.map((bucket) => [bucket, videoEntries(bucketResults[bucket].entries, {
+      upgradeLegacyCudaLtx: bucket === 'cuda',
+    })]),
   );
 
   // Spread the user's own `video` keys but NOT the legacy bucket spellings: the

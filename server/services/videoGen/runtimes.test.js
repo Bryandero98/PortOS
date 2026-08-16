@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { pinPlatform } from '../../lib/testHelper.js';
 
 const runtimeMocks = vi.hoisted(() => ({
   existsSync: vi.fn(() => true),
@@ -23,6 +24,7 @@ import {
   byovRuntimeLoraCapable, invalidateByovLoraCapabilityCache, invalidateByovReadyCache,
   isByovRuntimeReady, isPinnedSourceStatusClean, modelAnchorsLastFrame,
   resolveByovRuntimeLoraCapable, runtimeIsCacheOnly, runtimeNeedsProcessGroupKill,
+  routesToWindowsHelper,
 } from './runtimes.js';
 
 const REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
@@ -167,6 +169,36 @@ describe('modelAnchorsLastFrame', () => {
   it('treats a missing model or runtime as not anchored', () => {
     expect(modelAnchorsLastFrame(null)).toBe(false);
     expect(modelAnchorsLastFrame({})).toBe(false);
+  });
+});
+
+describe('routesToWindowsHelper', () => {
+  it.each(['win32', 'linux'])('routes legacy CUDA video through the helper on %s', (platform) => {
+    const restorePlatform = pinPlatform(platform);
+    try {
+      expect(routesToWindowsHelper({ runtime: 'cuda_video' })).toBe(true);
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it('keeps macOS and BYOV runtimes out of the legacy helper', () => {
+    const restorePlatform = pinPlatform('darwin');
+    try {
+      expect(routesToWindowsHelper({ runtime: 'cuda_video' })).toBe(false);
+    } finally {
+      restorePlatform();
+    }
+    expect(routesToWindowsHelper({ runtime: 'minimax_h3_cuda' })).toBe(false);
+  });
+
+  it('does not send a Linux custom MLX entry through the fixed-repo helper', () => {
+    const restorePlatform = pinPlatform('linux');
+    try {
+      expect(routesToWindowsHelper({ runtime: 'mlx_video', repo: 'example-org/custom-video' })).toBe(false);
+    } finally {
+      restorePlatform();
+    }
   });
 });
 

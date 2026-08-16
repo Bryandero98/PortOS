@@ -85,7 +85,7 @@ const QUANTIZED_LTX_RE = /(?:^|[-_/\s])q(?:4|8)(?![0-9])/i;
 // scripts/generate_av_lora.py drives generate_av and merges the LoRA deltas into
 // the transformer weights before generation. Scoped to NON-quantized (bf16)
 // LTX-2.x models for now: the quantized q4/q8 variants need a separate
-// dequantize→merge→requantize validation pass. The Windows LTX-Video 0.9.5
+// dequantize→merge→requantize validation pass. The CUDA LTX-Video 0.9.5
 // model ("ltx_video" / "LTX-Video 0.9.5") is excluded — it has no "ltx-2"
 // marker and runs through generate_win.py, not generate_av.
 export const isMlxVideoLtxLoraCapable = (model) => {
