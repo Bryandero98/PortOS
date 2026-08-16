@@ -760,7 +760,7 @@ Read the full issue (\`gh issue view "\${NUM}" --comments\`) before writing any 
 
 Write the code, tests, and any docs the issue requires. Follow the repo conventions in CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates). Run the relevant test suite as you go.
 
-**Roll discovered backbone work INTO this PR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`gh issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`) rather than appending to PLAN.md.
+**Roll discovered backbone work INTO this PR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`gh issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`) rather than appending to PLAN.md. Choose independent dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) and contributor labels (\`good first issue\`, \`help wanted\`) only when justified; omit an axis rather than guessing; create each missing label immediately before applying it; use repeated \`--label\` flags; do not prefix the title with \`[category]\` / \`[model:…]\`.
 
 Commit with a conventional message referencing the issue so the trail is grep-able:
 
@@ -806,7 +806,7 @@ If \`git branch -d\` refuses (the PR squash-merged on GitHub but local doesn't k
 
 **Reconcile the issue — did this PR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` trailer already auto-closed it; if it's somehow still open, close it (\`gh issue close "\${NUM}"\`) and remove the label (\`gh issue edit "\${NUM}" --remove-label in-progress\`).
-- **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing comment (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`gh issue create --title "…" --label plan --body "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had).
+- **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing comment (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`gh issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --body "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
 - **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` comment, and release the claim so the queue re-picks it: \`gh issue edit "\${NUM}" --remove-label in-progress --remove-assignee @me\`.
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitHub via \`gh pr merge\`; leave the user's working tree alone.`,
@@ -893,7 +893,7 @@ Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **E
 
 Write the code, tests, and any docs the issue requires. Follow the repo conventions in CLAUDE.md. Run the relevant test suite as you go.
 
-**Roll discovered backbone work INTO this MR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`glab issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`).
+**Roll discovered backbone work INTO this MR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`glab issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`). Choose independent dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) and contributor labels (\`good first issue\`, \`help wanted\`) only when justified; omit an axis rather than guessing; create each missing label immediately before applying it; use repeated \`--label\` flags; do not prefix the title with \`[category]\` / \`[model:…]\`.
 
 Commit with a conventional message referencing the issue:
 
@@ -938,7 +938,7 @@ If \`git branch -d\` refuses, use \`-D\` — the MR is confirmed merged, so the 
 
 **Reconcile the issue — did this MR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` line already auto-closed it on merge to the default branch; if it's somehow still open, close it (\`glab issue close "\${NUM}"\`) and remove the label (\`glab issue update "\${NUM}" --unlabel in-progress\`).
-- **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing note (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`glab issue create --title "…" --label plan --description "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had).
+- **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing note (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`glab issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --description "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
 - **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\`.
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitLab via \`glab mr merge\`; leave the user's working tree alone.`,
@@ -1048,7 +1048,7 @@ The audit trail is the merged MR/PR + \`git log\`. Detect the forge from the git
    - GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transitions again (transitions change once In Progress).
    - Pick the transition whose target status best matches "In Review" (e.g. "In Review", "Code Review", "Review", "Ready for Review"); match case-insensitively.
    - POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transition with body {"transitionId": "<id>"}.
-5. Add the MR/PR link to the ticket: POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments with body {"comment": "Implementation complete. MR/PR: \${PR_URL}\\n\\nReady for code review."}. **If you shipped only PART of the ticket's scope** (a valuable slice with real work remaining), make the comment a \`Done ✓ / Remaining ▢\` summary so the remaining scope is not lost when a human lands the MR/PR; when that remainder is a clean, separable chunk, ALSO file a new follow-up ticket for it (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets with a summary + a description referencing \`KEY\`) so it re-enters the sprint queue. If a transition in step 4 failed (status unreachable), say so in this comment AND in the Phase 6 summary — do not silently drop it.
+5. Add the MR/PR link to the ticket: POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments with body {"comment": "Implementation complete. MR/PR: \${PR_URL}\\n\\nReady for code review."}. **If you shipped only PART of the ticket's scope** (a valuable slice with real work remaining), make the comment a \`Done ✓ / Remaining ▢\` summary so the remaining scope is not lost when a human lands the MR/PR; when that remainder is a clean, separable chunk, ALSO file a new follow-up ticket for it (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets with a summary + a description referencing \`KEY\`, plus equivalent labels \`model-light|model-medium|model-heavy\`, \`effort-low|effort-medium|effort-high|effort-xhigh|effort-max\`, \`good-first-issue\`, \`help-wanted\` when independently justified) so it re-enters the sprint queue. If a transition in step 4 failed (status unreachable), say so in this comment AND in the Phase 6 summary — do not silently drop it.
 
 ## Phase 6 — Review and clean up
 
@@ -1497,8 +1497,8 @@ Every command is shown as \`gh\` (GitHub) / \`glab\` (GitLab) — run the one ma
 
 ## The partial-ship hybrid (per the "Do:" line)
 - **Separable remainder** → close the original with a comment summarizing what shipped (✓) and what moved out, then file ONE tightly-scoped follow-up issue for the remainder. Carry over any \`area:*\` labels the original had, then remove the claim label (closing already drops it from the queue, but be explicit).
-  - GitHub: \`gh issue create --title "…" --label plan --body "…\\n\\nRefs #<num>"\` then \`gh issue edit <num> --remove-label in-progress\`.
-  - GitLab: \`glab issue create --title "…" --label plan --description "…\\n\\nRefs #<num>"\` then \`glab issue update <num> --unlabel in-progress\`.
+  - GitHub: \`gh issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --body "…\\n\\nRefs #<num>"\` then \`gh issue edit <num> --remove-label in-progress\`.
+  - GitLab: \`glab issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --description "…\\n\\nRefs #<num>"\` then \`glab issue update <num> --unlabel in-progress\`.
 - **Continuation of the same scope** → keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` comment, and release the claim so the queue re-picks it.
   - GitHub: \`gh issue edit <num> --remove-label in-progress --remove-assignee @me\`.
   - GitLab: \`glab issue update <num> --unlabel in-progress --unassign\`.
@@ -1515,7 +1515,7 @@ Use only if the header names JIRA. There is no forge CLI — every action is a P
 - To transition: GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transitions to list the available transitions, pick the one whose target status matches your intent (case-insensitive), then POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transition with body {"transitionId": "<id>"}.
 
 ## The partial-ship hybrid (JIRA)
-- **Separable remainder** → post a \`Done ✓ / Remaining ▢\` comment (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments with body {"comment": "…"}), transition the original to **Done**, then file ONE tightly-scoped follow-up ticket for the remainder: POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets with body {"projectKey": "<projectKey>", "summary": "…", "description": "…\\n\\nRefs <KEY>"}. Carry over the epic/labels where sensible.
+- **Separable remainder** → post a \`Done ✓ / Remaining ▢\` comment (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments with body {"comment": "…"}), transition the original to **Done**, then file ONE tightly-scoped follow-up ticket for the remainder: POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets with body {"projectKey": "<projectKey>", "summary": "…", "description": "…\\n\\nRefs <KEY>", "labels": ["plan", /* optional independently justified: model-light|model-medium|model-heavy, effort-low|…|effort-max, good-first-issue, help-wanted */]}. Carry over the epic/labels where sensible.
 - **Continuation of the same scope** → post the \`Done ✓ / Remaining ▢\` comment, then transition the ticket BACK to a not-started status (To Do / Selected for Development / Backlog — pick the transition that returns it to the To Do column) so the claim queue re-picks it. Do NOT file a follow-up.
 
 ## Peer safety — avoid duplicate follow-ups
@@ -1523,7 +1523,7 @@ Use only if the header names JIRA. There is no forge CLI — every action is a P
 
 ━━━━━━━━━━ Rules (all trackers) ━━━━━━━━━━
 - Work ONLY on the items listed above. Never open, close, transition, or relabel an item that is not listed.
-- Every follow-up you file MUST carry the \`Refs #<num>\` / \`Refs <KEY>\` dedup marker in its body and (on the forges) be labeled \`plan\` so the claim queue can pick it up.
+- Every follow-up you file MUST carry the \`Refs #<num>\` / \`Refs <KEY>\` dedup marker in its body and (on the forges) be labeled \`plan\` so the claim queue can pick it up. Also apply independent dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) and contributor labels (\`good first issue\`, \`help wanted\`) when justified; omit an axis rather than guessing; create each missing label immediately before applying it; never stamp \`good first issue\` on a leftover sweep.
 - Summarize what each item ended up doing (closed/Done + follow-up #NEW / released for re-claim / left as-is because it was not a zombie).`,
 
   // pr-reviewer is now a pipeline — this prompt is kept as fallback for non-pipeline mode

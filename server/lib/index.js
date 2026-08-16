@@ -319,6 +319,7 @@ export * from './arrayUtils.js';
 export * from './asyncMutex.js';
 export * from './authGate.js';
 export * from './concurrencyGate.js';
+export * from './dispatchLabels.js';
 export * from './domainAutonomy.js';
 export * from './domainBudgets.js';
 export * from './errorHandler.js';

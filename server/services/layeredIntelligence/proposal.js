@@ -8,6 +8,7 @@
  * CoS hand-off task. Also the tracker→filer dispatch table.
  */
 
+import { normalizeDispatchEffort, normalizeDispatchModel } from '../../lib/dispatchLabels.js';
 import { PROPOSAL_SCOPES, PROPOSAL_COMPLEXITIES, HANDOFF_COMPLEXITY } from './constants.js';
 import { normalizeSlug } from './dedup.js';
 
@@ -55,7 +56,17 @@ export function validateReasonerResponse(parsed) {
         // (unknown → never trivial → never auto-handed-off); `safe` is a strict
         // boolean so only an explicit `true` opens the hand-off path.
         complexity: PROPOSAL_COMPLEXITIES.includes(p.complexity) ? p.complexity : null,
-        safe: p.safe === true
+        safe: p.safe === true,
+        // Optional slashdo dispatch hints — independent of each other AND of
+        // `complexity`. Unknown / absent → omit the axis (null), never invent
+        // a default and never copy complexity onto them.
+        model: normalizeDispatchModel(p.model),
+        effort: normalizeDispatchEffort(p.effort),
+        // Contributor labels. Strict boolean like `safe` — only explicit true
+        // applies. Independent of model:light (a wide mechanical sweep is not
+        // a good first issue).
+        goodFirstIssue: p.goodFirstIssue === true,
+        helpWanted: p.helpWanted === true
       };
     }
   }

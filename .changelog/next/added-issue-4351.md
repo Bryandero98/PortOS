@@ -1,0 +1,1 @@
+- Planner-filed issues now get optional slashdo dispatch hints and contributor labels like good first issue when the work actually fits.

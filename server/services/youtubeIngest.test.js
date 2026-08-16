@@ -165,6 +165,8 @@ describe('buildAgentTaskContext', () => {
     expect(context).toContain('/data/brain/youtube/oCnxnaVg0bY.md');
     expect(context).toContain('Consumed/YouTube/note.md');
     expect(context).toContain('portos-file-issue');
+    expect(context).toContain('model:light|medium|heavy');
+    expect(context).toContain('good first issue');
     expect(context).toContain('**Duration:** 1:02:03');
   });
 
