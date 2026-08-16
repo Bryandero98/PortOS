@@ -219,9 +219,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
     ['plan-task', 14],
-    ['claim-issue', 12],
-    ['claim-issue-gitlab', 11],
-    ['claim-issue-jira', 9],
+    ['claim-issue', 13],
+    ['claim-issue-gitlab', 12],
+    ['claim-issue-jira', 10],
   ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     expect(PROMPT_VERSIONS[key]).toBe(version);
@@ -264,8 +264,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(worktreeCommands).toHaveLength(1);
     expect(worktreeCommands.every((command) => command.includes('--no-track'))).toBe(true);
 
-    const outgoing = PREVIOUS_DEFAULT_PROMPTS[key].at(-1);
-    expect(outgoing).toMatch(/\bworktree add -b\b/);
+    // Located by CONTENT, not array position: later revisions append their
+    // own outgoing bodies after the pre-`--no-track` default.
+    const outgoing = PREVIOUS_DEFAULT_PROMPTS[key].find(
+      (p) => /\bworktree add -b\b/.test(p) && !p.includes('--no-track'),
+    );
+    expect(outgoing).toBeDefined();
     expect(outgoing).not.toContain('--no-track');
     expect(outgoing).not.toBe(current);
   });

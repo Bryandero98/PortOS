@@ -1,22 +1,21 @@
 /**
- * {trackerInstructions} regression guard (#3273).
+ * {trackerInstructions} regression guard (#3273, dispatch hints #4351).
  *
- * `formatTrackerInstructions` was generalized out of referenceRepos.js so the
- * `ux` task type can reuse the same "inventory / record / finalize" mechanics.
- * The reference-watch prompt is at PROMPT_VERSIONS 3 and its stored copies on
- * other installs are keyed to that version, so the generalization must be a
- * pure refactor for reference-watch: these four expected strings are the blocks
- * exactly as they shipped before the extraction. If a change here is
- * intentional, it needs a reference-watch PROMPT_VERSIONS bump, not a test edit.
+ * PLAN.md is still byte-pinned — that path has no labels. The forge/Jira
+ * blocks grew independent `model:` / `effort:` dispatch-hint instructions, so
+ * those are pinned by contract (vocabulary, repeated `--label`, category
+ * preservation) rather than a frozen string. `{trackerInstructions}` is
+ * substituted at dispatch time, so a stored reference-watch template does not
+ * need a PROMPT_VERSIONS bump for this change.
  */
 
 import { describe, it, expect } from 'vitest';
+import { DISPATCH_HINT_GUIDANCE, JIRA_DISPATCH_HINT_GUIDANCE } from './dispatchLabels.js';
 import { formatTrackerInstructions, TRACKER_FILING_PRESETS } from './workTracker.js';
 
 const REF_WATCH = { slugPrefix: 'ref-watch-', label: 'reference-watch', issueLabel: 'reference-watch' };
 
-const EXPECTED = {
-  plan: `This app records autonomous work in **PLAN.md** at the repo root ({repoPath}).
+const EXPECTED_PLAN = `This app records autonomous work in **PLAN.md** at the repo root ({repoPath}).
 
 - **Inventory:** Read PLAN.md from {repoPath}. Every existing checkbox carries a \`[<slug>]\` ID — collect the \`[ref-watch-…]\` ones so you don't duplicate. If PLAN.md does not exist, create it with a single top-level heading (\`# {appName} — Development Plan\`) and a \`## Next Up\` section before appending.
 - **Record** each proposal as a slug-tagged checklist item appended to the \`## Next Up\` section:
@@ -24,54 +23,70 @@ const EXPECTED = {
   - [ ] [<slug>] **<Short title.>** From \`reference-watch\` review of <ref name> (commit(s) \`<sha>\` [+ \`<sha>\` …], <today's date>). <1–2 sentences.> Fix: <files + functions in {appName}>. <Estimated scope.>
   \`\`\`
   Place **Maybe — needs human call** items in a \`### Trigger-gated (waiting for a precondition)\` subsection if one exists; otherwise append them under \`## Next Up\`.
-- **Finalize:** Commit the PLAN.md edit with message \`docs(reference-watch): propose <N> item(s) from <ref names>\`. Do NOT create branches or PRs — \`/claim\` (or the \`plan-task\` agent) picks the slugs up later.`,
+- **Finalize:** Commit the PLAN.md edit with message \`docs(reference-watch): propose <N> item(s) from <ref names>\`. Do NOT create branches or PRs — \`/claim\` (or the \`plan-task\` agent) picks the slugs up later.`;
 
-  github: `This app tracks autonomous work in **GitHub Issues** (via the \`gh\` CLI), NOT PLAN.md — do NOT edit PLAN.md.
-
-- **Inventory:** From {repoPath}, resolve the repo (\`gh repo view --json nameWithOwner -q .nameWithOwner\`) and list existing reference-watch issues so you don't duplicate: \`gh issue list --state all --search "ref-watch in:title" --limit 100 --json number,title\`. Each carries a \`[ref-watch-…]\` slug in its title — collect them. If \`gh\` is not authenticated or the remote is not GitHub, exit cleanly.
-- **Record** each proposal as a new GitHub issue. Ensure the label exists first (\`gh label create reference-watch --description "Proposed from a reference-repo watch" --force\`), then:
-  \`\`\`bash
-  gh issue create --title "[<slug>] <Short title>" --label reference-watch --body "<body>"
-  \`\`\`
-  The body must contain the provenance (ref + commit SHA(s) + today's date), the 1–2 sentence rationale, the \`Fix:\` line naming the {appName} files/functions to change, and the estimated scope. For **Maybe — needs human call** items, also add \`--label needs-decision\` (create it the same way if absent) and end the body with \`**Decision needed:** <one sentence>.\`.
-- **Finalize:** No source-code edits, no PLAN.md, no branches, no PRs — the issues ARE the deliverable. \`/claim --issues\` (the \`claim-issue\` flow) picks them up later.`,
-
-  gitlab: `This app tracks autonomous work in **GitLab Issues** (via the \`glab\` CLI), NOT PLAN.md — do NOT edit PLAN.md.
-
-- **Inventory:** From {repoPath}, confirm the forge (\`glab repo view\`) and list existing reference-watch issues so you don't duplicate: \`glab issue list --label reference-watch --per-page 100 -F json\` (also scan titles for the \`[ref-watch-…]\` slug). Collect the existing slugs. If \`glab\` is not authenticated or the remote is not GitLab, exit cleanly.
-- **Record** each proposal as a new GitLab issue:
-  \`\`\`bash
-  glab issue create --title "[<slug>] <Short title>" --label reference-watch --description "<body>"
-  \`\`\`
-  (Run \`glab issue create --help\` if a flag is rejected — glab's flags evolve.) The body must contain the provenance (ref + commit SHA(s) + today's date), the 1–2 sentence rationale, the \`Fix:\` line naming the {appName} files/functions to change, and the estimated scope. For **Maybe — needs human call** items, also add \`--label needs-decision\` and end the body with \`**Decision needed:** <one sentence>.\`.
-- **Finalize:** No source-code edits, no PLAN.md, no branches, no MRs — the issues ARE the deliverable. \`/claim --issues\` (the \`claim-issue-gitlab\` flow) picks them up later.`,
-
-  jira: `This app tracks autonomous work in **JIRA**. Create one JIRA issue per proposal in the app's configured project using whatever JIRA CLI/REST this environment provides. **If no JIRA credentials are available, fall back to recording proposals in PLAN.md at {repoPath} (slug-tagged \`- [ ] [<slug>] …\` checklist items under \`## Next Up\`, committed) and say so in your final summary.**
-
-- **Inventory:** Search existing JIRA issues (and PLAN.md, if you fall back) for the \`[ref-watch-…]\` slug so you don't duplicate; collect the existing slugs.
-- **Record** each proposal as a new JIRA issue whose summary starts with the \`[<slug>]\` tag. The description must contain the provenance (ref + commit SHA(s) + today's date), the 1–2 sentence rationale, the \`Fix:\` line naming the {appName} files/functions to change, and the estimated scope. For **Maybe — needs human call** items, end the description with \`**Decision needed:** <one sentence>.\`.
-- **Finalize:** No source-code edits, no branches, no PRs — the tickets (or the committed PLAN.md fallback) ARE the deliverable. The \`claim-issue-jira\` flow picks them up later.`,
-};
-
-describe('formatTrackerInstructions — reference-watch byte-identity (#3273)', () => {
-  for (const tracker of ['plan', 'github', 'gitlab', 'jira']) {
-    it(`renders the pre-extraction ${tracker} block byte-for-byte`, () => {
-      expect(formatTrackerInstructions(tracker, REF_WATCH)).toBe(EXPECTED[tracker]);
-    });
-
-    it(`renders the same ${tracker} block with no options (referenceRepos back-compat)`, () => {
-      expect(formatTrackerInstructions(tracker)).toBe(EXPECTED[tracker]);
-    });
-
-    it(`renders the same ${tracker} block from the reference-watch preset`, () => {
-      expect(formatTrackerInstructions(tracker, TRACKER_FILING_PRESETS['reference-watch']))
-        .toBe(EXPECTED[tracker]);
-    });
+function expectForgeDispatchContract(block, { cli, issueLabel }) {
+  expect(block).toContain(DISPATCH_HINT_GUIDANCE.split('\n')[0]);
+  expect(block).toContain('model:light|medium|heavy');
+  expect(block).toContain('effort:low|medium|high|xhigh|max');
+  expect(block).toContain('Omit an axis rather than guessing');
+  expect(block).toContain(`--label ${issueLabel} --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"]`);
+  expect(block).toContain('good first issue');
+  expect(block).toContain('Do not relabel');
+  expect(block).toContain('[category]');
+  if (cli === 'gh') {
+    expect(block).toContain(`gh label create ${issueLabel}`);
+    expect(block).toContain('gh issue create');
+  } else {
+    expect(block).toContain(`glab label create --name ${issueLabel}`);
+    expect(block).toContain('glab issue create');
   }
+}
+
+describe('formatTrackerInstructions — reference-watch PLAN.md byte-identity (#3273)', () => {
+  it('renders the pre-extraction PLAN.md block byte-for-byte', () => {
+    expect(formatTrackerInstructions('plan', REF_WATCH)).toBe(EXPECTED_PLAN);
+  });
+
+  it('renders the same PLAN.md block with no options (referenceRepos back-compat)', () => {
+    expect(formatTrackerInstructions('plan')).toBe(EXPECTED_PLAN);
+  });
+
+  it('renders the same PLAN.md block from the reference-watch preset', () => {
+    expect(formatTrackerInstructions('plan', TRACKER_FILING_PRESETS['reference-watch']))
+      .toBe(EXPECTED_PLAN);
+  });
 
   it('falls back to the PLAN.md block for an unknown/missing tracker', () => {
-    expect(formatTrackerInstructions('nope')).toBe(EXPECTED.plan);
-    expect(formatTrackerInstructions(undefined)).toBe(EXPECTED.plan);
+    expect(formatTrackerInstructions('nope')).toBe(EXPECTED_PLAN);
+    expect(formatTrackerInstructions(undefined)).toBe(EXPECTED_PLAN);
+  });
+});
+
+describe('formatTrackerInstructions — forge dispatch hints (#4351)', () => {
+  it('teaches GitHub to create labels lazily and apply independent model/effort hints', () => {
+    const github = formatTrackerInstructions('github', REF_WATCH);
+    expectForgeDispatchContract(github, { cli: 'gh', issueLabel: 'reference-watch' });
+    expect(github).toContain('--search "ref-watch in:title"');
+    expect(formatTrackerInstructions('github')).toBe(github);
+    expect(formatTrackerInstructions('github', TRACKER_FILING_PRESETS['reference-watch'])).toBe(github);
+  });
+
+  it('teaches GitLab the same contract with glab flags', () => {
+    const gitlab = formatTrackerInstructions('gitlab', REF_WATCH);
+    expectForgeDispatchContract(gitlab, { cli: 'glab', issueLabel: 'reference-watch' });
+    expect(gitlab).toContain('glab issue list --label reference-watch');
+    expect(formatTrackerInstructions('gitlab')).toBe(gitlab);
+  });
+
+  it('teaches Jira the hyphenated equivalent labels and leaves PLAN.md fallback intact', () => {
+    const jira = formatTrackerInstructions('jira', REF_WATCH);
+    expect(jira).toContain(JIRA_DISPATCH_HINT_GUIDANCE.split('\n')[0]);
+    expect(jira).toContain('model-light|model-medium|model-heavy');
+    expect(jira).toContain('effort-low|effort-medium|effort-high|effort-xhigh|effort-max');
+    expect(jira).toContain('Do not relabel a ticket you skipped as a duplicate');
+    expect(jira).toContain('fall back to recording proposals in PLAN.md');
+    expect(formatTrackerInstructions('jira')).toBe(jira);
   });
 });
 
@@ -87,12 +102,13 @@ describe('formatTrackerInstructions — ux preset (#3273)', () => {
     }
   });
 
-  it('labels filed forge issues `ux` and searches titles by the slug stem', () => {
+  it('labels filed forge issues `ux` (and `plan`) and searches titles by the slug stem', () => {
     const github = formatTrackerInstructions('github', ux);
     expect(github).toContain('gh label create ux --description "Proposed from a UX/design audit" --force');
-    expect(github).toContain('--label ux --body');
+    expect(github).toContain('--label ux --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"]');
     expect(github).toContain('--search "ux in:title"');
     expect(formatTrackerInstructions('gitlab', ux)).toContain('glab issue list --label ux');
+    expect(formatTrackerInstructions('gitlab', ux)).toContain('--label ux --label plan');
   });
 
   it('keeps the read-only-on-source contract in every block', () => {

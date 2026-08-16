@@ -8,6 +8,7 @@
  * live Jira instance.
  */
 
+import { jiraIssueLabels } from '../../lib/dispatchLabels.js';
 import { createTicket, searchIssues, addLabels, escapeJql } from '../jira.js';
 import { LI_LABEL, PLANNED_WORK_LABEL, LI_JIRA_BLOCKING_LABEL } from './constants.js';
 import { slugMarker, extractSlugFromBody } from './dedup.js';
@@ -111,7 +112,10 @@ export async function listJiraBlockingIssues({ instanceId, projectKey, search = 
  * label. Returns `{ success, key, url }` — Jira issues are keyed strings
  * (`PROJ-123`), not integers, so the handler resolves pause targets by key.
  */
-export async function fileProposalToJira({ instanceId, projectKey, issueType = 'Task', title, body, slug, create = createTicket } = {}) {
+export async function fileProposalToJira({
+  instanceId, projectKey, issueType = 'Task', title, body, slug,
+  model, effort, goodFirstIssue, helpWanted, create = createTicket
+} = {}) {
   if (!instanceId || !projectKey) return { success: false, error: 'jira instance/project not configured' };
   const description = `${body}\n\n${slugMarker(slug)}`;
   const res = await create(instanceId, {
@@ -119,7 +123,7 @@ export async function fileProposalToJira({ instanceId, projectKey, issueType = '
     summary: title,
     description,
     issueType,
-    labels: [LI_LABEL]
+    labels: [LI_LABEL, ...jiraIssueLabels({ model, effort, goodFirstIssue, helpWanted })]
   }).then(r => r, (err) => ({ success: false, error: err?.message || 'jira create failed' }));
   if (!res?.success) return { success: false, error: res?.error || 'jira create failed' };
   return { success: true, key: res.ticketId || null, url: res.url || null };

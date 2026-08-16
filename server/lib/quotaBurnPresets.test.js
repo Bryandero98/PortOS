@@ -93,6 +93,20 @@ describe('QUOTA_BURN_PROMPT_PRESETS', () => {
       expect(prompt).toMatch(/Cap yourself at 5 issues/);
     }
   });
+
+  it('teaches every audit preset the independent model/effort dispatch contract', () => {
+    for (const preset of QUOTA_BURN_PROMPT_PRESETS) {
+      const prompt = preset.params.prompt;
+      expect(prompt).toContain('model:light|medium|heavy');
+      expect(prompt).toContain('effort:low|medium|high|xhigh|max');
+      expect(prompt).toContain('Omit an axis rather than guessing');
+      expect(prompt).toContain('repeated `--label`');
+      expect(prompt).toContain('gh label create');
+      expect(prompt).toContain('Do not relabel an existing issue');
+      expect(prompt).toContain('good first issue');
+      expect(prompt).toContain('help wanted');
+    }
+  });
 });
 
 describe('findQuotaBurnPreset', () => {

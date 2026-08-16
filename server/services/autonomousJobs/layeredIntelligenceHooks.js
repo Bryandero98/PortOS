@@ -469,12 +469,18 @@ export async function buildTaskInput({ app } = {}) {
  */
 async function fileProposal({ filer, forgeCli, cwd, app, proposal, jira }) {
   if (filer === 'forge' && forgeCli) {
-    return fileProposalToForge({ cli: forgeCli, cwd, title: proposal.title, body: proposal.body, slug: proposal.slug })
+    return fileProposalToForge({
+      cli: forgeCli, cwd, title: proposal.title, body: proposal.body, slug: proposal.slug,
+      model: proposal.model, effort: proposal.effort,
+      goodFirstIssue: proposal.goodFirstIssue, helpWanted: proposal.helpWanted
+    })
   }
   if (filer === 'jira' && jira) {
     return fileProposalToJira({
       instanceId: jira.instanceId, projectKey: jira.projectKey, issueType: jira.issueType,
-      title: proposal.title, body: proposal.body, slug: proposal.slug
+      title: proposal.title, body: proposal.body, slug: proposal.slug,
+      model: proposal.model, effort: proposal.effort,
+      goodFirstIssue: proposal.goodFirstIssue, helpWanted: proposal.helpWanted
     })
   }
   if (filer === 'plan' && cwd) {
