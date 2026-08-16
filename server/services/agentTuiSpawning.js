@@ -549,11 +549,11 @@ function createPasteRetryController({
     };
 
     // Confirms the TUI actually received the paste before we submit. The
-    // paste-commit MARKER ([Pasted text #N]) is authoritative — Claude Code
-    // collapses a multi-line paste into that chip and HIDES the body text, so a
-    // literal text check false-negatives on every multi-line prompt (real
-    // incident 2026-07-05: agent-656efa6e et al. failed `paste-not-rendered`
-    // despite the marker being present). Literal-text verification is only the
+    // paste-commit marker is authoritative — Claude Code and OpenCode can
+    // collapse a multi-line paste into a chip and HIDE the body text, so a
+    // literal text check false-negatives on multi-line prompts (real incident
+    // 2026-07-05: agent-656efa6e et al. failed `paste-not-rendered` despite
+    // Claude's marker being present). Literal-text verification is only the
     // fallback for the markerless path — see isPasteConfirmed.
     const pasteConfirmed = (buffer) =>
       isPasteConfirmed(buffer, { verifiablePrefix, promptMarkerCount });
@@ -1498,7 +1498,7 @@ export async function spawnTuiAgent({
   // failure mode that left the input empty. The `\r` is split from the paste
   // write because a fixed delay races Claude Code's paste-commit on large
   // prompts; instead we poll Claude Code's raw output for its
-  // `[Pasted text #N +M lines]` marker, then wait an extra
+  // provider paste-commit marker, then wait an extra
   // PASTE_TO_ENTER_MIN_DELAY_MS before submitting. A fallback timer fires
   // the Enter unconditionally if the marker never appears (very small
   // prompts won't trigger the marker). All timers are tracked so finish()
