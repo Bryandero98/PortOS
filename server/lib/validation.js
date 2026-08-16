@@ -416,10 +416,7 @@ export const providerSchema = z.object({
   allowCustomEndpoint: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
   headlessArgs: z.array(z.string()).optional(),
-  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
-  // Absolute wall-clock ceiling for long-running TUI agents (mirrors the
-  // aiToolkit providerSchema). Min 1min, max 12h.
-  tuiMaxRuntimeMs: z.number().int().min(60000).max(43200000).optional()
+  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional()
 });
 
 // Run command schema

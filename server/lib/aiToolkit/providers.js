@@ -565,10 +565,7 @@ export function createProviderService(config = {}) {
         envVars: providerData.envVars || {},
         secretEnvVars: providerData.secretEnvVars || [],
         headlessArgs: providerData.headlessArgs || [],
-        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500,
-        // Absolute wall-clock ceiling for long-running TUI agents (3h). The
-        // consumer (agentTuiSpawning) enforces this backstop.
-        tuiMaxRuntimeMs: providerData.tuiMaxRuntimeMs || 10800000
+        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500
       };
 
       data.providers[id] = provider;

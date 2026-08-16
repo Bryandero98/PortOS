@@ -682,7 +682,7 @@ export default function AIProviders() {
                       )}
                       {isTuiProvider(provider) && (
                         <p className="text-xs break-words">
-                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, completion by sentinel, process exit, or runtime ceiling
+                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, completion by sentinel, process exit, or explicit failure
                         </p>
                       )}
                       {provider.fallbackProvider && (
@@ -1107,7 +1107,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
                     />
                   </FormField>
                   <p className="sm:col-span-2 text-xs text-gray-500">
-                    TUI providers stay attached while the provider is silent; they finish on the completion sentinel, process exit, explicit failure, or the max-runtime ceiling.
+                    TUI providers stay attached while the provider is silent; they finish on the completion sentinel, process exit, or explicit failure.
                   </p>
                 </div>
               )}

@@ -54,14 +54,14 @@ PortOS runs MANY apps under one shared pm2 daemon. To restart an app, use a SCOP
 
 // Also appended to every agent briefing. A CoS agent runs headless: the TUI has
 // no human attached, so an interactive selector or approval gate is a dead end —
-// the session can sit there until its wall-clock runtime ceiling and the work is
-// discarded. Nothing in the briefing used to SAY that, so a `/do:plan-task` run
-// (whose skill shows its drafted issue for approval before filing) parked on a
-// scope question for its whole life and was retried into the same gate three
-// times, filing nothing. The rule names the escape hatch too: slash commands
-// that gate on approval take a flag to skip it.
+// the session can sit there indefinitely and the work may never complete.
+// Nothing in the briefing used to SAY that, so a `/do:plan-task` run (whose
+// skill shows its drafted issue for approval before filing) parked on a scope
+// question for its whole life and was retried into the same gate three times,
+// filing nothing. The rule names the escape hatch too: slash commands that gate
+// on approval take a flag to skip it.
 export const UNATTENDED_RUN_RULE = `## ⚠️ Unattended Run (no human is present)
-PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session can sit there until its runtime ceiling and **your work may be thrown away**.
+PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session can wait indefinitely and **your work may never complete**.
 - **Never ask the user to choose or approve.** Make the call yourself, state the assumption in your summary, and proceed.
 - **Invoke commands and skills in their non-interactive form.** If one drafts something and gates on approval before acting, pass the flag that skips that gate (\`--yes\` for the slashdo commands that have one).
 - **Ambiguous task?** Pick the most reasonable reading, do the work, and note the alternatives you rejected in your completion summary.
@@ -1324,9 +1324,9 @@ export function buildProgrammaticOutputCompletionSection(sentinelPath) {
  * A TUI agent still needs a `.agent-done` sentinel to signal completion — the 2s
  * sentinel poll in `spawnTuiAgent` is the primary finalize path and the channel
  * that ingests the run summary. Without it a read-only TUI run relies on shell
- * exit or the runtime ceiling, so the resolution summary is not captured
- * cleanly (the bug this repairs). CLI/API read-only agents complete on
- * process exit and never poll a sentinel, so they get the bare notice only.
+ * exit, so the resolution summary is not captured cleanly (the bug this
+ * repairs). CLI/API read-only agents complete on process exit and never poll a
+ * sentinel, so they get the bare notice only.
  */
 export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = null } = {}) {
   const notice = '## Read-Only Task\nDo NOT commit, push, or modify any files. Read data and report findings only.';

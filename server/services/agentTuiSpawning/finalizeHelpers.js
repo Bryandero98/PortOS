@@ -76,10 +76,11 @@ export async function captureWorktreeDiff(workspacePath, agentDir) {
  * short-circuits the analysis entirely.
  *
  * `completionReason` / `completionError` carry the finalize path's OWN verdict
- * (legacy idle-reaper reason, max runtime, spawn failure). The analyzer prefers
- * that structural signal over a loose keyword match in the transcript — a repaint-driven PTY
- * transcript is a whole session's worth of text, and any keyword in it (including
- * ones the agent itself typed) would otherwise classify the failure.
+ * (legacy forced-stop reason or spawn failure). The analyzer prefers that
+ * structural signal over a loose keyword match in the transcript — a
+ * repaint-driven PTY transcript is a whole session's worth of text, and any
+ * keyword in it (including ones the agent itself typed) would otherwise
+ * classify the failure.
  *
  * @returns {Promise<object|null>} The error-analysis object, or null on success.
  */
