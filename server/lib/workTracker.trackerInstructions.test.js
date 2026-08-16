@@ -33,6 +33,8 @@ function expectForgeDispatchContract(block, { cli, issueLabel }) {
   expect(block).toContain(`--label ${issueLabel} --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"]`);
   expect(block).toContain('good first issue');
   expect(block).toContain('Do not relabel');
+  expect(block).toContain('Issue-quality gate');
+  expect(block).toContain('current refactors that pay off now are valid');
   expect(block).toContain('[category]');
   if (cli === 'gh') {
     expect(block).toContain(`gh label create ${issueLabel}`);
@@ -85,6 +87,7 @@ describe('formatTrackerInstructions — forge dispatch hints (#4351)', () => {
     expect(jira).toContain('model-light|model-medium|model-heavy');
     expect(jira).toContain('effort-low|effort-medium|effort-high|effort-xhigh|effort-max');
     expect(jira).toContain('Do not relabel a ticket you skipped as a duplicate');
+    expect(jira).toContain('Issue-quality gate');
     expect(jira).toContain('fall back to recording proposals in PLAN.md');
     expect(formatTrackerInstructions('jira')).toBe(jira);
   });

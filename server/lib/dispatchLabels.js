@@ -206,6 +206,15 @@ export function formatRepeatedLabelFlags(labels = []) {
 }
 
 /**
+ * Shared quality gate for any scheduled planner that files tracker work.
+ * This deliberately allows worthwhile refactors while rejecting proposals whose
+ * only justification is a possible future trigger or a speculative abstraction.
+ */
+export const ISSUE_QUALITY_GUIDANCE = [
+  'Issue-quality gate: File current, evidenced work with impact and a chosen fix. Drop future-only/speculative refactors; current refactors that pay off now are valid.',
+].join('\n');
+
+/**
  * Standing guidance for any planner that files GitHub/GitLab issues. Used in
  * tracker-filing instructions, quota-burn audits, claim follow-ups, and the
  * file-issue skill so the vocabulary cannot drift.
@@ -221,6 +230,7 @@ export const DISPATCH_HINT_GUIDANCE = [
   '- `help wanted` (color 008672) — extra hands welcome and the body is scoped enough to pick up cold.',
   'Create those two with the same `gh` / `glab label create` form as the dispatch hints (quote the name; glab still needs `--name` and `#<hex>`).',
   'Use repeated `--label` flags (one per label). Preserve existing category/scope labels (`plan`, `ux`, `bug`, `tests`, `layered-intelligence`, …). Never relabel a deduplicated existing issue.',
+  ISSUE_QUALITY_GUIDANCE,
 ].join('\n');
 
 /**
@@ -235,6 +245,7 @@ export const JIRA_DISPATCH_HINT_GUIDANCE = [
   'Choose each axis only when the work you just inspected justifies it. Omit an axis rather than guessing. Do NOT stamp `medium` on both by reflex, and do NOT put `[model-…]` / `[effort-…]` / `[category]` / `[SEVERITY]` in the summary — those belong in labels.',
   'Also apply contributor labels when the work actually fits them — independently of the dispatch axes: `good-first-issue` (self-contained, a new contributor can ship it) and `help-wanted` (extra hands welcome, scoped enough to pick up cold). A `model-light` 40-file sweep is NOT a good-first-issue.',
   'Preserve existing category/scope labels. Never relabel a ticket you skipped as a duplicate.',
+  ISSUE_QUALITY_GUIDANCE,
 ].join('\n');
 
 /**

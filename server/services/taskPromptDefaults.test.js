@@ -111,6 +111,21 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v9).not.toBe(current);
   });
 
+  it('do-replan v2 rejects future-only proposals while preserving v1 for migration', () => {
+    const current = DEFAULT_TASK_PROMPTS['do-replan'];
+    expect(PROMPT_VERSIONS['do-replan']).toBe(2);
+    expect(current).toContain('Issue-quality gate');
+    expect(current).toContain('useful to do now');
+    expect(current).toContain('let a later audit rediscover it');
+    expect(current).toContain('A refactor is valid when current evidence shows it pays off now');
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['do-replan'];
+    const v1 = previous.find((prompt) => prompt.includes('Replan — Audit PLAN.md'));
+    expect(v1).toBeDefined();
+    expect(v1).not.toContain('Issue-quality gate');
+    expect(v1).not.toBe(current);
+  });
+
   // claim-issue v7 / claim-issue-gitlab v6: Phase 3 no longer parks an *ambiguous*
   // issue to `needs-input` and re-picks — the agent decides (picks the most
   // reasonable reading, records it in an issue comment/note, ships) instead of

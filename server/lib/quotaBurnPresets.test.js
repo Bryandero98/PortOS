@@ -105,6 +105,8 @@ describe('QUOTA_BURN_PROMPT_PRESETS', () => {
       expect(prompt).toContain('Do not relabel an existing issue');
       expect(prompt).toContain('good first issue');
       expect(prompt).toContain('help wanted');
+      expect(prompt).toContain('Issue-quality gate');
+      expect(prompt).toContain('current refactors that pay off now are valid');
     }
   });
 });

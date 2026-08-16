@@ -3,6 +3,7 @@ import {
   DISPATCH_MODEL_TIERS,
   DISPATCH_EFFORT_LEVELS,
   DISPATCH_LABEL_COLORS,
+  ISSUE_QUALITY_GUIDANCE,
   DISPATCH_HINT_GUIDANCE,
   JIRA_DISPATCH_HINT_GUIDANCE,
   PORTOS_AREA_LABELS,
@@ -152,6 +153,9 @@ describe('label specs and CLI formatting', () => {
 
 describe('shared guidance', () => {
   it('names both vocabularies and the omit-rather-than-guess rule', () => {
+    expect(ISSUE_QUALITY_GUIDANCE).toContain('current, evidenced work');
+    expect(ISSUE_QUALITY_GUIDANCE).toContain('future-only/speculative refactors');
+    expect(ISSUE_QUALITY_GUIDANCE).toContain('current refactors that pay off now are valid');
     expect(DISPATCH_HINT_GUIDANCE).toContain('model:light|medium|heavy');
     expect(DISPATCH_HINT_GUIDANCE).toContain('effort:low|medium|high|xhigh|max');
     expect(DISPATCH_HINT_GUIDANCE).toContain('Omit an axis rather than guessing');
@@ -162,10 +166,12 @@ describe('shared guidance', () => {
     expect(DISPATCH_HINT_GUIDANCE).toContain('help wanted');
     expect(DISPATCH_HINT_GUIDANCE).toContain('NOT a good first issue');
     expect(DISPATCH_HINT_GUIDANCE).toContain('glab label create');
+    expect(DISPATCH_HINT_GUIDANCE).toContain('Issue-quality gate');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('model-light|model-medium|model-heavy');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('effort-low|effort-medium|effort-high|effort-xhigh|effort-max');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('good-first-issue');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('help-wanted');
+    expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('Issue-quality gate');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).not.toMatch(/model:light/);
   });
 

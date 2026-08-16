@@ -22,7 +22,7 @@
     "typing": "1f2758ce0bb62d789a21aec241549531",
     "release-check": "746f11daaf721eae9e16845858ef55ee",
     "jira-sprint-manager": "3e63c8a3bdf0d5a05a30faaa2dc07980",
-    "do-replan": "59a57f1bb445138c30ab4fa23630c6f8",
+    "do-replan": "35660eb7b43e4259a6a9253ed288a1db",
     "jira-status-report": "9d374a9d8ccb92c5c8fd0aa9899e79a5",
     "branch-cleanup": "8fdeb4acc2749816a47ca318b6602721",
     "branch-reconcile": "16479f4b64395103fd222dc9608830b1",
@@ -35,6 +35,7 @@
     "refresh-local-llm-catalog": "ca7324a0f2251a66b46ea534940c9da8"
   },
   "PROMPT_VERSIONS": {
+    "do-replan": 2,
     "feature-ideas": 10,
     "plan-task": 14,
     "claim-issue": 13,
@@ -62,6 +63,9 @@
   },
   "REFERENCE_WATCH_AUDITED_VERSION": 3,
   "PREVIOUS_DEFAULT_PROMPTS": {
+    "do-replan": [
+      "59a57f1bb445138c30ab4fa23630c6f8"
+    ],
     "feature-ideas": [
       "d67a9028aeb8bb8348453951f878501b",
       "c6a399399245872401666d5c67c716cc",

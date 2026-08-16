@@ -11,6 +11,16 @@
 
 // PORTOS_API_URL is interpolated into the jira-status-report default prompt below.
 import { PORTOS_API_URL } from '../../lib/ports.js';
+import { ISSUE_QUALITY_GUIDANCE } from '../../lib/dispatchLabels.js';
+
+const SCHEDULED_ISSUE_QUALITY_GATE = `## Scheduled issue-quality gate
+
+${ISSUE_QUALITY_GUIDANCE}
+
+Apply this gate to every new issue created by the scheduled replan, including
+items migrated from PLAN.md or GOALS.md and opportunity-scan suggestions. A
+proposal is valid only when it is useful to do now. A refactor is valid when current evidence shows it pays off now; a deferred possibility is not an issue.
+Return/drop it and let a later audit rediscover it when the evidence changes.`;
 
 // ============================================================
 // Unified DEFAULT_TASK_PROMPTS — one entry per scheduled task type / pipeline stage
@@ -1388,6 +1398,8 @@ Repository: {repoPath}
 The full \`/do:replan\` command body follows. Apply it to {repoPath} exactly as written, then commit any changes. Default mode is autonomous — do NOT prompt the user; run \`--interactive\` only if the user has explicitly asked for it (they have not).
 
 Scope: this task operates against the managed app's repository, NOT PortOS. All edits must land in {repoPath} (PLAN.md, GOALS.md, docs/, the changelog) — never write to PortOS itself.
+
+${SCHEDULED_ISSUE_QUALITY_GATE}
 
 ---
 
