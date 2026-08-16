@@ -454,7 +454,7 @@ export async function buildClaimWorkTask(app, {
 
   // Reviewers: explicit option wins; otherwise mirror the scheduler. Local-LLM
   // reviewers stay in the operative list; an appended procedure below tells the
-  // claim agent how to invoke PortOS's endpoint instead of silently replacing
+  // claim agent how to invoke PortOS's review service instead of silently replacing
   // the user's configured reviewer.
   const reviewersList = reviewers !== undefined
     ? normalizeClaimReviewers({ reviewers: Array.isArray(reviewers) ? reviewers : [reviewers] }, codeReviewDefaults?.reviewers)
@@ -2727,7 +2727,7 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // user's configured reviewers. Settings I/O failures degrade to the hardcoded
   // default inside normalizeReviewers, so a read error never blocks dispatch.
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  // Keep local-LLM reviewers in the operative list. Their endpoint invocation
+  // Keep local-LLM reviewers in the operative list. Their service invocation
   // contract is appended after rendering so customized legacy prompts receive
   // it without needing a new placeholder.
   const promptReviewers = normalizeClaimReviewers(metadata, codeReviewDefaults?.reviewers);

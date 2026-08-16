@@ -488,7 +488,7 @@ When PLAN.md is missing, empty, or fully completed, brainstorm and implement a n
    \`\`\`
 8. Commit with a clear description of the feature and rationale`
   ],
- 'plan-task': [
+  'plan-task': [
     // v14 default (pre-local-reviewer invocation and verified immediate merge)
     `[Plan Task: {appName}] Claim and ship next PLAN.md item
 
