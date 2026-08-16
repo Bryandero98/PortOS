@@ -101,6 +101,13 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(PASTE_MARKER_PATTERN.test('[PastedContent2431chars]')).toBe(true);
   });
 
+  it('PASTE_MARKER_PATTERN matches OpenCode paste-commit chips', () => {
+    expect(PASTE_MARKER_PATTERN.test('[Pasted ~46 lines]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pasted~46lines]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pasted ~1 line]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pasted ~46 chars]')).toBe(false);
+  });
+
   it('PASTE_MARKER_PATTERN matches the SPACE-COLLAPSED form left after ANSI strip', () => {
     // The raw PTY stream renders the marker with absolute-column cursor moves
     // between tokens (`[Pasted\x1b[11Gtext\x1b[16G#1…`), so once ANSI is stripped
@@ -1494,6 +1501,12 @@ describe('tuiHandshake.isPasteConfirmed', () => {
   it('confirms when the prompt text DID render inline (markerless small paste)', () => {
     const inlineBuffer = '❯ Onthetaskspagewhenwerenderpending/active/blockedtaskcards Begin working on the task now.';
     expect(isPasteConfirmed(inlineBuffer, { verifiablePrefix: prefix, promptMarkerCount: 0 })).toBe(true);
+  });
+
+  it('confirms an OpenCode line-count chip even when the prompt body is hidden', () => {
+    const opencodeBuffer = 'Build · hf.co/example/model Ollama [Pasted ~46 lines]';
+    expect(verifyPasteRendered(opencodeBuffer, prefix)).toBe(false);
+    expect(isPasteConfirmed(opencodeBuffer, { verifiablePrefix: prefix, promptMarkerCount: 0 })).toBe(true);
   });
 
   it('does NOT confirm when neither the marker nor the text appears (paste swallowed by a not-ready TUI)', () => {

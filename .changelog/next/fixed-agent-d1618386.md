@@ -1,0 +1,1 @@
+- OpenCode TUI pastes now submit with Enter instead of being repeated.
