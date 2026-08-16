@@ -1,1 +1,0 @@
-- CollapsibleText gained a children-based max-height variant for content CSS line-clamp cannot clamp; the CoS agent card's task description now uses it (measured overflow + aria-expanded/aria-controls) instead of its own character-count heuristic, and keyboard focus landing on a link inside a clipped preview now expands it rather than scrolling it out of reach

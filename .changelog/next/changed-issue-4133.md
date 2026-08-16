@@ -1,1 +1,0 @@
-- Dashboard grid layouts now store a single reading/packing sequence (`order`) instead of a row coordinate — drag, resize and mobile reorder all run in one coordinate space, and migration 269 converts saved layouts in place

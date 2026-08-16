@@ -1,1 +1,0 @@
-- Instance and peer settings now have clear screen-reader labels.

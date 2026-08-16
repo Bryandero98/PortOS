@@ -1,1 +1,0 @@
-- Loading sub-regions that refetch after a page has already painted — the Brain, Goals, and Digital Twin tab-body Suspense fallbacks, the Data Manager category detail panel, the provider-usage section, and the per-app sprint board — now reserve a skeleton shaped to their content instead of a centered spinner

@@ -1,1 +1,0 @@
-- release-check prompt no longer names a PortOS-only changelog preview script that managed apps do not have

@@ -1,1 +1,0 @@
-- Canceling an in-progress task edit in Chief of Staff now asks for confirmation before discarding unsaved changes

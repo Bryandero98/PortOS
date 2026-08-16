@@ -1,1 +1,0 @@
-- SongBook: chord-sheet play-along — a strummed synth backing at a practice tempo, with a count-in, a metronome, and the sounding chord lit in the tab/chord sheet (viewer, editor preview, and importer preview)

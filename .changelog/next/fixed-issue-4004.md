@@ -1,1 +1,0 @@
-- Unsaved changes confirmation dialog no longer stays hidden when an unrelated manuscript tab is saving.

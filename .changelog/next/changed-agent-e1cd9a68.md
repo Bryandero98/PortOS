@@ -1,1 +1,0 @@
-- Local LLM recommendations now distinguish general-purpose models from specialist options, with Qwen3.8 highlighted as the best overall local pick.

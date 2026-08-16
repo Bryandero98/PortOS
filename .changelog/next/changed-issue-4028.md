@@ -1,1 +1,0 @@
-- Deduplicated the repeated capitalize() helper in clinicianReport and tabNotation into the shared formatters module

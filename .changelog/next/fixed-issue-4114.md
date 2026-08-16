@@ -1,1 +1,0 @@
-- Brain graph: tapping a node on a phone now picks the nearest node within a finger-sized radius instead of requiring a direct hit on its ~10px sphere

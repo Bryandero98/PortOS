@@ -1,1 +1,0 @@
-- 3D Brain and Memory graphs now briefly explain their touch rotation gesture.

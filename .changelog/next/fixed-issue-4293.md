@@ -1,1 +1,0 @@
-- [issue-4293] Workspace-root rejection logs now identify the rejected path and checked roots.

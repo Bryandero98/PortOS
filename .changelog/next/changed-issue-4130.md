@@ -1,1 +1,0 @@
-- Metronome and the SongBook play-along transports now draw the same beat-pulse indicator (shared `BeatPulse` component) instead of three drifting copies

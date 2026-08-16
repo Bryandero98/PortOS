@@ -1,1 +1,0 @@
-- Keep video remix controls editable

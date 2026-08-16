@@ -1,1 +1,0 @@
-- Accessibility checks now cover client form inputs across pages, including explicit and implicit labels.

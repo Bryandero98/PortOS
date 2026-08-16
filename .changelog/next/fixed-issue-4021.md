@@ -1,1 +1,0 @@
-- handle unique constraint 23505 in recordScanVerdict (#4021)

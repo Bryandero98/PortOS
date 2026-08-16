@@ -1,1 +1,0 @@
-- a11y guard now checks <select> and <textarea> for an accessible name, not just <input>

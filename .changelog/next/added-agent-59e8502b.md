@@ -1,1 +1,0 @@
-- Media Gen can reverse-engineer image and video prompts from a gallery still, clip, or upload using any vision-capable provider.

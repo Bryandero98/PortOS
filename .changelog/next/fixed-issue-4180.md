@@ -1,1 +1,0 @@
-- Claude one-shot prompts now wait for startup dialogs to clear before sending.

@@ -1,1 +1,0 @@
-- Consolidate duplicate clamp helper across client modules

@@ -1,1 +1,0 @@
-- Chief of Staff now paints a dimension-reserving two-pane loading skeleton instead of a centered spinner, via a new PageSkeleton `layout="split"` mode

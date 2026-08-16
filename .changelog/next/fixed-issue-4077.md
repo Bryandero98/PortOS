@@ -1,1 +1,0 @@
-- Pin LF line endings in .gitattributes, platform-gate POSIX binary tests, raise Vitest timeouts on Windows, and add Windows job to CI (#4077)

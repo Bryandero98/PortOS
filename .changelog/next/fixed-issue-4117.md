@@ -1,1 +1,0 @@
-- CoS memory graph is usable on a phone: the 3D canvas is viewport-relative instead of a fixed 500px, the legend collapses behind a toggle on a small viewport, and the hover tooltip is clamped inside the window

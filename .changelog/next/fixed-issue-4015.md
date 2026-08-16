@@ -1,1 +1,0 @@
-- Ensure min 44px touch targets on StagePromptModelPicker mode buttons

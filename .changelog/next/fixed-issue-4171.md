@@ -1,1 +1,0 @@
-- Cancelling a video render on Windows now tree-kills the runner, so ffmpeg/download children die with it instead of orphaning and holding GPU memory

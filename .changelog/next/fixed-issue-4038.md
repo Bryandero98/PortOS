@@ -1,1 +1,0 @@
-- Chief of Staff: the "Mark Task as Blocked" prompt now keeps your typed reason when the update fails, and pre-fills the reason for tasks the system blocked automatically.

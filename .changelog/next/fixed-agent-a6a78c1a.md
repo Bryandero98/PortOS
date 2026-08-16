@@ -1,1 +1,0 @@
-- Windows CI: audioMux path assertion escaped no regex metacharacters, so a backslash-containing temp path could never match

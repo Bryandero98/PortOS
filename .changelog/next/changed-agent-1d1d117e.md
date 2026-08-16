@@ -1,1 +1,0 @@
-- Align MiniMax H3 video duration and native resolution controls with the upstream model, including prompt-steered audio.

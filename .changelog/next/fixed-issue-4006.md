@@ -1,1 +1,0 @@
-- Catalog canon projection now preserves write ordering when multiple entries reference the same ingredient in one save batch.

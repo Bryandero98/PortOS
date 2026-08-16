@@ -1,1 +1,0 @@
-- Ollama provider model refresh now probes each daemon once and applies the result to every provider sharing it, instead of re-running the full /api/tags + per-model capability sweep per provider

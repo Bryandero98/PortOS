@@ -1,1 +1,0 @@
-- a11y guard: one shared tag walk for every scanner, closing a false-positive where label markup inside an attribute value named an unlabeled control

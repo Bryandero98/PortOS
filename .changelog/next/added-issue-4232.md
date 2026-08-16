@@ -1,1 +1,0 @@
-- Music Studio can install and generate full songs with ACE-Step 1.5 while keeping existing ACE-Step renders on v1.

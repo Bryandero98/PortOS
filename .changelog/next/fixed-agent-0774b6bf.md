@@ -1,1 +1,0 @@
-- Arc-verify telemetry now reports every resolver attempt with what it actually wrote — per-record mutation counts plus a categorical reason when nothing changed — so a spine round's edits are no longer invisible behind episodesEdited: 0

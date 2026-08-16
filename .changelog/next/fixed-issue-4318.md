@@ -1,1 +1,0 @@
-- a11y guard: an apostrophe in JSX text no longer hides a labeled control from the accessible-name scan

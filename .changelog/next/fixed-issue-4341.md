@@ -1,1 +1,0 @@
-- a11y guard: the shared tag walk is driven by the JSX lexer, so it now sees elements written inside attribute expressions and reads self-closing from the scanner instead of the tag text

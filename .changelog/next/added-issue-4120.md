@@ -1,1 +1,0 @@
-- Character sheet: a Days Active tile counting distinct days with any logged activity — a union of the health-log and POST day sets on the user's local day boundary, never a sum of per-domain counts

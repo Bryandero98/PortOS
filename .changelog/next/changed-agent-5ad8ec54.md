@@ -1,1 +1,0 @@
-- AI provider settings support a configurable default reasoning effort level

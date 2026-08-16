@@ -1,1 +1,0 @@
-- Music generation now shows active processing feedback and elapsed time during long renders.

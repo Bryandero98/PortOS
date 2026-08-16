@@ -1,1 +1,0 @@
-- Creative Commission detail page resolves its render history through a new `GET /creative-director?ids=` batch filter instead of fetching every Creative Director project

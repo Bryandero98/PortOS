@@ -1,1 +1,0 @@
-- Preserved user settings and displayed inline error state with Retry button on fetch failure in CodeReviewDefaultsPanel

@@ -1,1 +1,0 @@
-- Document CoS schedule REST endpoints in docs/API.md

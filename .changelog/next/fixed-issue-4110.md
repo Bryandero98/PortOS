@@ -1,1 +1,0 @@
-- Antigravity CLI runs with extra arguments no longer strand them after the prompt — `--print <prompt>` is re-anchored as the final argv pair at spawn time

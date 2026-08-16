@@ -1,1 +1,0 @@
-- CoS task recovery now finds and reuses its existing worktree more reliably.

@@ -1,1 +1,0 @@
-- Provider model refreshes now batch into a single providers.json write — an Ollama install/delete no longer rewrites the whole provider file once per matching provider

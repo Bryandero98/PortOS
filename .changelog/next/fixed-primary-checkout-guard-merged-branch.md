@@ -1,1 +1,0 @@
-- Primary-checkout guard no longer fails a worktree agent whose PR already merged: attribution now asks its patch-id question only about the commits the upstream genuinely lacks, and the recovery command names the branch's real upstream instead of assuming origin/<branch>

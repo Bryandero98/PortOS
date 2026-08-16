@@ -12,6 +12,18 @@ vi.mock('../services/pm2.js', () => ({
   listProcesses: vi.fn().mockResolvedValue([])
 }));
 
+// Health assertions must not inherit the developer machine's disk or memory
+// pressure. In particular, a nearly-full volume can legitimately make every
+// otherwise-unrelated route case critical, masking the behavior under test.
+vi.mock('fs/promises', async (importOriginal) => ({
+  ...(await importOriginal()),
+  statfs: vi.fn().mockResolvedValue({ blocks: 100, bavail: 50, bsize: 1 })
+}));
+
+vi.mock('../lib/memoryStats.js', () => ({
+  getMemoryStats: vi.fn().mockResolvedValue({ total: 100, used: 50, free: 50 })
+}));
+
 // Mock instances + auth directly (rather than through settings) so the pre-auth
 // companion-app identity fields on GET /health are deterministic. Mocking auth.js
 // directly also sidesteps its module-load `settingsEvents.on(...)` side effect,
