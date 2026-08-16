@@ -663,6 +663,20 @@ describe('huggingFaceCatalog', () => {
       expect(results.some((r) => r.repository === mlxRepo)).toBe(false)
     })
 
+    it('does not offer non-standalone MTP drafter checkpoints as MLX installs', async () => {
+      const drafterRepo = 'mlx-community/Qwen3.8-27B-MTP-4bit'
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', [mlxListing(drafterRepo, ['model.safetensors'])]],
+        ['filter=gguf', []],
+      ]))
+
+      const results = await searchHuggingFaceModels({
+        backend: 'lmstudio', query: 'qwen3.8', appleSilicon: true
+      })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
     it('does not surface MLX on a non-Apple host even for LM Studio', async () => {
       const mlxRepo = 'mlx-community/Hidden-On-Intel-4bit'
       fetch.mockImplementation(urlRouter([
@@ -749,6 +763,39 @@ describe('huggingFaceCatalog', () => {
       // 128 GB → highest-fidelity that fits becomes the recommended default.
       expect(catalog[0].variants.find((v) => v.recommended).installId).toBe(`${repo}@Q8_0`)
       expect(catalog[0].sizeBytes).toBe(8_000_000_000)
+    })
+
+    it('enriches a curated LM Studio MLX entry with one installed native-format variant', async () => {
+      const repo = 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+      fetch.mockResolvedValueOnce(blobs(repo, {
+        'model-00001-of-00003.safetensors': 5_400_000_000,
+        'model-00002-of-00003.safetensors': 5_300_000_000,
+        'model-00003-of-00003.safetensors': 5_300_000_000,
+      }))
+
+      const catalog = [{
+        id: repo,
+        key: 'qwen3.8-27b-mlx-4bit',
+        name: 'Qwen3.8 27B MLX 4-bit',
+        category: 'general',
+        format: 'mlx',
+        size: '15.0 GB'
+      }]
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio',
+        systemMemoryBytes: 128 * 1024 ** 3,
+        installedIds: [`${repo}@4bit`]
+      })
+
+      expect(catalog[0]).toMatchObject({ format: 'mlx', quant: '4bit', sizeBytes: 16_000_000_000, installed: true })
+      expect(catalog[0].variants).toEqual([expect.objectContaining({
+        format: 'mlx',
+        quant: '4bit',
+        installId: repo,
+        sizeBytes: 16_000_000_000,
+        installed: true,
+        recommended: true
+      })])
     })
 
     it('enriches an Ollama hf.co curated id and keeps the hf.co install ids', async () => {
