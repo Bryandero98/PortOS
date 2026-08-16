@@ -14,6 +14,8 @@
  * because `model` happened to be `light`.
  */
 
+import { shellQuote } from './shellQuote.js';
+
 export const DISPATCH_MODEL_TIERS = Object.freeze(['light', 'medium', 'heavy']);
 export const DISPATCH_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -188,18 +190,18 @@ export function allDispatchLabelSpecs() {
 export function formatLabelCreateCommand(name, { cli = 'gh' } = {}) {
   const spec = dispatchLabelSpec(name);
   if (!spec) return null;
-  const quoted = spec.name.includes(' ') ? `"${spec.name}"` : spec.name;
+  const quoted = shellQuote(spec.name);
   if (cli === 'glab') {
-    return `glab label create --name ${quoted} --color "#${spec.color}" --description "${spec.description}" 2>/dev/null || true`;
+    return `glab label create --name ${quoted} --color ${shellQuote(`#${spec.color}`)} --description ${shellQuote(spec.description)} 2>/dev/null || true`;
   }
-  return `gh label create ${quoted} --color ${spec.color} --description "${spec.description}" 2>/dev/null || true`;
+  return `gh label create ${quoted} --color ${spec.color} --description ${shellQuote(spec.description)} 2>/dev/null || true`;
 }
 
 /** Repeated `--label <name>` flags — one per label, never a comma list. */
 export function formatRepeatedLabelFlags(labels = []) {
   return labels
     .filter((label) => typeof label === 'string' && label.trim())
-    .map((label) => `--label ${label.trim()}`)
+    .map((label) => `--label ${shellQuote(label.trim())}`)
     .join(' ');
 }
 
@@ -215,8 +217,9 @@ export const DISPATCH_HINT_GUIDANCE = [
   'Choose each axis only when the work you just inspected justifies it. Omit an axis rather than guessing. Do NOT stamp `medium` on both by reflex, and do NOT put `[model:…]` / `[effort:…]` / `[category]` / `[SEVERITY]` in the title — those belong in labels.',
   'Create each missing hint label immediately before applying it (`gh label create <name> --color <hex> 2>/dev/null || true`; glab needs `--name` and `#<hex>`). Colors: model:light D4C5F9, model:medium A371F7, model:heavy 6F42C1, effort:low BFE5E5, effort:medium 76C7C7, effort:high 1D7874, effort:xhigh 0E4F4C, effort:max 05403D.',
   'Also apply contributor labels when the work actually fits them — independently of `model:`/`effort:`:',
-  '- `good first issue` (color 7057FF) — self-contained, well-specified, a new contributor can ship it without deep repo context. A `model:light` 40-file sweep is NOT a good first issue. Create with `gh label create "good first issue" --color 7057FF 2>/dev/null || true`.',
-  '- `help wanted` (color 008672) — extra hands welcome and the body is scoped enough to pick up cold. Create with `gh label create "help wanted" --color 008672 2>/dev/null || true`.',
+  '- `good first issue` (color 7057FF) — self-contained, well-specified, a new contributor can ship it without deep repo context. A `model:light` 40-file sweep is NOT a good first issue.',
+  '- `help wanted` (color 008672) — extra hands welcome and the body is scoped enough to pick up cold.',
+  'Create those two with the same `gh` / `glab label create` form as the dispatch hints (quote the name; glab still needs `--name` and `#<hex>`).',
   'Use repeated `--label` flags (one per label). Preserve existing category/scope labels (`plan`, `ux`, `bug`, `tests`, `layered-intelligence`, …). Never relabel a deduplicated existing issue.',
 ].join('\n');
 

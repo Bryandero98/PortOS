@@ -112,14 +112,14 @@ describe('label specs and CLI formatting', () => {
 
   it('formats idempotent gh / glab create commands with slashdo colors', () => {
     expect(formatLabelCreateCommand('model:light')).toBe(
-      'gh label create model:light --color D4C5F9 --description "Dispatch capability: cheapest capable coding model" 2>/dev/null || true',
+      "gh label create model:light --color D4C5F9 --description 'Dispatch capability: cheapest capable coding model' 2>/dev/null || true",
     );
     expect(formatLabelCreateCommand('effort:max', { cli: 'glab' })).toBe(
-      'glab label create --name effort:max --color "#05403D" --description "Dispatch reasoning effort: maximum" 2>/dev/null || true',
+      "glab label create --name effort:max --color '#05403D' --description 'Dispatch reasoning effort: maximum' 2>/dev/null || true",
     );
     expect(formatLabelCreateCommand('plan')).toBe(null);
     expect(formatLabelCreateCommand(GOOD_FIRST_ISSUE_LABEL)).toBe(
-      'gh label create "good first issue" --color 7057FF --description "Self-contained work a new contributor can ship without deep repo context" 2>/dev/null || true',
+      "gh label create 'good first issue' --color 7057FF --description 'Self-contained work a new contributor can ship without deep repo context' 2>/dev/null || true",
     );
   });
 
@@ -142,6 +142,8 @@ describe('label specs and CLI formatting', () => {
       .toBe('--label plan --label model:light --label effort:max');
     expect(formatRepeatedLabelFlags(['ux', '', null, 'plan'])).toBe('--label ux --label plan');
     expect(formatRepeatedLabelFlags([])).toBe('');
+    expect(formatRepeatedLabelFlags([GOOD_FIRST_ISSUE_LABEL, HELP_WANTED_LABEL]))
+      .toBe("--label 'good first issue' --label 'help wanted'");
   });
 });
 
@@ -156,6 +158,7 @@ describe('shared guidance', () => {
     expect(DISPATCH_HINT_GUIDANCE).toContain('good first issue');
     expect(DISPATCH_HINT_GUIDANCE).toContain('help wanted');
     expect(DISPATCH_HINT_GUIDANCE).toContain('NOT a good first issue');
+    expect(DISPATCH_HINT_GUIDANCE).toContain('glab label create');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('model-light|model-medium|model-heavy');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('effort-low|effort-medium|effort-high|effort-xhigh|effort-max');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('good-first-issue');
