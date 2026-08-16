@@ -5,7 +5,7 @@ import toast from '../components/ui/Toast';
 import {
   getImageModelStatuses, getVideoModelStatuses,
   verifyImageModels, verifyVideoModels, repairImageModel, repairVideoModel,
-  repairTextEncoder, repairIcLora,
+  repairTextEncoder, repairTextEncoderOption, repairIcLora,
 } from '../services/apiImageVideo.js';
 
 // Sentinel `modelId` used to drive a text-encoder download instead of a model
@@ -13,6 +13,21 @@ import {
 // rewrites to the dedicated /text-encoder/download endpoint. Exported so
 // callers and the hook agree on the magic string.
 export const TEXT_ENCODER_DOWNLOAD_ID = '__text_encoder__';
+
+// Namespace for a substitutable prompt-conditioner download id (#4081). The
+// video form passes `textEncoderDownloadId(option.id)` to start()/repair(); the
+// prefix keeps those ids from ever colliding with a registry model id.
+export const TEXT_ENCODER_OPTION_PREFIX = '__text_encoder_option__:';
+export const textEncoderDownloadId = (id) => `${TEXT_ENCODER_OPTION_PREFIX}${id}`;
+// The registry id inside a namespaced download id, or `null` when this isn't
+// one. One place decides both questions, so the URL builder, the repair
+// dispatch and the status lookup can't disagree about what counts as a
+// conditioner id or where the bare id starts.
+const textEncoderOptionIdOf = (downloadId) => (
+  String(downloadId).startsWith(TEXT_ENCODER_OPTION_PREFIX)
+    ? String(downloadId).slice(TEXT_ENCODER_OPTION_PREFIX.length)
+    : null
+);
 
 // IC-LoRA remix weights (issue #3100) are downloadable but aren't registry
 // models, so — like the text encoder — they route to a dedicated endpoint.
@@ -34,6 +49,14 @@ export const buildDownloadUrl = (kind, modelId, force = false) => {
   if (kind === 'video' && isIcLoraMode(modelId)) {
     return `/api/video-gen/ic-loras/${encodeURIComponent(modelId)}/download${q}`;
   }
+  // Substitutable prompt conditioners (#4081) are downloadable but aren't
+  // registry models either. Identified by the namespace the caller wraps the
+  // registry id in, rather than by the bare id — otherwise a future model whose
+  // id happened to match one would be misrouted.
+  const encoderOptionId = kind === 'video' ? textEncoderOptionIdOf(modelId) : null;
+  if (encoderOptionId) {
+    return `/api/video-gen/text-encoders/${encodeURIComponent(encoderOptionId)}/download${q}`;
+  }
   return `/api/${kind}-gen/models/${encodeURIComponent(modelId)}/download${q}`;
 };
 
@@ -44,6 +67,12 @@ export const buildDownloadUrl = (kind, modelId, force = false) => {
 // opens an EventSource against the download endpoint. When the stream
 // emits a terminal frame we automatically refetch /models/status so the
 // badge flips to "Available" without the caller wiring that up.
+//
+// `startWhenIdle(modelId)` is the same pull expressed as an intent rather than
+// a command — for a picker where choosing an option IS the request for its
+// weights. It waits for the cache verdict, skips an already-resident repo, and
+// queues behind whatever owns the lane; `queuedModelId` is what a badge renders
+// while it waits.
 export function useModelDownloadStatus({ kind = 'image' } = {}) {
   const [statuses, setStatuses] = useState(null);
   const [extra, setExtra] = useState({}); // video: { textEncoder: {...} }
@@ -72,6 +101,7 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
       setStatuses(Array.isArray(body?.models) ? body.models : []);
       setExtra({
         textEncoder: body?.textEncoder || null,
+        textEncoderOptions: Array.isArray(body?.textEncoderOptions) ? body.textEncoderOptions : [],
         icLoras: Array.isArray(body?.icLoras) ? body.icLoras : [],
       });
     } else {
@@ -150,13 +180,15 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     // The shared text encoder isn't a model id, so its repair hits the scalar
     // /text-encoder/repair endpoint; the sentinel `start()` below already maps
     // to the dedicated /text-encoder/download SSE for the clean re-fetch.
-    const isTextEncoder = kind === 'video' && modelId === TEXT_ENCODER_DOWNLOAD_ID;
-    const isIcLora = kind === 'video' && isIcLoraMode(modelId);
-    const run = isTextEncoder
-      ? () => repairTextEncoder({ deep })
-      : isIcLora
-        ? () => repairIcLora(modelId, { deep })
-        : () => (kind === 'video' ? repairVideoModel : repairImageModel)(modelId, { deep });
+    const run = () => {
+      if (kind === 'video') {
+        if (modelId === TEXT_ENCODER_DOWNLOAD_ID) return repairTextEncoder({ deep });
+        if (isIcLoraMode(modelId)) return repairIcLora(modelId, { deep });
+        const encoderOptionId = textEncoderOptionIdOf(modelId);
+        if (encoderOptionId) return repairTextEncoderOption(encoderOptionId, { deep });
+      }
+      return (kind === 'video' ? repairVideoModel : repairImageModel)(modelId, { deep });
+    };
     const result = await run().catch((err) => {
       toast.error(err?.message || 'Repair failed');
       return null;
@@ -195,8 +227,17 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     const found = list.find((s) => s.id === modelId);
     if (found) return found;
     const icList = Array.isArray(extra.icLoras) ? extra.icLoras : [];
-    return icList.find((s) => s.id === modelId) || null;
-  }, [statuses, extra.icLoras]);
+    const ic = icList.find((s) => s.id === modelId);
+    if (ic) return ic;
+    // Conditioner entries are keyed by their BARE registry id in the status
+    // payload, so unwrap the download namespace before matching.
+    const encoderOptionId = textEncoderOptionIdOf(modelId);
+    if (encoderOptionId) {
+      const encoders = Array.isArray(extra.textEncoderOptions) ? extra.textEncoderOptions : [];
+      return encoders.find((s) => s.id === encoderOptionId) || null;
+    }
+    return null;
+  }, [statuses, extra.icLoras, extra.textEncoderOptions]);
 
   const activeStatus = useMemo(() => {
     if (!activeModelId) return null;
@@ -210,6 +251,29 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     return findEntry(modelId);
   }, [findEntry, activeModelId, activeStatus]);
 
+  // "Download this unless it's already here" — the shape a picker needs when
+  // choosing an option IS the request to fetch its weights, with no separate
+  // Download click. Lives here rather than in the caller because both things it
+  // has to wait on are this hook's: the cache verdict (`statuses` may still be
+  // loading, and starting on an unknown verdict would re-pull a resident
+  // multi-GB repo) and the single EventSource lane (`start` would otherwise
+  // hijack a download already in flight).
+  //
+  // Passing a falsy id clears a queued intent, so a caller whose selection moved
+  // on — to an option with no download of its own, or to another id, which
+  // replaces the queue — doesn't strand a pull nobody is waiting for any more.
+  const [queuedModelId, setQueuedModelId] = useState(null);
+  const startWhenIdle = useCallback((modelId) => { setQueuedModelId(modelId || null); }, []);
+  useEffect(() => {
+    if (!queuedModelId || loading || activeModelId) return;
+    const entry = findEntry(queuedModelId);
+    // Cleared either way: with the verdict in, the question is answered. A
+    // missing entry means the id is in no downloadable collection, so there is
+    // nothing to start and nothing to keep waiting for.
+    setQueuedModelId(null);
+    if (entry?.cached === false) start(queuedModelId);
+  }, [queuedModelId, loading, activeModelId, findEntry, start]);
+
   return {
     statuses,
     extra,
@@ -217,6 +281,8 @@ export function useModelDownloadStatus({ kind = 'image' } = {}) {
     statusError,
     refresh: fetchStatuses,
     start,
+    startWhenIdle,
+    queuedModelId,
     cancel,
     verify,
     verifying,

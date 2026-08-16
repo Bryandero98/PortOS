@@ -19,10 +19,11 @@ export const BACKENDS = ['ollama', 'lmstudio'];
 export const isBackend = (b) => BACKENDS.includes(b);
 
 export const LOCAL_LLM_CATEGORIES = [
-  { id: 'chat', label: 'Chat' },
-  { id: 'reasoning', label: 'Reasoning' },
-  { id: 'coding', label: 'Coding' },
+  { id: 'general', label: 'General purpose' },
+  { id: 'coding', label: 'Coding & agents' },
+  { id: 'reasoning', label: 'Reasoning & analysis' },
   { id: 'vision', label: 'Image Analysis' },
+  { id: 'chat', label: 'Chat & voice' },
   // Audio/music GENERATION models (ACE-Step, MusicGen, AudioLDM2, Stable Audio,
   // Magenta…). These are NOT GGUF chat models and don't run on Ollama/LM Studio
   // — the Hugging Face search relaxes its GGUF filter for this category and the
@@ -36,8 +37,15 @@ export const LOCAL_LLM_CATEGORIES = [
   { id: 'multilingual', label: 'Multilingual' }
 ];
 
-// Each entry: { key, name, category, params, size, family, description, capabilities,
-//               context?, ollama?, lmstudio? }
+// Each entry: { key, name, category, recommendedFor?, featured?, params, size,
+//               family, description, capabilities, context?, ollama?, lmstudio? }
+//
+// `category` is the one primary lane that groups a model in the unfiltered
+// picker. `recommendedFor` is its intentionally broader set of use-case lanes:
+// a general model can surface in Coding or Vision without being mislabeled as a
+// specialist, while `capabilities` remains the factual modality/tool badge set.
+// It must include the primary category. `featured` is reserved for a deliberate
+// first-choice recommendation, not a measure of raw benchmark scores.
 // `ollama` / `lmstudio` are the exact pull/download ids for that backend.
 // A missing id means there is no well-known build of that model for that
 // backend (the user can still free-text install one).
@@ -58,6 +66,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'functiongemma-270m',
     name: 'FunctionGemma 270M',
     category: 'lightweight',
+    recommendedFor: ['lightweight'],
     params: '270M',
     size: '301 MB',
     family: 'gemma',
@@ -71,6 +80,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'gemma-3-270m-it',
     name: 'Gemma 3 270M IT',
     category: 'lightweight',
+    recommendedFor: ['lightweight'],
     params: '270M',
     size: '253 MB',
     family: 'gemma',
@@ -83,6 +93,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'lfm2.5-thinking-1.2b',
     name: 'LFM2.5 Thinking 1.2B',
     category: 'lightweight',
+    recommendedFor: ['lightweight', 'reasoning'],
     params: '1.2B',
     size: '731 MB',
     family: 'lfm2',
@@ -95,6 +106,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'qwen2.5-3b',
     name: 'Qwen2.5 3B',
     category: 'lightweight',
+    recommendedFor: ['lightweight', 'chat', 'multilingual'],
     params: '3B',
     size: '2.0 GB',
     family: 'qwen',
@@ -110,6 +122,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'granite4.1-3b',
     name: 'Granite 4.1 3B',
     category: 'lightweight',
+    recommendedFor: ['lightweight'],
     params: '3B',
     size: '2.1 GB',
     family: 'granite',
@@ -123,6 +136,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'nemotron-3-nano-4b',
     name: 'Nemotron 3 Nano 4B',
     category: 'lightweight',
+    recommendedFor: ['lightweight', 'reasoning'],
     params: '4B',
     size: '2.8 GB',
     family: 'nemotron',
@@ -136,6 +150,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'qwen3.5-4b',
     name: 'Qwen3.5 4B',
     category: 'lightweight',
+    recommendedFor: ['lightweight', 'general', 'vision', 'multilingual'],
     params: '4B',
     size: '3.4 GB',
     family: 'qwen',
@@ -145,11 +160,12 @@ export const LOCAL_LLM_CATALOG = [
     ollama: 'qwen3.5:4b',
     lmstudio: 'lmstudio-community/Qwen3.5-4B-GGUF'
   },
-  // ── Everyday chat tier (laptop-class: 16–32GB) ──
+  // ── General-purpose laptop tier (16–32GB) ──
   {
     key: 'lfm2.5-8b-a1b',
     name: 'LFM2.5 8B-A1B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'chat', 'reasoning'],
     params: '8B / 1B active',
     size: '5.2 GB',
     family: 'lfm2',
@@ -162,6 +178,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'hermes-3-llama-3.1-8b',
     name: 'Hermes 3 8B',
     category: 'chat',
+    recommendedFor: ['chat'],
     params: '8B',
     size: '4.9 GB',
     family: 'hermes',
@@ -173,7 +190,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'granite4.1-8b',
     name: 'Granite 4.1 8B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'multilingual'],
     params: '8B',
     size: '5.3 GB',
     family: 'granite',
@@ -186,7 +204,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'ministral-3-8b',
     name: 'Ministral 3 8B Instruct',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'vision', 'multilingual'],
     params: '8B',
     size: '6.0 GB',
     family: 'ministral',
@@ -199,7 +218,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'qwen3.5-9b',
     name: 'Qwen3.5 9B',
-    category: 'multilingual',
+    category: 'general',
+    recommendedFor: ['general', 'vision', 'multilingual'],
     params: '9B',
     size: '6.6 GB',
     family: 'qwen',
@@ -212,7 +232,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'gemma4-12b',
     name: 'Gemma 4 12B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'vision'],
     params: '12B',
     size: '7.6 GB',
     family: 'gemma',
@@ -225,7 +246,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'ministral-3-14b',
     name: 'Ministral 3 14B Instruct',
-    category: 'reasoning',
+    category: 'general',
+    recommendedFor: ['general', 'reasoning', 'vision'],
     params: '14B',
     size: '9.1 GB',
     family: 'ministral',
@@ -239,6 +261,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'gpt-oss-20b',
     name: 'GPT-OSS 20B',
     category: 'reasoning',
+    recommendedFor: ['reasoning'],
     params: '20B',
     size: '12 GB',
     family: 'gpt-oss',
@@ -247,27 +270,33 @@ export const LOCAL_LLM_CATALOG = [
     ollama: 'gpt-oss:20b',
     lmstudio: 'lmstudio-community/gpt-oss-20b-GGUF'
   },
-  // ── Large narrative / long-context tier (workstation-class: 32–128GB unified memory) ──
+  // ── Large general-purpose / long-context tier (32–128GB unified memory) ──
   // Best suited for whole-manuscript editorial review, where prose quality and a
   // long context window matter most. To actually fit the manuscript, raise Ollama's
   // context window (OLLAMA_CONTEXT_LENGTH) — the default 4K window silently truncates.
   {
-    key: 'qwen3.6-27b',
-    name: 'Qwen3.6 27B',
-    category: 'chat',
+    key: 'qwen3.8-27b',
+    name: 'Qwen3.8 27B',
+    category: 'general',
+    recommendedFor: ['general', 'coding', 'reasoning', 'vision', 'multilingual'],
+    featured: {
+      label: 'Best overall',
+      description: 'Flagship local pick for general work, coding and agents, reasoning, and image analysis.'
+    },
     params: '27B',
     size: '17 GB',
     family: 'qwen',
-    description: 'Dense current-generation Qwen with a 256K context, vision, tools, and a thinking mode — the strongest all-round narrative editor that still fits 32GB.',
-    capabilities: ['chat', 'reasoning', 'tools', 'vision'],
+    description: 'Dense current-generation Qwen with a 256K context, strong coding and agent work, vision, tools, multilingual support, and a thinking mode — the strongest all-round local model that still fits 32GB.',
+    capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision', 'multilingual'],
     context: 262144,
-    ollama: 'qwen3.6:27b',
-    lmstudio: 'lmstudio-community/Qwen3.6-27B-GGUF'
+    ollama: 'hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M',
+    lmstudio: 'unsloth/Qwen3.8-27B-GGUF'
   },
   {
     key: 'gemma4-26b-a4b',
     name: 'Gemma 4 26B-A4B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'vision'],
     params: '26B / 4B active',
     size: '18 GB',
     family: 'gemma',
@@ -280,7 +309,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'muse-glimmer-30b',
     name: 'Muse Glimmer 30B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'reasoning', 'vision'],
     params: '30B',
     size: '18 GB',
     family: 'muse-glimmer',
@@ -293,7 +323,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'glm-4.7-flash',
     name: 'GLM-4.7 Flash',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'reasoning'],
     params: '30B class',
     size: '19 GB',
     family: 'glm',
@@ -306,6 +337,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'olmo-3.1-32b',
     name: 'Olmo 3.1 32B Instruct',
     category: 'reasoning',
+    recommendedFor: ['reasoning'],
     params: '32B',
     size: '20 GB',
     family: 'olmo',
@@ -318,7 +350,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'gemma4-31b',
     name: 'Gemma 4 31B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'vision'],
     params: '31B',
     size: '20 GB',
     family: 'gemma',
@@ -332,6 +365,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'nemotron-3-nano-30b-a3b',
     name: 'Nemotron 3 Nano 30B-A3B',
     category: 'reasoning',
+    recommendedFor: ['reasoning'],
     params: '30B / 3B active',
     size: '24 GB',
     family: 'nemotron',
@@ -344,7 +378,8 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'qwen3.5-122b-a10b',
     name: 'Qwen3.5 122B-A10B',
-    category: 'chat',
+    category: 'general',
+    recommendedFor: ['general', 'reasoning', 'vision', 'multilingual'],
     params: '122B / 10B active',
     size: '81 GB',
     family: 'qwen',
@@ -359,6 +394,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'ornith-9b',
     name: 'Ornith 1.0 9B',
     category: 'coding',
+    recommendedFor: ['coding'],
     params: '9B',
     size: '5.6 GB',
     family: 'ornith',
@@ -372,6 +408,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'devstral-small-2-24b',
     name: 'Devstral Small 2 24B',
     category: 'coding',
+    recommendedFor: ['coding', 'vision'],
     params: '24B',
     size: '15 GB',
     family: 'devstral',
@@ -384,6 +421,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'north-mini-code-1.0',
     name: 'North Mini Code 1.0 30B-A3B',
     category: 'coding',
+    recommendedFor: ['coding', 'reasoning'],
     params: '30B / 3B active',
     size: '19 GB',
     family: 'north-mini-code',
@@ -396,6 +434,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'ornith-35b',
     name: 'Ornith 1.0 35B',
     category: 'coding',
+    recommendedFor: ['coding'],
     params: '35B',
     size: '21 GB',
     family: 'ornith',
@@ -409,6 +448,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'nex-n2-mini',
     name: 'Nex-N2-mini 35B-A3B',
     category: 'coding',
+    recommendedFor: ['coding', 'reasoning', 'vision'],
     params: '35B / 3B active',
     size: '22 GB',
     family: 'nex-n2',
@@ -421,6 +461,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'qwen3.6-35b-a3b',
     name: 'Qwen3.6 35B-A3B',
     category: 'coding',
+    recommendedFor: ['coding', 'vision'],
     params: '35B / 3B active',
     size: '24 GB',
     family: 'qwen',
@@ -435,6 +476,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'minicpm-v4.6',
     name: 'MiniCPM-V 4.6 (vision)',
     category: 'vision',
+    recommendedFor: ['vision'],
     params: '1B',
     size: '1.6 GB',
     family: 'minicpm',
@@ -448,6 +490,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'qwen3-vl-2b',
     name: 'Qwen3-VL 2B (vision)',
     category: 'vision',
+    recommendedFor: ['vision'],
     params: '2B',
     size: '1.9 GB',
     family: 'qwen',
@@ -461,6 +504,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'qwen3-vl-8b',
     name: 'Qwen3-VL 8B (vision)',
     category: 'vision',
+    recommendedFor: ['vision'],
     params: '8B',
     size: '6.1 GB',
     family: 'qwen',
@@ -474,6 +518,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'glm-4.6v-flash',
     name: 'GLM-4.6V Flash',
     category: 'vision',
+    recommendedFor: ['vision'],
     params: 'Vision',
     size: '7.1 GB',
     family: 'glm',
@@ -485,6 +530,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'qwen3-vl-30b-a3b',
     name: 'Qwen3-VL 30B-A3B (vision)',
     category: 'vision',
+    recommendedFor: ['vision'],
     params: '30B / 3B active',
     size: '20 GB',
     family: 'qwen',
@@ -503,6 +549,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'embeddinggemma-300m',
     name: 'EmbeddingGemma 300M',
     category: 'embedding',
+    recommendedFor: ['embedding'],
     params: '300M',
     size: '622 MB',
     family: 'embedding',
@@ -515,6 +562,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'nomic-embed-text',
     name: 'Nomic Embed Text',
     category: 'embedding',
+    recommendedFor: ['embedding'],
     params: '137M',
     size: '274 MB',
     family: 'embedding',
@@ -527,6 +575,7 @@ export const LOCAL_LLM_CATALOG = [
     key: 'nomic-embed-text-v2-moe',
     name: 'Nomic Embed Text v2 MoE',
     category: 'embedding',
+    recommendedFor: ['embedding'],
     params: '0.5B',
     size: '344 MB',
     family: 'embedding',
@@ -603,27 +652,34 @@ const normalizeFor = (backend, id) =>
  *
  * @param {string} backend - 'ollama' | 'lmstudio'
  * @param {string[]} [installedIds] - ids currently installed on that backend
- * @returns {Array<{ id, key, name, params, size, family, description, capabilities, contextLength, installed }>}
+ * @returns {Array<{ id, key, name, category, recommendedFor, featured, params, size, family, description, capabilities, contextLength, installed }>}
  */
 export function getCatalog(backend, installedIds = []) {
   if (!isBackend(backend)) return [];
   const installedNorm = new Set(installedIds.map((id) => normalizeFor(backend, id)));
   return LOCAL_LLM_CATALOG
     .filter((entry) => entry[backend])
-    .map((entry) => ({
-      id: entry[backend],
-      key: entry.key,
-      name: entry.name,
-      category: entry.category,
-      params: entry.params,
-      size: entry.size,
-      family: entry.family,
-      description: entry.description,
-      capabilities: entry.capabilities,
-      // Native context window (tokens), when it's a documented spec; null otherwise.
-      contextLength: Number.isFinite(entry.context) ? entry.context : null,
-      installed: installedNorm.has(normalizeFor(backend, entry[backend]))
-    }));
+    .map((entry) => {
+      const recommendedFor = Array.isArray(entry.recommendedFor) && entry.recommendedFor.length
+        ? [...entry.recommendedFor]
+        : [entry.category];
+      return {
+        id: entry[backend],
+        key: entry.key,
+        name: entry.name,
+        category: entry.category,
+        recommendedFor,
+        featured: entry.featured ? { ...entry.featured } : null,
+        params: entry.params,
+        size: entry.size,
+        family: entry.family,
+        description: entry.description,
+        capabilities: entry.capabilities,
+        // Native context window (tokens), when it's a documented spec; null otherwise.
+        contextLength: Number.isFinite(entry.context) ? entry.context : null,
+        installed: installedNorm.has(normalizeFor(backend, entry[backend]))
+      };
+    });
 }
 
 /**
@@ -638,7 +694,9 @@ export function searchCatalog(backend, query, installedIds = []) {
     m.name.toLowerCase().includes(q) ||
     m.id.toLowerCase().includes(q) ||
     m.category.toLowerCase().includes(q) ||
+    m.recommendedFor.some((category) => category.toLowerCase().includes(q)) ||
     m.family.toLowerCase().includes(q) ||
+    m.capabilities.some((capability) => capability.toLowerCase().includes(q)) ||
     m.description.toLowerCase().includes(q));
 }
 

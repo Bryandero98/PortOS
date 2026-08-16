@@ -15,9 +15,9 @@
  * O(n²) tag explosion can't happen.
  *
  * The two edge-bearing views need every record's tags and summary, so they go
- * through `loadNodes()` (a full read of each entity store). The search index
- * needs only `{ id, label, brainType }`, so it reads the cached field
- * projections in `brainSearchIndex` instead — focusing the graph's search box
+ * through `loadNodes()` (the cached field projections for each entity store).
+ * The search index needs only `{ id, label, brainType }`, so it reads those
+ * same projections in `brainSearchIndex` instead — focusing the graph's search box
  * no longer walks and JSON-parses every record body and Daily Log entry on disk
  * (issue #3507).
  */
@@ -28,7 +28,7 @@ import { loadBridgeMap, bridgeKey } from './brainMemoryBridge.js';
 import { getBrainProjections, journalHasBody } from './brainSearchIndex.js';
 import { getGoals } from './identity.js';
 
-const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories'];
+const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'songs'];
 
 // Edges shown per node are capped so a densely-tagged hub can't reintroduce the
 // combinatorial blow-up inside a bounded view.
@@ -60,6 +60,26 @@ const clampLimit = (limit, fallback) => {
 // projection-backed search index, so the two can never drift on what a node is
 // called or which records are skipped.
 const entityLabel = (record) => record.name || record.title || '(untitled)';
+
+// One-line gist for the node tooltip / detail panel. Every candidate is
+// type-checked rather than `||`-chained straight through, because `content` is
+// a STRING on memories/journals but an OBJECT (`{ format, text }`) on a
+// SongBook record — an untyped chain would put `[object Object]` in the
+// tooltip. `artist` sits ahead of `notes` so a song reads as "who plays it"
+// rather than whatever practice note happens to be attached.
+//
+// Kept identical to `BODY_FIELDS` in client/src/components/brain/tabs/BrainGraph.jsx:
+// the detail panel falls back to this server-computed summary when the full
+// record hasn't loaded, so a different field order would make the text jump on
+// load. `description` is inert here (no entity store carries it — goals set
+// their summary directly below) but stays in the list so the two can't drift.
+const SUMMARY_FIELDS = ['description', 'context', 'oneLiner', 'artist', 'notes', 'content'];
+const entitySummary = (record) => {
+  for (const field of SUMMARY_FIELDS) {
+    if (typeof record[field] === 'string' && record[field]) return record[field];
+  }
+  return '';
+};
 const goalLabel = (goal) => goal.title || '(untitled goal)';
 const isInactiveGoal = (goal) => goal.status === 'completed' || goal.status === 'abandoned';
 const journalDate = (entry) => entry.id || entry.date;
@@ -67,21 +87,21 @@ const journalDate = (entry) => entry.id || entry.date;
 // Load all non-archived brain entities as graph nodes (no edges).
 async function loadNodes() {
   const nodes = [];
-  for (const type of ENTITY_TYPES) {
-    const records = await brainStorage.getAll(type);
-    for (const record of records) {
+  const perType = await Promise.all(ENTITY_TYPES.map((type) => getBrainProjections(type, { ranked: false })));
+  ENTITY_TYPES.forEach((type, i) => {
+    for (const record of perType[i]) {
       if (record.archived) continue;
       nodes.push({
         id: record.id,
         brainType: type,
         label: entityLabel(record),
-        summary: record.context || record.oneLiner || record.notes || record.content || '',
+        summary: entitySummary(record),
         tags: record.tags || [],
         importance: 0.6,
         status: record.status
       });
     }
-  }
+  });
 
   // Goals (identity system): active goals only (completed/abandoned excluded)
   const goalsData = await getGoals().catch(() => null);

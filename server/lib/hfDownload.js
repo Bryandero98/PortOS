@@ -9,7 +9,9 @@
 //
 // Wire protocol parses the stdout/stderr lines from scripts/hf_download_repo.py:
 //   STAGE:list                                  -> { type: 'stage', stage: 'list' }
-//   STAGE:download:<n>/<total>:<file>           -> stage + progress n/total
+//   STAGE:download:<n>/<total>:<file>           -> progress at the START of file n
+//   STAGE:bytes:<n>/<total>:<got>/<size>:<file> -> byte progress for file n
+//   STAGE:verify:<n>/<total>:<file>             -> transfer done; committing/hashing
 //   STAGE:complete:<bytes>                      -> { type: 'complete', sizeBytes }
 //   USER_ERROR:<kind>:<detail>                  -> typed-error capture; <detail>
 //                                                  is the repo id for list/auth
@@ -17,8 +19,11 @@
 //                                                  for per-file download errors
 //   ❌ <prose>                                   -> errorMessage
 // Unknown lines fall through as raw `{ type: 'log', message }`.
+//
+// parseHfDownloadLine is the single decoder — downloadHfRepo and the tests
+// share it so a wire-shape change cannot drift between them.
 
-import { spawn } from 'node:child_process';
+import { spawn } from './childProcess.js';
 import { join } from 'node:path';
 import {
   resolveFlux2Python, isFlux2VenvHealthy,
@@ -26,11 +31,121 @@ import {
 } from './pythonSetup.js';
 import { PATHS } from './fileUtils.js';
 import { getHfTokenInfo } from './hfToken.js';
-import { safeChildProcessEnv } from './processEnv.js';
+import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
 import { createLineReader } from './streamLines.js';
 import { getSettings } from '../services/settings.js';
 
 const HELPER_SCRIPT = join(PATHS.root, 'scripts', 'hf_download_repo.py');
+
+/**
+ * Decode one helper stdout/stderr line into a typed action.
+ *
+ *   { type: 'event', event }         — emit via onEvent
+ *   { type: 'complete', sizeBytes }  — record resident bytes; do not emit yet
+ *   { type: 'user_error', errorKind }
+ *   { type: 'error_message', message }
+ *   { type: 'ignore' }
+ */
+export function parseHfDownloadLine(raw) {
+  const line = String(raw).trim();
+  if (!line) return { type: 'ignore' };
+
+  if (line.startsWith('STAGE:')) {
+    const body = line.slice('STAGE:'.length);
+    const colon = body.indexOf(':');
+    const stage = colon === -1 ? body : body.slice(0, colon);
+    const detail = colon === -1 ? '' : body.slice(colon + 1);
+
+    if (stage === 'download') {
+      // `3/47:model-00003-of-00047.safetensors` — this fires when a file
+      // STARTS, so the bar sits at the beginning of that file. Using
+      // step/total here made a 1-file 50 GB pull report 100% for the entire
+      // transfer.
+      const m = detail.match(/^(\d+)\/(\d+):(.+)$/);
+      if (m) {
+        const step = parseInt(m[1], 10);
+        const total = parseInt(m[2], 10);
+        return {
+          type: 'event',
+          event: {
+            type: 'progress',
+            stage: 'download',
+            progress: total > 0 ? (step - 1) / total : 0,
+            step,
+            total,
+            file: m[3],
+          },
+        };
+      }
+    }
+
+    if (stage === 'bytes') {
+      // `1/1:26843545600/51506295440:qwen3vl_….safetensors`
+      const m = detail.match(/^(\d+)\/(\d+):(\d+)\/(\d+):(.+)$/);
+      if (m) {
+        const step = parseInt(m[1], 10);
+        const files = parseInt(m[2], 10);
+        const downloaded = parseInt(m[3], 10);
+        const totalBytes = parseInt(m[4], 10);
+        const fileFrac = totalBytes > 0 ? Math.min(1, downloaded / totalBytes) : 0;
+        return {
+          type: 'event',
+          event: {
+            type: 'progress',
+            stage: 'download',
+            progress: files > 0 ? ((step - 1) + fileFrac) / files : fileFrac,
+            step,
+            total: files,
+            downloaded,
+            totalBytes,
+            file: m[5],
+          },
+        };
+      }
+    }
+
+    if (stage === 'verify') {
+      const m = detail.match(/^(\d+)\/(\d+):(.+)$/);
+      if (m) {
+        const step = parseInt(m[1], 10);
+        const total = parseInt(m[2], 10);
+        return {
+          type: 'event',
+          event: {
+            type: 'progress',
+            stage: 'verify',
+            progress: total > 0 ? step / total : 1,
+            step,
+            total,
+            file: m[3],
+          },
+        };
+      }
+    }
+
+    if (stage === 'complete') {
+      const bytes = parseInt(detail, 10);
+      return { type: 'complete', sizeBytes: Number.isFinite(bytes) ? bytes : 0 };
+    }
+
+    return { type: 'event', event: { type: 'stage', stage, detail } };
+  }
+
+  if (line.startsWith('USER_ERROR:')) {
+    const body = line.slice('USER_ERROR:'.length);
+    const colon = body.indexOf(':');
+    return { type: 'user_error', errorKind: colon === -1 ? body : body.slice(0, colon) };
+  }
+
+  if (line.startsWith('❌')) {
+    return { type: 'error_message', message: line.replace(/^❌\s*/, '') };
+  }
+
+  // Mirrored by STAGE:download — the helper prints both so older regexes still match.
+  if (line.startsWith('DOWNLOAD:')) return { type: 'ignore' };
+
+  return { type: 'event', event: { type: 'log', message: line } };
+}
 
 // Resolve a Python interpreter with huggingface_hub installed. Order: FLUX.2
 // venv (the modern path; always has hf_hub via diffusers), then the
@@ -107,61 +222,30 @@ export function downloadHfRepo({ repo, revision = null, only = null, pythonPath:
     });
 
     return new Promise((resolve) => {
-      proc = spawn(pythonPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      proc = spawn(pythonPath, args, safeChildProcessOptions({ env, stdio: ['ignore', 'pipe', 'pipe'] }));
       // Window: kill() could have fired between the second `if (killed)`
       // check and the spawn returning the proc handle. Re-check now that we
       // own a proc — if it raced, kill it immediately.
       if (killed) proc.kill('SIGTERM');
 
       const handleLine = (raw) => {
-        const line = raw.trim();
-        if (!line) return;
-        if (line.startsWith('STAGE:')) {
-          // STAGE:<name>[:rest]. Special-case the file-progress + complete
-          // shapes so the UI can render a real progress bar; everything
-          // else falls through as a generic stage event.
-          const body = line.slice('STAGE:'.length);
-          const colon = body.indexOf(':');
-          const stage = colon === -1 ? body : body.slice(0, colon);
-          const detail = colon === -1 ? '' : body.slice(colon + 1);
-          if (stage === 'download') {
-            // detail looks like `3/47:model-00003-of-00047.safetensors`
-            const m = detail.match(/^(\d+)\/(\d+):(.+)$/);
-            if (m) {
-              const step = parseInt(m[1], 10);
-              const total = parseInt(m[2], 10);
-              onEvent({
-                type: 'progress',
-                progress: total > 0 ? step / total : 0,
-                step,
-                total,
-                file: m[3],
-              });
-              return;
-            }
-          }
-          if (stage === 'complete') {
-            const bytes = parseInt(detail, 10);
-            if (Number.isFinite(bytes)) sizeBytes = bytes;
-            // Don't emit a `complete` event here — wait for the close
-            // handler so a successful exit code is required.
-            return;
-          }
-          onEvent({ type: 'stage', stage, detail });
+        const parsed = parseHfDownloadLine(raw);
+        if (parsed.type === 'ignore') return;
+        if (parsed.type === 'complete') {
+          sizeBytes = parsed.sizeBytes;
+          // Don't emit a `complete` event here — wait for the close
+          // handler so a successful exit code is required.
           return;
         }
-        if (line.startsWith('USER_ERROR:')) {
-          const body = line.slice('USER_ERROR:'.length);
-          const colon = body.indexOf(':');
-          errorKind = colon === -1 ? body : body.slice(0, colon);
+        if (parsed.type === 'user_error') {
+          errorKind = parsed.errorKind;
           return;
         }
-        if (line.startsWith('❌')) {
-          errorMessage = line.replace(/^❌\s*/, '');
+        if (parsed.type === 'error_message') {
+          errorMessage = parsed.message;
           return;
         }
-        if (line.startsWith('DOWNLOAD:')) return; // mirrored by STAGE:download
-        onEvent({ type: 'log', message: line });
+        onEvent(parsed.event);
       };
 
       // Line-buffer across chunks so a STAGE:/USER_ERROR: marker split across

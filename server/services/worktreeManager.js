@@ -12,13 +12,26 @@
 import { existsSync, realpathSync } from 'fs';
 import { readdir, rm, stat } from 'fs/promises';
 import { join } from 'path';
-import { ensureDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
+import { ensureDir, isPathInsideDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, doneSentinelName } from '../lib/agentSentinel.js';
 import { execGit } from '../lib/execGit.js';
 import { createKeyCachedQueue } from '../lib/createKeyCachedQueue.js';
+import { enforceSafeBranchUpstream } from '../lib/branchUpstreamGuard.js';
+import { isHumanClaimWorktree, worktreeAgentId, worktreeOwnershipReason } from '../lib/worktreeOwnership.js';
 import { ensureInstanceId } from './instances.js';
 
+export { isHumanClaimWorktree } from '../lib/worktreeOwnership.js';
+
 const WORKTREES_DIR = PATHS.worktrees;
+// `git worktree list --porcelain` reports POSIX separators on every platform —
+// `H:/repo/data/cos/worktrees/agent-x` — while WORKTREES_DIR is built with
+// `join` and is backslash-separated on Windows. So a git-reported path is never
+// compared with a bare `startsWith`/`split('/')`: `isPathInsideDir` resolves
+// both sides first (and rejects a sibling like `worktrees-old`), and
+// `worktreeAgentId()` treats either separator as one. Before this, every CoS
+// worktree failed the containment check on Windows — `cleanupOrphanedWorktrees`
+// skipped them all and `reapMergedWorktrees` filed them as `unmanaged-location`,
+// so the daily line read "reaped 0 merged + 0 orphaned" with orphans on disk.
 // Lockfiles that npm/yarn/pnpm modify as a side-effect — safe to discard during worktree cleanup
 const AUTO_GENERATED_LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'];
 // Cap the dirty paths named in a "worktree preserved" warning — the message ends
@@ -35,6 +48,17 @@ const DIRT_PATHS_IN_WARNING = 5;
 const WORKTREE_ADD_MAX_ATTEMPTS = 4;
 const WORKTREE_ADD_RETRY_DELAY_MS = 250;
 
+// `git worktree add` materializes a FULL checkout, so it is nothing like the
+// metadata reads execGit's 30s default was sized for: ~5.8k files here, and on
+// Windows every one of them is written through the AV filter driver, which puts
+// a cold add well past 30s. Worse, the timeout doesn't stop git — the checkout
+// keeps running and lands — so PortOS blocks the task with `worktree-failed`
+// while the worktree and branch it just gave up on exist on disk, which then
+// defeats the orphan-branch cleanup ("Cannot delete branch … checked out at …").
+// Ten minutes is far above any healthy add and still bounded. Applies to
+// `worktree move` too — it routes through this same wrapper.
+const WORKTREE_ADD_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * True when a git error message indicates lock/contention on the worktree or
  * index lock (as opposed to a genuine, non-retryable failure like a bad ref,
@@ -45,9 +69,40 @@ const WORKTREE_ADD_RETRY_DELAY_MS = 250;
  * (caught by `index.lock`), whereas `a branch named 'X' already exists` and
  * `'<path>' already exists` are permanent. Exported for unit testing against
  * real git lock-error wording.
+ *
+ * The "unable to create" alternative is anchored to a quoted `.lock` path on
+ * purpose. A bare `unable to create` also matches git's PER-FILE checkout
+ * failure, `error: unable to create file <path>: Permission denied` — exactly
+ * what a Windows AV filter driver produces mid-checkout. That is not lock
+ * contention and does not clear on retry, but it IS reached only after git has
+ * written most of the tree, so matching it spent the whole retry budget on
+ * repeated full checkouts: with WORKTREE_ADD_TIMEOUT_MS that is 4 × 10 min of
+ * head-of-line blocking on the per-repo queue for a permanent failure. The
+ * retry budget is sized for bookkeeping-lock failures, which fail in
+ * milliseconds.
  */
 export function isGitLockError(message) {
-  return /index\.lock|cannot lock|could not lock|unable to (?:create|write|lock)|already locked|another git process/i.test(message || '');
+  return /index\.lock|cannot lock|could not lock|unable to create '[^']*\.lock'|unable to (?:write|lock)|already locked|another git process/i.test(message || '');
+}
+
+/**
+ * True when `git worktree add` refused because the branch is ALREADY checked out
+ * in some other worktree — `fatal: '<branch>' is already used by worktree at
+ * '<path>'` on current git, `is already checked out at '<path>'` on older ones.
+ *
+ * This is a TRANSIENT condition, not a misconfiguration: the only routine
+ * producer is a cleanup still tearing down the previous agent's worktree while
+ * the follow-up spawned to land its PR is already prepping (the two ran ~0.7s
+ * apart in the incident that motivated this). Callers use it to pause and retry
+ * rather than blocking the task, which stranded the pull request the follow-up
+ * existed to merge.
+ *
+ * Deliberately NOT folded into `isGitLockError`: that predicate drives the
+ * in-process add retry, whose budget is sized in milliseconds for bookkeeping
+ * locks. Waiting out another worktree's teardown belongs at the task level.
+ */
+export function isBranchCheckedOutElsewhereError(message) {
+  return /already (?:used by worktree|checked out) at/i.test(message || '');
 }
 
 /**
@@ -65,7 +120,7 @@ export function isGitLockError(message) {
  * (#2193) — the branch is exactly the orphan it needs to delete.
  */
 export function addWorktreeWithRetry(args, repo, attempt = 1, firstError = null) {
-  return execGit(args, repo).catch((err) => {
+  return execGit(args, repo, { timeout: WORKTREE_ADD_TIMEOUT_MS }).catch((err) => {
     const originalError = firstError || err;
     if (attempt >= WORKTREE_ADD_MAX_ATTEMPTS || !isGitLockError(err.message)) {
       err.firstAttemptError = originalError;
@@ -185,6 +240,32 @@ export async function forceRemoveWorktreeDir(repo, worktreePath, { label, log = 
 }
 
 /**
+ * Run the upstream guard on a branch whose worktree ALREADY exists, undoing the
+ * add if the guard refuses (#4172).
+ *
+ * `enforceSafeBranchUpstream` throws when a branch's upstream still aims at a
+ * foreign ref after repair — correct, because every downstream push helper would
+ * land there. But the throw happens AFTER `git worktree add` succeeded, so
+ * without this the caller gets a failed create while a registered worktree (and,
+ * for a fresh `-b` add, an orphan branch) stays on disk: exactly the debris
+ * `cleanupOrphanBranch` already prevents on the add itself.
+ *
+ * `deleteBranch` is false on the attach paths — that branch pre-dates this add
+ * and may hold real commits, the same distinction `cleanupOrphanBranch` makes.
+ */
+async function enforceUpstreamOrUndoAdd(sourceWorkspace, branchName, worktreePath, { deleteBranch }) {
+  return enforceSafeBranchUpstream(sourceWorkspace, branchName).catch(async (err) => {
+    await forceRemoveWorktreeDir(sourceWorkspace, worktreePath, {
+      label: `Undoing worktree add for ${branchName} after an unsafe upstream`,
+      log: 'all',
+      subject: branchName,
+    }).catch(() => {});
+    if (deleteBranch) await cleanupOrphanBranch(sourceWorkspace, branchName, err);
+    throw err;
+  });
+}
+
+/**
  * Classify a `git status --porcelain` blob into real changes vs auto-generated
  * lockfile churn. Pure (testable) — callers decide what to do with the result.
  *
@@ -236,24 +317,6 @@ function pathsEqual(a, b) {
   if (a === b) return true;
   const resolved = (p) => { try { return realpathSync(p); } catch { return p; } };
   return resolved(a) === resolved(b);
-}
-
-/**
- * True when a worktree directory belongs to a human-driven `/claim` TUI
- * session, not a CoS agent.
- *
- * The `/claim` command creates its worktree at `data/cos/worktrees/claim-<slug>`
- * — the SAME directory CoS uses for agent worktrees (`agent-<uuid>`). CoS
- * agent IDs are always `agent-<8-char-uuid>` (see `agentLifecycle.js`), so the
- * `claim-` prefix is unambiguous. These worktrees are owned by the `/claim`
- * command's own Phase 7 cleanup; CoS orphan-cleanup MUST skip them. Otherwise
- * every cleanup cycle (boot + each evaluation) sees a `claim-<slug>` dir with
- * no matching active agent, treats it as orphaned, and removes it — pruning a
- * human's in-flight claim mid-review (and, with `{ merge: true }`, even
- * fast-forwarding the `claim/<slug>` branch into the default branch).
- */
-export function isHumanClaimWorktree(agentId) {
-  return typeof agentId === 'string' && agentId.startsWith('claim-');
 }
 
 /**
@@ -356,6 +419,11 @@ async function createWorktreeUnlocked(agentId, sourceWorkspace, taskId, options 
       // Attach path re-uses an existing branch, so no orphan-branch cleanup on failure.
       await addWorktreeWithRetry(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`], sourceWorkspace);
     }
+    // Re-attaching a branch a PREVIOUS run created — which, before #4172, may
+    // have been left tracking `refs/heads/main`. Repair it before the agent (and
+    // its `/do:pr`) touches it. Tracking `origin/<branchName>` is the healthy
+    // shape here and passes untouched.
+    await enforceUpstreamOrUndoAdd(sourceWorkspace, branchName, worktreePath, { deleteBranch: false });
     console.log(`🌳 Created worktree for ${agentId} at ${worktreePath} on existing branch ${branchName}`);
     return { worktreePath, branchName, baseBranch: null, existingBranch: true, instanceId };
   }
@@ -380,19 +448,87 @@ async function createWorktreeUnlocked(agentId, sourceWorkspace, taskId, options 
     .catch(() => baseBranch);
 
   // Create worktree with a new branch based on the latest default branch.
+  // `--no-track` is load-bearing, not tidiness (#4172): `baseRef` is normally the
+  // remote-tracking `origin/<default>`, and git's default `branch.autoSetupMerge`
+  // would record `branch.<name>.merge = refs/heads/main` on the new branch. Push
+  // helpers derive their destination from that config — `/do:pr` pushes
+  // `HEAD:$(git config branch.<name>.merge)` — so the agent's work lands straight
+  // on main, skipping the PR. Untracked is what makes `git push -u origin <branch>`
+  // the correct path. See lib/branchUpstreamGuard.js.
   // On final failure, delete the partially-created branch so a failed add
   // doesn't leave an orphan branch with no worktree (#2193).
   await addWorktreeWithRetry(
-    ['worktree', 'add', '-b', branchName, worktreePath, baseRef],
+    ['worktree', 'add', '--no-track', '-b', branchName, worktreePath, baseRef],
     sourceWorkspace
   ).catch(async (err) => {
     await cleanupOrphanBranch(sourceWorkspace, branchName, err);
     throw err;
   });
 
+  // Backstop the flag above — an older git, or a repo-level `branch.autoSetupMerge`
+  // setting, must not be able to hand an agent a branch aimed at the default branch.
+  await enforceUpstreamOrUndoAdd(sourceWorkspace, branchName, worktreePath, { deleteBranch: true });
+
   console.log(`🌳 Created worktree for ${agentId} at ${worktreePath} (branch: ${branchName}, base: ${baseRef})`);
 
   return { worktreePath, branchName, baseBranch, instanceId };
+}
+
+/**
+ * Locate the worktree that currently holds `branchName`, when it is one PortOS
+ * may take over — i.e. a tree `adoptWorktree` could legitimately move.
+ *
+ * `git worktree add` refuses to attach a second tree to a checked-out branch, so
+ * a task pointed at an existing branch (a review-loop/merge follow-up, a resume)
+ * cannot start while another tree holds it. Usually that holder is the finished
+ * run's own worktree, still there because `removeWorktree` won't delete a dirty
+ * tree — and it IS that branch's workspace, so adopting it is both the fastest
+ * path and the one that preserves the leftover work. Waiting for a teardown that
+ * is never coming just strands the pull request the follow-up exists to land.
+ *
+ * Refuses (returns null) for every holder PortOS doesn't own outright, because
+ * adoption MOVES the directory:
+ *   - the primary checkout, or any tree outside `data/cos/worktrees/` — moving
+ *     the user's own checkout out from under them is exactly the branch-jacking
+ *     guarded against everywhere else;
+ *   - a human `/claim` tree (`claim-*`), owned by the claim flow's cleanup;
+ *   - a tree whose agent is still running — it is mid-edit in that directory;
+ *   - a locked worktree, whose lock means "don't touch" regardless of owner.
+ *
+ * @param {string} sourceWorkspace - the parent git repository
+ * @param {string} branchName - branch to find a holder for (no `refs/heads/`)
+ * @param {object} [options]
+ * @param {Set<string>} [options.activeAgentIds] - agents currently running
+ * @param {string} [options.preferredPath] - cached holder path to validate first
+ * @returns {Promise<{ path: string, agentId: string }|null>}
+ */
+export async function findAdoptableWorktreeForBranch(sourceWorkspace, branchName, {
+  activeAgentIds = new Set(),
+  preferredPath = null,
+} = {}) {
+  if (!sourceWorkspace || !branchName) return null;
+
+  const worktrees = await listWorktrees(sourceWorkspace).catch(() => []);
+  // Git permits one holder per branch. A resume pointer is merely a cache of that
+  // answer, so validate it against the current worktree list first and then fall
+  // back to discovery when the cached path went stale or was moved.
+  const holders = worktrees.filter(wt => wt.branch?.replace('refs/heads/', '') === branchName);
+  const holder = preferredPath
+    ? holders.find(wt => pathsEqual(wt.path, preferredPath)) || holders[0]
+    : holders[0];
+  if (!holder?.path) return null;
+
+  const agentId = worktreeAgentId(holder.path);
+  const ownershipReason = worktreeOwnershipReason({
+    path: holder.path,
+    locked: holder.locked,
+    activeAgentIds,
+    roots: [{ path: WORKTREES_DIR, requireAgentId: true }],
+    requireKnownLiveness: true,
+  });
+  if (ownershipReason) return null;
+
+  return { path: holder.path, agentId };
 }
 
 /**
@@ -732,10 +868,16 @@ async function createPersistentWorktreeUnlocked(featureAgentId, sourceWorkspace,
     await addWorktreeWithRetry(['worktree', 'add', '--track', '-b', branchName, FA_WORKTREES, `origin/${branchName}`], sourceWorkspace)
       .catch(async (err) => { await cleanupOrphanBranch(sourceWorkspace, branchName, err); throw err; });
   } else {
-    // New branch - create from base. Clean up the orphan branch on final failure (#2193).
-    await addWorktreeWithRetry(['worktree', 'add', '-b', branchName, FA_WORKTREES, baseRef], sourceWorkspace)
+    // New branch - create from base. `--no-track` for the same reason as createWorktree:
+    // `baseRef` is usually `origin/<default>`, and an auto-configured
+    // `branch.<name>.merge = refs/heads/main` turns a config-derived push into a push
+    // onto the default branch (#4172). Clean up the orphan branch on final failure (#2193).
+    await addWorktreeWithRetry(['worktree', 'add', '--no-track', '-b', branchName, FA_WORKTREES, baseRef], sourceWorkspace)
       .catch(async (err) => { await cleanupOrphanBranch(sourceWorkspace, branchName, err); throw err; });
   }
+
+  // Covers all three arms above, including a branch a prior run left mis-tracked.
+  await enforceUpstreamOrUndoAdd(sourceWorkspace, branchName, FA_WORKTREES, { deleteBranch: !localBranchExists });
 
   console.log(`🌳 Created persistent worktree for feature agent ${featureAgentId} at ${FA_WORKTREES} (branch: ${branchName})`);
   return { worktreePath: FA_WORKTREES, branchName, baseBranch };
@@ -861,25 +1003,27 @@ export async function cleanupOrphanedWorktrees(sourceWorkspace, activeAgentIds) 
   const handledAgentIds = new Set();
 
   for (const wt of worktrees) {
-    // Only clean up worktrees under our managed directory
-    if (!wt.path.startsWith(WORKTREES_DIR)) continue;
-
-    const agentId = wt.path.split('/').pop();
+    const ownershipReason = worktreeOwnershipReason({
+      path: wt.path,
+      locked: wt.locked,
+      activeAgentIds,
+      roots: [{ path: WORKTREES_DIR, requireAgentId: true }],
+      requireKnownLiveness: true,
+    });
+    if (ownershipReason === 'worktree-unmanaged-location') continue;
+    const agentId = worktreeAgentId(wt.path);
     handledAgentIds.add(agentId);
-    // Never reap human-driven `/claim` worktrees (`claim-<slug>`) — they belong
-    // to the `/claim` command's own Phase 7 cleanup, not CoS. See isHumanClaimWorktree.
-    if (isHumanClaimWorktree(agentId)) continue;
-    if (!activeAgentIds.has(agentId)) {
-      const branchName = wt.branch?.replace('refs/heads/', '') || '';
-      // Attempt merge so committed work from preserved worktrees (e.g., PR/push failures) isn't lost.
-      // If merge fails, the branch is preserved for manual recovery.
-      const result = await removeWorktree(agentId, sourceWorkspace, branchName, { merge: true })
-        .catch(err => {
-          console.log(`⚠️ Failed to clean orphaned worktree ${agentId}: ${err.message}`);
-          return { removed: false };
-        });
-      if (result?.removed) cleaned++;
-    }
+    if (ownershipReason) continue;
+
+    const branchName = wt.branch?.replace('refs/heads/', '') || '';
+    // Attempt merge so committed work from preserved worktrees (e.g., PR/push failures) isn't lost.
+    // If merge fails, the branch is preserved for manual recovery.
+    const result = await removeWorktree(agentId, sourceWorkspace, branchName, { merge: true })
+      .catch(err => {
+        console.log(`⚠️ Failed to clean orphaned worktree ${agentId}: ${err.message}`);
+        return { removed: false };
+      });
+    if (result?.removed) cleaned++;
   }
 
   // Scan for external-repo worktrees (directories whose .git points to a different repo).
@@ -943,6 +1087,10 @@ export async function reapMergedWorktrees(sourceWorkspace, {
 
   const protectedBranches = new Set(['main', 'master', 'dev', 'develop', 'release', defaultBranch]);
   const claudeTreesRoot = join(sourceWorkspace, '.claude', 'worktrees');
+  const managedRoots = [
+    { path: WORKTREES_DIR, requireAgentId: true },
+    { path: claudeTreesRoot, requireAgentId: false },
+  ];
 
   const worktrees = await listWorktrees(sourceWorkspace).catch(() => []);
   const reaped = [];
@@ -957,16 +1105,19 @@ export async function reapMergedWorktrees(sourceWorkspace, {
     if (!branchName) { skipped.push({ path: wt.path, reason: 'no-branch' }); continue; }
     if (protectedBranches.has(branchName) || branchName === currentBranch) { skipped.push({ path: wt.path, reason: 'protected' }); continue; }
 
-    const agentId = wt.path.split('/').pop();
-    // Human `/claim` worktrees self-clean in the claim flow's Phase 7 — never reap them here.
-    if (isHumanClaimWorktree(agentId)) { skipped.push({ path: wt.path, reason: 'human-claim' }); continue; }
-    if (activeAgentIds.has(agentId)) { skipped.push({ path: wt.path, reason: 'active-agent' }); continue; }
-
-    const isCosTree = wt.path.startsWith(WORKTREES_DIR);
-    const isClaudeTree = wt.path.startsWith(claudeTreesRoot);
-    if (!isCosTree && !isClaudeTree) { skipped.push({ path: wt.path, reason: 'unmanaged-location' }); continue; }
+    const isClaudeTree = isPathInsideDir(claudeTreesRoot, wt.path);
+    const ownershipReason = worktreeOwnershipReason({
+      path: wt.path,
+      locked: wt.locked,
+      activeAgentIds,
+      roots: managedRoots,
+      requireKnownLiveness: true,
+    });
+    if (ownershipReason) {
+      skipped.push({ path: wt.path, reason: ownershipReason });
+      continue;
+    }
     if (isClaudeTree && !includeClaudeTrees) { skipped.push({ path: wt.path, reason: 'claude-tree-excluded' }); continue; }
-    if (wt.locked) { skipped.push({ path: wt.path, reason: 'locked' }); continue; }
 
     // Gate 1: working tree must be completely clean. Unlike removeWorktree(),
     // the background reaper does not discard even lockfile-only edits: an

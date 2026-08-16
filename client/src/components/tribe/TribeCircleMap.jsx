@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 
 import { RINGS, TRIBE_RINGS, ENERGY, STATUS_HEX, contactStatus, energyFor, initialsFor } from '../../lib/tribe.js';
 import { clickableProps } from '../../lib/a11yKeyboard';
+import { clamp } from '../../utils/formatters.js';
 
 // Concentric-circles map of the Tribe: "Me" at the center, each Dunbar ring is a
 // tinted band (support innermost → village outermost) and every person is a node
@@ -32,7 +33,6 @@ const nodeRadius = (i) => NODE_R[i] ?? NODE_R[NODE_R.length - 1];
 // Golden angle — successive nodes placed this far apart spread evenly (sunflower
 // packing) instead of stacking into spokes.
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 // Theme-reactive SVG colors. Hardcoded dark hexes washed out on the day themes
 // (a near-white card with a dark label halo and pale-gray node text), so these

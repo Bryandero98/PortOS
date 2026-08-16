@@ -14,6 +14,7 @@ import MoodBoardReferenceStrip from '../moodBoard/MoodBoardReferenceStrip';
 import StyleProbeImage from '../universe/StyleProbeImage';
 import VisionProviderPicker from '../universe/VisionProviderPicker';
 import InfluenceChipsInput from './InfluenceChipsInput';
+import MoodBoardStyleSynthesis from './MoodBoardStyleSynthesis';
 import UniverseStyleReferences from './UniverseStyleReferences';
 
 function LockButton({ field, locked, onToggle, label }) {
@@ -70,6 +71,7 @@ function StyleNegativePromptEditor({ influences, onChange, locked, onToggleLock 
             tokens={safe.embrace}
             onChange={(next) => onChange({ ...safe, embrace: next })}
             placeholder="moebius linework, cel-shading, dust palette…"
+            ariaLabel="Add style prompt reference"
             tone="success"
             readOnly={!!locked?.influencesEmbrace}
           />
@@ -83,6 +85,7 @@ function StyleNegativePromptEditor({ influences, onChange, locked, onToggleLock 
             tokens={safe.avoid}
             onChange={(next) => onChange({ ...safe, avoid: next })}
             placeholder="blurry, lowres, watermark, neon cyberpunk…"
+            ariaLabel="Add negative prompt reference"
             tone="error"
             readOnly={!!locked?.influencesAvoid}
           />
@@ -111,6 +114,7 @@ export default function BibleTab({
   saved = false,
   onPersistStyleReference,
   onRemoveStyleReference,
+  onAdoptStyleGuide,
 }) {
   const { providers, providerModels, providerLabel, activeProviderId } = llm;
   const {
@@ -166,7 +170,30 @@ export default function BibleTab({
           </div>
         </div>
 
-        <MoodBoardReferenceStrip storageKey="universe-builder" />
+        {/* Persisted per-universe link (#4188): the pick lives on the record
+            (`moodBoardId`) and rides the normal draft Save — not localStorage —
+            so it survives reload, is per-universe, and syncs to peers. */}
+        <MoodBoardReferenceStrip
+          storageKey="universe-builder"
+          value={draft.moodBoardId || ''}
+          onChange={(id) => updateDraft({ moodBoardId: id || null })}
+          newBoardName={draft.name?.trim() || ''}
+        />
+
+        {/* Board → style synthesis (#4188 Phase 4): distill the linked board
+            into the style guide. Adoption goes through the draft hook
+            (adoptStyleGuideFromBoard), which runs the server-side queued
+            write AND the same saved-snapshot/watermark bookkeeping as an
+            art-reference adopt — so styleProbeDirty clears correctly. */}
+        <MoodBoardStyleSynthesis
+          boardId={draft.moodBoardId || ''}
+          universeId={draft.id}
+          styleNotes={draft.styleNotes || ''}
+          influences={draft.influences || {}}
+          locked={draft.locked || {}}
+          saved={saved}
+          onAdopt={onAdoptStyleGuide}
+        />
 
         <div className="flex items-center gap-2 flex-wrap">
           <button

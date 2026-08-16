@@ -25,7 +25,7 @@ const router = Router();
 // This still can't close the window where a NEW spawn begins AFTER a caller
 // reads this but before update.sh's pm2 restart. The route's post-lock re-check
 // below narrows it; fully closing it needs every CoS spawn engine to consult
-// updateInProgress (tracked in PLAN.md) — the orphan reaper bounds the residual.
+// updateInProgress (tracked in #4124) — the orphan reaper bounds the residual.
 function countActiveCosAgents() {
   return getActiveAgentIds().length + spawningTasks.size;
 }
@@ -219,7 +219,10 @@ router.post('/execute', asyncHandler(async (req, res) => {
   // spawn) may have started live during the git/fork awaits between the
   // fast-fail pre-check and here. If so, release the lock and reject rather than
   // restart out from under it. A spawn that begins AFTER this, during update.sh
-  // itself, is the residual the PLAN.md spawn-engine gate will close.
+  // itself, is closed from the spawn side: the lock we just acquired flips
+  // `updateChecker.isUpdateInProgress()`, which subAgentSpawner's `task:ready`
+  // listener and `spawnAgentForTask` both check, holding the task as `pending`
+  // until after the restart (issue #4124).
   const postLock = countActiveCosAgents();
   if (postLock > 0) {
     await updateChecker.setUpdateInProgress(false);

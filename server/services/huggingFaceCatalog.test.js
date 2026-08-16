@@ -2,6 +2,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { searchHuggingFaceModels, enrichCatalogWithVariants } from './huggingFaceCatalog.js'
 import { __resetOllamaRegistryCache } from './ollamaRegistryCatalog.js'
 
+// The disk cache resolves its file from the REAL PATHS.data, and fetchRepoModel
+// consults it before the network — so without this mock these tests read the
+// developer's live `data/cache/huggingface-repos.json`. The fixtures below use
+// real repo ids (bartowski/…, facebook/musicgen-small, nomic-ai/…) that this very
+// feature caches the moment anyone opens Settings → Local LLM, so a cached record
+// would bypass the `fetch` mock entirely and fail assertions locally while CI —
+// with no cache file — stayed green. Mocking also keeps the debounced writer from
+// ever persisting these fabricated records (a 13 GB `Qwen3.6-35B`, `burst-pub/…`)
+// into the real cache, which the running server would then serve as genuine sizes.
+// Spies, not plain stubs, so the what-gets-persisted tests below can observe the
+// writes — which is the whole point of the transient-vs-durable distinction.
+vi.mock('./huggingFaceRepoCache.js', () => ({
+  readCachedRepoModel: vi.fn(async () => ({ hit: false, model: null })),
+  writeCachedRepoModel: vi.fn(async () => {})
+}))
+
 const response = (body, ok = true) => ({
   ok,
   status: ok ? 200 : 500,
@@ -10,8 +26,11 @@ const response = (body, ok = true) => ({
 })
 
 describe('huggingFaceCatalog', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.stubGlobal('fetch', vi.fn())
+    const cache = await import('./huggingFaceRepoCache.js')
+    cache.readCachedRepoModel.mockClear()
+    cache.writeCachedRepoModel.mockClear()
   })
 
   afterEach(() => {
@@ -71,6 +90,9 @@ describe('huggingFaceCatalog', () => {
 
     expect(results[0].id).toBe('bartowski/Meta-Llama-3.1-8B-Instruct-GGUF')
     expect(results[0].installed).toBe(true)
+    // A non-specialized instruct model belongs in the broad start-here lane,
+    // not the narrower Chat & voice filter.
+    expect(results[0].category).toBe('general')
   })
 
   it('backfills file sizes from the per-model blobs endpoint when the search omits them', async () => {
@@ -921,6 +943,198 @@ describe('huggingFaceCatalog', () => {
       })
       const small = results.find((r) => r.repository === 'facebook/musicgen-small')
       expect(small.installed).toBe(true)
+    })
+  })
+
+  // The Hub retires idle pooled HTTP/2 connections; undici surfaces the retirement
+  // as a request-level `fetch failed` with a GOAWAY cause, which used to blank the
+  // whole result set. It is a connection artifact, not a request failure.
+  describe('hub politeness — transient retry and burst bounding', () => {
+    const goaway = () => {
+      const err = new TypeError('fetch failed')
+      err.cause = new Error('HTTP/2: "GOAWAY" frame received with code 0')
+      return err
+    }
+
+    it('retries a GOAWAY once and returns the results the retry fetched', async () => {
+      const repo = 'goaway-pub/Retry-GGUF'
+      let searchCalls = 0
+      fetch.mockImplementation(async (url) => {
+        const u = String(url)
+        if (u.includes('blobs=true')) return response({ id: repo, siblings: [{ rfilename: 'R-Q4_K_M.gguf', size: 4_000_000_000 }] })
+        searchCalls += 1
+        if (searchCalls === 1) throw goaway()
+        return response([{ modelId: repo, downloads: 10, tags: ['gguf'], siblings: [{ rfilename: 'R-Q4_K_M.gguf', size: 4_000_000_000 }] }])
+      })
+
+      const results = await searchHuggingFaceModels({ backend: 'lmstudio', query: 'retry' })
+
+      expect(searchCalls).toBe(2)
+      expect(results.some((r) => r.repository === repo)).toBe(true)
+    })
+
+    it('reports a repeated GOAWAY as a named condition, not a bare "fetch failed"', async () => {
+      let calls = 0
+      fetch.mockImplementation(async () => { calls += 1; throw goaway() })
+
+      await expect(searchHuggingFaceModels({ backend: 'lmstudio', query: 'always-goaway' }))
+        .rejects.toThrow(/Hugging Face is not responding/)
+      expect(calls).toBe(2) // one retry, not an unbounded loop
+    })
+
+    // Every flavour of timeout, not just our own AbortController's. A per-item
+    // probe loop that retried timeouts would hand a merely-slow Hub double the
+    // traffic — the opposite of the politeness this whole path exists to provide.
+    it.each([
+      ['our AbortController firing', () => Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }), /aborted/i],
+      ['a TCP-level ETIMEDOUT', () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }) }), /fetch failed/i]
+    ])('does not retry %s — a slow hub must not get double the traffic', async (_label, makeErr, expected) => {
+      let calls = 0
+      fetch.mockImplementation(async () => { calls += 1; throw makeErr() })
+
+      await expect(searchHuggingFaceModels({ backend: 'lmstudio', query: `timeout-${calls}` }))
+        .rejects.toThrow(expected)
+      expect(calls).toBe(1)
+    })
+
+    it('caps simultaneous hub requests while enriching a full catalog', async () => {
+      let inFlight = 0
+      let peak = 0
+      fetch.mockImplementation(async (url) => {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        inFlight -= 1
+        const repo = String(url).split('/api/models/')[1]?.split('?')[0] || 'x/y'
+        return response({ id: repo, siblings: [{ rfilename: 'C-Q4_K_M.gguf', size: 4_000_000_000 }] })
+      })
+
+      // 30 distinct repos so none is served from the per-process repo cache — this
+      // is the cold-page-load shape the gate exists for.
+      const catalog = Array.from({ length: 30 }, (_, i) => ({
+        id: `burst-pub/Burst-${i}-GGUF`, key: `burst-${i}`, name: `Burst ${i}`, category: 'chat', size: '2.0 GB'
+      }))
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+
+      // Two properties, both required. The upper bound is the cap itself; the
+      // lower bound catches a gate that degraded to serial, which the cap
+      // assertion alone would happily pass. Not `toBe(4)`: each probe now
+      // awaits the disk cache before reaching the gate, so arrivals stagger and
+      // the observed peak legitimately lands a slot or two below the cap. The
+      // exact-cap guarantee is pinned in concurrencyGate.test.js instead.
+      expect(peak).toBeLessThanOrEqual(4)
+      expect(peak).toBeGreaterThan(1)
+      // The cap must not cost coverage — every entry still enriched.
+      expect(catalog.every((e) => e.format === 'gguf')).toBe(true)
+    })
+
+    // The disk cache holds entries for a WEEK, so what gets written matters far
+    // more than it did when a restart cleared everything. A rate limit is exactly
+    // what a burst provokes — caching it as "this repo has no sizes" would bake
+    // the degradation in for seven days, across restarts.
+    it.each([
+      ['a 429 rate limit', 429],
+      ['a 503 outage', 503],
+      ['a 408 timeout', 408]
+    ])('does not cache %s as a durable "no data" answer', async (_label, status) => {
+      const repo = `transient-${status}/Repo-GGUF`
+      const { writeCachedRepoModel } = await import('./huggingFaceRepoCache.js')
+
+      fetch.mockImplementation(async (url) => (
+        String(url).includes('blobs=true')
+          ? { ok: false, status, json: vi.fn(), text: vi.fn(async () => 'slow down') }
+          : response([{ modelId: repo, downloads: 1, tags: ['gguf'], siblings: [{ rfilename: 'T-Q4_K_M.gguf', size: 100 }] }])
+      ))
+
+      const catalog = [{ id: repo, key: 't', name: 'T', category: 'chat', size: '2.0 GB' }]
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+
+      expect(writeCachedRepoModel.mock.calls).toEqual([])
+    })
+
+    // A durable answer IS worth caching — the counterpart to the test above, so a
+    // fix for one can't quietly disable the other.
+    it.each([
+      ['a 404 (repo gone)', 404],
+      ['a 403 (gated)', 403]
+    ])('caches %s as a durable "no data" answer', async (_label, status) => {
+      const repo = `permanent-${status}/Repo-GGUF`
+      const { writeCachedRepoModel } = await import('./huggingFaceRepoCache.js')
+
+      fetch.mockImplementation(async (url) => (
+        String(url).includes('blobs=true')
+          ? { ok: false, status, json: vi.fn(), text: vi.fn(async () => 'nope') }
+          : response([])
+      ))
+
+      const catalog = [{ id: repo, key: 'p', name: 'P', category: 'chat', size: '2.0 GB' }]
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+
+      expect(writeCachedRepoModel.mock.calls).toEqual([[repo, null]])
+    })
+
+    // The gate must bound open CONNECTIONS, not just header waits — releasing the
+    // slot before the body is read would let all N stream at once, which is the
+    // condition that earns the GOAWAY in the first place.
+    it('holds the gate slot until the response body is consumed', async () => {
+      let bodiesInFlight = 0
+      let peakBodies = 0
+      fetch.mockImplementation(async (url) => {
+        const repo = String(url).split('/api/models/')[1]?.split('?')[0] || 'x/y'
+        // Instrument text(), which is what readResponseJson actually consumes.
+        return {
+          ok: true,
+          status: 200,
+          json: vi.fn(),
+          text: async () => {
+            bodiesInFlight += 1
+            peakBodies = Math.max(peakBodies, bodiesInFlight)
+            await new Promise((resolve) => setTimeout(resolve, 5))
+            bodiesInFlight -= 1
+            return JSON.stringify({ id: repo, siblings: [{ rfilename: 'B-Q4_K_M.gguf', size: 4_000_000_000 }] })
+          }
+        }
+      })
+
+      const catalog = Array.from({ length: 20 }, (_, i) => ({
+        id: `body-pub/Body-${i}-GGUF`, key: `body-${i}`, name: `Body ${i}`, category: 'chat', size: '2.0 GB'
+      }))
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+
+      expect(peakBodies).toBeLessThanOrEqual(4)
+      expect(catalog.every((e) => e.format === 'gguf')).toBe(true)
+    })
+
+    it('coalesces concurrent probes of the same repo into one request', async () => {
+      const repo = 'dedupe-pub/Shared-GGUF'
+      let blobCalls = 0
+      fetch.mockImplementation(async (url) => {
+        const u = String(url)
+        if (u.includes('blobs=true')) {
+          blobCalls += 1
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          return response({ id: repo, siblings: [{ rfilename: 'S-Q4_K_M.gguf', size: 4_000_000_000 }] })
+        }
+        return response([])
+      })
+
+      const catalogs = Array.from({ length: 3 }, () => ([
+        { id: repo, key: 'shared', name: 'Shared', category: 'chat', size: '2.0 GB' }
+      ]))
+      await Promise.all(catalogs.map((c) => enrichCatalogWithVariants(c, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })))
+
+      expect(blobCalls).toBe(1)
+      expect(catalogs.every((c) => c[0].format === 'gguf')).toBe(true)
     })
   })
 })

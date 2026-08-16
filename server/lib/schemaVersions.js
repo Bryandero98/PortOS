@@ -62,7 +62,12 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // `universes` gate above already protects the canonical (embedded) copy.
   // v8 adds shared styleReferences[]. Older peers must not sanitize the field
   // away and LWW-sync that loss back to a newer install.
-  universes: 8,
+  // v9 = `moodBoardId` added (#4188) — the universe's linked mood board. The
+  // pointer rides the wire (mood boards federate, so the id resolves on peers);
+  // same rationale as v6/v7/v8: additive + gracefully degrading, but an older
+  // peer that re-sanitizes a universe through its moodBoardId-unaware
+  // `sanitizeTemplate` would silently strip the link and LWW the loss back.
+  universes: 9,
   // v1 = post-split. Migrations 035/036 introduced the pipeline collection
   // layout for issues and series.
   // v2 = `stages.audio.audioMode` + `stages.audio.cues[]` added (whole-episode
@@ -376,10 +381,18 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // record type with its own per-category gate — a v1 sender pushing to a ≤v0
   // (pre-feature) receiver is sender-ahead on `moodBoards` and gets a 412 (only
   // that category pauses); a v1 receiver still accepts a ≤v0 sender (pre-feature
-  // peers never push a `moodBoard`). The FIRST incompatible board-shape change
-  // MUST bump this to 2 then. The board body (name/description/items) is
+  // peers never push a `moodBoard`). The board body (name/description/items) is
   // LWW-overwritten whole; referenced image bytes ride the asset manifest.
-  moodBoards: 1,
+  // v2 = `type: 'video'` board items (#4188). An EXECUTION-semantics break for
+  // v1 receivers, not a sanitizer strip (the whole-record LWW passes unknown
+  // item shapes through verbatim): a v1 renderer treats a non-image item as a
+  // text note (blank card), and its updateItem gates a 'video' item onto the
+  // text editable-keys — so a v1 peer that edits the board can mangle video
+  // items and LWW the damage back. Bumping makes the v1 receiver 412-reject
+  // the ahead-version push until it upgrades. Video bytes ride the existing
+  // asset manifest (`video:<filename>` ref → PATHS.videos, receiver regenerates
+  // the poster thumbnail on pull).
+  moodBoards: 2,
   // v1 = Writers Room works (PostgreSQL `writers_room_works` + decomposed
   // `writers_room_draft_versions`) federated via the per-record peer-sync push
   // pipeline (record kind `writersRoomWork`, sync category `writersRoomWorks`,
@@ -534,7 +547,18 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // reviewer CLI's default effort instead of the pinned tier, silently downgrading
   // a review the user deliberately strengthened. Per-category gate → only cos-tasks
   // sync pauses until the peer upgrades.
-  cosTasks: 4,
+  // v5 = the `metadata.prompt` / `metadata.context` split (#4153): the full
+  // agent-facing payload now rides `prompt` and `context` reverts to the
+  // one-line human note. Same EXECUTION-semantics break as v3/v4 — `prompt`
+  // rides the permissive `metadata` map, so a ≤v4 receiver validates and stores
+  // the task fine and then MIS-RUNS it: its prompt builder only knows
+  // `metadata.context`, so the agent is handed a one-line description with the
+  // entire Phase 1–7 body (or `/do:*` claim prompt) missing, does the wrong
+  // work, and LWW-pushes that damaged state back onto the v5 peer. Readers on
+  // v5 fall back to `metadata.context`, so the reverse direction degrades
+  // gracefully — the gate exists for the forward one. Per-category gate → only
+  // cos-tasks sync pauses until the peer upgrades.
+  cosTasks: 5,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

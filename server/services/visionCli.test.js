@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { posixPath } from '../lib/testHelper.js';
+
 import { EventEmitter } from 'events';
 
 // Wrap the REAL resolveWindowsExecutable/prepareWindowsSafeSpawn in spies
@@ -42,7 +44,7 @@ describe('buildCliVisionInvocation', () => {
     );
     expect(inv.command).toBe('codex');
     expect(inv.args).toContain('-i');
-    expect(inv.args).toContain('/tmp/x/vision-input.png');
+    expect(posixPath(inv.args)).toContain('/tmp/x/vision-input.png');
     expect(inv.args).toContain('-m');
     expect(inv.args).toContain('gpt-5');
     expect(inv.args[inv.args.length - 1]).toBe('describe'); // prompt is positional
@@ -50,7 +52,7 @@ describe('buildCliVisionInvocation', () => {
     // under the vision timeout.
     expect(inv.args).toEqual(expect.arrayContaining(['-c', 'check_for_update_on_startup=false']));
     expect(inv.stdin).toBeNull();
-    expect(inv.cwd).toBe('/tmp/x');
+    expect(posixPath(inv.cwd)).toBe('/tmp/x');
   });
 
   it('omits -m for the codex-configured-default sentinel (falls back to config.toml)', () => {
@@ -76,7 +78,36 @@ describe('buildCliVisionInvocation', () => {
     expect(inv.args).toEqual(expect.arrayContaining(['-p', '-', '--model', 'claude-opus-4-8']));
     expect(inv.stdin).toContain('describe');
     expect(inv.stdin).toContain('vision-input.png');
-    expect(inv.cwd).toBe('/tmp/y');
+    expect(posixPath(inv.cwd)).toBe('/tmp/y');
+  });
+
+  it('attaches every named frame and injects effort for a multi-image Codex call', () => {
+    const inv = buildCliVisionInvocation(
+      { id: 'codex', command: 'codex', args: [] },
+      'gpt-5',
+      '/tmp/x',
+      'describe motion',
+      { imageNames: ['vision-1.jpg', 'vision-2.jpg'], effort: 'high' },
+    );
+    const paths = inv.args.map((a) => posixPath(a));
+    expect(paths.filter((a) => a === '-i')).toHaveLength(2);
+    expect(paths).toContain('/tmp/x/vision-1.jpg');
+    expect(paths).toContain('/tmp/x/vision-2.jpg');
+    expect(inv.args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort=high']));
+  });
+
+  it('lists every frame in the Claude stdin prompt and passes effort through buildCliArgs', () => {
+    const inv = buildCliVisionInvocation(
+      { id: 'claude-code', command: 'claude', args: [] },
+      'claude-opus-4-8',
+      '/tmp/y',
+      'describe motion',
+      { imageNames: ['vision-1.jpg', 'vision-2.jpg'], effort: 'high' },
+    );
+    expect(inv.stdin).toContain('vision-1.jpg');
+    expect(inv.stdin).toContain('vision-2.jpg');
+    expect(inv.stdin).toMatch(/chronological/i);
+    expect(inv.args).toEqual(expect.arrayContaining(['--effort', 'high']));
   });
 });
 

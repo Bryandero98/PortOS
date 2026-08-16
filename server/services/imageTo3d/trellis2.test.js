@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TRELLIS2_REPO,
@@ -40,9 +41,11 @@ const BASE = '/tmp/portos-test-home';
 
 describe('trellis2 path resolution', () => {
   it('roots the install under the injected base', () => {
-    expect(trellis2Root(BASE)).toBe('/tmp/portos-test-home/trellis2');
-    expect(trellis2VenvPython(BASE)).toMatch(/trellis2\/\.venv\/(bin\/python3|Scripts\/python\.exe)$/);
-    expect(trellis2GenerateScript(BASE)).toBe('/tmp/portos-test-home/trellis2/generate.py');
+    expect(trellis2Root(BASE)).toBe(join(BASE, 'trellis2'));
+    expect(trellis2VenvPython(BASE)).toBe(process.platform === 'win32'
+      ? join(BASE, 'trellis2', '.venv', 'Scripts', 'python.exe')
+      : join(BASE, 'trellis2', '.venv', 'bin', 'python3'));
+    expect(trellis2GenerateScript(BASE)).toBe(join(BASE, 'trellis2', 'generate.py'));
     expect(trellis2GenerateRunnerScript()).toMatch(/trellis2GenerateRunner\.py$/);
   });
 });
@@ -109,7 +112,7 @@ describe('buildInstallSteps', () => {
     // A prior install cloned the top-level repo but failed inside setup.sh (the
     // #2952 case). Re-cloning into the non-empty root would abort, so resume must
     // begin at the idempotent setup.sh.
-    const gitDir = `${trellis2Root(BASE)}/.git`;
+    const gitDir = join(trellis2Root(BASE), '.git');
     const steps = buildInstallSteps(BASE, { exists: (p) => p === gitDir });
     expect(steps.map((s) => s.stage)).toEqual(['setup']);
     expect(steps[0]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
@@ -865,7 +868,7 @@ describe('installTrellis2', () => {
     // existing root; it must go straight to the idempotent setup.sh.
     const child = makeChild();
     const spawnImpl = vi.fn(() => child);
-    const gitDir = `${trellis2Root(BASE)}/.git`;
+    const gitDir = join(trellis2Root(BASE), '.git');
     const { promise } = installTrellis2({
       base: BASE, spawnImpl, exists: (p) => p === gitDir, sleep: () => Promise.resolve(),
     });

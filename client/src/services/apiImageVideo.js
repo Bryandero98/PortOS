@@ -187,6 +187,14 @@ export const repairTextEncoder = ({ deep = false } = {}) => request('/video-gen/
   body: JSON.stringify({ deep }),
   silent: true,
 });
+// Repair a substitutable prompt conditioner (#4081) — a single pinned file
+// keyed by its registry id ('heretic-bf16', …). Distinct from repairTextEncoder
+// above, which targets the SHARED install-wide LTX encoder repo.
+export const repairTextEncoderOption = (id, { deep = false } = {}) => request(`/video-gen/text-encoders/${encodeURIComponent(id)}/repair`, {
+  method: 'POST',
+  body: JSON.stringify({ deep }),
+  silent: true,
+});
 // Repair an IC-LoRA remix weight (issue #3100). Keyed by the remix mode
 // ('ic-control', …) rather than a model id — the weights aren't registry models,
 // same reason the text encoder has its own scalar endpoint above.
@@ -213,6 +221,21 @@ export const getVideoGenRuntimeStatus = (runtime, { signal } = {}) =>
 // poll doesn't double-toast on every navigation.
 export const getActiveVideoJob = () => request('/video-gen/active', { silent: true });
 export const listVideoHistory = (options = {}) => request('/video-gen/history', options);
+// ONE history entry by id (#4165) — for a surface that holds only a video-history
+// id and needs the file it actually points at. A history id is not the filename
+// stem (a timeline render mints `timeline-*.mp4` beside a randomUUID() id), and
+// pulling the whole list to find one row is what this replaces. 404s (throwing an
+// Error with `.status === 404`) when the entry is gone; pass `{ silent: true }`
+// when the caller owns the not-found UI.
+export const getVideoHistoryItem = (id, options = {}) => request(`/video-gen/history/${encodeURIComponent(id)}`, options);
+// Upload a video into the shared gallery (#4188) — lands under /data/videos/
+// with a video-history entry (peer-syncable), unlike the /api/uploads scratch
+// dir. Returns the history entry; feed it through normalizeVideo to display.
+export const uploadGalleryVideo = (base64Data, filename, options = {}) => request('/video-gen/upload', {
+  method: 'POST',
+  body: JSON.stringify({ data: base64Data, ...(filename ? { filename } : {}) }),
+  ...options,
+});
 export const deleteVideoHistoryItem = (id, options = {}) => request(`/video-gen/history/${encodeURIComponent(id)}`, { method: 'DELETE', ...options });
 export const setVideoHidden = (id, hidden, options = {}) => request(`/video-gen/history/${encodeURIComponent(id)}/visibility`, {
   method: 'POST',
@@ -352,8 +375,9 @@ export const deleteLora = (filename, options = {}) => request(`/image-video/mode
 
 // Media-model REGISTRY (the catalog of pickable image/video base models,
 // distinct from listCachedModels which reports on-disk HF cache usage). Returns
-// `{ video: [...], image: [...] }` with a `builtIn` flag per entry so the
-// manager renders built-ins read-only and user-added entries editable.
+// `{ video: [...], image: [...], textEncoders: [...] }`, each with a `builtIn`
+// flag. Text encoders also identify the compatible video-model ids so the
+// manager can install/delete their separate prompt-conditioner pulls.
 export const listMediaModelRegistry = () => request('/image-video/models/registry');
 
 // Search the HuggingFace Hub for candidate base-model repos. `pipeline` scopes
@@ -417,10 +441,11 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
   silent,
 });
 
-// Install a video LoRA from a HuggingFace repo (fal / Lightricks LTX LoRAs).
-// `family` is an optional override (e.g. 'ltx-video') when autodetection from
-// the repo id/tags can't classify it. `silent` lets the page route HF_AUTH /
-// HF_UNKNOWN_FAMILY errors into its own inline UI.
+// Install an image or video LoRA from a HuggingFace repo (Flux.2 Klein, fal /
+// Lightricks LTX, MiniMax H3). `family` is an optional override (e.g. 'flux2'
+// or 'ltx-video') when autodetection from the repo id/tags/filenames can't
+// classify it. `silent` lets the page route HF_AUTH / HF_UNKNOWN_FAMILY errors
+// into its own inline UI.
 export const installLoraFromHuggingface = ({ url, family, file, silent = false } = {}) => request('/loras/install/huggingface', {
   method: 'POST',
   body: JSON.stringify({ url, ...(family ? { family } : {}), ...(file ? { file } : {}) }),

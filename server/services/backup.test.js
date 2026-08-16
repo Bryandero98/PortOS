@@ -61,10 +61,10 @@ vi.mock('./memoryBackend.js', () => ({
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 // Partial mock: only override spawn. Preserve execFile et al. because
 // backup.js transitively imports fileUtils.js, which promisifies execFile.
-vi.mock('child_process', async (importOriginal) => ({
+vi.mock('../lib/childProcess.js', async (importOriginal) => ({
   ...(await importOriginal()),
   spawn: vi.fn(),
 }));
@@ -79,7 +79,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 
 import { checkHealth, getServerMajorVersion } from '../lib/db.js';
 import { getBackendName } from './memoryBackend.js';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { PATHS } from '../lib/fileUtils.js';
 import * as fs from 'fs/promises';
 // Partial mock of the settings service: only reloadSettings is overridden, so a
@@ -1062,7 +1062,7 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
     it('builds the exact include/exclude chain for a valid subdirFilter', async () => {
       await runRestore('/dest', 'snap-1', { dryRun: true, subdirFilter: 'brain' });
 
-      const srcDir = join('/dest', 'snapshots', machineHost, 'snap-1', 'data');
+      const srcDir = resolve('/dest', 'snapshots', machineHost, 'snap-1', 'data');
       // Asserted as an exact array (not arrayContaining): the ORDER matters to
       // rsync — `--exclude=*` must come last, after both includes, or the
       // targeted restore silently degrades into a full-tree restore.

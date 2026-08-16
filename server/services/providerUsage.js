@@ -608,13 +608,13 @@ const FAMILIES = PROVIDER_FAMILIES.map((family) => ({ ...family, fetch: FAMILY_F
 
 /**
  * Distinct quota families among the enabled providers, in registry order.
- * Ollama-backed wrappers are excluded up front regardless of which CLI binary
+ * Local-runtime wrappers are excluded up front regardless of which CLI binary
  * they launch — a local model has no subscription quota, so e.g. an enabled
  * `claude-ollama` must not surface a Claude Code card (nor a codex/agy/grok
  * wrapper its family's card).
  */
 export function resolveEnabledFamilies(providers) {
-  const enabled = (providers || []).filter((p) => p?.enabled && p.ollamaBacked !== true);
+  const enabled = (providers || []).filter((p) => p?.enabled && p.ollamaBacked !== true && p.mtplxBacked !== true);
   return FAMILIES.filter((family) => enabled.some((p) => family.matches(p)));
 }
 
@@ -651,7 +651,7 @@ const fetchFamilyQuota = (family, { wait, providers }) =>
 export async function getProviderQuotas({ wait = WAIT.CACHED, family = null } = {}) {
   const result = await getAllProviders();
   const providers = Array.isArray(result) ? result : (result?.providers || []);
-  const enabled = providers.filter((p) => p?.enabled && p.ollamaBacked !== true);
+  const enabled = providers.filter((p) => p?.enabled && p.ollamaBacked !== true && p.mtplxBacked !== true);
   const families = resolveEnabledFamilies(providers).filter((f) => !family || f.id === family);
   const familyCards = await Promise.all(families.map((f) =>
     fetchFamilyQuota(f, { wait, providers: enabled.filter((p) => f.matches(p)) })));

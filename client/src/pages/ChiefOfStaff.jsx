@@ -9,6 +9,7 @@ import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown,
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import TabPills from '../components/ui/TabPills';
+import PageSkeleton from '../components/ui/PageSkeleton';
 
 // Import from modular components
 import {
@@ -516,6 +517,26 @@ export default function ChiefOfStaff() {
 
   const hasCanvasAvatar = CANVAS_AVATAR_STYLES.has(avatarStyle);
 
+  // Learning tile behaviour shared by the compact (sidebar/mobile) and mini
+  // (ascii stats bar) renderings — only the icon scale and the empty-state
+  // value differ between them. A skipped task type is critical on its own
+  // terms: derive that here rather than trusting the server's status chain to
+  // keep classifying `skipped > 0` as `critical`, or a reorder there would
+  // silently drop the red signal while the tile still reads "N skipped".
+  const learningSkipped = learningSummary?.skipped ?? 0;
+  // `!= null`, not truthiness — a real 0% success rate is the highest-signal
+  // state and must not render as the empty state. `null` is the sentinel each
+  // tile falls back from to its own (differently sized) empty-state string.
+  const learningRate = learningSummary?.overallSuccessRate != null ? `${learningSummary.overallSuccessRate}%` : null;
+  const learningStatProps = {
+    label: 'Learning',
+    tone: learningSkipped > 0 ? 'critical' : (learningSummary?.status || 'default'),
+    active: learningSkipped > 0,
+    activeLabel: learningSkipped > 0 ? `${learningSkipped} skipped` : null,
+    title: learningSummary?.statusMessage || 'View learning analytics',
+    onClick: () => navigate('/cos/learning'),
+  };
+
   // Compact stats card grid — rendered both inside the desktop CoS sidebar and
   // the mobile compressed header so the metrics always live "inside" CoS.
   const statsGridCards = (
@@ -545,39 +566,12 @@ export default function ChiefOfStaff() {
         icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
         compact
       />
-      <button
-        onClick={() => navigate('/cos/learning')}
-        className={`bg-port-card/80 border rounded px-2 py-1.5 flex items-center gap-2 transition-all ${
-          learningSummary?.status === 'critical' ? 'border-port-error shadow-md shadow-port-error/20' :
-          learningSummary?.status === 'warning' ? 'border-port-warning' :
-          'border-port-border'
-        }`}
-      >
-        <Brain className={`w-4 h-4 shrink-0 ${
-          learningSummary?.status === 'critical' ? 'text-port-error' :
-          learningSummary?.status === 'warning' ? 'text-port-warning' :
-          learningSummary?.status === 'good' ? 'text-port-accent-2' :
-          'text-gray-500'
-        }`} />
-        <div className="flex-1 min-w-0 text-left">
-          <div className="text-[10px] text-gray-500 truncate">Learning</div>
-          {/* Stacked, not a flex row: as flex items these keep min-width:auto,
-              so on a narrow card the skipped label can't shrink and spills out.
-              (The `min-w-0` on the column above is what lets it shrink at all —
-              a nowrap label in a `min-width:auto` flex item can't.) The value
-              itself stays wrappable — `truncate` would clip the widest value,
-              'No data', to 'No dat…'. Mirrors StatCard's compact variant:
-              truncate the label, leave the value alone. */}
-          <div className="text-sm font-bold text-white">
-            {learningSummary?.overallSuccessRate != null ? `${learningSummary.overallSuccessRate}%` : 'No data'}
-          </div>
-          {learningSummary?.skipped > 0 && (
-            <div className="text-[9px] text-port-error font-normal truncate">
-              {learningSummary.skipped} skipped
-            </div>
-          )}
-        </div>
-      </button>
+      <StatCard
+        {...learningStatProps}
+        value={learningRate ?? 'No data'}
+        icon={<Brain className="w-4 h-4" />}
+        compact
+      />
       {status?.running ? (
         <>
           <button
@@ -644,10 +638,24 @@ export default function ChiefOfStaff() {
   };
 
   if (loading) {
+    // Reserve the loaded two-pane shell (#4144) — `/cos` is an `isFullWidth`
+    // route, so a centered spinner reserved nothing and the whole page jumped
+    // into place on first paint. `desktopPanelCollapsed` comes from
+    // localStorage, so the skeleton already knows which rail width to hold.
     return (
-      <div className="flex items-center justify-center h-64">
-        <BrailleSpinner text="Loading" />
-      </div>
+      <PageSkeleton
+        layout="split"
+        label="Loading Chief of Staff"
+        fullHeight
+        padded
+        bodyClassName="p-3 lg:p-4"
+        sideCollapsed={desktopPanelCollapsed}
+        sideClassName="flex flex-col gap-3 border-b lg:border-b-0 lg:border-r border-port-accent-2/20 bg-gradient-to-b from-port-card/80 to-port-card/40 p-3 lg:px-4 lg:py-6 lg:h-full lg:overflow-hidden"
+        sideHero
+        sideBlocks={4}
+        sideBlockColsClass="grid-cols-2"
+        tabs={TABS.length}
+      />
     );
   }
 
@@ -895,33 +903,12 @@ export default function ChiefOfStaff() {
             mini
           />
           {/* Learning Health - clickable to go to Learning tab */}
-          <button
-            onClick={() => navigate('/cos/learning')}
-            className={`bg-port-card border rounded p-1.5 sm:p-2 lg:p-3 transition-all text-left hover:bg-port-card/80 ${
-              learningSummary?.status === 'critical' ? 'border-port-error shadow-md shadow-port-error/20' :
-              learningSummary?.status === 'warning' ? 'border-port-warning shadow-md shadow-port-warning/20' :
-              'border-port-border hover:border-port-accent-2/50'
-            }`}
-            title={learningSummary?.statusMessage || 'View learning analytics'}
-          >
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[10px] sm:text-xs text-gray-500 truncate">Learning</span>
-              <Brain className={`w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 shrink-0 ${
-                learningSummary?.status === 'critical' ? 'text-port-error' :
-                learningSummary?.status === 'warning' ? 'text-port-warning' :
-                learningSummary?.status === 'good' ? 'text-port-accent-2' :
-                'text-gray-500'
-              }`} />
-            </div>
-            <div className="text-sm sm:text-base lg:text-xl font-bold text-white">
-              {learningSummary?.overallSuccessRate != null ? `${learningSummary.overallSuccessRate}%` : '—'}
-            </div>
-            {learningSummary?.skipped > 0 && (
-              <div className="text-[9px] text-port-error mt-0.5 truncate">
-                {learningSummary.skipped} skipped
-              </div>
-            )}
-          </button>
+          <StatCard
+            {...learningStatProps}
+            value={learningRate ?? '—'}
+            icon={<Brain className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />}
+            mini
+          />
         </div>
 
         {/* Tabs - scrollable with arrow navigation */}

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { posixPath } from '../../lib/testHelper.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -39,6 +40,14 @@ vi.mock('../../lib/hfToken.js', () => ({
   hfChildEnv: vi.fn(async () => ({ HF_TOKEN: 'hf_from_store', HUGGINGFACE_HUB_TOKEN: 'hf_from_store' })),
 }));
 
+const { claimRelease } = vi.hoisted(() => ({ claimRelease: vi.fn(async () => {}) }));
+vi.mock('../../lib/heavyJobClaim.js', () => ({
+  claimHeavyLocalJob: vi.fn(async () => ({ ok: true, holder: {}, release: claimRelease })),
+}));
+vi.mock('../../lib/localMemory.js', () => ({
+  prepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
+}));
+
 vi.mock('./db.js', () => ({
   listModels: vi.fn(),
   getModel: vi.fn(),
@@ -52,6 +61,7 @@ import { rm } from 'node:fs/promises';
 import { ensureDir } from '../../lib/fileUtils.js';
 import { resolveTarget } from './targets.js';
 import { isTrellis2Installed, runTrellis2Generate } from './trellis2.js';
+import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import * as store from './db.js';
 import {
   createModel, startGeneration, getModelAsset, recoverInterruptedModels, deleteModel,
@@ -71,6 +81,7 @@ const draftRecord = () => ({
 describe('image-to-3D model orchestration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    claimHeavyLocalJob.mockResolvedValue({ ok: true, holder: {}, release: claimRelease });
     isTrellis2Installed.mockReturnValue(true);
     resolveTarget.mockImplementation((id) => (
       id === 'trellis2'
@@ -130,14 +141,17 @@ describe('image-to-3D model orchestration', () => {
     expect(started.status).toBe('generating');
 
     await vi.waitFor(() => expect(current.status).toBe('ready'));
-    expect(runTrellis2Generate).toHaveBeenCalledWith(expect.objectContaining({
-      imagePath: '/mock/data/images/example.png',
-      outputPath: expect.stringMatching(/image-to-3d\/image3d-example\/model\.glb$/),
-      // #3032: the resolved HF token (settings-stored included) rides into the child,
-      // merged over process.env — without it, gated DINOv3/RMBG-2.0 pulls 401.
-      env: expect.objectContaining({ HF_TOKEN: 'hf_from_store', HUGGINGFACE_HUB_TOKEN: 'hf_from_store' }),
-    }));
-    expect(current.assetPath).toBe('/data/image-to-3d/image3d-example/model.glb');
+    // Read the call back and normalize its paths — matchers compare the raw
+    // received value, which is backslash-separated on Windows.
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(posixPath(generateArgs.imagePath)).toBe('/mock/data/images/example.png');
+    expect(posixPath(generateArgs.outputPath)).toMatch(/image-to-3d\/image3d-example\/model\.glb$/);
+    // #3032: the resolved HF token (settings-stored included) rides into the child,
+    // merged over process.env — without it, gated DINOv3/RMBG-2.0 pulls 401.
+    expect(generateArgs.env).toMatchObject({ HF_TOKEN: 'hf_from_store', HUGGINGFACE_HUB_TOKEN: 'hf_from_store' });
+    expect(claimHeavyLocalJob).toHaveBeenCalledWith(expect.objectContaining({ kind: 'image-to-3D generation' }));
+    expect(claimRelease).toHaveBeenCalled();
+    expect(posixPath(current.assetPath)).toBe('/data/image-to-3d/image3d-example/model.glb');
     expect(current.generationOperationId).toBeNull();
     expect(current.runs.at(-1)).toMatchObject({ status: 'completed', percent: 100 });
   });
@@ -208,10 +222,12 @@ describe('image-to-3D model orchestration', () => {
 
     // The killed child settles; executeRender's finally then removes the orphaned dir.
     rejectRender(Object.assign(new Error('killed'), { code: 'TRELLIS2_GENERATE_FAILED' }));
-    await vi.waitFor(() => expect(rm).toHaveBeenCalledWith(
-      '/mock/data/image-to-3d/image3d-example',
-      expect.objectContaining({ recursive: true, force: true }),
-    ));
+    await vi.waitFor(() => {
+      expect(rm).toHaveBeenCalled();
+      const [target, opts] = rm.mock.calls.at(-1);
+      expect(posixPath(target)).toBe('/mock/data/image-to-3d/image3d-example');
+      expect(opts).toMatchObject({ recursive: true, force: true });
+    });
   });
 
   it('terminates a render whose delete landed before the kill handle was registered', async () => {
@@ -265,9 +281,7 @@ describe('image-to-3D model orchestration', () => {
       ...draftRecord(), status: 'ready', name: 'My Beacon', assetPath: '/data/image-to-3d/image3d-example/model.glb',
     });
     const asset = await getModelAsset('image3d-example');
-    expect(asset).toMatchObject({
-      path: expect.stringMatching(/image-to-3d\/image3d-example\/model\.glb$/),
-      filename: 'my-beacon.glb',
-    });
+    expect(posixPath(asset.path)).toMatch(/image-to-3d\/image3d-example\/model\.glb$/);
+    expect(asset.filename).toBe('my-beacon.glb');
   });
 });

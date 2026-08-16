@@ -12,7 +12,7 @@ import { getSeries, updateSeries } from '../series.js';
 import * as volumeBeatsRunner from '../volumeBeatsRunner.js';
 import * as autoRunner from '../autoRunner.js';
 import { patchRunMetadata, stopRun } from '../../runner.js';
-import { runs, autopilotEvents, noteSignal } from './state.js';
+import { runs, autopilotEvents, noteSignal, noteProgress, snapshotProgress } from './state.js';
 
 // ---------------------------------------------------------------------------
 // Run registry helpers (mirror editorialAnalysisRunner.js).
@@ -38,6 +38,17 @@ export function activeRunStart(seriesId) {
   const run = runs.get(seriesId);
   if (!run || run.finished) return null;
   return run.startPayload || null;
+}
+
+// The live progress snapshot of an IN-FLIGHT run (null when none is active) —
+// the milestone map's cursor: completed counts per step kind, the step running
+// now, and what each gate last verified. Same object the `progress` frame
+// carries, so a client attaching mid-run starts from the run's real position
+// instead of an empty map.
+export function activeRunProgress(seriesId) {
+  const run = runs.get(seriesId);
+  if (!run || run.finished) return null;
+  return snapshotProgress(run);
 }
 
 export function attachClient(seriesId, res) {
@@ -86,10 +97,8 @@ export function pauseSeriesAutopilot(seriesId) {
   return true;
 }
 
-export function broadcast(seriesId, payload) {
-  const run = runs.get(seriesId);
-  if (!run) return;
-  broadcastSse(run, payload);
+function emitFrame(run, seriesId, payload, sseOpts) {
+  broadcastSse(run, payload, sseOpts);
   // Retain the diagnosable frames for the opt-in self-improvement pass. A single
   // tap here (rather than instrumenting each step runner) means any telemetry
   // frame a future step emits is diagnosable evidence for free. No-op unless the
@@ -104,6 +113,23 @@ export function broadcast(seriesId, payload) {
     autopilotEvents.emit(seriesId, payload);
   } catch (err) {
     console.log(`⚠️ autopilot: event emit failed for ${seriesId.slice(0, 12)}: ${err.message}`);
+  }
+}
+
+export function broadcast(seriesId, payload) {
+  const run = runs.get(seriesId);
+  if (!run) return;
+  emitFrame(run, seriesId, payload);
+  // Milestone map: fold the frame into the run's progress snapshot and, when it
+  // moved, follow it with the snapshot itself. Emitted as its own frame (rather
+  // than stamped onto every frame) so the existing frame shapes — and the
+  // diagnosis evidence read off them — are untouched, and NOT retained for SSE
+  // replay: it follows nearly every meaningful frame, so retaining it would take
+  // the single replay slot and leave a late-attaching client with a snapshot
+  // instead of the frame that says what the run is doing. That client reads the
+  // same snapshot off the status route.
+  if (noteProgress(run, payload)) {
+    emitFrame(run, seriesId, { type: 'progress', runId: run.runId, ...snapshotProgress(run) }, { retain: false });
   }
 }
 
@@ -140,10 +166,27 @@ export async function persistMarker(seriesId, patch) {
       overrideStagePins: run.options.overrideStagePins === true,
     }
     : null;
+  // Milestone map (#4140). Both halves the Autonomous card draws it from live
+  // ONLY on the in-memory run record — the projected plan on the retained
+  // `start` frame, and the progress snapshot folded onto the record — so a run
+  // that paused overnight came back as a resume banner with no map beside it.
+  // Carry them on the marker, which outlives the run.
+  //
+  // Stamped on EVERY marker write that has a plan, not only the terminals: the
+  // marker is wholesale-replaced per write, so a terminals-only stamp would
+  // leave the map missing for the one interruption that skips a terminal write
+  // entirely — a hard restart, whose `running` marker the boot recovery demotes
+  // to `paused` by spreading whatever the marker already held. The plan is ~20
+  // small rows and the snapshot is keyed by the same step vocabulary, so this
+  // costs a couple of KB on a series record that is already tens.
+  const plan = Array.isArray(run?.startPayload?.plan) ? run.startPayload.plan : null;
+  const progress = plan ? snapshotProgress(run) : null;
   await updateSeries(seriesId, {
     autopilot: {
       ...patch,
       ...(resumable ? { resumeOptions: resumable } : {}),
+      ...(plan ? { plan } : {}),
+      ...(progress ? { progress } : {}),
       updatedAt: new Date().toISOString(),
     },
   }).catch((err) => {
@@ -171,7 +214,12 @@ export async function fileGap(record, sId, { gapKind, issueId = null, summary, c
   if (!record.options.fileGaps || record.mode !== 'execute') return;
   const idTag = `series ${sId}${issueId ? ` issue ${issueId}` : ''}`;
   const description = `Autopilot ${gapKind} gap — ${idTag}\n\n${summary}`;
-  const result = await cosTaskStore.addTask({ description, context }, 'user')
+  const result = await cosTaskStore.addTask({
+    description,
+    context,
+    autopilotGapSeriesId: sId,
+    autopilotGapKind: gapKind,
+  }, 'user')
     .catch((err) => { console.log(`⚠️ autopilot: fileGap (${gapKind}) failed: ${err.message}`); return null; });
   if (result && !result.duplicate) {
     broadcast(sId, { type: 'gap:filed', gapKind, issueId, taskId: result.id });
@@ -194,6 +242,58 @@ export async function fileGap(record, sId, { gapKind, issueId = null, summary, c
 // unrelated notifications. Best-effort.
 export async function clearPauseNotice(sId) {
   await removeByMetadata('autopilotPauseSeriesId', sId).catch(() => {});
+}
+
+// The gap task's counterpart to clearPauseNotice: retire any gap task still
+// QUEUED for this series when a fresh execute run starts.
+//
+// A gap task is a snapshot of one pause ("needs human review of the residual
+// findings before it can continue"). Once a run is moving again that premise is
+// void, but nothing used to retire the task — so CoS kept dispatching agents
+// against findings the run had already repaired. On this install that burned ten
+// agent sessions across two series, each re-fixing what the previous one fixed.
+//
+// Worse than waste: the resumed run OWNS the fields those findings name (the
+// foundation gate repairs worldbuilding/character/craft itself, and the arc gate
+// rewrites `arc.summary` + `season.synopsis`), so an agent hand-editing them
+// concurrently clobbers the run's own repair.
+//
+// Self-correcting by construction: the gate re-judges from live content on the
+// way past, and re-files a gap with FRESH findings if it still fails. Clearing
+// early can only drop a task whose findings are about to be re-derived.
+//
+// Scoped to `pending` on purpose — an `in_progress` task has an agent attached,
+// and flipping it mid-run would strand that agent and re-open the dedup slot.
+// Status flip, never deletion, so the retirement federates (the #2619 precedent
+// in cosTaskStore.sweepResolvedFailureTasks). Best-effort: this must never
+// abort a run.
+export async function clearGapTasks(sId) {
+  const { tasks = [] } = await cosTaskStore.getUserTasks().catch(() => ({ tasks: [] }));
+  // Legacy gap tasks (filed before `autopilotGapSeriesId` existed — every
+  // install upgrading into this has some) carry no metadata handle, so fall back
+  // to the first line, which fileGap builds deterministically above.
+  const isGapFor = (t) => {
+    if (t.metadata?.autopilotGapSeriesId) return t.metadata.autopilotGapSeriesId === sId;
+    const line = cosTaskStore.firstLine(t.description);
+    return line.startsWith('Autopilot ') && line.includes(` gap — series ${sId}`);
+  };
+  const stale = tasks.filter((t) => t.status === 'pending' && isGapFor(t));
+  let retired = 0;
+  for (const task of stale) {
+    const updated = await cosTaskStore.updateTask(task.id, {
+      status: 'completed',
+      metadata: {
+        resolution: 'auto-expired',
+        autoExpiredReason: 'autopilot-resumed',
+        autoExpiredAt: new Date().toISOString(),
+      },
+    }, 'user').catch(() => null);
+    if (updated && !updated.error) retired++;
+  }
+  if (retired > 0) {
+    console.log(`🧹 autopilot: retired ${retired} stale gap task(s) for ${sId.slice(0, 12)} on resume`);
+  }
+  return retired;
 }
 
 export async function notifyPause(record, sId, { reason, pauseKind = null, currentStep = null }) {
@@ -270,8 +370,28 @@ export const roleLlm = (record, role = 'creative') => {
   if (stageRoute && typeof stageRoute === 'object' && Object.keys(stageRoute).length > 0) {
     return inheritLlmRoute(stageRoute, roleRoute);
   }
-  const learned = options.autoSelectModels === true
-    && options.modelRoutesExplicit?.[role] !== true
+  // Evidence-based routing (`autoSelectModels`) only fills in for a role left
+  // ENTIRELY unrouted — read off `roleRoute`, the route this role would
+  // otherwise run on, so the rule has one definition and cannot desync from the
+  // inheritance above it.
+  //
+  // That inheritance is the whole point: with no separate judge configured, the
+  // judge route IS the run route, so choosing a run provider/model chooses the
+  // judge too — which is exactly what the Options panel promises when "Use a
+  // separate model for judging and verification" is unchecked. Deriving this
+  // from `options.judgeLlm` alone instead left a run that picked ONE
+  // provider/model with creation on the chosen route while every judge/verify
+  // call (pipeline-arc-verify above all, plus volume verify, the foundation
+  // judge and the editorial checks) was silently re-pointed at the learned one.
+  // Reading `roleRoute` also covers the run route the series' own `series.llm`
+  // supplied (orchestrator.js resolves that into these options before the run
+  // starts), so a series that names its provider keeps it here too — and keeps
+  // it identically across a pause, since that resolved route is what the resume
+  // marker persists.
+  const routeChosen = !!(
+    roleRoute.providerOverride || roleRoute.modelOverride || roleRoute.effortOverride
+  );
+  const learned = options.autoSelectModels === true && !routeChosen
     ? options.modelRecommendations?.[record?.currentStep]?.[role]
     : null;
   if (learned) {

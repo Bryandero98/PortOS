@@ -69,20 +69,26 @@ export function UniverseSelector({ universes, selectedId, value, onChange, onPic
     [universes],
   );
   return (
-    <EntityCombobox
-      items={items}
-      selectedId={selectedId}
-      value={value}
-      onChange={onChange}
-      onPick={(item) => onPick(item.id)}
-      onCreate={onCreate}
-      busy={busy}
-      inputId="universe-name"
-      noun="universe"
-      placeholder="Search universes or type a new name…"
-      emptyNoItems="No universes yet — type a name and Create."
-      maxLength={100}
-    />
+    <>
+      {/* The combobox doubles as the name field in a thin action header, so the
+          label is sr-only: the placeholder carries the affordance visually, but
+          a screen reader would otherwise announce a bare combo box. */}
+      <label htmlFor="universe-name" className="sr-only">Universe name</label>
+      <EntityCombobox
+        items={items}
+        selectedId={selectedId}
+        value={value}
+        onChange={onChange}
+        onPick={(item) => onPick(item.id)}
+        onCreate={onCreate}
+        busy={busy}
+        inputId="universe-name"
+        noun="universe"
+        placeholder="Search universes or type a new name…"
+        emptyNoItems="No universes yet — type a name and Create."
+        maxLength={100}
+      />
+    </>
   );
 }
 
@@ -130,6 +136,7 @@ export default function UniverseBuilder() {
     providerLabel,
     providerModels,
     providers,
+    adoptStyleGuideFromBoard,
     persistStyleReference,
     removeCategory,
     removeStyleReference,
@@ -400,6 +407,7 @@ export default function UniverseBuilder() {
             saved={!!selectedId}
             onPersistStyleReference={persistStyleReference}
             onRemoveStyleReference={removeStyleReference}
+            onAdoptStyleGuide={adoptStyleGuideFromBoard}
           />
         )}
 
@@ -491,8 +499,9 @@ export default function UniverseBuilder() {
                 expand. New buckets default to kind='other' so they land under
                 the Other tab. */}
             <section className="bg-port-card border border-port-border rounded p-3 flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-gray-400 mr-1">Add a custom sub-bucket (lands under Other):</span>
+              <label htmlFor="universe-add-sub-bucket" className="text-xs text-gray-400 mr-1">Add a custom sub-bucket (lands under Other):</label>
               <input
+                id="universe-add-sub-bucket"
                 type="text"
                 value={newCategoryName}
                 onChange={(e) => setNewCategoryName(e.target.value)}

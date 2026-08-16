@@ -32,7 +32,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import { join, resolve as pathResolve, sep as PATH_SEP } from 'path';
-import { PATHS, readJSONFile, atomicWrite, ensureDir, sleep } from '../../lib/fileUtils.js';
+import { PATHS, readJSONFileStrict, atomicWrite, ensureDir, sleep } from '../../lib/fileUtils.js';
 import { SSE_HEADERS } from '../../lib/sseHeaders.js';
 import { reapAndCleanDetachedDirs } from '../../lib/detachedSpawn.js';
 import {
@@ -176,6 +176,14 @@ async function resolveLiveParams(job, safeParams) {
 }
 
 export const mediaJobEvents = new EventEmitter();
+// Boot already wires 11 permanent `completed` hooks (universe-builder, catalog
+// image-attach, writers-room, music-video scene image/video, music bed, sprite
+// references, scene frames, and the comicPages/storyboards/seasonCover filename
+// hooks), which trips Node's default limit of 10 and prints a bogus
+// MaxListenersExceededWarning on every start. These are long-lived subscribers,
+// not a leak; per-job waiters add more on top. Matches the caps the sibling
+// emitters already set (imageGenEvents 200, videoGenEvents 50).
+mediaJobEvents.setMaxListeners(100);
 
 // GPU lane: serialized — `running` holds at most one job (the MLX runtime can't
 // share VRAM). Codex lane: up to `codexParallelLimit` jobs in `cloudRunning[]`
@@ -260,7 +268,15 @@ export function listJobs({ status, kind, owner } = {}) {
 // (e.g. completed→running). Chaining ensures every snapshot reflects the
 // state at its enqueue time, in submission order.
 let persistChain = Promise.resolve();
+// Set when the boot read of JOBS_FILE was untrustworthy (#4115). Every persist()
+// writes the FULL in-memory snapshot, so persisting on top of a queue we failed
+// to restore would replace the real jobs file with whatever this process happens
+// to hold — the classic "unreadable read becomes an empty write". Latching the
+// writer off preserves the file for the user to recover or delete; the queue
+// still runs normally in memory for the life of the process.
+let persistBlocked = false;
 function persist() {
+  if (persistBlocked) return persistChain;
   persistChain = persistChain.then(persistImpl, persistImpl);
   return persistChain;
 }
@@ -296,7 +312,21 @@ export async function initMediaJobQueue() {
     // Read the codex parallel limit before the worker starts so the first
     // drain tick honors the user's configured value, not the default.
     await refreshCodexParallelLimit().catch(() => {});
-    const data = await readJSONFile(JOBS_FILE, { jobs: [] });
+    // Strict (#4115). A swallowed unreadable jobs file boots an empty queue and
+    // the `await persist()` at the end of this init writes that emptiness over
+    // the real snapshot — losing the archive and orphaning every job the reload
+    // below would have reconciled. This init is an awaited step of
+    // `runPostRouteSequence`, where a rejection is FATAL (process.exit), so a
+    // bad permission bit on one snapshot file must not take the server down:
+    // report it, boot an empty queue, and latch persistence off instead.
+    const { ok, value: data } = await readJSONFileStrict(JOBS_FILE, { jobs: [] });
+    if (!ok) {
+      persistBlocked = true;
+      // Name the recovery step: the latch is process-lifetime, so without this
+      // the user has a queue that silently stops surviving restarts and no
+      // indication that repairing or deleting one file restores it.
+      console.error(`❌ media-job queue: ${JOBS_FILE} is present but unreadable — starting empty and NOT persisting so it is preserved; repair or delete it and restart to re-enable persistence`);
+    }
     const persistedJobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const restartedFailedIds = [];
     // #1332: training jobs whose detached trainer survived the restart, to be
@@ -1109,6 +1139,9 @@ export function __resetForTests() {
   // Reset the persist chain so a leftover rejection from a previous test's
   // ENOENT writes doesn't poison subsequent persist() calls.
   persistChain = Promise.resolve();
+  // Un-latch the persistence block (#4115) — a test that booted on an unreadable
+  // jobs file would otherwise leave every later test's queue unable to persist.
+  persistBlocked = false;
 }
 
 // Test-only deterministic settle hook. EventEmitter terminal handlers and

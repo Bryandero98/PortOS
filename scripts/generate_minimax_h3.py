@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -24,82 +23,60 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _runner_common import emit_runtime_fingerprint, heartbeat, register_source_namespace  # noqa: E402
+from _runner_common import (  # noqa: E402
+    emit_runtime_fingerprint, establish_process_group, heartbeat, register_source_namespace,
+)
+from _minimax_h3_common import (  # noqa: E402
+    FPS, add_h3_common_args, emit_result, load_keyframes, resolve_cached_snapshot,
+    validate_h3_output_args,
+)
 
 
-FPS = 24
-MIN_FRAMES = 124  # first 17n+5 grid point at or above 5 seconds
+# The MLX port accepts H3's full documented 4-15s range. The diffusers CUDA
+# runner is narrower (5-15s) — see generate_minimax_h3_cuda.py — which is why
+# the window is per-runner while FPS and the 17n+5 grid are shared.
+MIN_FRAMES = 107  # first 17n+5 grid point at or above the upstream 4-second minimum
 MAX_FRAMES = 362  # first 17n+5 grid point at or above 15 seconds
-FRAME_MODULUS = 17
-FRAME_REMAINDER = 5
 STEP_RE = re.compile(r"\bstep\s+(\d+)/(\d+)\b", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = add_h3_common_args(argparse.ArgumentParser(description=__doc__), steps_default=9)
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--runtime-revision", required=True)
-    parser.add_argument("--model-repo", required=True)
-    parser.add_argument("--model-revision", required=True)
     parser.add_argument("--checkpoint-repo", required=True)
     parser.add_argument("--checkpoint-revision", required=True)
     parser.add_argument("--checkpoint-file", action="append", default=[])
-    parser.add_argument("--prompt", required=True)
-    parser.add_argument("--width", type=int, required=True)
-    parser.add_argument("--height", type=int, required=True)
-    parser.add_argument("--num-frames", type=int, required=True)
-    parser.add_argument("--fps", type=int, default=FPS)
-    parser.add_argument("--steps", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--image", action="append", default=[],
-                        help="keyframe conditioning image (repeatable, max 2)")
-    parser.add_argument("--anchor", action="append", default=[], choices=["first", "last"],
-                        help="latent anchor for each --image, in the same order")
     parser.add_argument("--lora", action="append", default=[],
                         help="user LoRA safetensors applied at runtime (repeatable)")
     parser.add_argument("--lora-scale", action="append", type=float, default=[],
                         help="strength for each --lora, in the same order")
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--text-encoder-id",
+                        help="id of the substituted prompt conditioner (shim directory name)")
+    parser.add_argument("--text-encoder-file", action="append", default=[],
+                        help="already-cached safetensors to condition with instead of the checkpoint's own "
+                             "(repeatable — one per shard of a multi-shard conditioner)")
+    parser.add_argument("--text-encoder-shim-root",
+                        help="directory the composed checkpoint root is built under")
+    parser.add_argument("--text-encoder-key-prefix", action="append", default=[],
+                        metavar="FROM=TO",
+                        help="rewrite this checkpoint-key prefix before the loader matches it (repeatable)")
+    parser.add_argument("--text-encoder-final-norm-key",
+                        help="synthesize a ones-filled final norm under this key (for a conditioner published without one)")
     return parser.parse_args()
 
 
-def snapshot_root(resolved_file: str | Path, repo_filename: str) -> Path:
-    """Return the HF snapshot directory containing one resolved repo file."""
-    levels = len(Path(repo_filename).parts)
-    # Hugging Face snapshot entries are normally symlinks into `blobs/`.
-    # Resolving the symlink would therefore walk OUT of the snapshot and hand
-    # the pipeline a blob directory. `hf_hub_download` already returns an
-    # absolute snapshot path, so preserve that lexical path deliberately.
-    return Path(resolved_file).absolute().parents[levels - 1]
+def require_ffmpeg() -> str:
+    """Fail before loading tens of GB of weights when muxing cannot succeed.
 
-
-def resolve_cached_snapshot(repo: str, revision: str, required_files: list[str]) -> Path:
-    """Resolve exact cached files without ever permitting a network fallback."""
-    if not required_files:
-        raise RuntimeError(f"No required files declared for {repo}.")
-
-    from huggingface_hub import hf_hub_download
-
-    resolved: list[tuple[str, Path]] = []
-    for filename in required_files:
-        try:
-            path = hf_hub_download(
-                repo_id=repo,
-                filename=filename,
-                revision=revision,
-                local_files_only=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Required cached weight is missing: {repo}@{revision[:12]}/{filename}. "
-                "Use Download in Video Gen before generating."
-            ) from exc
-        resolved.append((filename, Path(path)))
-
-    roots = {snapshot_root(path, filename) for filename, path in resolved}
-    if len(roots) != 1:
-        raise RuntimeError(f"Cached files for {repo}@{revision[:12]} span multiple snapshots; repair the model in Video Gen.")
-    return roots.pop()
+    Only this runner needs it: it shells out to the ffmpeg binary to mux the
+    joint video+audio output, where the CUDA sibling muxes in-process through
+    diffusers' PyAV-backed encode_video().
+    """
+    path = shutil.which("ffmpeg")
+    if path is None:
+        raise RuntimeError("ffmpeg is required to mux MiniMax H3 video and audio; install it before generating.")
+    return path
 
 
 def resolve_transformer_snapshot(repo: str, revision: str) -> Path:
@@ -120,12 +97,133 @@ def resolve_transformer_snapshot(repo: str, revision: str) -> Path:
     return root
 
 
-def require_ffmpeg() -> str:
-    """Fail before loading ~83 GB of weights when muxing cannot succeed."""
-    path = shutil.which("ffmpeg")
-    if path is None:
-        raise RuntimeError("ffmpeg is required to mux MiniMax H3 video and audio; install it before generating.")
-    return path
+def parse_key_prefixes(pairs: list[str]) -> list[tuple[str, str]]:
+    """Parse `--text-encoder-key-prefix FROM=TO` into longest-prefix-first rules.
+
+    Sorting by descending source length means a more specific rule can never be
+    shadowed by a shorter one that also matches, so PortOS can declare the pairs
+    in whatever order reads best on its side.
+    """
+    rules: list[tuple[str, str]] = []
+    for pair in pairs:
+        source, sep, target = pair.partition("=")
+        if not sep or not source:
+            raise SystemExit(f"--text-encoder-key-prefix must be FROM=TO; got {pair!r}.")
+        rules.append((source, target))
+    return sorted(rules, key=lambda rule: -len(rule[0]))
+
+
+def install_key_prefix_map(rules: list[tuple[str, str]]) -> None:
+    """Rewrite checkpoint-key prefixes before the pinned loader matches them.
+
+    A conditioner repackaged for ComfyUI flattens the transformers namespace
+    (`model.layers.N.…` / `visual.…`) while the port's `_wanted` matches the
+    Hugging Face one (`model.language_model.layers.N.…` / `model.visual.…`).
+    Wrapping that single method translates the namespace for the duration of the
+    load and delegates every real decision — which layers are past the
+    conditioning depth, what `lm_head` maps to — back to the pinned
+    implementation, so this adapter cannot drift from the port's own contract.
+
+    Deliberately NOT a source edit: the checkout is verified clean above, and it
+    must stay that way.
+    """
+    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
+
+    original = getattr(MiniMaxH3TextEncoder, "_wanted", None)
+    if original is None:
+        raise RuntimeError(
+            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder._wanted, "
+            "so a substituted text encoder cannot be key-mapped onto it. Render with the "
+            "stock text encoder, or update PortOS for the new pin."
+        )
+
+    def _wanted(self, key: str):
+        for source, target in rules:
+            if key.startswith(source):
+                key = target + key[len(source):]
+                break
+        return original(self, key)
+
+    MiniMaxH3TextEncoder._wanted = _wanted
+
+
+def write_final_norm_shard(path: Path, key: str, hidden_size: int) -> None:
+    """Write the one tensor a norm-less conditioner is missing.
+
+    H3 conditions on the hidden state *before* the final norm, so a checkpoint
+    published for H3 correctly omits it — but the port instantiates the whole
+    module tree and refuses to load with any parameter absent. The value is
+    therefore never read; ones is the identity, which keeps the file honest if a
+    future revision ever does apply it.
+
+    Written under the SUBSTITUTE's own key namespace so the prefix map above
+    rewrites it exactly like every other key in the checkpoint.
+    """
+    import mlx.core as mx
+
+    mx.save_safetensors(str(path), {key: mx.ones((hidden_size,), dtype=mx.bfloat16)})
+
+
+def build_encoder_shim(
+    checkpoint_dir: Path,
+    shim_root: Path,
+    encoder_id: str,
+    encoder_files: list[Path],
+    final_norm_key: str | None,
+) -> Path:
+    """Compose a checkpoint root whose `text_encoder/` is the substitute.
+
+    Everything else — `model_index.json`, both VAEs, the tokenizer and the
+    processor — is symlinked straight through from the upstream snapshot, so the
+    pinned `from_pretrained` loads this directory with no argument it doesn't
+    already take and no knowledge that anything was swapped. The substitute
+    ships weights only; its tokenizer/processor/config come from upstream, which
+    is correct because abliteration changes weights, not the vocabulary or the
+    vision geometry.
+
+    A substitute may be one repackaged safetensors or several shards of an
+    upstream checkpoint: every file is linked into the same `text_encoder/`,
+    which the loader globs, so a multi-shard conditioner needs no index file.
+    Only the shards carrying parameters the loader actually builds are pulled,
+    so the glob deliberately sees fewer files than the upstream repo publishes.
+
+    Rebuilt from scratch on every render: the links are free, and a stale shim
+    pointing at a blob the user has since re-downloaded would otherwise load
+    silently-wrong weights.
+    """
+    for encoder_file in encoder_files:
+        if not encoder_file.is_file():
+            raise RuntimeError(f"Substituted text encoder is missing: {encoder_file}")
+    names = [f.name for f in encoder_files]
+    if len(set(names)) != len(names):
+        raise RuntimeError(f"Substituted text encoder has duplicate shard names: {sorted(names)}")
+
+    root = shim_root / encoder_id
+    shutil.rmtree(root, ignore_errors=True)
+    (root / "text_encoder").mkdir(parents=True, exist_ok=True)
+
+    for entry in checkpoint_dir.iterdir():
+        if entry.name == "text_encoder":
+            continue
+        # `target_is_directory` is a no-op on POSIX but load-bearing on Windows,
+        # where a directory linked as a file symlink cannot be traversed — the
+        # VAEs, the tokenizer and the processor are all directories.
+        (root / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+
+    stock_config = checkpoint_dir / "text_encoder" / "config.json"
+    if not stock_config.is_file():
+        raise RuntimeError(f"Upstream text-encoder config is missing: {stock_config}")
+    (root / "text_encoder" / "config.json").symlink_to(stock_config)
+    for encoder_file in encoder_files:
+        (root / "text_encoder" / encoder_file.name).symlink_to(encoder_file)
+
+    if final_norm_key:
+        hidden_size = json.loads(stock_config.read_text(encoding="utf-8"))["text_config"]["hidden_size"]
+        # `_load_weights` globs *.safetensors in this directory, so a companion
+        # shard is picked up alongside the substitute with no loader change.
+        write_final_norm_shard(root / "text_encoder" / "_portos_final_norm.safetensors", final_norm_key, hidden_size)
+
+    return root
 
 
 def verify_runtime_checkout(runtime_dir: Path, expected_revision: str) -> None:
@@ -148,11 +246,6 @@ def verify_runtime_checkout(runtime_dir: Path, expected_revision: str) -> None:
     dirty = [line for line in lines if not line.startswith("# ")]
     if oid != expected_revision or dirty:
         raise RuntimeError("MiniMax H3 runtime source differs from the pinned checkout; use Repair in Video Gen.")
-
-
-def emit_result(output: Path) -> None:
-    """Emit the completion contract that arms PortOS's teardown watchdog."""
-    print(json.dumps({"video_path": str(output)}), flush=True)
 
 
 class ProgressWriter:
@@ -191,24 +284,18 @@ class ProgressWriter:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if args.fps != FPS:
-        raise SystemExit(f"MiniMax H3 runs at a fixed {FPS} fps; got {args.fps}.")
-    if args.width <= 0 or args.height <= 0 or args.width % 32 or args.height % 32:
-        raise SystemExit(f"MiniMax H3 dimensions must be positive multiples of 32; got {args.width}x{args.height}.")
-    if not MIN_FRAMES <= args.num_frames <= MAX_FRAMES:
-        raise SystemExit(f"MiniMax H3 supports approximately 5-15 seconds ({MIN_FRAMES}-{MAX_FRAMES} aligned frames).")
-    if args.num_frames % FRAME_MODULUS != FRAME_REMAINDER:
-        raise SystemExit(f"MiniMax H3 frame count must be 17n+5; got {args.num_frames}.")
-    if args.steps < 2:
-        raise SystemExit("MiniMax H3 needs at least 2 sigma grid points.")
-    if len(args.anchor) != len(args.image):
-        raise SystemExit(
-            f"MiniMax H3 needs one --anchor per --image; got {len(args.image)} images and {len(args.anchor)} anchors."
-        )
-    # H3's fl2va conditioning defines exactly two latent anchors, so a repeated
-    # anchor would silently overwrite one keyframe's position with another's.
-    if len(set(args.anchor)) != len(args.anchor):
-        raise SystemExit(f"MiniMax H3 anchors must be distinct; got {args.anchor}.")
+    # Everything the H3 checkpoint imposes regardless of runtime — fps, the 32px
+    # canvas grid, the 17n+5 frame grid, the sigma floor, keyframe anchoring —
+    # lives in the shared module so this runner and the CUDA one cannot drift.
+    # Only the duration window and the LoRA pairing below are ours.
+    validate_h3_output_args(
+        args,
+        min_frames=MIN_FRAMES,
+        max_frames=MAX_FRAMES,
+        frame_window_message=(
+            f"MiniMax H3 supports approximately 4-15 seconds ({MIN_FRAMES}-{MAX_FRAMES} aligned frames)."
+        ),
+    )
     if len(args.lora_scale) != len(args.lora):
         raise SystemExit(
             f"MiniMax H3 needs one --lora-scale per --lora; got {len(args.lora)} LoRAs "
@@ -217,32 +304,19 @@ def validate_args(args: argparse.Namespace) -> None:
     for path in args.lora:
         if not Path(path).is_file():
             raise SystemExit(f"LoRA file is missing: {path}")
-
-
-def load_keyframes(paths: list[str]) -> list:
-    """Open each conditioning image upright, in RGB, in the order given."""
-    # Every path is checked before anything is opened, so a bad second keyframe
-    # doesn't cost a decode of the first — and the message names the PortOS-side
-    # cause rather than surfacing Pillow's bare FileNotFoundError.
-    for path in paths:
-        if not Path(path).is_file():
-            raise RuntimeError(f"Conditioning image is missing: {path}")
-    # Imported only once there is something to decode: a text-only run never
-    # pulls Pillow in, and the missing-file path above stays dependency-free.
-    if not paths:
-        return []
-    from PIL import Image, ImageOps
-
-    images = []
-    for path in paths:
-        with Image.open(path) as handle:
-            image = handle.convert("RGB")
-        # In place: PortOS hands us ffmpeg-normalized PNGs with no orientation
-        # tag, and the copying form would duplicate every pixel buffer for
-        # nothing — then hold it across the 83 GB load below.
-        ImageOps.exif_transpose(image, in_place=True)
-        images.append(image)
-    return images
+    # The substitution is all-or-nothing: without the id there is nowhere to
+    # build the shim, and without the shim root there is nowhere to put it.
+    # Accepting a partial set would silently fall back to the stock conditioner
+    # and hand the user a render they'd have no way to tell apart.
+    encoder_flags = (args.text_encoder_id, args.text_encoder_file, args.text_encoder_shim_root)
+    if any(encoder_flags) and not all(encoder_flags):
+        raise SystemExit(
+            "--text-encoder-id, --text-encoder-file and --text-encoder-shim-root must be given together."
+        )
+    if args.text_encoder_id and not re.fullmatch(r"[A-Za-z0-9._-]+", args.text_encoder_id):
+        raise SystemExit(f"--text-encoder-id must be a bare directory-safe name; got {args.text_encoder_id!r}.")
+    if not args.text_encoder_file and (args.text_encoder_key_prefix or args.text_encoder_final_norm_key):
+        raise SystemExit("--text-encoder-key-prefix / --text-encoder-final-norm-key need --text-encoder-file.")
 
 
 def main() -> int:
@@ -253,14 +327,9 @@ def main() -> int:
     # image should not cost seconds before it reports.
     images = load_keyframes(args.image)
 
-    # PortOS cancels this helper by process group; ffmpeg inherits the group and
-    # cannot remain behind muxing after the user presses Cancel. Establish the
-    # group before the git pin probe, which is the first child process.
-    if hasattr(os, "setpgid"):
-        try:
-            os.setpgid(0, 0)
-        except OSError:
-            pass
+    # Before the git pin probe, which is the first child process — and before
+    # the ffmpeg this runner shells out to mux with.
+    establish_process_group()
 
     require_ffmpeg()
 
@@ -288,6 +357,27 @@ def main() -> int:
 
     from minimax_h3_mlx.media import save_mp4
     from minimax_h3_mlx.pipeline import MiniMaxH3Pipeline
+
+    # Substituted prompt conditioner. H3 reads the unnormalized hidden state
+    # after Qwen3-VL language layer 49, so any checkpoint carrying the same
+    # embedding + layers 0-49 + vision tower conditions the DiT identically in
+    # shape while reading the prompt differently. The swap is expressed as a
+    # composed checkpoint root plus a key-prefix rewrite, both of which leave the
+    # pinned runtime source untouched.
+    if args.text_encoder_file:
+        # Bare phase marker plus a separate STATUS line: the SSE parser reads
+        # field 2 of a STAGE frame as `step`/`heartbeat`, so the encoder id
+        # cannot ride along in the marker itself.
+        print("STAGE:swap-text-encoder", file=sys.stderr, flush=True)
+        print(f"STATUS:Conditioning with the {args.text_encoder_id} text encoder", file=sys.stderr, flush=True)
+        install_key_prefix_map(parse_key_prefixes(args.text_encoder_key_prefix))
+        checkpoint_dir = build_encoder_shim(
+            checkpoint_dir,
+            Path(args.text_encoder_shim_root),
+            args.text_encoder_id,
+            [Path(f) for f in args.text_encoder_file],
+            args.text_encoder_final_norm_key,
+        )
 
     print("STAGE:load-pipeline", file=sys.stderr, flush=True)
     with heartbeat("minimax-h3-load"):

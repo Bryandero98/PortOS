@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { ChildProcess } from 'child_process';
+import { ChildProcess } from './childProcess.js';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -11,7 +11,7 @@ import { tmpdir } from 'os';
 // needs the real `ChildProcess` export; a from-scratch replacement object
 // (no `ChildProcess` key) would make that check throw on an actual win32 run.
 const spawnMock = vi.fn();
-vi.mock('child_process', async (importOriginal) => {
+vi.mock('./childProcess.js', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, spawn: (...a) => spawnMock(...a) };
 });
@@ -105,12 +105,44 @@ describe('killProcessTree', () => {
     killProcessTree(child);
     expect(spawnMock).toHaveBeenCalledWith(
       'taskkill', ['/T', '/F', '/PID', '999'],
-      expect.objectContaining({ stdio: 'ignore', windowsHide: true })
+      expect.objectContaining({ stdio: 'ignore' })
     );
     // taskkill runs in a detached process that never touches `child` itself —
     // .killed must be set synchronously here so re-entrant kill/abort guards
     // elsewhere (gated on `!child.killed`) actually engage on Windows.
     expect(child.killed).toBe(true);
+  });
+
+  it('on non-Windows with processGroup signals the whole group, so a detached shell takes its children with it', () => {
+    if (IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild({ pid: 555 });
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    killProcessTree(child, undefined, { processGroup: true });
+    expect(killSpy).toHaveBeenCalledWith(-555, 'SIGTERM');
+    expect(child.kill).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
+  it('on non-Windows falls back to the single pid when the group is already gone (ESRCH)', () => {
+    if (IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('ESRCH'); });
+    killProcessTree(child, 'SIGKILL', { processGroup: true });
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    killSpy.mockRestore();
+  });
+
+  it('on Windows ignores processGroup — taskkill /T is already the tree', () => {
+    if (!IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild({ pid: 777 });
+    const tk = makeFakeChild();
+    tk.unref = vi.fn();
+    spawnMock.mockReturnValueOnce(tk);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    killProcessTree(child, undefined, { processGroup: true });
+    expect(spawnMock).toHaveBeenCalledWith('taskkill', ['/T', '/F', '/PID', '777'], expect.anything());
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
   });
 
   it('on Windows still uses .kill() (not taskkill) for a non-ChildProcess killable, e.g. a node-pty session', () => {
@@ -325,8 +357,9 @@ describe('bufferedSpawn — structured result', () => {
       success: true, code: 0, signal: null,
       stdout: 'out-data', stderr: 'err-data', timedOut: false,
     });
-    // cwd + windowsHide passed through; shell defaults to needsShell(cmd).
-    expect(spawnMock).toHaveBeenCalledWith('echo', ['hi'], expect.objectContaining({ cwd: '/tmp', windowsHide: true }));
+    // cwd passed through; shell defaults to needsShell(cmd). windowsHide is the
+    // wrapper's job now, so it isn't in what bufferedSpawn itself passes.
+    expect(spawnMock).toHaveBeenCalledWith('echo', ['hi'], expect.objectContaining({ cwd: '/tmp' }));
   });
 
   it('resolves failure (not throw) on a non-zero exit', async () => {

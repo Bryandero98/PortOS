@@ -425,7 +425,7 @@ async function getUniverseSnapshot({ exclude } = {}) {
   return { data, checksum: computeChecksum(data) };
 }
 
-async function applyUniverseRemote(remoteData, source) {
+async function applyUniverseRemote(remoteData, source, meta = {}) {
   if (!remoteData) return { applied: false, count: 0 };
   // Routes through `mergeUniversesFromSync` so the read-modify-write runs
   // INSIDE `queueUniverseWrite` (serialized against every other writer:
@@ -433,7 +433,12 @@ async function applyUniverseRemote(remoteData, source) {
   // remote record passes through `sanitizeTemplate` for schema-version
   // backfill — older peers landing pre-v4 records get them migrated on the
   // way in instead of polluting disk with un-backfilled state.
-  const result = await mergeUniversesFromSync(remoteData.universes || [], { source });
+  // `senderSchemaVersions` gates the moodBoardId omitted-vs-cleared
+  // disambiguation (#4188) — see mergeUniversesFromSync.
+  const result = await mergeUniversesFromSync(remoteData.universes || [], {
+    source,
+    senderSchemaVersions: meta.senderSchemaVersions || null,
+  });
   if (result.applied) {
     console.log(`🔄 Universe sync: merged ${result.count} universe(s)`);
   }
@@ -640,7 +645,10 @@ async function applyMediaCollectionsRemote(remoteData, source) {
 const hasVideoRowId = (r) => typeof r?.id === 'string' && r.id;
 
 async function getVideoHistorySnapshot() {
-  const raw = await readJSONFile(VIDEO_HISTORY_FILE, []);
+  // STRICT (#4115): an unreadable history would publish a valid CHECKSUM over an
+  // empty set — peers conclude this machine holds no videos and the category
+  // thrashes forever. Absent is a real empty; unreadable must not go on the wire.
+  const raw = await readJSONFile(VIDEO_HISTORY_FILE, [], { strict: true });
   // Exclude rows without a string `id`: applyVideoHistoryRemote can only merge
   // id-keyed rows, so an id-less row in the wire snapshot/checksum would be
   // un-appliable on the receiver — its recomputed checksum would never match the
@@ -672,7 +680,11 @@ async function applyVideoHistoryRemote(remoteData) {
   const incoming = Array.isArray(remoteData.videos) ? remoteData.videos : [];
   if (incoming.length === 0) return { applied: false, count: 0 };
 
-  const localRaw = await readJSONFile(VIDEO_HISTORY_FILE, []);
+  // STRICT (#4115): this is the merge BASE, and the merged result is written
+  // back over the whole file below. A swallowed unreadable read makes `local`
+  // empty, so `next` becomes the remote rows alone — deleting every local-only
+  // row, including the id-less ones the code below goes out of its way to keep.
+  const localRaw = await readJSONFile(VIDEO_HISTORY_FILE, [], { strict: true });
   const local = Array.isArray(localRaw) ? localRaw : [];
 
   // Union by `id`, LWW on `createdAt` when both sides know the same row.
@@ -1059,5 +1071,8 @@ export async function applyRemote(category, remoteData, options = {}) {
       },
     };
   }
-  return cat.applyRemote(remoteData, source);
+  // Third arg: sender envelope details for appliers that disambiguate
+  // omitted-vs-cleared fields by sender version (universe moodBoardId, #4188).
+  // Appliers that don't need it ignore the extra argument.
+  return cat.applyRemote(remoteData, source, { senderSchemaVersions });
 }

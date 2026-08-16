@@ -56,10 +56,11 @@ describe('detectForgeCli', () => {
     expect(detectForgeCli('GitLab.Internal.Co')).toBe('glab');
   });
 
-  it('defaults to gh for unknown or empty hosts', () => {
+  it('defaults to gh for unknown non-empty hosts, returns unknown for falsy hosts', () => {
     expect(detectForgeCli('bitbucket.org')).toBe('gh');
-    expect(detectForgeCli(null)).toBe('gh');
-    expect(detectForgeCli('')).toBe('gh');
+    expect(detectForgeCli(null)).toBe('unknown');
+    expect(detectForgeCli(undefined)).toBe('unknown');
+    expect(detectForgeCli('')).toBe('unknown');
   });
 });
 
@@ -93,7 +94,7 @@ describe('createPR', () => {
   });
 
   // Regression: `spawn` was previously used inside createPR but the
-  // `import { spawn } from 'child_process'` line was dropped during a refactor,
+  // `import { spawn } from '../lib/childProcess.js'` line was dropped during a refactor,
   // causing every CoS-agent PR to fail with "spawn is not defined" and falling
   // back to the recovery-task path. The check below ensures a real call into
   // createPR doesn't throw a ReferenceError before completing.

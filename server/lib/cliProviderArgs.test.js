@@ -162,33 +162,34 @@ describe('cliProviderArgs', () => {
   });
 
   describe('buildCliArgs — Kimi Code CLI', () => {
-    it('builds a headless --print invocation without --model for the sentinel (seeded args)', () => {
-      const args = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: ['--print'], defaultModel: 'kimi-configured-default' });
-      expect(args).toEqual(['--print']);
+    it('builds an empty headless argv for the sentinel (seeded args) — no mode flag exists (#4139)', () => {
+      const args = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: [], defaultModel: 'kimi-configured-default' });
+      expect(args).toEqual([]);
       expect(args).not.toContain('--model');
       expect(args).not.toContain('kimi-configured-default');
     });
 
-    it('adds --print when the saved args omit it', () => {
-      const args = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: [], defaultModel: 'kimi-configured-default' });
-      expect(args).toEqual(['--print']);
+    it('never injects --print or --afk — kimi rejects both outright (#4139)', () => {
+      const args = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: [], defaultModel: 'kimi-k2' });
+      expect(args).not.toContain('--print');
+      expect(args).not.toContain('--afk');
     });
 
     it('injects --model when a concrete model id is set (path/exe tolerant)', () => {
-      const args = buildCliArgs({ id: 'my-kimi', command: '/opt/homebrew/bin/kimi', args: ['--print'], defaultModel: 'kimi-k2' });
-      expect(args).toEqual(['--print', '--model', 'kimi-k2']);
+      const args = buildCliArgs({ id: 'my-kimi', command: '/opt/homebrew/bin/kimi', args: [], defaultModel: 'kimi-k2' });
+      expect(args).toEqual(['--model', 'kimi-k2']);
     });
 
     it('respects a user-baked --model and does not duplicate it', () => {
-      const args = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: ['--print', '--model', 'mine'], defaultModel: 'kimi-configured-default' });
+      const args = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: ['--model', 'mine'], defaultModel: 'kimi-configured-default' });
       expect(args.filter((a) => a === '--model')).toHaveLength(1);
       expect(args).toContain('mine');
     });
 
     it('delivers the prompt as the --prompt argv value (useStdin false)', () => {
-      const built = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: ['--print'], defaultModel: 'kimi-configured-default' });
+      const built = buildCliArgs({ id: 'kimi-cli', command: 'kimi', args: [], defaultModel: 'kimi-configured-default' });
       const { args, useStdin } = prepareCliPrompt('kimi', built, 'write a haiku');
-      expect(args).toEqual(['--print', '--prompt', 'write a haiku']);
+      expect(args).toEqual(['--prompt', 'write a haiku']);
       expect(useStdin).toBe(false);
     });
   });
@@ -276,6 +277,28 @@ describe('cliProviderArgs', () => {
       expect(buildCliArgs({
         id: 'antigravity-cli', command: 'agy', defaultModel: 'gemini-3.6-flash-medium', models: AGY_CATALOG,
       })).toEqual(['--model', 'gemini-3.6-flash', '--effort', 'medium', '--dangerously-skip-permissions', '--print']);
+    });
+
+    // #4110: mirrors runCliProviderPrompt's `[...buildCliArgs(p), ...extraArgs]` — agy's
+    // print flag is a bare trailing marker at build time, so extraArgs land past
+    // it and prepareCliPrompt has to re-anchor `--print <prompt>` at the end.
+    it('keeps --print + prompt final for Antigravity even with trailing extraArgs', () => {
+      const provider = { id: 'antigravity-cli', command: 'agy', defaultModel: 'gemini-3.6-flash', models: AGY_CATALOG };
+      const extraArgs = ['--include-directories', '/srv/example'];
+      const built = [...buildCliArgs(provider), ...extraArgs];
+      const { args, useStdin } = prepareCliPrompt('agy', built, 'write a haiku');
+      expect(args.slice(-2)).toEqual(['--print', 'write a haiku']);
+      expect(args.filter((a) => a === '--print')).toHaveLength(1);
+      for (const extra of extraArgs) expect(args.indexOf(extra)).toBeLessThan(args.indexOf('--print'));
+      expect(useStdin).toBe(false);
+    });
+
+    it('is unchanged for Antigravity with no extraArgs', () => {
+      const provider = { id: 'antigravity-cli', command: 'agy', defaultModel: 'gemini-3.6-flash', models: AGY_CATALOG };
+      const { args } = prepareCliPrompt('agy', buildCliArgs(provider), 'write a haiku');
+      expect(args).toEqual([
+        '--model', 'gemini-3.6-flash', '--dangerously-skip-permissions', '--print', 'write a haiku',
+      ]);
     });
 
     it('is a no-op for providers with no effort control', () => {

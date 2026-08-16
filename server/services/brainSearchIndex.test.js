@@ -39,21 +39,59 @@ describe('brainSearchIndex', () => {
       expect(BRAIN_PROJECTION_TYPES).toContain(type)
     }
     expect(BRAIN_PROJECTION_TYPES).toContain('journals')
+    // Graph-only types (not unified-search sources) still have to be projected,
+    // or getBrainGraphSearchIndex throws on them.
+    expect(BRAIN_PROJECTION_TYPES).toContain('songs')
+    expect(BRAIN_SEARCH_TYPES).not.toContain('songs')
   })
 
   it('rejects a type it does not index', async () => {
-    await expect(getBrainProjections('songs')).rejects.toThrow(/unknown projection type/)
+    // `buckets` is a real brain entity store with no projection — the graph and
+    // unified search both ignore it.
+    await expect(getBrainProjections('buckets')).rejects.toThrow(/unknown projection type/)
   })
 
   it('projects only the fields its consumers read', async () => {
     getAll.mockResolvedValue([
-      { id: 'p1', name: 'Ada Placeholder', context: 'colleague', avatarBlob: 'x'.repeat(50), embedding: [1, 2, 3] }
+      {
+        id: 'p1',
+        name: 'Ada Placeholder',
+        context: 'colleague',
+        tags: ['example'],
+        status: 'active',
+        avatarBlob: 'x'.repeat(50),
+        embedding: [1, 2, 3]
+      }
     ])
 
     const [projection] = await getBrainProjections('people')
-    expect(projection).toEqual({ id: 'p1', name: 'Ada Placeholder', context: 'colleague' })
+    expect(projection).toMatchObject({
+      id: 'p1',
+      name: 'Ada Placeholder',
+      context: 'colleague',
+      tags: ['example'],
+      status: 'active'
+    })
     expect(projection).not.toHaveProperty('avatarBlob')
     expect(projection).not.toHaveProperty('embedding')
+  })
+
+  it('keeps string content but drops object-shaped content from graph projections', async () => {
+    getAll.mockImplementation(async (type) => {
+      if (type === 'memories') return [{ id: 'm1', title: 'Example memory', content: 'searchable text' }]
+      if (type === 'songs') return [{
+        id: 's1',
+        title: 'Example song',
+        content: { format: 'chordpro', text: 'large sheet body' }
+      }]
+      return []
+    })
+
+    const [memory] = await getBrainProjections('memories', { ranked: false })
+    const [song] = await getBrainProjections('songs', { ranked: false })
+
+    expect(memory.content).toBe('searchable text')
+    expect(song.content).toBeUndefined()
   })
 
   it('projects a journal entry as a body predicate, never the body', async () => {

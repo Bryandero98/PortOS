@@ -3,6 +3,7 @@ import { updateMusicVideoScene } from '../services/apiMusicVideo.js';
 import { generateImage } from '../services/apiSystem.js';
 import { generateVideo } from '../services/apiImageVideo.js';
 import useSceneRenderLifecycle from './useSceneRenderLifecycle.js';
+import { isLtx2FamilyRuntime } from '../lib/runnerFamilies';
 
 // Audio-reactive generation conditions motion on the song itself, so the prompt
 // has to rule out anything that reads as a performance of it.
@@ -105,13 +106,7 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
     videoLane.trackJob(jobId, sceneId);
   };
 
-  // A restricted model's license gate is enforced server-side, so a render can
-  // still be rejected for terms the board thought were accepted (accepted on
-  // another peer, withdrawn since this page loaded). Refresh the gate state so
-  // the acknowledgement panel appears with the checkbox the message is asking
-  // for, rather than leaving a 403 the user has nowhere to act on.
   const handleVideoError = (err, sceneId, fallbackMessage) => {
-    if (err?.code === 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED') videoSettings?.refreshTerms?.();
     toast.error(err?.message || fallbackMessage);
     videoLane.clearScene(sceneId);
   };
@@ -168,7 +163,7 @@ export default function useMusicVideoSceneMedia({ project, videoSettings, applyS
   const continueSceneVideo = (scene) => {
     if (!scene.videoHistoryId || !scene.referenceImageId) return;
     const { settings, activeModel, effectiveModelId, videoBlockedReason } = videoSettings;
-    if (settings.backend !== 'local' || activeModel?.runtime !== 'ltx2') {
+    if (settings.backend !== 'local' || !isLtx2FamilyRuntime(activeModel?.runtime)) {
       toast.error('Choose an LTX local model with native continuation support');
       return;
     }

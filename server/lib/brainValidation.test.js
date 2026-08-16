@@ -38,6 +38,7 @@ import {
   brainSyncPushSchema,
   memoryInputSchema,
   songInputSchema,
+  songUpdateSchema,
   songInstrumentEnum,
   songContentFormatEnum
 } from './brainValidation.js';
@@ -835,6 +836,125 @@ describe('brainValidation.js', () => {
         const result = songInputSchema.safeParse({ title: 'T', instrument: bad });
         expect(result.success, `instrument "${bad}"`).toBe(false);
       }
+    });
+  });
+
+  // The "fit to duration" autoscroll target (#4100) — the play view derives px/s
+  // from it against the rendered scroll height.
+  describe('songbook scrollDurationSec (#4100)', () => {
+    it('accepts a whole-second target and lands it on the record', () => {
+      const result = songInputSchema.safeParse({ title: 'T', scrollDurationSec: 210 });
+      expect(result.success).toBe(true);
+      expect(result.data.scrollDurationSec).toBe(210);
+    });
+
+    it('defaults to null (no target) when the key is absent on create', () => {
+      const result = songInputSchema.safeParse({ title: 'T' });
+      expect(result.success).toBe(true);
+      expect(result.data).toHaveProperty('scrollDurationSec');
+      expect(result.data.scrollDurationSec).toBe(null);
+    });
+
+    it('rejects out-of-bounds and non-integer targets', () => {
+      for (const bad of [14, 3601, 0, -30, 90.5, '210', true]) {
+        const result = songInputSchema.safeParse({ title: 'T', scrollDurationSec: bad });
+        expect(result.success, `scrollDurationSec ${String(bad)}`).toBe(false);
+      }
+      // The bounds themselves are inclusive.
+      for (const ok of [15, 3600]) {
+        expect(songInputSchema.safeParse({ title: 'T', scrollDurationSec: ok }).success, String(ok)).toBe(true);
+      }
+    });
+
+    // Absent vs. intentionally-empty: an omitted key must stay omitted so the
+    // PATCH merge preserves a stored target, while an explicit null must survive
+    // as null so clearing the input actually clears the record.
+    it('separates "not sent" from an explicit null on update', () => {
+      const untouched = songUpdateSchema.safeParse({ title: 'T' });
+      expect(untouched.success).toBe(true);
+      expect('scrollDurationSec' in untouched.data).toBe(false);
+
+      const cleared = songUpdateSchema.safeParse({ scrollDurationSec: null });
+      expect(cleared.success).toBe(true);
+      expect(cleared.data.scrollDurationSec).toBe(null);
+
+      const set = songUpdateSchema.safeParse({ scrollDurationSec: 90 });
+      expect(set.success).toBe(true);
+      expect(set.data.scrollDurationSec).toBe(90);
+    });
+
+    it('keeps the bounds on the update schema too', () => {
+      expect(songUpdateSchema.safeParse({ scrollDurationSec: 5 }).success).toBe(false);
+      expect(songUpdateSchema.safeParse({ scrollDurationSec: 7200 }).success).toBe(false);
+    });
+  });
+
+  // Cross-links to the other music record kinds — Rounds and music Tracks (#4103).
+  describe('songbook links (#4103)', () => {
+    it('accepts links to a round and a track, defaulting the label', () => {
+      const result = songInputSchema.safeParse({
+        title: 'T',
+        links: [
+          { type: 'round', id: 'round-1', label: 'Example Round' },
+          { type: 'track', id: 'track-1' },
+        ],
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.links).toEqual([
+        { type: 'round', id: 'round-1', label: 'Example Round' },
+        { type: 'track', id: 'track-1', label: '' },
+      ]);
+    });
+
+    it('defaults to an empty list when the key is absent on create', () => {
+      const result = songInputSchema.safeParse({ title: 'T' });
+      expect(result.success).toBe(true);
+      expect(result.data.links).toEqual([]);
+    });
+
+    it('rejects malformed entries and an over-long list', () => {
+      const bad = [
+        [{ id: 'round-1' }],                       // no type
+        [{ type: 'round' }],                       // no id
+        [{ type: 'round', id: '' }],               // empty id
+        [{ type: 'Round', id: 'round-1' }],        // uppercase — not a valid slug
+        [{ type: 'round', id: 'round-1', label: 'x'.repeat(301) }],
+        ['round-1'],                               // not an object
+      ];
+      for (const links of bad) {
+        expect(songInputSchema.safeParse({ title: 'T', links }).success, JSON.stringify(links)).toBe(false);
+      }
+      const tooMany = Array.from({ length: 21 }, (_, i) => ({ type: 'round', id: `round-${i}` }));
+      expect(songInputSchema.safeParse({ title: 'T', links: tooMany }).success).toBe(false);
+    });
+
+    // Same forward-compat contract as instrument/content.format: a song synced
+    // from a NEWER peer can carry a link type this install doesn't know, and
+    // rejecting it would make the song uneditable.
+    it('accepts an unknown short-slug link type from a newer peer', () => {
+      const result = songInputSchema.safeParse({
+        title: 'T',
+        links: [{ type: 'stem-pack', id: 'x1' }],
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.links[0].type).toBe('stem-pack');
+      // …but not free text.
+      expect(songInputSchema.safeParse({
+        title: 'T',
+        links: [{ type: 'a totally free form value', id: 'x1' }],
+      }).success).toBe(false);
+    });
+
+    // Absent vs. intentionally-empty: an omitted key preserves the stored links
+    // through the PATCH merge, while an explicit [] clears them.
+    it('separates "not sent" from an explicit empty list on update', () => {
+      const untouched = songUpdateSchema.safeParse({ title: 'T' });
+      expect(untouched.success).toBe(true);
+      expect('links' in untouched.data).toBe(false);
+
+      const cleared = songUpdateSchema.safeParse({ links: [] });
+      expect(cleared.success).toBe(true);
+      expect(cleared.data.links).toEqual([]);
     });
   });
 });

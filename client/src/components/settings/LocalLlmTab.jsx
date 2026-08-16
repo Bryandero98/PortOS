@@ -24,17 +24,24 @@ const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
 const CATEGORY_LABELS = {
-  chat: 'Chat',
-  reasoning: 'Reasoning',
-  coding: 'Coding',
+  general: 'General purpose',
+  coding: 'Coding & agents',
+  reasoning: 'Reasoning & analysis',
   vision: 'Image Analysis',
+  chat: 'Chat & voice',
   audio: 'Audio & Music',
   embedding: 'Text Embeddings',
   lightweight: 'Small & Fast',
   multilingual: 'Multilingual'
 };
-const CATEGORY_ORDER = ['reasoning', 'coding', 'vision', 'audio', 'embedding', 'chat', 'lightweight', 'multilingual'];
+const CATEGORY_ORDER = ['general', 'coding', 'reasoning', 'vision', 'chat', 'lightweight', 'multilingual', 'embedding', 'audio'];
 const categoryLabel = (id) => CATEGORY_LABELS[id] || id;
+const primaryCategoryFor = (model) => model?.category || 'general';
+const recommendationCategoriesFor = (model) => {
+  const categories = model?.recommendedFor;
+  return Array.isArray(categories) && categories.length ? categories : [primaryCategoryFor(model)];
+};
+const isRecommendedForCategory = (model, category) => recommendationCategoriesFor(model).includes(category);
 
 // Render model capabilities as colored icons (LM Studio style) instead of text.
 // `cls` is the icon color; the bordered chip uses the same hue at low opacity.
@@ -126,6 +133,13 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
   const statusColor = data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
   const startupService = backend.id === 'ollama' ? data?.service : null;
   const runsAtStartup = Boolean(startupService?.runAtStartup);
+  // The window resident models were ACTUALLY loaded at — Ollama picks it from
+  // VRAM (4K/32K/256K), and an agent harness that overruns it dies mid-task with
+  // a 400. Null while nothing is resident, since Ollama hasn't committed yet.
+  const runtimeContext = backend.id === 'ollama' ? data?.contextLength?.runtime ?? null : null;
+  const runtimeContextLabel = formatContextLength(runtimeContext);
+  const contextBelowAgentFloor = runtimeContext != null
+    && runtimeContext < (data?.contextLength?.agentMinimum ?? 0);
 
   return (
     <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
@@ -157,6 +171,16 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
           </span>
         )}
         {startupService?.supported && <> · {runsAtStartup ? 'runs at login' : 'startup off'}</>}
+        {runtimeContextLabel && (
+          <span
+            className={contextBelowAgentFloor ? 'text-port-warning' : undefined}
+            title={contextBelowAgentFloor
+              ? `Loaded models are running at ${runtimeContextLabel} — below what an agent harness (Claude Ollama / OpenCode Ollama) usually needs. Set "Local num_ctx" on that provider in AI Providers to reload Ollama at a larger window.`
+              : `Loaded models are running at ${runtimeContextLabel}`}
+          >
+            {' · '}{runtimeContextLabel}
+          </span>
+        )}
       </div>
 
       {!data?.installed && (
@@ -338,7 +362,12 @@ export function LocalLlmTab() {
       });
   }, []);
 
-  const loadCatalog = useCallback((backend, q, source = catalogSource, category = activeCategory) => {
+  // `source` and `category` are required rather than defaulted from state: a
+  // state default would put them in the dep list, so `loadCatalog`'s identity
+  // would change on every category click and re-trigger the debounce effect —
+  // the exact refetch the effect below is written to avoid. Every call site
+  // passes both.
+  const loadCatalog = useCallback((backend, q, source, category) => {
     const requestId = ++catalogRequestId.current;
     setCatalogLoading(true);
     setCatalogError('');
@@ -361,14 +390,29 @@ export function LocalLlmTab() {
       .finally(() => {
         if (requestId === catalogRequestId.current) setCatalogLoading(false);
       });
-  }, [activeCategory, catalogSource]);
+  }, []);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
+  //
+  // `activeCategory` is a trigger for the Hugging Face source ONLY — the live
+  // search asks the Hub for that category's models, so switching tabs is a new
+  // query. The curated catalog sends just backend+q and filters by category on
+  // the client (see visibleCatalogGroups), so refetching on a tab click would
+  // re-request a byte-identical list AND re-run the server's ~36-repo variant
+  // enrichment. `catalogCategoryKey` is the category when it matters and a
+  // constant when it doesn't, which keeps the whole effect one code path.
+  const catalogCategoryKey = catalogSource === 'huggingface' ? activeCategory : 'client-filtered';
   useEffect(() => {
     const t = setTimeout(() => loadCatalog(selected, query, catalogSource, activeCategory), catalogSource === 'huggingface' ? 450 : 250);
     return () => clearTimeout(t);
-  }, [selected, query, catalogSource, activeCategory, loadCatalog]);
+    // `activeCategory` is intentionally absent: `catalogCategoryKey` IS it
+    // whenever the source consumes it, so the effect re-runs (with a fresh
+    // closure) exactly when the category matters. On the curated source the
+    // closure can hold a stale category, which is harmless because that branch
+    // of loadCatalog never reads the argument.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, query, catalogSource, catalogCategoryKey, loadCatalog]);
 
   useEffect(() => {
     const handleProgress = (data) => {
@@ -429,12 +473,17 @@ export function LocalLlmTab() {
   const compareTargetKeys = useMemo(() => new Set(compareTargets.map(localLlmTargetKey)), [compareTargets]);
   const catalogCategories = useMemo(() => {
     const counts = new Map();
-    for (const model of catalog) counts.set(model.category || 'chat', (counts.get(model.category || 'chat') || 0) + 1);
+    for (const model of catalog) {
+      for (const category of recommendationCategoriesFor(model)) {
+        counts.set(category, (counts.get(category) || 0) + 1);
+      }
+    }
     // Hugging Face is searched per-category server-side, so a default GGUF query
     // never surfaces audio results — expose the full category set as filter
     // buttons (count shown only when known) so the user can navigate to
-    // categories like Audio & Music. The curated local catalog stays
-    // counts-driven (its categories are fixed and fully present).
+    // categories like Audio & Music. Curated counts include every lane a model
+    // is recommended for; the unfiltered groups below still use one primary
+    // lane per model, so broad models never duplicate in All.
     const ids = catalogSource === 'huggingface'
       ? CATEGORY_ORDER
       : CATEGORY_ORDER.filter((id) => counts.has(id));
@@ -443,13 +492,21 @@ export function LocalLlmTab() {
   const visibleCatalogGroups = useMemo(() => {
     const filterCategory = catalogSource === 'huggingface' ? 'all' : activeCategory;
     const categoryIds = filterCategory === 'all'
-      ? catalogCategories.map((c) => c.id)
+      ? CATEGORY_ORDER.filter((category) => catalog.some((model) => primaryCategoryFor(model) === category))
       : [filterCategory];
     return categoryIds
       .map((category) => ({
         category,
         label: categoryLabel(category),
-        models: catalog.filter((model) => (model.category || 'chat') === category)
+        // A featured recommendation leads every relevant lane, including the
+        // broad All view, instead of being buried by the catalog's source order.
+        models: catalog
+          .filter((model) => (
+            filterCategory === 'all'
+              ? primaryCategoryFor(model) === category
+              : isRecommendedForCategory(model, category)
+          ))
+          .sort((a, b) => Number(Boolean(b.featured)) - Number(Boolean(a.featured)))
       }))
       .filter((group) => group.models.length > 0);
   }, [activeCategory, catalog, catalogCategories, catalogSource]);
@@ -850,10 +907,18 @@ export function LocalLlmTab() {
                   const createdMs = new Date(m.createdAt).getTime();
                   const updatedMs = new Date(m.updatedAt).getTime();
                   return (
-                  <div key={m.key || m.id} className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-3 bg-port-bg border border-port-border rounded-lg p-3">
+                  <div key={m.key || m.id} className={`flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-3 rounded-lg p-3 ${m.featured ? 'bg-port-accent/5 border border-port-accent/60 ring-1 ring-port-accent/20' : 'bg-port-bg border border-port-border'}`}>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white break-words">
                         {m.name} <span className="text-xs text-gray-500">· {m.params}</span>
+                        {m.featured && (
+                          <span
+                            title={m.featured.description || 'Flagship local recommendation'}
+                            className="ml-1.5 align-middle inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded border border-port-accent/60 bg-port-accent/15 text-port-accent"
+                          >
+                            <Star size={9} className="fill-current" /> {m.featured.label || 'Featured'}
+                          </span>
+                        )}
                         {FORMAT_META[m.format] && (
                           <span
                             title={FORMAT_META[m.format].title}
@@ -873,6 +938,9 @@ export function LocalLlmTab() {
                       </div>
                       <div className="text-xs text-gray-500 break-all">{chosenId}</div>
                       <div className="text-xs text-gray-500 mt-0.5">{m.description}</div>
+                      {m.featured?.description && (
+                        <div className="text-xs text-port-accent mt-1">{m.featured.description}</div>
+                      )}
                       {m.note && <div className="text-[11px] text-port-warning/90 mt-0.5">{m.note}</div>}
                       {hasVariantPicker && (
                         <div className="flex items-center gap-1.5 flex-wrap mt-1">

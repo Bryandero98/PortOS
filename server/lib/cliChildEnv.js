@@ -54,7 +54,7 @@ import { agentGuardEnv } from './agentGuard/index.js';
  * @param {object} options
  * @param {object|null} [options.before] - layered first, so `provider.envVars`
  *   overrides it (forgeTokenEnv, claudeSettingsEnv).
- * @param {{command?:string, envVars?:object, models?:string[], defaultModel?:string|null, ollamaBacked?:boolean}|null} [options.provider]
+ * @param {{command?:string, envVars?:object, models?:string[], defaultModel?:string|null, ollamaBacked?:boolean, mtplxBacked?:boolean}|null} [options.provider]
  * @param {string|null} [options.model] - the model being run this invocation,
  *   unioned into the OpenCode declared-models map. Omit when the site has no
  *   per-call model — `provider.defaultModel` is always declared regardless.
@@ -67,8 +67,8 @@ export function composeProviderEnv({ before = null, provider = null, model = nul
     ...(before || {}),
     ...(provider?.envVars || {}),
     // Rebuilds OPENCODE_CONFIG_CONTENT with a declared models map for OpenCode
-    // Ollama providers (an empty object for everyone else) so the injected
-    // `--model ollama/<id>` isn't rejected as "not valid" — see #2190. It lands
+    // local providers (an empty object for everyone else) so the injected
+    // namespaced `--model` isn't rejected as "not valid" — see #2190. It lands
     // after provider.envVars to override the provider's STATIC
     // OPENCODE_CONFIG_CONTENT, which it was built from.
     ...buildOpencodeEnvVars(provider, model),

@@ -27,6 +27,7 @@ import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunn
 // lets that edge be a plain static import instead of a dynamic-import dodge.
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
 import { isRetryHeld, clearedRetryHoldMetadata } from '../lib/taskRetryHold.js';
+import { resolveTaskTargetBranch } from '../lib/taskTargetBranch.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { completeAgentRun } from './agentRunTracking.js';
@@ -408,7 +409,7 @@ async function requeuePausedTask({ task, taskType, overrides }) {
       status: 500, code: 'AGENT_RESUME_FAILED'
     });
   }
-  return { taskId: task.id, mode: 'requeued', branchName: result?.metadata?.existingBranch || null };
+  return { taskId: task.id, mode: 'requeued', branchName: resolveTaskTargetBranch(result?.metadata) };
 }
 
 /**
@@ -428,10 +429,13 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
   const description = overrides.description
     || task?.description
     || `Resume ${agentId}`;
-  const { context, provider, model, effort, app } = task?.metadata || {};
+  // `prompt` rides along with `context` (#4153): on a task written by current
+  // code the agent-facing payload lives there, and a replacement queued without
+  // it would run with nothing but the one-line description.
+  const { context, prompt, provider, model, effort, app } = task?.metadata || {};
   const created = await addTask({
     description,
-    context, provider, model, effort, app,
+    context, prompt, provider, model, effort, app,
     ...resumeOverrideMetadata(overrides, context)
   }, taskType);
   if (created?.error) {
@@ -446,9 +450,11 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
  * The dialog's edits as a task-metadata patch. Every field is "unchanged unless
  * supplied" — the dialog seeds its selects from the paused run, so a blank value
  * is absence rather than an intentional clear (CLAUDE.md's absent-vs-empty rule).
- * `context` APPENDS to `existingContext`: the task's own context is what the
+ * `context` APPENDS to `existingContext`: the task's own note is what the
  * original run was given, and dropping it would resume with less information than
- * the run that paused.
+ * the run that paused. It never touches `metadata.prompt` — the dialog edits the
+ * NOTE, and folding a note into the agent-facing payload would make the two
+ * indistinguishable again (#4153).
  */
 function resumeOverrideMetadata({ context, provider, model, effort, app, screenshots }, existingContext) {
   const patch = {};
@@ -653,14 +659,14 @@ export async function getAgentProcessStats(agentId) {
       return { active: true, agentId, pid: null, cpu: 0, memoryKb: 0, memoryMb: 0, state: 'unknown' };
     }
 
-    const { exec } = await import('child_process');
+    const { exec } = await import('../lib/childProcess.js');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
 
     const psCmd = process.platform === 'win32'
       ? `tasklist /FI "PID eq ${agent.pid}" /FO CSV /NH`
       : `ps -p ${agent.pid} -o pid=,pcpu=,rss=,state=`;
-    const result = await execAsync(psCmd, { windowsHide: true }).catch(() => ({ stdout: '' }));
+    const result = await execAsync(psCmd).catch(() => ({ stdout: '' }));
     const line = result.stdout.trim();
 
     if (!line) {
@@ -1140,8 +1146,9 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn, { agent
       emitLog('warn', `Resume pointer for held task ${taskId} could not be resolved: ${err.message}`, { taskId, agentId });
       return {};
     });
-    emitLog('info', `🔓 Completing interrupted retry transition for task ${taskId}${resumePatch.existingBranch ? ` — resuming ${resumePatch.existingBranch}` : ''}`, {
-      taskId, agentId, branchName: resumePatch.existingBranch || null
+    const targetBranch = resolveTaskTargetBranch(resumePatch);
+    emitLog('info', `🔓 Completing interrupted retry transition for task ${taskId}${targetBranch ? ` — resuming ${targetBranch}` : ''}`, {
+      taskId, agentId, branchName: targetBranch
     });
     await updateTask(taskId, {
       status: 'pending',

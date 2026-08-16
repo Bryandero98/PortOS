@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { pinPlatform } from '../lib/testHelper.js';
 
-vi.mock('child_process', () => ({
+vi.mock('../lib/childProcess.js', () => ({
   spawn: vi.fn()
 }));
 
@@ -24,7 +25,7 @@ vi.mock('./updateChecker.js', () => ({
   recordUpdateResult: vi.fn().mockResolvedValue(undefined)
 }));
 
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { spawnDetached, isDetachedRunning } from '../lib/detachedSpawn.js';
 import { readFile } from 'fs/promises';
 import { recordUpdateResult } from './updateChecker.js';
@@ -54,7 +55,18 @@ async function startUpdate(...args) {
   return { promise };
 }
 
+// executeUpdate branches on process.platform, and every test below except the
+// first asserts the POSIX (spawnDetached) launch path. Pin the platform so
+// they exercise that path on a Windows host too — otherwise they take the
+// powershell branch, the cleared spawn() mock returns undefined, and each one
+// hangs to the timeout. Safe here: updateExecutor.js and its (mocked) deps
+// load no native addon that picks its binary from process.platform.
+let restorePlatform = () => {};
+
+afterEach(() => restorePlatform());
+
 beforeEach(() => {
+  restorePlatform = pinPlatform('linux');
   vi.clearAllMocks();
   // Default: marker file not found (tests that need it override this)
   readFile.mockRejectedValue(new Error('ENOENT'));
@@ -64,28 +76,23 @@ beforeEach(() => {
 
 describe('executeUpdate', () => {
   it('spawns powershell on Windows (plain spawn, not spawnDetached)', async () => {
-    const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    try {
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      const child = createMockChild();
-      child.unref = vi.fn();
-      spawn.mockReturnValue(child);
+    // Re-pin over the file-level linux default; the file-level afterEach still
+    // restores the pristine descriptor, so a failure here can't leak win32.
+    pinPlatform('win32');
+    const child = createMockChild();
+    child.unref = vi.fn();
+    spawn.mockReturnValue(child);
 
-      const { promise } = await startUpdate('v1.0.0', () => {});
-      child.emit('close', 0);
-      await promise;
+    const { promise } = await startUpdate('v1.0.0', () => {});
+    child.emit('close', 0);
+    await promise;
 
-      expect(spawn).toHaveBeenCalledWith(
-        'powershell',
-        expect.arrayContaining(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']),
-        expect.any(Object)
-      );
-      expect(spawnDetached).not.toHaveBeenCalled();
-    } finally {
-      if (originalPlatformDescriptor) {
-        Object.defineProperty(process, 'platform', originalPlatformDescriptor);
-      }
-    }
+    expect(spawn).toHaveBeenCalledWith(
+      'powershell',
+      expect.arrayContaining(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']),
+      expect.any(Object)
+    );
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   // Regression for the reconcile "shuts down but never restarts" failure: a

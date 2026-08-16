@@ -66,8 +66,10 @@ describe('PageSkeleton', () => {
 
   it('omits the header entirely for header="none" (page already rendered its own)', () => {
     const { container } = render(<PageSkeleton header="none" cards={1} sidebar={false} />);
-    // Only the single card block remains — no title/action placeholders.
-    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(1);
+    // Only the single card block remains — no title/action placeholders. Its
+    // own title + two body lines are the only pulsing blocks left.
+    expect(cardCount(container)).toBe(1);
+    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(3);
   });
 
   it('reserves a bordered PageHeader bar for header="bar"', () => {
@@ -158,5 +160,89 @@ describe('PageSkeleton', () => {
     // Infinity would also throw RangeError without the upper clamp.
     const infinite = render(<PageSkeleton cards={Infinity} sidebar={false} />);
     expect(cardCount(infinite.container)).toBe(64);
+  });
+
+  describe('layout="split"', () => {
+    const sideBlocks = (container) => container.querySelectorAll('.h-\\[52px\\]');
+
+    it('reserves the two-pane grid tracks and drops the stack sidebar', () => {
+      const { container } = render(<PageSkeleton layout="split" cards={2} />);
+      expect(status().className).toContain('lg:grid');
+      expect(status().className).toContain('lg:grid-cols-[320px_1fr]');
+      // The stack layout's right sidebar must not sneak into the main pane.
+      expect(container.innerHTML).not.toContain('lg:grid-cols-[1fr_360px]');
+      expect(cardCount(container)).toBe(2);
+    });
+
+    it('collapses the rail track by default when sideCollapsed, without a caller override', () => {
+      // Otherwise a collapsed rail reserves 320px of nothing on desktop.
+      render(<PageSkeleton layout="split" sideCollapsed />);
+      expect(status().className).toContain('lg:grid-cols-[0px_1fr]');
+      expect(status().className).not.toContain('lg:grid-cols-[320px_1fr]');
+    });
+
+    it('takes caller-supplied grid tracks over the derived default', () => {
+      render(<PageSkeleton layout="split" splitColsClass="lg:grid-cols-[240px_1fr]" />);
+      expect(status().className).toContain('lg:grid-cols-[240px_1fr]');
+    });
+
+    it('renders the tab strip INSIDE the main pane, not above the split', () => {
+      const { container } = render(<PageSkeleton layout="split" tabs={3} sideBlocks={0} />);
+      const strip = container.querySelector('.h-\\[44px\\]').closest('.flex-1');
+      // The strip's pane is the main pane — the one holding the cards.
+      expect(strip).not.toBeNull();
+      expect(strip.querySelectorAll('.rounded-lg.border.border-port-border.bg-port-card').length)
+        .toBeGreaterThan(0);
+    });
+
+    it('reserves the hero block and the rail blocks in the requested column count', () => {
+      const { container } = render(
+        <PageSkeleton layout="split" sideHero sideBlocks={4} sideBlockColsClass="grid-cols-2" />
+      );
+      expect(container.querySelector('.rounded-full')).not.toBeNull();
+      expect(sideBlocks(container)).toHaveLength(4);
+      expect(container.innerHTML).toContain('grid gap-1.5 grid-cols-2');
+    });
+
+    it('omits the hero and the rail blocks when they are not requested', () => {
+      const { container } = render(<PageSkeleton layout="split" sideHero={false} sideBlocks={0} />);
+      expect(container.querySelector('.rounded-full')).toBeNull();
+      expect(sideBlocks(container)).toHaveLength(0);
+    });
+
+    it('keeps a zero-width desktop track plus the mobile band when sideCollapsed', () => {
+      const { container } = render(<PageSkeleton layout="split" sideCollapsed sideBlocks={2} />);
+      // The empty desktop track keeps the main pane in grid column 2.
+      expect(container.querySelector('.hidden.lg\\:block')).not.toBeNull();
+      // The rail itself only survives below `lg`, where the page stacks.
+      const rail = sideBlocks(container)[0].closest('.lg\\:hidden');
+      expect(rail).not.toBeNull();
+    });
+
+    it('owns the full height only when fullHeight is set', () => {
+      const tall = render(<PageSkeleton layout="split" fullHeight />);
+      expect(status().className).toContain('h-full');
+      tall.unmount();
+
+      render(<PageSkeleton layout="split" />);
+      expect(status().className).not.toContain('h-full');
+    });
+
+    it('gives the main pane the scroll on a fullHeight split, since the root hides overflow', () => {
+      const tall = render(<PageSkeleton layout="split" fullHeight sideBlocks={0} />);
+      expect(tall.container.querySelector('.flex-1').className).toContain('overflow-y-auto');
+      tall.unmount();
+
+      // Without fullHeight the shell doesn't own a viewport, so nothing scrolls.
+      const short = render(<PageSkeleton layout="split" sideBlocks={0} />);
+      expect(short.container.querySelector('.flex-1').className).not.toContain('overflow-y-auto');
+    });
+
+    it('pads the main pane with bodyClassName only when padded', () => {
+      const { container } = render(
+        <PageSkeleton layout="split" padded bodyClassName="p-3 lg:p-4" sideBlocks={0} />
+      );
+      expect(container.querySelector('.flex-1').className).toContain('p-3 lg:p-4');
+    });
   });
 });

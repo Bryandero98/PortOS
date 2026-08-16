@@ -474,6 +474,7 @@ export default function ConfigTab({ accounts, setAccounts }) {
                                     value={oauthForm.clientId}
                                     onChange={e => setOauthForm(f => ({ ...f, clientId: e.target.value }))}
                                     placeholder="Client ID (e.g. 123456789-abc.apps.googleusercontent.com)"
+                                    aria-label="Google OAuth client ID"
                                     className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white placeholder-gray-600"
                                   />
                                   <input
@@ -481,6 +482,7 @@ export default function ConfigTab({ accounts, setAccounts }) {
                                     value={oauthForm.clientSecret}
                                     onChange={e => setOauthForm(f => ({ ...f, clientSecret: e.target.value }))}
                                     placeholder="Client Secret (e.g. GOCSPX-...)"
+                                    aria-label="Google OAuth client secret"
                                     className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white placeholder-gray-600"
                                   />
                                   <button
@@ -546,6 +548,7 @@ export default function ConfigTab({ accounts, setAccounts }) {
                             <label className="relative w-4 h-4 shrink-0 cursor-pointer" title="Change color">
                               <div className="w-4 h-4 rounded-full border border-port-border" style={{ backgroundColor: sc.color || DEFAULT_AVATAR_COLOR }} />
                               <input
+                                aria-label={`Change color for ${sc.name}`}
                                 type="color"
                                 value={sc.color || DEFAULT_AVATAR_COLOR}
                                 onInput={(e) => handleSubcalendarLocal(account, sc.calendarId, 'color', e.target.value)}

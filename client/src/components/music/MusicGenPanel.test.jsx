@@ -112,4 +112,107 @@ describe('MusicGenPanel', () => {
     expect(select).toHaveValue('musicgen');
     expect(screen.queryByText(/Loading generators/i)).not.toBeInTheDocument();
   });
+
+  it('explains CUDA gating and hides install actions on an unsupported host', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3', name: 'MiniMax Music 3 (CUDA only)', ready: false,
+        cudaRequired: true, cudaState: 'absent', fixedModelInstall: true, modelReady: false,
+        customModels: false, lyrics: true, maxDurationSec: 300, defaultDurationSec: 60,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="cinematic score" lyrics="Example lyrics" />);
+
+    expect(await screen.findByText(/requires an NVIDIA CUDA GPU/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install runtime/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install model/i })).not.toBeInTheDocument();
+  });
+
+  it('generates an unsaved standalone track without requiring a title or associations', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'musicgen',
+      engines: [engine({ ready: true })],
+    });
+    api.generateMusic.mockResolvedValue({ track: { id: 'generated-track', title: 'Ambient sunrise' } });
+    const onGenerated = vi.fn();
+
+    render(<MusicGenPanel prompt="Ambient sunrise" lyrics="" onGenerated={onGenerated} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate track/i }));
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'Ambient sunrise',
+      title: '',
+      artistId: '',
+      artist: '',
+      albumId: '',
+    }), { silent: true }));
+    expect(api.generateMusic.mock.calls[0][0]).not.toHaveProperty('trackId');
+    expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
+  });
+
+  it('names the host requirement and hides Install for a platform-gated engine', async () => {
+    // MusicGen is MLX-only. Before this, a Windows/Linux user got an Install
+    // button whose installer skipped and exited 0, surfaced as 'installer exited
+    // 0 but MusicGen (MLX) is still not available'.
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'musicgen',
+      engines: [engine({
+        ready: false,
+        runtimeReady: false,
+        platformSupported: false,
+        platformLabel: 'macOS on Apple Silicon (MLX)',
+      })],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="ambient bed" lyrics="" />);
+
+    expect(await screen.findByText(/requires macOS on Apple Silicon/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install runtime/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /unavailable on this host/i })).toBeInTheDocument();
+  });
+
+  it('offers the fixed-model install without suggesting a runtime reinstall', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3', name: 'MiniMax Music 3 (CUDA only)', ready: false,
+        runtimeReady: true, modelReady: false, fixedModelInstall: true,
+        cudaRequired: true, cudaState: 'available', customModels: false,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+
+    render(<MusicGenPanel prompt="cinematic score" lyrics="" />);
+
+    expect(await screen.findByText(/model weights are not installed yet/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /install model/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install runtime/i })).not.toBeInTheDocument();
+  });
+
+  it('shows honest elapsed GPU feedback while MiniMax generation is running', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [engine({
+        id: 'minimax-music3', name: 'MiniMax Music 3 (CUDA only)', ready: true,
+        cudaRequired: true, cudaState: 'available', customModels: false, lyrics: true,
+        maxDurationSec: 300, defaultDurationSec: 60,
+        models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }],
+        defaultModelId: 'minimax-music3',
+      })],
+    });
+    api.generateMusic.mockReturnValue(new Promise(() => {}));
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="cinematic score" lyrics="Example lyrics" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate/i }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Processing on the GPU');
+    expect(screen.getByRole('status')).toHaveTextContent('0:00 elapsed');
+    expect(screen.getByRole('status')).toHaveTextContent(/does not report an exact percentage/i);
+    expect(screen.getByRole('status')).toHaveTextContent(/tens of minutes on a 24 GB GPU/i);
+  });
 });

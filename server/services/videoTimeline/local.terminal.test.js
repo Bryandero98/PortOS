@@ -30,7 +30,7 @@ const h = vi.hoisted(() => {
   return { procs, spawn };
 });
 
-vi.mock('child_process', () => ({ spawn: h.spawn }));
+vi.mock('../../lib/childProcess.js', () => ({ spawn: h.spawn }));
 vi.mock('fs', () => ({ existsSync: vi.fn(() => true) }));
 vi.mock('fs/promises', () => ({ unlink: vi.fn(async () => {}) }));
 vi.mock('../../lib/fileUtils.js', () => ({
@@ -50,7 +50,9 @@ vi.mock('../../lib/ffmpeg.js', () => ({
   safeUnder: (root, name) => (name ? `${root}/${name}` : null),
   generateThumbnail: vi.fn(async () => 'thumb.jpg'),
 }));
-vi.mock('../../lib/processEnv.js', () => ({ safeChildProcessEnv: () => ({}) }));
+vi.mock('../../lib/processEnv.js', () => ({
+  safeChildProcessOptions: (options = {}) => ({ ...options, env: {}, windowsHide: true }),
+}));
 vi.mock('../../lib/killWithEscalation.js', () => ({ killWithEscalation: vi.fn() }));
 vi.mock('../videoGen/local.js', () => ({
   loadHistory: vi.fn(),

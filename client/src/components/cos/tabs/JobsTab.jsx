@@ -9,6 +9,7 @@ import { effectiveModelFor, effortAwareModelOptions } from '../../../utils/provi
 import ProviderModelSelector from '../../ProviderModelSelector';
 import EffortSelect from '../EffortSelect';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
+import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 
 const INTERVAL_OPTIONS = [
@@ -229,6 +230,7 @@ function ScheduleFields({ data, onChange }) {
               className="flex-1 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm font-mono"
               placeholder="0 7 * * *"
               title="Cron expression: minute hour dayOfMonth month dayOfWeek"
+              aria-label="Cron expression: minute hour dayOfMonth month dayOfWeek"
             />
             <select
               value=""
@@ -263,6 +265,7 @@ function ScheduleFields({ data, onChange }) {
             onChange={e => onChange('scheduledTime', e.target.value || null)}
             className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
             title="Run at specific time (leave empty for any time)"
+            aria-label="Run at a specific time (leave empty for any time)"
           />
         </div>
       )}
@@ -424,8 +427,12 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
         <div className="flex items-center gap-1">
           <button
             onClick={() => onTrigger(job.id)}
-            className="p-1.5 text-gray-500 hover:text-port-accent transition-colors"
-            title="Run now" aria-label="Run now"
+            disabled={editing}
+            className={`p-1.5 transition-colors text-gray-500 ${
+              editing ? 'opacity-50 cursor-not-allowed' : 'hover:text-port-accent'
+            }`}
+            title={editing ? 'Save changes before running job' : 'Run now'}
+            aria-label={editing ? 'Save changes before running job' : 'Run now'}
           >
             <Play size={14} />
           </button>
@@ -451,20 +458,22 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
         <div className="border-t border-port-border p-4 space-y-3">
           {editing ? (
             <>
-              <input
-                type="text"
-                value={editData.name}
-                onChange={e => setEditData(d => ({ ...d, name: e.target.value }))}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
-                placeholder="Job name"
-              />
-              <input
-                type="text"
-                value={editData.description}
-                onChange={e => setEditData(d => ({ ...d, description: e.target.value }))}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
-                placeholder="Description"
-              />
+              <FormField label="Job name" labelClassName="block text-xs text-gray-400 mb-1">
+                <input
+                  type="text"
+                  value={editData.name}
+                  onChange={e => setEditData(d => ({ ...d, name: e.target.value }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+                />
+              </FormField>
+              <FormField label="Description" labelClassName="block text-xs text-gray-400 mb-1">
+                <input
+                  type="text"
+                  value={editData.description}
+                  onChange={e => setEditData(d => ({ ...d, description: e.target.value }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+                />
+              </FormField>
               <div className="flex gap-3">
                 <select
                   value={editData.type}
@@ -795,37 +804,42 @@ export default function JobsTab() {
         <div className="bg-port-card border border-port-accent/50 rounded-lg p-4">
           <div className="space-y-3">
             <div className="flex gap-3">
-              <input
-                type="text"
-                placeholder="Job name *"
-                value={newJob.name}
-                onChange={e => setNewJob(j => ({ ...j, name: e.target.value }))}
-                className="flex-1 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
-              />
-              <select
-                value={newJob.type}
-                onChange={e => setNewJob(j => ({ ...j, type: e.target.value }))}
-                className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
-              >
-                {JOB_TYPE_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-              <input
-                type="text"
-                placeholder="Category"
-                value={newJob.category}
-                onChange={e => setNewJob(j => ({ ...j, category: e.target.value }))}
-                className="w-40 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
-              />
+              <FormField label="Job name *" className="flex-1" labelClassName="block text-xs text-gray-400 mb-1">
+                <input
+                  type="text"
+                  value={newJob.name}
+                  onChange={e => setNewJob(j => ({ ...j, name: e.target.value }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+                />
+              </FormField>
+              <FormField label="Type" labelClassName="block text-xs text-gray-400 mb-1">
+                <select
+                  value={newJob.type}
+                  onChange={e => setNewJob(j => ({ ...j, type: e.target.value }))}
+                  className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+                >
+                  {JOB_TYPE_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </FormField>
+              <FormField label="Category" labelClassName="block text-xs text-gray-400 mb-1">
+                <input
+                  type="text"
+                  value={newJob.category}
+                  onChange={e => setNewJob(j => ({ ...j, category: e.target.value }))}
+                  className="w-40 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+                />
+              </FormField>
             </div>
-            <input
-              type="text"
-              placeholder="Description"
-              value={newJob.description}
-              onChange={e => setNewJob(j => ({ ...j, description: e.target.value }))}
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
-            />
+            <FormField label="Description" labelClassName="block text-xs text-gray-400 mb-1">
+              <input
+                type="text"
+                value={newJob.description}
+                onChange={e => setNewJob(j => ({ ...j, description: e.target.value }))}
+                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+              />
+            </FormField>
             <div className="flex gap-3">
               <select
                 value={newJob.priority}

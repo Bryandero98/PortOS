@@ -13,10 +13,11 @@ import { compareLocalLlmModels, getLoadedLlmModels, getLocalLlmCatalog, getLocal
 const BACKEND_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 const DEFAULT_PROMPT = 'Write a short, vivid paragraph about a lighthouse computer waking up at dawn.';
 const CATEGORY_LABELS = {
-  chat: 'Chat',
-  reasoning: 'Reasoning',
-  coding: 'Coding',
+  general: 'General purpose',
+  coding: 'Coding & agents',
+  reasoning: 'Reasoning & analysis',
   vision: 'Image Analysis',
+  chat: 'Chat & voice',
   audio: 'Audio & Music',
   embedding: 'Text Embeddings',
   lightweight: 'Small & Fast',

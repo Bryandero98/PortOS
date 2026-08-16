@@ -174,6 +174,27 @@ describe('mergeTaskLists', () => {
     expect(fromA.metadata.context).toBe(fromB.metadata.context);
   });
 
+  // #4153 — the prompt/note split adds a metadata key; `contentSignature` walks
+  // every non-claim key, so it must converge with no special case, and a peer
+  // still holding the payload under `context` must not lose it.
+  it('converges on a same-status metadata.prompt edit', () => {
+    const a = [task('task-1', 'pending', { metadata: { prompt: 'body-A\nmore' } })];
+    const b = [task('task-1', 'pending', { metadata: { prompt: 'body-B\nmore' } })];
+    const [fromA] = mergeTaskLists(a, b, { now: NOW });
+    const [fromB] = mergeTaskLists(b, a, { now: NOW });
+    expect(fromA.metadata.prompt).toBe(fromB.metadata.prompt);
+  });
+
+  it('keeps the freshest side whole when one peer is split and the other is legacy', () => {
+    const split = task('task-1', 'pending', { metadata: { prompt: 'body\nmore', updatedAt: future(5000) } });
+    const legacy = task('task-1', 'pending', { metadata: { context: 'body\nmore', updatedAt: past(5000) } });
+    const [fromSplit] = mergeTaskLists([split], [legacy], { now: NOW });
+    const [fromLegacy] = mergeTaskLists([legacy], [split], { now: NOW });
+    expect(fromSplit.metadata.prompt).toBe('body\nmore');
+    expect(fromSplit.metadata.context).toBeUndefined();
+    expect(fromLegacy.metadata.prompt).toBe('body\nmore');
+  });
+
   it('newest-edit-wins: larger updatedAt wins a same-status tie, regardless of initiator', () => {
     // Same pending status; the fresher edit (larger updatedAt) is authoritative
     // even though it carries the LOWER priority — the #1714 upgrade over the

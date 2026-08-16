@@ -172,6 +172,20 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(analysis.compaction?.needed).toBe(true);
   });
 
+  it('classifies an Ollama context overflow separately from a generic context-length error', () => {
+    const body = 'API Error: 400 {"error":{"code":400,"message":"request (32768 tokens) exceeds the available ' +
+      'context size (32768 tokens), try increasing it","type":"exceed_context_size_error",' +
+      '"n_prompt_tokens":32768,"n_ctx":32768}}';
+    const analysis = analyzeAgentFailure(withLead(body), { id: 't' }, 'qwen3.8:27b');
+    // NOT `context-length`: the task isn't too big, the daemon loaded the model
+    // at 32K. Splitting the task (that rule's advice) would lose the work again.
+    expect(analysis.category).toBe('ollama-context-window');
+    expect(analysis.actionable).toBe(true);
+    expect(analysis.affectedContextLength).toBe(32768);
+    expect(analysis.requestedTokens).toBe(32768);
+    expect(analysis.suggestedFix).toContain('num_ctx');
+  });
+
   it('falls back to an unknown, non-actionable category for unrecognized output', () => {
     const analysis = analyzeAgentFailure(withLead('The agent halted after an unrecognized condition with no diagnostic.'), { id: 't' }, 'x');
     expect(analysis.category).toBe('unknown');
@@ -1070,6 +1084,67 @@ describe('analyzeAgentFailure — runner completion reason (COMPLETION_REASON_AN
     for (const [reason, def] of Object.entries(COMPLETION_REASON_ANALYSES)) {
       expect(known.has(def.category), `${reason} → ${def.category}`).toBe(true);
     }
+  });
+});
+
+// agent-f71b794e (2026-08-14): claude v2.1.233 put its auto-mode offer up before
+// the paste landed, so the run submitted nothing. With no COMPLETION_REASON entry
+// for `paste-not-rendered` the analyzer fell through to the regex sweep and matched
+// the idle composer's placeholder hint — filing a never-started run as `lint-error`
+// / "Linting failed", which is what the follow-up investigation task was named for.
+describe('analyzeAgentFailure — TUI startup gates are not lint errors', () => {
+  // Verbatim shape of the failing screen: banner, the composer's rotating
+  // placeholder, then the modal that swallowed the paste.
+  const stuckOnAutoModeOffer = withLead(
+    [
+      'Claude Code v2.1.233',
+      'Opus 5 with high effort · Claude Max',
+      '❯ Try "fix lint errors"',
+      '⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+      'Make auto mode your default permission mode?',
+      '   ❯ 1. Yes, set auto mode as my default permission mode',
+      "     2. No, keep don't ask",
+    ].join('\n')
+  );
+
+  it('classifies a swallowed paste as a startup failure, not a lint error', () => {
+    const analysis = analyzeAgentFailure(stuckOnAutoModeOffer, { id: 't' }, 'x', {
+      completionReason: 'paste-not-rendered',
+      completionError: 'claude was still initializing and the paste was silently swallowed.',
+    });
+    expect(analysis.category).toBe('startup-failure');
+    expect(analysis.category).not.toBe('lint-error');
+    expect(analysis.origin).toBe('runner');
+  });
+
+  it('names the unanswered dialog as the cause instead of blaming the idle reaper', () => {
+    const analysis = analyzeAgentFailure(stuckOnAutoModeOffer, { id: 't' }, 'x', {
+      completionReason: 'paste-not-rendered',
+    });
+    expect(analysis.message).toMatch(/startup dialog/i);
+    // The idle-out prose would be wrong here — no reaper was involved.
+    expect(analysis.suggestedFix).not.toMatch(/idle reaper/i);
+  });
+
+  it('registers both spawner-resolved startup verdicts', () => {
+    expect(COMPLETION_REASON_ANALYSES['paste-not-rendered'].category).toBe('startup-failure');
+    expect(COMPLETION_REASON_ANALYSES['tui-not-ready'].category).toBe('startup-failure');
+  });
+
+  // Defense in depth for the case with no completion reason to lean on: the
+  // placeholder is the TUI advertising what you COULD ask, and its suggestion
+  // rotates — so leaving it in the window lets it trip patterns by coincidence.
+  it('ignores the empty-composer placeholder hint when there is no runner verdict', () => {
+    const analysis = analyzeAgentFailure(stuckOnAutoModeOffer, { id: 't' }, 'x');
+    expect(analysis.category).not.toBe('lint-error');
+  });
+
+  it('still classifies a genuine lint failure the agent actually hit', () => {
+    const analysis = analyzeAgentFailure(
+      withLead('npm run lint\n/src/app.js\n  12:1  error  Unexpected var\n\nlint failed with 1 error'),
+      { id: 't' }, 'x'
+    );
+    expect(analysis.category).toBe('lint-error');
   });
 });
 

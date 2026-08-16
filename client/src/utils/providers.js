@@ -452,6 +452,19 @@ export const isVisionModel = (id) =>
   /(?:^|[-_/:])vision(?:[-_/:.]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|(?:^|[-_/:])gemma-?[34]|llava|bakllava|moondream|minicpm-?v|pixtral|smolvlm|internvl|cogvlm|glm-?4v|phi-?3\.5?-vision|phi-?4-multimodal|got-ocr|idefics|fuyu|paligemma|kosmos|nanollava/i.test(id);
 
 /**
+ * Whether a CLI-type provider can read an image file (its CLI accepts a
+ * vision attachment). Mirror of `isVisionCapableCliProvider` in
+ * server/lib/localModelHeuristics.js — keyed on command basename so a
+ * renamed/path-configured Claude or Codex still qualifies. API providers
+ * return false here; use `visionLocalModelFilter` for their model lists.
+ * @param {{type?:string, command?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const isVisionCapableCliProvider = (provider) =>
+  provider?.type === 'cli'
+  && (commandBasename(provider.command) === 'codex' || commandBasename(provider.command) === 'claude');
+
+/**
  * Tool-use (function-calling) capable model detector — mirror of `isToolUseModel`
  * in server/lib/localModelHeuristics.js (and the TOOL_USE_RE inlined in
  * server/lib/aiToolkit/providers.js). Keep all three in lockstep (the server libs
@@ -481,21 +494,41 @@ export const isToolUseModel = (id) =>
  *
  * Returns `null` for cloud / API providers: their model ids don't encode their
  * family, so the name heuristic would mislabel them. LOCAL backends return
- * `{ toolCapable }` keyed on {@link isToolUseModel} — where "local" is BOTH a
- * direct Ollama / LM Studio backend ({@link localBackendForProvider}) AND an
- * Ollama-BACKED CLI/TUI wrapper ({@link isOllamaBackedProvider}): a renamed
- * `claude-ollama-tui` / OpenCode wrapper keeps `ollamaBacked: true` but may lose
- * the "ollama" name/endpoint/id that `localBackendForProvider` matches on, and
- * that wrapper is exactly the incident's provider class — so it must still be
- * flagged, not silently skipped.
+ * `{ toolCapable }` — where "local" is BOTH a direct Ollama / LM Studio backend
+ * ({@link localBackendForProvider}) AND an Ollama-BACKED CLI/TUI wrapper
+ * ({@link isOllamaBackedProvider}): a renamed `claude-ollama-tui` / OpenCode
+ * wrapper keeps `ollamaBacked: true` but may lose the "ollama"
+ * name/endpoint/id that `localBackendForProvider` matches on, and that wrapper
+ * is exactly the incident's provider class — so it must still be flagged, not
+ * silently skipped.
+ *
+ * `toolUseIdsByProvider` is the AUTHORITATIVE map the server reports from each
+ * backend's own capability metadata (Ollama `/api/show` `tools`) keyed by the
+ * PROVIDER ID the server says serves each model — see `useToolUseModelIds`. It
+ * is UNIONED with, never substituted for, {@link isToolUseModel}: the regex is a
+ * positive allowlist that goes stale every time a new function-calling family
+ * ships (`phi4-mini`, newer Gemma builds got "⚠ no known tool use" while the
+ * Local LLMs tab's "Agents" badge, reading these same capabilities, said
+ * otherwise), while the map can't speak for a provider the server never
+ * enumerated. Pass `null` (the default) when it hasn't loaded — that degrades to
+ * regex-only, the behavior this picker has always had.
+ *
+ * Keyed by the ENUMERATED PROVIDER, not flattened and not keyed by backend,
+ * because a bare id is not a capability: a CUSTOM provider (or an Ollama-backed
+ * CLI wrapper) pointed at a *different* Ollama/LM Studio host resolves to the
+ * same backend, but the server never enumerated that host — so a local model's
+ * id must not vouch for a remote model that merely shares its name. Such a
+ * provider stays regex-only, which is the conservative direction: a false
+ * "tool-capable" sends an agent to a model that narrates instead of acting.
  * @param {string} id
  * @param {object} [provider]
+ * @param {Record<string, Set<string>>|null} [toolUseIdsByProvider]
  * @returns {{toolCapable:boolean}|null}
  */
-export const localToolUseHint = (id, provider) =>
+export const localToolUseHint = (id, provider, toolUseIdsByProvider = null) =>
   (localBackendForProvider(provider) || isOllamaBackedProvider(provider))
     && typeof id === 'string' && id.length > 0
-    ? { toolCapable: isToolUseModel(id) }
+    ? { toolCapable: toolUseIdsByProvider?.[provider?.id]?.has(id) === true || isToolUseModel(id) }
     : null;
 
 /**
@@ -510,14 +543,18 @@ export const localToolUseHint = (id, provider) =>
  * "tool-capable", but a NON-match only means "not a recognized tool-caller" —
  * NOT a proven negative (a newer tool-capable family whose id isn't in the regex
  * yet would fall here). So the negative marker is worded as unverified, not a
- * false-certain "no tool use".
+ * false-certain "no tool use". Passing `toolUseIdsByProvider` (from
+ * `useToolUseModelIds`) shrinks that unverified band to the models the server
+ * couldn't speak for; see {@link localToolUseHint} for the union rule.
  * @param {string} id - model id (drives the heuristic)
  * @param {string} label - display label to annotate (often === id)
  * @param {object} [provider] - the selected provider object
+ * @param {Record<string, Set<string>>|null} [toolUseIdsByProvider] - authoritative
+ *   server-reported tool-capable ids, keyed by provider id; `null` = regex-only
  * @returns {string}
  */
-export const withToolUseOptionLabel = (id, label, provider) => {
-  const hint = localToolUseHint(id, provider);
+export const withToolUseOptionLabel = (id, label, provider, toolUseIdsByProvider = null) => {
+  const hint = localToolUseHint(id, provider, toolUseIdsByProvider);
   if (!hint) return label;
   return `${label}${hint.toolCapable ? ' · 🔧 tool use' : ' · ⚠ no known tool use'}`;
 };
@@ -686,6 +723,51 @@ export const enabledApiProviderFilter = (provider) => Boolean(provider?.enabled)
  * HTTP-API provider. Use this for "shows a Command + args" config predicates.
  */
 export const isProcessProvider = (provider) => isCliProvider(provider) || isTuiProvider(provider);
+
+/**
+ * Base name of a spawn command, normalized the way the CoS Agent Runner's
+ * allowlist check does before its membership test: strip any directory
+ * prefix, then a trailing Windows `.exe`. Mirror of `isAllowedCommand`'s
+ * normalization in `server/cos-runner/allowedCommands.js`, pinned by
+ * `server/cos-runner/allowedCommands.parity.test.js`.
+ *
+ * The server uses `path.basename`, which is platform-specific — on a POSIX
+ * host a backslash is NOT a separator. This mirror always treats both `/` and
+ * `\` as separators, so a Windows-style path typed into the editor on a POSIX
+ * install reads as "allowed" when the server would spawn-time reject it. That
+ * direction is deliberate: this drives an informational warning, and a false
+ * *warning* about a path the user's own platform handles fine is worse than a
+ * missing one for a path shape that platform can't run anyway.
+ */
+const runnerCommandBaseName = (command) => {
+  const base = String(command).replace(/[/\\]+$/, '').split(/[/\\]/).pop();
+  // Only `.exe` — a `.cmd`/`.bat` npm shim is deliberately NOT stripped,
+  // matching the server: the spawn path runs with `shell: false` and cannot
+  // execute a batch shim, so accepting it would only move the failure later.
+  return base.toLowerCase().endsWith('.exe') ? base.slice(0, -4) : base;
+};
+
+/**
+ * Would the CoS Agent Runner (`/spawn`, `/spawn-tui`) accept this command?
+ *
+ * `allowedCommands` is the server-published list (`runnerAllowedCommands` on
+ * `GET /api/providers`) — the client never carries its own copy, because the
+ * allowlist is the runner's exec boundary and must stay hand-curated
+ * server-side rather than derived from user-writable provider config.
+ *
+ * Returns `null` for "can't tell" — the list hasn't been fetched, or the field
+ * is still blank — which is distinct from `false` ("fetched, and this command
+ * is definitely off the list"). Only an explicit `false` should render a
+ * warning; a failed fetch must not accuse a perfectly good command.
+ *
+ * The command is matched UNTRIMMED (past the blank guard), because the editor
+ * persists it untrimmed too — `'claude '` really would fail the runner's check.
+ */
+export const isRunnerAllowedCommand = (command, allowedCommands) => {
+  if (!Array.isArray(allowedCommands) || allowedCommands.length === 0) return null;
+  if (typeof command !== 'string' || command.trim() === '') return null;
+  return allowedCommands.includes(runnerCommandBaseName(command));
+};
 
 /**
  * Whether `provider` is served by an Ollama daemon rather than its nominal
@@ -863,6 +945,43 @@ export const assignmentModelOptions = (entry, providers, providerId, visionIdsBy
   const installed = baked ? null : visionIdsByProvider?.[providerId];
   const candidates = installed ? mergeModelLists(models, [...installed]) : models;
   return candidates.filter((id) => visionLocalModelFilter(id, provider, visionIdsByProvider));
+};
+
+/**
+ * Tool-use annotation state for one AI-assignment row/stage, so every editor of
+ * the same pin (the AI Assignments table, the Creative Director Models drawer,
+ * any future one) derives it identically instead of re-deriving the rule and
+ * drifting — the drawer used to be the only editor that warned at all, because
+ * its stage list hard-coded `needsTools` client-side.
+ *
+ * `entry.needsTools` is the SERVER's marker for an assignment whose provider runs
+ * an agent harness (see `agentEntry` in server/services/aiAssignments.js). It
+ * mirrors `modelFilter: 'vision'`: one server flag, read uniformly.
+ *
+ * Three rules are baked in here so a caller can't forget one:
+ *   - The EFFECTIVE model is judged, not the pin. A blank model isn't a no-op —
+ *     the agent resolver then runs the provider's own `defaultModel`, which for a
+ *     local backend can be the non-tool model that wedges the run.
+ *   - Nothing is asserted until the capability scan SETTLES (`toolUseLoaded`,
+ *     success or failure). Annotating mid-scan shows the false "no known tool
+ *     use" the authoritative union exists to remove, only to retract it a beat
+ *     later.
+ *   - `incapable` is a strict `=== false` on the hint, so a non-agent entry, a
+ *     cloud provider (`localToolUseHint` returns null — ids don't encode family)
+ *     or an unpinned row all read as "no warning", never as "incapable".
+ *
+ * @param {{needsTools?:boolean}|null|undefined} entry - the assignment entry
+ * @param {object|undefined} provider - the currently selected provider object
+ * @param {string} model - the row's model pin ('' = provider default)
+ * @param {Record<string, Set<string>>|null} [toolUseIdsByProvider] - from `useToolUseModelIds`
+ * @param {boolean} [toolUseLoaded] - whether that scan has settled
+ * @returns {{annotate: boolean, effectiveModel: string, incapable: boolean}}
+ */
+export const assignmentToolUseState = (entry, provider, model, toolUseIdsByProvider = null, toolUseLoaded = false) => {
+  const effectiveModel = effectiveModelFor(provider, model);
+  const annotate = entry?.needsTools === true && toolUseLoaded;
+  const hint = annotate ? localToolUseHint(effectiveModel, provider, toolUseIdsByProvider) : null;
+  return { annotate, effectiveModel, incapable: hint?.toolCapable === false };
 };
 
 /**

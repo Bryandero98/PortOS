@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
-import { request } from '../lib/testHelper.js';
+import { request as httpRequest } from 'node:http';
+import { request, startLoopbackServer, closeLoopbackServer, waitForAbort } from '../lib/testHelper.js';
 import openclawRoutes, { sendMessageSchema } from './openclaw.js';
 
 vi.mock('../integrations/openclaw/api.js', () => ({
@@ -431,7 +432,11 @@ describe('OpenClaw Routes', () => {
       const mockBody = { getReader: vi.fn().mockReturnValue(mockReader) };
       const mockResponse = { ok: true, body: mockBody };
 
-      openclawApi.streamSessionMessage.mockResolvedValue({ response: mockResponse });
+      let upstreamSignal;
+      openclawApi.streamSessionMessage.mockImplementation((_sessionId, _payload, { signal }) => {
+        upstreamSignal = signal;
+        return Promise.resolve({ response: mockResponse });
+      });
 
       const response = await request(app)
         .post('/api/openclaw/sessions/main/messages/stream')
@@ -444,6 +449,154 @@ describe('OpenClaw Routes', () => {
         expect.objectContaining({ message: 'Stream this' }),
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       );
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(upstreamSignal.aborted).toBe(false);
+      expect(mockReader.cancel).not.toHaveBeenCalled();
+    });
+
+    // A POST's IncomingMessage has already completed by the time this route
+    // awaits configuration. Use an actual loopback client so a later socket
+    // hang-up proves response-close cancellation reaches both upstream pieces.
+    it('aborts upstream and cancels its reader when a real SSE client disconnects', async () => {
+      openclawApi.isConfigured.mockResolvedValue(CONFIGURED_STATUS);
+
+      let markReaderStarted;
+      const readerStarted = new Promise((resolve) => { markReaderStarted = resolve; });
+      let finishRead;
+      const pendingRead = new Promise((resolve) => { finishRead = resolve; });
+      let markReaderCancelled;
+      const readerCancelled = new Promise((resolve) => { markReaderCancelled = resolve; });
+      const mockReader = {
+        read: vi.fn(() => {
+          markReaderStarted();
+          return pendingRead;
+        }),
+        cancel: vi.fn(async () => {
+          markReaderCancelled();
+          finishRead({ done: true, value: undefined });
+        }),
+      };
+      const mockResponse = { ok: true, body: { getReader: vi.fn(() => mockReader) } };
+      let upstreamSignal;
+      openclawApi.streamSessionMessage.mockImplementation((_sessionId, _payload, { signal }) => {
+        upstreamSignal = signal;
+        return Promise.resolve({ response: mockResponse });
+      });
+
+      const server = await startLoopbackServer(app);
+      let client;
+      try {
+        const body = JSON.stringify({ message: 'Wait for disconnect' });
+        client = httpRequest({
+          hostname: '127.0.0.1',
+          port: server.address().port,
+          method: 'POST',
+          path: '/api/openclaw/sessions/main/messages/stream',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body),
+          },
+        });
+        client.on('response', (response) => {
+          response.on('error', () => {});
+          response.resume();
+        });
+        client.on('error', () => {});
+        client.end(body);
+
+        await readerStarted;
+        client.destroy();
+        await waitForAbort(upstreamSignal);
+        await readerCancelled;
+
+        expect(upstreamSignal.aborted).toBe(true);
+        expect(mockReader.cancel).toHaveBeenCalledTimes(1);
+      } finally {
+        client?.destroy();
+        finishRead({ done: true, value: undefined });
+        await closeLoopbackServer(server);
+      }
+    });
+
+    it('leaves a backpressured SSE wait when its client disconnects', async () => {
+      openclawApi.isConfigured.mockResolvedValue(CONFIGURED_STATUS);
+
+      let finishRead;
+      const pendingRead = new Promise((resolve) => { finishRead = resolve; });
+      let markReaderCancelled;
+      const readerCancelled = new Promise((resolve) => { markReaderCancelled = resolve; });
+      let reads = 0;
+      const mockReader = {
+        read: vi.fn(() => {
+          if (reads++ === 0) return Promise.resolve({ done: false, value: Buffer.from('data: first\\n\\n') });
+          return pendingRead;
+        }),
+        cancel: vi.fn(async () => {
+          markReaderCancelled();
+          finishRead({ done: true, value: undefined });
+        }),
+      };
+      openclawApi.streamSessionMessage.mockResolvedValue({
+        response: { ok: true, body: { getReader: vi.fn(() => mockReader) } },
+      });
+
+      let markBackpressured;
+      const backpressured = new Promise((resolve) => { markBackpressured = resolve; });
+      let markRouteEnded;
+      const routeEnded = new Promise((resolve) => { markRouteEnded = resolve; });
+      const backpressureApp = express();
+      backpressureApp.use(express.json({ limit: '55mb' }));
+      backpressureApp.use((_req, res, next) => {
+        const write = res.write.bind(res);
+        const end = res.end.bind(res);
+        let firstWrite = true;
+        res.write = (...args) => {
+          if (firstWrite) {
+            firstWrite = false;
+            markBackpressured();
+            return false;
+          }
+          return write(...args);
+        };
+        res.end = (...args) => {
+          markRouteEnded();
+          return end(...args);
+        };
+        next();
+      });
+      backpressureApp.use('/api/openclaw', openclawRoutes);
+
+      const server = await startLoopbackServer(backpressureApp);
+      let client;
+      try {
+        const body = JSON.stringify({ message: 'Disconnect while backpressured' });
+        client = httpRequest({
+          hostname: '127.0.0.1',
+          port: server.address().port,
+          method: 'POST',
+          path: '/api/openclaw/sessions/main/messages/stream',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body),
+          },
+        });
+        client.on('error', () => {});
+        client.end(body);
+
+        await backpressured;
+        client.destroy();
+        await readerCancelled;
+        await Promise.race([
+          routeEnded,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('route remained backpressured after close')), 1000)),
+        ]);
+
+        expect(mockReader.cancel).toHaveBeenCalledTimes(1);
+      } finally {
+        client?.destroy();
+        finishRead({ done: true, value: undefined });
+        await closeLoopbackServer(server);
+      }
     });
 
     it('should write an error SSE event when upstream body is null', async () => {

@@ -33,10 +33,11 @@ export const PASTE_DEADLINE_MS = 10000;
 // path; the non-claude providers use PASTE_DEADLINE_MS.
 export const TUI_INPUT_READY_DEADLINE_MS = 45000;
 
-// Claude Code emits `[Pasted text #N +M lines]`, while Codex emits
-// `[Pasted Content N chars]`, after committing a paste. Watch for either
-// marker (or fall back after PASTE_TO_ENTER_FALLBACK_MS) before sending `\r`
-// so Enter doesn't get swallowed mid-paste-commit.
+// Claude Code emits `[Pasted text #N +M lines]`, Codex emits
+// `[Pasted Content N chars]`, and OpenCode emits `[Pasted ~N lines]` after
+// committing a paste. Watch for any of these markers (or fall back after
+// PASTE_TO_ENTER_FALLBACK_MS) before sending `\r` so Enter doesn't get
+// swallowed mid-paste-commit.
 //
 // CRITICAL: the marker must be matched against ANSI-STRIPPED output, never the
 // raw PTY stream. Claude Code renders the marker by positioning each token with
@@ -62,7 +63,7 @@ export const PASTE_RETRY_MAX_ATTEMPTS = 3;
 export const PASTE_RETRY_BASE_DELAY_MS = 800;
 // Minimum prefix length for verification (shorter prompts verify whole-text)
 const MIN_VERIFIABLE_PREFIX_LEN = 15;
-export const PASTE_MARKER_PATTERN = /\[Pasted\s*(?:text\s*#\d+[^\]]*|content\s*\d+\s*chars)\]/i;
+export const PASTE_MARKER_PATTERN = /\[Pasted\s*(?:text\s*#\d+[^\]]*|content\s*\d+\s*chars|~\s*\d+\s*lines?)\]/i;
 export const PASTE_TO_ENTER_MIN_DELAY_MS = 200;
 export const PASTE_TO_ENTER_FALLBACK_MS = 3500;
 
@@ -124,7 +125,8 @@ export function verifyPasteRendered(strippedBuffer, prefix) {
 }
 
 /**
- * Count the `[Pasted text #N …]` paste-commit markers in `strippedText`.
+ * Count paste-commit markers from Claude Code, Codex, or OpenCode in
+ * `strippedText`.
  * Callers MUST pass ANSI-STRIPPED output (see PASTE_MARKER_PATTERN above for why
  * the raw stream never matches). Shared by both TUI consumers so the
  * strip-then-match contract can't drift between them.
@@ -200,12 +202,12 @@ export function isCollapsedPasteChip(strippedText) {
  * paste — the gate before sending the submit Enter(s). Two independent signals,
  * checked in priority order:
  *
- *   1. The TUI's own paste-commit MARKER (`[Pasted text #N]`) count exceeds the
- *      count the prompt itself carried (promptMarkerCount). This is AUTHORITATIVE
- *      and is checked FIRST because Claude Code collapses a multi-line bracketed
- *      paste INTO that chip and HIDES the pasted body text from the buffer — so on
- *      every multi-line prompt the literal text is genuinely absent even though
- *      the paste landed perfectly. Real incident (2026-07-05): every
+ *   1. The TUI's own paste-commit marker count exceeds the count the prompt
+ *      itself carried (promptMarkerCount). This is AUTHORITATIVE and is checked
+ *      FIRST because Claude Code collapses a multi-line bracketed paste into a
+ *      chip and HIDES the pasted body text from the buffer — so on every
+ *      multi-line prompt the literal text is genuinely absent even though the
+ *      paste landed perfectly. Real incident (2026-07-05): every
  *      claude-code-tui CoS agent failed `paste-not-rendered` after 3 retries
  *      because #2192's text-only check never saw the collapsed body — while the
  *      marker was sitting right there. (agent-656efa6e et al.)
@@ -275,6 +277,24 @@ export const BRACKETED_PASTE_MODE_PATTERN = /\x1b\[\?2004([hl])/g;
 export const TUI_TRUST_PROMPT_PATTERN =
   /trustthisfolder|isthisaprojectyou(?:created|trust)/i;
 
+// Claude Code's auto-mode opt-in offer ("Make auto mode your default permission
+// mode? → 1. Yes, set auto mode as my default permission mode / 2. No, keep
+// don't ask"), added in v2.1.233. Like the trust gate it is NOT bypassed by
+// `--dangerously-skip-permissions`, but unlike the trust gate it paints AFTER
+// the composer is live — bracketed-paste mode is already ON, so `ready` goes
+// true and the prompt is pasted straight into a modal that ignores it. Every
+// one of the four claude-code-tui agents launched on 2026-08-14 died
+// `paste-not-rendered` this way (agent-f71b794e et al.).
+//
+// The spawner answers "2. No, keep don't ask" rather than accepting the
+// highlighted default: option 1 rewrites the HUMAN's global default permission
+// mode in `~/.claude.json`, and an unattended agent must not mutate the
+// operator's config as a side effect of dismissing a dialog. Option 2 preserves
+// whatever posture the user already chose, and the agent's own session keeps
+// the `--dangerously-skip-permissions` it was launched with either way.
+export const TUI_AUTO_MODE_PROMPT_PATTERN =
+  /automodeyourdefaultpermissionmode|setautomodeasmydefaultpermissionmode/i;
+
 // Antigravity (agy) needs a SECOND, positive readiness signal on top of paste
 // mode. agy enables bracketed paste the moment it enters the alt screen — while
 // it is still "Signing in…", before its folder-trust gate has painted and long
@@ -316,7 +336,18 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
   let sawCommandRun = directLaunch;
   let needsTrust = false;
   let sawReadyText = false;
+  // Auto-mode offer: latched when seen, cleared once answered. `autoModeAnswered`
+  // makes the ack TERMINAL — `tail` is a rolling 4000-char window, so the modal's
+  // text lingers in it long after the dialog is gone and would otherwise re-arm
+  // the flag on the very next chunk, re-answering forever and pinning `ready`
+  // false until the 45s deadline. Arm-once, same as the gates above it.
+  let needsAutoModeChoice = false;
+  let autoModeAnswered = false;
   let tail = '';
+  // node-pty can split `ESC[?2004h` across reads. Keep only the trailing
+  // prefix of that exact toggle so the next chunk can complete it without
+  // treating unrelated escape traffic as a readiness signal.
+  let rawTail = '';
   return {
     // Ready once the TUI has RE-ENABLED bracketed-paste mode after the launch
     // shell turned it off to run the command — for claude that means its input
@@ -324,22 +355,38 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
     // initial ON does not count: sawCommandRun gates on the intervening OFF.)
     // Providers that enable paste mode before their composer exists supply a
     // readyTextPattern to close the gap.
+    // The auto-mode offer is the one gate that paints with paste mode already ON,
+    // so it must SUPPRESS ready — every other signal here says "go" while the
+    // modal is still swallowing input. Cleared by ackAutoModeChoice() once the
+    // spawner has answered it.
     get ready() {
-      return sawCommandRun && pasteModeOn && (!readyTextPattern || sawReadyText);
+      return sawCommandRun && pasteModeOn && !needsAutoModeChoice
+        && (!readyTextPattern || sawReadyText);
     },
     get needsTrust() { return needsTrust; },
+    get needsAutoModeChoice() { return needsAutoModeChoice; },
+    /** Spawner reports the dismissal keystrokes went out; re-arms `ready`. */
+    ackAutoModeChoice() { needsAutoModeChoice = false; autoModeAnswered = true; },
     // rawText: un-stripped chunk (paste-mode toggles live here);
     // strippedText: ANSI-stripped chunk (the trust-gate / composer text).
     observe(rawText, strippedText) {
       if (rawText) {
-        for (const m of rawText.matchAll(BRACKETED_PASTE_MODE_PATTERN)) {
+        const raw = rawTail + rawText;
+        rawTail = '';
+        for (const m of raw.matchAll(BRACKETED_PASTE_MODE_PATTERN)) {
           if (m[1] === 'l') { pasteModeOn = false; sawCommandRun = true; }
           else pasteModeOn = true;
+        }
+        const lastEscape = raw.lastIndexOf('\x1b');
+        const possibleTogglePrefix = lastEscape === -1 ? '' : raw.slice(lastEscape);
+        if (possibleTogglePrefix && '\x1b[?2004'.startsWith(possibleTogglePrefix)) {
+          rawTail = possibleTogglePrefix;
         }
       }
       if (strippedText) {
         tail = (tail + strippedText.replace(/\s+/g, '')).slice(-OBSERVE_TAIL_MAX_LEN);
         if (!needsTrust && TUI_TRUST_PROMPT_PATTERN.test(tail)) needsTrust = true;
+        if (!needsAutoModeChoice && !autoModeAnswered && TUI_AUTO_MODE_PROMPT_PATTERN.test(tail)) needsAutoModeChoice = true;
         if (readyTextPattern && !sawReadyText && readyTextPattern.test(tail)) sawReadyText = true;
       }
     },

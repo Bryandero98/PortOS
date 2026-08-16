@@ -37,6 +37,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
+import { isMiniMaxH3Runtime, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -49,13 +50,13 @@ import IcLoraPanel from '../components/videoGen/IcLoraPanel';
 import AdvancedParamsPanel from '../components/videoGen/AdvancedParamsPanel';
 import RuntimeFingerprint from '../components/videoGen/RuntimeFingerprint';
 import ModelDisclosure from '../components/videoGen/ModelDisclosure';
-import ModelTermsGate from '../components/videoGen/ModelTermsGate';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
-import VideoPreviewPanel from '../components/videoGen/VideoPreviewPanel';
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
+import PromptEnhancer from '../components/media/PromptEnhancer';
+import PromptFromMedia from '../components/media/PromptFromMedia';
 import { normalizeVideo } from '../components/media/normalize';
 import {
   Film, Sparkles, Settings as SettingsIcon, RefreshCw, AlertTriangle,
@@ -67,7 +68,8 @@ import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import ModelSelect from '../components/ModelSelect';
 import { FormField } from '../components/ui/FormField';
 import ModelDownloadBadge, { deriveSizeEstimate } from '../components/media/ModelDownloadBadge';
-import { useModelDownloadStatus, TEXT_ENCODER_DOWNLOAD_ID } from '../hooks/useModelDownloadStatus';
+import { useModelDownloadStatus, TEXT_ENCODER_DOWNLOAD_ID, textEncoderDownloadId } from '../hooks/useModelDownloadStatus';
+import TextEncoderPicker from '../components/videoGen/TextEncoderPicker';
 import { useMediaJobSse } from '../hooks/useMediaJobSse';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
@@ -86,14 +88,11 @@ import {
   listLorasFull,
 } from '../services/api';
 import LoraPicker from '../components/imageGen/LoraPicker';
-import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
+import { VIDEO_RESOLUTIONS, resolutionOptionsForModel } from '../lib/videoGenResolutions';
 import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import ResolutionField from '../components/media/ResolutionField';
-import { VIDEO_EDGE_BOUNDS, IC_LORA_MODES } from '../lib/videoGenParams.js';
+import { VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord } from '../lib/videoFinish.js';
-import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
-import useVideoModelTerms from '../hooks/useVideoModelTerms.js';
-
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
   { id: 'image',  label: 'Image',  icon: ImageIcon,  desc: 'Image-to-video (start frame)' },
@@ -143,7 +142,7 @@ export default function VideoGen() {
   const {
     backend, isGrok, handleBackendChange, grokDuration, setGrokDuration,
     mode, handleModeChange,
-    prompt, setPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset,
+    prompt, setPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset, remixModelFallback,
     modelId, handleModelChange, currentModel, visibleModels,
     loraFamily, videoLoras, loraUnavailableHint,
     selectedLoras, setSelectedLoras,
@@ -153,6 +152,7 @@ export default function VideoGen() {
     contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
+    textEncoderId, setTextEncoderId, textEncoderOptions,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
     sourceImageFile, sourceImageUpload, sourceUploadUrl,
     pickSourceImage, uploadSourceImage, clearSourceImage,
@@ -169,39 +169,8 @@ export default function VideoGen() {
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
-
-  // Restricted model terms are accepted per exact reviewed license id, and the
-  // acceptance is recorded server-side so it authorizes every other render
-  // surface (music video board, pipeline, agent runs) — not just this page in
-  // this browser. That record is the ONLY authorization: no request carries an
-  // acceptance of its own, so the gates below are a UI mirror of what the
-  // server independently enforces on every download and render.
-  const termsGate = !isGrok && currentModel?.termsGate ? currentModel.termsGate : null;
-  const modelTerms = useVideoModelTerms();
-  // Key acceptance by the exact license id, never a shared boolean, so a model
-  // switch can't momentarily apply one model's acceptance to another's terms.
-  const termsAccepted = modelTerms.isAccepted(termsGate?.id);
-  // One-time carry-forward of the browser-local acceptance bit this page used
-  // to keep: the user already performed this exact acknowledgement (same
-  // versioned id) here, so re-home it into settings instead of asking again.
-  // The legacy key is cleared afterwards so it can never re-assert a later
-  // withdrawal, and `migratedTerms` keeps the re-home to one attempt per id —
-  // the effect re-runs on any acceptance-list change, and the PATCH is not
-  // instantaneous.
-  const migratedTerms = useRef(new Set());
-  useEffect(() => {
-    const id = termsGate?.id;
-    if (!id || !modelTerms.loaded || modelTerms.isAccepted(id) || migratedTerms.current.has(id)) return;
-    const legacyKey = `video-gen:terms:${id}`;
-    if (safeReadStorage(legacyKey) !== '1') return;
-    migratedTerms.current.add(id);
-    modelTerms.setAcceptance(id, true).then((saved) => { if (saved) safeWriteStorage(legacyKey, '0'); });
-  }, [termsGate?.id, modelTerms.loaded, modelTerms.isAccepted, modelTerms.setAcceptance]);
-  const handleTermsAcceptedChange = (accepted) => {
-    if (termsGate?.id) modelTerms.setAcceptance(termsGate.id, accepted);
-  };
-  const termsGateBlocked = !!termsGate && !termsAccepted;
-  const termsDescriptionId = termsGate ? 'video-model-terms-requirement' : undefined;
+  const localResolutionOptions = resolutionOptionsForModel(currentModel);
+  const localResolutionBounds = videoEdgeBoundsForModel(currentModel);
 
   // Every gallery-image slot on this page (both frame panels, each multi-keyframe
   // row, each IC-LoRA reference row) opens the SAME GalleryImagePicker modal the
@@ -314,7 +283,6 @@ export default function VideoGen() {
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState(null);
   const [statusMsg, setStatusMsg] = useState('');
-  const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const { attach, eventSourceRef } = useMediaJobSse('video');
   // Hold the reject() of the in-flight runGeneration Promise so cancel can
@@ -360,7 +328,6 @@ export default function VideoGen() {
         if (msg.message) setStatusMsg(msg.message);
       },
       onComplete: (msg) => {
-        setResult(msg.result);
         setGenerating(false);
         setProgress({ progress: 1 });
         setStatusMsg('Complete');
@@ -388,7 +355,7 @@ export default function VideoGen() {
   };
 
   // Resume an in-flight (or queued) render so a page reload doesn't lose
-  // the preview/progress display. Server holds the job's last SSE payload,
+  // the progress line next to Generate. Server holds the job's last SSE payload,
   // so re-attaching replays the most recent status/progress immediately.
   // Mirrors the ImageGen `getActiveImageJob` mount path.
   useEffect(() => {
@@ -466,6 +433,34 @@ export default function VideoGen() {
       ? { ...textEncoderInfo, downloading: true, progress: modelDownload.progress }
       : textEncoderInfo)
     : null;
+  // Substitutable prompt conditioner (#4081). A built-in option ships inside
+  // the model's own weights, so only a substitute has a download of its own to
+  // track — and only then can it gate Generate.
+  const selectedTextEncoder = textEncoderOptions.find((option) => option.id === textEncoderId) || null;
+  // Non-null exactly when the selection has a download of its own — a built-in
+  // conditioner ships inside the model's weights. Doubles as the "needs
+  // weights" predicate so there's one derivation, not two.
+  const textEncoderOptionDownloadId = selectedTextEncoder && !selectedTextEncoder.builtIn
+    ? textEncoderDownloadId(selectedTextEncoder.id)
+    : null;
+  const textEncoderOptionStatus = textEncoderOptionDownloadId
+    ? modelDownload.getStatus(textEncoderOptionDownloadId)
+    : null;
+  // Choosing a substitute IS the request for its weights: it is unusable until
+  // resident and Generate is gated on it either way, so `startWhenIdle` turns
+  // the pick into the pull (it owns waiting for the cache verdict, skipping an
+  // already-downloaded one, and queueing behind an active download).
+  //
+  // Wired to the PICKER's onChange alone, deliberately — a Remix, a resumed
+  // render, and the snap-to-stock on a model change all reach `setTextEncoderId`
+  // too, and a multi-GB pull must follow a click the user just made rather than
+  // a state restore. Passing null for a built-in option clears any queued pull.
+  const { startWhenIdle: startEncoderWhenIdle } = modelDownload;
+  const handleTextEncoderChange = useCallback((id) => {
+    setTextEncoderId(id);
+    const option = textEncoderOptions.find((entry) => entry.id === id);
+    startEncoderWhenIdle(option && !option.builtIn ? textEncoderDownloadId(id) : null);
+  }, [setTextEncoderId, textEncoderOptions, startEncoderWhenIdle]);
   const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
   const modelWeightsBlocked = !isGrok
     && (statusLoading || !modelId || !currentModel || modelDownload.loading
@@ -474,10 +469,14 @@ export default function VideoGen() {
     && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
   const icWeightsBlocked = !isGrok && icModeActive
     && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
-  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked || icWeightsBlocked;
+  const textEncoderOptionBlocked = !isGrok && !!textEncoderOptionDownloadId
+    && (modelDownload.loading || textEncoderOptionStatus === null || textEncoderOptionStatus?.cached === false);
+  const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked
+    || textEncoderOptionBlocked || icWeightsBlocked;
   const activeWeightErrorIds = [
     modelId,
     usesSharedTextEncoder ? TEXT_ENCODER_DOWNLOAD_ID : null,
+    textEncoderOptionDownloadId,
     icModeActive ? icSpec?.mode : null,
   ].filter(Boolean);
   const activeWeightError = activeWeightErrorIds.includes(modelDownload.lastError?.modelId)
@@ -506,6 +505,22 @@ export default function VideoGen() {
   const [dismissedEncoderIntegrityKey, setDismissedEncoderIntegrityKey] = useState(null);
   const showEncoderIntegrityBanner = encoderIntegrityBad && dismissedEncoderIntegrityKey !== encoderIntegrityKey && !modelDownload.downloading;
 
+  // A substituted conditioner is a separate pinned file, so it gets the same
+  // treatment: the model-keyed and shared-encoder repairs above can't reach it,
+  // and a corrupt one degrades the render rather than failing it.
+  const textEncoderOptionIntegrity = textEncoderOptionStatus && !textEncoderOptionStatus.downloading
+    ? textEncoderOptionStatus.integrity
+    : null;
+  const textEncoderOptionIntegrityBad = textEncoderOptionIntegrity?.status === 'bad';
+  const textEncoderOptionIntegrityBadCount = textEncoderOptionIntegrityBad ? (textEncoderOptionIntegrity.badFiles || []).length : 0;
+  const textEncoderOptionIntegrityKey = textEncoderOptionIntegrityBad
+    ? `${textEncoderOptionDownloadId}:${(textEncoderOptionIntegrity.badFiles || []).map((f) => f.name).join(',')}`
+    : null;
+  const [dismissedTextEncoderOptionIntegrityKey, setDismissedTextEncoderOptionIntegrityKey] = useState(null);
+  const showTextEncoderOptionIntegrityBanner = textEncoderOptionIntegrityBad
+    && dismissedTextEncoderOptionIntegrityKey !== textEncoderOptionIntegrityKey
+    && !modelDownload.downloading;
+
   // IC-LoRA weights are independent downloads too. Keep their corruption
   // recovery on the originating Video Gen surface instead of requiring a CLI
   // cache purge or leaving the user with a disabled Generate button.
@@ -520,13 +535,6 @@ export default function VideoGen() {
     && dismissedIcIntegrityKey !== icIntegrityKey && !modelDownload.downloading;
 
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
-
-  // Explicit px sizing — maxWidth + maxHeight + aspectRatio together resolves
-  // inconsistently across browsers for mixed orientations.
-  const previewBudget = 420;
-  const previewRatio = (width > 0 && height > 0) ? width / height : 16 / 9;
-  const previewWidth = previewRatio >= 1 ? previewBudget : Math.round(previewBudget * previewRatio);
-  const previewHeight = previewRatio >= 1 ? Math.round(previewBudget / previewRatio) : previewBudget;
 
   // Run a single payload through the SSE pipeline. Returns a promise that
   // resolves when the job completes (or rejects on error / cancel). Shared
@@ -546,7 +554,6 @@ export default function VideoGen() {
     setGenerating(true);
     setProgress({ progress: 0 });
     setStatusMsg('Starting...');
-    setResult(null);
     setError(null);
 
     const myToken = ++runTokenRef.current;
@@ -596,12 +603,11 @@ export default function VideoGen() {
 
   const handleGenerate = async (e) => {
     e?.preventDefault?.();
-    // Mirror the inline submit-button's disabled rules: blank prompt,
-    // already generating, backend disconnected, or extend mode not ready.
-    // Without these guards the user could press Enter in the prompt
-    // textarea and fire a request the disabled button would otherwise
-    // have prevented.
-    if (!prompt.trim() || generating || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
+    if (generating) {
+      if (canEnqueue) handleEnqueue();
+      return;
+    }
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
@@ -610,7 +616,7 @@ export default function VideoGen() {
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))) return;
+    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
     enqueue(buildGeneratePayload());
@@ -655,19 +661,22 @@ export default function VideoGen() {
 
   const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked
     && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
-    && !weightsGateBlocked && !keyframesBlocked && !termsGateBlocked));
+    && !weightsGateBlocked && !keyframesBlocked));
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 text-xs">
         {status ? (
-          <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border ${
-            status.connected
-              ? 'border-port-success/40 bg-port-success/10 text-port-success'
-              : 'border-port-error/40 bg-port-error/10 text-port-error'
-          }`}>
+          <span
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border ${
+              status.connected
+                ? 'border-port-success/40 bg-port-success/10 text-port-success'
+                : 'border-port-error/40 bg-port-error/10 text-port-error'
+            }`}
+            title={status.pythonPath || 'Local Python'}
+          >
             {status.connected ? (
-              <><span className="w-2 h-2 rounded-full bg-port-success" /> {status.pythonPath || 'local Python'}</>
+              <><span className="w-2 h-2 rounded-full bg-port-success" /> {status.pythonVersion ? `Python ${status.pythonVersion}` : 'Python'}</>
             ) : (
               <>
                 <AlertTriangle className="w-3 h-3" />
@@ -781,7 +790,7 @@ export default function VideoGen() {
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
                 <strong className="font-semibold">{byovStatus.label}</strong> {byovStatus.upgradeAvailable ? 'has an update available.' : "isn't installed yet."}
-                {' '}PortOS can {byovStatus.upgradeAvailable ? 'upgrade' : 'fetch and install'} it from {byovStatus.repoUrl?.replace('https://', '')} on demand.
+                {' '}PortOS can {byovStatus.upgradeAvailable ? 'upgrade' : 'fetch and install'} it from {byovStatus.installSourceLabel || byovStatus.repoUrl?.replace('https://', '')} on demand.
               </div>
               <button
                 type="button"
@@ -806,8 +815,7 @@ export default function VideoGen() {
                 modelDownload.repair(modelId);
               }}
               onDismiss={() => setDismissedIntegrityKey(integrityKey)}
-              disabled={termsGateBlocked || modelDownload.repairing || modelDownload.downloading}
-              disabledReasonId={termsGateBlocked ? termsDescriptionId : undefined}
+              disabled={modelDownload.repairing || modelDownload.downloading}
               repairing={modelDownload.repairing}
             />
           )}
@@ -820,6 +828,26 @@ export default function VideoGen() {
               repairLabel="Repair encoder"
               onRepair={() => { setDismissedEncoderIntegrityKey(encoderIntegrityKey); modelDownload.repair(TEXT_ENCODER_DOWNLOAD_ID); }}
               onDismiss={() => setDismissedEncoderIntegrityKey(encoderIntegrityKey)}
+              disabled={modelDownload.repairing || modelDownload.downloading}
+              repairing={modelDownload.repairing}
+            />
+          )}
+          {/* A substituted conditioner is its own multi-GB file, so a corrupt
+              one needs its own Repair path — neither the model-keyed banner nor
+              the shared-encoder one above can reach it. Same failure mode as a
+              corrupt model: the render completes and comes out garbled. */}
+          {showTextEncoderOptionIntegrityBanner && (
+            <ModelRepairBanner
+              message={<>
+                The <strong className="font-semibold">{selectedTextEncoder?.label}</strong> text encoder has {textEncoderOptionIntegrityBadCount || 'corrupt'} damaged file{textEncoderOptionIntegrityBadCount === 1 ? '' : 's'} — renders may come out garbled.
+                Repair deletes the bad file{textEncoderOptionIntegrityBadCount === 1 ? '' : 's'} and re-downloads a clean copy.
+              </>}
+              repairLabel="Repair text encoder"
+              onRepair={() => {
+                setDismissedTextEncoderOptionIntegrityKey(textEncoderOptionIntegrityKey);
+                modelDownload.repair(textEncoderOptionDownloadId);
+              }}
+              onDismiss={() => setDismissedTextEncoderOptionIntegrityKey(textEncoderOptionIntegrityKey)}
               disabled={modelDownload.repairing || modelDownload.downloading}
               repairing={modelDownload.repairing}
             />
@@ -840,7 +868,6 @@ export default function VideoGen() {
           <StylePresetPicker
             value={stylePreset?.id || ''}
             onChange={setStylePreset}
-            disabled={generating}
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <FormField label="Prompt" labelClassName="block text-xs font-medium text-gray-400 mb-1">
@@ -865,6 +892,17 @@ export default function VideoGen() {
               />
             </FormField>
           </div>
+
+          {/* Keep Enhance live while a render is in flight so the next clip
+              can be composed and queued. Generate itself becomes Cancel. */}
+          <PromptEnhancer
+            kind="video"
+            prompt={prompt}
+            setPrompt={setPrompt}
+            negativePrompt={negativePrompt}
+            setNegativePrompt={setNegativePrompt}
+            renderConfig={{ stylePreset: stylePreset?.id, mode, model: modelId }}
+          />
 
           {mode === 'fflf' && keyframesSupported && (
             <KeyframePanel
@@ -998,15 +1036,21 @@ export default function VideoGen() {
                   value={modelId}
                   onChange={(e) => handleModelChange(e.target.value)}
                 />
+                {remixModelFallback && (
+                  <p className="mt-1 text-[11px] text-port-accent leading-snug" role="status">
+                    {remixModelFallback.sourceName} {remixModelFallback.samplerLocked && remixModelFallback.negativePromptUnsupported
+                      ? 'has fixed sampler controls and no negative prompt'
+                      : remixModelFallback.samplerLocked
+                        ? 'has fixed sampler controls'
+                        : 'does not support a negative prompt'}. This remix is using {remixModelFallback.targetName} so its negative prompt, Steps, and CFG Scale remain editable.
+                  </p>
+                )}
                 {modelStatus && (
                   <ModelDownloadBadge
                     status={modelStatus}
                     onDownload={() => modelDownload.start(modelId)}
                     onCancel={modelDownload.cancel}
                     estimateLabel={deriveSizeEstimate(currentModel?.name)}
-                    disabled={termsGateBlocked}
-                    disabledReason="Accept the selected model's eligibility and license terms below before downloading."
-                    disabledReasonId={termsDescriptionId}
                   />
                 )}
                 {activeWeightError && (
@@ -1037,6 +1081,21 @@ export default function VideoGen() {
                     </button>
                   </div>
                 )}
+                {/* Prompt conditioner. Sits with the Model field rather than in
+                    the collapsed Advanced panel: a substitute is its own
+                    multi-GB pull and gates Generate, so its badge has to be
+                    visible at the moment it's picked. Renders nothing unless
+                    the model offers a real choice. */}
+                <TextEncoderPicker
+                  options={textEncoderOptions}
+                  value={textEncoderId}
+                  onChange={handleTextEncoderChange}
+                  status={textEncoderOptionStatus}
+                  onDownload={() => modelDownload.start(textEncoderOptionDownloadId)}
+                  queued={modelDownload.queuedModelId === textEncoderOptionDownloadId}
+                  onCancel={modelDownload.cancel}
+                  disabled={generating}
+                />
                 {usesSharedTextEncoder && textEncoderStatus && (textEncoderStatus.cached === false || textEncoderStatus.downloading) && (
                   <div className="mt-1">
                     <p className="text-[10px] text-gray-500">Text encoder ({textEncoderStatus.repo}) is also required:</p>
@@ -1084,45 +1143,33 @@ export default function VideoGen() {
             )}
 
             {/* Preset dropdown + free-form custom W×H for exact I2V sizing beyond
-                the preset list. The server accepts 64..2048 and rounds each dim
-                DOWN to the 64-grid, so an off-grid size renders at the next-lower
-                multiple of 64 — ResolutionField's blur-snap reflects that. */}
+                the preset list. Most runners use the shared 64px grid; models
+                such as H3 declare their native 32px grid and trained presets. */}
             <ResolutionField
-              presets={VIDEO_RESOLUTIONS}
+              presets={localResolutionOptions}
               width={width}
               height={height}
               onChange={handleResolutionChange}
-              {...VIDEO_EDGE_BOUNDS}
+              {...localResolutionBounds}
               snapOnBlur
-              note="Each edge 64–2048px; the server rounds each down to the nearest multiple of 64."
+              note={isMiniMaxH3Runtime(currentModel?.runtime)
+                ? 'H3 quality presets follow its trained 768px short-edge, area-capped canvas. Smaller custom sizes are off-distribution but useful for faster wiring tests; each edge snaps to 32px.'
+                : 'Each edge 64–2048px; the server rounds each down to the nearest multiple of 64.'}
             />
 
           </div>
           )}
 
-          {/* A restricted model's server-enforced terms gate, then provenance /
-              licensing / policy scope for the selected backend + model (#3674)
-              — both before Advanced / Generate. */}
-          <div className="space-y-2">
-            <ModelTermsGate
-              termsGate={termsGate}
-              accepted={termsAccepted}
-              onAcceptedChange={handleTermsAcceptedChange}
-              disabled={modelTerms.saving}
-              descriptionId={termsDescriptionId}
-              inputId="video-gen-terms-accept"
-            />
-            <ModelDisclosure
-              backend={backend}
-              backendDisclosures={status?.backendDisclosures}
-              model={isGrok ? null : currentModel}
-              systemMemoryGb={status?.systemMemoryGb}
-            />
-          </div>
+          {/* Provenance / licensing / policy scope for the selected backend +
+              model (#3674). Territory and Community License live here as
+              facts — they do not block download or generate. */}
+          <ModelDisclosure
+            backend={backend}
+            backendDisclosures={status?.backendDisclosures}
+            model={isGrok ? null : currentModel}
+            systemMemoryGb={status?.systemMemoryGb}
+          />
 
-          {/* Sampler/output knobs live behind a closed-by-default disclosure so
-              Generate stays above the fold — the sibling /media/image tab keeps
-              only Model + Resolution inline for the same reason (issue #3279). */}
           {!isGrok && (
             <AdvancedParamsPanel
               mode={mode}
@@ -1154,18 +1201,17 @@ export default function VideoGen() {
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked || termsGateBlocked))}
-                aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
+                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))}
                 className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
                 title={
                   byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
-                    : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before generating'
                     : modelWeightsBlocked ? 'Download the selected model weights before generating'
                     : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'
+                    : textEncoderOptionBlocked ? `Download the ${selectedTextEncoder?.label || 'selected'} text encoder before generating`
                     : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before generating`
                     : extendModeBlocked ? 'Pick a prior render and wait for the last frame to extract before generating'
-                    : a2vModeBlocked ? (currentModel?.runtime !== 'ltx2'
+                    : a2vModeBlocked ? (!isLtx2FamilyRuntime(currentModel?.runtime)
                       ? 'a2v mode requires an ltx2-runtime model — pick one from the Model dropdown'
                       : 'Pick an audio file before generating')
                     : keyframesBlocked ? keyframesError
@@ -1179,11 +1225,9 @@ export default function VideoGen() {
               type="button"
               onClick={handleEnqueue}
               disabled={!canEnqueue}
-              aria-describedby={termsGateBlocked ? termsDescriptionId : undefined}
               className="flex items-center gap-2 px-4 py-2 border border-port-border text-gray-200 hover:text-white hover:bg-port-border/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg min-h-[40px]"
               title={canEnqueue ? 'Add this configuration to the batch queue'
                 : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before queueing`
-                  : termsGateBlocked ? 'Confirm the selected model eligibility and license terms above before queueing'
                   : weightsGateBlocked ? 'Finish required model downloads before queueing'
                     : 'Complete the required inputs before queueing'}
             >
@@ -1198,14 +1242,16 @@ export default function VideoGen() {
           </div>
         </div>
 
-        <VideoPreviewPanel
-          result={result}
-          generating={generating}
-          statusMsg={statusMsg}
-          progressPct={progressPct}
-          previewWidth={previewWidth}
-          previewHeight={previewHeight}
-        />
+        <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
+          <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Prompt from media</h2>
+          <PromptFromMedia
+            kindDefault="both"
+            applyKind="video"
+            setPrompt={setPrompt}
+            setNegativePrompt={setNegativePrompt}
+            alwaysOpen
+          />
+        </div>
       </form>
 
       <BatchQueuePanel
@@ -1230,6 +1276,7 @@ export default function VideoGen() {
         onToggleFavorites={() => setFavoritesOnly((v) => !v)}
         onToggleShowHidden={() => setShowHidden((s) => !s)}
         onPreview={setPreview}
+        onRemix={handleRemixVideo}
         onContinue={(v) => handleContinue(normalizeVideo(v))}
         onUpscale={handleUpscaleHistory}
         onDelete={handleDeleteHistory}

@@ -101,13 +101,21 @@ The verification pass flagged these problems. Resolve **every** one of them in y
 {{findingsJson}}
 ```
 
-## Exact-text field budgets
+## Field budgets
 
 These are measured from the current persisted strings above. For every exact
 replacement, `replace.length - find.length` must be less than or equal to the
 field's `remaining` value. A negative delta frees space. The server rejects the
 entire replacement instead of truncating it when the resulting field would
 exceed `max`.
+
+Character-arc fields are rewritten whole rather than by exact replacement, so
+each one you return must itself fit inside its `max`. Those caps are far tighter
+than the arc prose — a transition `label` gets 200 characters — and an over-cap
+label is **clipped, not rejected**, which lands a milestone that stops
+mid-thought and reads to the next verification pass as an incomplete record.
+Write the whole irreversible commitment inside the cap, compressing wording
+instead of running past it, and put supporting terms in the transition `note`.
 
 ```json
 {{textBudgetsJson}}

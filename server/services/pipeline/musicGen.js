@@ -28,6 +28,9 @@
  */
 
 import { existsSync, statSync } from 'fs';
+import { execFile } from '../../lib/childProcess.js';
+import { platform as osPlatform, arch as osArch } from 'os';
+import { promisify } from 'util';
 import { unlink } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -39,8 +42,16 @@ import {
   resolveMusicgenPython, MUSICGEN_RUNTIME_DIR, MUSICGEN_VENV_DEFAULT,
   resolveAudioldm2Python, AUDIOLDM2_RUNTIME_DIR, AUDIOLDM2_VENV_DEFAULT,
   resolveAcestepPython, ACESTEP_RUNTIME_DIR, ACESTEP_VENV_DEFAULT,
+  resolveAcestep15Python, ACESTEP15_RUNTIME_DIR, ACESTEP15_VENV_DEFAULT,
+  resolveMinimaxMusic3Python, MINIMAX_MUSIC3_RUNTIME_DIR, MINIMAX_MUSIC3_VENV_DEFAULT,
 } from '../../lib/pythonSetup.js';
+import { getCudaCapability } from '../../lib/cudaCapability.js';
+import { inspectModelCache } from '../../lib/hfCache.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { stripMarkdownEmphasis } from '../../lib/markdownText.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The sidecar scripts live at the repo root — resolve module-relative so the
@@ -48,6 +59,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MUSICGEN_SCRIPT = join(__dirname, '../../../scripts/generate_musicgen.py');
 const AUDIOLDM2_SCRIPT = join(__dirname, '../../../scripts/generate_audioldm2.py');
 const ACESTEP_SCRIPT = join(__dirname, '../../../scripts/generate_acestep.py');
+const ACESTEP15_SCRIPT = join(__dirname, '../../../scripts/generate_acestep15.py');
+const MINIMAX_MUSIC3_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3.py');
 // Back-compat alias for the pre-multi-engine `buildMusicGenArgs` default.
 const SIDECAR_SCRIPT = MUSICGEN_SCRIPT;
 
@@ -87,6 +100,16 @@ export const ACESTEP_MODELS = Object.freeze([
   { id: 'ace-step-v1-3.5b', repo: 'ACE-Step/ACE-Step-v1-3.5B', name: 'ACE-Step v1 3.5B (full song + vocals)' },
 ]);
 export const DEFAULT_ACESTEP_MODEL_ID = 'ace-step-v1-3.5b';
+// ACE-Step 1.5 stores its DiT, VAE, text encoder, and LM in one HF repository.
+// It is deliberately a separate engine: persisted v1 render metadata must
+// continue to select v1's pip-based runtime instead of silently changing.
+export const ACESTEP15_MODELS = Object.freeze([
+  { id: 'ace-step-v1.5', repo: 'ACE-Step/Ace-Step1.5', name: 'ACE-Step 1.5 (full song + vocals)' },
+]);
+export const DEFAULT_ACESTEP15_MODEL_ID = 'ace-step-v1.5';
+export const MINIMAX_MUSIC3_MODELS = Object.freeze([
+  { id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3 (CUDA, up to 5 minutes)' },
+]);
 
 /**
  * Backend registry. Each engine is fully described here so the route, UI and
@@ -97,6 +120,15 @@ export const DEFAULT_ACESTEP_MODEL_ID = 'ace-step-v1-3.5b';
  *   - `scriptPath`       — the Python sidecar
  *   - `runtimeDir`       — value for the sidecar's --runtime-dir flag
  *   - `resolvePython`    — () => venv interpreter path | null (readiness probe)
+ *   - `healthProbe`      — python source proving the venv can actually run this
+ *     backend. `resolvePython` only confirms the interpreter exists, and a
+ *     failed/cancelled install leaves the interpreter with no packages — see
+ *     isEngineHealthy below. Mirrors each engine's assertion in
+ *     scripts/setup-image-video.sh; keep the two in sync.
+ *   - `requiresPlatform` — hosts this backend can run on at all, when it is not
+ *     portable. Absent means "anywhere". The installer already refuses on the
+ *     wrong host, but without this the UI offers an Install button that exits 0
+ *     having done nothing — see isEnginePlatformSupported below.
  *   - `venvDefault`/`installEnv` — install-hint pieces for the 503 message
  */
 export const ENGINES = Object.freeze({
@@ -113,6 +145,14 @@ export const ENGINES = Object.freeze({
     resolvePython: resolveMusicgenPython,
     venvDefault: MUSICGEN_VENV_DEFAULT,
     installEnv: 'INSTALL_MUSICGEN',
+    // MLX is Apple-Silicon only, and the implementation lives in the
+    // ml-explore/mlx-examples clone rather than a pip package — there is no
+    // Windows/Linux path at all. Mirrors the is_macos guard in
+    // scripts/setup-image-video.sh's INSTALL_MUSICGEN block.
+    requiresPlatform: { platform: 'darwin', arch: 'arm64', label: 'macOS on Apple Silicon (MLX)' },
+    // Mirrors the setup script's MusicGen assertion — the class lives in the
+    // mlx-examples clone, so the probe re-creates the sidecar's sys.path insert.
+    healthProbe: 'import sys; sys.path.insert(0, r"' + MUSICGEN_RUNTIME_DIR + '"); import torch; from musicgen import MusicGen',
     // The sidecar passes `--model <repo>` straight to from_pretrained, so any
     // HuggingFace MusicGen checkpoint works — user-installed models are usable.
     customModels: true,
@@ -130,6 +170,7 @@ export const ENGINES = Object.freeze({
     resolvePython: resolveAudioldm2Python,
     venvDefault: AUDIOLDM2_VENV_DEFAULT,
     installEnv: 'INSTALL_AUDIOLDM2',
+    healthProbe: 'import torch; from diffusers import AudioLDM2Pipeline',
     // `--model <repo>` → AudioLDM2Pipeline.from_pretrained: any HF AudioLDM2
     // checkpoint works, so user-installed models are usable.
     customModels: true,
@@ -147,6 +188,7 @@ export const ENGINES = Object.freeze({
     resolvePython: resolveAcestepPython,
     venvDefault: ACESTEP_VENV_DEFAULT,
     installEnv: 'INSTALL_ACESTEP',
+    healthProbe: 'import torch; from acestep.pipeline_ace_step import ACEStepPipeline',
     // ACE-Step is lyric-aware: the route/UI may send `lyrics`, threaded into the
     // sidecar as --lyrics. The other engines ignore lyrics (the flag gates UI).
     lyrics: true,
@@ -156,6 +198,61 @@ export const ENGINES = Object.freeze({
     // therefore disabled for it (customModels falsy) — the sidecar ignores
     // --model by design.
     customModels: false,
+  },
+  acestep15: {
+    id: 'acestep15',
+    name: 'ACE-Step 1.5 (full song + vocals)',
+    models: ACESTEP15_MODELS,
+    defaultModelId: DEFAULT_ACESTEP15_MODEL_ID,
+    minDurationSec: 1,
+    // The vendor supports much longer compositions, but retain the established
+    // studio window until a user-facing duration expansion is separately tested.
+    maxDurationSec: 240,
+    defaultDurationSec: 60,
+    scriptPath: ACESTEP15_SCRIPT,
+    runtimeDir: ACESTEP15_RUNTIME_DIR,
+    resolvePython: resolveAcestep15Python,
+    venvDefault: ACESTEP15_VENV_DEFAULT,
+    installEnv: 'INSTALL_ACESTEP15',
+    // ACE-Step 1.5's handler imports the fixed snapshot's custom
+    // modeling_acestep_v15_turbo.py via transformers AutoModel trust_remote_code.
+    // Probe the generation import path too (acestep.inference), not just the
+    // handler — a venv missing that submodule would otherwise report healthy
+    // and fail generation with a bare ImportError instead of the actionable
+    // "runtime not found" 503.
+    healthProbe: 'import torch; from transformers import AutoModel; from acestep.handler import AceStepHandler; from acestep.inference import GenerationConfig, GenerationParams, generate_music',
+    lyrics: true,
+    customModels: false,
+    fixedModelInstall: true,
+  },
+  'minimax-music3': {
+    id: 'minimax-music3',
+    name: 'MiniMax Music 3 (CUDA only)',
+    models: MINIMAX_MUSIC3_MODELS,
+    defaultModelId: 'minimax-music3',
+    minDurationSec: 1,
+    maxDurationSec: 300,
+    defaultDurationSec: 60,
+    scriptPath: MINIMAX_MUSIC3_SCRIPT,
+    runtimeDir: MINIMAX_MUSIC3_RUNTIME_DIR,
+    resolvePython: resolveMinimaxMusic3Python,
+    venvDefault: MINIMAX_MUSIC3_VENV_DEFAULT,
+    installEnv: 'INSTALL_MINIMAX_MUSIC3',
+    healthProbe: 'import torch; from diffusers import ModularPipeline',
+    lyrics: true,
+    // This checkpoint REJECTS empty lyrics — its tokenize step raises
+    // "`lyrics` must be a non-empty string" before generation starts, so an
+    // instrumental prompt cannot simply omit them. The model card's contract is
+    // a structure-tag-only lyric sheet, and `[Instrumental]` is one of its
+    // documented section tags. Engines without this field (ACE-Step) accept an
+    // empty string and render an instrumental themselves.
+    //
+    // The sheet is built per-render rather than fixed, because `audio_duration`
+    // is only a CEILING for this engine — see buildMinimaxInstrumentalLyrics.
+    instrumentalLyrics: buildMinimaxInstrumentalLyrics,
+    customModels: false,
+    fixedModelInstall: true,
+    cudaRequired: true,
   },
 });
 
@@ -180,12 +277,81 @@ export function getMusicgenModel(modelId) {
   return MUSICGEN_MODELS.find((m) => m.id === modelId) || null;
 }
 
-// Whether a backend's opt-in venv is provisioned. The UI gates its "Generate"
-// affordance on this so users see an install hint instead of a 503 after typing
-// a prompt. Cheap (an existsSync probe behind the resolver's cache) — safe to
-// call per request.
+// Whether this host can run a backend at all. An engine with no
+// `requiresPlatform` is portable and always supported. Distinct from every other
+// readiness signal: the others describe something the user can fix by
+// installing, this one never becomes true here. Without it the UI offers an
+// Install button that runs the setup script, hits its own platform guard, prints
+// "Skipping.", and exits 0 — reported back as "installer exited 0 but the engine
+// is still not available", which reads like a broken install rather than an
+// unsupported host.
+export function isEnginePlatformSupported(engineId) {
+  const { requiresPlatform } = getEngine(engineId);
+  if (!requiresPlatform) return true;
+  if (requiresPlatform.platform && osPlatform() !== requiresPlatform.platform) return false;
+  if (requiresPlatform.arch && osArch() !== requiresPlatform.arch) return false;
+  return true;
+}
+
+// Human-readable requirement for the UI's "unavailable on this host" copy, or
+// null for a portable engine.
+export function enginePlatformLabel(engineId) {
+  return getEngine(engineId).requiresPlatform?.label || null;
+}
+
+// Whether a backend's venv interpreter exists. Cheap (an existsSync behind the
+// resolver's cache) but NOT sufficient for a readiness verdict — a failed
+// install leaves the interpreter with no packages, and this still says yes.
+// Prefer `isEngineHealthy` for anything that gates install/generate UI; this
+// stays as the synchronous "is there a venv at all" primitive.
 export function isEngineReady(engineId) {
   return getEngine(engineId).resolvePython() !== null;
+}
+
+// Whether a backend's venv can actually RUN — not just whether its interpreter
+// file exists. An install that dies partway (pip resolve failure, a killed
+// child, a lost network) leaves `venv-<engine>/…/python` behind with none of the
+// packages, and `isEngineReady` reports that corpse as provisioned forever: the
+// install endpoint then short-circuits with "already installed", the UI hides
+// the install affordance, and the engine can never be repaired from the app.
+// Same failure `isFlux2VenvHealthy` exists to prevent for the FLUX.2 venv.
+//
+// Cached per engine because the probe spawns a Python process. `refresh: true`
+// forces a re-probe — the install path passes it so a venv that broke after the
+// last check is re-examined instead of trusting a stale `true`.
+const engineHealthCache = new Map();
+
+export async function isEngineHealthy(engineId, { refresh = false } = {}) {
+  const engine = getEngine(engineId);
+  // A host that can never run this backend is never healthy, and probing it
+  // would spawn a python that cannot exist.
+  if (!isEnginePlatformSupported(engine.id)) return false;
+  if (refresh) engineHealthCache.delete(engine.id);
+  else if (engineHealthCache.has(engine.id)) return engineHealthCache.get(engine.id);
+
+  const python = engine.resolvePython();
+  if (!python) {
+    engineHealthCache.set(engine.id, false);
+    return false;
+  }
+  // No declared probe → fall back to the interpreter-exists verdict rather than
+  // guessing an import and reporting a working engine as broken.
+  if (!engine.healthProbe) {
+    engineHealthCache.set(engine.id, true);
+    return true;
+  }
+  const healthy = await execFileAsync(python, ['-c', engine.healthProbe], safeChildProcessOptions({
+    timeout: 60_000,
+  })).then(() => true).catch(() => false);
+  engineHealthCache.set(engine.id, healthy);
+  return healthy;
+}
+
+// Drop a cached health verdict (or all of them). Called after an install so the
+// next readiness check re-probes the freshly-built venv.
+export function invalidateEngineHealth(engineId = null) {
+  if (engineId) engineHealthCache.delete(engineId);
+  else engineHealthCache.clear();
 }
 
 // Back-compat: MusicGen readiness probe.
@@ -205,6 +371,45 @@ export function clampDuration(durationSec, engineId = DEFAULT_ENGINE_ID) {
   return Math.max(engine.minDurationSec, Math.min(engine.maxDurationSec, n));
 }
 
+// Section tags for a MiniMax Music 3 instrumental body, cycled to pad the sheet
+// out. Restricted to the tags the model card documents, and to the ones that
+// don't imply a vocal line ([verse]/[chorus] would) — an instrumental render
+// should not coax the model into singing.
+const MINIMAX_INSTRUMENTAL_BODY = Object.freeze(['instrumental', 'bridge', 'instrumental', 'solo']);
+// Roughly how much audio one body section buys. Deliberately pessimistic:
+// `audio_duration` still truncates hard at the requested length, so an
+// over-provisioned sheet costs nothing while an under-provisioned one is the
+// bug this exists to fix.
+const MINIMAX_SEC_PER_SECTION = 20;
+const MINIMAX_MAX_BODY_SECTIONS = 12;
+
+/**
+ * Build MiniMax Music 3's structure-tag lyric sheet for an instrumental render,
+ * sized to the requested duration.
+ *
+ * MiniMax Music 3 treats `audio_duration` as an UPPER BOUND, not a target: its
+ * global LLM emits `<|audio_end|>` whenever it decides the piece is finished
+ * and the autoregressive loop breaks there (see the diffusers
+ * `MiniMaxMusic3AutoregressiveStep` — "The language model may stop earlier").
+ * What actually paces the song is the lyric sheet's section tags. A one-tag
+ * sheet is one section long, so a 60s request came back at 25s. Giving
+ * the model a section count proportionate to the ask is the only lever the
+ * architecture exposes — and per the model card, tags are "generative control
+ * rather than strict symbolic guarantees", so this raises the expected length
+ * without promising it.
+ */
+export function buildMinimaxInstrumentalLyrics(durationSec) {
+  const seconds = clampDuration(durationSec, 'minimax-music3');
+  // The intro and outro carry their own runtime, so only the remainder needs
+  // body sections. At least one body section always survives the floor.
+  const bodyCount = Math.min(
+    MINIMAX_MAX_BODY_SECTIONS,
+    Math.max(1, Math.ceil((seconds - MINIMAX_SEC_PER_SECTION) / MINIMAX_SEC_PER_SECTION)),
+  );
+  const body = Array.from({ length: bodyCount }, (_, i) => MINIMAX_INSTRUMENTAL_BODY[i % MINIMAX_INSTRUMENTAL_BODY.length]);
+  return ['intro', ...body, 'outro'].map((tag) => `[${tag}]`).join('\n');
+}
+
 /**
  * Build the `{ bin, args }` for a backend's sidecar. Pure — unit-tested without
  * spawning Python. All sidecars share the same base flag contract
@@ -216,15 +421,30 @@ export function clampDuration(durationSec, engineId = DEFAULT_ENGINE_ID) {
  */
 export function buildSidecarArgs({ engineId = DEFAULT_ENGINE_ID, pythonPath, scriptPath, runtimeDir, repo, prompt, lyrics, durationSec, outputPath }) {
   const engine = getEngine(engineId);
+  const seconds = clampDuration(durationSec, engine.id);
   const args = [
     scriptPath ?? engine.scriptPath,
     '--model', repo,
-    '--text', prompt,
-    '--duration', String(clampDuration(durationSec, engine.id)),
+    // Prompts are authored in a plain textarea that many users type markdown
+    // into out of habit. Every backend's text encoder tokenizes `**` and `_`
+    // as literal content, so the emphasis markers become conditioning noise —
+    // strip them and keep the words.
+    '--text', stripMarkdownEmphasis(prompt).trim(),
+    '--duration', String(seconds),
     '--output', outputPath,
     '--runtime-dir', runtimeDir ?? engine.runtimeDir,
   ];
-  if (engine.lyrics) args.push('--lyrics', typeof lyrics === 'string' ? lyrics : '');
+  if (engine.lyrics) {
+    // Preserve the caller's string verbatim when they supplied one; substitute
+    // only when it is absent or whitespace, and only for an engine that cannot
+    // accept empty lyrics (see instrumentalLyrics). The substitute may be a
+    // builder that sizes the sheet to the render length.
+    const provided = typeof lyrics === 'string' ? lyrics : '';
+    const fallback = typeof engine.instrumentalLyrics === 'function'
+      ? engine.instrumentalLyrics(seconds)
+      : (engine.instrumentalLyrics || '');
+    args.push('--lyrics', provided.trim() ? provided : fallback);
+  }
   return { bin: pythonPath, args };
 }
 
@@ -243,7 +463,8 @@ export function buildMusicGenArgs({ pythonPath, scriptPath = SIDECAR_SCRIPT, run
  * ServerError (503) when the selected backend's venv isn't provisioned, or
  * (500) when the sidecar exits non-zero / produces no result.
  *
- * `engine` selects the backend (`musicgen` | `audioldm2` | `acestep`); unknown
+ * `engine` selects the backend (`musicgen` | `audioldm2` | `acestep` |
+ * `acestep15`); unknown
  * ids fall back to the default. `modelId` is resolved within that engine's
  * registry. `lyrics` is forwarded only to lyric-aware engines (ACE-Step); other
  * engines ignore it. `signal` (optional AbortSignal) SIGTERMs the child — wired
@@ -272,7 +493,30 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
     : shippedModel;
   const resolvedDuration = durationSec ?? engine.defaultDurationSec;
   const pythonPath = engine.resolvePython();
-  if (!pythonPath) {
+  if (engine.cudaRequired) {
+    const cuda = await getCudaCapability();
+    if (cuda.status !== 'available') {
+      throw new ServerError(
+        cuda.status === 'unknown' ? 'CUDA availability could not be determined.' : `${engine.name} requires an NVIDIA CUDA GPU.`,
+        { status: 503, code: 'PIPELINE_MUSIC_CUDA_REQUIRED' },
+      );
+    }
+  }
+  if (engine.fixedModelInstall) {
+    const cache = await inspectModelCache(model.repo).catch(() => ({ cached: false }));
+    if (!cache.cached) {
+      throw new ServerError(`${engine.name} model weights are not installed. Install them from Music before generating.`, {
+        status: 503, code: 'PIPELINE_MUSIC_MODEL_MISSING',
+      });
+    }
+  }
+  // Health, not just "the interpreter file is there". A venv left half-built by
+  // a failed install passes the path check and then dies inside the sidecar with
+  // a raw ImportError traceback; this turns that into the actionable 503 the
+  // module contract promises. Subsumes the old `!pythonPath` guard — a missing
+  // interpreter is unhealthy by definition, and is answered without a spawn. The
+  // verdict is cached, so this costs one spawn per engine per process.
+  if (!await isEngineHealthy(engine.id)) {
     throw new ServerError(
       `${engine.name} runtime not found. Run \`${engine.installEnv}=1 bash scripts/setup-image-video.sh\` to bootstrap it (expected venv at ${engine.venvDefault}).`,
       { status: 503, code: 'PIPELINE_MUSIC_RUNTIME_MISSING' },

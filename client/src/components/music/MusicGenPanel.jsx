@@ -21,13 +21,26 @@ import {
 } from '../../services/api';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
 
-export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remix }) {
+function engineSetupMessage(engine) {
+  // Host-incompatible comes first: it is the only reason that no amount of
+  // installing will fix, so it must not be worded as a setup step.
+  if (engine.platformSupported === false) return `${engine.name} requires ${engine.platformLabel || 'a different host'} and is unavailable on this machine.`;
+  if (engine.cudaRequired && engine.cudaState === 'absent') return `${engine.name} requires an NVIDIA CUDA GPU and is unavailable on this host.`;
+  if (engine.cudaRequired && engine.cudaState === 'unknown') return `${engine.name} is disabled because CUDA availability could not be determined.`;
+  if (engine.runtimeReady === false && engine.fixedModelInstall && engine.modelReady === false) return `${engine.name} needs its runtime and model weights before generation.`;
+  if (engine.runtimeReady === false) return `${engine.name} needs its runtime before generation.`;
+  if (engine.fixedModelInstall && engine.modelReady === false) return `${engine.name} model weights are not installed yet.`;
+  return `${engine.name} is not installed yet. Install the runtime to enable generation.`;
+}
+
+export default function MusicGenPanel({ track, title = '', artistId = '', artist = '', albumId = '', prompt, lyrics, onGenerated, remix }) {
   const [engines, setEngines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [engineId, setEngineId] = useState('');
   const [modelId, setModelId] = useState('');
   const [durationSec, setDurationSec] = useState(null);
   const [generating, setGenerating] = useState(false);
+  const [generationElapsedSec, setGenerationElapsedSec] = useState(0);
   // Inline HF model install.
   const [installRepo, setInstallRepo] = useState('');
   const [installing, setInstalling] = useState(false);
@@ -51,6 +64,16 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
   };
 
   useEffect(() => { loadEngines(); }, []);
+
+  useEffect(() => {
+    if (!generating) return undefined;
+    const startedAt = Date.now();
+    setGenerationElapsedSec(0);
+    const timer = setInterval(() => {
+      if (mountedRef.current) setGenerationElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [generating]);
 
   const engine = useMemo(() => engines.find((e) => e.id === engineId) || null, [engines, engineId]);
 
@@ -82,11 +105,28 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
-  const canGenerate = !!engine?.ready && !!prompt?.trim() && !generating && !!track?.id;
+  const canGenerate = !!engine?.ready && !!prompt?.trim() && !generating;
+
+  const handleFixedModelInstall = async () => {
+    const model = engine?.models?.find((item) => item.id === engine.defaultModelId) || engine?.models?.[0];
+    if (!engine || !model?.repo) return;
+    setInstalling(true);
+    setInstallProgress({ message: `Starting ${model.name}…` });
+    let failed = false;
+    await installAudioModel({ engine: engine.id, repo: model.repo }, (ev) => {
+      if (!mountedRef.current) return;
+      if (ev.type === 'progress') setInstallProgress({ message: `${ev.file || 'downloading'} — ${Math.round((ev.progress || 0) * 100)}%`, progress: ev.progress });
+      else if (ev.type === 'stage') setInstallProgress({ message: ev.stage });
+      else if (ev.type === 'error') { failed = true; toast.error(ev.message || 'Download failed'); }
+    }).catch((err) => { failed = true; if (mountedRef.current) toast.error(err.message || 'Install failed'); });
+    if (!mountedRef.current) return;
+    setInstalling(false);
+    setInstallProgress(null);
+    if (!failed) { await loadEngines(); toast.success(`${model.name} installed`); }
+  };
 
   const handleGenerate = async () => {
     if (!engine) return;
-    if (!track?.id) { toast.error('Save the track first, then generate'); return; }
     if (!prompt?.trim()) { toast.error('Add a generation prompt first'); return; }
     setGenerating(true);
     const body = {
@@ -94,8 +134,14 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
       lyrics: engine.lyrics ? (lyrics || '') : '',
       engine: engine.id,
       modelId,
-      trackId: track.id,
     };
+    if (track?.id) body.trackId = track.id;
+    else {
+      body.title = title.trim();
+      body.artistId = artistId;
+      body.artist = artist;
+      body.albumId = albumId;
+    }
     if (Number.isFinite(durationSec)) body.durationSec = durationSec;
     const res = await generateMusic(body, { silent: true }).catch((err) => { toast.error(err.message || 'Generation failed'); return null; });
     if (!mountedRef.current) return;
@@ -143,6 +189,9 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
   const showRuntimeInstallHint = !!engine && !engine.ready && (!!prompt?.trim() || userSelectedEngine);
+  const canInstallRuntime = engine?.runtimeReady !== true
+    && engine?.platformSupported !== false
+    && (!engine?.cudaRequired || engine?.cudaState === 'available');
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -162,7 +211,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
             className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
           >
             {engines.map((e) => (
-              <option key={e.id} value={e.id}>{e.name}{e.ready ? '' : ' (not installed)'}</option>
+              <option key={e.id} value={e.id}>{e.name}{e.platformSupported === false ? ' (unavailable on this host)' : e.cudaRequired && e.cudaState !== 'available' ? ' (CUDA unavailable)' : e.ready ? '' : ' (setup required)'}</option>
             ))}
           </select>
         </label>
@@ -197,9 +246,9 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
       {showRuntimeInstallHint ? (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-port-warning/30 bg-port-warning/10 px-3 py-2">
           <p className="text-[11px] text-port-warning">
-            {engine.name} is not installed yet. Install the runtime to enable generation.
+            {engineSetupMessage(engine)}
           </p>
-          <button
+          {canInstallRuntime ? <button
             type="button"
             onClick={() => setRuntimeInstallEngine(engine)}
             className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-warning/50 text-port-warning text-xs font-medium hover:border-port-warning disabled:opacity-50"
@@ -207,6 +256,15 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
             <Download size={13} />
             Install runtime
           </button>
+          : null}
+        </div>
+      ) : null}
+      {engine?.fixedModelInstall && !engine.modelReady && engine.platformSupported !== false && engine.cudaState === 'available' ? (
+        <div className="rounded-lg border border-port-border px-3 py-2">
+          <button type="button" onClick={handleFixedModelInstall} disabled={installing} className="inline-flex items-center gap-2 text-xs text-port-accent disabled:opacity-50">
+            {installing ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Install model
+          </button>
+          {installProgress ? <p className="mt-1 truncate text-[11px] text-gray-500">{installProgress.message}</p> : null}
         </div>
       ) : null}
       {engine?.lyrics ? (
@@ -218,11 +276,11 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
           type="button"
           onClick={handleGenerate}
           disabled={!canGenerate}
-          title={!track?.id ? 'Save the track first' : !prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Engine not installed' : 'Generate audio'}
+          title={!prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Complete engine setup first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
         >
           {generating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-          {generating ? 'Generating…' : 'Generate'}
+          {generating ? 'Generating…' : track?.id ? 'Generate' : 'Generate track'}
         </button>
         {selectedUserModel ? (
           <button
@@ -235,15 +293,36 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated, remi
           </button>
         ) : null}
       </div>
+      {generating ? (
+        <div role="status" className="rounded-lg border border-port-accent/30 bg-port-accent/10 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-gray-300">
+              {engine?.cudaRequired ? 'Processing on the GPU' : 'Rendering audio'}
+            </span>
+            <span className="font-mono tabular-nums text-port-accent">
+              {Math.floor(generationElapsedSec / 60)}:{String(generationElapsedSec % 60).padStart(2, '0')} elapsed
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-port-border" aria-hidden="true">
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-port-accent" />
+          </div>
+          <p className="mt-1.5 text-[11px] text-gray-500">
+            {engine?.id === 'minimax-music3'
+              ? 'MiniMax Music 3 does not report an exact percentage yet; a 60-second track can take tens of minutes on a 24 GB GPU.'
+              : 'Generation is still active. Longer requested durations take more time.'}
+          </p>
+        </div>
+      ) : null}
 
       {/* Install an additional model from HuggingFace — only for engines that
           can render an arbitrary checkpoint (musicgen/audioldm2). ACE-Step uses
           a fixed foundation checkpoint, so the install affordance is hidden. */}
       {engine?.customModels ? (
       <div className="pt-2 border-t border-port-border/60">
-        <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Install a model from HuggingFace</span>
+        <label htmlFor="musicgen-install-repo" className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Install a model from HuggingFace</label>
         <div className="flex items-center gap-2">
           <input
+            id="musicgen-install-repo"
             value={installRepo}
             onChange={(e) => setInstallRepo(e.target.value)}
             placeholder="org/model-repo"

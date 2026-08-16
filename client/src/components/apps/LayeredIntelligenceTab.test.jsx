@@ -29,7 +29,7 @@ describe('describeLastRun', () => {
   it('surfaces an unparseable reasoning response as a warning with actionable prose', () => {
     const r = describeLastRun({ lastRunAt: at, lastRunAction: 'no-op', lastRunReason: 'unparseable-response' });
     expect(r.tone).toBe('warn');
-    expect(r.text).toMatch(/no usable JSON/i);
+    expect(r.text).toMatch(/no usable answer/i);
   });
 
   it('treats a genuine no-proposal run as neutral (not an error)', () => {
@@ -65,7 +65,7 @@ describe('LayeredIntelligenceTab last-run status', () => {
   it('renders the durable last-run line when the config carries a run outcome', () => {
     render(<LayeredIntelligenceTab li={li({ lastRunAt: '2026-07-09T20:29:05.000Z', lastRunAction: 'no-op', lastRunReason: 'unparseable-response' })} onChange={noop} providers={[]} isPortos loaded />);
     expect(screen.getByText(/Last run/i)).toBeInTheDocument();
-    expect(screen.getByText(/no usable JSON/i)).toBeInTheDocument();
+    expect(screen.getByText(/no usable answer/i)).toBeInTheDocument();
   });
 
   it('omits the last-run line before the loop has ever run', () => {

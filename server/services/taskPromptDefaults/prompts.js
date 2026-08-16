@@ -533,7 +533,7 @@ SLUG=<picked-slug>
 WORKTREE="{worktreesRoot}/claim-\${SLUG}"
 mkdir -p {worktreesRoot}
 git fetch origin main
-git worktree add -b "claim/\${SLUG}" "\${WORKTREE}" origin/main
+git worktree add --no-track -b "claim/\${SLUG}" "\${WORKTREE}" origin/main
 cd "\${WORKTREE}"
 \`\`\`
 
@@ -732,7 +732,7 @@ NUM=<picked-number>
 WORKTREE="{worktreesRoot}/claim-issue-\${NUM}"
 mkdir -p {worktreesRoot}
 git fetch origin main
-git worktree add -b "claim/issue-\${NUM}" "\${WORKTREE}" origin/main
+git worktree add --no-track -b "claim/issue-\${NUM}" "\${WORKTREE}" origin/main
 # Cross-machine claim markers (best-effort — do not abort the run if these fail):
 gh issue edit "\${NUM}" --add-assignee @me 2>/dev/null
 gh issue edit "\${NUM}" --add-label in-progress 2>/dev/null
@@ -745,12 +745,12 @@ cd "\${WORKTREE}"
 
 ## Phase 3 — Verify still valid
 
-Read the full issue (\`gh issue view "\${NUM}" --comments\`) before writing any code. **If ANY of these are true, release the claim and re-pick** (remove the assignee + \`in-progress\` label you set, remove the worktree, return to Phase 1):
+Read the full issue (\`gh issue view "\${NUM}" --comments\`) before writing any code. **Every exit from this phase must leave a CONVERGING outcome on the issue — closed, or labeled \`needs-input\`.** Phase 1 step 4 skips both, so an autonomous drain stops re-picking the item. Releasing an issue OPEN and unlabeled is NOT an exit: the work detector still reports it actionable, so the next pass re-picks it and burns another no-op agent — every pass, forever.
 
-- A comment indicates the issue was already fixed, superseded, or closed-then-reopened-for-tracking.
-- The request references a function, file, or component that no longer exists (\`grep -rn\` the named identifiers — if they're gone, the issue is stale).
+- **Already fixed, superseded, or closed-then-reopened-for-tracking** — a comment says so, or the change it asks for is already on the default branch. **Close it:** post a comment naming the PR/commit (or issue) that already delivered it (\`gh issue comment "\${NUM}" --body "..."\`), then \`gh issue close "\${NUM}" --reason completed\` (use \`--reason "not planned"\` when it was superseded rather than delivered) and clear the markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`). Remove the worktree and return to Phase 1. **Evidence gate: if you cannot name the PR, commit, or issue that delivered it, this branch does NOT apply** — closing on a hunch destroys live work, which is far worse than one wasted pass. Treat the issue as real work and continue to Phase 4.
+- **Stale reference** — the request names a function, file, or component that no longer exists (\`grep -rn\` the named identifiers; if they're gone, the issue is stale). Post a comment naming what you searched for and what you found instead, **tag it \`needs-input\`** (\`gh issue edit "\${NUM}" --add-label needs-input\`), release the claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and return to Phase 1. Re-scoping a stale issue against today's code is a human call — and the label is what keeps the drain off it in the meantime.
 
-(A too-large scope is NOT in this release-and-re-pick list — releasing it just lets the next pass re-pick the same oversized issue. It has its own park path below.)
+(A too-large scope is NOT in this list — it has its own park path below.)
 
 **A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 5's \`Refs\` path, post a brief comment naming the split you'd suggest, **tag it \`needs-input\`** (\`gh issue edit "\${NUM}" --add-label needs-input\`), release the claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it is what stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
 
@@ -864,7 +864,7 @@ DEFAULT_BRANCH="\${DEFAULT_BRANCH:-main}"
 WORKTREE="{worktreesRoot}/claim-issue-\${NUM}"
 mkdir -p {worktreesRoot}
 git fetch origin "\${DEFAULT_BRANCH}"
-git worktree add -b "claim/issue-\${NUM}" "\${WORKTREE}" "origin/\${DEFAULT_BRANCH}"
+git worktree add --no-track -b "claim/issue-\${NUM}" "\${WORKTREE}" "origin/\${DEFAULT_BRANCH}"
 # Cross-machine claim markers (best-effort — do not abort the run if these fail).
 # Resolve your own username first — glab's --assignee wants a username (the
 # \`@me\` gh-ism isn't universally supported), falling back to @me if the lookup fails:
@@ -878,12 +878,12 @@ cd "\${WORKTREE}"
 
 ## Phase 3 — Verify still valid
 
-Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **If ANY of these are true, release the claim and re-pick** (remove the assignee with \`glab issue update "\${NUM}" --unassign\` + the \`in-progress\` label with \`--unlabel in-progress\`, remove the worktree, return to Phase 1):
+Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **Every exit from this phase must leave a CONVERGING outcome on the issue — closed, or labeled \`needs-input\`.** Phase 1 step 4 skips both, so an autonomous drain stops re-picking the item. Releasing an issue OPEN and unlabeled is NOT an exit: the work detector still reports it actionable, so the next pass re-picks it and burns another no-op agent — every pass, forever.
 
-- A note indicates the issue was already fixed, superseded, or closed-then-reopened-for-tracking.
-- The request references a function, file, or component that no longer exists (\`grep -rn\` the named identifiers — if they're gone, the issue is stale).
+- **Already fixed, superseded, or closed-then-reopened-for-tracking** — a note says so, or the change it asks for is already on the default branch. **Close it:** post a note naming the MR/commit (or issue) that already delivered it (\`glab issue note "\${NUM}" -m "..."\`), then \`glab issue close "\${NUM}"\` and clear the markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`). Remove the worktree and return to Phase 1. **Evidence gate: if you cannot name the MR, commit, or issue that delivered it, this branch does NOT apply** — closing on a hunch destroys live work, which is far worse than one wasted pass. Treat the issue as real work and continue to Phase 4.
+- **Stale reference** — the request names a function, file, or component that no longer exists (\`grep -rn\` the named identifiers; if they're gone, the issue is stale). Post a note naming what you searched for and what you found instead, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and return to Phase 1. Re-scoping a stale issue against today's code is a human call — and the label is what keeps the drain off it in the meantime.
 
-(A too-large scope is NOT in this release-and-re-pick list — releasing it just lets the next pass re-pick the same oversized issue. It has its own park path below.)
+(A too-large scope is NOT in this list — it has its own park path below.)
 
 **A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 5's \`Refs\` path, post a brief note naming the split you'd suggest, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
 
@@ -1001,7 +1001,7 @@ DEFAULT_BRANCH="\${DEFAULT_BRANCH:-main}"
 WORKTREE="{worktreesRoot}/claim-\${KEY}"
 mkdir -p "{worktreesRoot}"
 git -C {repoPath} fetch origin "\${DEFAULT_BRANCH}"
-git -C {repoPath} worktree add -b "claim/\${KEY}" "\${WORKTREE}" "origin/\${DEFAULT_BRANCH}"
+git -C {repoPath} worktree add --no-track -b "claim/\${KEY}" "\${WORKTREE}" "origin/\${DEFAULT_BRANCH}"
 cd "\${WORKTREE}"
 \`\`\`
 
@@ -1009,10 +1009,12 @@ cd "\${WORKTREE}"
 
 ## Phase 3 — Verify still valid
 
-Re-read the ticket (GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>) before writing any code. **If ANY of these are true, release the claim and re-pick** (transition the ticket back to its not-started status, remove the worktree, return to Phase 1):
+Re-read the ticket (GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>) before writing any code. **Every exit from this phase must leave a CONVERGING status on the ticket — Done/Closed, or a held status backed by a Review Hub todo.** Transitioning back to a not-started status is NOT an exit: Phase 1's not-started-only filter makes the ticket immediately re-eligible again, so the next pass re-picks it and burns another no-op run — every pass, forever.
 
-- The ticket references a function, file, or component that no longer exists (\`grep -rn\` the named identifiers — if they're gone, it's stale).
-(A too-large scope is NOT in this release-and-re-pick list — releasing it just lets the next pass re-pick the same oversized ticket. It has its own park path below.)
+- **Already fixed, superseded, or duplicated by another ticket** — a comment says so, or the change it asks for is already on the default branch. Post a ticket comment naming the PR/MR, commit, or ticket that already delivered it (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments), transition the ticket to **Done/Closed**, remove the worktree, and return to Phase 1. **Evidence gate: if you cannot name the PR/MR, commit, or ticket that delivered it, this branch does NOT apply** — closing on a hunch destroys live work, which is far worse than one wasted pass. Treat the ticket as real work and continue to Phase 4.
+- **Stale reference** — the ticket names a function, file, or component that no longer exists (\`grep -rn\` the named identifiers; if they're gone, it's stale). Post a ticket comment naming what you searched for and what you found instead, create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Stale reference" and what a human must re-scope), and transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status**; if the workflow has no held status, leave it **In Progress** so Phase 1's filter excludes it. Then remove the worktree and return to Phase 1.
+
+(A too-large scope is NOT in this list — it has its own park path below.)
 
 **A genuinely too-large ticket needs parking so the queue converges.** If the work is bigger than one coherent claim — it would touch files far outside the ticket's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to ship first, splitting the omnibus is a human call: create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" and the split you'd suggest), transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status**, which would re-queue it under Phase 1 (ticket selection never consults Review Hub todos, so a not-started ticket is immediately re-eligible and the run would re-park it every pass); if the workflow has no held status, leave it **In Progress**. Phase 1's not-started-only filter keeps a non-not-started ticket out of the ready queue, and the Review Hub todo is the durable human signal — together they let the claim run converge. Then remove the worktree and exit.
 
@@ -1814,13 +1816,14 @@ Default branch: {defaultBranch}
 
 2. Read the current catalog at \`server/lib/localLlmCatalog.js\` (the
    \`LOCAL_LLM_CATALOG\` array; each entry is
-   \`{ key, name, category, params, size, family, description, capabilities, ollama?, lmstudio? }\`)
+   \`{ key, name, category, recommendedFor?, featured?, params, size, family, description, capabilities, ollama?, lmstudio? }\`)
    and the editorial ranking \`EDITORIAL_FAMILY_RANK\` in
    \`server/lib/localModelHeuristics.js\`.
 
 3. Research the current best-in-class local models for EACH category in
-   \`LOCAL_LLM_CATEGORIES\` (chat, reasoning, coding, vision/image-analysis,
-   embedding, lightweight/small-&-fast, multilingual). Prefer models that are:
+   \`LOCAL_LLM_CATEGORIES\` (general-purpose, coding/agents,
+   reasoning/analysis, vision/image-analysis, chat/voice,
+   lightweight/small-&-fast, multilingual, embedding). Prefer models that are:
    - Pullable on Ollama (use the canonical \`ollama pull\` id) and/or available
      as a well-known GGUF build on LM Studio / Hugging Face (use the canonical
      repo id, e.g. \`lmstudio-community/<Model>-GGUF\`).
@@ -1832,10 +1835,16 @@ Default branch: {defaultBranch}
 4. Update \`LOCAL_LLM_CATALOG\`:
    - Add newly-prominent models, refresh \`params\`/\`size\`/\`description\` on
      existing entries, and remove models that are clearly deprecated/superseded.
+   - Treat \`category\` as the model's ONE primary recommendation lane. Use
+     \`recommendedFor\` only for additional user-facing filters where a genuinely
+     general model is a good choice; it must include the primary category. Keep
+     modality and tool facts in \`capabilities\`, not in arbitrary categories.
+     Reserve \`featured\` for a deliberate first-choice recommendation with a
+     concise user-facing reason — never set it merely because a model is newest.
    - Keep the module's shape EXACTLY: do not change the exports
      (\`BACKENDS\`, \`isBackend\`, \`LOCAL_LLM_CATEGORIES\`, \`LOCAL_LLM_CATALOG\`),
-     the entry field names, or \`category\` values (they must stay within
-     \`LOCAL_LLM_CATEGORIES\` ids). A missing \`ollama\`/\`lmstudio\` id is fine
+     and keep \`category\` and every \`recommendedFor\` value within
+     \`LOCAL_LLM_CATEGORIES\` ids. A missing \`ollama\`/\`lmstudio\` id is fine
      when no well-known build exists for that backend.
 
 5. Review \`EDITORIAL_FAMILY_RANK\` in \`server/lib/localModelHeuristics.js\` (used
@@ -1847,8 +1856,8 @@ Default branch: {defaultBranch}
 
 6. Run the affected tests and make sure they pass:
    \`cd {repoPath}/server && npx vitest run lib/localLlmCatalog lib/localModelHeuristics lib/index.test.js\`.
-   If you changed the catalog's exported shape you broke the contract — revert
-   that part. Fix any test you legitimately invalidated (e.g. an entry count).
+   Update catalog/picker tests when you intentionally add recommendation
+   metadata; do not change existing cross-backend install-id mapping semantics.
 
 7. Log the refresh in the changelog with
    \`cd {repoPath} && npm run changelog:add -- changed "<one line summarizing the catalog refresh>"\`.

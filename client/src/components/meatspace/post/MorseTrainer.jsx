@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useId } from 'react';
 import { ArrowLeft, Radio, Headphones, Hand, EyeOff, CheckCircle, XCircle, Play, RefreshCw, Volume2, GitBranch, List as ListIcon, Ruler, Eraser } from 'lucide-react';
 import useDrawerTab from '../../../hooks/useDrawerTab';
+import useAudioSessionClaim from '../../../hooks/useAudioSessionClaim.js';
 import { submitTrainingEntry, getTrainingStats, submitMorseRound, getMorseProgress, updateMorseLevel } from '../../../services/api';
 import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
@@ -218,6 +219,16 @@ function pickSendPrompt() {
 
 function useAudioContext() {
   const ctxRef = useRef(null);
+  // MorseTrainer sounds through a PER-MOUNT AudioContext (it close()s it on
+  // unmount, which would kill a shared one for everyone else), so it can't
+  // inherit the shared lookahead transport's `audioSession` option — it claims
+  // the iOS `playback` session by hand instead. Every tone this component makes
+  // is output-only: the copy drill's prompt and the send-mode sidetone, which
+  // are never mounted at the same time, so one claim slot is enough. Callers
+  // `claim()` before the resume await (the context should come up on the right
+  // session) and `release()` when they stop sounding; unmount releases whatever
+  // is still held. See the audio-session note in lib/audioContext.js.
+  const { claim: claimSession, release: releaseSession } = useAudioSessionClaim('playback');
   const ensureCtx = useCallback(async () => {
     if (!ctxRef.current) {
       const Ctor = window.AudioContext || window.webkitAudioContext;
@@ -237,14 +248,14 @@ function useAudioContext() {
     if (ctxRef.current) ctxRef.current.close();
     ctxRef.current = null;
   }, []);
-  return ensureCtx;
+  return { ensureCtx, claimSession, releaseSession };
 }
 
 // `enabled` defaults to false so callers must explicitly opt in to attaching
 // the global spacebar listener — it's only safe in Send mode. In other modes
 // it would compete with text input and suppress the voice-widget push-to-talk
 // hotkey via stopImmediatePropagation.
-function useKeyingDecoder({ unitMs, hz, ensureCtx, enabled = false }) {
+function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession, enabled = false }) {
   const oscRef = useRef(null);
   const gainRef = useRef(null);
   const pressStartRef = useRef(0);
@@ -271,13 +282,42 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, enabled = false }) {
 
   const startTone = useCallback(async () => {
     const gen = ++toneGenRef.current;
-    const ctx = await ensureCtx();
+    // Claimed BEFORE the resume await so the context comes up on the `playback`
+    // session — the sidetone is output-only and the iPhone's ring/silent switch
+    // would otherwise mute the whole send drill.
+    claimSession();
+    const ctx = await ensureCtx().catch((err) => {
+      // claimSession has one slot. A newer key press replaces this claim while
+      // the first resume is pending, so an older failure must not release the
+      // newer press's playback session.
+      if (gen === toneGenRef.current) {
+        releaseSession();
+        pressingRef.current = false;
+        setPressing(false);
+      }
+      console.error(`❌ Morse sidetone unavailable: ${err.message}`);
+      return null;
+    });
+    // Unmounting close()s and nulls the per-mount context, so a press parked in
+    // the unlock window resumes with nothing to sound into (same bail as
+    // CopyDrill.playPrompt). Release rather than throwing into createOscillator.
+    if (!ctx) {
+      if (gen === toneGenRef.current) {
+        releaseSession();
+        pressingRef.current = false;
+        setPressing(false);
+      }
+      return;
+    }
     // A fast tap can release (endPress → stopTone), or a newer press can start,
     // before the first-press-only resume await settles. Bail if the key is no
     // longer held (`!pressingRef.current`) OR a newer press superseded this one
     // (`gen !== toneGenRef.current`) — a bare boolean can't distinguish the two,
     // so two overlapping starts would both create an oscillator and orphan the
-    // first, leaving it droning with no matching stop.
+    // first, leaving it droning with no matching stop. Either bail leaves the
+    // session claim alone: a released key already ran stopTone (which releases),
+    // and a newer press's claimSession() now owns the slot — releasing here
+    // would silence the tone that superseded this one.
     if (!pressingRef.current || gen !== toneGenRef.current) return;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -291,9 +331,14 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, enabled = false }) {
     gain.gain.linearRampToValueAtTime(TONE_GAIN, now + RAMP_SEC);
     oscRef.current = osc;
     gainRef.current = gain;
-  }, [ensureCtx, hz]);
+  }, [ensureCtx, hz, claimSession, releaseSession]);
 
   const stopTone = useCallback(() => {
+    // Released FIRST, before the early return: a tap short enough to end before
+    // startTone's resume await settles has a claim but no oscillator yet, and
+    // that claim would otherwise be stranded until unmount. Presses are
+    // serialized by `pressingRef`, so this can only ever be releasing our own.
+    releaseSession();
     const osc = oscRef.current;
     const gain = gainRef.current;
     if (!osc || !gain) return;
@@ -308,7 +353,7 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, enabled = false }) {
     osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     oscRef.current = null;
     gainRef.current = null;
-  }, []);
+  }, [releaseSession]);
 
   const flushLetter = useCallback(() => {
     const buf = patternRef.current;
@@ -424,9 +469,11 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
   // Bumped after each round submit so the progress panel refetches its trends /
   // confusion matrix without a manual reload.
   const [progressRefresh, setProgressRefresh] = useState(0);
-  const ensureCtx = useAudioContext();
+  const { ensureCtx, claimSession, releaseSession } = useAudioContext();
   const unitMs = 1.2 / prefs.wpm * 1000;
-  const keying = useKeyingDecoder({ unitMs, hz: prefs.hz, ensureCtx, enabled: mode === 'send' });
+  const keying = useKeyingDecoder({
+    unitMs, hz: prefs.hz, ensureCtx, claimSession, releaseSession, enabled: mode === 'send',
+  });
   // Head Copy reuses CopyDrill's whole pipeline (Koch pool, round scoring,
   // level unlock) minus the on-screen morse hints and the reference cheat
   // sheet — the only meaningful difference the issue asks for.
@@ -535,10 +582,10 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
           <SettingsPanel prefs={prefs} updatePrefs={updatePrefs} onResetProgress={resetProgress} trainingStats={trainingStats} />
           {!mode && <ModeGrid onPick={onSelectMode} />}
           {mode === 'copy' && (
-            <CopyDrill prefs={prefs} updatePrefs={updatePrefs} ensureCtx={ensureCtx} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
+            <CopyDrill prefs={prefs} updatePrefs={updatePrefs} ensureCtx={ensureCtx} claimSession={claimSession} releaseSession={releaseSession} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
           )}
           {mode === 'head-copy' && (
-            <CopyDrill prefs={prefs} updatePrefs={updatePrefs} ensureCtx={ensureCtx} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} headCopy />
+            <CopyDrill prefs={prefs} updatePrefs={updatePrefs} ensureCtx={ensureCtx} claimSession={claimSession} releaseSession={releaseSession} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} headCopy />
           )}
           {mode === 'send' && (
             <SendDrill keying={keying} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
@@ -612,13 +659,18 @@ function SettingsPanel({ prefs, updatePrefs, onResetProgress, trainingStats }) {
 }
 
 function SliderRow({ label, value, min, max, step = 1, onChange, suffix = '', hint }) {
+  // The row already shows the label; pair it to the slider rather than
+  // duplicating it into an aria-label. Wrapping instead would pull the live
+  // value readout beside it into the accessible name.
+  const sliderId = useId();
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-xs text-gray-400 uppercase tracking-wide">{label}</label>
+        <label htmlFor={sliderId} className="text-xs text-gray-400 uppercase tracking-wide">{label}</label>
         <span className="text-sm text-white font-mono">{value}{suffix && ` ${suffix}`}</span>
       </div>
       <input
+        id={sliderId}
         type="range"
         min={min}
         max={max}
@@ -876,12 +928,13 @@ export function resultsToItems(results) {
   return items;
 }
 
-function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessionComplete, onRoundSubmit, headCopy = false }) {
+function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession, onExit, onContinue, onSessionComplete, onRoundSubmit, headCopy = false }) {
   const [prompt, setPrompt] = useState('');
   const [input, setInput] = useState('');
   const [results, setResults] = useState([]);
   const [feedback, setFeedback] = useState(null);
   const [playing, setPlaying] = useState(false);
+  const [playbackError, setPlaybackError] = useState(null);
   const [done, setDone] = useState(false);
   const inputRef = useRef(null);
   const roundStartRef = useRef(0);
@@ -910,7 +963,27 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
   async function playPrompt(isNew) {
     if (playingRef.current) return;
     playingRef.current = true;
-    const ctx = await ensureCtx();
+    setPlaybackError(null);
+    // Claimed BEFORE the resume await so the context comes up on the iOS
+    // `playback` session — this drill is pure synth with no media element, so
+    // on the default `auto` session the ring/silent switch mutes the prompt
+    // while the UI still says "playing...".
+    claimSession();
+    const ctx = await ensureCtx().catch((err) => {
+      console.error(`❌ Morse prompt audio unavailable: ${err.message}`);
+      return null;
+    });
+    // The per-mount context is close()d and nulled on unmount, so a play that
+    // was still inside the iOS unlock window when the trainer went away has
+    // nothing left to sound into. Bail rather than throwing into playMorse — and
+    // hand the claim back, since no teardown will run for this play.
+    if (!ctx) {
+      releaseSession();
+      setPlaying(false);
+      playingRef.current = false;
+      setPlaybackError('Audio playback could not start. Check your browser audio settings and try again.');
+      return;
+    }
     const text = isNew ? pickKochPrompt(prefs.kochLevel) : prompt;
     if (isNew) {
       setPrompt(text);
@@ -918,9 +991,22 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
       setFeedback(null);
     }
     setPlaying(true);
-    await playMorse(ctx, text, prefs);
-    setPlaying(false);
-    playingRef.current = false;
+    // Handle a synthesis failure locally: the handlers that call this function
+    // intentionally fire-and-forget, so rethrowing would create an unhandled
+    // rejection and strand the round's synchronous re-entrancy guard.
+    const played = await playMorse(ctx, text, prefs).then(
+      () => true,
+      (err) => {
+        console.error(`❌ Morse prompt playback failed: ${err.message}`);
+        setPlaybackError('Audio playback could not finish. Try replaying the prompt.');
+        return false;
+      },
+    ).finally(() => {
+      releaseSession();
+      setPlaying(false);
+      playingRef.current = false;
+    });
+    if (!played) return;
     questionStartRef.current = Date.now();
     setTimeout(() => inputRef.current?.focus(), 50);
   }
@@ -1036,6 +1122,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
             ? 'Listen to a 10-question round. No code hints on the results screen — pure recall. Hit 90% to unlock the next letter.'
             : 'Listen to a 10-question round. Hit 90% to unlock the next letter.'}
         </p>
+        {playbackError && <p role="alert" className="text-sm text-port-error">{playbackError}</p>}
         <button
           onClick={startRound}
           className="px-6 py-3 bg-port-accent hover:bg-port-accent/80 text-white font-medium rounded-lg transition-colors inline-flex items-center gap-2"
@@ -1048,6 +1135,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
 
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-6 space-y-4">
+      {playbackError && <p role="alert" className="text-sm text-port-error">{playbackError}</p>}
       <div className="flex items-center justify-between text-xs text-gray-500">
         <span>Question {results.length + 1} / {ROUND_SIZE}</span>
         <button
@@ -1095,6 +1183,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, onExit, onContinue, onSessio
           autoFocus
           className="w-full px-4 py-3 bg-port-bg border border-port-border focus:border-port-accent rounded-lg text-white text-center font-mono text-lg uppercase tracking-widest outline-none"
           placeholder="????"
+          aria-label="Decoded characters"
         />
       )}
       {feedback && (

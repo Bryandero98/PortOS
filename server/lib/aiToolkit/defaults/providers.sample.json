@@ -112,6 +112,43 @@
       "tuiPromptDelayMs": 2500,
       "tuiIdleTimeoutMs": 180000
     },
+    "opencode-mtplx": {
+      "id": "opencode-mtplx",
+      "name": "OpenCode MTPLX (local MTP)",
+      "type": "cli",
+      "command": "opencode",
+      "args": ["run"],
+      "endpoint": "http://127.0.0.1:8000/v1",
+      "models": ["mtplx"],
+      "defaultModel": "mtplx",
+      "mtplxBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"mtplx\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"MTPLX (local MTP)\",\"options\":{\"baseURL\":\"http://127.0.0.1:8000/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "headlessArgs": []
+    },
+    "opencode-mtplx-tui": {
+      "id": "opencode-mtplx-tui",
+      "name": "OpenCode MTPLX TUI (local MTP)",
+      "type": "tui",
+      "command": "opencode",
+      "args": [],
+      "endpoint": "http://127.0.0.1:8000/v1",
+      "models": ["mtplx"],
+      "defaultModel": "mtplx",
+      "mtplxBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"mtplx\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"MTPLX (local MTP)\",\"options\":{\"baseURL\":\"http://127.0.0.1:8000/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "tuiPromptDelayMs": 2500,
+      "tuiIdleTimeoutMs": 180000
+    },
     "codex": {
       "id": "codex",
       "name": "Codex CLI",
@@ -280,6 +317,19 @@
       "envVars": {},
       "secretEnvVars": []
     },
+    "mtplx": {
+      "id": "mtplx",
+      "name": "MTPLX (local MTP)",
+      "type": "api",
+      "endpoint": "http://127.0.0.1:8000/v1",
+      "apiKey": "",
+      "models": ["mtplx"],
+      "defaultModel": "mtplx",
+      "timeout": 300000,
+      "enabled": false,
+      "envVars": {},
+      "secretEnvVars": []
+    },
     "grok": {
       "id": "grok",
       "name": "xAI Grok",
@@ -338,7 +388,7 @@
       "name": "Kimi Code CLI",
       "type": "cli",
       "command": "kimi",
-      "args": ["--print"],
+      "args": [],
       "models": ["kimi-configured-default"],
       "defaultModel": "kimi-configured-default",
       "lightModel": "kimi-configured-default",

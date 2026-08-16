@@ -3,6 +3,7 @@ import useMounted from './useMounted';
 import toast from '../components/ui/Toast';
 import {
   addUniverseStyleReference,
+  adoptUniverseStyleGuide,
   createUniverse,
   deleteUniverse,
   getProviders,
@@ -45,6 +46,7 @@ export const createEmptyUniverseDraft = () => ({
   logline: '',
   premise: '',
   styleNotes: '',
+  moodBoardId: null,
   categories: ensureDraftCategories(),
   compositeSheets: [],
   influences: { embrace: [], avoid: [] },
@@ -62,6 +64,7 @@ export const universeDraftSnapshot = (draft = {}) => JSON.stringify({
   logline: draft.logline || '',
   premise: draft.premise || '',
   styleNotes: draft.styleNotes || '',
+  moodBoardId: draft.moodBoardId || null,
   categories: draft.categories || {},
   compositeSheets: draft.compositeSheets || [],
   influences: ensureInfluences(draft.influences),
@@ -250,6 +253,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
           logline: universe.logline || '',
           premise: universe.premise || '',
           styleNotes: universe.styleNotes || '',
+          moodBoardId: universe.moodBoardId || null,
           influences: ensureInfluences(universe.influences),
           styleReferences: universe.styleReferences || [],
           locked: universe.locked || {},
@@ -275,6 +279,9 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
       logline: draft.logline || '',
       premise: draft.premise || '',
       styleNotes: draft.styleNotes || '',
+      // Linked mood board (#4188) — null clears server-side; the field always
+      // ships so Save carries the full intended state like other scalars.
+      moodBoardId: draft.moodBoardId || null,
       categories: draft.categories,
       compositeSheets: draft.compositeSheets || [],
       influences: ensureInfluences(draft.influences),
@@ -487,6 +494,32 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     if (!updated) return false;
     applyStyleReferenceResult(targetId, updated, adopt ? capturedStyle : null);
     toast.success(adopt ? 'Art reference added and style guide updated' : 'Art reference added');
+    return true;
+  }, [applyStyleReferenceResult, draft, selectedId]);
+
+  // Adopt a board-synthesized style guide (#4188 Phase 4) — the reference-less
+  // sibling of the persistStyleReference adopt path. Routes through the same
+  // applyStyleReferenceResult bookkeeping so the saved snapshot + update
+  // watermark advance and styleProbeDirty clears, exactly as an art-reference
+  // adopt does; the server re-checks field locks in its queued write.
+  const adoptStyleGuideFromBoard = useCallback(async (proposed) => {
+    if (!selectedId) return false;
+    const targetId = selectedId;
+    const current = draftRef.current || draft;
+    const capturedStyle = {
+      styleNotes: current.styleNotes || '',
+      influences: ensureInfluences(current.influences),
+    };
+    const updated = await adoptUniverseStyleGuide(targetId, {
+      styleNotes: proposed?.styleNotes || '',
+      influences: ensureInfluences(proposed?.influences),
+    }, { silent: true }).catch((error) => {
+      toast.error(`Adopting the style guide failed: ${error.message}`);
+      return null;
+    });
+    if (!updated) return false;
+    applyStyleReferenceResult(targetId, updated, capturedStyle);
+    toast.success('Style guide adopted from mood board');
     return true;
   }, [applyStyleReferenceResult, draft, selectedId]);
 
@@ -713,6 +746,7 @@ export default function useUniverseDraft({ selectedId, goToWorld }) {
     // Exposed so a consumer can retry the catalog/settings load after a failed
     // refresh instead of forcing a full page reload.
     refresh,
+    adoptStyleGuideFromBoard,
     persistStyleReference,
     removeCategory,
     removeStyleReference,

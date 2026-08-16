@@ -29,6 +29,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 |---|---|
 | `api.js` | Barrel — re-exports every `apiX.js`. |
 | `apiCore.js` | `request()` helper + stable PortOS-app id. Shared error / toast handling. |
+| `apiBatch.js` | `fetchByIds(path, ids, options)` — batch-fetch records through a list route's `?ids=a,b,c` filter (dedupe, empty-list short-circuit, `{ items }` envelope unwrap). |
 | `socket.js` | Singleton Socket.IO client over relative path (Tailscale-friendly). |
 | `appUrls.js` | Compute candidate launch URLs for an app from page context. |
 
@@ -95,7 +96,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiImageVideo.js` | Image-gen local backend extras (gallery, models, LoRAs, cancel, delete). |
 | `apiLoraTraining.js` | Character LoRA training — datasets (CRUD, upload, generate, slice, caption), training runs (start/list/cancel/delete + status), character→LoRA link lookup. |
 | `apiMedia.js` | Screenshots + media assets. Also owns the multi-file upload orchestration — `processScreenshotUploads` / `processAttachmentUploads` and their single-file variants (`uploadScreenshotFile` / `uploadAttachmentFile`) — moved from `utils/fileUpload.js` since they perform network I/O, not pure transforms. `utils/fileUpload.js` keeps only the pure helpers/constants and no longer re-exports these. |
-| `apiMediaJobs.js` | Media generation job tracking. |
+| `apiMediaJobs.js` | Media generation job tracking + `refineMediaPrompt` / `promptFromMedia` (vision reverse-prompt). |
 | `apiCreativeDirector.js` | Creative Director (video production). |
 | `apiCreativeCommission.js` | Creative Commissions (Autonomous Creation Engine — standing recurring briefs). |
 | `apiGames.js` | Game studio records, managed-app binding, reusable sprite/music bindings, deterministic asset-bundle compilation/integrity preflight, and AI feedback history. |
@@ -111,11 +112,11 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiAlbums.js` | Music albums (title, artist FK + name, description, genre, release year, cover art, ordered track ids). |
 | `apiTracks.js` | Music tracks (title, album/artist FKs, lyrics, prompt, gen metadata, audio-library pointer) + shared music-library list + audio upload/attach/clear. |
 | `apiVideoDownload.js` | Dev Tools video downloader (#1946): start/cancel a YouTube/x.com full-video download via yt-dlp (SSE progress), list + delete downloaded clips. |
-| `apiMusic.js` | On-device music generation (MusicGen / AudioLDM2 / ACE-Step): list engines (+ readiness) and generate a track from a prompt/lyrics. |
+| `apiMusic.js` | On-device music generation (MusicGen / AudioLDM2 / ACE-Step): list engines (+ readiness), the stepped designer's AI describe/lyrics steps, and generate a track from a prompt/lyrics. |
 | `apiWritersRoom.js` | Writers Room (folders + works + drafts, live continuation + render-preview reservation, scene-image attach). |
 | `apiSharing.js` | Share buckets + federation sync. |
 | `apiRounds.js` | Rounds workbench CRUD (a cappella round writing + arranging voice layers + learning tracking). |
-| `apiSongbook.js` | SongBook repertoire tracker (`/songbook` — Brain `songs` entity): song CRUD + stage PATCH, URL import draft, and attachments (base64 upload, present-flag list, raw serve URL via `songAttachmentUrl`). |
+| `apiSongbook.js` | SongBook repertoire tracker (`/songbook` — Brain `songs` entity): song CRUD + stage PATCH, `practiceSong(id, quality)` (logs a 0..5-graded practice run; the server owns the SM-2 advance and the resulting `stage`/`practice`), URL import draft, and attachments (base64 upload, present-flag list, raw serve URL via `songAttachmentUrl`). |
 | `apiPeerSync.js` | Per-record peer sync subscriptions (universe + series → other PortOS instances over Tailnet). |
 | `apiSyncReview.js` | Sync hygiene: duplicate-record detection + smart merge (universe/series) and the non-blocking edit-conflict journal (list/resolve). Surfaced in Sharing → Duplicates / Conflicts. |
 

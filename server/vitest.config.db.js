@@ -52,7 +52,7 @@ export const DB_TEST_INCLUDE = [
  */
 export default defineConfig({
   test: {
-    testTimeout: 15000,
+    testTimeout: process.platform === 'win32' ? 30000 : 15000,
     globals: true,
     setupFiles: ['./vitest.setup.js'],
     // One file at a time — these suites assume exclusive access to their tables.

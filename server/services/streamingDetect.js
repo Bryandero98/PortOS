@@ -10,6 +10,88 @@ import { detectAppIcon } from './appIconDetect.js';
 export const NON_PM2_TYPES = new Set(['ios-native', 'macos-native', 'xcode', 'swift']);
 
 /**
+ * Language markers, checked FIRST: a repo's LANGUAGE beats its packaging, so a
+ * Python service that also ships a `Dockerfile` classifies as `python` (the
+ * common case) rather than as a Docker stack.
+ */
+const LANGUAGE_MARKERS = [
+  ['python', ['pyproject.toml', 'requirements.txt', 'setup.py', 'Pipfile']],
+  ['go', ['go.mod']]
+];
+
+/** Compose/Dockerfile markers — only reached when no language marker matched. */
+const DOCKER_MARKERS = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml', 'Dockerfile'];
+
+/**
+ * Node entry points meaning "a process runs here". Checked BEFORE the docker
+ * and static rules, and mapped to *no* classification rather than to a type: a
+ * package-less repo shipping `server.mjs` is a Node app someone containerized
+ * (or that also serves a page), and classifying it `docker`/`static` would
+ * withdraw standardization from an app that genuinely wants it — the exact
+ * false negative this predicate exists to avoid.
+ *
+ * The basename list is deliberately just `server`, the one name that can only
+ * mean a server. `index`, `app`, and `main` are all at least as common as
+ * browser scripts loaded by an `index.html`, and treating those as evidence
+ * would leave real static sites unclassified (and still offered the Node
+ * standardizer) — trading this rule's false negative for the very false
+ * positive the issue was filed about.
+ */
+const SERVER_ENTRY_BASENAMES = ['server'];
+const SERVER_ENTRY_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts'];
+
+const hasNodeServerEntry = (present) =>
+  // ECOSYSTEM_CONFIG_FILENAMES (below) is the one list of PM2 config names — a
+  // repo carrying one is unambiguously a PM2-managed process app.
+  ECOSYSTEM_CONFIG_FILENAMES.some(name => present.has(name)) ||
+  SERVER_ENTRY_BASENAMES.some(base => SERVER_ENTRY_EXTENSIONS.some(ext => present.has(`${base}${ext}`)));
+
+/** The non-Node app types `classifyNonNodeType` can emit. */
+export const NON_NODE_TYPES = new Set([...LANGUAGE_MARKERS.map(([type]) => type), 'docker', 'static']);
+
+/**
+ * Classify a repo's runtime from its top-level filenames, for repos that
+ * carried no Node or Apple signal. Returns `null` when nothing matched — the
+ * caller keeps `unknown` rather than guessing.
+ *
+ * @param {string[]} files Top-level entry names (from `readdir`).
+ * @returns {'python'|'go'|'docker'|'static'|null}
+ */
+export function classifyNonNodeType(files) {
+  const present = new Set(files || []);
+  for (const [type, markers] of LANGUAGE_MARKERS) {
+    if (markers.some(marker => present.has(marker))) return type;
+  }
+  if (hasNodeServerEntry(present)) return null;
+  if (DOCKER_MARKERS.some(marker => present.has(marker))) return 'docker';
+  if (present.has('index.html')) return 'static';
+  return null;
+}
+
+/**
+ * App types the PM2 standardizer must REFUSE: the Apple types (never PM2 at
+ * all) plus the non-Node runtimes above. The standardizer's prompt opens with
+ * "You are analyzing a Node.js application" — on a Python/Go/Docker/static repo
+ * it doesn't fail, it confidently writes a Node ecosystem config into someone
+ * else's project. That is what this predicate exists to stop.
+ *
+ * It is a DENY list rather than an allowlist of Node types because `type` is a
+ * free-form string (`appSchema` in `server/lib/validation.js` defaults it to
+ * `express` and accepts any value) PERSISTED on the app record. Installs
+ * upgrade on their own schedule, so app records in the wild carry values this
+ * file has never heard of — `unknown` from before this classification existed,
+ * `node`/`react`/`web` from older detection, whatever a user typed. An
+ * allowlist would silently withdraw standardization from every one of them.
+ * Only a type we have positively identified as non-Node is refused; anything
+ * unrecognized degrades to the previous behavior (offer it, and let the user
+ * decide) instead of a button that quietly disappears on upgrade.
+ */
+export const NON_STANDARDIZABLE_TYPES = new Set([...NON_PM2_TYPES, ...NON_NODE_TYPES]);
+
+/** Whether the PM2 standardizer (which writes a NODE ecosystem config) applies. */
+export const isStandardizable = (type) => !NON_STANDARDIZABLE_TYPES.has(type);
+
+/**
  * App types that run a GUI/desktop process with no HTTP port (e.g. a Godot
  * game binary). These are still supervised through PM2, but launched from the
  * app's own `startCommands` — never an ecosystem web-server config — and with
@@ -1208,7 +1290,18 @@ export async function streamDetection(socket, dirPath) {
       }
     }
   } else {
-    emit('package', 'done', { message: 'No package.json found' });
+    // No package.json ⇒ nothing Node owns this repo, so fall back to marker-file
+    // classification for the common non-Node runtimes. Without this, a Python
+    // service / Go binary / Docker stack / static site all landed on `unknown`
+    // and were offered Node PM2 standardization. Guarded on `unknown` so an
+    // Apple type already resolved in step 2 (a Swift repo that also ships a
+    // Dockerfile) isn't overwritten.
+    const nonNodeType = result.type === 'unknown' ? classifyNonNodeType(files) : null;
+    if (nonNodeType) result.type = nonNodeType;
+    emit('package', 'done', {
+      message: nonNodeType ? `No package.json — detected ${nonNodeType} project` : 'No package.json found',
+      type: result.type
+    });
   }
 
   // Native game launch is additive: web ports/processes remain the standard

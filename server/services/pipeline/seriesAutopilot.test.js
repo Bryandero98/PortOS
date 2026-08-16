@@ -137,7 +137,18 @@ vi.mock('./visualStages.js', () => visualSpies);
 
 let nextTaskId = 0;
 const addTask = vi.fn(async () => ({ id: `task-gap-${++nextTaskId}` }));
-vi.mock('../cosTaskStore.js', () => ({ addTask }));
+// Backing store for the gap-task retirement path (clearGapTasks). Tests seed
+// `userTasks` with whatever the queue should already hold when a run starts.
+let userTasks = [];
+const getUserTasks = vi.fn(async () => ({ tasks: userTasks }));
+const updateTask = vi.fn(async (taskId, updates) => {
+  const task = userTasks.find(t => t.id === taskId);
+  if (!task) return { error: 'Task not found' };
+  Object.assign(task, updates, { metadata: { ...task.metadata, ...updates.metadata } });
+  return task;
+});
+const firstLine = (s) => (s || '').split('\n').map(l => l.trim()).find(l => l) || '';
+vi.mock('../cosTaskStore.js', () => ({ addTask, getUserTasks, updateTask, firstLine }));
 
 let scriptVerifyFindings = [];
 const verifyComicScript = vi.fn(async () => ({ issues: scriptVerifyFindings }));
@@ -197,7 +208,12 @@ vi.mock('./foundationJudge.js', async (importOriginal) => {
 });
 
 const recordModelOutcome = vi.fn(async () => true);
-vi.mock('./seriesAutopilot/modelPerformance.js', () => ({ recordModelOutcome }));
+// Learned routing (`autoSelectModels`) reads the run history through this
+// report. Mocked so a test can hand the run a recommendation and assert which
+// roles it is allowed to re-point.
+let modelRecommendations = {};
+const getModelPerformanceReport = vi.fn(async () => ({ recommendations: modelRecommendations }));
+vi.mock('./seriesAutopilot/modelPerformance.js', () => ({ recordModelOutcome, getModelPerformanceReport }));
 
 // Pause-escalation notifications (#1615) — spy on the notification center so a
 // test can assert a pause posts a banner (and a clean run / opt-out does not).
@@ -266,6 +282,8 @@ beforeEach(() => {
   editorialChecksPerCheck = [];
   editorialChecksFindings = [];
   nextTaskId = 0;
+  userTasks = [];
+  modelRecommendations = {};
   autopilot.__testing.runs.clear();
   vi.clearAllMocks();
   generateReverseOutline.mockImplementation(async () => ({ status: 'complete', stale: false, scenes: [{ id: 'sc1' }] }));
@@ -345,28 +363,65 @@ describe('provider/model threading helpers (#1514 provider + #1558 model — bot
     });
   });
 
-  it('uses learned stage/role routing only when that role has no explicit run choice', () => {
+  // Learned routing fills in only where the run routed NOTHING. The run route
+  // reaching roleLlm is already resolved (per-run picker, else the series' own
+  // `series.llm`), so "the run chose none" means both are blank.
+  const recommendations = {
+    foundationGate: {
+      creative: { providerOverride: 'ollama', modelOverride: 'local-14b' },
+      judge: { providerOverride: 'codex', modelOverride: 'judge-model' },
+    },
+  };
+
+  it('uses learned stage/role routing for a role the run left unrouted', () => {
     const learned = {
       currentStep: 'foundationGate',
       options: {
         autoSelectModels: true,
-        providerOverride: 'series-default',
-        modelOverride: 'series-model',
-        modelRoutesExplicit: { creative: false, judge: true },
-        modelRecommendations: {
-          foundationGate: {
-            creative: { providerOverride: 'ollama', modelOverride: 'local-14b' },
-            judge: { providerOverride: 'codex', modelOverride: 'judge-model' },
-          },
-        },
+        modelRecommendations: recommendations,
         judgeLlm: { providerOverride: 'manual-judge', modelOverride: 'manual-model' },
       },
     };
     expect(autopilot.__testing.roleLlm(learned, 'creative')).toEqual({
       providerOverride: 'ollama', modelOverride: 'local-14b', effortOverride: undefined,
     });
+    // …but never over a hand-picked one.
     expect(autopilot.__testing.roleLlm(learned, 'judge')).toEqual({
       providerOverride: 'manual-judge', modelOverride: 'manual-model', effortOverride: undefined,
+    });
+  });
+
+  // The live failure: with `autoSelectModels` on, a run that picked ONE
+  // provider/model and left "use a separate model for judging" unchecked kept
+  // CREATION on that route while every judge-role call — pipeline-arc-verify
+  // above all — was re-pointed at the learned route. Judging inherits the run
+  // route, so choosing the run route chooses the judge with it.
+  it.each(['creative', 'judge'])('keeps the %s role on the run route the user chose', (role) => {
+    const chosen = {
+      currentStep: 'foundationGate',
+      options: {
+        autoSelectModels: true,
+        providerOverride: 'antigravity-tui',
+        modelOverride: 'gemini-3.6-flash-high',
+        effortOverride: 'high',
+        modelRecommendations: recommendations,
+      },
+    };
+    expect(autopilot.__testing.roleLlm(chosen, role)).toEqual({
+      providerOverride: 'antigravity-tui', modelOverride: 'gemini-3.6-flash-high', effortOverride: 'high',
+    });
+  });
+
+  // Any ONE dimension is a deliberate choice — an effort-only run route still
+  // has to keep its (provider-default) route rather than adopt a learned one.
+  it('treats an effort-only run route as chosen for both roles', () => {
+    const effortOnly = {
+      currentStep: 'foundationGate',
+      options: { autoSelectModels: true, effortOverride: 'max', modelRecommendations: recommendations },
+    };
+    expect(autopilot.__testing.roleLlm(effortOnly, 'creative').effortOverride).toBe('max');
+    expect(autopilot.__testing.roleLlm(effortOnly, 'judge')).toEqual({
+      providerOverride: undefined, modelOverride: undefined, effortOverride: 'max',
     });
   });
 
@@ -1169,6 +1224,143 @@ describe('autopilotEvents in-process bus (#2185)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Milestone map — the plan an EXECUTE run projects + the progress
+// snapshot the panel measures against it.
+// ---------------------------------------------------------------------------
+describe('noteProgress (pure fold)', () => {
+  const { noteProgress, emptyProgress } = autopilot;
+
+  it('marks the running step and clears its complete flag when the run RE-ENTERS a gate', () => {
+    const run = { progress: emptyProgress() };
+    noteProgress(run, { type: 'step:start', kind: 'foundationGate', ordinal: 3 });
+    noteProgress(run, { type: 'step:complete', kind: 'foundationGate' });
+    expect(run.progress).toMatchObject({
+      currentStep: 'foundationGate', currentStepComplete: true, completed: { foundationGate: 1 },
+    });
+    // The arc repair sends it back through the same gate — the map must show it
+    // working again rather than reading as the step it just finished.
+    noteProgress(run, { type: 'step:start', kind: 'foundationGate', ordinal: 5 });
+    expect(run.progress).toMatchObject({ currentStep: 'foundationGate', currentStepComplete: false });
+  });
+
+  it('files each gate verification under the step it was measured in', () => {
+    const run = { progress: emptyProgress() };
+    noteProgress(run, { type: 'step:start', kind: 'verifyArcSpine' });
+    noteProgress(run, { type: 'verify:round', scope: 'arcSpine', round: 2, findings: 5, blocking: 0 });
+    noteProgress(run, { type: 'step:start', kind: 'foundationGate' });
+    noteProgress(run, { type: 'foundation:round', round: 1, weightedScore: 8.1, threshold: 7.5, weakest: 'craft' });
+    expect(run.progress.verified).toEqual({
+      verifyArcSpine: { round: 2, findings: 5, blocking: 0 },
+      foundationGate: { round: 1, weightedScore: 8.1, threshold: 7.5, weakest: 'craft' },
+    });
+  });
+
+  it('drops gate telemetry that arrives outside a step rather than filing it nowhere', () => {
+    const run = { progress: emptyProgress() };
+    expect(noteProgress(run, { type: 'verify:round', scope: 'arc', findings: 1, blocking: 1 })).toBe(false);
+    expect(run.progress.verified).toEqual({});
+  });
+
+  it('counts sub-step skips without advancing the milestone', () => {
+    const run = { progress: emptyProgress() };
+    noteProgress(run, { type: 'step:skip', kind: 'visualDraft', reason: 'locked' });
+    expect(run.progress).toMatchObject({ skipped: { visualDraft: 1 }, completed: {} });
+  });
+
+  it('ignores frames the map does not track — including every terminal', () => {
+    const run = { progress: emptyProgress() };
+    for (const type of ['note', 'check:complete', 'complete', 'paused', 'canceled', 'error']) {
+      expect(noteProgress(run, { type })).toBe(false);
+    }
+    expect(run.progress).toEqual(emptyProgress());
+  });
+});
+
+describe('milestone map telemetry', () => {
+  const collectFrames = (seriesId) => {
+    const frames = [];
+    autopilot.autopilotEvents.on(seriesId, (p) => frames.push(p));
+    return frames;
+  };
+
+  it('carries the projected plan on an EXECUTE start frame, not only a dry-run', async () => {
+    const { seriesId } = await seedComplete();
+    const frames = collectFrames(seriesId);
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    const start = frames.find((f) => f.type === 'start');
+    expect(start.mode).toBe('execute');
+    // Same projection the dry-run emits — the panel draws it as the milestone map.
+    expect(start.plan.map((p) => p.kind)).toEqual(
+      expect.arrayContaining(['verifyArcSpine', 'verifyArc', 'editorialReview']),
+    );
+    expect(start.planTotals.estActions).toBeGreaterThan(0);
+  });
+
+  it('publishes a progress snapshot as the run advances', async () => {
+    const { seriesId } = await seedComplete();
+    const frames = collectFrames(seriesId);
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    const progressFrames = frames.filter((f) => f.type === 'progress');
+    expect(progressFrames.length).toBeGreaterThan(0);
+    const final = progressFrames.at(-1);
+    expect(final.completed.verifyArcSpine).toBe(1);
+    expect(final.completed.editorialReview).toBe(1);
+    // …and what each gate actually validated, keyed by step kind.
+    expect(final.verified.verifyArcSpine).toMatchObject({ blocking: 0 });
+  });
+
+  it('publishes DETACHED snapshots — a later step cannot rewrite a delivered frame', async () => {
+    const { seriesId } = await seedComplete();
+    const frames = collectFrames(seriesId);
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    const progressFrames = frames.filter((f) => f.type === 'progress');
+    const first = progressFrames[0];
+    const last = progressFrames.at(-1);
+    // The fold mutates the maps it owns; if the frames shared them, the first
+    // frame would report the final run's counts and the map would jump.
+    expect(first.completed).not.toBe(last.completed);
+    expect(Object.keys(first.completed).length).toBeLessThan(Object.keys(last.completed).length);
+  });
+
+  it('never emits a progress frame after the terminal one (SSE replays only the last payload)', async () => {
+    const { seriesId } = await seedComplete();
+    const frames = collectFrames(seriesId);
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    const terminalAt = frames.findIndex((f) => autopilot.AUTOPILOT_TERMINAL_TYPES.has(f.type));
+    expect(terminalAt).toBeGreaterThan(-1);
+    expect(frames.slice(terminalAt + 1).some((f) => f.type === 'progress')).toBe(false);
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+  });
+
+  it('does not let a progress frame take the SSE replay slot from a real frame', async () => {
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    // A client attaching late replays `lastPayload`; a snapshot there would hide
+    // what the run was doing (and, at the end, that it finished at all).
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).not.toBe('progress');
+  });
+
+  it('serves the snapshot to a client attaching mid-run, and nothing once the run is over', async () => {
+    const { seriesId } = await seedComplete();
+    let midRun = null;
+    // Sample the accessor from inside the run — the mid-run attach the status
+    // route serves — rather than after it, when the record is finished.
+    autopilot.autopilotEvents.on(seriesId, (f) => {
+      if (f.type === 'step:complete' && !midRun) midRun = autopilot.activeRunProgress(seriesId);
+    });
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(midRun.currentStep).toBeTruthy();
+    expect(autopilot.activeRunProgress(seriesId)).toBe(null);
+  });
+});
+
 describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   // buildDryRunPlan is kept in sync with resolveNextStep BY HAND (see the comment
   // above buildDryRunPlan). This guard runs BOTH against the same fixtures and
@@ -1838,6 +2030,28 @@ describe('autopilot conductor', () => {
     expect(run.options.providerOverride).toBe('claude');
     // codex's model must NOT ride along to claude.
     expect(run.options.modelOverride).toBeUndefined();
+  });
+
+  // arc verify is a JUDGE-role call, and the live failure was that a run which
+  // picked ONE provider/model with `autoSelectModels` on kept creation on that
+  // route while the verifier was re-pointed at the learned one. Asserted at the
+  // delegated verify call — where the wrong provider actually got spent — for
+  // both a run that chose a route and one that left the judge to the evidence.
+  it.each([
+    ['keeps arc verify on the run route the user chose', { providerOverride: 'claude', modelOverride: 'claude-model' }, 'claude', 'claude-model'],
+    ['lets a learned judge route fill in for a run that chose none', {}, 'codex', 'gpt-x'],
+  ])('%s', async (_name, routeOptions, provider, model) => {
+    modelRecommendations = {
+      verifyArcSpine: { judge: { providerOverride: 'codex', modelOverride: 'gpt-x' } },
+      verifyArc: { judge: { providerOverride: 'codex', modelOverride: 'gpt-x' } },
+    };
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { ...routeOptions, autoSelectModels: true });
+    await waitFor(runFinished(seriesId));
+    expect(arcSpies.verifyArc).toHaveBeenCalledWith(
+      seriesId,
+      expect.objectContaining({ providerDefault: provider, modelDefault: model }),
+    );
   });
 
   it('pauses for review when arc verify never converges', async () => {
@@ -2527,6 +2741,42 @@ describe('autopilot conductor', () => {
     });
   });
 
+  it('persists the milestone map so a paused run survives a reload (#4140)', async () => {
+    editorialFindings = [{ severity: 'high', problem: 'missing scene', issueNumber: 1 }];
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxEditorialRounds: 1 });
+    await waitFor(runFinished(seriesId));
+    const series = await seriesSvc.getSeries(seriesId);
+    expect(series.autopilot?.status).toBe('paused');
+    // The plan half: the same projection the run's `start` frame carried, so the
+    // panel can redraw every milestone the run expected to reach.
+    expect(series.autopilot?.plan?.length).toBeGreaterThan(0);
+    expect(series.autopilot.plan.every((r) => typeof r.kind === 'string' && r.count >= 1)).toBe(true);
+    // …and the progress half: where it actually got to, including the step it
+    // stopped on (which is what the map draws as blocked).
+    expect(series.autopilot?.progress?.currentStep).toBe('editorialReview');
+    expect(Object.keys(series.autopilot.progress.completed).length).toBeGreaterThan(0);
+  });
+
+  it('keeps the milestone map on a restart-interrupted run (#4140)', async () => {
+    // The map is stamped on every marker write that has a plan, not only the
+    // terminals — a hard restart never reaches a terminal write, and the boot
+    // recovery demotes `running` → `paused` by SPREADING whatever the marker
+    // already held. Simulate that: complete a run, rewind its marker to the
+    // `running` shape a killed process would have left, and recover.
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, {});
+    await waitFor(runFinished(seriesId));
+    const done = (await seriesSvc.getSeries(seriesId)).autopilot;
+    expect(done?.plan?.length).toBeGreaterThan(0);
+    await seriesSvc.updateSeries(seriesId, { autopilot: { ...done, status: 'running' } });
+    await autopilot.recoverStuckAutopilots();
+    const recovered = (await seriesSvc.getSeries(seriesId)).autopilot;
+    expect(recovered.status).toBe('paused');
+    expect(recovered.plan).toEqual(done.plan);
+    expect(recovered.progress).toEqual(done.progress);
+  });
+
   it('does not notify on a clean complete (#1615)', async () => {
     const { seriesId } = await seedComplete();
     await autopilot.startSeriesAutopilot(seriesId, {});
@@ -2785,6 +3035,90 @@ describe('autopilot conductor', () => {
     }));
     const series = await seriesSvc.getSeries(seriesId);
     expect(series.autopilot?.pauseKind).not.toBe('regression');
+  });
+
+  it('reports every arc-spine resolver attempt with what it actually wrote (#3843)', async () => {
+    // The 2026-08-13 verifyArcSpine pause, replayed: 5 blockers → 2 → 2 → 2,
+    // stopping on "no net progress over 2 consecutive rounds of auto-resolve".
+    // Its retained telemetry was 4 `verify:round` frames and ONE `resolve:round`
+    // reporting `episodesEdited: 0` — so a reader could see neither that the
+    // first round's arc + volume edits are what took 5 to 2 (a spine resolver
+    // may not touch episodes at all, so that zero was expected), nor that the
+    // two rounds it paused over had attempted anything whatsoever.
+    const blockers = (n) => Array.from({ length: n }, (_, i) => ({
+      severity: 'high', problem: `spine gap ${i}`, location: `V${i + 1}`,
+    }));
+    arcSpies.verifyArc.mockReset();
+    arcSpies.verifyArc
+      .mockImplementationOnce(async () => ({ issues: blockers(5) }))
+      .mockImplementationOnce(async () => ({ issues: blockers(2) }));
+    arcSpies.resolveVerifyIssues
+      .mockImplementationOnce(async () => ({
+        applied: true,
+        runId: 'arc-spine-1',
+        mutations: { arcFieldsEdited: 1, volumesEdited: 2, characterArcsEdited: 0, episodesEdited: 0 },
+      }))
+      // The two attempts the pause was counting. Both wrote nothing, for
+      // different reasons — which is exactly the distinction the gate could not
+      // report before.
+      .mockImplementationOnce(async () => ({
+        applied: false, runId: 'arc-spine-2', rejectedExactEdits: 3, noChangeReason: 'exact-edits-rejected',
+      }))
+      .mockImplementationOnce(async () => ({
+        applied: false, runId: 'arc-spine-3', noChangeReason: 'no-edits-returned',
+      }));
+    const { seriesId } = await seedComplete();
+    const frames = [];
+    const handler = (p) => frames.push(p);
+    autopilot.autopilotEvents.on(seriesId, handler);
+    await autopilot.startSeriesAutopilot(seriesId, { maxArcVerifyRounds: 6 });
+    await waitFor(runFinished(seriesId));
+    autopilot.autopilotEvents.off(seriesId, handler);
+
+    // Four rounds, three resolver attempts, and an outcome frame for each one.
+    expect(frames.filter((f) => f.type === 'verify:round' && f.scope === 'arcSpine')).toHaveLength(4);
+    const attempts = frames.filter((f) => f.type === 'resolve:round' || f.type === 'resolve:no-change');
+    expect(attempts).toHaveLength(3);
+    // Round 1 wrote the spine. `episodesEdited: 0` stays for existing readers,
+    // but it is no longer the only thing the frame says.
+    expect(attempts[0]).toMatchObject({
+      type: 'resolve:round',
+      scope: 'arcSpine',
+      round: 1,
+      applied: true,
+      arcFieldsEdited: 1,
+      volumesEdited: 2,
+      episodesEdited: 0,
+      noChangeReason: null,
+    });
+    expect(attempts[1]).toMatchObject({
+      type: 'resolve:no-change',
+      round: 2,
+      applied: false,
+      arcFieldsEdited: 0,
+      volumesEdited: 0,
+      episodesEdited: 0,
+      rejectedExactEdits: 3,
+      noChangeReason: 'exact-edits-rejected',
+    });
+    expect(attempts[2]).toMatchObject({
+      type: 'resolve:no-change',
+      round: 3,
+      applied: false,
+      rejectedExactEdits: 0,
+      noChangeReason: 'no-edits-returned',
+    });
+    // Every frame stays numeric/enum — the diagnosis log must never carry
+    // manuscript text or the resolver's own prose.
+    for (const frame of attempts) {
+      expect(frame).not.toHaveProperty('notes');
+      expect(frame).not.toHaveProperty('findings');
+    }
+    // A round whose resolver wrote nothing re-uses its verification instead of
+    // billing another arc + per-volume pass.
+    expect(arcSpies.verifyArc).toHaveBeenCalledTimes(2);
+    const last = autopilot.__testing.runs.get(seriesId)?.lastPayload;
+    expect(last?.pauseKind).toBe('divergence');
   });
 
   it('carries a rejected candidate\'s findings past its corrective retry into the next ordinary resolve', async () => {
@@ -3964,6 +4298,61 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.scope).toBe('textStages');
     expect(last?.reason).toMatch(/comicScript/);
+  });
+
+  it('tags a filed gap task with the series so a later run can find it', async () => {
+    const { seriesId } = await seedComplete({ script: 'just prose, no comic pages here' });
+    await autopilot.startSeriesAutopilot(seriesId, { fileGaps: true, includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    const tagged = addTask.mock.calls.map((c) => c[0]).find((t) => /script-unparseable/.test(t.description));
+    expect(tagged.autopilotGapSeriesId).toBe(seriesId);
+    expect(tagged.autopilotGapKind).toBe('script-unparseable');
+  });
+
+  it('retires a PENDING gap task for this series when a new run starts', async () => {
+    const { seriesId } = await seedComplete();
+    userTasks = [{
+      id: 'task-stale', status: 'pending',
+      description: `Autopilot foundationGate-stalled gap — series ${seriesId}\n\npaused`,
+      metadata: { autopilotGapSeriesId: seriesId },
+    }];
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(userTasks[0].status).toBe('completed');
+    expect(userTasks[0].metadata.resolution).toBe('auto-expired');
+    expect(userTasks[0].metadata.autoExpiredReason).toBe('autopilot-resumed');
+  });
+
+  it('retires a legacy gap task that predates the autopilotGapSeriesId tag', async () => {
+    const { seriesId } = await seedComplete();
+    userTasks = [{
+      id: 'task-legacy', status: 'pending',
+      description: `Autopilot foundationGate-stalled gap — series ${seriesId}\n\npaused`,
+      metadata: {},
+    }];
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(userTasks[0].status).toBe('completed');
+  });
+
+  it('leaves in-progress gap tasks and other series alone', async () => {
+    const { seriesId } = await seedComplete();
+    userTasks = [
+      {
+        id: 'task-running', status: 'in_progress',
+        description: `Autopilot foundationGate-stalled gap — series ${seriesId}\n\npaused`,
+        metadata: { autopilotGapSeriesId: seriesId },
+      },
+      {
+        id: 'task-other', status: 'pending',
+        description: 'Autopilot foundationGate-stalled gap — series ser-somebody-else\n\npaused',
+        metadata: { autopilotGapSeriesId: 'ser-somebody-else' },
+      },
+      { id: 'task-unrelated', status: 'pending', description: 'Fix the login page', metadata: {} },
+    ];
+    await autopilot.startSeriesAutopilot(seriesId, { includeVisual: false });
+    await waitFor(runFinished(seriesId));
+    expect(userTasks.map((t) => t.status)).toEqual(['in_progress', 'pending', 'pending']);
   });
 
   it('does not file gap tasks when fileGaps is off', async () => {

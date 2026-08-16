@@ -448,6 +448,36 @@ describe("universeBuilder service", () => {
     expect(fresh.styleReferences).toHaveLength(1);
   });
 
+  it("adoptStyleGuide writes the proposed guide with no reference attached (#4188 Phase 4)", async () => {
+    const w = await svc.createUniverse({ name: "Adopt Guide", influences: { embrace: ["old"], avoid: [] } });
+    const updated = await svc.adoptStyleGuide(w.id, {
+      styleNotes: "Board-synthesized prose",
+      influences: { embrace: ["ink wash"], avoid: ["gloss"] },
+    });
+    expect(updated.styleNotes).toBe("Board-synthesized prose");
+    expect(updated.influences).toEqual({ embrace: ["ink wash"], avoid: ["gloss"] });
+    const fresh = await svc.getUniverse(w.id);
+    expect(fresh.styleNotes).toBe("Board-synthesized prose");
+    expect(fresh.styleReferences ?? []).toHaveLength(0);
+  });
+
+  it("adoptStyleGuide re-checks locks against the freshest persisted record", async () => {
+    const w = await svc.createUniverse({
+      name: "Adopt Locked",
+      styleNotes: "Locked prose",
+      influences: { embrace: ["keep me"], avoid: ["old bad"] },
+      locked: { styleNotes: true, influencesEmbrace: true },
+    });
+    const updated = await svc.adoptStyleGuide(w.id, {
+      styleNotes: "Should not land",
+      influences: { embrace: ["should not land"], avoid: ["new bad"] },
+    });
+    // Locked fields keep the persisted values; the unlocked avoid list adopts.
+    expect(updated.styleNotes).toBe("Locked prose");
+    expect(updated.influences.embrace).toEqual(["keep me"]);
+    expect(updated.influences.avoid).toEqual(["new bad"]);
+  });
+
   it("addStyleReference is idempotent on a re-sent id and rejects an invalid reference", async () => {
     const reference = {
       id: "style-ref-once",
@@ -1226,6 +1256,48 @@ describe("universeBuilder service", () => {
         expect(after.name).toBe("Remote Edited Name");
         expect(after.imageMode).toBe("agy");
         expect(after.imageModelId).toBe("gemini-3.6-flash-low");
+      });
+
+      it("preserves the local moodBoardId when a pre-v9/no-meta sender's edit wins LWW (#4188)", async () => {
+        // A behind sender passes the version gate (only AHEAD rejects), and
+        // its moodBoardId-unaware sanitizer omitted the field — that omission
+        // must not read as a clear.
+        const w = await seedWorld();
+        await svc.updateUniverse(w.id, { moodBoardId: "mb-local" });
+        const editTs = new Date(Date.now() + 60_000).toISOString();
+        const r = await svc.mergeUniversesFromSync([
+          { ...w, name: "Remote Edited Name", updatedAt: editTs },
+        ]); // no senderSchemaVersions — legacy/no-meta sender
+        expect(r.applied).toBe(true);
+        const after = await svc.getUniverse(w.id);
+        expect(after.name).toBe("Remote Edited Name");
+        expect(after.moodBoardId).toBe("mb-local");
+      });
+
+      it("honors a v9-aware sender's omitted moodBoardId as an explicit clear (#4188)", async () => {
+        const w = await seedWorld();
+        await svc.updateUniverse(w.id, { moodBoardId: "mb-local" });
+        const editTs = new Date(Date.now() + 60_000).toISOString();
+        const r = await svc.mergeUniversesFromSync(
+          [{ ...w, name: "Remote Cleared", updatedAt: editTs }],
+          { senderSchemaVersions: { universes: 9 } },
+        );
+        expect(r.applied).toBe(true);
+        const after = await svc.getUniverse(w.id);
+        expect("moodBoardId" in after).toBe(false);
+      });
+
+      it("applies a v9-aware sender's moodBoardId over the local link (#4188)", async () => {
+        const w = await seedWorld();
+        await svc.updateUniverse(w.id, { moodBoardId: "mb-local" });
+        const editTs = new Date(Date.now() + 60_000).toISOString();
+        const r = await svc.mergeUniversesFromSync(
+          [{ ...w, moodBoardId: "mb-remote", updatedAt: editTs }],
+          { senderSchemaVersions: { universes: 9 } },
+        );
+        expect(r.applied).toBe(true);
+        const after = await svc.getUniverse(w.id);
+        expect(after.moodBoardId).toBe("mb-remote");
       });
     });
 
@@ -2644,6 +2716,40 @@ describe("universeBuilder service", () => {
       const list = await svc.listUniverses();
       expect(list[0].categories.landscapes.variations).toHaveLength(1);
       expect(list[0].categories.landscapes.variations[0].label).toBe("Good");
+    });
+  });
+
+  describe("moodBoardId (linked mood board, #4188)", () => {
+    it("persists through create and is absent when never set", async () => {
+      const linked = await svc.createUniverse({ name: "Linked", moodBoardId: "mb-abc123" });
+      expect(linked.moodBoardId).toBe("mb-abc123");
+      const bare = await svc.createUniverse({ name: "Bare" });
+      expect("moodBoardId" in bare).toBe(false);
+    });
+
+    it("PATCH sets, preserves-on-absent, and clears on ''/null", async () => {
+      const w = await svc.createUniverse({ name: "W" });
+      const set = await svc.updateUniverse(w.id, { moodBoardId: "mb-1" });
+      expect(set.moodBoardId).toBe("mb-1");
+      // A patch that doesn't carry the key preserves the link.
+      const untouched = await svc.updateUniverse(w.id, { logline: "still linked" });
+      expect(untouched.moodBoardId).toBe("mb-1");
+      // Key-present with '' clears — the field drops back to absent.
+      const cleared = await svc.updateUniverse(w.id, { moodBoardId: "" });
+      expect("moodBoardId" in cleared).toBe(false);
+      const setAgain = await svc.updateUniverse(w.id, { moodBoardId: "mb-2" });
+      expect(setAgain.moodBoardId).toBe("mb-2");
+      const nulled = await svc.updateUniverse(w.id, { moodBoardId: null });
+      expect("moodBoardId" in nulled).toBe(false);
+    });
+
+    it("sanitizes a non-string value to absent on read", async () => {
+      await seedState({
+        universes: [{ id: "w-mb", name: "X", moodBoardId: 42, createdAt: "2024-01-01T00:00:00Z" }],
+        runs: [],
+      });
+      const list = await svc.listUniverses();
+      expect("moodBoardId" in list[0]).toBe(false);
     });
   });
 

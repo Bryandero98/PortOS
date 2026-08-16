@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { join } from 'path';
 
 // Heavy modules needed only by spawnDirectly — mock them all before importing.
 vi.mock('./cosEvents.js', () => ({ cosEvents: { emit: vi.fn() }, emitLog: vi.fn() }));
@@ -82,7 +83,7 @@ vi.mock('../lib/bufferedSpawn.js', () => ({
 
 // Mock child_process.spawn to return a controllable fake process
 let fakeProcess;
-vi.mock('child_process', () => ({
+vi.mock('../lib/childProcess.js', () => ({
   spawn: vi.fn(() => fakeProcess),
   // `execFile` is pulled in transitively by codeReview.js → lmStudioManager
   // (via `resolveReviewLoopOptions`'s dependency graph), even though this
@@ -96,14 +97,22 @@ vi.mock('child_process', () => ({
 vi.mock('./agentWorktreeCleanup.js', () => ({
   releaseRetryHold: vi.fn().mockResolvedValue({}),
 }));
+vi.mock('./ollamaAgentContext.js', () => ({
+  ensureOllamaAgentContext: vi.fn(async () => ({ skipped: true })),
+}));
+vi.mock('./providers.js', () => ({
+  isOllamaBackedProvider: vi.fn(() => false),
+}));
 
 import { buildCliSpawnConfig, createStreamJsonParser, spawnDirectly } from './agentCliSpawning.js';
 import { releaseRetryHold } from './agentWorktreeCleanup.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
 // Real module — the flag is a plain process-local boolean, so driving it
 // directly exercises the same code path production does.
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
 import { existsSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 
 // Helper: feed the parser a sequence of stream-json lines
@@ -256,6 +265,17 @@ describe('buildCliSpawnConfig', () => {
     expect(config.stdinMode).toBe('prompt');
     // OpenCode emits plain text, so no stream-json format is requested.
     expect(config.streamFormat).toBeUndefined();
+  });
+
+  it('runs `opencode run -m mtplx/<model>` for a headless OpenCode MTPLX agent', () => {
+    const config = buildCliSpawnConfig(
+      { id: 'opencode-mtplx', command: 'opencode', args: ['run'], mtplxBacked: true },
+      'mtplx',
+    );
+
+    expect(config.command).toBe('opencode');
+    expect(config.args).toEqual(['run', '-m', 'mtplx/mtplx']);
+    expect(config.stdinMode).toBe('prompt');
   });
 
   it('prepends the run subcommand for OpenCode even if saved args dropped it', () => {
@@ -519,6 +539,8 @@ describe('stream error containment', () => {
     (await import('./agentFinalization.js')).finalizeAgent.mockResolvedValue(undefined);
     minimalArgs.cleanupWorktreeFn.mockResolvedValue(undefined);
     vi.mocked(existsSync).mockReturnValue(false);
+    vi.mocked(isOllamaBackedProvider).mockReturnValue(false);
+    vi.mocked(ensureOllamaAgentContext).mockResolvedValue({ skipped: true });
     // Reset the resolve+wrap helper to its POSIX passthrough before each test
     // (afterEach's restoreAllMocks can clear the factory implementation).
     vi.mocked(prepareCliSpawn).mockImplementation((command, args) => ({ command, args }));
@@ -569,6 +591,36 @@ describe('stream error containment', () => {
       (args) => typeof args[0] === 'string' && args[0].startsWith('❌ agent agent-test output batch flush failed:')
     );
     expect(logged).toBe(true);
+  });
+
+  it('prepares the configured Ollama context before a direct CLI agent spawns', async () => {
+    vi.mocked(spawn).mockClear();
+    vi.mocked(ensureOllamaAgentContext).mockClear();
+    vi.mocked(isOllamaBackedProvider).mockReturnValue(true);
+    vi.mocked(ensureOllamaAgentContext).mockResolvedValue({
+      skipped: false,
+      applied: true,
+      contextLength: 131072,
+      warning: '⚠️ Example context warning',
+    });
+
+    const spawnPromise = spawnDirectly({
+      ...minimalArgs,
+      provider: { ...minimalArgs.provider, id: 'claude-ollama', ollamaBacked: true },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(ensureOllamaAgentContext).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-ollama' }));
+    expect(ensureOllamaAgentContext.mock.invocationCallOrder[0]).toBeLessThan(spawn.mock.invocationCallOrder[0]);
+
+    fakeProcess.emit('close', 0);
+    await spawnPromise;
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(agentStateMocks.appendAgentOutputLines).toHaveBeenCalledWith('agent-test', [
+      '⚠️ Example context warning',
+      '🪟 Reloaded Ollama at a 131072-token context window',
+    ]);
   });
 
   it('drains stderr output on close and a failed batch flush is logged, not leaked as an unhandled rejection', async () => {
@@ -934,7 +986,8 @@ describe('stream error containment', () => {
       const { finalizeAgent } = await import('./agentFinalization.js');
       // The sentinel is named per agent instance so two worktree-less runs
       // sharing one workspace can't be finalized on each other's signal.
-      vi.mocked(existsSync).mockImplementation((path) => path === '/tmp/.agent-done-agent-test');
+      vi.mocked(existsSync).mockImplementation((path) =>
+        path === join(minimalArgs.workspacePath, '.agent-done-agent-test'));
 
       await runToClose({ ...minimalArgs }, null);
 

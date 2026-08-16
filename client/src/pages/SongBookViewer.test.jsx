@@ -10,7 +10,11 @@ const api = vi.hoisted(() => ({
   listSongAttachments: vi.fn(),
   uploadSongAttachment: vi.fn(),
   deleteSongAttachment: vi.fn(),
+  practiceSong: vi.fn(),
   songAttachmentUrl: (id, filename) => `/api/brain/songbook/${id}/attachments/${filename}`,
+  // Cross-link picker options (#4103) — the editor loads both lists on mount.
+  listRounds: vi.fn(),
+  listTracks: vi.fn(),
 }));
 vi.mock('../services/api', () => api);
 vi.mock('../components/ui/Toast', () => ({ default: { error: vi.fn(), success: vi.fn() } }));
@@ -64,6 +68,9 @@ describe('SongBookViewer', () => {
     api.listSongAttachments.mockReset().mockResolvedValue([]);
     api.updateSong.mockReset();
     api.deleteSong.mockReset();
+    api.practiceSong.mockReset();
+    api.listRounds.mockReset().mockResolvedValue({ rounds: [{ id: 'r1', title: 'Example Round' }] });
+    api.listTracks.mockReset().mockResolvedValue([{ id: 't1', title: 'Example Track' }]);
     globalThis.localStorage?.clear?.();
   });
 
@@ -109,6 +116,21 @@ describe('SongBookViewer', () => {
     fireEvent.change(select, { target: { value: 'learned' } });
     expect(api.updateSong).toHaveBeenCalledWith('abc', { stage: 'learned' });
     await waitFor(() => expect(screen.getByLabelText('Learning stage').value).toBe('learned'));
+  });
+
+  // A logged practice run moves the stage server-side (#4102), so the chip and
+  // the edit draft must both follow the returned record — not just `practice`.
+  it('merges a logged practice run, advancing the stage chip', async () => {
+    api.practiceSong.mockResolvedValue(song({
+      stage: 'learning',
+      practice: { ease: 2.5, intervalDays: 1, nextReview: '2099-01-01T00:00:00.000Z', lastReviewed: '2026-03-01T00:00:00.000Z', sessions: 1 },
+    }));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Solid' }));
+    expect(api.practiceSong).toHaveBeenCalledWith('abc', 4, { silent: true });
+    await waitFor(() => expect(screen.getByLabelText('Learning stage').value).toBe('learning'));
+    // The stage select stays available as a manual override.
+    expect(screen.getByLabelText('Learning stage').disabled).toBe(false);
   });
 
   it('marks synced-but-absent attachments as not on this machine', async () => {
@@ -578,7 +600,249 @@ K:  o - - - - - o -`;
     expect('attachments' in patch).toBe(false);
   });
 
+  // Cross-links to the other music record kinds — Rounds and music Tracks.
+  describe('cross-links to Rounds / Tracks (#4103)', () => {
+    it('renders stored links as chips pointing at the target routes in play mode', async () => {
+      api.getSong.mockResolvedValue(song({
+        links: [
+          { type: 'round', id: 'r1', label: 'Example Round' },
+          { type: 'track', id: 't1', label: 'Example Track' },
+        ],
+      }));
+      renderPage();
+      const round = await screen.findByRole('link', { name: /Example Round/ });
+      expect(round.getAttribute('href')).toBe('/rounds/r1');
+      expect(screen.getByRole('link', { name: /Example Track/ }).getAttribute('href')).toBe('/music/tracks/t1');
+    });
+
+    // A song synced from a NEWER peer can carry a link type this client has no
+    // route for — it must still render its name, not a dead link.
+    it('renders an unknown link type as a plain chip, not a link', async () => {
+      api.getSong.mockResolvedValue(song({ links: [{ type: 'stem-pack', id: 'x1', label: 'Future Record' }] }));
+      renderPage();
+      expect(await screen.findByText('Future Record')).toBeTruthy();
+      expect(screen.queryByRole('link', { name: /Future Record/ })).toBeNull();
+    });
+
+    it('adds a link from the picker and sends it on save with the target title', async () => {
+      api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
+      renderPage('/songbook/abc?mode=edit');
+      const target = await screen.findByLabelText('Record to link');
+      await waitFor(() => expect(within(target).getAllByRole('option').length).toBe(2));
+      fireEvent.change(target, { target: { value: 'r1' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(api.updateSong).toHaveBeenCalled());
+      const [, patch] = api.updateSong.mock.calls[0];
+      expect(patch.links).toEqual([{ type: 'round', id: 'r1', label: 'Example Round' }]);
+    });
+
+    // Absent vs. intentionally-empty: removing the last link must SEND [] so the
+    // stored list is cleared, not omit the key (which would preserve it).
+    it('sends an explicit empty array when the last link is removed', async () => {
+      api.getSong.mockResolvedValue(song({ links: [{ type: 'round', id: 'r1', label: 'Example Round' }] }));
+      api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
+      renderPage('/songbook/abc?mode=edit');
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove link to Example Round' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(api.updateSong).toHaveBeenCalled());
+      expect(api.updateSong.mock.calls[0][1].links).toEqual([]);
+    });
+
+    // Re-validating an untouched array on every save would 400 the WHOLE save
+    // for a song synced from a newer peer whose links exceed this version's
+    // bounds — a field the user never touched. Omitting the key takes the
+    // schema's absent-preserves branch instead.
+    it('omits links from the PATCH when the user edited something else', async () => {
+      api.getSong.mockResolvedValue(song({ links: [{ type: 'round', id: 'r1', label: 'Example Round' }] }));
+      api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
+      renderPage('/songbook/abc?mode=edit');
+      const titleInput = await screen.findByLabelText('Title');
+      fireEvent.change(titleInput, { target: { value: 'Renamed Song' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(api.updateSong).toHaveBeenCalled());
+      const [, patch] = api.updateSong.mock.calls[0];
+      expect(patch.title).toBe('Renamed Song');
+      expect('links' in patch).toBe(false);
+    });
+
+    // A label is free text — it is another record's title, captured at link
+    // time — so a delimiter-joined comparison lets two DIFFERENT link lists
+    // serialize identically and hides a real edit from the unsaved-changes
+    // guard. Reachable: two links stored, the first target later renamed to a
+    // title that happens to contain the separators, then the user replaces the
+    // two links with just that one. Both lists join to the same string.
+    it('sees a link edit that a delimiter-joined comparison would miss', async () => {
+      api.getSong.mockResolvedValue(song({
+        links: [
+          { type: 'round', id: 'r1', label: 'A' },
+          { type: 'round', id: 'r2', label: 'B' },
+        ],
+      }));
+      api.listRounds.mockResolvedValue({
+        rounds: [{ id: 'r1', title: 'A\nround:r2|B' }, { id: 'r2', title: 'B' }],
+      });
+      const { router } = renderPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
+
+      // Drop both links, then re-add the renamed one → a single link whose label
+      // is the two old rows run together.
+      const removals = await screen.findAllByRole('button', { name: /^Remove link to/ });
+      expect(removals).toHaveLength(2);
+      fireEvent.click(removals[1]);
+      fireEvent.click(screen.getAllByRole('button', { name: /^Remove link to/ })[0]);
+      fireEvent.change(screen.getByLabelText('Record to link'), { target: { value: 'r1' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+
+      await navigate(router, '/songbook');
+      // Blocked: the discard prompt is up and we're still on the song.
+      expect(screen.queryByText('All songs index')).toBeNull();
+      expect(screen.getByText('Discard your unsaved changes to this song?')).toBeTruthy();
+    });
+
+    it('keeps editing usable when the picker lists fail to load', async () => {
+      api.listRounds.mockRejectedValue(new Error('boom'));
+      api.listTracks.mockRejectedValue(new Error('boom'));
+      renderPage('/songbook/abc?mode=edit');
+      const target = await screen.findByLabelText('Record to link');
+      await waitFor(() => expect(target.disabled).toBe(true));
+      expect(screen.getByLabelText('Title').value).toBe('Example Song');
+    });
+
+    // Opening Edit must not read as dirty just because `links` is an array —
+    // a by-reference compare would flag every open (#3902 guard).
+    it('does not treat an untouched links array as an unsaved edit', async () => {
+      api.getSong.mockResolvedValue(song({ links: [{ type: 'round', id: 'r1', label: 'Example Round' }] }));
+      const { router } = renderPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
+      await screen.findByLabelText('Title');
+      await navigate(router, '/songbook');
+      expect(await screen.findByText('All songs index')).toBeTruthy();
+    });
+  });
+
+  describe('fit-to-duration autoscroll preset (#4100)', () => {
+    // jsdom lays nothing out, so the scroll container reports 0/0 — stub the two
+    // metrics the preset measures. 2000 tall in a 500 viewport = 1500px of travel.
+    const stubScrollMetrics = (scrollHeight, clientHeight) => {
+      const sh = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
+      const ch = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
+      return () => { sh.mockRestore(); ch.mockRestore(); };
+    };
+
+    it('hides the Fit button for a song with no scroll-time target', async () => {
+      renderPage();
+      expect(await screen.findByLabelText('Autoscroll speed')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /^Fit autoscroll/ })).toBeNull();
+    });
+
+    it('sets the speed from the sheet travel over the target time', async () => {
+      const restore = stubScrollMetrics(2000, 500);
+      api.getSong.mockResolvedValue(song({ scrollDurationSec: 100 }));
+      renderPage();
+      // The button announces the target in M:SS.
+      const fit = await screen.findByRole('button', { name: 'Fit autoscroll to 1:40' });
+      const speed = screen.getByLabelText('Autoscroll speed');
+      expect(speed.value).toBe('30'); // hook default, untouched until the click
+
+      toast.error.mockClear(); // the shared module mock outlives earlier tests
+      fireEvent.click(fit);
+      // 1500px of travel / 100s = 15px/s. Measuring raw scrollHeight (2000/100 =
+      // 20) would land the sheet at the bottom a full screenful early.
+      expect(speed.value).toBe('15');
+      expect(toast.error).not.toHaveBeenCalled();
+      restore();
+    });
+
+    it('clamps a target the speed slider cannot honour', async () => {
+      const restore = stubScrollMetrics(2000, 500);
+      api.getSong.mockResolvedValue(song({ scrollDurationSec: 3600 }));
+      renderPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'Fit autoscroll to 60:00' }));
+      // 1500px over an hour is 0.4px/s — floored at the slider's own minimum,
+      // never set to an off-scale value the control can't represent.
+      const speed = screen.getByLabelText('Autoscroll speed');
+      expect(speed.value).toBe('5');
+      expect(Number(speed.min)).toBe(5);
+      restore();
+    });
+
+    it('says so instead of silently "fitting" when the sheet fits on screen', async () => {
+      const restore = stubScrollMetrics(400, 400); // zero travel
+      api.getSong.mockResolvedValue(song({ scrollDurationSec: 100 }));
+      renderPage();
+      const fit = await screen.findByRole('button', { name: 'Fit autoscroll to 1:40' });
+      toast.error.mockClear();
+      fireEvent.click(fit);
+      expect(toast.error).toHaveBeenCalledWith('Nothing to autoscroll — this sheet already fits on screen');
+      expect(screen.getByLabelText('Autoscroll speed').value).toBe('30'); // unchanged
+      restore();
+    });
+
+    it('saves a typed scroll time and clears it with an explicit null', async () => {
+      api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
+      renderPage('/songbook/abc?mode=edit');
+      const input = await screen.findByLabelText('Scroll time (seconds)');
+      expect(input.value).toBe(''); // no target on the fixture
+
+      fireEvent.change(input, { target: { value: '210' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(api.updateSong).toHaveBeenCalled());
+      expect(api.updateSong.mock.calls[0][1].scrollDurationSec).toBe(210);
+
+      // Clearing sends null (a real clear), not an omitted key — which the PATCH
+      // merge would read as "leave the stored target alone".
+      fireEvent.change(screen.getByLabelText('Scroll time (seconds)'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(api.updateSong).toHaveBeenCalledTimes(2));
+      const cleared = api.updateSong.mock.calls[1][1];
+      expect('scrollDurationSec' in cleared).toBe(true);
+      expect(cleared.scrollDurationSec).toBe(null);
+    });
+
+    it('treats a retyped scroll time as clean (unsaved-changes guard)', async () => {
+      api.getSong.mockResolvedValue(song({ scrollDurationSec: 210 }));
+      renderPage('/songbook/abc?mode=edit');
+      const input = await screen.findByLabelText('Scroll time (seconds)');
+      expect(input.value).toBe('210');
+      fireEvent.change(input, { target: { value: '120' } });
+      fireEvent.change(input, { target: { value: '210' } });
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
+      expect(screen.queryByText(/Discard your unsaved changes/)).toBeNull();
+    });
+
+    it('prompts before dropping an edited scroll time', async () => {
+      renderPage('/songbook/abc?mode=edit');
+      fireEvent.change(await screen.findByLabelText('Scroll time (seconds)'), { target: { value: '210' } });
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
+      expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
+    });
+  });
+
   describe('unsaved-edit guard (#3902)', () => {
+    const settleSongLinksEditor = () => act(async () => {});
+
+    // SongLinksEditor starts its picker loads when edit mode mounts. Drain its
+    // mount promises inside act so their state updates cannot spill into a
+    // later guard case on a slower CI runner (#4226).
+    const renderEditPage = async (path = '/songbook/abc?mode=edit', options) => {
+      const page = renderPage(path, options);
+      await screen.findByLabelText('Content');
+      await settleSongLinksEditor();
+      return page;
+    };
+
+    // Model the picker results arriving after the edit form has rendered, as
+    // they can on a slower CI runner. The helper above must settle both loads.
+    beforeEach(() => {
+      api.listRounds.mockImplementation(() => Promise.resolve().then(() => ({
+        rounds: [{ id: 'r1', title: 'Example Round' }],
+      })));
+      api.listTracks.mockImplementation(() => Promise.resolve().then(() => [
+        { id: 't1', title: 'Example Track' },
+      ]));
+    });
+
     const editSheet = async (value = 'Edited sheet text') => {
       const textarea = await screen.findByLabelText('Content');
       fireEvent.change(textarea, { target: { value } });
@@ -586,8 +850,8 @@ K:  o - - - - - o -`;
     };
 
     it('switches straight to play mode when the draft is clean', async () => {
-      renderPage('/songbook/abc?mode=edit');
-      fireEvent.click(await screen.findByRole('button', { name: 'View' }));
+      await renderEditPage();
+      fireEvent.click(screen.getByRole('button', { name: 'View' }));
       // The edit-mode PREVIEW renders the sheet text too, so "we left edit
       // mode" is asserted on the form going away, not on the sheet appearing.
       await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
@@ -596,7 +860,7 @@ K:  o - - - - - o -`;
     });
 
     it('confirms before the View toggle discards unsaved edits', async () => {
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
       // Still in edit mode, with the discard confirm armed.
@@ -614,11 +878,12 @@ K:  o - - - - - o -`;
       await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
       expect((await screen.findByLabelText('Content')).value).toBe(SHEET);
+      await settleSongLinksEditor();
       expect(api.updateSong).not.toHaveBeenCalled();
     });
 
     it('confirms before the All songs link leaves with unsaved edits', async () => {
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('link', { name: /All songs/ }));
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -627,8 +892,8 @@ K:  o - - - - - o -`;
     });
 
     it('treats a retyped capo value as clean (number input round-trip)', async () => {
-      renderPage('/songbook/abc?mode=edit');
-      const capo = await screen.findByLabelText('Capo');
+      await renderEditPage();
+      const capo = screen.getByLabelText('Capo');
       fireEvent.change(capo, { target: { value: '3' } });
       fireEvent.change(capo, { target: { value: '2' } });
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
@@ -638,8 +903,8 @@ K:  o - - - - - o -`;
 
     it('treats tag whitespace and a trailing comma as clean (parseTags round-trip)', async () => {
       api.getSong.mockResolvedValue(song({ tags: ['campfire', 'fingerstyle'] }));
-      renderPage('/songbook/abc?mode=edit');
-      const tags = await screen.findByLabelText('Tags (comma-separated)');
+      await renderEditPage();
+      const tags = screen.getByLabelText('Tags (comma-separated)');
       expect(tags.value).toBe('campfire, fingerstyle');
       // Same saved value — different raw text.
       fireEvent.change(tags, { target: { value: 'campfire,fingerstyle,' } });
@@ -653,7 +918,7 @@ K:  o - - - - - o -`;
       api.updateSong.mockImplementation((_id, patch) => new Promise((resolve) => {
         resolveSave = () => resolve(song({ ...patch }));
       }));
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -670,7 +935,7 @@ K:  o - - - - - o -`;
     });
 
     it('lets a modified click open All songs in a new tab without prompting', async () => {
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       // ⌘/Ctrl-click opens a second tab and leaves this editor standing — there
       // is no unsaved work at risk, so the guard must not swallow it.
@@ -683,7 +948,7 @@ K:  o - - - - - o -`;
     // palette jump, a voice ui_navigate, the browser Back button. They all
     // reach the router the same way, so driving router.navigate covers them.
     it('confirms before a sidebar/⌘K navigation leaves with unsaved edits', async () => {
-      const { router } = renderPage('/songbook/abc?mode=edit');
+      const { router } = await renderEditPage();
       await editSheet();
       await navigate(router, '/songbook');
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -698,7 +963,7 @@ K:  o - - - - - o -`;
     });
 
     it('discards and completes the parked navigation on confirm', async () => {
-      const { router } = renderPage('/songbook/abc?mode=edit');
+      const { router } = await renderEditPage();
       await editSheet();
       await navigate(router, '/songbook');
       fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
@@ -707,7 +972,7 @@ K:  o - - - - - o -`;
     });
 
     it('confirms before the browser Back button leaves with unsaved edits', async () => {
-      const { router } = renderPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
+      const { router } = await renderEditPage('/songbook/abc?mode=edit', { history: ['/songbook'] });
       await editSheet();
       await navigate(router, -1);
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -716,7 +981,7 @@ K:  o - - - - - o -`;
 
     it('lets a navigation through once the draft is saved clean', async () => {
       api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
-      const { router } = renderPage('/songbook/abc?mode=edit');
+      const { router } = await renderEditPage();
       await editSheet();
       await navigate(router, '/songbook');
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();
@@ -728,7 +993,7 @@ K:  o - - - - - o -`;
 
     it('drops the armed confirm once a save settles the draft', async () => {
       api.updateSong.mockImplementation((_id, patch) => Promise.resolve(song({ ...patch })));
-      renderPage('/songbook/abc?mode=edit');
+      await renderEditPage();
       await editSheet();
       fireEvent.click(screen.getByRole('button', { name: 'View' }));
       expect(await screen.findByText('Discard your unsaved changes to this song?')).toBeTruthy();

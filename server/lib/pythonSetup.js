@@ -1,10 +1,10 @@
-import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFile, spawn } from './childProcess.js';
+import { existsSync, readdirSync } from 'node:fs';
 import { arch, homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { PATHS } from './fileUtils.js';
-import { safeChildProcessEnv, whichFirst } from './processEnv.js';
+import { safeChildProcessOptions, whichFirst, whichFirstSync } from './processEnv.js';
 import { createLineReader } from './streamLines.js';
 import { getCudaCapability } from './cudaCapability.js';
 
@@ -56,6 +56,32 @@ export const pipNameFor = (importName) => PIP_NAMES[importName] || importName;
 
 const HOME = homedir();
 
+// uv-managed CPython installs (`uv python install 3.10`). These are standalone
+// python-build-standalone builds — no conda MKL/OpenMP in the DLL search path —
+// which makes them the right base for a torch venv, so they rank with the
+// python.org installs and ahead of conda. uv's install root is versioned and
+// platform-tagged (`cpython-3.10.19-windows-x86_64-none`), so it has to be
+// enumerated rather than listed. Newest version first; a bad read (uv absent,
+// which is the common case) yields nothing rather than throwing.
+const UV_PYTHON_ROOT = IS_WIN
+  ? join(HOME, 'AppData', 'Roaming', 'uv', 'python')
+  : join(HOME, '.local', 'share', 'uv', 'python');
+
+function uvPythonCandidates() {
+  let entries;
+  try {
+    entries = readdirSync(UV_PYTHON_ROOT);
+  } catch {
+    return [];
+  }
+  // Sort by the version triple descending, so 3.13 beats 3.10 and 3.10.19 beats
+  // the bare 3.10 alias. localeCompare's numeric mode keeps 3.9 < 3.10.
+  return entries
+    .filter((name) => name.startsWith('cpython-'))
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+    .map((name) => join(UV_PYTHON_ROOT, name, IS_WIN ? 'python.exe' : join('bin', 'python3')));
+}
+
 // Earlier = preferred. Non-externally-managed Pythons (venvs, conda) win
 // over Homebrew/system Pythons because PEP 668 blocks pip there.
 const PYTHON_CANDIDATES = IS_WIN
@@ -98,7 +124,7 @@ const PYTHON_CANDIDATES = IS_WIN
 export async function probePythonArch(pythonPath) {
   const { stdout } = await execFileAsync(pythonPath, [
     '-c', 'import platform; print(platform.machine())'
-  ], { env: safeChildProcessEnv(), timeout: 10_000 }).catch(() => ({ stdout: '' }));
+  ], safeChildProcessOptions({ timeout: 10_000 })).catch(() => ({ stdout: '' }));
   return stdout.trim() || null;
 }
 
@@ -115,6 +141,57 @@ const firstArchMatch = async (candidates, predicate) => {
   const idx = arches.findIndex((a) => a && predicate(a));
   return idx >= 0 ? candidates[idx] : null;
 };
+
+// First installed candidate — the synchronous half of detectPython(), for
+// callers that cannot await (spawnSetupScript in lib/setupScriptRunner.js,
+// where an extra await would open an abort window between the in-flight claim
+// and the spawn). Prefer detectPython() when you can: the arch probe this
+// skips is what keeps an x86_64 conda from beating an arm64 Homebrew python
+// for mlx wheels on Apple Silicon.
+export function detectPythonSync() {
+  const present = PYTHON_CANDIDATES.find((p) => existsSync(p));
+  if (present) return present;
+  // Same PATH fallback detectPython() ends on — without it a Python installed
+  // somewhere the candidate list does not name (scoop, chocolatey, a custom
+  // dir) reads as "no Python at all", which is exactly the box where the
+  // Windows installer then falls back to its broken `python3` default.
+  const found = whichFirstSync(IS_WIN ? 'python' : 'python3');
+  // The WindowsApps alias is a Store launcher, not an interpreter: it opens the
+  // Microsoft Store and exits, so a venv built from it never appears.
+  if (found && /\\Microsoft\\WindowsApps\\/i.test(found)) return null;
+  return found || null;
+}
+
+// The interpreter to build a torch venv FROM — a different question than
+// detectPythonSync's "which interpreter can we pip into".
+//
+// Those two answers conflict. `detectPythonSync` ranks conda highly precisely
+// because conda is not PEP 668 externally-managed, so `installPackages` can pip
+// straight into it. But a venv created from a conda base installs torch fine and
+// then dies at `import torch` with "WinError 1114: c10.dll initialization routine
+// failed" — conda's MKL/OpenMP DLLs poison the child venv's DLL search path.
+// uv/python.org standalone builds are the reverse: externally-managed (so a bad
+// pip target) but a perfect venv base.
+//
+// So this prefers standalone builds and only falls back to detectPythonSync's
+// answer when there are none — a conda-based venv still beats no venv at all,
+// and the setup script's own import check reports it when it can't work.
+export function detectVenvBasePythonSync() {
+  const standalone = [
+    ...uvPythonCandidates(),
+    ...(IS_WIN
+      ? [
+          join(HOME, 'AppData', 'Local', 'Programs', 'Python', 'Python313', 'python.exe'),
+          join(HOME, 'AppData', 'Local', 'Programs', 'Python', 'Python312', 'python.exe'),
+          join(HOME, 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'python.exe'),
+          'C:\\Python313\\python.exe',
+          'C:\\Python312\\python.exe',
+          'C:\\Python311\\python.exe',
+        ]
+      : []),
+  ];
+  return standalone.find((p) => existsSync(p)) || detectPythonSync();
+}
 
 export async function detectPython() {
   // mlx ships arm64-only wheels; prefer an arm64 interpreter on Apple Silicon
@@ -182,7 +259,7 @@ export async function isFlux2VenvHealthy() {
   if (cachedFlux2Healthy !== null) return cachedFlux2Healthy;
   const py = resolveFlux2Python();
   if (!py) { cachedFlux2Healthy = false; return false; }
-  const ok = await execFileAsync(py, ['-c', 'from diffusers import Flux2KleinPipeline'], { env: safeChildProcessEnv(), timeout: 30_000 })
+  const ok = await execFileAsync(py, ['-c', 'from diffusers import Flux2KleinPipeline'], safeChildProcessOptions({ timeout: 30_000 }))
     .then(() => true)
     .catch(() => false);
   cachedFlux2Healthy = ok;
@@ -350,6 +427,62 @@ export function invalidateAcestepPython() {
   cachedAcestepPython = null;
 }
 
+// ACE-Step 1.5 has a different runtime from v1: its installed package supplies
+// the multi-component Transformers pipeline that loads the fixed HF snapshot
+// with trust_remote_code. Keep it in a sibling venv so v1 renders remain
+// reproducible even when the two packages need different torch stacks.
+const ACESTEP15_VENV_CANDIDATES = IS_WIN
+  ? [
+      join(HOME, '.portos', 'venv-acestep15', 'Scripts', 'python.exe'),
+      join(PATHS.data, 'python', 'venv-acestep15', 'Scripts', 'python.exe'),
+    ]
+  : [
+      join(HOME, '.portos', 'venv-acestep15', 'bin', 'python3'),
+      join(PATHS.data, 'python', 'venv-acestep15', 'bin', 'python3'),
+    ];
+
+export const ACESTEP15_VENV_DEFAULT = ACESTEP15_VENV_CANDIDATES[0];
+export const ACESTEP15_RUNTIME_DIR = '';
+
+let cachedAcestep15Python = null;
+export function resolveAcestep15Python() {
+  if (cachedAcestep15Python && existsSync(cachedAcestep15Python)) return cachedAcestep15Python;
+  for (const p of ACESTEP15_VENV_CANDIDATES) {
+    if (existsSync(p)) { cachedAcestep15Python = p; return p; }
+  }
+  return null;
+}
+
+export function invalidateAcestep15Python() {
+  cachedAcestep15Python = null;
+}
+
+const MINIMAX_MUSIC3_VENV_CANDIDATES = IS_WIN
+  ? [
+      join(HOME, '.portos', 'venv-minimax-music3', 'Scripts', 'python.exe'),
+      join(PATHS.data, 'python', 'venv-minimax-music3', 'Scripts', 'python.exe'),
+    ]
+  : [
+      join(HOME, '.portos', 'venv-minimax-music3', 'bin', 'python3'),
+      join(PATHS.data, 'python', 'venv-minimax-music3', 'bin', 'python3'),
+    ];
+
+export const MINIMAX_MUSIC3_VENV_DEFAULT = MINIMAX_MUSIC3_VENV_CANDIDATES[0];
+export const MINIMAX_MUSIC3_RUNTIME_DIR = '';
+
+let cachedMinimaxMusic3Python = null;
+export function resolveMinimaxMusic3Python() {
+  if (cachedMinimaxMusic3Python && existsSync(cachedMinimaxMusic3Python)) return cachedMinimaxMusic3Python;
+  for (const p of MINIMAX_MUSIC3_VENV_CANDIDATES) {
+    if (existsSync(p)) { cachedMinimaxMusic3Python = p; return p; }
+  }
+  return null;
+}
+
+export function invalidateMinimaxMusic3Python() {
+  cachedMinimaxMusic3Python = null;
+}
+
 // MuScriptor (audio → MIDI transcription for the Rounds workbench + Music Video
 // parsing, #reference-audio-to-midi) runs in its own venv at
 // ~/.portos/venv-muscriptor — the `muscriptor` pip package pulls its own torch
@@ -394,7 +527,7 @@ export async function isMuscriptorRuntimeReady() {
   if (cachedMuscriptorReady) return true;
   const py = resolveMuscriptorPython();
   if (!py) return false;
-  const ok = await execFileAsync(py, ['-c', 'from muscriptor import TranscriptionModel'], { env: safeChildProcessEnv(), timeout: 30_000 })
+  const ok = await execFileAsync(py, ['-c', 'from muscriptor import TranscriptionModel'], safeChildProcessOptions({ timeout: 30_000 }))
     .then(() => true)
     .catch(() => false);
   cachedMuscriptorReady = ok;
@@ -435,7 +568,7 @@ export async function createVenv(basePython, targetDir) {
     ? join(targetDir, 'Scripts', 'python.exe')
     : join(targetDir, 'bin', 'python3');
   if (existsSync(venvPython)) return venvPython;
-  await execFileAsync(basePython, ['-m', 'venv', targetDir], { env: safeChildProcessEnv(), timeout: 120_000 });
+  await execFileAsync(basePython, ['-m', 'venv', targetDir], safeChildProcessOptions({ timeout: 120_000 }));
   if (!existsSync(venvPython)) {
     throw new Error(`Venv created but interpreter missing at ${venvPython}`);
   }
@@ -455,10 +588,11 @@ export async function probePythonHealth(pythonPath) {
     '  "basePrefix": sys.base_prefix,',
     '  "stdlib": sysconfig.get_path("stdlib"),',
     '  "arch": platform.machine(),',
+    '  "pythonVersion": platform.python_version(),',
     '  "imports": imports,',
     '}))',
   ].join('\n');
-  const { stdout } = await execFileAsync(pythonPath, ['-c', probe], { env: safeChildProcessEnv(), timeout: 30_000 });
+  const { stdout } = await execFileAsync(pythonPath, ['-c', probe], safeChildProcessOptions({ timeout: 30_000 }));
   const data = JSON.parse(stdout.trim().split(/\r?\n/).pop());
   const installed = [];
   const missing = [];
@@ -479,12 +613,13 @@ export async function probePythonHealth(pythonPath) {
     missingPip: missing.map(pipNameFor),
     externallyManaged,
     interpreterArch: data.arch || null,
+    pythonVersion: data.pythonVersion || null,
   };
 }
 
 export async function checkPackages(pythonPath) {
-  const { installed, missing, missingPip } = await probePythonHealth(pythonPath);
-  return { installed, missing, missingPip };
+  const { installed, missing, missingPip, pythonVersion } = await probePythonHealth(pythonPath);
+  return { installed, missing, missingPip, pythonVersion };
 }
 
 // Spawn a child, stream its stdout+stderr line-by-line via `onLog`, resolve
@@ -492,7 +627,7 @@ export async function checkPackages(pythonPath) {
 // live child handle so the caller's outer closure can track it for SIGTERM.
 function streamSpawn(bin, args, onLog, onProc) {
   return new Promise((resolve) => {
-    const proc = spawn(bin, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(bin, args, safeChildProcessOptions({ stdio: ['ignore', 'pipe', 'pipe'] }));
     onProc(proc);
     // `splitRe: /[\r\n]+/` so a torch/tqdm progress bar that redraws with a
     // bare `\r` surfaces each redraw as its own log line; the carry buffer

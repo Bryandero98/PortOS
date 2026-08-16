@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { HardDrive, RefreshCw, Archive, Trash2, ChevronDown, ChevronRight, FolderOpen, File, Package } from 'lucide-react';
 import * as api from '../services/api';
 import { formatBytes, formatDateNumeric } from '../utils/formatters';
-import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
+import { SkeletonRegion, SkeletonRows } from '../components/ui/Skeleton';
 import toast from '../components/ui/Toast';
 import socket from '../services/socket';
 import { useAsyncAction } from '../hooks/useAsyncAction';
@@ -284,9 +284,17 @@ function CategoryRow({ cat, maxSize, onExpand, expanded, detail, onArchive, onPu
               )}
             </div>
           ) : (
-            <div className="p-3 flex items-center gap-2 text-xs text-gray-500">
-              <BrailleSpinner text="Loading" />
-      </div>
+            // Reserve the item table's rows and columns rather than centering a
+            // spinner in the panel (#4147). `max-h-64` matches the loaded
+            // scroller so expanding a category doesn't resize when it fills in.
+            <SkeletonRegion label={`Loading ${cat.label} contents`} className="max-h-64 overflow-hidden">
+              <SkeletonRows
+                rows={5}
+                columnWidthClasses={itemScoped
+                  ? ['flex-1', 'w-14', 'w-10', 'w-4']
+                  : ['flex-1', 'w-14', 'w-10']}
+              />
+            </SkeletonRegion>
           )}
         </div>
       )}
@@ -444,6 +452,9 @@ export default function DataManager() {
     setBackups(prev => prev.filter(b => b.name !== filename));
   };
 
+  // `fullHeight` + `padded` + the `p-4` bar/body mirror the loaded shell below,
+  // and stay correct now that `/data` is an `isFullWidthRoute` — its `<main>`
+  // supplies neither the scroll container nor the padding.
   if (loading) {
     return (
       <PageSkeleton
@@ -465,10 +476,14 @@ export default function DataManager() {
 
   const maxSize = overview?.categories?.[0]?.size || 1;
 
+  // `/data` is an `isFullWidthRoute` (Layout.jsx), so `<main>` is a bare
+  // `relative overflow-hidden` and this shell owns the only scroll region.
+  // `min-h-0` on the column and on the body keeps a tall body scrolling instead
+  // of stretching the shell past `<main>` (#4145).
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-port-border">
+      <div className="shrink-0 flex items-center justify-between p-4 border-b border-port-border">
         <div className="flex items-center gap-3">
           <HardDrive className="w-8 h-8 text-port-accent" />
           <div>
@@ -492,7 +507,7 @@ export default function DataManager() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 min-h-0 overflow-auto p-4">
         {/* Summary cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
           <div className="bg-port-card rounded-lg p-3 border border-port-border">

@@ -20,10 +20,12 @@ import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normal
 import { isPlainObject } from '../lib/objects.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
+import { resolveTaskTargetBranch, shouldStripTaskTargetBranch } from '../lib/taskTargetBranch.js';
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, isAgentPausedTask, resolvePausedTaskResume, retirePausedAgent } from '../lib/taskPauseHold.js';
 import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
 import { isInvestigationTask } from '../lib/investigationTasks.js';
 import { PAUSED_BLOCKED_CATEGORIES, USER_DECISION_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
+import { splitTaskPromptFields } from '../lib/cosTaskPrompt.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
 import { CLAIM_METADATA_KEYS } from './cosTaskClaim.js';
@@ -60,10 +62,13 @@ export { PAUSED_BLOCKED_CATEGORIES };
 // both are legitimate execution outcomes worth recording).
 const isTerminalTaskStatus = (status) => status === 'completed' || status === 'blocked';
 
-// Legacy fields an `updateTask` patch may carry directly (vs nested under
-// `metadata`); they're normalized into `metadata` on write. Listed once so the
-// content-edit detector and the normalizer below can't drift apart.
-const LEGACY_DIRECT_FIELDS = ['context', 'model', 'provider', 'effort', 'app'];
+// Fields an `updateTask` patch may carry directly (vs nested under `metadata`);
+// they're normalized into `metadata` on write. Listed once so the content-edit
+// detector and the normalizer below can't drift apart. `prompt` joined the list
+// with the #4153 split so the task editor can edit the agent-facing payload the
+// same way it edits the human note — deliberately WITHOUT re-classification, so
+// a multi-line note edit can't overwrite the payload (see `splitTaskPromptFields`).
+const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'app'];
 
 // Equality for metadata values across a fresh markdown re-parse: primitives by
 // ===, arrays/objects (reviewers[], screenshots[], …) by JSON since the two
@@ -318,6 +323,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // Build metadata object
     const metadata = {};
     if (taskData.context) metadata.context = taskData.context;
+    // The full agent-facing payload, when the producer names it explicitly
+    // (#4153). Producers that still pass a multi-line `context` are classified
+    // by `splitTaskPromptFields` below, so both call shapes converge.
+    if (typeof taskData.prompt === 'string') metadata.prompt = taskData.prompt;
     if (taskData.model) metadata.model = taskData.model;
     if (taskData.provider) metadata.provider = taskData.provider;
     if (taskData.effort) metadata.effort = taskData.effort;
@@ -326,6 +335,12 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // speech layer can announce its completion (see voice/proactiveTriggers.js).
     if (taskData.voiceDispatch === true) metadata.voiceDispatch = true;
     if (taskData.isRecovery === true) metadata.isRecovery = true;
+    // Series Autopilot gap tasks (seriesAutopilot/session.js `fileGap`) carry the
+    // series they were filed for so a later run can retire the ones it has moved
+    // past. Without this the only handle is the description prefix, which is
+    // stable by construction but a fragile thing to key a status flip on.
+    if (taskData.autopilotGapSeriesId) metadata.autopilotGapSeriesId = taskData.autopilotGapSeriesId;
+    if (taskData.autopilotGapKind) metadata.autopilotGapKind = taskData.autopilotGapKind;
     // Investigation-task guards (#2615): the durable fingerprint dedupes repeat
     // failures of the same cause; the marker blocks investigations-of-investigations;
     // affectedTasks names every task blocked on the cause (later dedup hits union in).
@@ -485,6 +500,18 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     };
   }
 
+  // Route a multi-line context payload to `metadata.prompt` (#4153). Applied to
+  // BOTH branches — the raw path is how the generator, the reference-watch
+  // analysis, and the repo-study filer queue their pre-built tasks, and they
+  // carry the same kind of multi-thousand-character body the direct-write path
+  // does. One classification, at CREATE only: `updateTask` deliberately leaves
+  // both fields alone, because the task editor's textarea is seeded from the
+  // NOTE and re-classifying a multi-line edit of it would overwrite the task's
+  // real prompt. A producer that already wrote `metadata.prompt` wins over the
+  // inference. See `server/lib/cosTaskPrompt.js` for the full contract.
+  const splitMetadata = splitTaskPromptFields(newTask.metadata);
+  if (splitMetadata !== newTask.metadata) newTask = { ...newTask, metadata: splitMetadata };
+
   // Add task to top or bottom based on position parameter
   if (taskData.position === 'top') {
     tasks.unshift(newTask);
@@ -531,7 +558,7 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   const release = await preparePauseRelease(taskId, updates);
   const result = await writeTaskUpdate(taskId, release ? { ...updates, metadata: release.metadata } : updates, taskType, { now });
   if (release && !result?.error) {
-    await retirePausedAgent(release.agentId, taskId, result?.metadata?.existingBranch || null);
+    await retirePausedAgent(release.agentId, taskId, resolveTaskTargetBranch(result?.metadata));
   }
   return result;
 }
@@ -627,14 +654,17 @@ async function writeTaskUpdate(taskId, updates, taskType, { now }) {
   // PAUSE-shaped blocks are the exception (`PAUSED_BLOCKED_CATEGORIES`): the task
   // is waiting on something outside itself and is expected to run again, so its
   // pointer is not spent. `orphan-cooldown` is a TIMED pause —
-  // `unblockExpiredOrphanCooldowns` (cosTaskGenerator.js) flips it back to
+  // `unblockExpiredCooldowns` (cosTaskGenerator.js) flips it back to
   // `pending` once `cooldownUntil` passes. The workspace blocks are a CONFIG pause:
   // the app's Repository Path is missing/unreachable, and the user fixes it and
   // revives the task. Stripping the pointer in either case means the revived task
   // starts clean and abandons the worktree its dead agent left behind — which is
   // exactly the recovery this mechanism exists for.
   if (isTerminalTaskStatus(updates.status) && !PAUSED_BLOCKED_CATEGORIES.has(updatedMetadata.blockedCategory)) {
-    delete updatedMetadata.existingBranch;
+    // The shared predicate identifies only retry-owned `existingBranch` pointers.
+    // Review-loop follow-ups own `reviewLoopPRBranch`, so their canonical target
+    // remains intact even when a legacy duplicate is removed here.
+    if (shouldStripTaskTargetBranch(updatedMetadata)) delete updatedMetadata.existingBranch;
     delete updatedMetadata.resumedFromAgentId;
     delete updatedMetadata.resumeWorktreePath;
   }
@@ -763,7 +793,13 @@ export async function reviveBlockedTask(taskId, { priority, metadata } = {}, tas
       ...(metadata || {}),
       totalSpawnCount: undefined,
       orphanRetryCount: undefined,
-      lastOrphanedAt: undefined
+      lastOrphanedAt: undefined,
+      // Same reasoning: the branch-busy patience budget is spent by the time a
+      // follow-up hard-blocks, so a revived one would hard-block again on the
+      // first busy race instead of waiting the other worktree out. NOT cleared on
+      // the cooldown revive (updateTask's blocked→pending path) — that runs on
+      // every wait and would defeat the cap.
+      worktreeBusyAttempts: undefined
     }
   }, taskType);
 }

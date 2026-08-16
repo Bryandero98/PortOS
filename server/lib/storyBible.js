@@ -314,6 +314,15 @@ const SENTENCE_CUT_FLOOR = 0.3;
 const SENTENCE_END_RE = /[.!?]["'’”)\]]*(?=\s|$)/g;
 const COMMON_ABBREVIATION_RE = /\b(?:dr|etc|jr|mr|mrs|ms|prof|sr|st|vs)\.$/i;
 
+// A clause boundary — the weaker cut used when a short field holds no sentence
+// terminator at all. Short caps (a 200-char transition label) routinely hold one
+// long clause-chained sentence, where the whole-word fallback leaves a dangling
+// half-clause ("...escrows the proceeds with no repayment lien, no") that reads
+// as an authoring gap to the next verify round. Because it is weaker than a
+// sentence break, it has to keep more of the field to be worth taking.
+const CLAUSE_END_RE = /[,;:—–]/g;
+const CLAUSE_CUT_FLOOR = 0.6;
+
 // Boundary-aware cap for PROSE fields (loglines, synopses, ending hooks). A hard
 // `slice(0, max)` clips mid-word ("...tracing the brand and"), which downstream
 // verify passes flag as "truncated mid-sentence" — and because a resolver then
@@ -321,10 +330,11 @@ const COMMON_ABBREVIATION_RE = /\b(?:dr|etc|jr|mr|mrs|ms|prof|sr|st|vs)\.$/i;
 // verify→resolve loop never converges. When the text fits, it's returned
 // untouched. When it must be clipped, back off to the last sentence terminator
 // (. ! ?) within the budget, provided that cut keeps at least
-// SENTENCE_CUT_FLOOR of it; otherwise (one run-on sentence, or a break so early
-// that honoring it would gut the field) fall back to the last whitespace
-// boundary so the result still ends on a whole word. Never returns more than
-// `max` chars.
+// SENTENCE_CUT_FLOOR of it; failing that, to the last clause boundary (, ; : —)
+// keeping at least CLAUSE_CUT_FLOOR; and failing that (a single clause running
+// past the cap, or a break so early that honoring it would gut the field) to the
+// last whitespace boundary so the result still ends on a whole word. Never
+// returns more than `max` chars.
 export function trimToClause(v, max) {
   if (!isStr(v)) return '';
   const s = v.trim();
@@ -339,7 +349,14 @@ export function trimToClause(v, max) {
     end = m.index + m[0].length;
   }
   if (end >= Math.floor(max * SENTENCE_CUT_FLOOR)) return window.slice(0, end).trim();
-  // No usable sentence break — clip on the last whole word instead of mid-word.
+  // No usable sentence break — back off to the last clause boundary instead, so
+  // the result ends on a complete clause rather than mid-thought. The mark itself
+  // is dropped (cut is exclusive) so the value never ends on a hanging comma.
+  let clause = -1;
+  CLAUSE_END_RE.lastIndex = 0;
+  for (let m = CLAUSE_END_RE.exec(window); m; m = CLAUSE_END_RE.exec(window)) clause = m.index;
+  if (clause >= Math.floor(max * CLAUSE_CUT_FLOOR)) return window.slice(0, clause).trim();
+  // Not even a usable clause break — clip on the last whole word instead of mid-word.
   const space = window.lastIndexOf(' ');
   return (space > 0 ? window.slice(0, space) : window).trim();
 }
@@ -1130,6 +1147,31 @@ export const SANITIZERS = Object.freeze({
   object: sanitizeObject,
 });
 
+/**
+ * Run ONE proposed field value through its kind's sanitizer and return the
+ * cleaned value (or `undefined` when the kind is unknown).
+ *
+ * Every LLM-expand merge needs this before it records a field as filled: the
+ * sanitizers drop rows missing required keys (a stat without `label`, a palette
+ * swatch without `name`) and fold an unrecognized enum to null, so accepting a
+ * raw proposal reports a field as updated that the next persist silently
+ * discards.
+ *
+ * The stub carries `target`'s identity fields because the top-level sanitizers
+ * REJECT a record without one — a character/object needs `name`, a place needs
+ * `name` OR `slugline` — and a rejected stub would discard every proposal for a
+ * slugline-only place. That rule is the reason this is one helper rather than
+ * the same three-line stub written at each merge site.
+ */
+export function sanitizeBibleField(kind, target, field, value) {
+  const sanitize = SANITIZERS[kind];
+  if (!sanitize) return undefined;
+  return sanitize(
+    { name: target?.name, slugline: target?.slugline, [field]: value },
+    { preserveTimestamps: false },
+  )?.[field];
+}
+
 // ---------------------------------------------------------------------------
 // Reveal-gated canon / spoiler scoping (#2178)
 // ---------------------------------------------------------------------------
@@ -1339,6 +1381,17 @@ const MERGE_CONFIG = Object.freeze({
     ],
   },
 });
+
+/**
+ * The fields the prose extractor's merge will fill only when blank, per kind.
+ *
+ * Exported so `universeBibleCompleteness.js` can be held to it: the extractor's
+ * no-clobber set and the expand prompts' field set are two answers to the same
+ * question ("what may an LLM fill in on an existing entry?"), and a field added
+ * to one but not the other is invisible to the completeness scan forever.
+ * `universeBibleCompleteness.test.js` asserts the two match modulo a named delta.
+ */
+export const bibleUserEditableFields = (kind) => MERGE_CONFIG[kind]?.userEditable || [];
 
 function indexEntry(map, entry, keyFields) {
   for (const { field, normalize } of keyFields) {

@@ -165,4 +165,51 @@ describe('projectToCatalog batching', () => {
     expect(await projectToCatalog('universe-1', null)).toEqual({ written: 0, skipped: 0 });
     expect(catalogDB.getIngredientTimestamps).not.toHaveBeenCalled();
   });
+
+  it('prevents older duplicate ingredientId from overwriting newer entry in same batch (#4006)', async () => {
+    catalogDB.getIngredientTimestamps.mockResolvedValue(timestampMap([['ing-dup', ROW_AT]]));
+
+    const stats = await projectToCatalog('universe-1', {
+      characters: [
+        entry('ing-dup', { name: 'Newer Entry', updatedAt: NEWER }),
+        entry('ing-dup', { name: 'Stale Duplicate', updatedAt: OLDER }),
+      ],
+    });
+
+    // Newer entry writes first; older duplicate entry is evaluated against appliedTimestamps (NEWER) and skipped
+    expect(catalogDB.updateIngredient).toHaveBeenCalledTimes(1);
+    expect(catalogDB.updateIngredient).toHaveBeenCalledWith(
+      'ing-dup',
+      { name: 'Newer Entry', payload: expect.anything() },
+      expect.anything(),
+    );
+    expect(stats).toEqual({ written: 1, skipped: 1 });
+  });
+
+  it('allows newer duplicate ingredientId to update older entry written earlier in same batch (#4006)', async () => {
+    catalogDB.getIngredientTimestamps.mockResolvedValue(timestampMap([['ing-dup', ROW_AT]]));
+
+    const stats = await projectToCatalog('universe-1', {
+      characters: [
+        entry('ing-dup', { name: 'Older First', updatedAt: ROW_AT }),
+        entry('ing-dup', { name: 'Newer Second', updatedAt: NEWER }),
+      ],
+    });
+
+    expect(catalogDB.updateIngredient).toHaveBeenCalledTimes(2);
+    expect(catalogDB.updateIngredient).toHaveBeenNthCalledWith(
+      1,
+      'ing-dup',
+      { name: 'Older First', payload: expect.anything() },
+      expect.anything(),
+    );
+    expect(catalogDB.updateIngredient).toHaveBeenNthCalledWith(
+      2,
+      'ing-dup',
+      { name: 'Newer Second', payload: expect.anything() },
+      expect.anything(),
+    );
+    expect(stats).toEqual({ written: 2, skipped: 0 });
+  });
 });
+

@@ -1,29 +1,33 @@
 /**
  * Media Models — manage the model catalog + clean up cached weights.
  *
- * Two concerns share this page:
+ * Three concerns share this page:
  *  1. Model catalog (registry): the image/video base models that can be picked
  *     in the gen forms. Built-in entries are read-only; user-added entries
  *     (installed from HuggingFace) are editable/removable. Adding a model here
  *     appends a `data/media-models.json` entry and hot-reloads the registry —
  *     no server restart (issue #2124).
- *  2. Cached weights: HF models live at HF's standard location
- *     (`~/.cache/huggingface/hub` unless HF_HOME is set). PortOS doesn't move or
- *     symlink them — it reads sizes for display and offers Delete to free disk.
+ *  2. MiniMax H3 text encoders: selectable prompt conditioners are separately
+ *     downloadable, so they need the same install/delete lifecycle as models.
+ *  3. Cached weights: HF models live at Hugging Face's configured cache
+ *     location. PortOS doesn't move or symlink them — it reads sizes for
+ *     display and offers Delete to free disk.
  *     LoRAs sit in `data/loras/`.
  *
  * The two views are JOINED on the HF repo id: a catalog row whose weights are
  * on disk shows its size and a "Delete weights" action inline, so freeing disk
  * for a model no longer means scrolling to a second list to find the same model
- * again. The cached-weights section below only lists what the catalog does NOT
- * cover (text encoders, orphaned/removed repos).
+ * again. The cached-weights section below only lists orphaned/removed repos.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { AlertTriangle, Trash2, Image as ImageIcon, Film, Plus, Pencil, Lock, X, Check, HardDrive } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import useConfirmDelete from '../hooks/useConfirmDelete';
+import { useModelDownloadStatus, textEncoderDownloadId } from '../hooks/useModelDownloadStatus';
+import ModelDownloadBadge from '../components/media/ModelDownloadBadge';
+import { formatBytes } from '../utils/formatters.js';
 import {
   listCachedModels,
   deleteCachedModel,
@@ -37,12 +41,13 @@ import {
 const DESTRUCTIVE_BTN = 'px-3 py-1.5 text-xs bg-port-error/20 hover:bg-port-error/40 text-port-error rounded disabled:opacity-50 flex items-center gap-1';
 
 /**
- * One arm-then-confirm destructive action. All four deletes on this page —
- * a catalog row's weights, a catalog row's registry entry, an orphaned cache
- * dir, a LoRA — are the same shape: a trigger that arms `confirmKey`, swapped
- * in place for the inline confirm pair. Keeping it in one component means the
- * confirm UX can't drift between them. `confirm` is a useConfirmDelete()
- * result, so only one action across the whole page is ever armed.
+ * One arm-then-confirm destructive action. Every delete on this page —
+ * a catalog row's weights, a text encoder, a catalog row's registry entry, an
+ * orphaned cache dir, or a LoRA — are the same shape: a trigger that arms
+ * `confirmKey`, swapped in place for the inline confirm pair. Keeping it in
+ * one component means the confirm UX can't drift between them. `confirm` is a
+ * useConfirmDelete() result, so only one action across the whole page is ever
+ * armed.
  */
 function DeleteAction({
   confirm,
@@ -53,6 +58,7 @@ function DeleteAction({
   confirmText = 'Delete',
   busyText = 'Deleting…',
   busy = false,
+  disabled = false,
   title,
   className = DESTRUCTIVE_BTN,
   icon: Icon = Trash2,
@@ -77,7 +83,7 @@ function DeleteAction({
     <button
       type="button"
       onClick={() => confirm.requestDelete(confirmKey)}
-      disabled={busy}
+      disabled={busy || disabled}
       title={title}
       className={className}
     >
@@ -88,7 +94,7 @@ function DeleteAction({
 
 export default function MediaModels() {
   const [data, setData] = useState({ models: [], loras: [], hubDir: '', diskUsage: {} });
-  const [registry, setRegistry] = useState({ video: [], image: [] });
+  const [registry, setRegistry] = useState({ video: [], image: [], textEncoders: [] });
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
@@ -105,6 +111,11 @@ export default function MediaModels() {
   // (`weights:` / `entry:` on a catalog row, `cache:` / `lora:` below) because
   // a catalog row carries TWO different deletes — its weights and its entry.
   const deleteConfirm = useConfirmDelete();
+  // H3 conditioner downloads already use the video download lane (including
+  // its SSE progress and cache verification). Reuse it here so installing from
+  // Models has the exact same explicit, recoverable behavior as Video Gen.
+  const textEncoderDownloads = useModelDownloadStatus({ kind: 'video' });
+  const wasDownloadingTextEncoder = useRef(false);
 
   const refresh = useCallback(() => {
     setError(null);
@@ -120,6 +131,19 @@ export default function MediaModels() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // The shared download hook refreshes its own cache badge when an SSE pull
+  // closes. Refresh the manager's cache-directory list once too, so the new
+  // encoder immediately gains its Delete weights action without a page reload.
+  useEffect(() => {
+    if (textEncoderDownloads.downloading) {
+      wasDownloadingTextEncoder.current = true;
+      return;
+    }
+    if (!wasDownloadingTextEncoder.current) return;
+    wasDownloadingTextEncoder.current = false;
+    listCachedModels({ silent: true }).then(setData).catch(() => {});
+  }, [textEncoderDownloads.downloading]);
 
   const handleDeleteModel = async (id) => {
     setBusy(id);
@@ -138,6 +162,18 @@ export default function MediaModels() {
       .then(() => {
         toast.success('LoRA deleted');
         setData((d) => ({ ...d, loras: d.loras.filter((l) => l.filename !== filename) }));
+      })
+      .catch((err) => toast.error(err.message || 'Delete failed'))
+      .finally(() => setBusy(null));
+  };
+
+  const handleDeleteTextEncoder = async (encoder, cacheId) => {
+    setBusy(cacheId);
+    await deleteCachedModel(cacheId, { silent: true })
+      .then(async () => {
+        toast.success(`${encoder.label} deleted — re-download it before selecting it in Video Gen`);
+        setData((d) => ({ ...d, models: d.models.filter((m) => m.id !== cacheId) }));
+        await textEncoderDownloads.refresh();
       })
       .catch((err) => toast.error(err.message || 'Delete failed'))
       .finally(() => setBusy(null));
@@ -199,7 +235,7 @@ export default function MediaModels() {
         // Merge the returned fields into the matching registry row locally
         // instead of refetching the whole catalog + cache.
         const merge = (list) => list.map((m) => (m.id === id ? { ...m, ...updated } : m));
-        setRegistry((r) => ({ video: merge(r.video), image: merge(r.image) }));
+        setRegistry((r) => ({ ...r, video: merge(r.video), image: merge(r.image) }));
       })
       .catch((err) => toast.error(err.message || 'Update failed'))
       .finally(() => setBusy(null));
@@ -211,6 +247,7 @@ export default function MediaModels() {
       .then(() => {
         toast.success('Custom model removed');
         setRegistry((r) => ({
+          ...r,
           video: r.video.filter((m) => m.id !== id),
           image: r.image.filter((m) => m.id !== id),
         }));
@@ -234,11 +271,16 @@ export default function MediaModels() {
   // repo -> cached HF dir entry. Both sides key off `org/name`, so a catalog
   // row can report its own on-disk size and delete its own weights.
   const cachedByRepo = new Map((data.models || []).filter((m) => m.repo).map((m) => [m.repo, m]));
+  // Older servers only returned video/image from this endpoint. Treat an
+  // absent textEncoders field as an empty catalog rather than letting a mixed
+  // version federation/UI update turn the page into a blank error state.
+  const textEncoders = Array.isArray(registry.textEncoders) ? registry.textEncoders : [];
   const claimedRepos = new Set(
-    [...registry.video, ...registry.image].map((m) => m.repo).filter(Boolean),
+    [...registry.video, ...registry.image, ...textEncoders].map((m) => m.repo).filter(Boolean),
   );
-  // Anything the catalog doesn't cover: text encoders, and repos whose catalog
-  // entry was removed but whose (multi-GB) weights are still on disk.
+  // Anything the catalog doesn't cover: repos whose catalog entry was removed
+  // but whose (multi-GB) weights are still on disk. Text encoders now have
+  // their own first-class rows below rather than hiding in this catch-all list.
   const unclaimedCached = (data.models || []).filter((m) => !claimedRepos.has(m.repo));
 
   const renderRegistryRow = (m) => {
@@ -362,6 +404,60 @@ export default function MediaModels() {
     );
   };
 
+  const renderTextEncoderRow = (encoder) => {
+    const cached = encoder.repo ? cachedByRepo.get(encoder.repo) : null;
+    const downloadId = encoder.builtIn ? null : textEncoderDownloadId(encoder.id);
+    const status = downloadId ? textEncoderDownloads.getStatus(downloadId) : null;
+    const downloading = textEncoderDownloads.activeModelId === downloadId;
+    const estimateLabel = encoder.sizeBytes ? `~${formatBytes(encoder.sizeBytes)}` : undefined;
+    return (
+      <div key={encoder.id} className="bg-port-bg border border-port-border rounded-lg p-3">
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-white flex items-center gap-2">
+              <span className="truncate">{encoder.label}</span>
+              {encoder.builtIn && <Lock className="w-3 h-3 text-gray-500 shrink-0" title="Included with the MiniMax H3 model weights" />}
+              {cached && (
+                <span className="text-[10px] px-1 rounded bg-port-success/20 text-port-success shrink-0 flex items-center gap-1">
+                  <HardDrive className="w-2.5 h-2.5" /> {cached.sizeHuman}
+                </span>
+              )}
+            </div>
+            {encoder.description && <p className="mt-1 text-xs text-gray-500">{encoder.description}</p>}
+            <p className="mt-1 text-[11px] text-gray-600 truncate">
+              {encoder.builtIn
+                ? 'Included with MiniMax H3 model weights'
+                : `${encoder.repo} · available for ${encoder.modelIds.length === 1 ? 'MiniMax H3' : `${encoder.modelIds.length} video models`}`}
+            </p>
+          </div>
+          {!encoder.builtIn && (
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <ModelDownloadBadge
+                status={status}
+                onDownload={() => textEncoderDownloads.start(downloadId)}
+                onCancel={textEncoderDownloads.cancel}
+                estimateLabel={estimateLabel}
+              />
+              {cached && (
+                <DeleteAction
+                  confirm={deleteConfirm}
+                  confirmKey={`text-encoder:${encoder.id}`}
+                  prompt={`Delete ${cached.sizeHuman} of ${encoder.label} weights?`}
+                  ariaLabel={`Confirm deleting cached weights for ${encoder.label}`}
+                  label="Delete weights"
+                  title="Delete this text encoder's downloaded weights (re-download before using it again)"
+                  busy={busy === cached.id}
+                  disabled={downloading}
+                  onConfirm={() => handleDeleteTextEncoder(encoder, cached.id)}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -396,6 +492,18 @@ export default function MediaModels() {
           <p className="text-xs text-gray-500">No models in the catalog yet — add one from HuggingFace below.</p>
         )}
       </div>
+
+      {textEncoders.length > 0 && (
+        <div className="bg-port-card border border-port-border rounded-xl p-5 space-y-3">
+          <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <HardDrive className="w-4 h-4" /> Video text encoders ({textEncoders.length})
+          </h2>
+          <p className="text-[11px] text-gray-600">
+            These prompt conditioners change how MiniMax H3 reads a prompt without changing its video weights. Choose one in Video Gen; download substitutes here ahead of time, or delete their weights to reclaim disk space.
+          </p>
+          <div className="space-y-2">{textEncoders.map(renderTextEncoderRow)}</div>
+        </div>
+      )}
 
       <div className="bg-port-card border border-port-border rounded-xl p-5 space-y-4">
         <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
@@ -444,7 +552,7 @@ export default function MediaModels() {
           <HardDrive className="w-4 h-4" /> Other cached weights ({unclaimedCached.length})
         </h2>
         <p className="text-[11px] text-gray-600">
-          Downloads with no catalog entry — text encoders, and models you removed from the catalog above. Weights for catalog models are deleted from their own row.
+          Downloads with no catalog entry, such as models you removed from the catalog above. Text encoders and catalog-model weights are deleted from their own rows.
         </p>
         {unclaimedCached.length === 0 ? (
           <p className="text-xs text-gray-500">Nothing here — every cached download belongs to a model in the catalog above.</p>

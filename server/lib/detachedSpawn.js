@@ -43,11 +43,12 @@
 // the supervisor records the exit status — exactly as if the original handle
 // had never gone away (#1332).
 
-import { spawn } from 'child_process';
+import { spawn } from './childProcess.js';
 import { EventEmitter } from 'events';
 import { constants as osConstants } from 'os';
 import { join } from 'path';
 import { open, readFile, writeFile, rm, stat, readdir } from 'fs/promises';
+import { killProcessTree } from './bufferedSpawn.js';
 import { ensureDir, sleep } from './fileUtils.js';
 import { withSpawnCwdEnv } from './spawnCwd.js';
 
@@ -230,6 +231,7 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
  * @param {boolean} [opts.killProcessGroup] - signal `-pid` on cancel/reap so a
  *   group-leader wrapper and every runtime child terminate together. The job is
  *   responsible for establishing its own process group before spawning children.
+ *   POSIX-only — the win32 fallback's `kill` always tree-kills, group or not.
  * @returns {Promise<object>} ChildProcess-like handle (resolves once the PID is known)
  */
 export async function spawnDetached(bin, args = [], {
@@ -242,9 +244,72 @@ export async function spawnDetached(bin, args = [], {
   // back to a normal child process: a real ChildProcess already satisfies the
   // handle contract (pid / stdout / stderr / on('close',code,signal) / kill /
   // exitCode / signalCode), so callers are unaffected. Surviving a pm2 restart
-  // is a POSIX-only guarantee; Windows keeps its prior spawn semantics.
+  // is a POSIX-only guarantee; Windows keeps its prior spawn semantics apart
+  // from `kill`, which is replaced with a tree-kill below.
   if (process.platform === 'win32') {
-    return spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    // A bare `child.kill()` terminates ONLY the runner. Windows has no process
+    // group for the POSIX `-pid` trick `killProcessGroup` relies on, so whatever
+    // the runner spawned (the ffmpeg mux a CUDA video runtime shells out to, a
+    // model download) survives as an orphan still holding the output file and
+    // GPU memory. Delegate to the shared tree-killer instead — `taskkill /T /F`
+    // on Windows, the POSIX group signal elsewhere (#4171). Note `taskkill /T /F`
+    // ignores the requested signal and force-kills, so a SIGTERM cancel is not
+    // graceful here; that is killProcessTree's documented Windows contract.
+    const nativeKill = child.kill.bind(child);
+    // What we hand killProcessTree: inherits from `child` (so `pid` reads
+    // through and `instanceof ChildProcess` still holds — the taskkill branch is
+    // gated on it) but exposes Node's own kill, so killProcessTree's POSIX
+    // fall-through can never re-enter the override below.
+    const treeKillTarget = Object.create(child, { kill: { value: nativeKill } });
+    // `taskkill` terminates the tree OUT OF BAND, so libuv never records an
+    // exit_signal and the child reports `close(1, null)` where Node's own
+    // `kill()` reported `close(null, 'SIGKILL')`. Callers classify on exactly
+    // that signal — videoGen's watchdog-success test keeps a finished .mp4 only
+    // when `signal === 'SIGKILL'`, and `describeSignalDeath` reads it for the
+    // failure reason — so re-stamp the signal we asked for onto the terminal
+    // events, matching both a native kill and the POSIX handle's decoded close.
+    // A concurrent clean exit (code 0) is left alone: the job really did finish.
+    // The stamp records the signal we ASKED for without waiting to confirm the
+    // tree died from it — exactly what Node's own `kill()` does (libuv stamps
+    // exit_signal at request time), and the guard above already refuses to fire
+    // at an exited child, so the only ambiguity left is a nonzero exit racing
+    // our kill by microseconds. Both readings mean "cancelled", so no async
+    // taskkill-completion plumbing is warranted here.
+    let killSignal = null;
+    const nativeEmit = child.emit.bind(child);
+    child.emit = (event, ...rest) => {
+      if (killSignal && (event === 'close' || event === 'exit') && rest[1] == null && rest[0] !== 0) {
+        child.exitCode = null;
+        child.signalCode = killSignal;
+        return nativeEmit(event, null, killSignal);
+      }
+      return nativeEmit(event, ...rest);
+    };
+    child.kill = (signal = 'SIGTERM') => {
+      // `taskkill /T /F` is destructive and Windows recycles PIDs freely, so it
+      // must never fire at a child that already exited — a late escalation
+      // (killWithEscalation's 8s SIGKILL) would tree-kill whatever inherited the
+      // number. Node's own kill is safe there because it holds a process HANDLE,
+      // not a pid; taskkill only gets the pid.
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) return false;
+      // Signal 0 is an existence PROBE, not a kill — hand it to Node so callers
+      // keep that meaning instead of force-killing the tree.
+      if (signal === 0 || signal === '0') return nativeKill(signal);
+      // Decode and validate the signal exactly as ChildProcess.kill() does:
+      // `kill()` also accepts a NUMBER while `close` reports NAMES (stamping a
+      // raw 9 would break every `signal === 'SIGKILL'` comparison), and an
+      // unknown signal must still throw ERR_UNKNOWN_SIGNAL rather than silently
+      // force-killing the tree. SIGNAL_BY_NUMBER is the same inverted table the
+      // POSIX handle decodes `wait` statuses with.
+      const signalName = typeof signal === 'number' ? SIGNAL_BY_NUMBER[signal] : signal;
+      if (!signalName || !(signalName in osConstants.signals)) return nativeKill(signal);
+      killSignal = signalName;
+      child.killed = true;
+      killProcessTree(treeKillTarget, signalName, { processGroup: true });
+      return true;
+    };
+    return child;
   }
 
   const handle = new EventEmitter();

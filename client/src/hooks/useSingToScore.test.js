@@ -47,10 +47,13 @@ describe('useSingToScore', () => {
     trackerOnUpdate = null;
     metroOpts = null;
     global.navigator.mediaDevices = { getUserMedia: vi.fn(async () => fakeStream()) };
+    // Safari 16.4+ only — jsdom has no `navigator.audioSession`, so the iOS
+    // session tests below stub the shape the arbiter writes to.
+    global.navigator.audioSession = { type: 'auto' };
     global.performance = { now: () => 1000 };
   });
 
-  afterEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.clearAllMocks(); delete global.navigator.audioSession; });
 
   it('walks idle → count-in → recording → idle and transcribes on stop', async () => {
     const { result } = renderHook(() => useSingToScore({ tempo: 120, score: 'time: 4/4', musicKey: 'C' }));
@@ -90,6 +93,10 @@ describe('useSingToScore', () => {
     await act(async () => { await result.current.start(); });
     expect(result.current.phase).toBe(SING_IDLE);
     expect(result.current.error).toBe('Permission denied');
+
+    global.navigator.mediaDevices.getUserMedia = vi.fn(async () => fakeStream());
+    await act(async () => { await result.current.start(); });
+    expect(result.current.phase).toBe(SING_COUNT_IN);
   });
 
   it('tears down mic, analyser, tracker, and metronome on unmount', async () => {
@@ -100,5 +107,98 @@ describe('useSingToScore', () => {
     expect(trackerStop).toHaveBeenCalled();
     expect(analyserClose).toHaveBeenCalled();
     expect(trackStop).toHaveBeenCalled();
+  });
+
+  it('allows only one microphone request while permission is pending', async () => {
+    let resolveStream;
+    navigator.mediaDevices.getUserMedia = vi.fn(() => new Promise((resolve) => {
+      resolveStream = resolve;
+    }));
+    const { result } = renderHook(() => useSingToScore({ tempo: 120, score: 'time: 4/4' }));
+
+    let firstStart;
+    act(() => {
+      firstStart = result.current.start();
+      result.current.start();
+    });
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveStream(fakeStream());
+      await firstStart;
+    });
+    expect(result.current.phase).toBe(SING_COUNT_IN);
+  });
+
+  it('stops a permission-pending stream when capture is cancelled', async () => {
+    let resolveStream;
+    navigator.mediaDevices.getUserMedia = vi.fn(() => new Promise((resolve) => {
+      resolveStream = resolve;
+    }));
+    const { result, unmount } = renderHook(() => useSingToScore({ tempo: 120, score: 'time: 4/4' }));
+
+    let startPromise;
+    act(() => { startPromise = result.current.start(); });
+    unmount();
+    await act(async () => {
+      resolveStream(fakeStream());
+      await startPromise;
+    });
+
+    expect(trackStop).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a permission rejection that arrives after capture was already cancelled', async () => {
+    let rejectStream;
+    navigator.mediaDevices.getUserMedia = vi.fn(() => new Promise((_resolve, reject) => {
+      rejectStream = reject;
+    }));
+    const { result, unmount } = renderHook(() => useSingToScore({ tempo: 120, score: 'time: 4/4' }));
+
+    let startPromise;
+    act(() => { startPromise = result.current.start(); });
+    unmount();
+
+    // The pending getUserMedia request rejects only after cancel() already
+    // tore this attempt down (generation bumped). The stale-generation branch
+    // in the catch handler must swallow this quietly — no error surfaced, no
+    // stream to stop, no double release.
+    await act(async () => {
+      rejectStream(new Error('Permission denied'));
+      await startPromise.catch(() => {});
+    });
+
+    expect(result.current.error).toBeNull();
+    expect(trackStop).not.toHaveBeenCalled();
+  });
+
+  // `playback` REFUSES capture on iOS, and the transport-driven players declare
+  // it document-wide, so this hook has to claim `play-and-record` around its own
+  // getUserMedia rather than relying on nothing else having claimed first (#4131).
+  describe('iOS audio session', () => {
+    it('claims play-and-record for the mic window and hands it back on stop', async () => {
+      const { result } = renderHook(() => useSingToScore({ tempo: 120, score: 'time: 4/4' }));
+      await act(async () => { await result.current.start(); });
+      expect(navigator.audioSession.type).toBe('play-and-record');
+
+      act(() => { result.current.stop(); });
+      expect(navigator.audioSession.type).toBe('auto');
+    });
+
+    it('hands the session back when the mic is denied', async () => {
+      global.navigator.mediaDevices.getUserMedia = vi.fn(async () => { throw new Error('Permission denied'); });
+      const { result } = renderHook(() => useSingToScore({ tempo: 120 }));
+      await act(async () => { await result.current.start(); });
+      // A denied mic never reaches teardown(), so the claim has to be released
+      // on the rejection path or the page stays pinned record-capable.
+      expect(navigator.audioSession.type).toBe('auto');
+    });
+
+    it('hands the session back on unmount mid-capture', async () => {
+      const { result, unmount } = renderHook(() => useSingToScore({ tempo: 120, score: 'time: 4/4' }));
+      await act(async () => { await result.current.start(); });
+      unmount();
+      expect(navigator.audioSession.type).toBe('auto');
+    });
   });
 });

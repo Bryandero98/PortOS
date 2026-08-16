@@ -96,16 +96,14 @@ describe('<TracksManager> generator mode toggle', () => {
 
   const modeButton = (name) => screen.getByRole('button', { name });
 
-  it('shows the toggle on an unsaved track, with a hint instead of a panel', async () => {
+  it('shows audio generation on an unsaved track while keeping chiptune gated', async () => {
     renderAt('new');
     await screen.findByRole('group', { name: /generation mode/i });
 
     expect(modeButton('Audio model')).toBeInTheDocument();
     expect(modeButton('Chiptune score')).toBeInTheDocument();
-    // Gating generation on a saved track is correct and stays — but it must
-    // explain itself rather than render an empty region.
-    expect(screen.getByText(/Save the track first, then generate with an audio model/i)).toBeInTheDocument();
-    expect(screen.queryByTestId('gen-panel')).toBeNull();
+    expect(screen.getByTestId('gen-panel')).toBeInTheDocument();
+    expect(screen.queryByText(/Save the track first, then generate with an audio model/i)).toBeNull();
     expect(screen.queryByTestId('chiptune-panel')).toBeNull();
     // The renders block's own hint no longer claims to cover generation, so an
     // unsaved track doesn't show two near-identical "save first" sentences.

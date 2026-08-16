@@ -21,6 +21,7 @@ Index of everything under `docs/`. Start with the [root README](../README.md) fo
 | [SELF_UPDATE.md](./SELF_UPDATE.md) | Fork-aware self-update flow — release polling, `FORK_SYNC_REQUIRED`, fork sync |
 | [DEPS.md](./DEPS.md) | Dependency audit — every third-party package and its verdict |
 | [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) | Common runtime issues, known issues |
+| [WINDOWS_CONSOLE.md](./WINDOWS_CONSOLE.md) | Why console windows flash and steal focus on Windows, and the two fixes |
 | [GOALS_OPERATIONAL.md](./GOALS_OPERATIONAL.md) | Runtime operating principles the CoS agent reads (parsed by `goalProgress.js`) |
 | [METRICS.md](./METRICS.md) | The `METRICS.md` convention — how a managed app exposes its own success metrics so agents (incl. Layered Intelligence) can evaluate it against its goals |
 | [SECURITY_AUDIT.md](./SECURITY_AUDIT.md) | Historical hardening audit (2026-02, all items resolved) |
@@ -31,13 +32,13 @@ Start with the [product surface map](./features/product-surfaces.md) for a compl
 
 App management: [app-wizard](./features/app-wizard.md) · [autofixer](./features/autofixer.md) · [browser](./features/browser.md) · [error-handling](./features/error-handling.md) · [jira-sprint-manager](./features/jira-sprint-manager.md)
 
-Chief of Staff: [chief-of-staff](./features/chief-of-staff.md) · [cos-agent-runner](./features/cos-agent-runner.md) · [cos-enhancement](./features/cos-enhancement.md) · [agent-skills](./features/agent-skills.md) · [memory-system](./features/memory-system.md) · [claude-ollama](./features/claude-ollama.md) · [prompt-manager](./features/prompt-manager.md)
+Chief of Staff: [chief-of-staff](./features/chief-of-staff.md) · [cos-agent-runner](./features/cos-agent-runner.md) · [cos-enhancement](./features/cos-enhancement.md) · [agent-skills](./features/agent-skills.md) · [memory-system](./features/memory-system.md) · [claude-ollama](./features/claude-ollama.md) · [mtplx](./features/mtplx.md) · [prompt-manager](./features/prompt-manager.md)
 
 Identity & self: [digital-twin](./features/digital-twin.md) · [identity-system](./features/identity-system.md) · [soul-system](./features/soul-system.md) · [post](./features/post.md) (insights design spike: [plans/2026-06-03](./plans/2026-06-03-cross-domain-insights-engine.md))
 
 Knowledge: [brain-system](./features/brain-system.md) · [messages-security](./features/messages-security.md)
 
-Create: [writers-room](./features/writers-room.md) · [cybercity-v2](./features/cybercity-v2.md) · [sprite-export-contract](./features/sprite-export-contract.md)
+Create: [writers-room](./features/writers-room.md) · [cybercity-v2](./features/cybercity-v2.md) · [sprite-export-contract](./features/sprite-export-contract.md) · [video-text-encoders](./features/video-text-encoders.md)
 
 Comms & voice: [openclaw-operator-chat](./features/openclaw-operator-chat.md) ([pre-build audit](./research/2026-03-31-openclaw-operator-chat-audit.md)) · [stacker-news](./features/stacker-news.md) · [voice](./features/voice.md)
 

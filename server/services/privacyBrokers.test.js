@@ -7,8 +7,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
-vi.mock('../lib/db.js', () => ({ query: queryMock, withTransaction: vi.fn() }));
+const { queryMock, withTransactionMock } = vi.hoisted(() => ({ queryMock: vi.fn(), withTransactionMock: vi.fn() }));
+vi.mock('../lib/db.js', () => ({ query: queryMock, withTransaction: withTransactionMock }));
 
 const SELF = '00000000-0000-4000-8000-000000000001';
 vi.mock('./privacySubjects.js', () => ({ resolveSubjectId: (id) => id || SELF }));
@@ -22,9 +22,19 @@ const {
   parseCaRegistryCsv,
   parseBadboolList,
   listBrokerCases,
+  recordScanVerdict,
+  ensureSeeded,
+  resetEnsureSeededForTests,
 } = await import('./privacyBrokers.js');
 
 beforeEach(() => queryMock.mockReset());
+
+describe('ensureSeeded — syncing curated brokers on boot/upgrade (#4019)', () => {
+  it('calls seedCuratedBrokers on initial ensureSeeded invocation', async () => {
+    resetEnsureSeededForTests();
+    await expect(ensureSeeded()).resolves.not.toThrow();
+  });
+});
 
 describe('listBrokerCases — subject scoping (#3658)', () => {
   it('always scopes to a subject and binds the state filter as $2 (not a literal)', async () => {
@@ -163,6 +173,12 @@ describe('allowedTransitionsFor — client action gating (issue #2417)', () => {
     expect(allowed).toContain('not_found');
   });
 
+  it('lets awaiting_processing transition to found and human_task_queued (#4020)', () => {
+    const allowed = allowedTransitionsFor('awaiting_processing');
+    expect(allowed).toContain('found');
+    expect(allowed).toContain('human_task_queued');
+  });
+
   it('returns only the any-state target for an unknown state', () => {
     expect(allowedTransitionsFor('bogus')).toEqual(['human_task_queued']);
   });
@@ -211,5 +227,50 @@ describe('parseBadboolList', () => {
   it('accepts a { brokers: [...] } wrapper and drops nameless rows', () => {
     const out = parseBadboolList({ brokers: [{ url: 'https://x.example' }, { name: 'Yes' }] });
     expect(out.map((b) => b.name)).toEqual(['Yes']);
+  });
+});
+
+describe('recordScanVerdict — 23505 unique constraint fallback (#4021)', () => {
+  it('handles unique constraint violation 23505 during concurrent insert and falls back to update branch', async () => {
+    const clientMock = {
+      query: vi.fn(),
+    };
+    withTransactionMock.mockImplementation(async (fn) => fn(clientMock));
+
+    // 1. SELECT broker -> found
+    clientMock.query.mockResolvedValueOnce({ rows: [{ id: 'spokeo' }] });
+    // 2. SELECT existing case -> none found initially
+    clientMock.query.mockResolvedValueOnce({ rows: [] });
+    // 3. SAVEPOINT -> ok
+    clientMock.query.mockResolvedValueOnce({});
+    // 4. INSERT -> throws Postgres error 23505
+    const err23505 = new Error('duplicate key value violates unique constraint "idx_privacy_broker_cases_broker_subject"');
+    err23505.code = '23505';
+    clientMock.query.mockRejectedValueOnce(err23505);
+    // 5. ROLLBACK TO SAVEPOINT -> ok
+    clientMock.query.mockResolvedValueOnce({});
+    // 6. Re-SELECT existing case FOR UPDATE -> now found (inserted by concurrent call)
+    clientMock.query.mockResolvedValueOnce({ rows: [{ id: 'case-123', state: 'unscanned' }] });
+    // 7. UPDATE case -> success
+    const mockCaseRow = {
+      id: 'case-123',
+      subject_id: SELF,
+      broker_id: 'spokeo',
+      state: 'found',
+      found: true,
+      evidence: '{}',
+      disclosed_fields: [],
+      channel: null,
+      reason: null,
+      next_recheck_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    clientMock.query.mockResolvedValueOnce({ rows: [mockCaseRow] });
+
+    const result = await recordScanVerdict('spokeo', 'found');
+    expect(result).toBeDefined();
+    expect(result.id).toBe('case-123');
+    expect(result.state).toBe('found');
   });
 });

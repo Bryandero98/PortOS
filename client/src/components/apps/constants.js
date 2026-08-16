@@ -44,10 +44,42 @@ export function resolveLaunchPanelProcess(app, result) {
   return result?.results?.[processName]?.success === false ? null : processName;
 }
 
-export const getAppTypeLabel = (type) =>
-  type === 'ios-native' ? '📱 iOS' :
-  type === 'macos-native' ? '🖥️ macOS' :
-  type === 'swift' ? '🐦 Swift' : '🔨 Xcode';
+// Mirrors NON_NODE_TYPES / NON_STANDARDIZABLE_TYPES in
+// server/services/streamingDetect.js (parity tests assert the Sets match). The
+// PM2 standardizer writes a NODE ecosystem config from a prompt that opens "You
+// are analyzing a Node.js application", so a Python/Go/Docker/static repo must
+// not be offered the flow. It's a DENY list, not an allowlist of Node types:
+// `type` is a free-form string persisted on the app record, so records in the
+// wild carry legacy values this file has never heard of, and an allowlist would
+// silently withdraw the button from all of them. See the server's rationale.
+export const NON_NODE_TYPES = new Set(['python', 'go', 'docker', 'static']);
+
+export const NON_STANDARDIZABLE_TYPES = new Set([...NON_PM2_TYPES, ...NON_NODE_TYPES]);
+
+/** Whether the PM2 standardizer (which writes a NODE ecosystem config) applies. */
+export const isStandardizable = (type) => !NON_STANDARDIZABLE_TYPES.has(type);
+
+// Every app type that can reach a UI label. Kept TOTAL (with a raw-type
+// fallback) rather than a ternary chain ending in '🔨 Xcode' — that default
+// meant any type not explicitly listed rendered as an Xcode project.
+const APP_TYPE_LABELS = {
+  'ios-native': '📱 iOS',
+  'macos-native': '🖥️ macOS',
+  swift: '🐦 Swift',
+  xcode: '🔨 Xcode',
+  python: '🐍 Python',
+  go: '🐹 Go',
+  docker: '🐳 Docker',
+  static: '📄 Static',
+  desktop: '🎮 Desktop',
+  'vite+express': '⚡ Vite + Express',
+  vite: '⚡ Vite',
+  'single-node-server': '🟢 Node',
+  express: '🟢 Express',
+  nextjs: '▲ Next.js'
+};
+
+export const getAppTypeLabel = (type) => APP_TYPE_LABELS[type] || type || 'Unknown';
 
 // Where an app's autonomous work items live. Mirrors WORK_TRACKERS +
 // TRACKER_LABELS in server/lib/workTracker.js — shared by the Edit App picker

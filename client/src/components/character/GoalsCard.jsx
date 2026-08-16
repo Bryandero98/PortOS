@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { Target, ArrowRight } from 'lucide-react';
 import { getGoalsTree } from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';
+import { GOALS_LIST_PATH, goalDetailPath } from '../goals/goalConstants';
 
 // The human's real life-goals, surfaced read-only on the Character sheet (#2675) so the sheet
 // reflects what the person is actually working toward. Surface, don't duplicate: the goals
@@ -12,11 +13,6 @@ import BrailleSpinner from '../BrailleSpinner';
 // Like SkillsCard/MetricsCard on the same page this is deliberately a plain read-only card —
 // Slice 5 (#2677) owns the page's framing/redesign, so it stays easy to restyle or relocate
 // wholesale.
-
-// Goals has no routed per-goal detail today (GoalsListView selects into a local `selectedGoal`
-// panel), so every row links to the list rather than inventing a deep link the router cannot
-// honor. See PLAN.md — routing that selection through the URL is the goals feature's job.
-export const GOALS_PATH = '/goals/list';
 
 const TOP_N = 4;
 
@@ -28,13 +24,13 @@ const TOP_N = 4;
 // is stable. Real urgencies are clamped to [0,1] server-side, so -1 can never collide.
 const urgencyRank = (urgency) => (Number.isFinite(urgency) ? urgency : -1);
 
-// A missing `status` counts as active, matching server/services/voice/tools/goals.js. Goals
-// synced in from MortalLoom are only run through `normalizeGoal` (server/services/identity/
-// store.js), whose PORTOS_GOAL_DEFAULTS backfills every field EXCEPT status — so a
-// status-less goal is a real, reachable shape, and dropping it here would render a
-// user's populated goal list as "No active goals yet". Erring toward showing a goal is the
-// safe direction: the cost is at worst one stale row, versus a card that lies about the
-// user having no goals at all.
+// A missing `status` counts as active, matching server/services/voice/tools/goals.js.
+// `normalizeGoal` (server/services/identity/store.js) now defaults status to 'active' at the
+// MortalLoom sync boundary (#4123), so the server should no longer hand us a status-less goal —
+// but this stays lenient on purpose: a goals.json record written before status existed never
+// passes through that normalization, and dropping it here would render a user's populated goal
+// list as "No active goals yet". Erring toward showing a goal is the safe direction: the cost is
+// at worst one stale row, versus a card that lies about the user having no goals at all.
 const isActive = (goal) => Boolean(goal) && (goal.status === 'active' || !goal.status);
 
 export function selectTopGoals(goals, limit = TOP_N) {
@@ -56,7 +52,10 @@ function GoalRow({ goal }) {
 
   return (
     <Link
-      to={GOALS_PATH}
+      // Deep-links straight to this goal's detail panel (#4121) — the sheet is a
+      // signpost, so a row that dumped the user on the generic list made them hunt
+      // for the goal they just clicked.
+      to={goalDetailPath(goal.id)}
       // Named explicitly: the row's own text nodes would otherwise concatenate into a
       // redundant "Example Goal 25%" that never says where the link goes. The bar itself is
       // decorative — the percentage text is its accessible representation, matching how the
@@ -90,14 +89,12 @@ export default function GoalsCard() {
     // so the two surfaces can never show contradictory urgency. (Enriching the flat endpoint
     // instead would change a shared API's semantics.)
     //
-    // Two honest limits on how fresh that is, both the goals feature's to fix (see PLAN.md),
-    // and both landing on "sorts last" rather than on a wrong number:
-    //   - The tree only re-derives for goals it considers active (`goals.js` gates on a
-    //     strict status), so the status-less goals `isActive` admits keep whatever urgency
-    //     they carry — for MortalLoom-synced goals, none at all.
-    //   - The horizons it derives against are only as fresh as the last deriveLongevity()
-    //     run. Every urgency consumer shares that, and re-deriving from this read-only card
-    //     would write on a read path AND make the sheet disagree with /goals.
+    // The horizons that urgency is derived against are now recomputed server-side on every
+    // read (#4122), so the number is current no matter how long ago deriveLongevity() ran.
+    // One honest limit remains, and it lands on "sorts last" rather than on a wrong number:
+    // the tree only re-derives for goals it considers active (`goals.js` gates on a strict
+    // status), so the status-less goals `isActive` admits keep whatever urgency they carry —
+    // for MortalLoom-synced goals, none at all.
     //
     // silent: this card owns its own error UI (the message below), so letting request() toast
     // as well would surface the same failure twice.
@@ -124,7 +121,7 @@ export default function GoalsCard() {
         <h2 id="character-goals-heading" className="text-sm font-medium text-gray-300">Life Goals</h2>
         <span className="text-xs text-gray-500">— what you're actually working toward</span>
         {state.status === 'ready' && top.length > 0 && (
-          <Link to={GOALS_PATH} className="ml-auto text-xs text-port-accent hover:underline shrink-0">
+          <Link to={GOALS_LIST_PATH} className="ml-auto text-xs text-port-accent hover:underline shrink-0">
             View all
           </Link>
         )}
@@ -135,7 +132,7 @@ export default function GoalsCard() {
       {state.status === 'error' && (
         <p className="text-sm text-gray-500">
           Your goals could not be loaded right now.{' '}
-          <Link to={GOALS_PATH} className="text-port-accent hover:underline">Open Goals</Link>
+          <Link to={GOALS_LIST_PATH} className="text-port-accent hover:underline">Open Goals</Link>
         </p>
       )}
 
@@ -146,7 +143,7 @@ export default function GoalsCard() {
             Your sheet reflects what you're working toward — set a goal to fill it in.
           </p>
           <Link
-            to={GOALS_PATH}
+            to={GOALS_LIST_PATH}
             className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 rounded-lg text-sm font-medium bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors"
           >
             Set your goals <ArrowRight className="w-3.5 h-3.5" />

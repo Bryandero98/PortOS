@@ -225,10 +225,43 @@ jobs:
           CI_LINT_FILES: ${{ needs.impact.outputs.lint_files }}
         run: node scripts/run-ci-lint.js
 
+  windows-server:
+    name: Windows server unit tests
+    needs: impact
+    if: needs.impact.outputs.server_mode != 'skip'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Rebuild trusted native dependencies
+        run: node scripts/trusted-rebuilds.js server
+
+      - name: Check server entry-point syntax
+        run: node --check server/index.js
+
+      - name: Run server tests on Windows
+        env:
+          CI_TEST_MODE: ${{ needs.impact.outputs.server_mode }}
+          CI_TEST_FILES: ${{ needs.impact.outputs.server_files }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/run-ci-tests.js server
+
   gate:
     name: CI Gate
     if: always()
-    needs: [impact, server, client, database, lint]
+    needs: [impact, server, client, database, lint, windows-server]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job to pass
@@ -238,6 +271,7 @@ jobs:
           CLIENT_RESULT: ${{ needs.client.result }}
           DATABASE_RESULT: ${{ needs.database.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          WINDOWS_SERVER_RESULT: ${{ needs.windows-server.result }}
         run: |
           node -e '
             const results = {
@@ -246,6 +280,7 @@ jobs:
               client: process.env.CLIENT_RESULT,
               database: process.env.DATABASE_RESULT,
               lint: process.env.LINT_RESULT,
+              windows_server: process.env.WINDOWS_SERVER_RESULT,
             };
             const failed = Object.entries(results)
               .filter(([, result]) => !["success", "skipped"].includes(result));
@@ -255,3 +290,4 @@ jobs:
             }
             console.log("CI gate passed:", results);
           '
+

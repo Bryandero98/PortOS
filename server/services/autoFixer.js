@@ -129,6 +129,7 @@ const CATEGORY_TO_TIER = {
   'parse-error': FIX_TIERS.SCHEMA_TYPE,
   'bad-request': FIX_TIERS.SCHEMA_TYPE,
   'context-length': FIX_TIERS.SCHEMA_TYPE,
+  'ollama-context-window': FIX_TIERS.SCHEMA_TYPE,
   'output-length': FIX_TIERS.SCHEMA_TYPE,
   'build-error': FIX_TIERS.SCHEMA_TYPE,
   'lint-error': FIX_TIERS.SCHEMA_TYPE,

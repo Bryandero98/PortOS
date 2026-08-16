@@ -6,7 +6,7 @@
 
 import { access, appendFile, chmod, mkdir, open, readFile, readdir, stat, writeFile, rename, unlink, copyFile } from 'fs/promises';
 import { existsSync, statSync, createReadStream } from 'fs';
-import { execFile } from 'child_process';
+import { execFile } from './childProcess.js';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
 import { join, dirname, basename, extname, resolve as resolvePath, sep as PATH_SEP } from 'path';
@@ -20,6 +20,24 @@ import { createFileWriteQueue } from './fileWriteQueue.js';
 // don't each re-wrap it. Returns { stdout, stderr }.
 export const execFileAsync = promisify(execFile);
 const IS_WIN = process.platform === 'win32';
+
+// Call-time platform probe. `IS_WIN` above is a module-load snapshot (fine for
+// the path-shape helper at the bottom of this file); the Windows retry paths
+// below read the platform on every call so a POSIX host never carries a stale
+// decision and so the retry behavior is exercisable in tests.
+const isWindows = () => process.platform === 'win32';
+
+// Windows-only retry knobs (#4095). A destination lock from a concurrent reader
+// or an AV scan clears in milliseconds, so a handful of short retries is enough
+// to avoid both the writer's destination-missing backup swap and the reader's
+// phantom "nothing here yet".
+const WIN_RETRY_ATTEMPTS = 5;
+const WIN_RETRY_DELAY_MS = 10;
+// rename(2) failures that mean "the destination is momentarily locked", not
+// "this rename can never work".
+const WIN_RENAME_LOCK_CODES = ['EPERM', 'EACCES', 'EEXIST'];
+// read failures with the same transient meaning on the reader side.
+const WIN_READ_LOCK_CODES = ['EPERM', 'EACCES', 'EBUSY'];
 
 // Cache __dirname calculation for services importing this module
 const __lib_filename = fileURLToPath(import.meta.url);
@@ -259,9 +277,23 @@ export async function atomicWrite(filePath, data) {
   // overwrite), but still fails with EPERM/EACCES if the destination is locked (AV scan,
   // concurrent reader). Fall back to a backup-swap so the original file is never lost.
   const replace = async () => {
-    const err = await rename(tmp, filePath).then(() => null, (e) => e);
+    let err = await rename(tmp, filePath).then(() => null, (e) => e);
+    // Retry the ATOMIC rename before resorting to the backup swap (#4095). The
+    // swap below renames the destination away and back, so for that instant the
+    // destination DOES NOT EXIST — a concurrent read lands on ENOENT and reads
+    // it as a trustworthy "nothing here yet", silently handing the caller its
+    // default instead of the file's real contents. A transient lock clears in
+    // milliseconds, so retrying keeps almost every write on the atomic path and
+    // never opens that window.
+    if (isWindows()) {
+      for (let attempt = 1; err && attempt < WIN_RETRY_ATTEMPTS && WIN_RENAME_LOCK_CODES.includes(err.code); attempt += 1) {
+        await sleep(WIN_RETRY_DELAY_MS);
+        err = await rename(tmp, filePath).then(() => null, (e) => e);
+        if (!err) console.log(`⚠️ atomicWrite rename succeeded after ${attempt} retry(s): ${basename(filePath)}`);
+      }
+    }
     if (!err) return;
-    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EEXIST'].includes(err.code)) {
+    if (isWindows() && WIN_RENAME_LOCK_CODES.includes(err.code)) {
       const bak = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.bak`;
       const hadExisting = await rename(filePath, bak).then(() => true, (e) => {
         if (e.code === 'ENOENT') return false;
@@ -425,7 +457,8 @@ export function safeJSONParse(str, defaultValue = null, { allowArray = true, log
  *
  * NOTE: like `readJSONFile`, this conflates "absent" with "unreadable" — both
  * return null. When the caller derives a user-visible stat from the result (where
- * a fake empty is a lie, not a default), reach for `readJSONFileStrict` instead.
+ * a fake empty is a lie, not a default), reach for `tryReadFileStrict` (raw bytes)
+ * or `readJSONFileStrict` (parsed JSON) instead.
  *
  * @param {string} filePath - Path to read
  * @param {string|null} [encoding='utf8'] - Encoding (null for Buffer)
@@ -433,6 +466,40 @@ export function safeJSONParse(str, defaultValue = null, { allowArray = true, log
  */
 export async function tryReadFile(filePath, encoding = 'utf8') {
   return readFile(filePath, encoding).catch(() => null);
+}
+
+/**
+ * `tryReadFile` that reports whether the read is TRUSTWORTHY — the raw-bytes
+ * counterpart to `readJSONFileStrict`, for callers that parse (or count, or
+ * display) the contents themselves rather than handing the file to JSON.parse.
+ *
+ *   - ENOENT (never written) → `{ ok: true,  value: null }` — a genuine "nothing
+ *     here yet". Safe to treat as a real empty.
+ *   - any other read error   → `{ ok: false, value: null }` — EACCES, EIO,
+ *     EISDIR, a transient FS failure. We do NOT know the file is absent.
+ *   - read                   → `{ ok: true,  value: contents }`
+ *
+ * So the three states `tryReadFile` collapses into one `null` stay separable:
+ * `ok && value !== null` = read, `ok && value === null` = absent, `!ok` =
+ * present-but-unreadable. Windows swap-window retries are shared with
+ * `readJSONFileStrict`, so an `atomicWrite` in flight can't masquerade as ENOENT.
+ *
+ * @param {string} filePath - Path to read
+ * @param {string|null} [encoding='utf8'] - Encoding (null for Buffer)
+ * @returns {Promise<{ ok: boolean, value: string|Buffer|null }>}
+ *
+ * @example
+ * const { ok, value } = await tryReadFileStrict(LEDGER_FILE);
+ * if (!ok) throw new Error('ledger unreadable'); // never report a fake 0
+ */
+export async function tryReadFileStrict(filePath, encoding = 'utf8') {
+  return readWithSwapRetry(filePath, encoding).then(
+    (value) => ({ ok: true, value }),
+    // ENOENT is the ONLY errno that proves absence. Everything else — EACCES on
+    // the file or a parent dir, ENOTDIR, EIO — means we could not confirm it,
+    // which must stay distinct from "confirmed empty".
+    (err) => ({ ok: err?.code === 'ENOENT', value: null })
+  );
 }
 
 /**
@@ -484,6 +551,80 @@ export async function readFileTail(path, maxBytes) {
 const PARSE_FAILED = Symbol('json-parse-failed');
 
 /**
+ * True when a `<filePath>.*.bak` sibling is on disk — the signature of an
+ * `atomicWrite` backup swap that is mid-flight for THIS file, i.e. the only
+ * window in which the destination legitimately vanishes.
+ *
+ * Deliberately does NOT match `.tmp`: `atomicWrite` writes its temp file on
+ * EVERY write, including the first-ever create of a file that has no
+ * destination yet. Treating a `.tmp` sibling as evidence of a swap would turn a
+ * plain "not written yet" read into a retry that waits for the in-flight write
+ * and returns its brand-new contents — a different value than the read was
+ * entitled to, and a behavior change on POSIX-shaped callers. The `.bak` only
+ * exists between the swap's two renames.
+ *
+ * Non-throwing: an unreadable parent directory just means "no evidence of a
+ * swap". Only consulted on win32, and only after a read already failed with
+ * ENOENT, so the directory listing never lands on a POSIX read or a successful
+ * one. A `.bak` orphaned by a crash mid-swap costs the bounded retry budget
+ * (~50ms) on subsequent ENOENT reads of that path, never an incorrect answer.
+ *
+ * Matching is case-INSENSITIVE: NTFS/FAT are case-insensitive, so the reader's
+ * `filePath` casing need not match the casing the writer used to create the
+ * file (and therefore the casing `readdir` reports). A case-sensitive compare
+ * would miss the sibling and let the phantom-empty through.
+ *
+ * @param {string} filePath
+ * @returns {Promise<boolean>}
+ */
+async function hasSwapSibling(filePath) {
+  const entries = await readdir(dirname(filePath)).catch(() => null);
+  if (!entries) return false;
+  const prefix = `${basename(filePath).toLowerCase()}.`;
+  return entries.some((entry) => {
+    const name = entry.toLowerCase();
+    return name.startsWith(prefix) && name.endsWith('.bak');
+  });
+}
+
+/**
+ * `readFile(filePath, encoding)` with the Windows-only retries that keep a read
+ * racing `atomicWrite` from being mistaken for an empty/absent file (#4095).
+ *
+ * On POSIX this is a straight delegate — zero extra syscalls, zero delay.
+ *
+ * On win32 two transient failures are retried with a short backoff:
+ *   - EPERM/EACCES/EBUSY — the destination is momentarily locked (AV scan, the
+ *     writer's own open handle).
+ *   - ENOENT, but ONLY when `hasSwapSibling` shows a backup swap is mid-flight.
+ *     A file that was simply never written — or one whose first-ever write is
+ *     still in its temp stage — stays a silent "nothing here yet": one failed
+ *     read, no retry, no sleep.
+ *
+ * Rejects with the last error once the attempts are exhausted, so the caller's
+ * existing errno handling is unchanged.
+ *
+ * @param {string} filePath
+ * @param {string|null} [encoding='utf-8'] - Encoding (null for Buffer)
+ * @returns {Promise<string|Buffer>}
+ */
+async function readWithSwapRetry(filePath, encoding = 'utf-8') {
+  if (!isWindows()) return readFile(filePath, encoding);
+  for (let attempt = 0; ; attempt += 1) {
+    const outcome = await readFile(filePath, encoding).then((content) => ({ content }), (err) => ({ err }));
+    if (!outcome.err) {
+      if (attempt > 0) console.log(`⚠️ read succeeded after ${attempt} retry(s) — write swap in flight: ${basename(filePath)}`);
+      return outcome.content;
+    }
+    const last = attempt >= WIN_RETRY_ATTEMPTS - 1;
+    const retriable = WIN_READ_LOCK_CODES.includes(outcome.err.code)
+      || (outcome.err.code === 'ENOENT' && !last && await hasSwapSibling(filePath));
+    if (last || !retriable) throw outcome.err;
+    await sleep(WIN_RETRY_DELAY_MS);
+  }
+}
+
+/**
  * Read a JSON file, reporting whether the read is TRUSTWORTHY rather than
  * collapsing every failure into the default (the `readJSONFile` behavior below).
  *
@@ -519,9 +660,11 @@ const PARSE_FAILED = Symbol('json-parse-failed');
 export async function readJSONFileStrict(filePath, defaultValue = null, { allowArray = true, logError = true } = {}) {
   let content;
   try {
-    content = await readFile(filePath, 'utf-8');
+    content = await readWithSwapRetry(filePath);
   } catch (err) {
     // ENOENT = file doesn't exist → a trustworthy "nothing here yet", silently.
+    // On win32 an ENOENT that was really an `atomicWrite` swap window has
+    // already been retried above, so reaching here means genuinely absent.
     if (err.code === 'ENOENT') {
       return { ok: true, value: defaultValue };
     }
@@ -1199,8 +1342,9 @@ export async function saveImageUpload(dir, { filename, data }, { maxBytes }) {
  * Throws ServerError with the exact status/code/message contract the
  * attachment routes established (`INVALID_FILE_TYPE`, `FILE_TOO_LARGE`,
  * `INVALID_FILENAME` — all 400), so refactored routes keep their pinned
- * responses. Consolidates `routes/attachments.js` and
- * `routes/brainSongbook.js` (uploads.js has a different shape — see PLAN.md).
+ * responses. Consolidates `routes/attachments.js`, `routes/brainSongbook.js`,
+ * and `routes/uploads.js` — the last keeps its own richer response shape
+ * (`originalName` / `sizeFormatted` / `createdAt`) around these fields.
  *
  * @param {string} dir - Destination directory (created if missing).
  * @param {{ filename: string, data: string }} upload - Original filename +

@@ -296,7 +296,10 @@ export function resolveAutopilotObserver(options = {}, settings = null) {
 // Evidence-based provider/model/effort routing. Off by default until the user
 // opts in: run history is still collected while off, but an existing series or
 // stage choice must not silently change merely because enough samples accrued.
-// When enabled, explicit per-run choices and exact stage pins remain stronger.
+// When enabled it fills in only where nothing was chosen — an exact Prompts
+// stage pin, a per-stage route, and the run's own route (per-run picker OR the
+// series' `series.llm`, for the judge role as much as the creative one) all
+// remain stronger. session.js#roleLlm owns that precedence.
 export const DEFAULT_AUTO_SELECT_MODELS = false;
 export function resolveAutopilotAutoSelectModels(options = {}, settings = null) {
   const pec = settings?.pipelineEditorialChecks || {};

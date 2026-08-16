@@ -10,7 +10,7 @@
  * the model sees them.
  */
 
-import { execFile, spawn } from 'child_process';
+import { execFile, spawn } from '../../lib/childProcess.js';
 import { existsSync, statSync } from 'fs';
 import { unlink, writeFile, copyFile } from 'fs/promises';
 import { join, basename } from 'path';
@@ -21,6 +21,8 @@ import { ensureDir, PATHS, UUID_RE } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { createLineReader } from '../../lib/streamLines.js';
+import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
+import { prepareLocalMemory } from '../../lib/localMemory.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { videoLoraLayoutIssue } from '../../lib/safetensors.js';
 import { videoGenEvents } from './events.js';
@@ -36,28 +38,33 @@ import {
   contextPrefixFrames, tailWindowStartFrame,
 } from '../../lib/videoContinuity.js';
 import { hfChildEnv } from '../../lib/hfToken.js';
-import { inspectModelCache, findCachedRepoFile } from '../../lib/hfCache.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { inspectModelCache, findCachedRepoFile, findCachedRepoFiles } from '../../lib/hfCache.js';
+import { safeChildProcessEnv, safeChildProcessOptions } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
-import { videoLoraFamily } from '../../lib/runners.js';
+import { videoLoraFamily, isLtx2FamilyRuntime } from '../../lib/runners.js';
 import {
-  isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsGateId, videoModelTermsError,
-} from '../../lib/videoDisclosure.js';
-import { getSettings } from '../settings.js';
+  publicVideoTextEncoderOptions, resolveVideoTextEncoder,
+} from '../../lib/videoTextEncoders.js';
 import {
   isIcLoraMode, icLoraSpecForMode, resolveIcLoraWeight,
   assertIcReferenceCount, icResolutionIssue,
 } from '../../lib/icLoraWeights.js';
 import {
-  LTX2_VENV_PYTHON,
   LTX2_HELPER_SCRIPT,
+  LTX25_ENCODER_SHIM_DIR,
   WAN22_VENV_PYTHON,
   WAN22_HELPER_SCRIPT,
   MINIMAX_H3_VENV_PYTHON,
   MINIMAX_H3_HELPER_SCRIPT,
   MINIMAX_H3_REPO_DIR,
+  MINIMAX_H3_ENCODER_SHIM_DIR,
   MINIMAX_H3_EXPECTED_REVISION,
+  MINIMAX_H3_CUDA_VENV_PYTHON,
+  MINIMAX_H3_CUDA_HELPER_SCRIPT,
+  MINIMAX_H3_CUDA_OFFLOAD_PROFILES,
+  runtimeIsCacheOnly,
+  runtimeNeedsProcessGroupKill,
   HUNYUAN_VENV_PYTHON,
   HUNYUAN_HELPER_SCRIPT,
   HUNYUAN_REPO_DIR,
@@ -67,19 +74,21 @@ import {
   resolveByovRuntimeLoraCapable,
   videoLoraUnsupportedError,
   modelAnchorsLastFrame,
+  routesToWindowsHelper,
   assertByovRuntimeInstalled,
   invalidateByovReadyCache,
   pickDeathFingerprint,
 } from './runtimes.js';
-import { loadHistory, saveHistory, mutateVideoHistory } from './history.js';
+import { loadHistory, saveHistory, mutateVideoHistory, getHistoryItem } from './history.js';
 import { videoModeContractError, videoChainUnsupportedError, VIDEO_MODE_GATED_RUNTIMES } from './modeContract.js';
+import { minimaxH3ControlError } from './minimaxH3Controls.js';
 import { estimateRenderMs } from './eta.js';
 // Re-export the extracted runtime + history surface so existing deep imports
 // (`from '../videoGen/local.js'`) keep resolving every symbol they used to.
 export * from './runtimes.js';
 export * from './modeContract.js';
 export * from './eta.js';
-export { loadHistory, saveHistory, mutateVideoHistory };
+export { loadHistory, saveHistory, mutateVideoHistory, getHistoryItem };
 
 // LoRA wrapper for the notapalindrome `mlx_video` runtime. The stock
 // `mlx_video.generate_av` CLI has no --lora flag, but the package ships an
@@ -92,9 +101,11 @@ const AV_LORA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_av_lora.py')
 
 const execFileAsync = promisify(execFile);
 
-const IS_WIN = process.platform === 'win32';
-
 const MODULE_NOT_FOUND_RE = /ModuleNotFoundError: No module named ['"]([^'"]+)['"]/;
+// Shared-gallery uploads use the upload filename stem as their history id.
+// Rendered clips retain their UUID ids, so service callers may act on either
+// form after route validation.
+const UPLOADED_HISTORY_ID_RE = /^upload-[a-f0-9]{8}$/i;
 
 // Panel-side SIGKILL watchdog (defense-in-depth at the Node layer).
 //
@@ -162,10 +173,16 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 // them off the model instead of keeping their own lists. Applied by BOTH model
 // resolvers, so the render path and the API payload can never disagree about
 // what a model supports.
+// Also attached: the substitutable prompt conditioners the model's runtime can
+// load (lib/videoTextEncoders.js). Decorated rather than declared on the
+// registry entry so the picker can never offer an option this build's runner
+// has no key-remap for — and empty for every runtime without substitutions, so
+// the client renders no picker instead of a one-entry select.
 const decorateVideoModel = (m) => (m ? {
   ...m,
   lastFrameAnchored: modelAnchorsLastFrame(m),
   runtimeLoraCapable: byovRuntimeLoraCapable(m.runtime),
+  textEncoderOptions: publicVideoTextEncoderOptions(m),
 } : m);
 
 export const resolveVideoModel = (modelId) =>
@@ -283,7 +300,7 @@ export const resolveT2vTwoStageOverride = ({
 }) => {
   const enabled = ['1', 'true', 'yes', 'on']
     .includes(String(env.PORTOS_T2V_TWO_STAGE ?? '').trim().toLowerCase());
-  if (!enabled || runtime !== 'ltx2') return null;
+  if (!enabled || !isLtx2FamilyRuntime(runtime)) return null;
   // Only the default text mode — anything explicitly fflf/a2v/extend/image
   // is conditioned and out of scope for the T2V Standard experiment.
   if (mode != null && mode !== 'text') return null;
@@ -410,8 +427,36 @@ export const icLoraArgs = ({ mode, width, height, icReferencePaths, icLoraWeight
   return args;
 };
 
-const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
-  assertByovRuntimeInstalled('ltx2');
+/**
+ * Shim flags for a substituted LTX-2.5 prompt conditioner (#4320), or `[]` for
+ * the stock choice — so an unswapped render's argv is byte-identical to what it
+ * was before the feature existed.
+ *
+ * A 2.5 pack's own Gemma 4 tower wins unconditionally inside the pinned fork
+ * (`PromptEncoder._text_encoder_source` ignores `gemma_model_id` whenever the
+ * pack ships a local `text_encoder/` reporting `model_type: "gemma4"`), so the
+ * substitution is a shim directory the runner builds and then points that
+ * resolution at — NOT a repo id on `--gemma`, which is why this shares no flag
+ * with the ltx2 path. `textEncoder.paths` were already resolved against the HF
+ * cache by generateVideo; the helper runs offline and never downloads.
+ *
+ * `--text-encoder-config-json` is emitted only when the entry declares
+ * `configOverrides`, mirroring how the H3 builder omits its key-remap flags for
+ * a checkpoint that needs none.
+ */
+export const ltx25TextEncoderArgs = (textEncoder) => {
+  if (!textEncoder) return [];
+  const args = ['--text-encoder-id', textEncoder.id];
+  for (const path of textEncoder.paths) args.push('--text-encoder-file', path);
+  args.push('--text-encoder-shim-root', LTX25_ENCODER_SHIM_DIR);
+  if (Object.keys(textEncoder.configOverrides || {}).length > 0) {
+    args.push('--text-encoder-config-json', JSON.stringify(textEncoder.configOverrides));
+  }
+  return args;
+};
+
+const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+  assertByovRuntimeInstalled(model.runtime);
   // Map PortOS UI modes to the helper's subcommand. Native extend on ltx2
   // routes to ExtendPipeline.extend_from_video — conditions on the entire
   // source video's latent (motion + visual content) rather than just the
@@ -511,8 +556,7 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
     '--mode', helperMode,
     '--prompt', prompt,
     '--output', outputPath,
-    '--model', model.repo,
-    '--gemma', textEncoderRepo,
+    '--model', ltxModelPath || model.repo,
     '--width', String(width),
     '--height', String(height),
     '--num-frames', String(numFrames),
@@ -521,6 +565,13 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
     '--steps', String(steps),
     '--cfg-scale', String(guidance),
   ];
+  // LTX-2.5 packs ship Gemma 4 under text_encoder/. Passing the shared 2.3
+  // Gemma 3 encoder would either fail load or silently condition on the wrong
+  // model. The 2.3 runtime still needs the explicit shared encoder.
+  if (model.runtime === 'ltx2') args.push('--gemma', textEncoderRepo);
+  // The 2.5 substitution, which overrides the pack's OWN conditioner rather
+  // than naming a repo — the two runtimes share this builder but not a flag.
+  if (model.runtime === 'ltx25') args.push(...ltx25TextEncoderArgs(textEncoder));
   // User LoRAs — fused into the transformer via the pipeline's _pending_loras
   // hook. Emitted as a JSON list of { path, strength }; generate_ltx2.py sets
   // pipe._pending_loras before generation so the deltas fuse at load time
@@ -571,7 +622,7 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
       icStrength, icAttentionStrength, icSkipStage2,
     }));
   }
-  return { bin: LTX2_VENV_PYTHON, args };
+  return { bin: BYOV_RUNTIME_INFO[model.runtime].venvPython, args };
 };
 
 // The render-side adapter for the shared mode/source contract: `prepareParams`
@@ -628,11 +679,20 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
   return { bin: WAN22_VENV_PYTHON, args };
 };
 
-// Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
-// only exact, already-cached HF revisions; every network download remains an
-// explicit Video Gen UI action guarded by the model's terms acknowledgement.
-const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras }) => {
-  assertByovRuntimeInstalled('minimax_h3');
+// Everything both H3 builders must clear before they start assembling argv:
+// the venv is installed, the mode/source combination is legal, H3's fixed
+// controls were not overridden, and the entry carries its pin. The two lanes
+// had carried byte-identical copies of all four — the same shape that put the
+// control checks in `minimaxH3Controls.js` in the first place — so a field
+// added to `assertRenderModeContract` can no longer be threaded into one H3
+// runner and forgotten in the other. `repoLabel` is the only real difference:
+// the MLX entry pins a *transformer* repo, the CUDA entry the model repo.
+const assertMiniMaxH3Preflight = ({
+  runtimeId, repoLabel, model, mode, sourceImagePath, lastImagePath, keyframes,
+  extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths,
+  negativePrompt, disableAudio, tiling, numFrames, fps,
+}) => {
+  assertByovRuntimeInstalled(runtimeId);
   assertRenderModeContract({
     model,
     mode,
@@ -644,42 +704,27 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
     audioStartSec,
     icReferencePaths,
   });
-  if (negativePrompt?.trim()) {
-    throw new ServerError(
-      'MiniMax H3 is CFG-distilled and does not accept a negative prompt.',
-      { status: 400, code: 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED' },
-    );
-  }
-  if (disableAudio) {
-    throw new ServerError(
-      'MiniMax H3 jointly generates video and audio; its audio track cannot be disabled.',
-      { status: 400, code: 'MINIMAX_H3_AUDIO_REQUIRED' },
-    );
-  }
-  if (tiling && tiling !== 'auto') {
-    throw new ServerError(
-      'MiniMax H3 does not expose a tiling mode.',
-      { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
-    );
-  }
-  if (!Array.isArray(model.frameOptions) || !model.frameOptions.includes(Number(numFrames))) {
-    throw new ServerError(
-      `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${numFrames}.`,
-      { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
-    );
-  }
-  if (Number(fps) !== 24) {
-    throw new ServerError(
-      `MiniMax H3 runs at a fixed 24 fps; got ${fps}.`,
-      { status: 400, code: 'MINIMAX_H3_INVALID_FPS' },
-    );
-  }
+  const controlError = minimaxH3ControlError({ model, negativePrompt, disableAudio, tiling, numFrames, fps });
+  if (controlError) throw controlError;
   if (typeof model.repo !== 'string' || typeof model.revision !== 'string') {
     throw new ServerError(
-      `MiniMax H3 model "${model.id}" is missing its pinned transformer repo or revision.`,
+      `MiniMax H3 model "${model.id}" is missing its pinned ${repoLabel}.`,
       { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
     );
   }
+};
+
+// Build args for PipeNetwork's pinned MiniMax H3 MLX port. The helper resolves
+// only exact, already-cached HF revisions; every network download remains an
+// explicit Video Gen UI action guarded by the model's terms acknowledgement.
+const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras, textEncoder }) => {
+  assertMiniMaxH3Preflight({
+    runtimeId: 'minimax_h3',
+    repoLabel: 'transformer repo or revision',
+    model, mode, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath,
+    audioFilePath, audioStartSec, icReferencePaths,
+    negativePrompt, disableAudio, tiling, numFrames, fps,
+  });
   const checkpoint = Array.isArray(model.requiredWeights) ? model.requiredWeights[0] : null;
   const files = Array.isArray(checkpoint?.files) ? checkpoint.files : [];
   if (!checkpoint?.repo || !checkpoint?.revision || files.length === 0) {
@@ -715,7 +760,91 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
   // has already rejected LoRAs unless the probe proved this checkout can apply
   // them to the quantized DiT (see runtimes.js `loraProbeArgs`).
   for (const l of loras ?? []) args.push('--lora', l.path, '--lora-scale', String(l.strength));
+  // Substituted prompt conditioner (lib/videoTextEncoders.js). Absent for the
+  // stock choice, so the argv of an unswapped render is byte-identical to what
+  // it was before this feature existed. `textEncoder.paths` were already
+  // resolved against the HF cache by generateVideo — the helper never downloads.
+  // One --text-encoder-file per shard; the shim links them all into the same
+  // `text_encoder/`, which the loader globs.
+  if (textEncoder) {
+    args.push('--text-encoder-id', textEncoder.id);
+    for (const path of textEncoder.paths) args.push('--text-encoder-file', path);
+    args.push('--text-encoder-shim-root', MINIMAX_H3_ENCODER_SHIM_DIR);
+    for (const [from, to] of Object.entries(textEncoder.keyPrefixMap || {})) {
+      args.push('--text-encoder-key-prefix', `${from}=${to}`);
+    }
+    // Only for a conditioner published without the final norm — H3 reads the
+    // hidden state before it, but the pinned loader builds the full module tree
+    // and refuses to load with any parameter missing.
+    if (textEncoder.finalNormKey) args.push('--text-encoder-final-norm-key', textEncoder.finalNormKey);
+  }
   return { bin: MINIMAX_H3_VENV_PYTHON, args };
+};
+
+// Build args for MiniMax H3 on CUDA — diffusers' MiniMaxH3ModularPipeline in a
+// pip venv, which is the only H3 path an NVIDIA box has (the MLX port above is
+// Apple-Silicon-only). Same cache-only contract: the helper resolves exactly
+// the pinned revisions already on disk and never reaches the network, so every
+// download stays an explicit, terms-gated Video Gen action.
+//
+// Unlike the MLX lane this is ONE repo — diffusers' modular layout keeps the
+// transformer, conditioner, both VAEs and the schedulers in the model's own
+// `repo`, so the file list rides on `repoFiles` and there is no separate
+// upstream-checkpoint dependency to resolve.
+const buildMiniMaxH3CudaArgs = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath }) => {
+  assertMiniMaxH3Preflight({
+    runtimeId: 'minimax_h3_cuda',
+    repoLabel: 'repo or revision',
+    model, mode, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath,
+    audioFilePath, audioStartSec, icReferencePaths,
+    negativePrompt, disableAudio, tiling, numFrames, fps,
+  });
+  const files = Array.isArray(model.repoFiles) ? model.repoFiles.filter((file) => typeof file === 'string' && file) : [];
+  if (files.length === 0) {
+    // Fail here rather than let the helper fall back to a repo-wide resolve:
+    // `MiniMaxAI/MiniMax-H3` is ~498 GB and holds three layouts, so "load
+    // whatever is cached" is not a recoverable default for this model.
+    throw new ServerError(
+      `MiniMax H3 model "${model.id}" is missing its pinned diffusers component file list.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const args = [
+    MINIMAX_H3_CUDA_HELPER_SCRIPT,
+    '--model-repo', model.repo,
+    '--model-revision', model.revision,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--steps', String(steps),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  for (const file of files) args.push('--repo-file', file);
+  // A user-pinned offload recipe from data/media-models.json. Omitted, the
+  // helper sizes one from the card's own VRAM — the right default, since the
+  // registry entry is shared across every install that syncs it and can't know
+  // what GPU is on the other end. Validated here rather than left to the
+  // helper's `choices=`: argparse would reject a typo as an opaque non-zero
+  // child exit, well after the render was queued.
+  if (model.offloadProfile !== undefined && model.offloadProfile !== null && model.offloadProfile !== '') {
+    if (!MINIMAX_H3_CUDA_OFFLOAD_PROFILES.includes(model.offloadProfile)) {
+      throw new ServerError(
+        `MiniMax H3 model "${model.id}" declares an unknown offloadProfile "${model.offloadProfile}"; `
+        + `expected one of ${MINIMAX_H3_CUDA_OFFLOAD_PROFILES.join(', ')}.`,
+        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+      );
+    }
+    args.push('--offload-profile', model.offloadProfile);
+  }
+  // Anchor order is packed order, same as the MLX lane: diffusers takes the
+  // first keyframe as `image` (which sets the canvas) and the last as
+  // `last_image`, so a first-frame image must lead.
+  if (sourceImagePath) args.push('--image', sourceImagePath, '--anchor', 'first');
+  if (lastImagePath) args.push('--image', lastImagePath, '--anchor', 'last');
+  return { bin: MINIMAX_H3_CUDA_VENV_PYTHON, args };
 };
 
 // Allowed precision tokens for runners that expose dtype as a CLI flag. The
@@ -756,12 +885,12 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, textEncoder, outputPath, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
-  if (model.runtime === 'ltx2') {
-    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
+  if (isLtx2FamilyRuntime(model.runtime)) {
+    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
   }
   // IC-LoRA remix modes are an LTX-2 primitive (ICLoraPipeline) — no other
   // runtime has an equivalent. The route guards this too, but a non-route
@@ -780,14 +909,19 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
   // applicator. All of those macOS/mlx-only. The route already rejects the rest,
   // but a non-route caller (test, queue replay) — or a Windows install with a
   // hand-edited/synced entry — could reach here. Fail clearly rather than fall
-  // through to the IS_WIN generate_win.py branch below, which would silently drop
-  // the LoRAs and produce a base render the user thinks is LoRA-styled.
+  // through to the generate_win.py branch below, which would silently drop the
+  // LoRAs and produce a base render the user thinks is LoRA-styled.
   // The same predicate the enqueue gate uses, off the same decorated model, so
-  // the two can't disagree — and the reason text comes from one factory.
-  if (hasLoras && (!videoLoraFamily(model) || IS_WIN)) {
-    throw IS_WIN
+  // the two can't disagree — and the reason text comes from one factory. The
+  // legacy-Windows-helper arm is keyed on the RUNNER, not the platform: a
+  // Windows BYOV runtime now gets the same runner-based reason the enqueue gate
+  // gives it, instead of a blanket "can't fuse LoRAs on Windows" that would
+  // contradict it.
+  const usesWindowsHelper = routesToWindowsHelper(model);
+  if (hasLoras && (!videoLoraFamily(model) || usesWindowsHelper)) {
+    throw usesWindowsHelper
       ? new ServerError(
-        `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on Windows.`,
+        `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on the Windows LTX-Video helper.`,
         { status: 400, code: 'LORAS_REQUIRE_LTX2' },
       )
       : videoLoraUnsupportedError(model, modelId);
@@ -796,7 +930,10 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
     return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
   }
   if (model.runtime === 'minimax_h3') {
-    return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras });
+    return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, loras, textEncoder });
+  }
+  if (model.runtime === 'minimax_h3_cuda') {
+    return buildMiniMaxH3CudaArgs({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath });
   }
   if (model.runtime === 'hunyuan') {
     return buildHunyuanArgs({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath });
@@ -813,7 +950,9 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
   }
-  if (IS_WIN) {
+  // The site the predicate is named for: every BYOV runtime has declined above,
+  // so what's left on win32 is the legacy LTX-Video 0.9.5 diffusers wrapper.
+  if (routesToWindowsHelper(model)) {
     const scriptPath = join(PATHS.root, 'scripts', 'generate_win.py');
     const args = [scriptPath, '--model', modelId, '--prompt', prompt, '--height', String(height), '--width', String(width), '--num-frames', String(numFrames), '--fps', String(fps), '--steps', String(steps), '--guidance', String(guidance), '--seed', String(seed), '--output', outputPath];
     if (negativePrompt) args.push('--negative-prompt', negativePrompt);
@@ -891,7 +1030,19 @@ export const DEFAULT_NUM_FRAMES = 121;
 // a still regardless of how many frames carry it.
 export const IC_STILL_REFERENCE_FRAMES = 9;
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, hidden = false, jobId: providedJobId = null }) {
+const configuredVideoDimension = (value, fallback) => {
+  const configured = Number(value);
+  return Number.isFinite(configured) && configured >= 64 && configured <= 2048
+    ? configured
+    : fallback;
+};
+
+const resolveVideoDimensions = (model, width, height) => ({
+  width: width ?? configuredVideoDimension(model?.defaultWidth, 768),
+  height: height ?? configuredVideoDimension(model?.defaultHeight, 512),
+});
+
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -901,18 +1052,6 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   const model = resolveVideoModel(modelId);
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
-  // Final execution-boundary gate for a restricted model's license. Route
-  // preparation also rejects early, but internal producers, persisted jobs, and
-  // retries all reach this function directly — so authorization is resolved
-  // HERE, from the install's recorded acknowledgements, rather than trusted
-  // from a caller-supplied parameter. Read at execution time, so a withdrawn
-  // acknowledgement (or a license revision that mints a new id) fails a job
-  // that was queued while it was still accepted. Ungated models never pay for
-  // the settings read.
-  if (videoModelTermsGateId(model)
-    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
-    throw videoModelTermsError(model);
-  }
   // Validate the mode contract before cache lookups, image resize, or staging
   // work. Internal producers and persisted/retried jobs bypass route
   // preparation, so silently dropping one of these inputs here would render a
@@ -934,6 +1073,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     audioStartSec,
     icReferencePaths,
   });
+  // Registry defaults are user-editable. Validate them at this internal-call
+  // boundary so an empty or malformed value cannot turn into a 0/NaN runner
+  // argument when the caller deliberately leaves the resolution unset.
+  ({ width, height } = resolveVideoDimensions(model, width, height));
   numFrames = numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   let wanModelPath = null;
   const wanRequiredWeights = [];
@@ -982,6 +1125,54 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       }
     }
   }
+  // Pinned LTX family entries (LTX-2.5 today) must render the verified
+  // snapshot, not whatever `main` snapshot_download would follow. Unpinned
+  // 2.3 entries keep passing the repo id so the helper's existing Hub resolve
+  // stays unchanged.
+  let ltxModelPath = model.repo;
+  if (isLtx2FamilyRuntime(model.runtime) && typeof model.revision === 'string' && model.revision) {
+    const cache = await inspectModelCache(model.repo, { revision: model.revision });
+    if (!cache.cached || !cache.snapshotPath) {
+      throw new ServerError(
+        `${model.name} revision ${model.revision.slice(0, 8)} is not fully cached. Download or repair it in Video Gen before rendering.`,
+        { status: 400, code: 'LTX2_MODEL_NOT_CACHED' },
+      );
+    }
+    ltxModelPath = cache.snapshotPath;
+  }
+  // Substituted prompt conditioner (#4081). `resolveVideoTextEncoder` returns
+  // null for the stock choice — the whole override path stays dormant then —
+  // and throws a 400 when the model's runtime has no remap for the requested
+  // id. The weight is resolved against the HF cache HERE rather than in the
+  // helper so a missing download fails as a clean 400 before any GPU work,
+  // matching how wan22's required weights are handled above.
+  const textEncoderOption = resolveVideoTextEncoder(model, textEncoderId);
+  let resolvedTextEncoder = null;
+  if (textEncoderOption) {
+    // All-or-nothing across every pinned shard: a partially-cached multi-shard
+    // conditioner must fail here as a clean 400 rather than loading a module
+    // tree with missing parameters minutes into the render.
+    const encoderPaths = await findCachedRepoFiles(
+      textEncoderOption.repo, textEncoderOption.files, { revision: textEncoderOption.revision },
+    );
+    if (!encoderPaths) {
+      throw new ServerError(
+        `Text encoder "${textEncoderOption.label}" is not downloaded. Download it in Video Gen before rendering.`,
+        { status: 400, code: 'VIDEO_TEXT_ENCODER_NOT_CACHED' },
+      );
+    }
+    // Runtime-agnostic: each runner's arg builder reads only the loader
+    // mechanics its own helper understands (H3 the key remap and final norm,
+    // ltx25 the config overrides), so one resolution serves both.
+    resolvedTextEncoder = {
+      id: textEncoderOption.id,
+      paths: encoderPaths,
+      keyPrefixMap: textEncoderOption.keyPrefixMap,
+      finalNormKey: textEncoderOption.finalNormKey,
+      configOverrides: textEncoderOption.configOverrides,
+    };
+  }
+
   // Only require the legacy mlx_video pythonPath when the chosen runtime
   // actually uses it. ltx2/wan22/hunyuan resolve their own venv path inside
   // buildArgs — gating them on the unrelated mlx_video setting locks users
@@ -990,10 +1181,12 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   if (!pythonPath && !BYOV_VIDEO_RUNTIMES.has(model.runtime)) {
     throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   }
-  // macOS/mlx_video requires a HuggingFace repo id — Windows doesn't (the
-  // diffusers wrapper hardcodes Lightricks/LTX-Video). A user-edited registry
-  // entry missing `repo` would otherwise pass `undefined` into spawn args.
-  if (!IS_WIN && (typeof model.repo !== 'string' || model.repo.length === 0)) {
+  // Every runner resolves its weights from a HuggingFace repo id EXCEPT the
+  // legacy Windows helper, which hardcodes Lightricks/LTX-Video. A user-edited
+  // registry entry missing `repo` would otherwise pass `undefined` into spawn
+  // args. Keyed on the runner rather than the platform, so a Windows BYOV
+  // runtime — which does need its repo — is still held to it here.
+  if (!routesToWindowsHelper(model) && (typeof model.repo !== 'string' || model.repo.length === 0)) {
     throw new ServerError(`Video model "${modelId}" is missing the required \`repo\` field in data/media-models.json`, { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' });
   }
 
@@ -1040,8 +1233,17 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const jobId = providedJobId || randomUUID();
   const filename = `${jobId}.mp4`;
   const outputPath = join(PATHS.videos, filename);
-  const w = Math.floor(Number(width) / 64) * 64;
-  const h = Math.floor(Number(height) / 64) * 64;
+  // Most local runners use PortOS's shared 64px grid. H3's released canvas
+  // resolver is explicitly 32px-aligned, including its native 21:9 height of
+  // 672px; honor a model-declared step so that valid preset is not silently
+  // floored to 640px at the final execution boundary.
+  const declaredResolutionStep = Number(model.resolutionStep);
+  const resolutionStep = Number.isInteger(declaredResolutionStep)
+    && declaredResolutionStep > 0 && declaredResolutionStep <= 64
+    ? declaredResolutionStep
+    : 64;
+  const w = Math.floor(Number(width) / resolutionStep) * resolutionStep;
+  const h = Math.floor(Number(height) / resolutionStep) * resolutionStep;
   const actualSeed = seed != null && seed !== '' ? Number(seed) : Math.floor(Math.random() * 2147483647);
   let actualSteps = model.samplerLocked ? model.steps : (steps ? Number(steps) : model.steps);
   let actualGuidance = model.samplerLocked
@@ -1089,10 +1291,13 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   //  - On macOS/mlx_video the FFLF fallback only consumes the last image when
   //    no source image is also provided (single conditioning frame only).
   //    Anything else is a no-op, so resizing is wasted ffmpeg work.
-  //  - On Windows we forward --last-image to generate_win.py so it can log
-  //    status, but the diffusers pipeline only reads --image — the script
-  //    never opens the last-frame file, so no resize is needed there either.
-  const lastImageWillBeUsed = !!lastImagePath && !IS_WIN && mode === 'fflf'
+  //  - A model that routes to generate_win.py takes --last-image only so the
+  //    script can log status; the LTX-Video 0.9.5 pipeline reads --image
+  //    alone, so it never opens the last-frame file. That gate keys on the
+  //    RUNNER, not on the platform (see routesToWindowsHelper): Windows also
+  //    has a BYOV runtime, MiniMax H3 CUDA, whose helper genuinely anchors the
+  //    last frame, and a bare platform check would hand it an unresized frame.
+  const lastImageWillBeUsed = !!lastImagePath && !routesToWindowsHelper(model) && mode === 'fflf'
     && (modelAnchorsLastFrame(model) || !sourceImagePath);
   // A non-null `keyframes` that ISN'T a length-≥2 array is malformed —
   // fail fast instead of silently dropping it (which would produce an
@@ -1115,7 +1320,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       '-vf', `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`,
       '-update', '1', '-frames:v', '1',
       '-y', resizedPath,
-    ], { env: safeChildProcessEnv(), timeout: 10000 }).catch((err) => ({ error: err }));
+    ], safeChildProcessOptions({ timeout: 10000 })).catch((err) => ({ error: err }));
     if (resizeResult.error) {
       console.log(`⚠️ Failed to resize ${tag} image, using original: ${resizeResult.error.message}`);
       return { resolved: srcPath, tempPath: null };
@@ -1223,7 +1428,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       '-r', String(parsedFps),
       '-pix_fmt', 'yuv420p', '-an',
       '-y', clipPaths[i],
-    ], { env: safeChildProcessEnv(), timeout: 30000 }).catch((err) => ({ error: err }))));
+    ], safeChildProcessOptions({ timeout: 30000 })).catch((err) => ({ error: err }))));
     const failedAt = encodes.findIndex((r) => r?.error);
     if (failedAt !== -1) {
       // Unlike the resizeImage fallback (which degrades to the original), there is
@@ -1258,6 +1463,11 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     guidanceScale: actualGuidance,
     tiling,
     disableAudio,
+    // Which prompt conditioner read this prompt. Only recorded when it wasn't
+    // the stock one, so pre-feature history and every unswapped render stay
+    // byte-identical — and so a Remix of a stock render can't resurrect an
+    // override the user has since deselected.
+    ...(resolvedTextEncoder ? { textEncoderId: resolvedTextEncoder.id } : {}),
     filename,
     createdAt: new Date().toISOString(),
     // History mode reflects the EFFECTIVE mode — buildLtx2Args infers fflf
@@ -1320,7 +1530,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
@@ -1339,6 +1549,22 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     closeJobAfterDelay(jobs, jobId);
     throw err;
   }
+
+  const heavyClaim = await claimHeavyLocalJob({ kind: 'local video generation', id: jobId });
+  if (!heavyClaim.ok) {
+    jobs.delete(jobId);
+    if (resizedSrcTempPath) await unlink(resizedSrcTempPath).catch(() => {});
+    if (resizedLastTempPath) await unlink(resizedLastTempPath).catch(() => {});
+    await Promise.all(resizedKeyframeTempPaths.map((path) => unlink(path).catch(() => {})));
+    await Promise.all(icReferenceTempPaths.map((path) => unlink(path).catch(() => {})));
+    if (uploadedTempPath) await unlink(uploadedTempPath).catch(() => {});
+    await Promise.all(uploadedTempPaths.map((path) => unlink(path).catch(() => {})));
+    throw new ServerError(heavyClaim.message, { status: 409, code: 'HEAVY_LOCAL_JOB_BUSY', context: { holder: heavyClaim.holder } });
+  }
+  const releaseHeavyClaim = () => heavyClaim.release()
+    .catch((err) => console.error(`❌ Video generation claim release [${jobId.slice(0, 8)}]: ${err.message}`));
+  const memoryReport = await prepareLocalMemory();
+  if (memoryReport.unloaded.length) console.log(`🧹 Video generation [${jobId.slice(0, 8)}] freed ${memoryReport.unloaded.length} resident model(s)`);
 
   // History-calibrated wall-clock estimate (#3801). `null` when this install
   // has never measured a render on this model — an explicit "no estimate"
@@ -1369,7 +1595,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // python helpers can authenticate snapshot_download() against gated repos
   // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
   // a gated repo, but the merge is harmless when no token is configured.
-  const childEnv = model.runtime === 'minimax_h3'
+  const childEnv = runtimeIsCacheOnly(model.runtime)
     ? safeChildProcessEnv()
     : await hfChildEnv();
   delete childEnv.PYTHONPATH;
@@ -1378,9 +1604,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // long inference loops emit nothing to handleLine() for minutes — the UI
   // looks dead even when the model is making progress.
   childEnv.PYTHONUNBUFFERED = '1';
-  if (model.runtime === 'minimax_h3') {
-    // The H3 repositories are public and the runner is cache-only. Do not hand
-    // it an ambient saved HF credential it neither needs nor may transmit.
+  if (runtimeIsCacheOnly(model.runtime)) {
+    // A cache-only runner never reaches the network. Do not hand it an ambient
+    // saved HF credential it neither needs nor may transmit.
     delete childEnv.HF_TOKEN;
     delete childEnv.HUGGING_FACE_HUB_TOKEN;
     childEnv.HF_HUB_DISABLE_IMPLICIT_TOKEN = '1';
@@ -1396,13 +1622,20 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // still `proc.kill()` it directly by PID on cancel / watchdog. `cleanup: true`
   // lets the helper drop that scratch dir on every terminal path (close/error)
   // so it can't accumulate under data/videos.
-  const proc = await spawnDetached(bin, args, {
-    env: childEnv,
-    controlDir: join(PATHS.videos, '.detached', jobId),
-    cleanup: true,
-    killProcessGroup: model.runtime === 'wan22' || model.runtime === 'minimax_h3',
-  });
+  let proc;
+  try {
+    proc = await spawnDetached(bin, args, {
+      env: childEnv,
+      controlDir: join(PATHS.videos, '.detached', jobId),
+      cleanup: true,
+      killProcessGroup: runtimeNeedsProcessGroupKill(model.runtime),
+    });
+  } catch (err) {
+    await releaseHeavyClaim();
+    throw err;
+  }
   activeProcess = proc;
+  await heavyClaim.handoffTo?.(proc.pid);
 
   // Panel-side completion watchdog. Armed once we see the render's completion
   // marker on stdout; SIGKILLs the child if it hasn't exited after the grace
@@ -1512,6 +1745,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     broadcastSse(job, { type: 'error', error: reason });
     videoGenEvents.emit('failed', { generationId: jobId, error: reason });
     activeProcess = null;
+    void releaseHeavyClaim();
     // Spawn failed, so proc.on('close') will never fire — clean up every
     // temp file we own here, including the multipart upload, otherwise
     // ENOENT/permission errors leak files in os.tmpdir().
@@ -1597,6 +1831,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     clearCompletionWatchdog();
     clearIdleStallTimer();
     activeProcess = null;
+    // The child has exited, so its accelerator allocation is gone. Release
+    // before emitting the terminal completion event: an extend chain starts its
+    // next child from that event and must be able to acquire the machine claim.
+    await releaseHeavyClaim();
     // Wrap the whole teardown so a throw from finalizeGeneratedVideo (history
     // save, thumbnail, file move) can't leak as an unhandled rejection — on
     // Node ≥15 that kills the process AND strands the media job `running` with
@@ -1775,21 +2013,22 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
   // pays the fixed per-render cost again, so the chain estimate is the
   // per-chunk estimate times the chunk count — `chunks` is handed to the
   // estimator rather than folding the chain into one oversized render.
-  // The dimension/step defaults mirror generateVideo's own resolution (its
-  // `width = 768, height = 512` parameter defaults and the samplerLocked step
-  // rule); the estimator returns null on anything it can't resolve, so a drift
-  // here degrades to "no estimate" rather than to a wrong number.
+  // The dimension/step defaults mirror generateVideo's model-aware resolution
+  // and samplerLocked step rule; the estimator returns null on anything it
+  // can't resolve, so malformed custom registry defaults degrade to the legacy
+  // canvas rather than producing a wrong or non-finite estimate.
   // Deliberately placed AFTER `activeChain`/`jobs` are registered: it is the
   // first await in this function, and a cancel arriving during the history
   // read must still find the chain to stop.
   const chainSteps = chainModel?.samplerLocked
     ? chainModel.steps
     : (rest.steps ? Number(rest.steps) : chainModel?.steps);
+  const chainDimensions = resolveVideoDimensions(chainModel, rest.width, rest.height);
   const chainEta = estimateRenderMs({
     history: await loadHistory(),
     modelId: rest.modelId || defaultVideoModelId(),
-    width: rest.width ?? 768,
-    height: rest.height ?? 512,
+    width: chainDimensions.width,
+    height: chainDimensions.height,
     numFrames: rest.numFrames ?? chainModel?.defaultFrames ?? DEFAULT_NUM_FRAMES,
     steps: chainSteps,
     chunks: totalChunks,
@@ -2095,6 +2334,12 @@ async function setHistoryItemsHidden(ids, hidden) {
 // Extract the last frame of a video as a PNG into data/images/ — used to
 // chain a clip into Imagine for "continue from last frame" remixing.
 export async function extractLastFrame(historyId) {
+  // Keep this service safe for callers outside the route layer too. Shared
+  // gallery uploads deliberately use `upload-<uuid8>` ids, while generated
+  // clips retain UUID ids.
+  if (typeof historyId !== 'string' || (!UUID_RE.test(historyId) && !UPLOADED_HISTORY_ID_RE.test(historyId))) {
+    throw new ServerError('Invalid history id', { status: 400, code: 'VALIDATION_ERROR' });
+  }
   const history = await loadHistory();
   const item = history.find((h) => h.id === historyId);
   if (!item) throw new ServerError('Video not found', { status: 404, code: 'NOT_FOUND' });
@@ -2109,9 +2354,10 @@ export async function extractLastFrame(historyId) {
   await ensureDir(PATHS.images);
   // Same path-traversal concern as `item.filename` above — `item.id` could
   // contain path separators or `..` if history.json was tampered with.
-  // generateVideo writes ids via randomUUID() (matches /^[a-f0-9-]{36}$/),
-  // so reject anything else outright.
-  if (!/^[a-f0-9-]{36}$/i.test(item.id)) {
+  // Generated clips use UUID ids and uploads use `upload-<uuid8>`; both forms
+  // are filename-safe. Do not trust a tampered stored record simply because
+  // the caller's id passed validation above.
+  if (typeof item.id !== 'string' || (!UUID_RE.test(item.id) && !UPLOADED_HISTORY_ID_RE.test(item.id))) {
     throw new ServerError('Invalid history id', { status: 400, code: 'VALIDATION_ERROR' });
   }
   const frameFilename = `lastframe-${item.id}.png`;
@@ -2169,7 +2415,7 @@ export async function extractLastFrame(historyId) {
     // sometimes still exiting 0 — leaving a phantom-success log + missing
     // file. The output file gets a -update 1 flag so ffmpeg overwrites
     // any partial file from a prior failed run instead of erroring.
-    const proc = spawn(ffmpeg, ['-sseof', '-1.0', '-i', videoPath, '-update', '1', '-vframes', '1', '-q:v', '2', '-y', framePath], { env: safeChildProcessEnv(), stdio: 'ignore' });
+    const proc = spawn(ffmpeg, ['-sseof', '-1.0', '-i', videoPath, '-update', '1', '-vframes', '1', '-q:v', '2', '-y', framePath], safeChildProcessOptions({ stdio: 'ignore' }));
     proc.on('close', async (code) => {
       // Wrap the body so a throw (e.g. writeSidecar) routes to reject() instead
       // of leaking an unhandled rejection AND leaving this Promise forever
@@ -2313,7 +2559,7 @@ export async function stitchVideos(videoIds, opts = {}) {
   // return, so a failure mid-encode would otherwise trail a run of them behind
   // the line that matters.
   const runFfmpeg = (args, { captureStderr = false } = {}) => new Promise((resolve, reject) => {
-    const proc = spawn(ffmpeg, args, { env: safeChildProcessEnv(), stdio: captureStderr ? ['ignore', 'ignore', 'pipe'] : 'ignore' });
+    const proc = spawn(ffmpeg, args, safeChildProcessOptions({ stdio: captureStderr ? ['ignore', 'ignore', 'pipe'] : 'ignore' }));
     let tail = '';
     proc.stderr?.on('data', (d) => { tail = `${tail}${d}`.slice(-400); });
     proc.on('close', (code) => code === 0
@@ -2429,9 +2675,10 @@ export async function upscaleHistoryItem(historyId) {
   // Validate the input arg first — failing here surfaces a clean 400 even if
   // the history file happens to contain a record with a malformed id, and
   // it short-circuits the loadHistory I/O for obviously-bogus requests.
-  // Use the shared strict UUID regex (the prior /^[a-f0-9-]{36}$/i pattern
-  // accepted non-UUID 36-char strings like all-hyphens).
-  if (typeof historyId !== 'string' || !UUID_RE.test(historyId)) {
+  // Rendered clips use UUIDs; shared-gallery uploads use their `upload-<uuid8>`
+  // filename stem as the id. Keep the strict UUID check for render ids while
+  // allowing the upload producer's documented id shape.
+  if (typeof historyId !== 'string' || (!UUID_RE.test(historyId) && !UPLOADED_HISTORY_ID_RE.test(historyId))) {
     throw new ServerError('Invalid history id', { status: 400, code: 'VALIDATION_ERROR' });
   }
   const history = await loadHistory();

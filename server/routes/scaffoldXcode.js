@@ -1,6 +1,6 @@
 import { writeFile, chmod } from 'fs/promises';
 import { join } from 'path';
-import { exec } from 'child_process';
+import { exec } from '../lib/childProcess.js';
 import { promisify } from 'util';
 import { ensureDir, ensureDirs } from '../lib/fileUtils.js';
 import {
@@ -447,7 +447,7 @@ Screenshots are saved to \`screenshots/{locale}/{device}/\` for upload to App St
   addStep('Create multi-platform Xcode project', 'done');
 
   // Run xcodegen if available
-  const { stderr: xgenErr } = await execAsync('xcodegen generate', { cwd: repoPath, windowsHide: true })
+  const { stderr: xgenErr } = await execAsync('xcodegen generate', { cwd: repoPath })
     .catch(err => ({ stderr: err.message }));
 
   if (xgenErr && !xgenErr.includes('Created project')) {

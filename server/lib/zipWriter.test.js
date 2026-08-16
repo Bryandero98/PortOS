@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Readable, Writable } from 'stream';
-import { execFileSync } from 'child_process';
+import { execFileSync } from './childProcess.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -131,7 +131,8 @@ describe('createZip', () => {
   it('produces a compressed archive the system unzip tool can extract', () => {
     let unzipPath;
     try {
-      unzipPath = execFileSync('which', ['unzip']).toString().trim();
+      const lookup = process.platform === 'win32' ? 'where' : 'which';
+      unzipPath = execFileSync(lookup, ['unzip']).toString().split(/\r?\n/)[0].trim();
     } catch {
       return; // no unzip on this host — skip
     }
@@ -155,7 +156,8 @@ describe('createZip', () => {
     // the central directory) would tolerate but a real tool would reject.
     let unzipPath;
     try {
-      unzipPath = execFileSync('which', ['unzip']).toString().trim();
+      const lookup = process.platform === 'win32' ? 'where' : 'which';
+      unzipPath = execFileSync(lookup, ['unzip']).toString().split(/\r?\n/)[0].trim();
     } catch {
       return; // no unzip on this host — skip rather than fail
     }

@@ -13,7 +13,7 @@
  * The trainers checkpoint on SIGTERM, so a cancel keeps its progress.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from '../../lib/childProcess.js';
 import { existsSync } from 'fs';
 import { copyFile, writeFile } from 'fs/promises';
 import { join, basename, dirname } from 'path';
@@ -43,6 +43,7 @@ import {
 import { makeTrainingLineHandler } from './progress.js';
 import { makeStallDetector } from './stallDetector.js';
 import { prepareMemoryForTraining, TRAINING_MIN_HEADROOM_GB } from './memoryPrep.js';
+import { claimHeavyLocalJob, adoptHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { classifyTrainingFailure } from './failure.js';
 import { buildTrainedSidecar, trainedLoraFilename } from './sidecar.js';
 import { validateDatasetReady } from './dataset.js';
@@ -440,6 +441,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   if (!run) return fail(`run record missing: ${runId}`);
   const settings = await getSettings();
   const dir = runDir(runId);
+  let heavyClaim = null;
 
   // Terminal failure BEFORE the child spawns: flip the run record to failed
   // AND release the dataset's `training` status, then emit the failed event.
@@ -447,6 +449,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   // stuck `running` (lingering until the next boot reconcile) or the dataset
   // stuck on its `training` chip.
   const failBeforeSpawn = async (message) => {
+    await heavyClaim?.release().catch((err) => console.error(`❌ training [${shortId(jobId)}] claim release failed: ${err.message}`));
     await runsDb.updateRun(runId, {
       status: 'failed', error: message, completedAt: new Date().toISOString(),
     }).catch(() => {});
@@ -461,6 +464,13 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   // staging, no validation, no fresh spawn. wireProcLifecycle then drives the
   // exact same line-handling/finalize path as a normal spawn, so a run that
   // completed mid-restart still registers its LoRA instead of being discarded.
+  //
+  // This runs BEFORE the fresh claimHeavyLocalJob() below: the survivor already
+  // holds the machine-wide accelerator claim from before the restart (handed
+  // off to its PID pre-crash), so acquiring a NEW claim here would see that
+  // live claim as a competing job and refuse it — failing every restart-
+  // survived run outright. Adopt the existing claim instead of contending for
+  // a fresh one.
   if (reattach) {
     const proc = await reattachDetached(join(dir, '.detached'));
     if (!proc) {
@@ -469,11 +479,21 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
       // pre-#1332 reap path would have left it.
       return failBeforeSpawn('Trainer did not survive the restart — marking failed; resume from the latest checkpoint.');
     }
+    heavyClaim = (await adoptHeavyLocalJob({ kind: 'LoRA training', id: jobId, pid: proc.pid }))
+      || (await claimHeavyLocalJob({ kind: 'LoRA training', id: jobId }));
+    if (!heavyClaim.ok) return failBeforeSpawn(heavyClaim.message);
+    // Only true on the claimHeavyLocalJob fallback (no matching on-disk claim
+    // survived) — adoptHeavyLocalJob only ever returns a claim already
+    // recorded against this exact pid.
+    if (heavyClaim.holder?.pid !== proc.pid) await heavyClaim.handoffTo?.(proc.pid);
     console.log(`🔁 training [${shortId(jobId)}] re-attached to surviving trainer pid ${proc.pid} (run ${shortId(runId)})`);
     trainingEvents.emit('status', { generationId: jobId, message: 'Re-attached to trainer that survived a restart' });
     wireProcLifecycle(proc, { isReattach: true });
     return;
   }
+
+  heavyClaim = await claimHeavyLocalJob({ kind: 'LoRA training', id: jobId });
+  if (!heavyClaim.ok) return failBeforeSpawn(heavyClaim.message);
 
   // Re-validate — the dataset may have been edited/deleted while queued. Skip
   // the caption identity-leak gate ONLY for a run that already opted past it:
@@ -634,7 +654,12 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   // and the queue worker awaits the 'close' event for the run lifecycle. No
   // `cleanup` — those logs are the only copy of raw trainer stdout/stderr, kept
   // in the run dir for post-mortem and removed when the run dir is deleted.
-  const proc = await spawnDetached(bin, args, { env: childEnv, controlDir: join(dir, '.detached') });
+  let proc;
+  try {
+    proc = await spawnDetached(bin, args, { env: childEnv, controlDir: join(dir, '.detached') });
+  } catch (err) {
+    return failBeforeSpawn(`trainer spawn failed: ${err.message}`);
+  }
   wireProcLifecycle(proc);
 
   // Wire a freshly-spawned OR re-attached (#1332) trainer handle into the full
@@ -646,6 +671,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   function wireProcLifecycle(proc, { isReattach = false } = {}) {
   activeProcess = proc;
   activeJobId = jobId;
+  void heavyClaim?.handoffTo?.(proc.pid)?.catch((err) => console.error(`❌ training [${shortId(jobId)}] claim handoff failed: ${err.message}`));
 
   // Keep the Mac awake for the duration of the training child (idle + system
   // sleep held off) — but DELIBERATELY let the *display* sleep. An active
@@ -836,7 +862,11 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
     // finalize reads the run record — the collapse guard and previewImageUrl
     // both read run.artifacts. Async finalize wrapped so a rejection can't
     // escape the event handler (unhandled rejection kills the process on Node ≥15).
-    Promise.resolve(flushProgress())
+    // The trainer has exited, so release before finalization can enqueue an
+    // automatic checkpoint resume; that successor must acquire a fresh claim.
+    Promise.resolve(heavyClaim?.release())
+      .catch((err) => console.error(`❌ training [${shortId(jobId)}] claim release failed: ${err.message}`))
+      .then(() => flushProgress())
       .then(() => finalizeTraining({ jobId, runId, code, signal, state: getState(), stallKilled }))
       .then((resumed) => {
         // Wake the display now the run is over so the user sees the result —

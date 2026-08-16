@@ -15,6 +15,7 @@ import {
   toBedrockModelId,
   resolveBedrockCliModel,
   prefixOpencodeModel,
+  getOpencodeLocalProviderNamespace,
   isOpencodeCommand,
   isClaudeCommand,
   isOllamaClaudeProvider,
@@ -132,6 +133,12 @@ describe('providerModels', () => {
       expect(prefixOpencodeModel(oc, 'qwen2.5:7b')).toBe('ollama/qwen2.5:7b');
     });
 
+    it('namespaces a bare MTPLX id under mtplx/ for MTPLX-backed OpenCode providers', () => {
+      const mtplx = { command: 'opencode', mtplxBacked: true };
+      expect(prefixOpencodeModel(mtplx, 'mtplx')).toBe('mtplx/mtplx');
+      expect(prefixOpencodeModel(mtplx, 'mtplx/mtplx')).toBe('mtplx/mtplx');
+    });
+
     it('is idempotent — an already-namespaced id is returned unchanged', () => {
       expect(prefixOpencodeModel(oc, 'ollama/qwen2.5:7b')).toBe('ollama/qwen2.5:7b');
     });
@@ -157,6 +164,15 @@ describe('providerModels', () => {
       expect(prefixOpencodeModel(oc, '')).toBe('');
       expect(prefixOpencodeModel(oc, null)).toBeNull();
       expect(prefixOpencodeModel(oc, undefined)).toBeUndefined();
+    });
+  });
+
+  describe('getOpencodeLocalProviderNamespace', () => {
+    it('uses explicit markers and keeps Ollama as the malformed dual-marker fallback', () => {
+      expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true })).toBe('ollama');
+      expect(getOpencodeLocalProviderNamespace({ mtplxBacked: true })).toBe('mtplx');
+      expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true, mtplxBacked: true })).toBe('ollama');
+      expect(getOpencodeLocalProviderNamespace({})).toBeNull();
     });
   });
 
@@ -754,6 +770,11 @@ describe('providerModels', () => {
     it('namespaces an Ollama id for opencode and never Bedrock-maps it', () => {
       const provider = { id: 'opencode-ollama-tui', command: 'opencode', ollamaBacked: true };
       expect(resolveInjectedTuiModel('qwen2.5:7b', provider, 'opencode')).toBe('ollama/qwen2.5:7b');
+    });
+
+    it('namespaces an MTPLX id for OpenCode TUI and never Bedrock-maps it', () => {
+      const provider = { id: 'opencode-mtplx-tui', command: 'opencode', mtplxBacked: true };
+      expect(resolveInjectedTuiModel('mtplx', provider, 'opencode')).toBe('mtplx/mtplx');
     });
 
     // The regression this helper exists for: cursor labels Anthropic models with

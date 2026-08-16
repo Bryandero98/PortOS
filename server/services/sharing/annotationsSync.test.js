@@ -1,16 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { posixPath as toPosix } from '../../lib/testHelper.js';
 
 // Mock store for atomicWrite + readJSONFile so we can inspect record writes.
 const fileStore = new Map();
+
 const writeCalls = [];
 
 vi.mock('../../lib/fileUtils.js', () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
   atomicWrite: vi.fn(async (path, data) => {
-    fileStore.set(path, data);
+    fileStore.set(toPosix(path), data);
     writeCalls.push({ path, data });
   }),
-  readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(path) ? fileStore.get(path) : fallback)),
+  readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(toPosix(path)) ? fileStore.get(toPosix(path)) : fallback)),
   PATHS: { data: '/mock/data' },
 }));
 

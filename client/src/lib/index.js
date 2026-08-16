@@ -18,6 +18,7 @@ export * from './universeRunTag.js';
 export * from './universeStylePreset.js';
 
 // === Pipeline / image-gen defaults ===
+export * from './autopilotMilestones.js';
 export * from './beatColors.js';
 export * from './beatGrid.js';
 export * from './bibleLimits.js';
@@ -52,6 +53,7 @@ export * from './wrImageDefaults.js';
 
 // === Graph & sim ===
 export * from './brainGraphFocus.js';
+export * from './graphPicking.js';
 export * from './graphSimulation.js';
 export * from './goalFeatureMap.js';
 
@@ -100,6 +102,7 @@ export * from './audioContext.js';
 export * from './cityPlaybackFrame.js';
 export * from './canvasRoll.js';
 export * from './chiptunePlayback.js';
+export * from './chordPlayback.js';
 export * from './chordShapes.js';
 export * from './colorMatch.js';
 export * from './drumKits.js';
@@ -115,6 +118,7 @@ export * from './midiNotes.js';
 export * from './midiPlayback.js';
 export * from './pianoKeyboard.js';
 export * from './pitchDetect.js';
+export * from './seriesReviewProgress.js';
 export * from './powersBreakdown.js';
 export * from './promptStageGroups.js';
 export * from './referenceAnalysis.js';

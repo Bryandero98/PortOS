@@ -23,9 +23,10 @@ import { removeWorktree, classifyWorktreeDirt } from './worktreeManager.js';
 import { isTruthyMeta } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { isRetryHoldOwner, clearedRetryHoldMetadata } from '../lib/taskRetryHold.js';
+import { resolveTaskTargetBranch, shouldStripTaskTargetBranch } from '../lib/taskTargetBranch.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
 import { detectForgeCli } from '../lib/gitForge.js';
-import { PR_COMPLETIONS, PR_COMPLETION_VALUES, leavesPrForHuman } from '../lib/prDisposition.js';
+import { PR_COMPLETIONS, PR_COMPLETION_VALUES, PR_CREATION, leavesPrForHuman, prClaimWasVerified } from '../lib/prDisposition.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SELECTABLE_REVIEWERS, EFFORT_SELECTABLE_REVIEWERS, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds } from '../lib/validation.js';
 
 // In-flight cleanup per agentId, so two completion paths racing to clean the
@@ -45,10 +46,14 @@ import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, MODEL_SE
 // this is one actor's duplicate in-flight operation, not two competing humans.
 const inFlightCleanups = new Map();
 
+
 /**
  * Clean up a worktree for a completed agent.
  * Reads worktree metadata from the agent's registered state and removes the worktree.
- * When openPR is true, pushes the branch and creates a PR instead of auto-merging.
+ * `prCreation` (see `PR_CREATION`) decides who opens the change request:
+ * `'always'` pushes and creates one instead of auto-merging; `'if-missing'` does
+ * that only when the forge confirms the agent — which owned its own PR workflow —
+ * opened none (#3733); `'never'` leaves it entirely to the agent.
  * `prCompletion` decides whether the PR is reviewed then merged, merged after
  * green CI, or intentionally left open. The explicit leave-open policy does
  * not spawn a post-PR agent.
@@ -79,7 +84,7 @@ export async function cleanupAgentWorktree(agentId, success, options = {}) {
   return run;
 }
 
-async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
+async function runCleanupAgentWorktree(agentId, success, { prCreation = PR_CREATION.NEVER, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {
   const { getAgent: getAgentState } = await import('./cos.js');
   const agentState = await getAgentState(agentId).catch(() => null);
   if (!agentState?.metadata?.isWorktree) return [];
@@ -113,8 +118,58 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
     return result?.warnings || [];
   }
 
+  // Safety net for a run that OWNED its PR workflow (#3733, `prCreation:
+  // 'if-missing'`): the prompt told the agent to push, open, review, and merge
+  // the PR itself, so PortOS stands down — but only once the forge confirms it
+  // actually did. A harness that skipped its completion workflow would otherwise
+  // leave the branch with no change request and nothing watching it, which is
+  // exactly the orphan this net exists to catch.
+  //
+  // Only reached when finalize did NOT already verify the claim (`'never'`
+  // covers that case), so this is one forge round-trip, not a second one.
+  let createPr = prCreation === PR_CREATION.ALWAYS;
+  // An UNCERTAIN stand-down must not also discard the work. Creating a second
+  // change request on a guess is unsafe; keeping the branch never is — and the
+  // default cleanup below deletes an unmerged branch outright on a `success`
+  // run, so a transient `gh pr list` failure would take the agent's only copy of
+  // the commits with it.
+  let preserveBranchOnStandDown = false;
+  if (prCreation === PR_CREATION.IF_MISSING && success) {
+    // Reuses finalize's own PR-claim check rather than re-implementing the forge
+    // dispatch: `pr-missing` is precisely "the forge answered and there is no
+    // change request for a branch that HOLDS commits".
+    const { verifyPrClaim, PR_MISSING_CATEGORY } = await import('./agentFinalization.js');
+    const worktreePath = agentState.metadata.workspacePath || join(PATHS.worktrees, agentId);
+    const verdict = await verifyPrClaim({ workspacePath: worktreePath, success: true, prExpected: true })
+      .catch(err => ({ ok: false, category: 'forge-unreachable', message: err.message }));
+    if (verdict.category === PR_MISSING_CATEGORY) {
+      createPr = true;
+      emitLog('warn', `🌳 ${agentId} owned its PR workflow but opened no pull request for ${worktreeBranch} — PortOS is opening one`, { agentId, branchName: worktreeBranch });
+      warnings.push(`Agent ${agentId} was told to open its own pull request for ${worktreeBranch} but did not; PortOS opened it instead.`);
+    } else if (prClaimWasVerified(verdict)) {
+      // `found`, or `noChangesToShip` — the branch holds nothing a PR could be
+      // opened for. Either way the agent's contract was met.
+      //
+      // The `verdict.branch` term is load-bearing: `verifyPrClaim` has a THIRD
+      // `ok: true` shape — `{ ok: true, branch: null }`, its explicit "we could
+      // not name a branch, so nothing was verified" sentinel (a detached HEAD,
+      // e.g. an agent that left an aborted rebase behind). Reading that as a
+      // confirmed PR would stand down AND, because the stand-down is not marked
+      // uncertain, let the cleanup below `git branch -D` a branch that was never
+      // pushed and has no PR. Absent must not collapse into verified.
+      emitLog('info', `🌳 ${agentId} opened its own pull request for ${worktreeBranch} — PortOS is standing down`, { agentId, branchName: worktreeBranch });
+    } else {
+      // `forge-unreachable`, or the no-branch sentinel above. Neither is
+      // evidence a PR exists, and neither is evidence one is missing.
+      preserveBranchOnStandDown = true;
+      const why = verdict.category || 'nothing to verify against';
+      emitLog('warn', `🌳 Could not confirm a pull request for ${worktreeBranch} (${why}) — keeping the branch rather than opening a possible duplicate`, { agentId, branchName: worktreeBranch });
+      warnings.push(`Could not confirm a pull request for ${worktreeBranch} (${why}); the branch was preserved for manual follow-up rather than risking a duplicate PR.`);
+    }
+  }
+
   // When openPR is set and task succeeded, push branch and create PR instead of auto-merging
-  if (openPR && success) {
+  if (createPr && success) {
     emitLog('info', `🌳 Opening PR for worktree agent ${agentId} branch ${worktreeBranch}`, { agentId, branchName: worktreeBranch });
 
     const worktreePath = agentState.metadata.workspacePath || join(PATHS.worktrees, agentId);
@@ -215,6 +270,22 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
       // run, but the follow-up must not merge. An explicit leave-open policy is
       // different — opening the PR is the entire requested outcome.
       const leaveOpen = leavesPrForHuman(originalTask);
+
+      // Release the PR branch BEFORE anything is queued against it. A follow-up
+      // spawned below attaches its OWN worktree to `worktreeBranch`, and the CoS
+      // evaluation tick preps that task within a second or two — comfortably
+      // inside the window this cleanup needs for its own teardown. Removing
+      // afterwards lost that race (~0.7s in the reported incident): the
+      // follow-up's `git worktree add` failed with "is already used by worktree
+      // at …", the task was blocked, and the pull request it existed to land was
+      // orphaned. Nothing below this point reads the worktree — the Copilot
+      // pre-request above is the last user of that checkout.
+      const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, { merge: false }).catch(err => {
+        emitLog('warn', `🌳 Worktree cleanup failed for ${agentId}: ${err.message}`, { agentId });
+        return { warnings: [`Worktree cleanup failed: ${err.message}`] };
+      });
+      warnings.push(...(result?.warnings || []));
+
       if (resolvedPrCompletion === PR_COMPLETIONS.LEAVE_OPEN) {
         emitLog('info', `🤝 Leaving ${prResult.url} open by task completion policy`, { agentId, prUrl: prResult.url });
       } else if (leaveOpen && !runsReviewLoop) {
@@ -283,11 +354,6 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
         }
       }
 
-      const result = await removeWorktree(agentId, sourceWorkspace, worktreeBranch, { merge: false }).catch(err => {
-        emitLog('warn', `🌳 Worktree cleanup failed for ${agentId}: ${err.message}`, { agentId });
-        return { warnings: [`Worktree cleanup failed: ${err.message}`] };
-      });
-      warnings.push(...(result?.warnings || []));
       return warnings;
     }
 
@@ -295,6 +361,35 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
     warnings.push(`Push failed for branch ${worktreeBranch} — worktree preserved at ${worktreePath} for manual retry`);
     emitLog('warn', `🌳 Push failed for ${worktreeBranch} — worktree preserved at ${worktreePath} for manual retry`, { agentId, branchName: worktreeBranch });
     return warnings;
+  }
+
+  // A run that owned its PR workflow and FAILED may still have opened the PR
+  // before it died — the prompt has it open one at step 3 and merge at step 4,
+  // so a reap in between (max-runtime, idle reaper, spend limit, host shutdown)
+  // leaves a real PR with nothing watching it (#3733). The old flow could not
+  // produce this: PortOS opened the PR only on success and spawned the follow-up
+  // in the same breath. The retry adopts the PR ("if `gh` reports the pull
+  // request already exists, adopt it"), but a task that exhausts its retry
+  // budget and goes `blocked` would strand it — and the orphaned-PR notifier
+  // keys on a follow-up task's `reviewLoopPRUrl`, which an inline run never
+  // creates. So hand it to the same follow-up machinery the old flow used.
+  //
+  // The lookup happens here (it needs the checkout), but the SPAWN waits until
+  // after `removeWorktree` below — same reason as the PR path above: the
+  // follow-up attaches its own worktree to this branch and would otherwise race
+  // this cleanup's teardown for it.
+  let strandedPrUrl = null;
+  if (prCreation === PR_CREATION.IF_MISSING && !success) {
+    const worktreePath = agentState.metadata.workspacePath || join(PATHS.worktrees, agentId);
+    const { findPullRequestForBranch } = await import('./github.js');
+    const { env } = await git.resolveForgeForRepo(worktreePath).catch(() => ({ env: null }));
+    const found = await findPullRequestForBranch(worktreeBranch, { cwd: worktreePath, env: env || null })
+      .catch(() => ({ status: 'unavailable' }));
+    if (found.status === 'found' && found.url) {
+      strandedPrUrl = found.url;
+      emitLog('warn', `🌳 ${agentId} failed after opening ${found.url} — handing the PR to a follow-up so it isn't stranded`, { agentId, prUrl: found.url, branchName: worktreeBranch });
+      warnings.push(`Agent ${agentId} failed after opening ${found.url}; a follow-up was queued to land it.`);
+    }
   }
 
   // Default: auto-merge on success, just cleanup on failure.
@@ -311,12 +406,32 @@ async function runCleanupAgentWorktree(agentId, success, { openPR = false, prCom
     // A FAILED agent's branch is the only record of what it got done. Keep it when
     // it holds commits so the task's retry can attach to it and resume rather than
     // redo the work (see resolveResumeBranch below + removeWorktree's flag docs).
-    preserveBranchWithCommits: !success,
+    // Same reasoning for a SUCCESSFUL run whose PR we could not confirm: we chose
+    // not to push it, so the local branch is the only copy.
+    preserveBranchWithCommits: !success || preserveBranchOnStandDown,
   }).catch(err => {
     emitLog('warn', `🌳 Worktree cleanup failed for ${agentId}: ${err.message}`, { agentId });
     return { warnings: [`Worktree cleanup failed: ${err.message}`] };
   });
   warnings.push(...(result?.warnings || []));
+
+  // The branch is released now, so the follow-up can check it out.
+  if (strandedPrUrl) {
+    await spawnReviewLoopFollowUp({
+      originalAgentId: agentId,
+      originalTask,
+      prUrl: strandedPrUrl,
+      prBranch: worktreeBranch,
+      sourceWorkspace,
+      prCompletion: PR_COMPLETION_VALUES.includes(prCompletion) ? prCompletion : PR_COMPLETIONS.REVIEW_THEN_MERGE,
+      reviewers, usernames, optionalReviewers, reviewerMaxRounds,
+      reviewStopMode, reviewerApplies, reviewerModels, reviewerEfforts,
+      leaveOpen: leavesPrForHuman(originalTask),
+    }).catch(err => {
+      emitLog('warn', `🌳 Failed to spawn a follow-up for orphaned ${strandedPrUrl}: ${err.message}`, { agentId });
+      warnings.push(`Could not queue a follow-up for ${strandedPrUrl}: ${err.message}`);
+    });
+  }
   return warnings;
 }
 
@@ -470,18 +585,18 @@ export async function resolveTaskResumePatch({ task, agentId, agentMetadata }) {
 /**
  * The task-metadata patch that makes a retry resume (or stop resuming).
  *
- * `existingBranch` is the flag agentWorkspacePrep already honors to attach a
- * worktree to a pre-existing branch (the review-loop follow-up uses it), and
- * `resumeWorktreePath` is honored there too, so resuming needs no new spawn
- * plumbing. `resumedFromAgentId` records whose run is being continued — it drives
- * the prompt's resume banner and is the marker that distinguishes a resume from
- * the follow-up (see `isPrBranchWorktree` in agentPromptBuilder.js).
+ * `existingBranch` is the retry-owned target that `agentWorkspacePrep` resolves
+ * before attaching a worktree, and `resumeWorktreePath` is honored there too, so
+ * resuming needs no new spawn plumbing. `resumedFromAgentId` records whose run is
+ * being continued — it drives the prompt's resume banner and is the marker that
+ * distinguishes a resume from a review-loop follow-up (see `isPrBranchWorktree`
+ * in agentPromptBuilder.js).
  *
  * With no pointer, a previously-stamped resume is CLEARED: its branch may since
  * have been merged or deleted, and leaving the pointer would attach the next
  * attempt to landed work. Keyed on `resumedFromAgentId` so it only ever clears a
- * pointer this mechanism wrote — the review-loop follow-up's own `existingBranch`
- * is its whole reason for existing and must survive being orphaned.
+ * pointer this mechanism wrote. Review-loop follow-ups keep their canonical target
+ * in `reviewLoopPRBranch`, so clearing a legacy duplicate cannot strand the PR.
  *
  * @param {{branchName: string, worktreePath: string|null}|null} pointer
  * @param {string} agentId - the run being resumed from
@@ -496,7 +611,7 @@ export function resumePointerMetadata(pointer, agentId, task) {
       resumeWorktreePath: pointer.worktreePath
     };
   }
-  if (!task?.metadata?.resumedFromAgentId) return {};
+  if (!shouldStripTaskTargetBranch(task?.metadata)) return {};
   // `undefined`, not `null`: `updateTask` DELETES undefined keys from the merged
   // metadata, while a null survives the merge and TASKS.md serializes it as the
   // literal string `"null"` — which reads back as a truthy `existingBranch` and
@@ -520,7 +635,7 @@ export async function recordTaskResumePointer({ task, agentId, agentMetadata }) 
   await updateTask(task.id, { metadata }, task.taskType || 'user').catch(err => {
     emitLog('warn', `Failed to record resume pointer for task ${task.id}: ${err.message}`, { taskId: task.id, agentId });
   });
-  if (!metadata.existingBranch) {
+  if (!resolveTaskTargetBranch(metadata)) {
     emitLog('info', `🧹 Cleared spent resume pointer on task ${task.id} — nothing left to resume`, { taskId: task.id, agentId });
   }
   return metadata;
@@ -620,9 +735,10 @@ export async function releaseRetryHold({ agentId, task, success, agentMetadata }
     emitLog('warn', `⏳ Task ${task.id} still held after a failed release — the orphan sweep will requeue it`, { taskId: task.id, agentId });
     return {};
   }
-  emitLog('info', patch.existingBranch
-    ? `🔁 Task ${task.id} requeued pointing at ${patch.existingBranch}`
-    : `🔓 Task ${task.id} requeued for retry`, { taskId: task.id, agentId, branchName: patch.existingBranch || null });
+  const targetBranch = resolveTaskTargetBranch(patch);
+  emitLog('info', targetBranch
+    ? `🔁 Task ${task.id} requeued pointing at ${targetBranch}`
+    : `🔓 Task ${task.id} requeued for retry`, { taskId: task.id, agentId, branchName: targetBranch });
   return patch;
 }
 
@@ -645,9 +761,9 @@ export async function releaseRetryHold({ agentId, task, success, agentMetadata }
  * then merge versus merge on green directly; `leave-open` is intentional and
  * returns without creating a follow-up.
  *
- * The follow-up task uses an isolated worktree attached to the existing PR
- * branch (via createWorktree's `existingBranch` option) so it can fix-and-push
- * without trampling concurrent agents.
+ * The follow-up task uses an isolated worktree attached to the existing PR branch
+ * through its canonical `reviewLoopPRBranch`, so it can fix-and-push without
+ * trampling concurrent agents.
  */
 export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, prUrl, prBranch, sourceWorkspace, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, leaveOpen = false }) {
   if (!prUrl || !prBranch) return null;
@@ -755,10 +871,9 @@ export async function spawnReviewLoopFollowUp({ originalAgentId, originalTask, p
     metadata: {
       app: appId,
       ...providerPins,
-      // useWorktree is required so the follow-up runs in isolation; existingBranch
-      // tells createWorktree to attach to the PR branch instead of cutting a new one.
+      // useWorktree is required so the follow-up runs in isolation. Its canonical
+      // reviewLoopPRBranch below tells the shared resolver which PR branch to attach.
       useWorktree: true,
-      existingBranch: prBranch,
       // openPR/reviewLoop must stay false so cleanup doesn't try to create another PR
       // or request another initial review (the agent itself drives the loop)
       openPR: false,

@@ -2,13 +2,13 @@ import { Router } from 'express';
 import { existsSync, realpathSync } from 'fs';
 import { readFile, stat } from 'fs/promises';
 import { join, resolve } from 'path';
-import { exec } from 'child_process';
+import { exec } from '../lib/childProcess.js';
 import { promisify } from 'util';
 import { execPm2 } from '../services/pm2.js';
 import { detectAppWithAi } from '../services/aiDetect.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
-import { isWithinAllowedRoots, WORKSPACE_ROOTS_CONFIGURED } from '../lib/workspaceRoots.js';
+import { isWithinAllowedRoots, outsideAllowedRootsMessage, WORKSPACE_ROOTS_CONFIGURED } from '../lib/workspaceRoots.js';
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -25,9 +25,9 @@ const router = Router();
 // confinement is required for safety.
 //
 // Operators who still want to confine detection to specific directories can set
-// PORTOS_WORKSPACE_ROOTS="/path1:/path2" (the same allow-list `routes/commands.js`
-// uses to scope command execution). When that env var is set, this route enforces
-// the allow-list too — a path outside the configured roots returns valid:false
+// PORTOS_WORKSPACE_ROOTS (see `.env.example` for the format — the same allow-list
+// `routes/commands.js` uses to scope command execution). When that env var is set,
+// this route enforces the allow-list too — a path outside the roots returns valid:false
 // rather than reading its files. When it is unset (the default), detection is
 // unrestricted, matching the pre-existing behavior.
 router.post('/repo', asyncHandler(async (req, res) => {
@@ -68,6 +68,7 @@ router.post('/repo', asyncHandler(async (req, res) => {
       return res.json({ valid: false, error: 'Path is not accessible' });
     }
     if (!isWithinAllowedRoots(realPath)) {
+      console.error(`❌ ${outsideAllowedRootsMessage(realPath)}`);
       return res.json({
         valid: false,
         error: 'Path is outside the configured workspace roots (PORTOS_WORKSPACE_ROOTS)'
@@ -189,7 +190,7 @@ router.post('/port', asyncHandler(async (req, res) => {
     ? `lsof -i :${safePort} -P -n | grep LISTEN`
     : `ss -lntp | grep :${safePort}`;
 
-  const { stdout } = await execAsync(command, { windowsHide: true }).catch(() => ({ stdout: '' }));
+  const { stdout } = await execAsync(command).catch(() => ({ stdout: '' }));
 
   if (stdout.trim()) {
     result.inUse = true;

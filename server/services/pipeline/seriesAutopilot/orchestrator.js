@@ -15,7 +15,7 @@ import { getSettings } from '../../settings.js';
 import { getSeries, updateSeries } from '../series.js';
 import { listIssues } from '../issues.js';
 import { buildEditorialCheckPlan } from '../editorial/checkRunner.js';
-import { runs } from './state.js';
+import { runs, emptyProgress } from './state.js';
 import {
   resolveAutopilotRounds, resolveAutopilotFoundationGate, resolveAutopilotFoundationThreshold,
   resolveAutopilotReadinessGate, resolveAutopilotCheckPauseThreshold, resolveAutopilotNotifyOnPause,
@@ -27,7 +27,7 @@ import { getModelPerformanceReport } from './modelPerformance.js';
 import { runSelfImproveDiagnosis } from './selfImprove.js';
 import { observerEnabled, runObserverPass, summarizeObserver } from './observer.js';
 import { VISUAL_DRAFT_ENABLED, summarizePlanCost } from './convergence.js';
-import { broadcast, broadcastStart, persistMarker, clearPauseNotice, notifyPause, fileGap, scheduleCleanup, roleLlm } from './session.js';
+import { broadcast, broadcastStart, persistMarker, clearPauseNotice, clearGapTasks, notifyPause, fileGap, scheduleCleanup, roleLlm } from './session.js';
 import { resolveNextStep } from './stepResolver.js';
 import { editorialSubsetIds } from './editorialSteps.js';
 import { dispatchStep } from './dispatch.js';
@@ -100,14 +100,6 @@ export async function startSeriesAutopilot(sId, options = {}) {
       return { recommendations: {} };
     })
     : { recommendations: {} };
-  const creativeRouteExplicit = !!(
-    options?.providerOverride || options?.modelOverride || options?.effortOverride
-  );
-  const judgeRouteExplicit = !!(
-    options?.judgeLlm?.providerOverride
-    || options?.judgeLlm?.modelOverride
-    || options?.judgeLlm?.effortOverride
-  );
   const runOptions = {
     ...options,
     ...resolveAutopilotRounds(options, settings),
@@ -134,11 +126,9 @@ export async function startSeriesAutopilot(sId, options = {}) {
     // (see config.js). Resolved here with the other gates so the coordinator
     // wrap below, the start frame and a resume all read the same effective flag.
     overrideStagePins: resolveAutopilotOverrideStagePins(options, settings),
+    // Candidate routes only: session.js#roleLlm applies one to a role that has
+    // no route of its own, and the run route resolved below outranks it.
     modelRecommendations: modelPerformance.recommendations || {},
-    modelRoutesExplicit: {
-      creative: creativeRouteExplicit,
-      judge: judgeRouteExplicit,
-    },
     priorArcAvoidFindings,
     priorFoundationAvoidFindings,
     // Run provider/model: per-run override → the series' own `series.llm` →
@@ -179,6 +169,9 @@ export async function startSeriesAutopilot(sId, options = {}) {
     // that didn't opt in.
     signals: [],
     signalsDropped: 0,
+    // Milestone-map cursor (see state.js#noteProgress) — folded from this run's
+    // own frames by `broadcast`, and readable mid-run off the status route.
+    progress: emptyProgress(),
     runState: {
       // Unlock-everything pre-pass (opt-in, see unlockPass.js) has run this
       // run. Boolean latch like arcVerified so the resolver routes there at
@@ -264,6 +257,20 @@ export async function startSeriesAutopilot(sId, options = {}) {
     };
   };
 
+  // The projected plan — every step this run expects to take, in order, with its
+  // count and cost estimate. A dry-run emits it as its whole product; an EXECUTE
+  // run emits the same thing as the milestone map the panel measures progress
+  // against ("what it has validated, where it is, what is left"). Pure reads plus
+  // one already-loaded settings object: no LLM spend, and every caller treats a
+  // failure as "no map" rather than a reason not to run.
+  const projectPlan = async (series, issues) => {
+    const checkPlan = await buildEditorialCheckPlan(sId, { checkIds: editorialSubsetIds(runOptions), settings })
+      .catch(() => null);
+    const editorialLlmCheckCount = checkPlan ? checkPlan.checks.filter((c) => c.kind === 'llm').length : undefined;
+    const plan = buildDryRunPlan(series, issues, runOptions, { editorialLlmCheckCount });
+    return { plan, planTotals: summarizePlanCost(plan) };
+  };
+
   // Post-mortem hook for the opt-in diagnosis passes. Best-effort by contract:
   // a diagnosis that throws must never turn a completed run into a failed one,
   // so every terminal calls it through these catches. Never fires on a cancel
@@ -332,16 +339,8 @@ export async function startSeriesAutopilot(sId, options = {}) {
     try {
       // DRY-RUN: enumerate the plan, no side effects.
       if (mode === 'dry-run') {
-        const series = await getSeries(sId);
-        const issues = await listIssues({ seriesId: sId });
-        // Resolve the enabled LLM-check count (#1576) so the plan's editorialChecks
-        // step can estimate its issues × checks LLM fan-out. Mirrors the actual
-        // pass: same subset (editorialSubsetIds) and same settings the checks read.
-        const settings = await getSettings().catch(() => null);
-        const checkPlan = await buildEditorialCheckPlan(sId, { checkIds: editorialSubsetIds(runOptions), settings }).catch(() => null);
-        const editorialLlmCheckCount = checkPlan ? checkPlan.checks.filter((c) => c.kind === 'llm').length : undefined;
-        const plan = buildDryRunPlan(series, issues, runOptions, { editorialLlmCheckCount });
-        const planTotals = summarizePlanCost(plan);
+        const [series, issues] = await Promise.all([getSeries(sId), listIssues({ seriesId: sId })]);
+        const { plan, planTotals } = await projectPlan(series, issues);
         broadcastStart(sId, startFrame(series.targetFormat, { plan, planTotals }));
         // Carry the plan on the terminal frame too: a dry-run emits start +
         // complete synchronously, often before the client attaches, and
@@ -353,19 +352,38 @@ export async function startSeriesAutopilot(sId, options = {}) {
       }
 
       // EXECUTE.
-      const series0 = await getSeries(sId);
-      broadcastStart(sId, startFrame(series0.targetFormat));
+      const [series0, issues0] = await Promise.all([getSeries(sId), listIssues({ seriesId: sId })]);
+      // Same projection the dry-run produces, carried on the start frame so the
+      // panel can draw the milestone map (and the estimated budget) for a run
+      // that is actually working — not only for a preview. Best-effort: a run
+      // must never fail to start because its map couldn't be drawn.
+      const projected = await projectPlan(series0, issues0).catch((err) => {
+        console.log(`⚠️ autopilot: plan projection failed for ${sId.slice(0, 12)}: ${err.message}`);
+        return {};
+      });
+      broadcastStart(sId, startFrame(series0.targetFormat, projected));
       await persistMarker(sId, { status: 'running', runId, currentStep: null, residualFindings: [], lastError: null });
       // A resume is a fresh start: drop any stale pause banner up front so a run
       // that completes/errors without re-pausing doesn't leave a dead resume link.
       await clearPauseNotice(sId);
+      // Same reasoning for the CoS gap task the pause filed — and higher stakes:
+      // a queued gap task dispatches an agent to hand-edit the very fields this
+      // run is about to repair itself. Re-filed with fresh findings if the gate
+      // still fails.
+      await clearGapTasks(sId).catch(() => {});
       if (runOptions.includeVisual && !VISUAL_DRAFT_ENABLED) {
         broadcast(sId, { type: 'note', message: 'Draft visual rendering is not enabled in this build — running to text-ready + editorial review.' });
       }
 
+      // The projection above read the very state the first iteration wants, and
+      // nothing between here and there touches series/issues — so hand it over
+      // rather than re-loading every issue (with its stage run history) twice at
+      // every run start. Cleared on use; every later iteration reads fresh.
+      let preloaded = { series: series0, issues: issues0 };
       while (!record.cancelRequested && !record.pauseRequested) {
-        const series = await getSeries(sId);
-        const issues = await listIssues({ seriesId: sId });
+        const series = preloaded?.series || await getSeries(sId);
+        const issues = preloaded?.issues || await listIssues({ seriesId: sId });
+        preloaded = null;
         const step = resolveNextStep(series, issues, record.runState, runOptions);
 
         if (step.kind === 'done') {

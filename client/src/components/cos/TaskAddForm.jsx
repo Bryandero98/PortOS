@@ -98,8 +98,9 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // Memoize enabled providers for the dropdown — restricted to CODING providers
   // (CLI/TUI agents with a file-writing harness). HTTP `api` providers (raw
   // Ollama / LM Studio / nvidia-kimi) return plain text and can't write files, so
-  // they're not valid task runners; a user who only has those should use the
-  // "Claude Ollama" sample (a `claude` CLI/TUI pointed at Ollama) instead.
+  // they're not valid task runners; a user who only has those should use a local
+  // coding preset: Claude Ollama or OpenCode MTPLX for a separately running
+  // MTPLX server.
   const enabledProviders = useMemo(() =>
     providers?.filter(p => p.enabled && isProcessProvider(p)) || [],
     [providers]
@@ -696,7 +697,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         </div>
         {apiOnlyProviders && (
           <div className="px-3 py-2 bg-port-warning/10 border border-port-warning/40 rounded-lg text-xs text-port-warning">
-            Your enabled providers (Ollama / LM Studio) are HTTP API providers with no file-writing harness, so they can't run agent tasks. Enable the <span className="font-semibold">Claude Ollama</span> provider (a <code>claude</code> CLI/TUI pointed at your local model) on the AI Providers page to run file-writing tasks on a local model.
+            Your enabled providers are HTTP API providers with no file-writing harness, so they can't run agent tasks. Enable <span className="font-semibold">Claude Ollama</span> for Ollama, or <span className="font-semibold">OpenCode MTPLX</span> for a separately running MTPLX server, on the AI Providers page to run file-writing tasks on a local model.
           </div>
         )}
         {/* Screenshot and Attachment Upload */}
@@ -791,6 +792,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               onChange={e => setTemplateNameInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && saveAsTemplate()}
               placeholder="Template name..."
+              aria-label="Template name"
               className="flex-1 px-3 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
               autoFocus
             />

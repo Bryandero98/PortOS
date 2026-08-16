@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { join } from 'path';
 
 // ─── Mocks for spawnTuiAgent tests ──────────────────────────────────────────
 // All vi.mock calls must be at the top level before any imports.
@@ -60,6 +61,13 @@ vi.mock('./agentCompletion.js', () => ({
   processAgentCompletion: vi.fn().mockResolvedValue(undefined)
 }));
 
+// The Ollama-backed spawn path prepares the daemon's context window first, which
+// otherwise reaches a real localhost:11434 in this suite. Stub it to a no-op —
+// its own behavior is covered by services/ollamaAgentContext.test.js.
+vi.mock('./ollamaAgentContext.js', () => ({
+  ensureOllamaAgentContext: vi.fn().mockResolvedValue({ skipped: false, contextLength: null, applied: false, warning: null })
+}));
+
 vi.mock('./agentFinalization.js', () => ({
   persistSimplifySummaries: vi.fn().mockResolvedValue(undefined),
   finalizeAgent: vi.fn().mockResolvedValue(undefined),
@@ -97,8 +105,14 @@ vi.mock('./agentState.js', async (importOriginal) => ({
 // only `git.js` would leave the probe shelling out to real git. Sharing the spy
 // keeps every `vi.mocked(gitService.execGit)` override in this file authoritative
 // for the probe too.
-const { execGitMock } = vi.hoisted(() => ({ execGitMock: vi.fn() }));
+const { execGitMock, getPullRequestStateMock } = vi.hoisted(() => ({
+  execGitMock: vi.fn(),
+  getPullRequestStateMock: vi.fn().mockResolvedValue({ status: 'known', state: 'OPEN' }),
+}));
 vi.mock('../lib/execGit.js', () => ({ execGit: execGitMock }));
+vi.mock('./github.js', () => ({
+  getPullRequestState: (...args) => getPullRequestStateMock(...args),
+}));
 
 vi.mock('./git.js', () => ({
   // Default: worktree has changes so idle-complete succeeds. Tests that want
@@ -148,7 +162,14 @@ vi.mock('../lib/fileUtils.js', async (importOriginal) => ({
   // agentSentinel.parseSentinelPayload, etc.); only stub the I/O + PATHS.
   ...(await importOriginal()),
   tryReadFile: vi.fn().mockResolvedValue(null),
-  PATHS: { root: '/tmp/portos-root' }
+  // `data` is required alongside `root`: this module pulls in taskTypeHooks.js
+  // -> ... -> lib/validation.js -> subscriptionSavings.js -> postStreak.js ->
+  // activeDays.js -> timezone.js -> services/settings.js, whose module-scope
+  // `join(PATHS.data, 'settings.json')` throws on load without it (#4211
+  // added the activeDays.js edge). The bare `PATHS: {...}` below fully
+  // replaces the real object (it doesn't merge), so every member this graph
+  // needs at import time has to be listed explicitly.
+  PATHS: { root: '/tmp/portos-root', data: '/tmp/portos-root/data' }
 }));
 
 vi.mock('../lib/providerModels.js', async (importOriginal) => ({
@@ -194,19 +215,20 @@ vi.mock('../lib/tuiHandshake.js', async (importOriginal) => {
 // (shellHasLiveChild). Default to an error callback so the probe resolves
 // "assume alive" (guard bypassed) for every test that doesn't exercise it —
 // the early-exit test below overrides this to report no child process.
-vi.mock('child_process', async (importOriginal) => {
+vi.mock('../lib/childProcess.js', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, execFile: vi.fn((_file, _args, _opts, cb) => cb(new Error('not mocked'))) };
 });
 
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { execFile } from 'child_process';
+import { execFile } from '../lib/childProcess.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
 import { releaseRetryHold } from './agentWorktreeCleanup.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import * as agentLifecycle from './agentFinalization.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
@@ -514,6 +536,7 @@ describe('spawnTuiAgent runtime', () => {
       executionId,
       laneName,
       checkOnlineFn,
+      leanMode: overrides.leanMode ?? false,
       useDurableRunner: overrides.useDurableRunner ?? false,
       ...helpers,
     });
@@ -612,7 +635,7 @@ describe('spawnTuiAgent runtime', () => {
       workspacePath: '/tmp/ws',
       // Per-agent sentinel: `/tmp/ws` is a SHARED workspace (its basename is not
       // the agent id), so the run watches only its own `.agent-done-agent-1`.
-      doneSentinelPath: '/tmp/ws/.agent-done-agent-1',
+      doneSentinelPath: join('/tmp/ws', '.agent-done-agent-1'),
     }));
     expect(shellService.createShellSession).not.toHaveBeenCalled();
     expect(shellService.registerExternalSession).toHaveBeenCalledWith(
@@ -664,7 +687,7 @@ describe('spawnTuiAgent runtime', () => {
     await completeDone;
   });
 
-  it('hands a slashdo-free TUI PR to PortOS for creation and review/merge follow-up', async () => {
+  it('backstops a slashdo-free TUI PR instead of creating one outright (#3733)', async () => {
     const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
     const spawnPromise = runSpawn({
       provider: { id: 'codex-tui', name: 'Codex TUI', type: 'tui', command: 'codex', envVars: {} },
@@ -680,16 +703,63 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnExit({ exitCode: 0, killed: false });
     await spawnPromise;
 
+    // The codex TUI drives its own push → PR → review → merge, so PortOS only
+    // steps in when the forge says no PR exists — hence prCreation: if-missing.
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: true,
+      prCreation: 'if-missing',
       prCompletion: 'review-then-merge',
       reviewers: ['codex'],
+      skipMerge: true,
+    }));
+  });
+
+  it('a lean --bare TUI still hands its PR to PortOS outright', async () => {
+    const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-ollama-tui', name: 'Lean Claude TUI', type: 'tui', command: 'claude', ollamaBacked: true, envVars: {} },
+      leanMode: true,
+      task: {
+        id: 'task-1',
+        description: 'do the thing',
+        metadata: { openPR: true, prCompletion: 'review-then-merge' },
+      },
+      helpers: { cleanupWorktreeFn, isTruthyMetaFn: (value) => value === true || value === 'true' },
+    });
+    await flushMicrotasks();
+
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+
+    expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
+      prCreation: 'always',
       skipMerge: false,
     }));
   });
 
+  it('prepares the Ollama context window only for Ollama-backed providers', async () => {
+    const spawnPromise = runSpawn({
+      provider: { id: 'claude-ollama-tui', name: 'Lean Claude TUI', type: 'tui', command: 'claude', ollamaBacked: true, envVars: {} },
+    });
+    await flushMicrotasks();
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
+    expect(ensureOllamaAgentContext).toHaveBeenCalledTimes(1);
+
+    vi.mocked(ensureOllamaAgentContext).mockClear();
+    const cloudSpawn = runSpawn();
+    await flushMicrotasks();
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await cloudSpawn;
+    expect(ensureOllamaAgentContext).not.toHaveBeenCalled();
+  });
+
   it('does not double-fire a PR owned by a slashdo-capable Claude TUI', async () => {
     const cleanupWorktreeFn = vi.fn().mockResolvedValue(undefined);
+    // finalize asked the forge and got an answer for a real branch — the only
+    // shape that lets cleanup skip its own query (see `prClaimWasVerified`).
+    vi.mocked(agentLifecycle.finalizeAgent).mockResolvedValueOnce({
+      success: true, prVerdict: { ok: true, branch: 'cos/task-1/agent-1' },
+    });
     const spawnPromise = runSpawn({
       provider: { id: 'claude-code-tui', name: 'Claude TUI', type: 'tui', command: 'claude', envVars: {} },
       task: {
@@ -704,8 +774,10 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnExit({ exitCode: 0, killed: false });
     await spawnPromise;
 
+    // `never`, not `if-missing`: finalize already ran `verifyPrClaim` for a
+    // slashdo-capable session, so a second forge query would be pure duplication.
     expect(cleanupWorktreeFn).toHaveBeenCalledWith('agent-1', true, expect.objectContaining({
-      openPR: false,
+      prCreation: 'never',
       prCompletion: 'review-then-merge',
       skipMerge: true,
     }));
@@ -1547,6 +1619,41 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.from(PASTE_ON));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
+  // Claude Code v2.1.233's auto-mode offer. The trust gate above paints BEFORE
+  // the composer; this one paints after, with paste mode already on — so the old
+  // gate said "ready" and the prompt went into a modal that ignored it. All four
+  // claude-code-tui agents on 2026-08-14 died `paste-not-rendered` this way.
+  it('claude auto-mode offer: declines it and pastes only after it is cleared', async () => {
+    runSpawn({ tuiConfig: claudeTuiConfig });
+    await flushMicrotasks();
+
+    // Composer comes up live — under the old gate this alone would paste.
+    await capturedOnData(Buffer.from(`${PASTE_OFF}${PASTE_ON}`));
+    await flushMicrotasks();
+
+    // ...then the modal paints over it, before the prompt delay elapses.
+    await capturedOnData(Buffer.from(
+      'Make auto mode your default permission mode?\n'
+      + '   ❯ 1. Yes, set auto mode as my default permission mode\n'
+      + "     2. No, keep don't ask\n"
+    ));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(700);
+    await flushMicrotasks();
+
+    // Down+Enter selects option 2. A BARE Enter would accept the highlighted
+    // option 1 and rewrite the user's global permission default — assert we did
+    // not do that.
+    const writes = vi.mocked(shellService.writeToSession).mock.calls.map(([, d]) => d);
+    expect(writes).toContain('\x1b[B\r');
+    expect(writes).not.toContain('\r');
+
+    // Only once the dialog is answered does the prompt go out — and exactly once.
+    await vi.advanceTimersByTimeAsync(3000);
     await flushMicrotasks();
     expect(pasteCount()).toBe(1);
   });
@@ -2450,6 +2557,68 @@ describe('spawnTuiAgent runtime', () => {
           error: 'Failed to start TUI session: posix_spawnp failed',
         })
       );
+    });
+
+    it('skips PR state polling when review-loop follow-up has an unresolved PR host (#4007)', async () => {
+      runSpawn({
+        task: {
+          id: 'task-4007',
+          description: 'do the thing',
+          metadata: {
+            reviewLoopFollowUp: 'true',
+            reviewLoopPRHost: null,
+            reviewLoopPRUrl: 'https://unknown-forge.example.com/owner/repo/pull/4007',
+          },
+        },
+      });
+
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('Codex booting...\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('do the thing\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(3600);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(800);
+      await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(16000);
+      await flushMicrotasks();
+
+      expect(getPullRequestStateMock).not.toHaveBeenCalled();
+    });
+
+    it('polls PR state when review-loop follow-up has a resolved github PR host (#4007)', async () => {
+      runSpawn({
+        task: {
+          id: 'task-4007-gh',
+          description: 'do the thing',
+          metadata: {
+            reviewLoopFollowUp: 'true',
+            reviewLoopPRHost: 'github.com',
+            reviewLoopPRUrl: 'https://github.com/owner/repo/pull/4007',
+          },
+        },
+      });
+
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('Codex booting...\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('do the thing\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(3600);
+      await flushMicrotasks();
+      await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(800);
+      await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+      await vi.advanceTimersByTimeAsync(16000);
+      await flushMicrotasks();
+
+      expect(getPullRequestStateMock).toHaveBeenCalledWith('https://github.com/owner/repo/pull/4007', expect.anything());
     });
   });
 });

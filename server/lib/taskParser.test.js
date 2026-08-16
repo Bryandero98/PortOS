@@ -352,6 +352,21 @@ describe('Task Parser', () => {
       expect(parsed[0].metadata.context).toBe(multiLineContext);
     });
 
+    // #4153 — the agent-facing payload moved from `metadata.context` to
+    // `metadata.prompt`. Round-trip safety is the whole reason it lives in
+    // metadata rather than `description`, so pin it for the new key too.
+    it('should round-trip a multi-line metadata.prompt alongside a one-line metadata.context', () => {
+      const prompt = 'Ship the thing\n\n## Phase 1\n- Read PLAN.md\n- [ ] not a task line';
+      const markdown = generateTasksMarkdown([
+        { id: 'task-001', status: 'pending', priority: 'MEDIUM', priorityValue: 2, description: 'Ship the thing', metadata: { prompt, context: 'a short note' } }
+      ]);
+      // The embedded `- [ ]` and `##` lines must NOT become a task/section.
+      const parsed = parseTasksMarkdown(markdown);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].metadata.prompt).toBe(prompt);
+      expect(parsed[0].metadata.context).toBe('a short note');
+    });
+
     it('should round-trip array and object metadata values (screenshots, attachments, reviewers)', () => {
       const tasks = [
         {

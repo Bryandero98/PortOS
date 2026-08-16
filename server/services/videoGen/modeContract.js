@@ -56,6 +56,26 @@ const DEFAULT_MESSAGES = Object.freeze({
   fflfRequiresImage: ({ model }) => `${model.name} FFLF requires a first and/or last frame image.`,
 });
 
+// H3's two runtimes share ONE row: the mode rules come from the fl2va
+// checkpoint partition, not from the MLX / diffusers runner in front of it, and
+// the error codes are the same `MINIMAX_H3_*` contract on both — so both keys
+// below reference this object rather than each carrying a copy, which is
+// exactly what drifted before #3736. `modeUnsupported` names the model rather
+// than the runtime for the same reason: a message that hardcoded one runtime's
+// name would be wrong for whichever entry it wasn't written for.
+const MINIMAX_H3_CONTRACT = Object.freeze({
+  codePrefix: 'MINIMAX_H3',
+  modeCeiling: MINIMAX_H3_MODES,
+  extraConditioningUnsupported: true,
+  messages: Object.freeze({
+    modeUnsupported: ({ model, allowedModes }) => `${model.name} supports ${allowedModes.join(', ') || 'no'} modes only; remove multi-keyframe, video, audio, or reference conditioning.`,
+    textSourceConflict: () => 'MiniMax H3 text-to-video cannot consume a conditioning image — switch to image or FFLF mode.',
+    imageRequiresFirst: () => 'MiniMax H3 image-to-video requires a source image — choose an existing gallery image or upload one.',
+    imageLastConflict: () => 'MiniMax H3 image-to-video takes a single first-frame image — switch to FFLF mode to use a last frame.',
+    fflfRequiresImage: () => 'MiniMax H3 FFLF requires a first and/or last frame image.',
+  }),
+});
+
 /**
  * The per-runtime rows. `modeCeiling` is the set of modes the *helper* has
  * arguments for — a `null` ceiling means the registry entry's `supportedModes`
@@ -87,18 +107,8 @@ const VIDEO_MODE_CONTRACTS = Object.freeze({
         : 'Wan 2.2 image-to-video requires a source image — upload one before running this model.'),
     },
   },
-  minimax_h3: {
-    codePrefix: 'MINIMAX_H3',
-    modeCeiling: MINIMAX_H3_MODES,
-    extraConditioningUnsupported: true,
-    messages: {
-      modeUnsupported: ({ allowedModes }) => `MiniMax H3 MLX supports ${allowedModes.join(', ') || 'no'} modes only; remove multi-keyframe, video, audio, or reference conditioning.`,
-      textSourceConflict: () => 'MiniMax H3 text-to-video cannot consume a conditioning image — switch to image or FFLF mode.',
-      imageRequiresFirst: () => 'MiniMax H3 image-to-video requires a source image — choose an existing gallery image or upload one.',
-      imageLastConflict: () => 'MiniMax H3 image-to-video takes a single first-frame image — switch to FFLF mode to use a last frame.',
-      fflfRequiresImage: () => 'MiniMax H3 FFLF requires a first and/or last frame image.',
-    },
-  },
+  minimax_h3: MINIMAX_H3_CONTRACT,
+  minimax_h3_cuda: MINIMAX_H3_CONTRACT,
 });
 
 // An empty array is "no references", not "references present" — and an empty

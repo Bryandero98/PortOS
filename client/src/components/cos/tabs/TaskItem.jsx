@@ -49,6 +49,14 @@ const APPROVAL_REASON_HINTS = {
   'investigation-loop:failure-storm': 'Held for you: this hour is nearly out of investigation budget — failures are cascading, not isolated.'
 };
 
+const getTaskEditData = (task) => ({
+  description: task.description,
+  prompt: task.metadata?.prompt || '',
+  context: task.metadata?.context || '',
+  model: task.metadata?.model || '',
+  provider: task.metadata?.provider || ''
+});
+
 // Get success rate styling based on percentage
 function getSuccessRateStyle(rate) {
   if (rate >= 70) return { bg: 'bg-port-success/15', text: 'text-port-success', label: 'high' };
@@ -72,15 +80,26 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
     setEditingInternal(val);
     onEditingChange?.(val);
   }, [onEditingChange]);
-  const [editData, setEditData] = useState({
-    description: task.description,
-    context: task.metadata?.context || '',
-    model: task.metadata?.model || '',
-    provider: task.metadata?.provider || ''
-  });
+  // A task written since the #4153 split keeps its full agent-facing payload in
+  // `metadata.prompt` and only a short human note in `metadata.context`. Legacy
+  // tasks (and peers still on the old code) have no `prompt` at all — their
+  // payload is still in `context` — so the Prompt field is offered ONLY when the
+  // task actually carries one, and is omitted from the PATCH otherwise rather
+  // than writing an empty `prompt` key onto every task the user edits.
+  const hasPromptField = typeof task.metadata?.prompt === 'string';
+  const taskPrompt = task.metadata?.prompt || '';
+  const taskContext = task.metadata?.context || '';
+  const taskModel = task.metadata?.model || '';
+  const taskProvider = task.metadata?.provider || '';
+  const [editData, setEditData] = useState(() => getTaskEditData(task));
   const [showBlockedModal, setShowBlockedModal] = useState(false);
   const [blockedReason, setBlockedReason] = useState('');
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
+  // Independent armed-state from the delete confirm above — a second instance
+  // of the same single-at-a-time hook, keyed on the same task id, gates
+  // discarding an in-progress edit (#4037) behind the same inline two-click-arm
+  // pattern rather than silently dropping the draft on Cancel.
+  const { isConfirming: isConfirmingDiscard, requestDelete: requestDiscardConfirm, cancelDelete: cancelDiscardConfirm, confirmDelete: confirmDiscard } = useConfirmDelete();
   const blockedInputRef = useRef(null);
 
   // Focus input when modal opens
@@ -89,6 +108,13 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
       blockedInputRef.current.focus();
     }
   }, [showBlockedModal]);
+
+  // Queue refreshes can replace a legacy task with its split form while this
+  // component stays mounted under the same task id. Keep the draft current
+  // whenever it is safe to do so, but never overwrite an active edit.
+  useEffect(() => {
+    if (!editing) setEditData(getTaskEditData(task));
+  }, [editing, task.id, task.description, taskPrompt, taskContext, taskModel, taskProvider, task]);
 
   // Get models for selected provider in edit mode
   const editProvider = providers?.find(p => p.id === editData.provider);
@@ -138,24 +164,38 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
       updates.blockedReason = blockedReasonText;
     }
     const result = await api.updateCosTask(task.id, updates, { silent: true }).catch(err => { toast.error(err.message); return null; });
-    if (!result) return;
+    if (!result) return false;
     toast.success(`Task marked as ${newStatus}`);
     onRefresh();
+    return true;
   };
 
   const handleMarkBlocked = () => {
-    setBlockedReason(task.metadata?.blocker || '');
+    // Server-side auto-blocks write `blockedReason`; a manual block writes
+    // `blocker` — seed from whichever the task carries, same as the badge below.
+    setBlockedReason(task.metadata?.blocker || task.metadata?.blockedReason || '');
     setShowBlockedModal(true);
   };
 
-  const handleConfirmBlocked = async () => {
-    await handleStatusChange('blocked', blockedReason.trim());
+  // Closing drops the typed reason rather than leaving it in state. handleMarkBlocked
+  // re-seeds from the task on every open, so nothing leaks through the UI today —
+  // this keeps that true for any future opener that doesn't re-seed.
+  const closeBlockedModal = () => {
     setShowBlockedModal(false);
     setBlockedReason('');
   };
 
+  const handleConfirmBlocked = async () => {
+    // Keep the modal (and the typed reason) open when the update fails, so a
+    // transient API error doesn't discard what the user wrote.
+    if (!(await handleStatusChange('blocked', blockedReason.trim()))) return;
+    closeBlockedModal();
+  };
+
   const handleSave = async () => {
-    const result = await api.updateCosTask(task.id, { ...editData, type: taskSource }, { silent: true }).catch(err => {
+    const { prompt, ...rest } = editData;
+    const payload = hasPromptField ? { ...rest, prompt, type: taskSource } : { ...rest, type: taskSource };
+    const result = await api.updateCosTask(task.id, payload, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });
@@ -163,6 +203,34 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
     toast.success('Task updated');
     setEditing(false);
     onRefresh();
+  };
+
+  // Compares the draft against the same task fields editData was seeded from
+  // (see the useState initializer above) — true only when the user actually
+  // changed something, so an unmodified Cancel still discards with no friction.
+  const hasUnsavedEdits =
+    editData.description !== task.description ||
+    (hasPromptField && editData.prompt !== (task.metadata?.prompt || '')) ||
+    editData.context !== (task.metadata?.context || '') ||
+    editData.model !== (task.metadata?.model || '') ||
+    editData.provider !== (task.metadata?.provider || '');
+
+  const handleCancelEdit = () => {
+    if (hasUnsavedEdits) {
+      requestDiscardConfirm(task.id);
+    } else {
+      setEditing(false);
+    }
+  };
+
+  // Discarding must actually revert the draft, not just hide it — without this,
+  // reopening Edit after a confirmed discard would show the just-discarded text
+  // again instead of the task's real values.
+  const handleConfirmDiscard = () => {
+    confirmDiscard(() => {
+      setEditData(getTaskEditData(task));
+      setEditing(false);
+    });
   };
 
   const handleDelete = async () => {
@@ -286,16 +354,28 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
               <input
                 type="text"
                 value={editData.description}
+                aria-label="Task description"
                 onChange={e => setEditData(d => ({ ...d, description: e.target.value }))}
                 className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
               />
-              {/* A textarea, not an input: for orchestrator tasks the context
-                  holds the task's entire multi-line prompt, which is unreadable
-                  and unnavigable in a single-line field. Bounded rows + its own
+              {/* A textarea, not an input: for orchestrator tasks this holds the
+                  task's entire multi-line prompt, which is unreadable and
+                  unnavigable in a single-line field. Bounded rows + its own
                   scroll so editing a long prompt doesn't stretch the card. */}
+              {hasPromptField && (
+                <textarea
+                  rows={4}
+                  placeholder="Prompt"
+                  aria-label="Task prompt"
+                  value={editData.prompt}
+                  onChange={e => setEditData(d => ({ ...d, prompt: e.target.value }))}
+                  className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm font-mono resize-y overflow-auto"
+                />
+              )}
               <textarea
                 rows={4}
                 placeholder="Context"
+                aria-label="Task context"
                 value={editData.context}
                 onChange={e => setEditData(d => ({ ...d, context: e.target.value }))}
                 className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm font-mono resize-y overflow-auto"
@@ -324,20 +404,31 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
                   </select>
                 )}
               </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleSave}
-                  className="flex items-center gap-1 text-sm px-3 py-2 min-h-[40px] text-port-success hover:text-port-success/80 bg-port-success/10 hover:bg-port-success/20 rounded transition-colors"
-                >
-                  <Save size={14} aria-hidden="true" /> Save
-                </button>
-                <button
-                  onClick={() => setEditing(false)}
-                  className="flex items-center gap-1 text-sm px-3 py-2 min-h-[40px] text-gray-400 hover:text-white bg-port-bg hover:bg-port-border rounded transition-colors"
-                >
-                  <X size={14} aria-hidden="true" /> Cancel
-                </button>
-              </div>
+              {isConfirmingDiscard(task.id) ? (
+                <ConfirmButtonPair
+                  prompt="Discard unsaved changes?"
+                  confirmText="Discard"
+                  ariaLabel="Confirm discard task edits"
+                  tone="warning"
+                  onConfirm={handleConfirmDiscard}
+                  onCancel={cancelDiscardConfirm}
+                />
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSave}
+                    className="flex items-center gap-1 text-sm px-3 py-2 min-h-[40px] text-port-success hover:text-port-success/80 bg-port-success/10 hover:bg-port-success/20 rounded transition-colors"
+                  >
+                    <Save size={14} aria-hidden="true" /> Save
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    className="flex items-center gap-1 text-sm px-3 py-2 min-h-[40px] text-gray-400 hover:text-white bg-port-bg hover:bg-port-border rounded transition-colors"
+                  >
+                    <X size={14} aria-hidden="true" /> Cancel
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -346,10 +437,18 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
                 text={task.description}
                 className="text-white"
               />
-              {/* The context often carries the task's full prompt (hundreds of
-                  lines for orchestrator tasks), so it gets the same clamp as the
-                  description — an unclamped one turns the pending list into a
-                  wall of text the user has to scroll past. */}
+              {/* The prompt runs to hundreds of lines for orchestrator tasks, so
+                  it gets the same clamp as the description — an unclamped one
+                  turns the pending list into a wall of text the user has to
+                  scroll past. The note below it gets the same treatment, since a
+                  legacy task still carries its payload there. */}
+              {task.metadata?.prompt && (
+                <CollapsibleText
+                  id={`task-prompt-${idScope}-${task.id}`}
+                  text={task.metadata.prompt}
+                  className="text-sm text-gray-500 mt-1"
+                />
+              )}
               {task.metadata?.context && (
                 <CollapsibleText
                   id={`task-context-${idScope}-${task.id}`}
@@ -526,7 +625,7 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
       {/* Blocked Reason Modal */}
       <Modal
         open={showBlockedModal}
-        onClose={() => setShowBlockedModal(false)}
+        onClose={closeBlockedModal}
         size="sm"
         ariaLabelledBy="blocked-modal-title"
         panelClassName="bg-port-card border border-port-border rounded-lg p-4"
@@ -547,11 +646,12 @@ export default function TaskItem({ task, isSystem, onRefresh, providers, duratio
             if (e.key === 'Enter') handleConfirmBlocked();
           }}
           placeholder="e.g., Waiting for API access, Needs design review..."
+          aria-label="Reason this task is blocked"
           className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm mb-4"
         />
         <div className="flex justify-end gap-2">
           <button
-            onClick={() => setShowBlockedModal(false)}
+            onClick={closeBlockedModal}
             className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
           >
             Cancel

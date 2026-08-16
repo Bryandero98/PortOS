@@ -13,6 +13,8 @@
 // `client/src/utils/index.js` barrel free of generic names like `parseHour` that
 // would collide with a future module.
 
+import { clamp } from './formatters.js';
+
 // Sentinel energy for "no usable profile" — distinct from any real curve value so a
 // missing profile is recognizable. It maps to NEUTRAL_MODIFIERS (no visible change),
 // NOT to peak brightness, so an unconfigured city looks untouched rather than washed out.
@@ -32,8 +34,6 @@ const ENERGY_RANGE = {
 // brightness and tempo at 1.0 so the scene renders exactly as it would without the
 // overlay. Keeps "unconfigured / failed to fetch" visually distinct from "low energy."
 const NEUTRAL_MODIFIERS = { energy: NEUTRAL_ENERGY, brightness: 1.0, tempo: 1.0 };
-
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // Parse "HH:MM" → fractional hours in [0,24). Returns NaN for unparseable input.
 // Hours past midnight that belong to "today's" late night (e.g. a 00:30 sleep time)

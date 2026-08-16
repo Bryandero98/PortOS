@@ -1,5 +1,5 @@
 import os from 'os';
-import { exec } from 'child_process';
+import { exec } from './childProcess.js';
 import { promisify } from 'util';
 import { readFile } from 'fs/promises';
 
@@ -24,7 +24,7 @@ function fallback() {
 }
 
 async function macMemory() {
-  const { stdout } = await execAsync('vm_stat', { windowsHide: true, timeout: 5000 });
+  const { stdout } = await execAsync('vm_stat', { timeout: 5000 });
   const pageSizeMatch = stdout.match(/page size of (\d+) bytes/);
   const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : 16384;
 

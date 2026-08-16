@@ -16,6 +16,16 @@ import { execGit } from '../lib/execGit.js';
 import { isBranchMergedInto } from './git.js';
 import { reapMergedWorktrees } from './worktreeManager.js';
 
+/**
+ * Why `wantedPath` was skipped, matched separator-insensitively — `skipped[].path`
+ * is git's POSIX output while these tests build paths with `join()`. See the
+ * WORKTREES_DIR comment in worktreeManager.js for the full failure mode.
+ */
+function skipReason(result, wantedPath) {
+  const posix = (p) => (p || '').replace(/\\/g, '/');
+  return result.skipped.find((s) => posix(s.path) === posix(wantedPath))?.reason;
+}
+
 async function commitFile(dir, name, content, message) {
   await writeFile(join(dir, name), content);
   await execGit(['add', '.'], dir);
@@ -26,8 +36,14 @@ async function initRepo() {
   // realpath-resolve: on macOS mkdtemp returns a /var symlink while
   // `git worktree list` records the canonical /private/var path, which would
   // break the reaper's startsWith() location checks and our path assertions.
-  const dir = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-')));
-  await execGit(['init', '-b', 'main'], dir);
+  const created = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-')));
+  await execGit(['init', '-b', 'main'], created);
+  // Adopt git's spelling of the root. `git worktree list` reports paths the way
+  // git normalized them, and the reaper's containment check compares those
+  // against a root derived from this value — so any disagreement (8.3 short
+  // names like C:\\Users\\RUNNER~1, drive-letter case) makes every worktree look
+  // like it lives somewhere unmanaged and nothing is reaped.
+  const dir = (await execGit(['rev-parse', '--show-toplevel'], created)).stdout.trim() || created;
   await execGit(['config', 'user.email', 'test@example.com'], dir);
   await execGit(['config', 'user.name', 'Test'], dir);
   await execGit(['config', 'commit.gpgsign', 'false'], dir);
@@ -124,9 +140,12 @@ describe('reapMergedWorktrees', () => {
 
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
 
-    expect(result.reaped.map(r => r.branch)).toContain('merged-br');
+    expect(
+      result.reaped.map(r => r.branch),
+      `nothing reaped; skipped = ${JSON.stringify(result.skipped)}`,
+    ).toContain('merged-br');
     expect(result.reaped.map(r => r.branch)).not.toContain('pending-br');
-    expect(result.skipped.find(s => s.path === unmergedPath)?.reason).toBe('unmerged');
+    expect(skipReason(result, unmergedPath)).toBe('unmerged');
 
     expect(existsSync(mergedPath)).toBe(false);
     expect(existsSync(unmergedPath)).toBe(true);
@@ -145,7 +164,7 @@ describe('reapMergedWorktrees', () => {
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('dirty-br');
-    expect(result.skipped.find(s => s.path === path)?.reason).toBe('uncommitted');
+    expect(skipReason(result, path)).toBe('uncommitted');
     expect(existsSync(path)).toBe(true);
   });
 
@@ -156,7 +175,7 @@ describe('reapMergedWorktrees', () => {
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('not-started-br');
-    expect(result.skipped.find(s => s.path === path)?.reason).toBe('uncommitted');
+    expect(skipReason(result, path)).toBe('uncommitted');
     expect(existsSync(path)).toBe(true);
   });
 
@@ -168,7 +187,7 @@ describe('reapMergedWorktrees', () => {
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('lockfile-dirty-br');
-    expect(result.skipped.find(s => s.path === path)?.reason).toBe('uncommitted');
+    expect(skipReason(result, path)).toBe('uncommitted');
     expect(existsSync(path)).toBe(true);
   });
 
@@ -180,7 +199,7 @@ describe('reapMergedWorktrees', () => {
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('locked-br');
-    expect(result.skipped.find(s => s.path === path)?.reason).toBe('locked');
+    expect(skipReason(result, path)).toBe('worktree-locked');
     expect(existsSync(path)).toBe(true);
   });
 
@@ -194,7 +213,7 @@ describe('reapMergedWorktrees', () => {
     });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('active-br');
-    expect(result.skipped.find(s => s.path === path)?.reason).toBe('active-agent');
+    expect(skipReason(result, path)).toBe('worktree-active-agent');
     expect(existsSync(path)).toBe(true);
     // The main repo checkout is never reported as reaped or skipped-with-branch.
     expect(result.reaped.find(r => r.branch === 'main')).toBeUndefined();
@@ -220,7 +239,7 @@ describe('reapMergedWorktrees', () => {
     const result = await reapMergedWorktrees(dir, { includeClaudeTrees: false });
 
     expect(result.reaped.map(r => r.branch)).not.toContain('excluded-br');
-    expect(result.skipped.find(s => s.path === path)?.reason).toBe('claude-tree-excluded');
+    expect(skipReason(result, path)).toBe('claude-tree-excluded');
     expect(existsSync(path)).toBe(true);
   });
 });

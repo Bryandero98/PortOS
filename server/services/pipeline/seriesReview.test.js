@@ -4,6 +4,12 @@ import {
   collectReviewFindings,
   shapeFeedbackFinding,
   buildFeedbackRoutePrompt,
+  manuscriptInputs,
+  seriesReviewInputsHash,
+  isSeriesReviewSourceStale,
+  isSeriesReviewFindingsStale,
+  seriesReviewRequestSig,
+  seriesFixRequestSig,
 } from './seriesReview.js';
 
 describe('computeReviewVerdict', () => {
@@ -157,5 +163,191 @@ describe('buildFeedbackRoutePrompt', () => {
   it('handles an empty roster', () => {
     const prompt = buildFeedbackRoutePrompt('note', []);
     expect(prompt).toContain('(no issues yet)');
+  });
+});
+
+describe('manuscriptInputs', () => {
+  const issue = (over = {}) => ({ id: 'iss-1', number: 1, stages: { prose: { output: 'the draft' } }, ...over });
+
+  it('flips the projection when a drafted stage OUTPUT changes', () => {
+    const before = manuscriptInputs([issue()]);
+    const after = manuscriptInputs([issue({ stages: { prose: { output: 'a rewritten draft' } } })]);
+    expect(after).not.toEqual(before);
+  });
+
+  it('flips the projection when a stage INPUT (the seed) changes, not only the output', () => {
+    const before = manuscriptInputs([issue({ stages: { prose: { input: 'beats', output: 'the draft' } } })]);
+    const after = manuscriptInputs([issue({ stages: { prose: { input: 'new beats', output: 'the draft' } } })]);
+    expect(after).not.toEqual(before);
+  });
+
+  it('covers every manuscript stage, not just the highest-precedence one', () => {
+    const base = { id: 'iss-1', stages: { comicScript: { output: 'PAGE 1' }, prose: { output: 'the draft' } } };
+    const edited = { id: 'iss-1', stages: { comicScript: { output: 'PAGE 1' }, prose: { output: 'edited prose' } } };
+    // `comicScript` outranks `prose` in the stitched corpus, so a prose-only edit
+    // is exactly the drift a precedence-picking projection would miss.
+    expect(manuscriptInputs([edited])).not.toEqual(manuscriptInputs([base]));
+  });
+
+  it('is stable across a listing re-order (a re-order is not an edit)', () => {
+    const a = issue();
+    const b = issue({ id: 'iss-2', number: 2 });
+    expect(manuscriptInputs([a, b])).toEqual(manuscriptInputs([b, a]));
+  });
+
+  it('tolerates a non-array input and issues with no stages', () => {
+    expect(manuscriptInputs(null)).toEqual([]);
+    expect(manuscriptInputs([{}])).toHaveLength(1);
+  });
+});
+
+describe('seriesReviewInputsHash', () => {
+  const series = { id: 'ser-1', targetFormat: 'comic+tv', severityWeights: null };
+  const universe = {
+    id: 'uni-1',
+    logline: 'A quiet town keeps a loud secret.',
+    characters: [{ id: 'ch-1', name: 'Ada', description: 'a tall figure in a long coat' }],
+    places: [],
+    objects: [],
+  };
+  const issues = [{ id: 'iss-1', number: 1, stages: { prose: { output: 'the draft' } } }];
+  const base = () => seriesReviewInputsHash({ series, universe, issues });
+
+  it('is deterministic for unchanged inputs', () => {
+    expect(base()).toBe(seriesReviewInputsHash({ series, universe, issues }));
+  });
+
+  it('changes when the manuscript is edited', () => {
+    const edited = [{ id: 'iss-1', number: 1, stages: { prose: { output: 'a rewritten draft' } } }];
+    expect(seriesReviewInputsHash({ series, universe, issues: edited })).not.toBe(base());
+  });
+
+  it('changes when a canon DESCRIPTION is edited (a field the foundation projection does not carry)', () => {
+    const edited = { ...universe, characters: [{ id: 'ch-1', name: 'Ada', description: 'a short figure in a raincoat' }] };
+    expect(seriesReviewInputsHash({ series, universe: edited, issues })).not.toBe(base());
+  });
+
+  it('changes when a foundation input (the world logline) is edited', () => {
+    const edited = { ...universe, logline: 'A loud town keeps a quiet secret.' };
+    expect(seriesReviewInputsHash({ series, universe: edited, issues })).not.toBe(base());
+  });
+
+  it('changes when the health severity weights change (same sources, different scoring)', () => {
+    const edited = { ...series, severityWeights: { high: 20, medium: 5, low: 1 } };
+    expect(seriesReviewInputsHash({ series: edited, universe, issues })).not.toBe(base());
+  });
+
+  it('changes when the target format changes (it selects the canon source text)', () => {
+    expect(seriesReviewInputsHash({ series: { ...series, targetFormat: 'tv' }, universe, issues })).not.toBe(base());
+  });
+
+  it('is unchanged by key ordering (a synced/imported record may re-order keys)', () => {
+    const reordered = { objects: [], places: [], characters: universe.characters, logline: universe.logline, id: 'uni-1' };
+    expect(seriesReviewInputsHash({ series, universe: reordered, issues })).toBe(base());
+  });
+
+  it('tolerates a series with no linked universe', () => {
+    expect(typeof seriesReviewInputsHash({ series, universe: null, issues })).toBe('string');
+  });
+});
+
+describe('isSeriesReviewSourceStale', () => {
+  it('flags a snapshot whose pinned hash no longer matches the current sources', () => {
+    expect(isSeriesReviewSourceStale({ sourceInputsHash: 'aaa' }, 'bbb')).toBe(true);
+  });
+
+  it('does not flag a snapshot whose sources are unchanged', () => {
+    expect(isSeriesReviewSourceStale({ sourceInputsHash: 'aaa' }, 'aaa')).toBe(false);
+  });
+
+  it('never flags a pre-#4111 snapshot that carries no hash (it cannot be judged)', () => {
+    expect(isSeriesReviewSourceStale({ verdict: 'ready' }, 'aaa')).toBe(false);
+    expect(isSeriesReviewSourceStale(null, 'aaa')).toBe(false);
+  });
+
+  it('flags a hashed snapshot whose current hash could not be recomputed (fails closed)', () => {
+    expect(isSeriesReviewSourceStale({ sourceInputsHash: 'aaa' }, null)).toBe(true);
+  });
+});
+
+describe('isSeriesReviewFindingsStale', () => {
+  it('is false when the live open set matches the pinned ids', () => {
+    expect(isSeriesReviewFindingsStale({ findingIds: ['a', 'b'] }, new Set(['a', 'b']))).toBe(false);
+  });
+
+  it('is true when a pinned finding was accepted/dismissed', () => {
+    expect(isSeriesReviewFindingsStale({ findingIds: ['a', 'b'] }, new Set(['a']))).toBe(true);
+  });
+
+  it('is true when a new finding appeared', () => {
+    expect(isSeriesReviewFindingsStale({ findingIds: ['a'] }, new Set(['a', 'b']))).toBe(true);
+  });
+
+  it('falls back to the embedded findings for a snapshot with no findingIds', () => {
+    expect(isSeriesReviewFindingsStale({ findings: [{ commentId: 'a' }] }, new Set(['a']))).toBe(false);
+    expect(isSeriesReviewFindingsStale({ findings: [{ commentId: 'a' }] }, new Set())).toBe(true);
+  });
+
+  it('accepts an array of live ids (not only a Set)', () => {
+    expect(isSeriesReviewFindingsStale({ findingIds: ['a'] }, ['a'])).toBe(false);
+  });
+});
+
+// The signatures the SSE runner coalesces on (#4113). Same signature = same work
+// (safe to attach a second start to the in-flight run); different signature =
+// different work, which must report a conflict instead of silently dropping the
+// second start's options.
+describe('seriesReviewRequestSig', () => {
+  it('matches for two starts that would run the same review', () => {
+    expect(seriesReviewRequestSig({ feedback: 'pacing drags', force: true }))
+      .toBe(seriesReviewRequestSig({ feedback: 'pacing drags', force: true }));
+  });
+
+  it('treats absent, empty, and whitespace-only feedback as the same (no) note', () => {
+    const none = seriesReviewRequestSig({});
+    expect(seriesReviewRequestSig({ feedback: '' })).toBe(none);
+    expect(seriesReviewRequestSig({ feedback: '   \n' })).toBe(none);
+  });
+
+  it('ignores surrounding whitespace on a real note, matching the service trim', () => {
+    expect(seriesReviewRequestSig({ feedback: '  pacing drags  ' }))
+      .toBe(seriesReviewRequestSig({ feedback: 'pacing drags' }));
+  });
+
+  it.each([
+    ['a different note', { feedback: 'pacing drags' }, { feedback: 'the ending lands flat' }],
+    ['a provider override', {}, { providerOverride: 'example-provider' }],
+    ['a model override', {}, { modelOverride: 'example-model' }],
+    ['force', {}, { force: true }],
+    ['a readiness gate', {}, { readinessGate: 'noOpenHighOrMedium' }],
+  ])('diverges on %s', (_label, a, b) => {
+    expect(seriesReviewRequestSig(a)).not.toBe(seriesReviewRequestSig(b));
+  });
+
+  it('does not conflate a note with the same text in another field', () => {
+    expect(seriesReviewRequestSig({ feedback: 'x' })).not.toBe(seriesReviewRequestSig({ modelOverride: 'x' }));
+  });
+});
+
+describe('seriesFixRequestSig', () => {
+  it('matches for the same finding set in a different order', () => {
+    expect(seriesFixRequestSig({ commentIds: ['mrc-2', 'mrc-1'] }))
+      .toBe(seriesFixRequestSig({ commentIds: ['mrc-1', 'mrc-2'] }));
+  });
+
+  it('treats an absent and an empty id list as the same "every open finding" pass', () => {
+    expect(seriesFixRequestSig({ commentIds: [] })).toBe(seriesFixRequestSig({}));
+  });
+
+  it('diverges when the finding set differs — that run WRITES the manuscript', () => {
+    expect(seriesFixRequestSig({ commentIds: ['mrc-1'] }))
+      .not.toBe(seriesFixRequestSig({ commentIds: ['mrc-1', 'mrc-2'] }));
+    // A scoped pass is NOT the same work as the unscoped "fix everything" pass.
+    expect(seriesFixRequestSig({ commentIds: ['mrc-1'] })).not.toBe(seriesFixRequestSig({}));
+  });
+
+  it('diverges on a provider/model override', () => {
+    expect(seriesFixRequestSig({})).not.toBe(seriesFixRequestSig({ providerOverride: 'example-provider' }));
+    expect(seriesFixRequestSig({})).not.toBe(seriesFixRequestSig({ modelOverride: 'example-model' }));
   });
 });

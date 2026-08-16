@@ -119,8 +119,8 @@ import {
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, registerPauseReleaseAdapter, __resetPauseReleaseAdapter } from '../lib/taskPauseHold.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/cosValidation.js';
 
-const USER_FILE = '/root/TASKS.md';
-const COS_FILE = '/root/COS-TASKS.md';
+const USER_FILE = join('/root', 'TASKS.md');
+const COS_FILE = join('/root', 'COS-TASKS.md');
 
 const baseState = () => ({
   config: { userTasksFile: 'TASKS.md', cosTasksFile: 'COS-TASKS.md' }
@@ -321,6 +321,87 @@ describe('cosTaskStore.addTask', () => {
     expect(task.priorityValue).toBe(PRIORITY_VALUES.MEDIUM);
     expect(task.status).toBe('pending');
     expect(mock.events.some(e => e.name === 'tasks:changed' && e.payload.action === 'added' && e.payload.type === 'user')).toBe(true);
+  });
+
+  describe('prompt / context split (#4153)', () => {
+    const AGENT_BODY = 'Improve Example App\n\n## Phase 1\nRead PLAN.md.';
+
+    it('routes a multi-line context payload to metadata.prompt and round-trips it through markdown', async () => {
+      const created = await addTask({ description: 'Improve Example App', id: 'task-split', context: AGENT_BODY }, 'user');
+      expect(created.metadata.prompt).toBe(AGENT_BODY);
+      expect(created.metadata.context).toBeUndefined();
+      const reloaded = await getTaskById('task-split');
+      expect(reloaded.metadata.prompt).toBe(AGENT_BODY);
+      expect(reloaded.metadata.context).toBeUndefined();
+    });
+
+    it('leaves a one-line human note on metadata.context', async () => {
+      const created = await addTask({ description: 'job', id: 'task-note', context: 'Manually triggered job: nightly' }, 'user');
+      expect(created.metadata.context).toBe('Manually triggered job: nightly');
+      expect(created.metadata.prompt).toBeUndefined();
+    });
+
+    it('accepts an explicit prompt alongside a note and never re-classifies it', async () => {
+      const created = await addTask(
+        { description: 'claim', id: 'task-explicit', prompt: AGENT_BODY, context: 'one-line note' },
+        'user'
+      );
+      expect(created.metadata.prompt).toBe(AGENT_BODY);
+      expect(created.metadata.context).toBe('one-line note');
+    });
+
+    it('preserves an explicitly cleared prompt alongside a note', async () => {
+      const created = await addTask(
+        { description: 'claim', id: 'task-empty-prompt', prompt: '', context: 'one-line note' },
+        'user'
+      );
+      expect(created.metadata).toHaveProperty('prompt', '');
+      expect(created.metadata.context).toBe('one-line note');
+
+      const reloaded = await getTaskById('task-empty-prompt');
+      expect(reloaded.metadata).toHaveProperty('prompt', '');
+      expect(reloaded.metadata.context).toBe('one-line note');
+    });
+
+    // The generator, the reference-watch filer and the repo-study filer all queue
+    // pre-built (raw) tasks carrying the same multi-thousand-character body.
+    it('classifies a raw pre-built task too, without mutating the caller object', async () => {
+      const raw = {
+        id: 'sys-raw',
+        status: 'pending',
+        priority: 'LOW',
+        priorityValue: 1,
+        description: 'Improve Example App',
+        autoApproved: true,
+        metadata: { context: AGENT_BODY, app: 'a1' },
+        section: 'pending',
+      };
+      const created = await addTask(raw, 'internal', { raw: true });
+      expect(created.metadata.prompt).toBe(AGENT_BODY);
+      expect(created.metadata.context).toBeUndefined();
+      expect(created.metadata.app).toBe('a1');
+      expect(raw.metadata.context).toBe(AGENT_BODY); // caller's object untouched
+    });
+
+    // The task editor's textarea is seeded from the NOTE; re-classifying a
+    // multi-line edit of it would silently overwrite the task's real prompt.
+    it('does NOT re-classify on update — a multi-line note edit stays a note', async () => {
+      await addTask({ description: 'claim', id: 'task-edit', prompt: AGENT_BODY, context: 'note' }, 'user');
+      const updated = await updateTask('task-edit', { context: 'note\nsecond line' }, 'user');
+      expect(updated.metadata.context).toBe('note\nsecond line');
+      expect(updated.metadata.prompt).toBe(AGENT_BODY);
+    });
+
+    it('treats prompt as a legacy direct field on update (edit stamp + clear)', async () => {
+      const T0 = Date.parse('2026-08-15T00:00:00.000Z');
+      const T1 = Date.parse('2026-08-15T06:00:00.000Z');
+      await addTask({ description: 'claim', id: 'task-prompt-edit', prompt: AGENT_BODY }, 'user', { now: T0 });
+      const edited = await updateTask('task-prompt-edit', { prompt: 'rewritten\nbody' }, 'user', { now: T1 });
+      expect(edited.metadata.prompt).toBe('rewritten\nbody');
+      expect(edited.metadata.updatedAt).toBe(new Date(T1).toISOString());
+      const cleared = await updateTask('task-prompt-edit', { prompt: '' }, 'user');
+      expect(cleared.metadata.prompt).toBe('');
+    });
   });
 
   it('persists structured auto-fix diagnostics into metadata and round-trips them through markdown (#2328)', async () => {
@@ -549,13 +630,19 @@ describe('cosTaskStore.addTask', () => {
     const task = await addTask({ description: 'budget reset', app: 'portos', id: 'sys-budget' }, 'internal');
     await updateTask(task.id, {
       status: 'blocked',
-      metadata: { blockedCategory: 'max-spawns', totalSpawnCount: 99, orphanRetryCount: 3, lastOrphanedAt: '2026-01-01T00:00:00.000Z' }
+      metadata: {
+        blockedCategory: 'max-spawns', totalSpawnCount: 99, orphanRetryCount: 3,
+        lastOrphanedAt: '2026-01-01T00:00:00.000Z', worktreeBusyAttempts: 5
+      }
     }, 'internal');
     const revived = await reviveBlockedTask(task.id, { metadata: { totalSpawnCount: 99, fresh: 'yes' } }, 'internal');
     expect(revived.status).toBe('pending');
     expect(revived.metadata.totalSpawnCount).toBeUndefined();
     expect(revived.metadata.orphanRetryCount).toBeUndefined();
     expect(revived.metadata.lastOrphanedAt).toBeUndefined();
+    // The branch-busy patience budget is spent by the time a follow-up gives up;
+    // leaving it would make the revived task hard-block on the first busy race.
+    expect(revived.metadata.worktreeBusyAttempts).toBeUndefined();
     expect(revived.metadata.blockedCategory).toBeUndefined();
     expect(revived.metadata.fresh).toBe('yes');
   });
@@ -871,6 +958,70 @@ describe('cosTaskStore.updateTask', () => {
     }, 'user');
     expect(blocked.metadata.existingBranch).toBe('cos/b');
     expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
+  });
+
+  // An `existingBranch` with no `resumedFromAgentId` beside it was never written
+  // by the resume mechanism — it is the task's OWN configuration. A merge
+  // follow-up is the producer: it exists to land the PR on that branch. Stripping
+  // that copy meant re-running a blocked follow-up cut a worktree fresh off the
+  // default branch, so any fix-and-push landed on a branch the PR never heard of.
+  it('keeps a self-configured branch pointer through a terminal block', async () => {
+    await addTask({ description: 'merge PR 1', id: 'sys-rl-keep' }, 'internal');
+    await updateTask('sys-rl-keep', {
+      metadata: { existingBranch: 'cos/task-1/agent-1', reviewLoopFollowUp: true, reviewLoopPRUrl: 'https://github.com/o/r/pull/1' }
+    }, 'internal');
+    const blocked = await updateTask('sys-rl-keep', {
+      status: 'blocked',
+      metadata: { blockedCategory: 'worktree-failed' }
+    }, 'internal');
+    expect(blocked.metadata.existingBranch).toBe('cos/task-1/agent-1');
+  });
+
+  // ...but once the resume mechanism has stamped its marker, the whole pointer is
+  // the resume's and goes with it — the tree the dead run left behind is gone by
+  // the time anyone re-runs the task.
+  it('drops the branch pointer once resumedFromAgentId marks it as the resume’s', async () => {
+    await addTask({ description: 'merge PR 2', id: 'sys-rl-halfkeep' }, 'internal');
+    await updateTask('sys-rl-halfkeep', {
+      metadata: {
+        existingBranch: 'cos/task-2/agent-2', reviewLoopFollowUp: true,
+        resumedFromAgentId: 'agent-2', resumeWorktreePath: '/w/agent-2'
+      }
+    }, 'internal');
+    const done = await updateTask('sys-rl-halfkeep', { status: 'completed' }, 'internal');
+    expect(done.metadata.existingBranch).toBeUndefined();
+    expect(done.metadata.resumedFromAgentId).toBeUndefined();
+    expect(done.metadata.resumeWorktreePath).toBeUndefined();
+  });
+
+  it('keeps a review-loop target after clearing its legacy retry duplicate', async () => {
+    await addTask({ description: 'merge PR canonical', id: 'sys-rl-canonical' }, 'internal');
+    await updateTask('sys-rl-canonical', {
+      metadata: {
+        existingBranch: 'cos/task-4/agent-old',
+        resumedFromAgentId: 'agent-old',
+        resumeWorktreePath: '/w/agent-old',
+        reviewLoopFollowUp: true,
+        reviewLoopPRBranch: 'cos/task-4/agent-pr',
+      }
+    }, 'internal');
+    const done = await updateTask('sys-rl-canonical', { status: 'completed' }, 'internal');
+    expect(done.metadata.existingBranch).toBeUndefined();
+    expect(done.metadata.reviewLoopPRBranch).toBe('cos/task-4/agent-pr');
+  });
+
+  // `worktree-busy` joins the pause categories: the cooldown sweeper revives it,
+  // and the revived attempt must still attach to the PR branch.
+  it('keeps the pointer through a worktree-busy cooldown block', async () => {
+    await addTask({ description: 'merge PR 3', id: 'sys-rl-busy' }, 'internal');
+    await updateTask('sys-rl-busy', {
+      metadata: { existingBranch: 'cos/task-3/agent-3', resumedFromAgentId: 'agent-3', reviewLoopFollowUp: true }
+    }, 'internal');
+    const cooled = await updateTask('sys-rl-busy', {
+      status: 'blocked',
+      metadata: { blockedCategory: 'worktree-busy', cooldownUntil: '2026-01-01T00:02:00.000Z' }
+    }, 'internal');
+    expect(cooled.metadata.existingBranch).toBe('cos/task-3/agent-3');
   });
 
   it('releases the federation claim/lease when a task leaves in_progress (#1563)', async () => {

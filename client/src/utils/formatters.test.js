@@ -1,11 +1,41 @@
 import { describe, it, expect } from 'vitest';
 import {
-  formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
-  formatCooldown, parseSizeGb, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
+  clamp, formatContextLength, formatDurationMin, formatDurationMs, formatEventDateTime, timeAgo,
+  formatCooldown, recommendedRamGb, parseTimeoutMs, formatDurationSec, middleTruncate,
   formatWeight, formatPercent, formatUsd, formatBytes,
   formatDateNumeric, formatTimeOfDaySeconds, formatClockTime, formatWeekdayDate,
   formatMonthDay, formatMonthYear, formatWeekdayShort, formatWeekdayTime, formatDateFull, formatDateShort, formatDateTime,
 } from './formatters.js';
+
+describe('clamp', () => {
+  it('returns value unchanged when within [min, max]', () => {
+    expect(clamp(5, 0, 10)).toBe(5);
+    expect(clamp(0, 0, 10)).toBe(0);
+    expect(clamp(10, 0, 10)).toBe(10);
+    expect(clamp(0.5, 0, 1)).toBe(0.5);
+  });
+
+  it('clamps values below min to min', () => {
+    expect(clamp(-5, 0, 10)).toBe(0);
+    expect(clamp(-0.1, 0, 1)).toBe(0);
+  });
+
+  it('clamps values above max to max', () => {
+    expect(clamp(15, 0, 10)).toBe(10);
+    expect(clamp(1.5, 0, 1)).toBe(1);
+  });
+
+  it('handles negative ranges correctly', () => {
+    expect(clamp(-15, -10, -5)).toBe(-10);
+    expect(clamp(0, -10, -5)).toBe(-5);
+    expect(clamp(-7, -10, -5)).toBe(-7);
+  });
+
+  it('handles min equal to max', () => {
+    expect(clamp(5, 10, 10)).toBe(10);
+    expect(clamp(15, 10, 10)).toBe(10);
+  });
+});
 
 describe('formatBytes', () => {
   it('renders whole-MB file-size caps with no decimals at decimals=0', () => {
@@ -260,30 +290,6 @@ describe('formatCooldown', () => {
   });
 });
 
-describe('parseSizeGb', () => {
-  it('parses GB strings', () => {
-    expect(parseSizeGb('4.7 GB')).toBeCloseTo(4.7);
-    expect(parseSizeGb('1GB')).toBe(1);
-  });
-
-  it('parses MB strings (converts to fractional GB)', () => {
-    const result = parseSizeGb('512 MB');
-    expect(result).toBeCloseTo(0.5);
-  });
-
-  it('parses TB strings (converts to large GB)', () => {
-    const result = parseSizeGb('2 TB');
-    expect(result).toBeCloseTo(2048);
-  });
-
-  it('returns null for garbage input', () => {
-    expect(parseSizeGb('not a size')).toBeNull();
-    expect(parseSizeGb('')).toBeNull();
-    expect(parseSizeGb(null)).toBeNull();
-    expect(parseSizeGb(undefined)).toBeNull();
-  });
-});
-
 describe('recommendedRamGb', () => {
   it('uses exact bytes when provided', () => {
     // 4 GB in bytes: 4 * 1024^3 = 4294967296; + 20% overhead = 4.8 → ceil = 5
@@ -293,11 +299,19 @@ describe('recommendedRamGb', () => {
   it('falls back to size string when bytes are null', () => {
     // 4.7 GB string: 4.7 * 1.2 = 5.64 → ceil = 6
     expect(recommendedRamGb(null, '4.7 GB')).toBe(6);
+    // 1 GB string: 1 * 1.2 = 1.2 → ceil = 2
+    expect(recommendedRamGb(null, '1GB')).toBe(2);
+    // 512 MB string: 0.5 * 1.2 = 0.6 → ceil = 1 (floor)
+    expect(recommendedRamGb(null, '512 MB')).toBe(1);
+    // 2 TB string: 2048 * 1.2 = 2457.6 → ceil = 2458
+    expect(recommendedRamGb(null, '2 TB')).toBe(2458);
   });
 
-  it('returns null when both inputs are absent', () => {
+  it('returns null when both inputs are absent or unparseable', () => {
     expect(recommendedRamGb(null, null)).toBeNull();
     expect(recommendedRamGb(undefined, undefined)).toBeNull();
+    expect(recommendedRamGb(null, 'not a size')).toBeNull();
+    expect(recommendedRamGb(null, '')).toBeNull();
   });
 
   it('enforces a 1 GB floor for tiny models', () => {

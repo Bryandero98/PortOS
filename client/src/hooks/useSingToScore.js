@@ -17,6 +17,8 @@ import { createStreamAnalyser } from '../lib/audioRecorder.js';
 import { createPitchTracker } from '../lib/pitchDetect.js';
 import { createMetronome, clampBpm, timeSignatureFromScore, DEFAULT_BPM } from '../lib/metronome.js';
 import { transcribePitchTrack } from '../lib/singToScore.js';
+import useAudioSessionClaim from './useAudioSessionClaim.js';
+import useAsyncCaptureGuard from './useAsyncCaptureGuard.js';
 import useMounted from './useMounted.js';
 
 // Phases the UI renders distinct states for.
@@ -61,6 +63,13 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
   const captureStartRef = useRef(0);  // performance.now() at first music beat
   const capturingRef = useRef(false); // gate frames until the count-in completes
 
+  // Held for exactly the window our own mic stream is open, symmetric with
+  // `voiceClient` / `audioRecorder`. Sing-to-score is safe on `auto` only
+  // because no `playback` claimant happens to share its route today — an
+  // accident of routing, not an invariant, and `playback` REFUSES capture. See
+  // the audio-session note in lib/audioContext.js.
+  const { claim: claimSession, release: releaseSession } = useAudioSessionClaim('play-and-record');
+
   const bpm = clampBpm(tempo) ?? DEFAULT_BPM;
   const timeSig = timeSignatureFromScore(score);
 
@@ -70,8 +79,26 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     if (trackerRef.current) { trackerRef.current.stop(); trackerRef.current = null; }
     if (analyserRef.current) { analyserRef.current.close(); analyserRef.current = null; }
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    releaseSession();
     capturingRef.current = false;
-  }, []);
+  }, [releaseSession]);
+
+  const resetAfterCancel = useCallback(() => {
+    trackRef.current = [];
+    if (!mountedRef.current) return;
+    setPhase(SING_IDLE);
+    setBeat(null);
+  }, [mountedRef]);
+
+  // Invalidate an in-flight permission request before tearing down. A browser
+  // can resolve getUserMedia after this hook unmounts; that continuation owns
+  // its stream until it sees this generation change and stops it itself.
+  const {
+    tryStart,
+    settleStart,
+    isCurrent,
+    cancel,
+  } = useAsyncCaptureGuard({ teardown, onCancel: resetAfterCancel });
 
   // Finalize: stop everything, run the transcription over the captured track.
   const finish = useCallback(() => {
@@ -96,16 +123,42 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
 
   const start = useCallback(async () => {
     if (phase !== SING_IDLE) return;
+    const requestGeneration = tryStart();
+    if (requestGeneration === null) return;
     setError(null);
     setResult(null);
     trackRef.current = [];
 
-    const src = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((err) => {
-      if (mountedRef.current) setError(err?.message || 'Microphone access denied');
+    // Resolved (and null-checked) BEFORE the claim: on an insecure origin
+    // `navigator.mediaDevices` is undefined, and reaching through it throws
+    // synchronously — past a claim, that leaves the document pinned
+    // record-capable with no release left to call. Mirrors useSingToVerify.
+    const getUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
+    if (!getUserMedia) {
+      settleStart(requestGeneration);
+      if (mountedRef.current) setError('Microphone access requires a secure browser connection');
+      return;
+    }
+
+    // Claimed BEFORE getUserMedia — an output-only `playback` session held by a
+    // player elsewhere on the page would refuse the request outright — and
+    // handed back on every path that never reaches teardown() (the unmount bail
+    // below is belt-and-suspenders: the hook already releases on unmount).
+    claimSession();
+    const src = await getUserMedia({ audio: true }).catch((err) => {
+      if (settleStart(requestGeneration)) {
+        releaseSession();
+        if (mountedRef.current) setError(err?.message || 'Microphone access denied');
+      }
       return null;
     });
     if (!src) return;
-    if (!mountedRef.current) { src.getTracks().forEach((t) => t.stop()); return; }
+    if (!mountedRef.current || !isCurrent(requestGeneration)) {
+      src.getTracks().forEach((track) => track.stop());
+      if (isCurrent(requestGeneration)) releaseSession();
+      return;
+    }
+    settleStart(requestGeneration);
     streamRef.current = src;
 
     const graph = createStreamAnalyser(src);
@@ -149,11 +202,14 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     });
     metronomeRef.current = metro;
     await metro.start().catch((err) => {
+      // A cancellation or fresh request may have already torn this capture
+      // down. Do not let its late failure tear down a newer session.
+      if (!isCurrent(requestGeneration)) return;
       if (mountedRef.current) setError(err?.message || 'Could not start audio');
       teardown();
       if (mountedRef.current) setPhase(SING_IDLE);
     });
-  }, [phase, bpm, timeSig.beats, timeSig.beatValue, teardown, mountedRef]);
+  }, [phase, bpm, timeSig.beats, timeSig.beatValue, teardown, mountedRef, claimSession, releaseSession, tryStart, settleStart, isCurrent]);
 
   // Clear a produced result (after the user inserts or discards it).
   const reset = useCallback(() => {
@@ -161,13 +217,13 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
     setError(null);
   }, []);
 
-  // Belt-and-suspenders: tear everything down on unmount so a navigation-away
-  // mid-capture can't leave the mic open or a loop running. A ref keeps the
-  // effect's dep list empty (run cleanup exactly once on unmount) while still
-  // calling the latest `teardown`.
-  const teardownRef = useRef(teardown);
-  teardownRef.current = teardown;
-  useEffect(() => () => teardownRef.current(), []);
+  // Belt-and-suspenders: cancel everything on unmount so a navigation-away
+  // mid-permission or mid-capture can't leave the mic open or a loop running.
+  // A ref keeps the effect's dep list empty (run cleanup exactly once on
+  // unmount) while still calling the latest cancellation callback.
+  const cancelRef = useRef(cancel);
+  cancelRef.current = cancel;
+  useEffect(() => () => cancelRef.current(), []);
 
   return { phase, beat, result, error, start, stop, reset };
 }

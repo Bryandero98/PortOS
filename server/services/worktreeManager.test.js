@@ -36,9 +36,16 @@ const {
   isGitLockError,
   addWorktreeWithRetry,
   isPreexistingRefError,
+  isBranchCheckedOutElsewhereError,
   removeWorktree,
   adoptWorktree,
+  findAdoptableWorktreeForBranch,
+  createWorktree,
+  createPersistentWorktree,
 } = await import('./worktreeManager.js');
+const { isPathInsideDir } = await import('../lib/fileUtils.js');
+const { worktreeOwnershipReason } = await import('../lib/worktreeOwnership.js');
+const { win32 } = await import('path');
 const { existsSync } = await import('fs');
 const { PATHS } = await import('../lib/fileUtils.js');
 
@@ -391,16 +398,45 @@ describe('Broken Worktree Detection', () => {
   });
 });
 
+// Git reports POSIX separators on every platform, while PATHS.worktrees is
+// backslash-separated on Windows — so a bare `startsWith` matched nothing there:
+// `cleanupOrphanedWorktrees` skipped every CoS worktree and `reapMergedWorktrees`
+// filed them all as `unmanaged-location`, which is why the daily line read
+// "reaped 0 merged + 0 orphaned" on a Windows install with orphans on disk.
+// These pin the properties the module RELIES ON from the shared helpers, so a
+// change to either one surfaces here rather than as silent dead cleanup.
+describe('git-vs-PortOS path comparison', () => {
+  it('matches a git-reported POSIX path against a Windows worktrees dir', () => {
+    // win32-only: `resolvePath` folds `/` to `\` on Windows, which is what makes
+    // the mixed-separator comparison work. On POSIX a backslash is a legal
+    // filename character, so this case can't arise and isn't asserted.
+    if (process.platform !== 'win32') return;
+    expect(isPathInsideDir('H:\\repo\\data\\cos\\worktrees', 'H:/repo/data/cos/worktrees/agent-abc')).toBe(true);
+  });
+
+  it('does not match a sibling directory that merely shares a prefix', () => {
+    expect(isPathInsideDir('/repo/data/cos/worktrees', '/repo/data/cos/worktrees-old/agent-abc')).toBe(false);
+  });
+
+  it('does not treat the directory itself as being under itself', () => {
+    expect(isPathInsideDir('/repo/data/cos/worktrees', '/repo/data/cos/worktrees')).toBe(false);
+  });
+
+  it('reads the agent id off either separator', () => {
+    expect(win32.basename('H:/repo/data/cos/worktrees/agent-abc')).toBe('agent-abc');
+    expect(win32.basename('H:\\repo\\data\\cos\\worktrees\\agent-abc')).toBe('agent-abc');
+  });
+});
+
 describe('Orphaned Worktree Detection', () => {
   function findOrphanedWorktrees(worktrees, worktreesDir, activeAgentIds) {
-    return worktrees.filter(wt => {
-      if (!wt.path.startsWith(worktreesDir)) return false;
-      const agentId = wt.path.split('/').pop();
-      // Mirror the real cleanup guard: human-driven `/claim` worktrees are
-      // never CoS orphans.
-      if (isHumanClaimWorktree(agentId)) return false;
-      return !activeAgentIds.has(agentId);
-    });
+    return worktrees.filter((wt) => worktreeOwnershipReason({
+      path: wt.path,
+      locked: wt.locked,
+      activeAgentIds,
+      roots: [{ path: worktreesDir, requireAgentId: true }],
+      requireKnownLiveness: true,
+    }) === null);
   }
 
   it('should identify worktrees without active agents', () => {
@@ -528,6 +564,21 @@ describe('isGitLockError (worktree add lock detection, #2193)', () => {
     expect(isGitLockError('')).toBe(false);
     expect(isGitLockError(undefined)).toBe(false);
   });
+
+  // A per-file checkout failure is NOT lock contention. It reads "unable to
+  // create", but it only happens after git has written most of the tree — so
+  // retrying it costs a full checkout per attempt. With the 10-minute add
+  // timeout that is 4 × 10 min of head-of-line blocking on the per-repo queue,
+  // for an error that never clears. This is the Windows AV-filter failure mode
+  // the long timeout exists to tolerate, so the two must not compound.
+  it('does NOT flag a per-file checkout failure as lock contention', () => {
+    expect(isGitLockError('error: unable to create file some/deep/path.js: Permission denied')).toBe(false);
+    expect(isGitLockError('error: unable to create symlink foo/bar: Operation not permitted')).toBe(false);
+  });
+
+  it('still flags a genuine lock-FILE creation failure', () => {
+    expect(isGitLockError("fatal: Unable to create '/repo/.git/config.lock': File exists")).toBe(true);
+  });
 });
 
 describe('addWorktreeWithRetry (lock-contention retry, #2193)', () => {
@@ -542,6 +593,21 @@ describe('addWorktreeWithRetry (lock-contention retry, #2193)', () => {
   it('resolves without retrying on first-attempt success', async () => {
     execGitMock.mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
     await addWorktreeWithRetry(['worktree', 'add', '/wt', 'main'], '/repo');
+    expect(execGitMock).toHaveBeenCalledTimes(1);
+  });
+
+  // See WORKTREE_ADD_TIMEOUT_MS for why 30s was not enough.
+  it('gives the add far more than execGit\'s 30s default, since it writes a full checkout', async () => {
+    execGitMock.mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+    await addWorktreeWithRetry(['worktree', 'add', '/wt', 'main'], '/repo');
+    const [, , options] = execGitMock.mock.calls[0];
+    expect(options?.timeout).toBeGreaterThanOrEqual(5 * 60 * 1000);
+  });
+
+  it('does NOT retry a timeout — git is still running and would collide with itself', async () => {
+    execGitMock.mockRejectedValueOnce(new Error('git command timed out after 600s: git worktree add -b cos/t/a /wt origin/main'));
+    await expect(addWorktreeWithRetry(['worktree', 'add', '-b', 'cos/t/a', '/wt', 'origin/main'], '/repo'))
+      .rejects.toThrow(/timed out/);
     expect(execGitMock).toHaveBeenCalledTimes(1);
   });
 
@@ -617,6 +683,118 @@ describe('isPreexistingRefError (orphan-cleanup guard, #2193)', () => {
     expect(isPreexistingRefError('fatal: invalid reference')).toBe(false);
     expect(isPreexistingRefError('')).toBe(false);
     expect(isPreexistingRefError(undefined)).toBe(false);
+  });
+});
+
+describe('isBranchCheckedOutElsewhereError (branch-busy pause gate)', () => {
+  it('matches git\'s wording for a branch held by another worktree, old and new', () => {
+    // Current git.
+    expect(isBranchCheckedOutElsewhereError(
+      "fatal: 'cos/task-x/agent-y' is already used by worktree at '/repo/data/cos/worktrees/agent-y'"
+    )).toBe(true);
+    // Pre-2.30 wording.
+    expect(isBranchCheckedOutElsewhereError(
+      "fatal: 'cos/task-x/agent-y' is already checked out at '/repo/data/cos/worktrees/agent-y'"
+    )).toBe(true);
+  });
+
+  it('does NOT match the other "already exists" failures — those are permanent', () => {
+    // An occupied worktree DIRECTORY is not a branch another tree is holding;
+    // pausing on it would wait out a cooldown that can never clear it.
+    expect(isBranchCheckedOutElsewhereError("fatal: '/repo/data/cos/worktrees/agent-x' already exists")).toBe(false);
+    expect(isBranchCheckedOutElsewhereError("fatal: a branch named 'cos/task/agent' already exists")).toBe(false);
+    expect(isBranchCheckedOutElsewhereError('error: cannot lock ref')).toBe(false);
+    expect(isBranchCheckedOutElsewhereError('fatal: invalid reference: origin/nope')).toBe(false);
+    expect(isBranchCheckedOutElsewhereError('')).toBe(false);
+    expect(isBranchCheckedOutElsewhereError(undefined)).toBe(false);
+  });
+
+  it('stays out of the in-process add retry — that budget is sized for lock contention', () => {
+    expect(isGitLockError("fatal: 'b' is already used by worktree at '/repo/wt'")).toBe(false);
+  });
+});
+
+describe('findAdoptableWorktreeForBranch (take over the tree that holds the branch)', () => {
+  const REPO = '/repo';
+  const BRANCH = 'cos/task-x/agent-y';
+
+  // `git worktree list --porcelain`: the primary checkout first, then whatever
+  // entries a test names.
+  function scriptWorktrees(entries) {
+    execGitMock.mockReset();
+    const stdout = [
+      `worktree ${REPO}`, 'HEAD abc123', 'branch refs/heads/main', '',
+      ...entries.flatMap(e => [
+        `worktree ${e.path}`, 'HEAD def456',
+        e.branch ? `branch ${e.branch}` : 'detached',
+        ...(e.locked ? ['locked'] : []), ''
+      ])
+    ].join('\n');
+    execGitMock.mockResolvedValue({ stdout, stderr: '' });
+  }
+
+  const cosTree = (agentId) => join(PATHS.worktrees, agentId);
+
+  it('finds the CoS worktree holding the branch', async () => {
+    scriptWorktrees([{ path: cosTree('agent-y'), branch: `refs/heads/${BRANCH}` }]);
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH))
+      .toEqual({ path: cosTree('agent-y'), agentId: 'agent-y' });
+  });
+
+  it('returns null when nothing holds the branch', async () => {
+    scriptWorktrees([{ path: cosTree('agent-z'), branch: 'refs/heads/cos/other/agent-z' }]);
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+  });
+
+  // Adoption MOVES the directory, so a holder PortOS doesn't own is never a
+  // candidate — taking the user's own checkout is the branch-jacking this
+  // codebase guards against everywhere else.
+  it('refuses the primary checkout, and any tree outside the managed root', async () => {
+    scriptWorktrees([{ path: '/repo/../elsewhere/tree', branch: `refs/heads/${BRANCH}` }]);
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+
+    // The repo root itself, checked out on the branch.
+    execGitMock.mockResolvedValue({
+      stdout: `worktree ${REPO}\nHEAD abc\nbranch refs/heads/${BRANCH}\n`, stderr: ''
+    });
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+  });
+
+  it('refuses a human /claim worktree — the claim flow owns its cleanup', async () => {
+    scriptWorktrees([{ path: cosTree('claim-issue-42'), branch: `refs/heads/${BRANCH}` }]);
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+  });
+
+  it('refuses a non-agent directory in the managed root', async () => {
+    scriptWorktrees([{ path: cosTree('next-issue-42'), branch: `refs/heads/${BRANCH}` }]);
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+  });
+
+  it('refuses a tree whose agent is still running — it is mid-edit in there', async () => {
+    scriptWorktrees([{ path: cosTree('agent-y'), branch: `refs/heads/${BRANCH}` }]);
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH, {
+      activeAgentIds: new Set(['agent-y'])
+    })).toBeNull();
+  });
+
+  it('refuses a locked worktree whatever else is true of it', async () => {
+    scriptWorktrees([{ path: cosTree('agent-y'), branch: `refs/heads/${BRANCH}`, locked: true }]);
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+  });
+
+  it('returns null rather than throwing when the listing fails', async () => {
+    execGitMock.mockReset();
+    execGitMock.mockRejectedValue(new Error('not a git repository'));
+
+    expect(await findAdoptableWorktreeForBranch(REPO, BRANCH)).toBeNull();
+    expect(await findAdoptableWorktreeForBranch(REPO, '')).toBeNull();
+    expect(await findAdoptableWorktreeForBranch('', BRANCH)).toBeNull();
   });
 });
 
@@ -774,7 +952,13 @@ describe('adoptWorktree — resuming an interrupted run in its own worktree', ()
   it('moves the dead run’s tree to the retrying agent’s directory', async () => {
     const result = await adoptWorktree('agent-new', '/repo', DEAD_TREE, 'cos/task-1/agent-dead');
 
-    expect(execGitMock).toHaveBeenCalledWith(['worktree', 'move', DEAD_TREE, NEW_TREE], '/repo');
+    // Third arg is the long add/move timeout — a move relocates a whole checkout,
+    // so it needs the same headroom as the add it shares a wrapper with.
+    expect(execGitMock).toHaveBeenCalledWith(
+      ['worktree', 'move', DEAD_TREE, NEW_TREE],
+      '/repo',
+      expect.objectContaining({ timeout: expect.any(Number) })
+    );
     expect(result).toMatchObject({
       worktreePath: NEW_TREE, branchName: 'cos/task-1/agent-dead',
       existingBranch: true, adopted: true
@@ -844,5 +1028,113 @@ describe('adoptWorktree — resuming an interrupted run in its own worktree', ()
     await expect(adoptWorktree(null, '/repo', DEAD_TREE, 'b')).resolves.toBeNull();
     await expect(adoptWorktree('agent-new', '/repo', DEAD_TREE, null)).resolves.toBeNull();
     expect(execGitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('createWorktree upstream safety (#4172)', () => {
+  // Wiring-level coverage: that the branch invariant itself HOLDS against real
+  // git is proved in lib/branchUpstreamGuard.test.js (real repos, real config).
+  // What can only be checked here is that createWorktree actually reaches for
+  // it — the flag on the add, and the guard on the result.
+  function scriptGit({ mergeReadings = [] } = {}) {
+    const readings = [...mergeReadings];
+    execGitMock.mockReset();
+    execGitMock.mockImplementation((args) => {
+      if (args[0] === 'config' && args[1] === '--get' && /\.merge$/.test(args[2] || '')) {
+        const answer = readings.length ? readings.shift() : '';
+        // exitCode 1 mirrors `git config --get` on an unset key, which the guard
+        // must read as "no upstream" rather than as an error.
+        return Promise.resolve({ stdout: answer, stderr: '', exitCode: answer ? 0 : 1 });
+      }
+      return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+    });
+  }
+
+  const argsFor = (predicate) => execGitMock.mock.calls.map(([args]) => args).filter(predicate);
+
+  beforeEach(() => {
+    getDefaultBranchMock.mockResolvedValue('main');
+    scriptGit();
+  });
+
+  it('creates the branch with --no-track so git cannot record refs/heads/main as its upstream', async () => {
+    await createWorktree('agent-1', '/repo', 'task-1');
+
+    const [add] = argsFor(a => a[0] === 'worktree' && a[1] === 'add');
+    expect(add).toContain('--no-track');
+    // The flag has to precede -b: it configures the branch being created.
+    expect(add.indexOf('--no-track')).toBeLessThan(add.indexOf('-b'));
+  });
+
+  it('drops an upstream that still points at the default branch', async () => {
+    // An older git, or a repo whose config re-tracks despite the flag: the first
+    // read finds `main`, the guard unsets, the re-read confirms.
+    scriptGit({ mergeReadings: ['refs/heads/main'] });
+
+    await createWorktree('agent-2', '/repo', 'task-2');
+
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '--unset-upstream')).toHaveLength(1);
+  });
+
+  it('leaves a healthy branch untouched', async () => {
+    await createWorktree('agent-3', '/repo', 'task-3');
+
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '--unset-upstream')).toHaveLength(0);
+  });
+
+  it('undoes the add when the upstream cannot be made safe, instead of stranding a worktree', async () => {
+    // The guard throws AFTER `worktree add` succeeded, so without an undo the
+    // caller sees a failed create while a registered worktree and an orphan
+    // branch stay on disk — the debris cleanupOrphanBranch prevents on the add.
+    scriptGit({ mergeReadings: ['refs/heads/main', 'refs/heads/main'] });
+
+    await expect(createWorktree('agent-5', '/repo', 'task-5')).rejects.toThrow(/still resolves to/);
+
+    expect(argsFor(a => a[0] === 'worktree' && a[1] === 'remove')).toHaveLength(1);
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '-D')).toHaveLength(1);
+  });
+
+  it('does NOT delete the branch when undoing an existingBranch attach', async () => {
+    // That branch pre-dates this add and may hold real commits — same
+    // distinction cleanupOrphanBranch draws.
+    scriptGit({ mergeReadings: ['refs/heads/main', 'refs/heads/main'] });
+
+    await expect(createWorktree('agent-6', '/repo', 'task-6', { existingBranch: 'cos/task-0/agent-0' }))
+      .rejects.toThrow(/still resolves to/);
+
+    expect(argsFor(a => a[0] === 'worktree' && a[1] === 'remove')).toHaveLength(1);
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '-D')).toHaveLength(0);
+  });
+
+  it('checks the re-attached branch of an existingBranch worktree too', async () => {
+    // Branches created before this fix keep their bad upstream; a review-loop
+    // agent re-attaching to one must not inherit a push aimed at main.
+    scriptGit({ mergeReadings: ['refs/heads/main'] });
+
+    await createWorktree('agent-4', '/repo', 'task-4', { existingBranch: 'cos/task-0/agent-0' });
+
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '--unset-upstream')).toHaveLength(1);
+  });
+
+  // The persistent feature-agent tree needs its own coverage, not just the CoS
+  // one: it lives OUTSIDE `WORKTREES_DIR`, so neither `cleanupOrphanedWorktrees`
+  // nor `reapMergedWorktrees` reaps it, and its only caller does not catch. A
+  // stranded tree there blocks every retry with "already exists" until a human
+  // prunes it, so the undo has to happen here rather than being left to a sweeper.
+  it('creates the persistent feature-agent branch with --no-track too', async () => {
+    await createPersistentWorktree('fa-1', '/repo', 'feature/x', 'main');
+
+    const [add] = argsFor(a => a[0] === 'worktree' && a[1] === 'add');
+    expect(add).toContain('--no-track');
+  });
+
+  it('undoes the persistent add when the upstream cannot be made safe', async () => {
+    scriptGit({ mergeReadings: ['refs/heads/main', 'refs/heads/main'] });
+
+    await expect(createPersistentWorktree('fa-2', '/repo', 'feature/y', 'main'))
+      .rejects.toThrow(/still resolves to/);
+
+    expect(argsFor(a => a[0] === 'worktree' && a[1] === 'remove')).toHaveLength(1);
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '-D')).toHaveLength(1);
   });
 });

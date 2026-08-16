@@ -3,19 +3,40 @@ import { useSearchParams } from 'react-router';
 import toast from '../components/ui/Toast';
 import { extractLastFrame } from '../services/api';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
-import { videoLoraFamily, isVideoLoraFamily, loraFamilyOf, VIDEO_LORA_FAMILIES } from '../lib/runnerFamilies';
+import { videoLoraFamily, isVideoLoraFamily, loraFamilyOf, VIDEO_LORA_FAMILIES, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
 import { randomSeed } from '../lib/genUtils';
-import { VIDEO_RESOLUTIONS, snapAspectToImage } from '../lib/videoGenResolutions';
+import {
+  resolutionOptionsForModel, defaultResolutionForModel, snapAspectToImage,
+} from '../lib/videoGenResolutions';
 import { clampImageEdge } from '../lib/imageGenResolutions';
 import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import {
-  VIDEO_EDGE_BOUNDS, MAX_CHUNKS, DEFAULT_CONTEXT_FRAMES,
+  VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, MAX_CHUNKS, DEFAULT_CONTEXT_FRAMES,
   videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
-  supportsVideoAudioControls,
+  supportsVideoAudioControls, supportsVideoAudioPromptControls,
   normalizeFramesForModel, normalizeFpsForModel,
   icLoraSpecForMode, icResolutionIssue,
+  STOCK_TEXT_ENCODER_ID, textEncoderOptionsForModel, normalizeTextEncoderForModel,
+  textEncoderIdFromRecord,
 } from '../lib/videoGenParams.js';
+
+// A Remix is an editing starting point. A fixed sampler profile (for example,
+// MiniMax H3) cannot honor a negative prompt, steps, or CFG override, so
+// restoring it as the active model leaves the very values Remix just loaded
+// trapped behind disabled inputs. Prefer an editable text-to-video model in
+// that case; the source model stays available in the picker for a faithful
+// re-render.
+const hasEditableRemixControls = (model) => (
+  model?.samplerLocked !== true && model?.supportsNegativePrompt !== false
+);
+
+const editableRemixModel = (models, defaultModelId) => {
+  const candidates = models.filter((model) => (
+    isModelAllowedForMode(model, 'text') && hasEditableRemixControls(model)
+  ));
+  return candidates.find((model) => model.id === defaultModelId) || candidates[0] || null;
+};
 
 /**
  * VideoGen form state + request shaping (issue #3291).
@@ -54,6 +75,14 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   const [negativePrompt, setNegativePrompt] = useState(incomingNegativePrompt || '');
   const [stylePreset, setStylePreset] = useState(null);
   const [modelId, setModelId] = useState('');
+  // Source model awaiting the catalog load. Both cross-page and in-page Remix
+  // arrive before/after models independently, so this state gives them one
+  // reconciliation path once the model capabilities are known. Recorded
+  // model-specific conditioning (a substitute text encoder or LoRAs) cannot
+  // survive a model swap, so it explicitly keeps that source model selected
+  // for a faithful remix.
+  const [remixSourceModel, setRemixSourceModel] = useState(null);
+  const [remixModelFallback, setRemixModelFallback] = useState(null);
   const [width, setWidth] = useState(768);
   const [height, setHeight] = useState(512);
   // Set once the size has been chosen deliberately — the user picking a preset,
@@ -82,16 +111,20 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   const [imageStrength, setImageStrength] = useState('');
   const [seed, setSeed] = useState('');
   const [tiling, setTiling] = useState('auto');
+  // Which prompt conditioner reads the prompt. Only MiniMax H3 offers a choice
+  // today (`model.textEncoderOptions`, decorated server-side); everywhere else
+  // the list is empty and this stays on the stock sentinel, which the submit
+  // builder drops from the payload entirely.
+  const [textEncoderId, setTextEncoderId] = useState(STOCK_TEXT_ENCODER_ID);
   const [disableAudio, setDisableAudio] = useState(false);
   // Video LoRAs (ltx2 runtime only) — `{ filename, name, scale }` entries the
   // LoraPicker owns; `availableLoras` is the full installed library filtered
   // by the picker to the model's video family. See videoLoraFamily().
   const [selectedLoras, setSelectedLoras] = useState([]);
-  // "No music" appends a soundscape constraint at submit time. LTX-2
-  // conditions audio on prompt text — adding "no music, no soundtrack"
-  // pushes the model toward ambient/diegetic sound (footsteps, room tone)
-  // and away from generated background music, which is hard to remove
-  // cleanly in post. Source: phosphene LTX-2 prompting guide.
+  // "No music" appends a soundscape constraint at submit time. LTX-2 and
+  // MiniMax H3 both steer generated audio from prompt text — adding "no music,
+  // no soundtrack" pushes them toward ambient/diegetic sound (footsteps, room
+  // tone) and away from generated background music.
   const [noMusic, setNoMusic] = useState(false);
   const [sourceImageFile, setSourceImageFile] = useState(incomingSourceImage || null);
   const [sourceImageUpload, setSourceImageUpload] = useState(null);
@@ -163,7 +196,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   }, [incomingNegativePrompt]);
   // When "Continue" pipes a video's last frame here, also sync the resolution
   // so the new render matches the source. Width/height get rounded to the
-  // model's 64-pixel grid server-side, so off-grid sources still work.
+  // selected model's declared resolution grid server-side, so off-grid sources
+  // still work.
   useEffect(() => {
     const w = Number(incomingWidth);
     const h = Number(incomingHeight);
@@ -191,7 +225,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     const present = remixGateKeys.filter((k) => searchParams.get(k) != null);
     if (present.length === 0) return;
     const get = (k) => searchParams.get(k);
-    if (get('modelId')) setModelId(get('modelId'));
+    if (get('modelId')) {
+      setModelId(get('modelId'));
+      setRemixSourceModel({ id: get('modelId'), preserveConditioning: false });
+    }
     const nf = Number(get('numFrames'));
     if (Number.isFinite(nf) && nf > 0) setNumFrames(nf);
     const f = Number(get('fps'));
@@ -242,7 +279,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // local.js#resizeImage) doesn't silently cut the subject out of a mismatched
   // frame. Only fires while the user hasn't taken the size into their own hands
   // (sizeManuallySetRef) — the inputs stay fully editable for power users, and
-  // the server keeps its own 64-grid clamp. Gallery picks resolve to
+  // the server keeps its own model-aware grid clamp. Gallery picks resolve to
   // /data/images/<file>; uploads reuse the object URL built above. The load is
   // async, so guard the apply against a newer pick (cancelled) and a late-
   // arriving manual size change (the ref re-check).
@@ -254,12 +291,17 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     const img = new Image();
     img.onload = () => {
       if (cancelled || sizeManuallySetRef.current) return;
-      const snapped = snapAspectToImage(VIDEO_RESOLUTIONS, img.naturalWidth, img.naturalHeight);
+      const activeModel = models.find((model) => model.id === modelId);
+      const snapped = snapAspectToImage(
+        resolutionOptionsForModel(activeModel),
+        img.naturalWidth,
+        img.naturalHeight,
+      );
       if (snapped) { setWidth(snapped.w); setHeight(snapped.h); }
     };
     img.src = src;
     return () => { cancelled = true; };
-  }, [sourceImageFile, sourceUploadUrl]);
+  }, [sourceImageFile, sourceUploadUrl, modelId, models]);
 
   // ?lora=<filename> preselects a video LoRA when the user clicks "Test" on a
   // video LoRA card in /media/loras. Mirrors the ImageGen ?lora= handoff:
@@ -382,14 +424,63 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
 
   const currentModel = models.find((m) => m.id === modelId);
 
+  // A source model can reach this hook either through a URL handoff before
+  // /status has populated `models`, or from the in-page gallery after it has.
+  // Resolve both cases here. The fallback is deliberately limited to models
+  // that can run a text remix and expose all restored prompt/sampler controls;
+  // if no such model is installed we leave the source selected rather than
+  // silently changing a faithful re-render.
+  useEffect(() => {
+    if (!remixSourceModel || models.length === 0) return;
+    const source = models.find((model) => model.id === remixSourceModel.id);
+    if (source && !remixSourceModel.preserveConditioning && !hasEditableRemixControls(source)) {
+      const target = editableRemixModel(models, status?.defaultModel);
+      if (target) {
+        setModelId(target.id);
+        setRemixModelFallback({
+          sourceName: source.name || source.id,
+          targetName: target.name || target.id,
+          samplerLocked: source.samplerLocked === true,
+          negativePromptUnsupported: source.supportsNegativePrompt === false,
+        });
+      }
+    } else {
+      setRemixModelFallback(null);
+    }
+    setRemixSourceModel(null);
+  }, [remixSourceModel, models, status?.defaultModel]);
+
+  // Until the user deliberately chooses a size, model changes carry their own
+  // native default canvas. This is material for H3: the shared 768x512 default
+  // is an off-distribution wiring-test size, while its trained 16:9 canvas is
+  // 1344x768. A source image still wins through the aspect-snap effect above,
+  // and Remix/Continue/user edits set sizeManuallySetRef so they are preserved.
+  useEffect(() => {
+    if (!currentModel || sizeManuallySetRef.current || sourceImageFile || sourceUploadUrl) return;
+    const next = defaultResolutionForModel(currentModel);
+    setWidth(next.w);
+    setHeight(next.h);
+  }, [currentModel, sourceImageFile, sourceUploadUrl]);
+
   // Remix/deep-link/resume paths set model + sampler fields independently.
   // Reconcile them once the model is known so a legacy LTX 8n+1 frame count
   // cannot reach a Wan 4n+1 runner (and a model-specific fps stays selectable).
+  // Reconciled here rather than in applyModelSelection so the remix / resume /
+  // deep-link paths are covered too: they set modelId and textEncoderId
+  // independently, and a conditioner the newly-resolved model can't load would
+  // otherwise sit in the <select> with no matching <option> until submit 400'd.
   useEffect(() => {
     if (!currentModel) return;
     setNumFrames((current) => normalizeFramesForModel(current, currentModel));
     setFps((current) => normalizeFpsForModel(current, currentModel));
+    setTextEncoderId((current) => normalizeTextEncoderForModel(current, currentModel));
   }, [currentModel]);
+
+  // Substitutable prompt conditioners the selected model can load, straight off
+  // the server-decorated entry. Empty for every runtime without substitutions,
+  // which is what hides the picker — the page never re-derives that from a
+  // runtime name.
+  const textEncoderOptions = textEncoderOptionsForModel(currentModel);
 
   // Video-LoRA family for the selected model — 'ltx-video' on ltx2, else null.
   // When null the picker is hidden and no LoRAs ride along on submit (the
@@ -448,7 +539,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // the server's accept rules (server/routes/videoGen.js ~line 574) so the
   // form blocks before a doomed POST: 2–8 entries, each pinned to a gallery
   // file, indices strictly ascending and within [0, numFrames-1].
-  const keyframesSupported = currentModel?.runtime === 'ltx2';
+  const keyframesSupported = isLtx2FamilyRuntime(currentModel?.runtime);
   const keyframesActive = mode === 'fflf' && keyframesMode && keyframesSupported;
   // Whether an FFLF last frame is a real anchor or just a hint. The server
   // decorates each model with `lastFrameAnchored` from the one runtime list
@@ -513,8 +604,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // on image upload stops overriding it (same flag the remix/deep-link paths set).
   // ResolutionField passes a transient 0 mid-edit and blur-snaps each edge to the
   // 64..2048 bound; the preview + FFLF-budget math guard against a transient 0,
-  // and the server floors both dims to a multiple of 64 (generateVideo in
-  // local.js) before enforcing the per-tier pixel budget.
+  // and the server floors both dims to the selected model's declared grid
+  // (generateVideo in local.js) before enforcing the per-tier pixel budget.
   const handleResolutionChange = (w, h) => {
     setWidth(w); setHeight(h); sizeManuallySetRef.current = true;
   };
@@ -522,7 +613,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // Switching model drops the sampler overrides — steps/guidanceScale are
   // per-model defaults, and carrying one model's numbers onto another is
   // usually wrong.
-  const handleModelChange = applyModelSelection;
+  const handleModelChange = (nextId) => {
+    setRemixSourceModel(null);
+    setRemixModelFallback(null);
+    applyModelSelection(nextId);
+  };
 
   const dropSourceImageParam = () => {
     if (!incomingSourceImage) return;
@@ -783,7 +878,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // extract roundtrip — the route resolves the video id to a disk path
     // server-side. Saves ~1s per pick + avoids the i2v fallback when the
     // extract fails.
-    if (currentModel?.runtime === 'ltx2') {
+    if (isLtx2FamilyRuntime(currentModel?.runtime)) {
       setExtendingFrame(false);
       return;
     }
@@ -806,12 +901,16 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   };
 
   // Remix a prior render: hand all its params back into the form so the user
-  // can iterate (tweak the prompt, swap seeds, etc.) without re-typing.
+  // can iterate (tweak the prompt, sampler, seed, etc.) without re-typing.
+  // Fixed-profile sources reconcile to an editable compatible model above;
+  // otherwise the original model remains selected for a faithful re-render.
   // Mirrors ImageGen.handleRemix — in-page state set so the form jumps to
   // the new values without a navigation. The `item` is the raw video sidecar
   // (not the normalized MediaPreview shape).
-  const applyRemix = (item) => {
+  const applyRemix = (item, { preferEditableModel = true } = {}) => {
     if (!item) return;
+    setRemixSourceModel(null);
+    setRemixModelFallback(null);
     setStylePreset(null);
     // prompt: always set explicitly. Legacy entries can be missing `prompt`
     // (normalizeVideo surfaces them as '(no prompt)') — clear the form instead
@@ -829,7 +928,17 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // (race on initial mount), this avoids dropping the value silently — the
     // post-load validation effect (`Validate modelId once models are loaded`)
     // will fall back to defaultModel if the id doesn't end up in the catalog.
-    if (item.modelId) setModelId(item.modelId);
+    if (item.modelId) {
+      setModelId(item.modelId);
+      setRemixSourceModel(preferEditableModel
+        ? {
+          id: item.modelId,
+          preserveConditioning: !!item.textEncoderId
+            || (Array.isArray(item.loraFilenames) && item.loraFilenames.length > 0),
+        }
+        : null);
+      if (!preferEditableModel) setRemixModelFallback(null);
+    }
     if (item.width) { setWidth(item.width); sizeManuallySetRef.current = true; }
     if (item.height) { setHeight(item.height); sizeManuallySetRef.current = true; }
     if (item.numFrames) setNumFrames(item.numFrames);
@@ -847,6 +956,12 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // store a boolean here — silently ignore unknown values so the <select>
     // stays valid and the next POST doesn't 400.
     if (typeof item.tiling === 'string' && VIDEO_TILING_ENUM_SET.has(item.tiling)) setTiling(item.tiling);
+    // ALWAYS set explicitly (like steps/guidanceScale above): history records the
+    // conditioner only when it wasn't the stock one, so a missing field means
+    // 'stock' and must clear a leftover override rather than silently reusing it
+    // on a render the user asked to reproduce faithfully. The currentModel effect
+    // snaps an id this model can't load back to stock.
+    setTextEncoderId(textEncoderIdFromRecord(item.textEncoderId));
     // disableAudio: always set explicitly (true/false) so the toggle reliably
     // matches the remixed render. Skipping the false branch would leave the
     // toggle stuck ON when the user remixes a clip that had audio enabled.
@@ -919,12 +1034,14 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // press Generate, so no provider call fires off a gallery click.
   const applyFinish = (item, deliveryModelId) => {
     if (!item || !deliveryModelId) return;
-    applyRemix(item);
+    applyRemix(item, { preferEditableModel: false });
     // Force the local backend: the delivery model is a local registry entry, so
     // finishing while the form happens to be on the Grok backend would leave
     // `isGrok` true and submit a Grok payload that ignores the model entirely.
     setBackend('local');
     setModelId(deliveryModelId);
+    setRemixSourceModel(null);
+    setRemixModelFallback(null);
     setSteps('');
     setGuidanceScale('');
   };
@@ -944,6 +1061,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     if (p.guidanceScale != null) setGuidanceScale(String(p.guidanceScale));
     if (p.seed != null) setSeed(String(p.seed));
     if (p.tiling) setTiling(p.tiling);
+    // Resume echoes the field only for a non-stock render, so absence is 'stock'.
+    setTextEncoderId(textEncoderIdFromRecord(p.textEncoderId));
     if (typeof p.disableAudio === 'boolean') setDisableAudio(p.disableAudio);
     if (p.mode === 'grok') {
       // Grok job: 'grok' is the queue discriminator, not a semantic video
@@ -1018,12 +1137,12 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // legacy runtime, also wait for the extracted frame).
   const extendModeBlocked = mode === 'extend' && (
     !extendFromVideoId
-    || (currentModel?.runtime !== 'ltx2' && (extendingFrame || !sourceImageFile))
+    || (!isLtx2FamilyRuntime(currentModel?.runtime) && (extendingFrame || !sourceImageFile))
   );
   // a2v requires an audio upload AND an ltx2-runtime model — the legacy
   // mlx_video runtime has no audio-conditioned pipeline. Block submit when
   // either is missing so the request fails the form, not the worker.
-  const a2vModeBlocked = mode === 'a2v' && (!audioFile || currentModel?.runtime !== 'ltx2');
+  const a2vModeBlocked = mode === 'a2v' && (!audioFile || !isLtx2FamilyRuntime(currentModel?.runtime));
   // IC-LoRA remix needs a reference clip AND an ltx2-runtime model, and the
   // resolution must divide by the weight's reference-downscale factor (the
   // server rejects otherwise). Block submit for all three so the request fails
@@ -1036,7 +1155,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     (icImageKind
       ? (icFilledImageRefs < icSpec.minReferences || icFilledImageRefs > icSpec.maxReferences)
       : (!icReferenceFile && !icReferenceVideoId))
-    || currentModel?.runtime !== 'ltx2'
+    || !isLtx2FamilyRuntime(currentModel?.runtime)
     || !!icResolutionIssue(icSpec, width, height)
   );
   // Chaining seeds each chunk from the previous one's last frame, so it needs
@@ -1069,6 +1188,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
 
   const buildGeneratePayload = () => {
     const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
+    // A hidden mute checkbox from a prior model must not suppress H3's visible
+    // prompt-audio steering. Treat mute as effective only on a model that can
+    // actually disable its generated audio track.
+    const effectiveDisableAudio = supportsVideoAudioControls(currentModel) && disableAudio;
     // The style preset and the no-music constraint are ENVELOPE, not content —
     // they have to wrap a per-chunk beat exactly as they wrap the main prompt.
     // Shipping a beat raw would render the chunks the user steered in a
@@ -1078,7 +1201,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // Idempotent on "no music": if the text already says it, don't double-append.
     const withEnvelope = (text) => {
       const c = composeStyledPrompt(text, negativePrompt, stylePreset);
-      return (supportsVideoAudioControls(currentModel) && noMusic && !disableAudio && !/no music/i.test(c.prompt))
+      return (supportsVideoAudioPromptControls(currentModel) && noMusic && !effectiveDisableAudio && !/no music/i.test(c.prompt))
         ? `${c.prompt}\n\nno music, no soundtrack`
         : c.prompt;
     };
@@ -1114,6 +1237,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     // with multi-keyframe mode on the server, so its image fields only ride
     // along when keyframes aren't active.
     const legacyFflf = mode === 'fflf' && !keyframesActive;
+    const localEdgeBounds = videoEdgeBoundsForModel(currentModel);
     return {
       // The page's backend toggle IS an explicit choice — send it so the
       // server's #3231 video pin ladder can't reroute a Local render to a
@@ -1125,15 +1249,21 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // Clamp/floor to the runner's edge bounds so a transient 0 (field cleared
       // mid-edit) or off-grid value can't 400 the server — mirrors ImageGen's
       // submit-time clampImageEdge guard.
-      width: clampImageEdge(width, VIDEO_EDGE_BOUNDS),
-      height: clampImageEdge(height, VIDEO_EDGE_BOUNDS),
+      width: clampImageEdge(width, localEdgeBounds),
+      height: clampImageEdge(height, localEdgeBounds),
       numFrames,
       fps,
       steps: steps || '',
       guidanceScale: guidanceScale || '',
       seed: seed || '',
       tiling: currentModel?.supportsTiling === false ? 'auto' : tiling,
-      disableAudio: supportsVideoAudioControls(currentModel) ? (disableAudio ? 'true' : 'false') : 'false',
+      // Dropped entirely for the stock conditioner so an unswapped render posts
+      // exactly the body it did before this knob existed — and re-snapped to the
+      // model's own list in case a restore raced the reconciliation effect.
+      textEncoderId: normalizeTextEncoderForModel(textEncoderId, currentModel) === STOCK_TEXT_ENCODER_ID
+        ? undefined
+        : textEncoderId,
+      disableAudio: effectiveDisableAudio ? 'true' : 'false',
       mode,
       imageStrength: imageStrength || '',
       // ltx2-extend bypasses the last-frame i2v path: we send the source
@@ -1154,12 +1284,12 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       loraFilenames: (loraFamily && selectedLoras.length) ? selectedLoras.map((l) => l.filename) : undefined,
       loraScales: (loraFamily && selectedLoras.length) ? selectedLoras.map((l) => l.scale) : undefined,
       sourceImageFile: (mode === 'image' || legacyFflf
-        || (mode === 'extend' && currentModel?.runtime !== 'ltx2'))
+        || (mode === 'extend' && !isLtx2FamilyRuntime(currentModel?.runtime)))
         ? (sourceImageFile || '') : '',
       sourceImage: (mode === 'image' || legacyFflf) ? (sourceImageUpload || '') : '',
       lastImageFile: legacyFflf ? (lastImageFile || '') : '',
       lastImage: legacyFflf ? (lastImageUpload || '') : '',
-      extendFromVideoId: (mode === 'extend' && currentModel?.runtime === 'ltx2')
+      extendFromVideoId: (mode === 'extend' && isLtx2FamilyRuntime(currentModel?.runtime))
         ? (extendFromVideoId || '') : '',
       // Audio File goes through under the multipart field 'audioFile'. Server
       // routes it to the durable uploads dir and into the a2v helper.
@@ -1201,6 +1331,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     prompt, setPrompt,
     negativePrompt, setNegativePrompt,
     stylePreset, setStylePreset,
+    remixModelFallback,
     // Model
     modelId, handleModelChange, currentModel, visibleModels,
     loraFamily, videoLoras, loraUnavailableHint,
@@ -1217,6 +1348,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     imageStrength, setImageStrength,
     seed, setSeed, handleRandomSeed,
     tiling, setTiling,
+    textEncoderId, setTextEncoderId, textEncoderOptions,
     disableAudio, setDisableAudio,
     noMusic, setNoMusic,
     // Frames

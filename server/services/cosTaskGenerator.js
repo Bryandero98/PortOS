@@ -43,6 +43,7 @@ import { isHeldByOther, getClaimOwner } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
 
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
@@ -723,21 +724,27 @@ export function isWithinProjectLimit(task, agentsByProject, perProjectLimit) {
 }
 
 /**
- * Unblock every expired `orphan-cooldown` task in ONE queue's blocked group.
+ * Unblock every expired timed-cooldown task in ONE queue's blocked group.
  * `defaultTaskType` names the store the array came from, so a task that carries
  * no explicit `taskType` is routed back to the queue it was read from — no
  * membership scan needed.
+ *
+ * Gated on the shared `TIMED_COOLDOWN_BLOCKED_CATEGORIES` vocabulary rather than
+ * a literal `orphan-cooldown`: any block whose only precondition is "wait a
+ * while" (the newer `worktree-busy` is the second) revives through this same
+ * pass, and a category added to that set without a sweeper of its own would
+ * otherwise sit blocked forever.
  */
 async function unblockExpiredCooldownsInQueue(blocked, defaultTaskType) {
   for (const task of blocked || []) {
-    if (task.metadata?.blockedCategory !== 'orphan-cooldown' || !task.metadata?.cooldownUntil) continue;
+    if (!TIMED_COOLDOWN_BLOCKED_CATEGORIES.has(task.metadata?.blockedCategory) || !task.metadata?.cooldownUntil) continue;
     // An unparseable `cooldownUntil` yields NaN, and NaN loses BOTH comparisons —
     // so the expiry test has to be written as "is expired", not as the negation of
     // "is still cooling". Guard it explicitly: a garbage timestamp leaves the task
     // blocked (the pre-#3500 behavior) rather than reviving it on the next tick.
     const cooldownUntil = new Date(task.metadata.cooldownUntil).getTime();
     if (!(cooldownUntil <= Date.now())) continue;
-    emitLog('info', `⏰ Orphan cooldown expired for task ${task.id}, unblocking`, { taskId: task.id });
+    emitLog('info', `⏰ Cooldown expired for task ${task.id} (${task.metadata.blockedCategory}), unblocking`, { taskId: task.id });
     await updateTask(task.id, {
       status: 'pending',
       metadata: {
@@ -752,17 +759,17 @@ async function unblockExpiredCooldownsInQueue(blocked, defaultTaskType) {
 }
 
 /**
- * Unblock tasks whose orphan-retry cooldown has expired. Walks the blocked
- * groups of both task stores and flips any `orphan-cooldown` task back to
- * pending once its `cooldownUntil` has passed. Extracted from `evaluateTasks`
- * so the cooldown-unblock pass is independently testable.
+ * Unblock tasks whose timed cooldown has expired. Walks the blocked groups of
+ * both task stores and flips any task in `TIMED_COOLDOWN_BLOCKED_CATEGORIES`
+ * back to pending once its `cooldownUntil` has passed. Extracted from
+ * `evaluateTasks` so the cooldown-unblock pass is independently testable.
  *
  * Each store is walked separately rather than concatenated: the old single-pass
  * version re-derived the queue of origin with `userBlocked.includes(task)` per
  * task, an O(N) scan inside an O(N) loop (#3500). Passing the origin down makes
  * classification O(1) and the whole pass linear.
  */
-export async function unblockExpiredOrphanCooldowns(userTaskData, cosTaskData) {
+export async function unblockExpiredCooldowns(userTaskData, cosTaskData) {
   await unblockExpiredCooldownsInQueue(userTaskData.grouped?.blocked, 'user');
   await unblockExpiredCooldownsInQueue(cosTaskData.grouped?.blocked, 'internal');
 }
@@ -1225,7 +1232,7 @@ export async function evaluateTasks(options) {
   const { user: userTaskData, cos: cosTaskData } = await getAllTasks();
 
   // Unblock tasks whose orphan-retry cooldown has expired
-  await unblockExpiredOrphanCooldowns(userTaskData, cosTaskData);
+  await unblockExpiredCooldowns(userTaskData, cosTaskData);
 
   // Count running agents and available slots (global + per-project)
   const runningAgentEntries = Object.values(state.agents).filter(a => a.status === 'running');
@@ -1606,7 +1613,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     task.priorityValue = PRIORITY_VALUES.LOW;
     task.id = `sys-${app.id.slice(0, 8)}-${nextType}-${Date.now().toString(36)}`;
 
-    // Move the generator's multi-line prompt into `metadata.context` so it
+    // Move the generator's multi-line prompt into `metadata.prompt` so it
     // survives the COS-TASKS.md round-trip. The on-demand path dispatches the
     // in-memory task immediately (cosEvents.emit('task:ready', task) with the
     // unparsed object), so it never round-trips through the markdown — but
@@ -1616,16 +1623,22 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // `parseTasksMarkdown` only matches the first line of a `- [ ]` block —
     // so any newline in `description` corrupts the file (stray `## Phase`
     // lines become section headers, `- ` lines become new tasks) AND silently
-    // strips the Phase 1–7 instructions on the re-read. `metadata.context` is
+    // strips the Phase 1–7 instructions on the re-read. Task metadata is
     // newline-escaped via `escapeNewlines`/`unescapeNewlines` (JSON-sentinel
     // encoding) so it round-trips losslessly. The agent prompt builder
     // (`cos-agent-briefing.md` + the built-in fallback in
-    // `agentPromptBuilder.js`) renders both `task.description` AND
-    // `task.metadata.context` into the agent's prompt, so the agent still
-    // sees the full Phase 1–7 body.
+    // `agentPromptBuilder.js`) renders both `task.description` AND the task's
+    // context block into the agent's prompt, so the agent still sees the full
+    // Phase 1–7 body.
+    //
+    // The payload lands in `metadata.prompt`, NOT `metadata.context` (#4153):
+    // `context` is the one-line human note, and overloading it made a
+    // multi-thousand-character agent prompt indistinguishable from one. Readers
+    // go through `getTaskPrompt` (server/lib/cosTaskPrompt.js), which falls back
+    // to `metadata.context` for tasks written before the split.
     if (typeof task.description === 'string' && task.description.includes('\n')) {
       task.metadata = task.metadata || {};
-      task.metadata.context = task.description;
+      task.metadata.prompt = task.description;
       task.description = firstLine(task.description);
     }
 

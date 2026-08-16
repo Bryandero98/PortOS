@@ -3,7 +3,7 @@
  * to avoid a circular dependency (git.js imports worktreeManager.js).
  */
 
-import { spawn } from 'child_process';
+import { spawn } from './childProcess.js';
 
 /**
  * Execute a git command safely using spawn (prevents shell injection).
@@ -24,8 +24,7 @@ export function execGit(args, cwd, options = {}) {
     // platforms (including Windows) without a shell wrapper.
     const child = spawn('git', args, {
       cwd,
-      shell: false,
-      windowsHide: true
+      shell: false
     });
 
     let stdout = '';

@@ -1,4 +1,32 @@
+# Pin LF line endings for text files cross-platform
+* text=auto eol=lf
 *.sh text eol=lf
+
+# Binary file declarations
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.glb binary
+*.gltf binary
+*.mp3 binary
+*.mp4 binary
+*.wav binary
+*.webm binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.tgz binary
+*.db binary
+*.sqlite binary
+*.wasm binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
 
 # Changelog fragments are one file per branch (see scripts/changelogFragments.js),
 # so two branches normally touch two different paths and never conflict. `union`

@@ -7,6 +7,7 @@ import {
 import toast from '../ui/Toast';
 import { usePipelineProgress } from '../../hooks/usePipelineProgress';
 import { severityRank } from '../../lib/editorialChecks';
+import { reviewFrameLabel, summarizeReviewProgress } from '../../lib/seriesReviewProgress';
 import {
   startPipelineSeriesReview,
   getPipelineSeriesReview,
@@ -19,40 +20,19 @@ import {
   getPipelineSeries,
   listPipelineIssues,
 } from '../../services/api';
-
-const SEVERITY_STYLES = {
-  high: 'text-port-error border-port-error/40 bg-port-error/10',
-  medium: 'text-port-warning border-port-warning/40 bg-port-warning/10',
-  low: 'text-gray-400 border-gray-500/30 bg-gray-700/20',
-};
+import { severityColor } from './constants.js';
 
 const RUN_ENDED = new Set(['complete', 'canceled', 'error']);
+// Why a stored verdict is out of date, keyed by the server's `staleReason`
+// (#4111). `findings` is also the fallback for a pre-#4111 snapshot, whose
+// staleness could only ever come from the findings store.
+const STALE_NOTICE = {
+  findings: 'The findings changed since this review ran — re-review for an up-to-date verdict.',
+  sources: 'The manuscript, canon, or foundation changed since this review ran — re-review for an up-to-date verdict.',
+  both: 'The findings and the reviewed manuscript/canon changed since this review ran — re-review for an up-to-date verdict.',
+};
 // The fix run's terminal frames: `rejected` = the cos gate/budget refused it.
 const FIX_RUN_ENDED = new Set(['complete', 'canceled', 'error', 'rejected']);
-
-// One-line label for a review SSE frame (mirrors AutopilotPanel's frameLabel,
-// scoped to this flow's steps).
-const REVIEW_STEP_LABELS = {
-  foundation: 'Judging foundation',
-  feedback: 'Routing your feedback',
-  editorialChecks: 'Running editorial checks',
-  canon: 'Checking canon descriptions',
-  health: 'Scoring editorial health',
-};
-function reviewFrameLabel(f) {
-  if (!f) return null;
-  switch (f.type) {
-    case 'start': return 'Starting review…';
-    case 'step:start': return `${REVIEW_STEP_LABELS[f.kind] || f.kind}…`;
-    case 'step:complete': return `${REVIEW_STEP_LABELS[f.kind] || f.kind} done`;
-    case 'check:start': return `Editorial check: ${f.label || f.checkId}…`;
-    case 'check:complete': return `Editorial check: ${f.label || f.checkId} — ${f.count ?? 0} finding(s)`;
-    case 'complete': return 'Review complete';
-    case 'canceled': return 'Review canceled';
-    case 'error': return `Review failed — ${f.error}`;
-    default: return f.type;
-  }
-}
 
 // Compact label for the per-finding fix run.
 function fixFrameLabel(f) {
@@ -235,6 +215,15 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
       .catch((err) => { toast.error(err.message || 'Could not start review'); return null; });
     setStarting(false);
     if (!res) return;
+    // A review with DIFFERENT options is already in flight (a second tab, or a
+    // peer-triggered run). The server refused to coalesce this one onto it
+    // (#4113) — binding to that stream would report its verdict as this
+    // request's while silently dropping this note/provider/gate. Surface it and
+    // leave the running review (and the note) alone.
+    if (res.conflict) {
+      toast.error('A different review is already running for this series — wait for it to finish, or cancel it first.');
+      return;
+    }
     // The note has now been consumed by this run — clear it so a later re-review
     // (after fixes clear `review`, re-showing the textarea) can't silently re-seed
     // the same note as a fresh duplicate finding. Don't clear when the server
@@ -261,6 +250,13 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
       .catch((err) => { toast.error(err?.message || 'Could not start fixing'); return null; });
     setFixStarting(false);
     if (!res) return;
+    // A fix pass over a DIFFERENT finding set is already in flight. That run
+    // WRITES the manuscript, so reporting its totals as this request's would be
+    // worse than misleading — refuse to bind and say so (#4113).
+    if (res.conflict) {
+      toast.error('A different fix pass is already running for this series — wait for it to finish, or cancel it first.');
+      return;
+    }
     fixRunIdRef.current = res.runId || null;
     setConfirmDismissed(true);
     setFixing(true);
@@ -269,7 +265,14 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
 
   if (!seriesId) return null;
 
-  const reviewLabel = reviewing ? (reviewFrameLabel(reviewLatest) || 'Working…') : null;
+  // The review's background passes (foundation judge, canon readiness) run
+  // CONCURRENTLY with the editorial checks (#4108), so the frames interleave —
+  // summarize the whole stream rather than labelling only the newest frame, or
+  // the headline flickers between the checks pass and a step that just settled.
+  const { headline: reviewHeadline, alsoRunning: reviewAlsoRunning } = reviewing
+    ? summarizeReviewProgress(reviewFrames)
+    : { headline: null, alsoRunning: [] };
+  const reviewLabel = reviewing ? (reviewHeadline || 'Working…') : null;
   const groups = review ? groupFindings(review.findings) : [];
   const hasIssues = review?.verdict === 'issues';
   // Only the manuscript-review findings are auto-fixable; a verdict that is
@@ -341,10 +344,17 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
       {/* Live review progress */}
       {reviewing ? (
         <div className="px-3 pb-3 border-t border-port-border pt-2">
-          <div className="text-xs text-gray-300 flex items-center gap-2">
+          <div className="text-xs text-gray-300 flex items-center gap-2 flex-wrap">
             <Loader2 size={12} className="animate-spin text-port-accent" />
             {reviewLabel}
           </div>
+          {/* The passes running alongside the headline step, so a long foundation
+              judge stays visible while the checks pass owns the line above. */}
+          {reviewAlsoRunning.length ? (
+            <div className="mt-1 text-[11px] text-gray-500">
+              also running: {reviewAlsoRunning.join(' · ')}
+            </div>
+          ) : null}
           {reviewFrames?.length ? (
             <div className="mt-2 max-h-24 overflow-y-auto text-[11px] text-gray-500 space-y-0.5">
               {reviewFrames.slice(-6).map((f, i) => <div key={i}>{reviewFrameLabel(f)}</div>)}
@@ -371,12 +381,13 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
             )}
           </div>
 
-          {/* Stale banner — the findings changed since this verdict (e.g. a
-              finding was fixed/dismissed via "Fix here"), so it's out of date. */}
+          {/* Stale banner — either the findings changed since this verdict (e.g. a
+              finding was fixed/dismissed via "Fix here") or the reviewed sources
+              themselves did (manuscript/canon/foundation edits), so it's out of date. */}
           {review.stale ? (
             <p className="text-[11px] text-port-warning flex items-center gap-1.5">
               <AlertTriangle size={12} />
-              The findings changed since this review ran — re-review for an up-to-date verdict.
+              {STALE_NOTICE[review.staleReason] || STALE_NOTICE.findings}
             </p>
           ) : null}
 
@@ -425,7 +436,7 @@ export default function SeriesReviewPanel({ series, onSeriesUpdate, onIssuesUpda
                   </div>
                   <ul className="space-y-1">
                     {g.items.map((f) => (
-                      <li key={f.commentId} className={`p-2 rounded border ${SEVERITY_STYLES[f.severity] || SEVERITY_STYLES.medium}`}>
+                      <li key={f.commentId} className={`p-2 rounded border ${severityColor(f.severity)}`}>
                         <div className="flex items-center gap-2">
                           <AlertCircle size={11} />
                           <span className="uppercase tracking-wider font-semibold text-[10px]">{f.severity}</span>

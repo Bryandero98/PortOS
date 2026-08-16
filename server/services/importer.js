@@ -77,7 +77,7 @@ export const ANALYZE_STAGE_TIMEOUT_MS = 1_200_000;
 // active provider's context window, since the whole corpus still goes into one
 // extraction call. Sources that fit the ceiling but overflow the chosen model's
 // window will fail at the provider until the chunked-extraction follow-up lands
-// (PLAN.md / "Create Suite — Importer page") — pick a large-context provider or
+// ("Create Suite — Importer page") — pick a large-context provider or
 // trim the source in the meantime.
 export const IMPORTER_SOURCE_CHAR_LIMIT = 5_000_000;
 

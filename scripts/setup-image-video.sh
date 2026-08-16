@@ -10,12 +10,15 @@
 #   PORTOS_DATA    Path to PortOS data dir (default: ./data, resolved from $REPO_ROOT)
 #   INSTALL_VIDEO  '1' to also install mlx_video for LTX video generation (default: 1 on macOS, 0 on Windows)
 #   INSTALL_LTX2   '1' to also clone + uv-sync dgrauet/ltx-2-mlx at ~/.portos/ltx-2-mlx for the second-gen LTX-2.3 pipeline (proper keyframe interpolation, true video extend, audio-to-video). Default: 0; opt in with INSTALL_LTX2=1.
-#   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx. Weights remain a separate explicit Video Gen download. Default: 0.
+#   INSTALL_LTX25  '1' to clone + uv-sync MrMofer's ltx-2.5 fork at ~/.portos/ltx-2.5-mlx (Apple Silicon). The 2.3 pin cannot load LTX-2.5 weights. Default: 0.
+#   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx (Apple Silicon). Weights remain a separate explicit Video Gen download. Default: 0.
+#   INSTALL_MINIMAX_H3_CUDA '1' to install the MiniMax H3 CUDA runtime at ~/.portos/minimax-h3-cuda (Windows + NVIDIA), via diffusers' MiniMaxH3ModularPipeline. Weights remain a separate explicit Video Gen download (~144 GB). Default: 0.
 #   INSTALL_FLUX2  '1' to also bootstrap a separate venv at ~/.portos/venv-flux2 for FLUX.2-klein (default: 1 on macOS, 0 elsewhere)
 #   INSTALL_MUSICGEN '1' to bootstrap a venv at ~/.portos/venv-musicgen + clone ml-explore/mlx-examples to ~/.portos/mlx-examples for local MusicGen (MLX) background-music generation (pipeline audio stage). Default: 0; opt in with INSTALL_MUSICGEN=1 (macOS / Apple Silicon only).
 #   MLX_EXAMPLES_PIN  commit SHA of ml-explore/mlx-examples to check out for MusicGen (default: main).
 #   INSTALL_AUDIOLDM2 '1' to bootstrap a venv at ~/.portos/venv-audioldm2 (torch + diffusers) for local AudioLDM2 long-form background-music generation (pipeline audio stage, second backend alongside MusicGen). Default: 0; opt in with INSTALL_AUDIOLDM2=1 (runs on MPS / CUDA / CPU).
 #   INSTALL_ACESTEP '1' to bootstrap a venv at ~/.portos/venv-acestep (torch + the acestep package) for local ACE-Step full-song generation with vocals (Music studio, third backend). Default: 0; opt in with INSTALL_ACESTEP=1 (runs on MPS / CUDA / CPU; checkpoints auto-download to ~/.cache/ace-step on first run).
+#   INSTALL_ACESTEP15 '1' to bootstrap a venv at ~/.portos/venv-acestep15 (the ACE-Step 1.5 package + torch) for local ACE-Step 1.5 full-song generation (Music studio). Default: 0; opt in with INSTALL_ACESTEP15=1 (runs on MPS / CUDA / CPU; model weights are installed separately from Music).
 #   INSTALL_MUSCRIPTOR '1' to bootstrap a venv at ~/.portos/venv-muscriptor (the muscriptor pip package + its torch stack) for local audio → MIDI transcription (Rounds reference audio + Music Video parsing). Default: 0; opt in with INSTALL_MUSCRIPTOR=1 (runs on MPS / CUDA / CPU; model weights auto-download from HuggingFace on first transcription).
 
 set -euo pipefail
@@ -27,6 +30,23 @@ PORTOS_DATA="${PORTOS_DATA:-${REPO_ROOT}/data}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+# Git-bash / MSYS / Cygwin all report a prefixed uname; PortOS runs the
+# in-app installer through git-bash on Windows, so match all three.
+is_windows() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0;; *) return 1;; esac; }
+
+# Resolve a venv interpreter from the layout its creating Python used. Git Bash
+# keeps its POSIX shell paths on Windows, but Python still creates Scripts/.
+venv_python() {
+  if [[ -x "$1/bin/python3" ]]; then
+    printf '%s\n' "$1/bin/python3"
+  else
+    printf '%s\n' "$1/Scripts/python.exe"
+  fi
+}
+
+# True if a venv at $1 already has an interpreter under either layout —
+# shared with venv_python so the two probes can't drift apart.
+venv_exists() { [[ -x "$1/bin/python3" || -x "$1/Scripts/python.exe" ]]; }
 
 # Check out a pin (a commit SHA, tag, or branch name) in an already-fetched
 # clone. A bare `git checkout <branch>` lands on the *local* branch created at
@@ -54,8 +74,8 @@ mkdir -p "${PORTOS_DATA}/videos"
 mkdir -p "${PORTOS_DATA}/video-thumbnails"
 
 # When the user only wants a specific BYOV runtime (set via INSTALL_LTX2 /
-# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 — or one of the self-contained MUSIC venvs
-# INSTALL_MUSICGEN / INSTALL_AUDIOLDM2 / INSTALL_ACESTEP — typically from the
+# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 / INSTALL_MINIMAX_H3_CUDA — or one of the self-contained MUSIC venvs
+# INSTALL_MUSICGEN / INSTALL_AUDIOLDM2 / INSTALL_ACESTEP / INSTALL_ACESTEP15 — typically from the
 # in-app installer), skip the mflux + legacy mlx_video preamble. Those
 # bring-your-own-venv runtimes are self-contained and don't depend on mflux;
 # running the preamble unprompted hits PEP 668 ("externally-managed-environment")
@@ -63,8 +83,14 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_MUSCRIPTOR:-0}"
-if [[ "$ANY_BYOV" == "00000000" ]]; then
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MUSCRIPTOR:-0}"
+# "no BYOV runtime was requested" = the concatenation contains no non-zero
+# character. Matching a literal string of zeros instead made this a counting
+# exercise that the string and the variable list had to agree on — and they had
+# already fallen out of step, so a bare `bash setup-image-video.sh` was taking
+# the BYOV-only branch and skipping the mflux + flux2 preamble it advertises.
+# This form cannot drift as runtimes are added.
+if [[ "$ANY_BYOV" != *[!0]* ]]; then
   DEFAULT_INSTALL_MFLUX=1
   DEFAULT_INSTALL_VIDEO=$(is_macos && echo 1 || echo 0)
   DEFAULT_INSTALL_FLUX2=$(is_macos && echo 1 || echo 0)
@@ -265,6 +291,47 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
   echo "✅ ltx-2-mlx venv ready: ${LTX2_PY}"
 fi
 
+INSTALL_LTX25="${INSTALL_LTX25:-0}"
+if [[ "$INSTALL_LTX25" == "1" ]]; then
+  # MrMofer's ltx25 fork of dgrauet/ltx-2-mlx. Same pipeline API as the 2.3
+  # runtime (generate_ltx2.py), different checkout — LTX-2.5 weights do not
+  # load on the frozen 2.3 pin.
+  if ! have uv; then
+    echo "❌ INSTALL_LTX25=1 requires the 'uv' Python installer. Install with:" >&2
+    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    exit 1
+  fi
+  if ! have git; then
+    echo "❌ INSTALL_LTX25=1 requires git." >&2
+    exit 1
+  fi
+  LTX25_PIN="${LTX25_PIN:-57952288076766abe27dda3a774b2c24f7346977}"
+  LTX25_DIR="${HOME}/.portos/ltx-2.5-mlx"
+  LTX25_PY="${LTX25_DIR}/.venv/bin/python3"
+  mkdir -p "${HOME}/.portos"
+  if [[ ! -d "${LTX25_DIR}/.git" ]]; then
+    echo "📦 Cloning MrMoferFRAN/ltx-2-mlx (pinned to ${LTX25_PIN:0:12})..."
+    git clone https://github.com/MrMoferFRAN/ltx-2-mlx.git "${LTX25_DIR}"
+  else
+    echo "📦 Fetching ltx-2.5-mlx updates..."
+    (cd "${LTX25_DIR}" && git fetch origin)
+  fi
+  echo "📦 Checking out pinned commit ${LTX25_PIN:0:12}..."
+  git_checkout_pin "${LTX25_DIR}" "${LTX25_PIN}"
+  if [[ ! -x "${LTX25_PY}" ]]; then
+    echo "📦 Creating ltx-2.5-mlx venv with Python 3.11..."
+    (cd "${LTX25_DIR}" && uv venv --python 3.11)
+  fi
+  echo "📦 Syncing ltx-2.5-mlx packages (uv sync, no extras)..."
+  (cd "${LTX25_DIR}" && uv sync)
+  if ! "${LTX25_PY}" -c "import ltx_pipelines_mlx" 2>/dev/null; then
+    echo "❌ ltx-2.5-mlx synced but 'import ltx_pipelines_mlx' failed." >&2
+    echo "   Re-run with: rm -rf ${LTX25_DIR}/.venv && bash $0" >&2
+    exit 1
+  fi
+  echo "✅ ltx-2.5-mlx venv ready: ${LTX25_PY}"
+fi
+
 INSTALL_WAN22="${INSTALL_WAN22:-0}"
 if [[ "$INSTALL_WAN22" == "1" ]]; then
   # MLX-Gen provides the validated Apple-Silicon Wan 2.2 TI2V-5B and A14B
@@ -374,6 +441,74 @@ if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
   fi
   echo "✅ MiniMax H3 MLX runtime ready: ${MINIMAX_H3_PY}"
   echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
+fi
+
+INSTALL_MINIMAX_H3_CUDA="${INSTALL_MINIMAX_H3_CUDA:-0}"
+if [[ "$INSTALL_MINIMAX_H3_CUDA" == "1" ]]; then
+  # MiniMax H3 on NVIDIA, through diffusers' MiniMaxH3ModularPipeline. Unlike
+  # the MLX sibling above there is no source checkout to pin — everything this
+  # runtime executes is an installed distribution, so the pin is the exact
+  # `==` set in requirements-minimax-h3-cuda.txt. Reached only from the
+  # explicit runtime Install / Repair action, never from PortOS boot.
+  if is_macos; then
+    echo "❌ MiniMax H3 CUDA needs an NVIDIA GPU. On Apple Silicon use INSTALL_MINIMAX_H3=1 (the MLX port) instead." >&2
+    exit 1
+  fi
+  # Windows and Linux both reach this model: since #4142 the catalog picks
+  # video.cuda[] vs video.mlx[] on `process.platform === 'darwin'`, so a Linux
+  # install is served the same CUDA list a Windows one is.
+  # diffusers is pinned to a git commit until a release carries the MiniMax-H3
+  # integration (see the note in requirements-minimax-h3-cuda.txt), so pip needs
+  # git to build that wheel. Say so up front rather than failing several minutes
+  # into a torch download.
+  if ! have git; then
+    echo "❌ INSTALL_MINIMAX_H3_CUDA=1 requires git (the diffusers pin is a git commit)." >&2
+    exit 1
+  fi
+
+  MINIMAX_H3_CUDA_DIR="${HOME}/.portos/minimax-h3-cuda"
+  MINIMAX_H3_CUDA_VENV="${MINIMAX_H3_CUDA_DIR}/.venv"
+  MINIMAX_H3_CUDA_REQS="${SCRIPT_DIR}/requirements-minimax-h3-cuda.txt"
+  mkdir -p "${MINIMAX_H3_CUDA_DIR}"
+  # A Windows venv puts the interpreter under Scripts/, a POSIX one under bin/.
+  # Probe for either rather than branching on `uname`, so an MSYS/Cygwin bash on
+  # Windows (which is what the in-app installer runs) resolves correctly.
+  if ! venv_exists "$MINIMAX_H3_CUDA_VENV"; then
+    echo "📦 Creating MiniMax H3 CUDA venv..."
+    "$PYTHON_BIN" -m venv "$MINIMAX_H3_CUDA_VENV"
+  fi
+  MINIMAX_H3_CUDA_PY="$(venv_python "$MINIMAX_H3_CUDA_VENV")"
+
+  "$MINIMAX_H3_CUDA_PY" -m pip install --disable-pip-version-check --upgrade pip wheel setuptools
+  # torch comes from PyTorch's own CUDA index on Windows — the default PyPI
+  # Windows wheel is CPU-only, which on a 33B model is not "slower" but
+  # unusable. Linux's PyPI torch already bundles CUDA, so it needs no swap.
+  # Mirrors WIN_TORCH_CUDA_INDEX in server/lib/pythonSetup.js.
+  MINIMAX_H3_TORCH_INDEX="${PORTOS_TORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu126}"
+  if is_windows; then
+    echo "📦 Installing CUDA torch from ${MINIMAX_H3_TORCH_INDEX}..."
+    "$MINIMAX_H3_CUDA_PY" -m pip install --upgrade --index-url "$MINIMAX_H3_TORCH_INDEX" torch
+  else
+    echo "📦 Installing torch..."
+    "$MINIMAX_H3_CUDA_PY" -m pip install --upgrade torch
+  fi
+  echo "📦 Installing pinned MiniMax H3 CUDA packages..."
+  "$MINIMAX_H3_CUDA_PY" -m pip install --upgrade --progress-bar on -r "$MINIMAX_H3_CUDA_REQS"
+
+  # Three separate ways this install can look complete and not be: a CPU-only
+  # torch, a diffusers without the H3 integration, or a missing torchao. Check
+  # all three here so the failure names itself, instead of surfacing hours later
+  # as an ImportError inside a render. Same assertions as the runtime's
+  # `importProbe` in server/services/videoGen/runtimes.js.
+  if ! "$MINIMAX_H3_CUDA_PY" -c "import torch; from diffusers import MiniMaxH3Transformer3DModel; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference; import torchao; assert torch.cuda.is_available(), 'no CUDA device'"; then
+    echo "❌ MiniMax H3 CUDA installed but its readiness check failed (see the error above)." >&2
+    echo "   A 'no CUDA device' assertion means torch cannot see your GPU; anything else means the" >&2
+    echo "   diffusers pin does not carry the MiniMax-H3 integration. Use Repair from the Video Gen runtime panel." >&2
+    exit 1
+  fi
+  echo "✅ MiniMax H3 CUDA runtime ready: ${MINIMAX_H3_CUDA_PY}"
+  echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
+  echo "   That download is ~144 GB, and rendering needs ~24 GB VRAM plus ~75 GB of system RAM for offloaded weights."
 fi
 
 INSTALL_HUNYUAN="${INSTALL_HUNYUAN:-0}"
@@ -505,19 +640,18 @@ if [[ "$INSTALL_AUDIOLDM2" == "1" ]]; then
   # diffusion text-to-audio model shipped in HuggingFace `diffusers` (a pip
   # package — no clone needed), so this is just a sibling torch venv. The sidecar
   # `scripts/generate_audioldm2.py` imports `AudioLDM2Pipeline` from diffusers;
-  # server/lib/pythonSetup.js (resolveAudioldm2Python) looks for python3 here.
+  # server/lib/pythonSetup.js (resolveAudioldm2Python) discovers this venv.
   # Runs on Apple-Silicon MPS, CUDA, or CPU — not gated to macOS like MusicGen.
-  # This is a bash installer, so the venv layout is the POSIX bin/python3 (same
-  # as the MusicGen block); the Windows Scripts/python.exe path is resolved on
-  # the JS side by pythonSetup's AUDIOLDM2_VENV_CANDIDATES.
+  # Git Bash on Windows creates Scripts/python.exe even though this is a bash
+  # installer; venv_python keeps the installer aligned with the JS resolver.
   AUDIOLDM2_VENV="${HOME}/.portos/venv-audioldm2"
-  AUDIOLDM2_PY="$AUDIOLDM2_VENV/bin/python3"
   mkdir -p "${HOME}/.portos"
 
-  if [[ ! -x "$AUDIOLDM2_PY" ]]; then
+  if ! venv_exists "$AUDIOLDM2_VENV"; then
     echo "📦 Creating AudioLDM2 venv at ${AUDIOLDM2_VENV}..."
     "$PYTHON_BIN" -m venv "$AUDIOLDM2_VENV"
   fi
+  AUDIOLDM2_PY="$(venv_python "$AUDIOLDM2_VENV")"
   echo "📦 Installing AudioLDM2 (diffusers) packages into ${AUDIOLDM2_VENV}..."
   "$AUDIOLDM2_PY" -m pip install --upgrade pip wheel setuptools >/dev/null
   # torch runs the model; diffusers provides AudioLDM2Pipeline; transformers +
@@ -551,19 +685,19 @@ if [[ "$INSTALL_ACESTEP" == "1" ]]; then
   # vocals. It installs as the `acestep` pip package (from git — no clone to
   # import from), so this is a sibling torch venv. The sidecar
   # `scripts/generate_acestep.py` imports `ACEStepPipeline` from acestep;
-  # server/lib/pythonSetup.js (resolveAcestepPython) looks for python3 here.
-  # Runs on Apple-Silicon MPS, CUDA, or CPU. The Windows Scripts/python.exe path
-  # is resolved on the JS side by pythonSetup's ACESTEP_VENV_CANDIDATES.
+  # server/lib/pythonSetup.js (resolveAcestepPython) discovers this venv.
+  # Runs on Apple-Silicon MPS, CUDA, or CPU. Git Bash on Windows creates
+  # Scripts/python.exe, so resolve the venv path after it is created.
   # ACE-Step auto-downloads its 3.5B checkpoints to ~/.cache/ace-step on first
   # run, so this only builds the venv — no weights are fetched here.
   ACESTEP_VENV="${HOME}/.portos/venv-acestep"
-  ACESTEP_PY="$ACESTEP_VENV/bin/python3"
   mkdir -p "${HOME}/.portos"
 
-  if [[ ! -x "$ACESTEP_PY" ]]; then
+  if ! venv_exists "$ACESTEP_VENV"; then
     echo "📦 Creating ACE-Step venv at ${ACESTEP_VENV}..."
     "$PYTHON_BIN" -m venv "$ACESTEP_VENV"
   fi
+  ACESTEP_PY="$(venv_python "$ACESTEP_VENV")"
   echo "📦 Installing ACE-Step into ${ACESTEP_VENV} (this pulls torch + the acestep package)..."
   "$ACESTEP_PY" -m pip install --upgrade pip wheel setuptools >/dev/null
   # The acestep package declares its own deps (torch, diffusers, transformers,
@@ -583,6 +717,94 @@ if [[ "$INSTALL_ACESTEP" == "1" ]]; then
   echo "✅ ACE-Step venv ready: $ACESTEP_PY"
 fi
 
+INSTALL_ACESTEP15="${INSTALL_ACESTEP15:-0}"
+if [[ "$INSTALL_ACESTEP15" == "1" ]]; then
+  # ACE-Step 1.5 is a separate architecture from v1. The package supplies the
+  # multi-component pipeline whose DiT loads custom Transformers code with
+  # trust_remote_code, so it must never share v1's `acestep` venv.
+  ACESTEP15_VENV="${HOME}/.portos/venv-acestep15"
+  mkdir -p "${HOME}/.portos"
+
+  if ! venv_exists "$ACESTEP15_VENV"; then
+    echo "📦 Creating ACE-Step 1.5 venv at ${ACESTEP15_VENV}..."
+    "$PYTHON_BIN" -m venv "$ACESTEP15_VENV"
+  fi
+  ACESTEP15_PY="$(venv_python "$ACESTEP15_VENV")"
+  echo "📦 Installing ACE-Step 1.5 into ${ACESTEP15_VENV}..."
+  "$ACESTEP15_PY" -m pip install --upgrade pip wheel setuptools >/dev/null
+  # ACE-Step 1.5's Linux/Windows torch pins are published on PyTorch's CUDA
+  # index. Passing it as an extra index remains harmless on macOS, where the
+  # package selects its native MPS-compatible torch dependency.
+  # Pin the runtime to a vendor release. The model snapshot is installed
+  # separately through Music, but its custom-code loader depends on this
+  # package's handler contract.
+  ACESTEP15_TORCH_INDEX="${PORTOS_TORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu128}"
+  "$ACESTEP15_PY" -m pip install --upgrade --extra-index-url "$ACESTEP15_TORCH_INDEX" \
+    "git+https://github.com/ace-step/ACE-Step-1.5.git@v0.1.8" \
+    "huggingface_hub[hf_xet]"
+  if ! "$ACESTEP15_PY" -c "import torch; from transformers import AutoModel; from acestep.handler import AceStepHandler; from acestep.inference import GenerationConfig, GenerationParams, generate_music" 2>/dev/null; then
+    echo "❌ ACE-Step 1.5 venv built but its Transformers runtime failed to import." >&2
+    echo "   Check that torch, transformers, and ACE-Step 1.5 installed cleanly in ${ACESTEP15_VENV}." >&2
+    exit 1
+  fi
+  echo "✅ ACE-Step 1.5 venv ready: $ACESTEP15_PY"
+fi
+
+INSTALL_MINIMAX_MUSIC3="${INSTALL_MINIMAX_MUSIC3:-0}"
+if [[ "$INSTALL_MINIMAX_MUSIC3" == "1" ]]; then
+  MINIMAX_MUSIC3_VENV="${HOME}/.portos/venv-minimax-music3"
+  mkdir -p "${HOME}/.portos"
+  # A venv built from a conda/anaconda base is the sticky Windows failure: pip
+  # installs torch happily, then `import torch` dies with
+  # "WinError 1114 ... c10.dll initialization routine failed" because conda's
+  # MKL/OpenMP DLLs poison the search path. Re-running never helped, because the
+  # venv already existed and got reused. Rebuild it when its recorded base is
+  # conda and the interpreter we'd build from is not.
+  if [[ -f "$MINIMAX_MUSIC3_VENV/pyvenv.cfg" ]] \
+     && grep -qiE '^home *=.*(miniconda|anaconda)' "$MINIMAX_MUSIC3_VENV/pyvenv.cfg" \
+     && [[ ! "$PYTHON_BIN" =~ [Mm]ini?conda|[Aa]naconda ]]; then
+    echo "♻️  Existing MiniMax Music 3 venv was built from a conda base (torch can't load there) — rebuilding from ${PYTHON_BIN}."
+    rm -rf "$MINIMAX_MUSIC3_VENV"
+  fi
+  if ! venv_exists "$MINIMAX_MUSIC3_VENV"; then
+    "$PYTHON_BIN" -m venv "$MINIMAX_MUSIC3_VENV"
+  fi
+  MINIMAX_MUSIC3_PY="$(venv_python "$MINIMAX_MUSIC3_VENV")"
+  "$MINIMAX_MUSIC3_PY" -m pip install --upgrade pip wheel setuptools
+  # torch comes from PyTorch's own CUDA index on Windows — the default PyPI
+  # Windows wheel is CPU-only, which fails the cuda assert below. Linux's PyPI
+  # torch already bundles CUDA. Mirrors the MiniMax H3 CUDA block above.
+  MINIMAX_MUSIC3_TORCH_INDEX="${PORTOS_TORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu126}"
+  if is_windows; then
+    echo "📦 Installing CUDA torch from ${MINIMAX_MUSIC3_TORCH_INDEX}..."
+    "$MINIMAX_MUSIC3_PY" -m pip install --upgrade --index-url "$MINIMAX_MUSIC3_TORCH_INDEX" torch
+  else
+    "$MINIMAX_MUSIC3_PY" -m pip install --upgrade torch
+  fi
+  # Fail here, with the cause named, rather than 400 MB of diffusers later. The
+  # conda-base check above is a heuristic (a venv can inherit a poisoned DLL path
+  # other ways); this is the ground truth.
+  if ! "$MINIMAX_MUSIC3_PY" -c "import torch" 2>/dev/null; then
+    echo "❌ torch installed into ${MINIMAX_MUSIC3_VENV} but cannot be imported." >&2
+    "$MINIMAX_MUSIC3_PY" -c "import torch" 2>&1 | tail -5 >&2
+    if is_windows; then
+      echo "   On Windows this is almost always a venv built from a conda/anaconda base:" >&2
+      echo "   conda's MKL/OpenMP DLLs break torch's c10.dll load (WinError 1114)." >&2
+      echo "   Install a standalone Python (\`uv python install 3.10\`, or python.org)," >&2
+      echo "   then re-run with PYTHON_BIN pointed at it." >&2
+    fi
+    exit 1
+  fi
+  # Pinned to the main commit that merged MiniMax Music 3 (diffusers PR #14456,
+  # 2026-08-13) — the integration is in no tagged release yet. The pin must be a
+  # commit reachable from main: pip clones the default branch, so a PR-branch
+  # head SHA fails with "pathspec ... did not match any file(s) known to git".
+  "$MINIMAX_MUSIC3_PY" -m pip install --upgrade transformers accelerate huggingface_hub numpy \
+    'diffusers @ git+https://github.com/huggingface/diffusers.git@2da7040be1a2e5f2fcbc8b985083342a308f5a86'
+  "$MINIMAX_MUSIC3_PY" -c "import torch; from diffusers import ModularPipeline; assert torch.cuda.is_available()"
+  echo "✅ MiniMax Music 3 venv ready: $MINIMAX_MUSIC3_PY"
+fi
+
 INSTALL_MUSCRIPTOR="${INSTALL_MUSCRIPTOR:-0}"
 if [[ "$INSTALL_MUSCRIPTOR" == "1" ]]; then
   # Local audio → MIDI transcription for the Rounds workbench + Music Video
@@ -597,20 +819,13 @@ if [[ "$INSTALL_MUSCRIPTOR" == "1" ]]; then
   # so this only builds the venv — no weights are fetched here. Weights are
   # CC BY-NC 4.0 (non-commercial).
   MUSCRIPTOR_VENV="${HOME}/.portos/venv-muscriptor"
-  MUSCRIPTOR_PY="$MUSCRIPTOR_VENV/bin/python3"
   mkdir -p "${HOME}/.portos"
 
-  if [[ ! -x "$MUSCRIPTOR_PY" && ! -x "$MUSCRIPTOR_VENV/Scripts/python.exe" ]]; then
+  if ! venv_exists "$MUSCRIPTOR_VENV"; then
     echo "📦 Creating MuScriptor venv at ${MUSCRIPTOR_VENV}..."
     "$PYTHON_BIN" -m venv "$MUSCRIPTOR_VENV"
   fi
-  # A venv created by Windows Python (this script run under git-bash) places the
-  # interpreter at Scripts/python.exe instead of bin/python3 — pick whichever
-  # layout the venv actually has so the pip steps below work on both. The JS
-  # side (pythonSetup's MUSCRIPTOR_VENV_CANDIDATES) already probes both.
-  if [[ ! -x "$MUSCRIPTOR_PY" ]]; then
-    MUSCRIPTOR_PY="$MUSCRIPTOR_VENV/Scripts/python.exe"
-  fi
+  MUSCRIPTOR_PY="$(venv_python "$MUSCRIPTOR_VENV")"
   echo "📦 Installing MuScriptor into ${MUSCRIPTOR_VENV} (pulls torch + audio deps)..."
   "$MUSCRIPTOR_PY" -m pip install --upgrade pip wheel setuptools >/dev/null
   # muscriptor declares its own deps (torch, soundfile, etc.), so installing the
@@ -635,14 +850,14 @@ if [[ "$INSTALL_FLUX2" == "1" ]]; then
   # FLUX.2-klein needs torch>=2.5 + diffusers-from-git + sdnq + optimum-quanto.
   # Mixing those into the mflux pip --user pile (mflux pulls older torch) is
   # fragile, so we use a sibling venv. server/lib/pythonSetup.js looks for
-  # python3 here when the active model has runner=='flux2'.
+  # this venv's interpreter when the active model has runner=='flux2'.
   FLUX2_VENV="${HOME}/.portos/venv-flux2"
-  FLUX2_PY="$FLUX2_VENV/bin/python3"
-  if [[ ! -x "$FLUX2_PY" ]]; then
+  if ! venv_exists "$FLUX2_VENV"; then
     echo "📦 Creating FLUX.2 venv at ${FLUX2_VENV}..."
     mkdir -p "${HOME}/.portos"
     "$PYTHON_BIN" -m venv "$FLUX2_VENV"
   fi
+  FLUX2_PY="$(venv_python "$FLUX2_VENV")"
 
   # Skip the (slow, network-heavy) pip path when Flux2KleinPipeline already
   # imports — diffusers-from-git is a git clone every run otherwise. Use
@@ -699,6 +914,9 @@ echo "   Videos:    ${PORTOS_DATA}/videos"
 if [[ "$INSTALL_LTX2" == "1" ]]; then
   echo "   LTX-2.3:   ${HOME}/.portos/ltx-2-mlx/.venv/bin/python3 (separate venv, dgrauet pipeline @ ${LTX2_PIN:0:12})"
 fi
+if [[ "$INSTALL_LTX25" == "1" ]]; then
+  echo "   LTX-2.5:   ${HOME}/.portos/ltx-2.5-mlx/.venv/bin/python3 (MrMofer ltx25 fork @ ${LTX25_PIN:0:12})"
+fi
 if [[ "$INSTALL_WAN22" == "1" ]]; then
   echo "   Wan 2.2:  ${HOME}/.portos/mlx-gen/.venv/bin/python3 (MLX-Gen @ ${WAN22_PIN:0:12})"
   echo "              Weights remain uninstalled until Download is chosen in Video Gen."
@@ -711,16 +929,19 @@ if [[ "$INSTALL_MUSICGEN" == "1" ]] && is_macos; then
   echo "   MusicGen:  ${HOME}/.portos/venv-musicgen/bin/python3 (separate venv, MLX runtime @ ${HOME}/.portos/mlx-examples/musicgen)"
 fi
 if [[ "$INSTALL_AUDIOLDM2" == "1" ]]; then
-  echo "   AudioLDM2: ${HOME}/.portos/venv-audioldm2/bin/python3 (separate venv, diffusers — long-form audio)"
+  echo "   AudioLDM2: ${AUDIOLDM2_PY} (separate venv, diffusers — long-form audio)"
 fi
 if [[ "$INSTALL_ACESTEP" == "1" ]]; then
-  echo "   ACE-Step:  ${HOME}/.portos/venv-acestep/bin/python3 (separate venv, acestep — full song + vocals)"
+  echo "   ACE-Step:  ${ACESTEP_PY} (separate venv, acestep — full song + vocals)"
+fi
+if [[ "$INSTALL_ACESTEP15" == "1" ]]; then
+  echo "   ACE-Step 1.5: ${ACESTEP15_PY} (separate venv, Transformers — full song + vocals)"
 fi
 if [[ "$INSTALL_MUSCRIPTOR" == "1" ]]; then
-  echo "   MuScriptor: ${HOME}/.portos/venv-muscriptor/bin/python3 (separate venv, muscriptor — audio → MIDI)"
+  echo "   MuScriptor: ${MUSCRIPTOR_PY} (separate venv, muscriptor — audio → MIDI)"
 fi
 if [[ "$INSTALL_FLUX2" == "1" ]]; then
-  echo "   FLUX.2:    ${HOME}/.portos/venv-flux2/bin/python3 (separate venv)"
+  echo "   FLUX.2:    ${FLUX2_PY} (separate venv)"
   echo "   Z-Image:   reuses the FLUX.2 venv (Apache 2.0, no HF login needed)"
   echo "   ERNIE:     reuses the FLUX.2 venv (Apache 2.0, no HF login needed)"
   echo ""

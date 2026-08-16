@@ -33,7 +33,7 @@ const EXPECTED_STAGE_OLD = {
   'pipeline-arc-overview.md': ['6a3ecab43d1f46b7ef9aab6c69ea0326', 'd34d72b8e49ba303d38607845dd87f1c', '0a1f6ffa6908522e3690c5e9e53a6ee0', '612f8b04950e2ff26dd350dd76a062fe', '74d6c26548660d85fc345b2099c63b6c', '648e11352cd1565aee490de1f662bef0'],
   'pipeline-arc-verify.md': ['52e31abc93e3105176236fcaa5d1575a', 'ff56d8387162017e08d5d0491060ddd6', '36aa70cdfc25d7549573a4d556e7702c', '83347e7d923580a3062033ab39b3c14b', '68f6956d7e09ebdb3870d8726b1b2a7a'],
   'pipeline-volume-verify.md': ['03f3c874cb80e1c98abcf03168fa7a92', 'c6ea28e972ad6e229bafb2d602b4dda3'],
-  'pipeline-arc-resolve.md': ['0611db539437083621e19bb88b005e8d', '0787128babf3c4c50e2f2cdb60214030', '5b340885c6e8f8afc63424d6b5bc7eb7', '87bc5c01f1a8a97b681727a38b05edc6', '8bb134554c122d1583c479ab3010e53d', '8e348f3d1894382889f9f0ee7d5c6792', '96f73a7e90526d65ef2bb100fb1cd4bf', 'a8677bbe1eb38f871fb152a5b0fec7c6', 'cc27b4da1d1a13c35e35d1c2d6183815', '31eca76b68f40de1b93734fe9bc9f4bb', '17fbb066d7957dc2e345df1795bb0d9d', 'ebd85d3a0b5949f16877c25ca498cce9'],
+  'pipeline-arc-resolve.md': ['0611db539437083621e19bb88b005e8d', '0787128babf3c4c50e2f2cdb60214030', '5b340885c6e8f8afc63424d6b5bc7eb7', '87bc5c01f1a8a97b681727a38b05edc6', '8bb134554c122d1583c479ab3010e53d', '8e348f3d1894382889f9f0ee7d5c6792', '96f73a7e90526d65ef2bb100fb1cd4bf', 'a8677bbe1eb38f871fb152a5b0fec7c6', 'cc27b4da1d1a13c35e35d1c2d6183815', '31eca76b68f40de1b93734fe9bc9f4bb', '17fbb066d7957dc2e345df1795bb0d9d', 'ebd85d3a0b5949f16877c25ca498cce9', '2349bce80e9df8caafa391a6106327b6'],
   'pipeline-script-verify.md': ['ed6c8101644cfe56a100eb6bfe3587f3'],
   'pipeline-extract-scenes.md': ['59fa5ee305ce53d91eb15224d8b546d3', 'c51fb208568d0d903eb43b437478b0ba'],
   'writers-room-places.md': ['24a33628cc94d80fa5ca60831d973daf', '7f1f80eb63d67a21161994cde115045e'],
@@ -52,6 +52,8 @@ const EXPECTED_STAGE_OLD = {
   'pipeline-series-generate.md': ['bc72731124a2bd6304362f4402c6305d'],
   'pipeline-character-foundation.md': ['f1c0b75a8161c0bc7f26752d148a5c1c', 'cda34127b40754ddbcc8544e3d82572b', 'd6c449c06de73a0868141c899b26e52c', '04419e382f3b46ed92bfaaa1d4f39e13'],
   'pipeline-judge-foundation.md': ['74c0244e641dcf7a73e9c83123ebdee9', '4c0bd349ff4d329048c9f4ac068745d4', 'edf7850d0c724c63761bc9fb667227d9', '02a8e9215ba534b333f3a29f11f3ac4f'],
+  'pipeline-observer.md': ['f3dc51ac077050a887c2161ee7438181'],
+  'pipeline-self-improve.md': ['ed0b0df42e0690d515b8dd88911931e4'],
 };
 const EXPECTED_STAGE_NEW = {
   'pipeline-idea-expansion.md': 'd6fa86a435f978336661dcabca67258f',
@@ -63,7 +65,7 @@ const EXPECTED_STAGE_NEW = {
   'pipeline-arc-overview.md': '5ed760caaf3cf88916ec28b220e2f590',
   'pipeline-arc-verify.md': '9f32e91bd33b97d30e1cbb2e697f4fc3',
   'pipeline-volume-verify.md': '49458d36700cb94e34806d536ffe2940',
-  'pipeline-arc-resolve.md': '2349bce80e9df8caafa391a6106327b6',
+  'pipeline-arc-resolve.md': 'aa2e463ebe0857859d79aa0c6ccb0256',
   'pipeline-script-verify.md': '722c62462d05462603cf67ca0ed1dee8',
   'pipeline-extract-scenes.md': '9f404b0c4721b23932a6d2dcfc1fba43',
   'writers-room-places.md': 'a7f68e51dd6b4421d20f5bd9d855d9b4',
@@ -82,6 +84,8 @@ const EXPECTED_STAGE_NEW = {
   'pipeline-series-generate.md': '21352c21ed6d4edb7a4b7c32704eff55',
   'pipeline-character-foundation.md': 'b7d2bac347e11171606f4c6acfcd32e1',
   'pipeline-judge-foundation.md': 'e44b6c50d741bbd21fc86f481684c410',
+  'pipeline-observer.md': '29e0212d2252b1be3278f20e2959eb8e',
+  'pipeline-self-improve.md': '95b378832ff78e5976a6a63fcf328090',
 };
 const EXPECTED_PARTIAL_OLD = {
   'bible-deference.md': ['218f0e85643609ed85a12b1ccc7b5a8d'],

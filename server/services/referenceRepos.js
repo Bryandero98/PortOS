@@ -652,6 +652,9 @@ export async function triggerReferenceAnalysis(app, ref, snapshot) {
       // Without this the TUI idle reaper records a run that did its whole job as
       // `idle-no-changes` failure (#3102).
       worktreeChangesExpected: isFileTracker(workTracker.resolved),
+      // A multi-line payload here is the agent PROMPT, not the one-line human
+      // note — `cosTaskStore.addTask` routes it to `metadata.prompt` on write
+      // (#4153, server/lib/cosTaskPrompt.js).
       context: fullPrompt,
     },
     autoApproved: true,

@@ -10,6 +10,7 @@ import {
   moodBoardUpdateSchema,
   moodBoardItemCreateSchema,
   moodBoardItemUpdateSchema,
+  isVideoItemMediaKey,
 } from './moodBoardValidation.js';
 
 describe('moodBoardCreateSchema', () => {
@@ -59,6 +60,39 @@ describe('moodBoardItemCreateSchema', () => {
   it('rejects a text item with blank text', () => {
     expect(moodBoardItemCreateSchema.safeParse({ type: 'text', text: '   ' }).success).toBe(false);
   });
+  it('accepts a video item with a video mediaKey (#4188)', () => {
+    expect(moodBoardItemCreateSchema.safeParse({ type: 'video', mediaKey: 'video:upload-ab12cd34.mp4' }).success).toBe(true);
+  });
+  it('accepts a video item with a poster imageUrl alongside the mediaKey', () => {
+    expect(moodBoardItemCreateSchema.safeParse({
+      type: 'video', mediaKey: 'video:a.mp4', imageUrl: '/data/video-thumbnails/a.jpg',
+    }).success).toBe(true);
+  });
+  it('rejects a video item without a mediaKey', () => {
+    expect(moodBoardItemCreateSchema.safeParse({ type: 'video', imageUrl: '/data/video-thumbnails/a.jpg' }).success).toBe(false);
+  });
+  it('rejects a video item whose mediaKey is not kind video', () => {
+    expect(moodBoardItemCreateSchema.safeParse({ type: 'video', mediaKey: 'image:a.png' }).success).toBe(false);
+  });
+  it('rejects a video item whose ref is a bare id (no extension) — it would 404 as a filename', () => {
+    expect(moodBoardItemCreateSchema.safeParse({ type: 'video', mediaKey: 'video:job-123' }).success).toBe(false);
+  });
+});
+
+describe('isVideoItemMediaKey', () => {
+  it('accepts a filename-with-extension video key', () => {
+    expect(isVideoItemMediaKey('video:upload-ab12cd34.mp4')).toBe(true);
+    expect(isVideoItemMediaKey('video:clip.webm')).toBe(true);
+  });
+  it('rejects non-video kinds, extension-less refs, and traversal shapes', () => {
+    expect(isVideoItemMediaKey('image:a.png')).toBe(false);
+    expect(isVideoItemMediaKey('video:job-123')).toBe(false);
+    expect(isVideoItemMediaKey('video:..')).toBe(false);
+    expect(isVideoItemMediaKey('video:a/b.mp4')).toBe(false);
+    expect(isVideoItemMediaKey('video:a\\b.mp4')).toBe(false);
+    expect(isVideoItemMediaKey(null)).toBe(false);
+    expect(isVideoItemMediaKey('')).toBe(false);
+  });
 });
 
 describe('moodBoardItemUpdateSchema', () => {
@@ -67,5 +101,28 @@ describe('moodBoardItemUpdateSchema', () => {
   });
   it('accepts a null caption (clear)', () => {
     expect(moodBoardItemUpdateSchema.parse({ caption: null }).caption).toBeNull();
+  });
+  it('accepts a full and a minimal analysis patch (#4188 Phase 3)', () => {
+    const full = moodBoardItemUpdateSchema.parse({
+      analysis: {
+        prompt: 'a moody castle at dusk',
+        negativePrompt: 'blurry',
+        rationale: 'gothic look',
+        providerId: 'openai',
+        model: 'gpt-4o',
+        analyzedAt: '2026-08-14T00:00:00.000Z',
+      },
+    });
+    expect(full.analysis.prompt).toBe('a moody castle at dusk');
+    expect(moodBoardItemUpdateSchema.parse({ analysis: { prompt: 'p' } }).analysis.prompt).toBe('p');
+  });
+  it('accepts a null analysis (clear)', () => {
+    expect(moodBoardItemUpdateSchema.parse({ analysis: null }).analysis).toBeNull();
+  });
+  it('rejects an analysis without a prompt, with unknown keys, or with a non-ISO analyzedAt', () => {
+    expect(() => moodBoardItemUpdateSchema.parse({ analysis: {} })).toThrow();
+    expect(() => moodBoardItemUpdateSchema.parse({ analysis: { prompt: '   ' } })).toThrow();
+    expect(() => moodBoardItemUpdateSchema.parse({ analysis: { prompt: 'p', extra: true } })).toThrow();
+    expect(() => moodBoardItemUpdateSchema.parse({ analysis: { prompt: 'p', analyzedAt: 'yesterday' } })).toThrow();
   });
 });

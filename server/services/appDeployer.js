@@ -1,8 +1,9 @@
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { NON_PM2_TYPES } from './streamingDetect.js';
 import { getAppById } from './apps.js';
+import { resolveBashBinary } from '../lib/bashResolver.js';
 
 export const DEPLOY_FLAGS = ['--ios', '--macos', '--watch', '--all', '--skip-tests'];
 const VALID_FLAGS = new Set(DEPLOY_FLAGS);
@@ -63,10 +64,11 @@ export function deployApp(app, flags, emit) {
   };
 
   return new Promise((resolve) => {
-    const child = spawn('bash', ['deploy.sh', ...safeFlags], {
+    // Not a bare `bash`: under PM2 on Windows that often resolves to WSL, which
+    // would run the app's deploy against a Linux toolchain (see bashResolver.js).
+    const child = spawn(resolveBashBinary(), ['deploy.sh', ...safeFlags], {
       cwd: dir,
       shell: false,
-      windowsHide: true,
       env: { ...process.env, FORCE_COLOR: '0' }
     });
 

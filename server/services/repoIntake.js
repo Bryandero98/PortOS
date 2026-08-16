@@ -69,6 +69,8 @@ Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow
   const result = await cos.addTask(
     {
       description: `Malware scan: ${repoLabel(link)}`,
+      // Multi-line ⇒ the agent PROMPT: `cosTaskStore.addTask` routes it to
+      // `metadata.prompt` on write (#4153, server/lib/cosTaskPrompt.js).
       context,
       slashdoCommand: 'scan',
       slashdoArgs: `--report-path-allow-anywhere --report-path ${JSON.stringify(reportPath)}`,

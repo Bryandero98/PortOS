@@ -354,6 +354,7 @@ export default function MediaCollectionDetail() {
           if (e.key === 'Escape') { setNameDraft(collection.name); setEditingName(false); }
         }}
         maxLength={80}
+        aria-label="Collection name"
         className="text-xl font-semibold bg-port-card border border-port-border rounded px-2 py-1 text-white focus:outline-none focus:border-port-accent"
       />
     );
@@ -524,7 +525,7 @@ export default function MediaCollectionDetail() {
                   item={item}
                   onPreview={selectMode ? undefined : setPreview}
                   onClick={selectMode ? () => toggleSelect(key) : undefined}
-                  onRemix={!selectMode && item.kind === 'image' ? handleRemix : undefined}
+                  onRemix={!selectMode ? handleRemix : undefined}
                   onSendToImage={!selectMode && item.kind === 'image' ? handleSendToImage : undefined}
                   onSendToVideo={!selectMode && item.kind === 'image' ? handleSendToVideo : undefined}
                   onContinue={!selectMode && item.kind === 'video' ? handleContinue : undefined}

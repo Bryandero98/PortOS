@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
+import { join, resolve } from 'path';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import { DEFAULT_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
@@ -24,7 +25,7 @@ const installProcess = vi.hoisted(() => {
   };
   return { spawn, makeChild };
 });
-vi.mock('child_process', async (importOriginal) => ({
+vi.mock('../lib/childProcess.js', async (importOriginal) => ({
   ...(await importOriginal()),
   spawn: installProcess.spawn,
 }));
@@ -56,6 +57,9 @@ vi.mock('../services/tracks/index.js', () => ({
 vi.mock('../lib/pythonSetup.js', () => ({
   checkPackages: vi.fn(async () => ({ installed: ['mflux', 'mlx'], missing: [], missingPip: [] })),
   isAllowedPython: vi.fn(() => true),
+  detectPythonSync: vi.fn(() => null),
+  // setupScriptRunner presets PYTHON_BIN from the venv-base picker on Windows.
+  detectVenvBasePythonSync: vi.fn(() => null),
 }));
 
 vi.mock('../services/videoGen/local.js', () => ({
@@ -66,6 +70,7 @@ vi.mock('../services/videoGen/local.js', () => ({
   listVideoModels: vi.fn(() => [{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]),
   defaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   loadHistory: vi.fn(async () => []),
+  getHistoryItem: vi.fn(async () => null),
   deleteHistoryItem: vi.fn(async (id) => ({ ok: true, id })),
   // The route imports setHistoryItemHidden too — without this entry, ESM
   // module linking fails when the route is loaded inside the test process.
@@ -94,6 +99,13 @@ vi.mock('../services/videoGen/local.js', () => ({
       installEnvVar: 'INSTALL_MINIMAX_H3', pinEnvVar: 'MINIMAX_H3_PIN',
       expectedRevision: 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49',
       repoUrl: 'x', repoDir: '/tmp',
+    },
+    // No `expectedRevision`: this runtime is installed wheels, not a checkout,
+    // which is why it carries an installSourceLabel instead of a clone URL.
+    minimax_h3_cuda: {
+      id: 'minimax_h3_cuda', label: 'MiniMax H3 CUDA', venvPython: '/tmp/minimax-h3-cuda.py',
+      installEnvVar: 'INSTALL_MINIMAX_H3_CUDA', repoUrl: 'x', repoDir: '/tmp',
+      installSourceLabel: 'pinned PyPI wheels',
     },
     ltx2: { id: 'ltx2', label: 'LTX-2 MLX', venvPython: '/tmp/ltx2.py', installEnvVar: 'INSTALL_LTX2', repoUrl: 'x', repoDir: '/tmp' },
     wan22: {
@@ -388,6 +400,20 @@ describe('videoGen routes', () => {
       });
       expect(videoGenService.isByovRuntimeReady).not.toHaveBeenCalled();
     });
+
+    // The install banner renders "PortOS can fetch and install it from X". For a
+    // runtime that clones its repoUrl, X is that URL; for minimax_h3_cuda the
+    // repoUrl is DOCUMENTATION (there is no checkout, only a venv), so the label
+    // has to reach the client or the banner tells the user PortOS downloads the
+    // runtime from a docs page.
+    it.each([
+      ['wan22', undefined],
+      ['minimax_h3_cuda', 'pinned PyPI wheels'],
+    ])('surfaces the install source label for %s', async (runtime, expected) => {
+      const r = await request(app).get(`/api/video-gen/setup/runtime-status?runtime=${runtime}`);
+      expect(r.status).toBe(200);
+      expect(r.body.installSourceLabel).toBe(expected);
+    });
   });
 
   describe('GET /setup/runtime-install', () => {
@@ -416,17 +442,19 @@ describe('videoGen routes', () => {
       expect(r.status).toBe(200);
       expect(r.text).toContain('"type":"complete"');
       expect(r.text).toContain('Wan 2.2 MLX ready');
-      expect(installProcess.spawn).toHaveBeenCalledWith(
-        'bash',
-        ['/mock/scripts/setup-image-video.sh'],
-        expect.objectContaining({
-          detached: true,
-          env: expect.objectContaining({
-            INSTALL_WAN22: '1',
-            WAN22_PIN: '2452f0c12edcc8886eebf15772205ce9c417a618',
-          }),
+      const [bin, argv, opts] = installProcess.spawn.mock.calls.at(-1);
+      // A bash, but never the WSL one PM2's PATH may resolve first, and never a
+      // backslash path — bash reads those as escapes and exits 127.
+      expect(bin).toMatch(/bash(.exe)?$/i);
+      expect(bin.toLowerCase()).not.toContain('system32');
+      expect(argv).toEqual(['/mock/scripts/setup-image-video.sh']);
+      expect(opts).toMatchObject({
+        detached: process.platform !== 'win32',
+        env: expect.objectContaining({
+          INSTALL_WAN22: '1',
+          WAN22_PIN: '2452f0c12edcc8886eebf15772205ce9c417a618',
         }),
-      );
+      });
     });
   });
 
@@ -449,8 +477,11 @@ describe('videoGen routes', () => {
       termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
       supportedModes: ['text'],
       defaultFrames: 124,
-      frameOptions: [124, 141, 158],
+      frameOptions: [107, 124, 141, 158],
       fpsOptions: [24],
+      defaultWidth: 1344,
+      defaultHeight: 768,
+      resolutionStep: 32,
       steps: 8,
       guidance: 0,
       samplerLocked: true,
@@ -461,28 +492,8 @@ describe('videoGen routes', () => {
       }],
     };
 
-    it('rejects a download until the install has recorded this exact acknowledgement', async () => {
-      const { getSettings } = await import('../services/settings.js');
-      videoGenService.listVideoModels.mockReturnValueOnce([h3]).mockReturnValueOnce([h3]);
-
-      const missing = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
-      expect(missing.status).toBe(403);
-      expect(missing.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
-      // The message is the only channel a blocked caller has, so it must point
-      // at where the acknowledgement is made.
-      expect(missing.body.error).toMatch(/Video Gen page/);
-
-      // A superseded license revision is not this one.
-      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: ['minimax-h3-community-license-2025-01-01'] } });
-      const stale = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
-      expect(stale.status).toBe(403);
-      expect(stale.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
-    });
-
-    it('downloads both exact snapshots once the acknowledgement is recorded', async () => {
-      const { getSettings } = await import('../services/settings.js');
+    it('downloads both exact snapshots without a recorded acknowledgement', async () => {
       videoGenService.listVideoModels.mockReturnValueOnce([h3]);
-      getSettings.mockResolvedValueOnce({ videoGen: { acceptedModelTerms: [h3.termsGate.id] } });
       const accepted = await request(app).get('/api/video-gen/models/minimax_h3_8bit/download');
       expect(accepted.status).toBe(200);
       expect(sseDownload.start).toHaveBeenCalledWith(expect.objectContaining({
@@ -501,39 +512,30 @@ describe('videoGen routes', () => {
       }));
     });
 
-    // The install-wide acknowledgement is what makes a single "I accept" click
-    // authorize every other surface — the music video board, a pipeline stage,
-    // an agent run — instead of each one 403ing with no UI to resolve it. It is
-    // also the ONLY authorization: a request cannot assert its own acceptance,
-    // so nothing renders without a recorded acknowledgement to withdraw.
-    it('queues the render on the recorded acknowledgement, and never on a self-asserted key', async () => {
-      const { getSettings } = await import('../services/settings.js');
+    it('queues an H3 render without a recorded acknowledgement', async () => {
       videoGenService.listVideoModels.mockReturnValue([h3]);
-      getSettings.mockResolvedValueOnce({
-        imageGen: { local: { pythonPath: '/usr/bin/python3' } },
-        videoGen: { acceptedModelTerms: [h3.termsGate.id] },
-      });
       const render = await request(app).post('/api/video-gen/').send({
         prompt: 'a fox watches the rain',
         modelId: h3.id,
         mode: 'text',
+        numFrames: 107,
+        fps: 24,
+        width: 1536,
+        height: 672,
       });
       expect(render.status).toBe(200);
-      // Nothing about the acceptance rides the job: the render re-resolves it
-      // from settings, so a withdrawal reaches work already in the queue.
       expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
         kind: 'video',
-        params: expect.not.objectContaining({ termsAcceptance: expect.anything() }),
+        params: expect.objectContaining({
+          modelId: h3.id,
+          numFrames: 107,
+          fps: 24,
+          width: 1536,
+          height: 672,
+        }),
       }));
-
-      const asserted = await request(app).post('/api/video-gen/').send({
-        prompt: 'a fox watches the rain',
-        modelId: h3.id,
-        mode: 'text',
-        termsAcceptance: h3.termsGate.id,
-      });
-      expect(asserted.status).toBe(403);
-      expect(asserted.body.code).toBe('VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED');
+      expect(mediaJobQueue.enqueueJob.mock.calls.at(-1)[0].params)
+        .not.toHaveProperty('termsAcceptance');
       videoGenService.listVideoModels.mockReset();
     });
   });
@@ -696,6 +698,10 @@ describe('videoGen routes', () => {
         'seed',
         'imageStrength',
         'tiling',
+        // Not in the it.each table above: the route deliberately DROPS the
+        // stock value from persisted params, so the generic round-trip
+        // assertion can't cover it. Its own case is below.
+        'textEncoderId',
       ]);
       const { getSettings } = await import('../services/settings.js');
       getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
@@ -704,6 +710,21 @@ describe('videoGen routes', () => {
       const [call] = mediaJobQueue.enqueueJob.mock.calls;
       expect(call[0].params.mode).not.toBe('grok');
       expect(call[0].params[param]).toBe(value);
+    });
+
+    // grok has no conditioner knob, so naming one must keep the render local —
+    // even for the stock id, which the route then drops from persisted params
+    // (an unswapped render's job params stay byte-identical to a request that
+    // never sent the field). Both halves matter: keeping it local without
+    // dropping it would persist a knob that never applied.
+    it('keeps textEncoderId on the local path under a grok pin, without persisting the stock value', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', textEncoderId: 'stock' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.textEncoderId).toBeUndefined();
     });
 
     it('a grok pin degrades to local when the request carries local-only machinery', async () => {
@@ -1365,12 +1386,12 @@ describe('videoGen routes', () => {
         params: expect.objectContaining({
           mode: 'a2v',
           // audio is staged into PATHS.uploads with the video-audio prefix
-          audioFilePath: expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          audioFilePath: expect.stringMatching(/[\\/]mock[\\/]uploads[\\/]video-audio-.*\.wav$/),
           // and threaded into uploadedTempPaths (array) for worker cleanup —
           // uploadedTempPath (singular) stays reserved for the start-frame
           // upload so legacy persisted jobs replay correctly.
           uploadedTempPaths: expect.arrayContaining([
-            expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+            expect.stringMatching(/[\\/]mock[\\/]uploads[\\/]video-audio-.*\.wav$/),
           ]),
         }),
       }));
@@ -1401,9 +1422,9 @@ describe('videoGen routes', () => {
           sourceImagePath: '/mock/images/reference.png',
           audioStartSec: 42.5,
           disableAudio: true,
-          audioFilePath: expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          audioFilePath: expect.stringMatching(/[\\/]mock[\\/]uploads[\\/]video-audio-.*\.wav$/),
           uploadedTempPaths: expect.arrayContaining([
-            expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+            expect.stringMatching(/[\\/]mock[\\/]uploads[\\/]video-audio-.*\.wav$/),
           ]),
           musicVideo: { projectId: 'mv-example', sceneId: 'scene-example' },
         }),
@@ -1518,10 +1539,10 @@ describe('videoGen routes', () => {
           params: expect.objectContaining({
             mode: 'ic-control',
             icStrength: 0.8,
-            icReferencePaths: [expect.stringMatching(/\/mock\/uploads\/video-ic-ref-.*\.mp4$/)],
+            icReferencePaths: [expect.stringMatching(/[\\/]mock[\\/]uploads[\\/]video-ic-ref-.*\.mp4$/)],
             // Tracked for worker cleanup the same way the audio upload is.
             uploadedTempPaths: expect.arrayContaining([
-              expect.stringMatching(/\/mock\/uploads\/video-ic-ref-.*\.mp4$/),
+              expect.stringMatching(/[\\/]mock[\\/]uploads[\\/]video-ic-ref-.*\.mp4$/),
             ]),
             // Chaining is meaningless for a reference-anchored render.
             chunks: 1,
@@ -1538,7 +1559,7 @@ describe('videoGen routes', () => {
         expect(r.status).toBe(200);
         expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
           params: expect.objectContaining({
-            icReferencePaths: [`/mock/videos/${id}.mp4`],
+            icReferencePaths: [resolve('/mock/videos', `${id}.mp4`)],
           }),
         }));
       });
@@ -1778,7 +1799,7 @@ describe('videoGen routes', () => {
     // Durable copies live under PATHS.uploads (mocked to /mock/uploads); the
     // multipart temp files live under /tmp. Splitting them keeps the
     // "durable survives" assertion below from being satisfied by a temp unlink.
-    const durableUnlinks = () => unlinkedPaths().filter((p) => p.startsWith('/mock/uploads/'));
+    const durableUnlinks = () => unlinkedPaths().filter((p) => /^[\\/]mock[\\/]uploads[\\/]/.test(p));
 
     it('unlinks the half-written destination AND every earlier staged copy when copyFile rejects', async () => {
       // sourceImage stages fine, audioFile's copy blows up — the failure has
@@ -1799,9 +1820,9 @@ describe('videoGen routes', () => {
       const unlinked = unlinkedPaths();
       expect(unlinked).toEqual(expect.arrayContaining([
         // the destination the failed copy may have partially written
-        expect.stringMatching(/^\/mock\/uploads\/video-audio-[^/]+\.wav$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-audio-[^\\/]+\.wav$/),
         // …and the durable copy staged before it (stagedDurablePaths)
-        expect.stringMatching(/^\/mock\/uploads\/video-source-[^/]+\.png$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-source-[^\\/]+\.png$/),
         // …and both multipart temp files
         sourceUpload.path,
         audioUpload.path,
@@ -1822,7 +1843,7 @@ describe('videoGen routes', () => {
       expect(r.body.code).toBe('NOT_FOUND');
       expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
       expect(unlinkedPaths()).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^\/mock\/uploads\/video-source-[^/]+\.png$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-source-[^\\/]+\.png$/),
         sourceUpload.path,
       ]));
     });
@@ -1840,8 +1861,8 @@ describe('videoGen routes', () => {
       expect(r.body.code).toBe('KEYFRAMES_MODE_MISMATCH');
       expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
       expect(unlinkedPaths()).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^\/mock\/uploads\/video-source-[^/]+\.png$/),
-        expect.stringMatching(/^\/mock\/uploads\/video-ic-ref-[^/]+\.mp4$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-source-[^\\/]+\.png$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-ic-ref-[^\\/]+\.mp4$/),
         sourceUpload.path,
         icUpload.path,
       ]));
@@ -1862,8 +1883,8 @@ describe('videoGen routes', () => {
       expect(r.body.code).toBe('KEYFRAMES_LEGACY_INPUTS_CONFLICT');
       expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
       expect(unlinkedPaths()).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^\/mock\/uploads\/video-source-[^/]+\.png$/),
-        expect.stringMatching(/^\/mock\/uploads\/video-last-[^/]+\.png$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-source-[^\\/]+\.png$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-last-[^\\/]+\.png$/),
         sourceUpload.path,
         lastImageUpload.path,
       ]));
@@ -1882,7 +1903,7 @@ describe('videoGen routes', () => {
       // skipped altogether — there'd be no durable path to unlink.
       expect(copyFile).toHaveBeenCalledWith(
         sourceUpload.path,
-        expect.stringMatching(/^\/mock\/uploads\/video-source-[^/]+\.png$/),
+        expect.stringMatching(/^[\\/]mock[\\/]uploads[\\/]video-source-[^\\/]+\.png$/),
       );
       const [, durableDest] = copyFile.mock.calls[0];
       expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
@@ -2089,12 +2110,67 @@ describe('videoGen routes', () => {
     });
   });
 
+  describe('GET /history/:id', () => {
+    // The point of the route (#4165): a timeline render's history id is a
+    // randomUUID() that has nothing to do with its `timeline-*.mp4` filename,
+    // so a client holding only the id learns the real file from HERE instead of
+    // downloading the whole history list to find one row.
+    it('returns the one entry, resolving an id whose filename is unrelated to it', async () => {
+      const entry = { id: 'final-1', filename: 'timeline-abcd1234-1700000000000.mp4', thumbnail: 'final-1.jpg' };
+      videoGenService.getHistoryItem.mockResolvedValueOnce(entry);
+      const r = await request(app).get('/api/video-gen/history/final-1');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual(entry);
+      expect(videoGenService.getHistoryItem).toHaveBeenCalledWith('final-1');
+      // Never the full list — that fan-out is exactly what this replaced.
+      expect(videoGenService.loadHistory).not.toHaveBeenCalled();
+    });
+
+    it('404s for an id that is not in history', async () => {
+      videoGenService.getHistoryItem.mockResolvedValueOnce(null);
+      const r = await request(app).get('/api/video-gen/history/gone-1');
+      expect(r.status).toBe(404);
+      expect(videoGenService.getHistoryItem).toHaveBeenCalledWith('gone-1');
+    });
+
+    it('decodes a percent-encoded id before looking it up', async () => {
+      videoGenService.getHistoryItem.mockResolvedValueOnce(null);
+      await request(app).get(`/api/video-gen/history/${encodeURIComponent('a b/c')}`);
+      expect(videoGenService.getHistoryItem).toHaveBeenCalledWith('a b/c');
+    });
+
+    it('rejects an absurdly long id without touching the service', async () => {
+      const r = await request(app).get(`/api/video-gen/history/${'x'.repeat(201)}`);
+      expect(r.status).toBe(400);
+      expect(videoGenService.getHistoryItem).not.toHaveBeenCalled();
+    });
+  });
+
   describe('DELETE /history/:id', () => {
     it('proxies to deleteHistoryItem', async () => {
       videoGenService.deleteHistoryItem.mockResolvedValue({ ok: true, id: 'abc' });
       const r = await request(app).delete('/api/video-gen/history/abc');
       expect(r.status).toBe(200);
       expect(videoGenService.deleteHistoryItem).toHaveBeenCalledWith('abc');
+    });
+  });
+
+  describe('POST /last-frame/:id', () => {
+    it('forwards a shared-gallery upload id to extractLastFrame', async () => {
+      const uploadId = 'upload-ab12cd34';
+      videoGenService.extractLastFrame.mockResolvedValue({ filename: `lastframe-${uploadId}.png` });
+
+      const r = await request(app).post(`/api/video-gen/last-frame/${uploadId}`).send({});
+
+      expect(r.status).toBe(200);
+      expect(videoGenService.extractLastFrame).toHaveBeenCalledWith(uploadId);
+    });
+
+    it('rejects malformed ids before extracting a frame', async () => {
+      const r = await request(app).post('/api/video-gen/last-frame/not-a-history-id').send({});
+
+      expect(r.status).toBe(400);
+      expect(videoGenService.extractLastFrame).not.toHaveBeenCalled();
     });
   });
 
@@ -2124,13 +2200,21 @@ describe('videoGen routes', () => {
       expect(r.body.video.id).toBe('s1');
       expect(videoGenService.stitchVideos).toHaveBeenCalledWith([validId(1), validId(2)]);
     });
+
+    it('accepts a shared-gallery upload history id', async () => {
+      videoGenService.stitchVideos.mockResolvedValue({ id: 's1', filename: 's1.mp4' });
+      const uploadId = 'upload-ab12cd34';
+      const r = await request(app).post('/api/video-gen/stitch').send({ videoIds: [uploadId, validId(2)] });
+      expect(r.status).toBe(200);
+      expect(videoGenService.stitchVideos).toHaveBeenCalledWith([uploadId, validId(2)]);
+    });
   });
 
   describe('POST /upscale/:id', () => {
     const validHistoryId = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaa1';
     const otherValidId = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbb2';
 
-    it('rejects history ids that do not match the UUID shape', async () => {
+    it('rejects history ids outside known render and upload shapes', async () => {
       const r = await request(app).post('/api/video-gen/upscale/not-a-uuid').send({});
       expect(r.status).toBe(400);
       expect(videoGenService.upscaleHistoryItem).not.toHaveBeenCalled();
@@ -2144,6 +2228,14 @@ describe('videoGen routes', () => {
       expect(r.body.ok).toBe(true);
       expect(r.body.video).toEqual(upscaled);
       expect(videoGenService.upscaleHistoryItem).toHaveBeenCalledWith(validHistoryId);
+    });
+
+    it('forwards a shared-gallery upload id to upscaleHistoryItem', async () => {
+      const uploadId = 'upload-ab12cd34';
+      videoGenService.upscaleHistoryItem.mockResolvedValue({ id: otherValidId, filename: `${otherValidId}.mp4`, upscaledFrom: uploadId });
+      const r = await request(app).post(`/api/video-gen/upscale/${uploadId}`).send({});
+      expect(r.status).toBe(200);
+      expect(videoGenService.upscaleHistoryItem).toHaveBeenCalledWith(uploadId);
     });
 
     it('returns the ServerError status when the service rejects', async () => {

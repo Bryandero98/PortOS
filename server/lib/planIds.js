@@ -23,30 +23,13 @@
  */
 
 import { execGit } from './execGit.js';
-import { spawn } from 'child_process';
+import { stripMarkdownEmphasis } from './markdownText.js';
+import { spawn } from './childProcess.js';
 
 const SLUG_MAX_LEN = 50;
 const CHECKBOX_RE = /^(?<indent>\s*)-\s+\[(?<box>[ xX])\]\s+(?:\[(?<id>[a-z0-9][a-z0-9-]*)\]\s+)?(?<rest>.*)$/;
 const NEEDS_INPUT_RE = /<!--\s*NEEDS_INPUT\s*-->/;
 const DRIFT_LINE_RE = /^\s*>\s*⚠️\s*DRIFT:/;
-
-/**
- * Strip common markdown wrappers from a title fragment.
- * - `**bold**`     → `bold`
- * - `~~struck~~`   → `struck`
- * - `` `code` ``   → `code`
- * - `[text](url)`  → `text`
- * - HTML comments  → removed
- */
-function stripMarkdown(text) {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/[*_~]/g, ' ');
-}
 
 /**
  * Lowercase + kebab-case a string, ASCII-only, collapse repeats.
@@ -77,7 +60,7 @@ function truncateOnBoundary(slug, max) {
  */
 export function slugify(title, takenIds = new Set()) {
   const taken = takenIds instanceof Set ? takenIds : new Set(takenIds);
-  const base = truncateOnBoundary(kebab(stripMarkdown(String(title || ''))), SLUG_MAX_LEN) || 'item';
+  const base = truncateOnBoundary(kebab(stripMarkdownEmphasis(title)), SLUG_MAX_LEN) || 'item';
   if (!taken.has(base)) return base;
   // Collision: append -2, -3, ... — keep the suffix inside SLUG_MAX_LEN.
   for (let n = 2; n < 10000; n++) {
@@ -251,8 +234,7 @@ export function listOpenPullRequestHeadRefs(repoPath) {
   return new Promise(resolve => {
     const child = spawn('gh', ['pr', 'list', '--state', 'open', '--json', 'headRefName', '-q', '.[].headRefName'], {
       cwd: repoPath,
-      shell: false,
-      windowsHide: true
+      shell: false
     });
     let out = '';
     let settled = false;

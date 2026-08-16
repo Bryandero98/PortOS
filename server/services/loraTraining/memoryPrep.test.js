@@ -15,12 +15,12 @@ const h = vi.hoisted(() => ({
   vmStatThrows: false,
 }));
 
-vi.mock('../ollamaManager.js', () => ({
+vi.mock('../../services/ollamaManager.js', () => ({
   getLoadedModels: vi.fn(async () => h.ollamaLoaded),
   unloadModel: (...a) => h.ollamaUnload(...a),
   getBaseUrl: () => h.ollamaUrl,
 }));
-vi.mock('../lmStudioManager.js', () => ({
+vi.mock('../../services/lmStudioManager.js', () => ({
   getLoadedModels: vi.fn(async () => h.lmLoaded),
   unloadModel: (...a) => h.lmUnload(...a),
   getBaseUrl: () => h.lmUrl,
@@ -30,7 +30,7 @@ vi.mock('os', () => ({
   totalmem: () => h.totalBytes,
   freemem: () => h.freeBytes,
 }));
-vi.mock('child_process', () => ({
+vi.mock('../../lib/childProcess.js', () => ({
   execFile: (_cmd, cb) => {
     if (h.vmStatThrows) return cb(new Error('vm_stat missing'));
     return cb(null, h.vmStat);

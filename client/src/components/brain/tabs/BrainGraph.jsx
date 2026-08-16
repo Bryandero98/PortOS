@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import {AlertTriangle, Zap, RefreshCw, X, ChevronRight, ArrowLeft, Compass, Info} from 'lucide-react';
@@ -7,10 +7,13 @@ import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
 import { BRAIN_TYPE_HEX, DESTINATIONS } from '../constants';
 import { buildGraph } from '../../../lib/graphSimulation';
+import { pickNearestNodeByScreenDistance, isTapGesture } from '../../../lib/graphPicking';
 import { pushFocus, popFocus, currentFocusId } from '../../../lib/brainGraphFocus';
 import EntityCombobox from '../../EntityCombobox';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import BrailleSpinner from '../../BrailleSpinner';
+import useHoverTooltip from '../../../hooks/useHoverTooltip';
+import useFirstTouchHint from '../../../hooks/useFirstTouchHint';
 import { formatDateNumeric } from '../../../utils/formatters';
 
 const EDGE_COLORS = {
@@ -19,7 +22,15 @@ const EDGE_COLORS = {
   linked: '#ffffff'
 };
 
-const BRAIN_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'goals', 'journals'];
+const BRAIN_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'songs', 'goals', 'journals'];
+
+// Only a gesture on the WebGL canvas itself picks a node. The overlay chrome —
+// "Clear selection", the legend toggle, the loading veil — sits INSIDE the same
+// wrapper the touch handlers are bound to, so its taps bubble there too; without
+// this, tapping the legend toggle would also select whichever node happens to
+// project nearest that corner. (r3f binds its own listeners to the canvas, so
+// the mouse path never had this problem.)
+const isCanvasGesture = (e) => e.target?.tagName === 'CANVAS';
 
 // Widest the hover tooltip renders. Single source for both its max-width and
 // the clamp that keeps it inside the viewport — as a CSS class plus a mirrored
@@ -34,7 +45,23 @@ const TYPE_GETTERS = {
   admin: api.getBrainAdminItem,
   memories: api.getBrainMemory,
   goals: api.getBrainGoal,
-  journals: api.getBrainJournalEntry
+  journals: api.getBrainJournalEntry,
+  songs: api.getSong
+};
+
+// Prose body for the detail panel, in the order the panel prefers it. Every
+// candidate is type-checked rather than `||`-chained straight through: a
+// SongBook record's `content` is an OBJECT (`{ format, text }`), not a string,
+// and handing that to React throws "Objects are not valid as a React child".
+// Mirrors `entitySummary` in server/services/brainGraph.js — the panel falls
+// back to the node's server-computed summary, so the two must agree on which
+// field a record reads as.
+const BODY_FIELDS = ['description', 'context', 'oneLiner', 'artist', 'notes', 'content'];
+export const recordBody = (record) => {
+  for (const field of BODY_FIELDS) {
+    if (typeof record?.[field] === 'string' && record[field]) return record[field];
+  }
+  return '';
 };
 
 function GraphEdges({ simEdges, selectedId }) {
@@ -77,14 +104,36 @@ function GraphEdges({ simEdges, selectedId }) {
 }
 
 // Memoized: the container's onPointerMove re-renders BrainGraph on every mouse
-// move over the canvas (it tracks the tooltip position), and every prop here is
-// already identity-stable across that render — so without memo each move
-// reconciles a <mesh> per node for nothing.
-const GraphScene = memo(function GraphScene({ graph, selectedId, adjacentIds, onSelect, onFocus, onHover }) {
+// move over the canvas WHILE A NODE IS HOVERED (it tracks the tooltip position),
+// and every prop here is already identity-stable across that render — so without
+// memo each move reconciles a <mesh> per node for nothing.
+const GraphScene = memo(function GraphScene({ graph, selectedId, adjacentIds, onSelect, onFocus, onHover, pickRef, touchGestureRef }) {
   const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 16, 12), []);
+  const { camera, size } = useThree();
 
   const selNode = selectedId ? graph.idMap.get(selectedId) : null;
   const selRadius = selNode ? 0.4 + (selNode.importance ?? 0.5) * 0.8 : 0;
+
+  // Publish a live screen-space pick to the DOM wrapper, which owns the touch
+  // gesture (see the tap handler in BrainGraph). The camera object is stable
+  // across orbiting, so the matrices are read at tap time, not captured here.
+  useEffect(() => {
+    if (!pickRef) return;
+    pickRef.current = (point) => {
+      camera.updateMatrixWorld();
+      const viewProjection = new THREE.Matrix4()
+        .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+        .elements;
+      return pickNearestNodeByScreenDistance({
+        nodes: graph.simNodes,
+        viewProjection,
+        width: size.width,
+        height: size.height,
+        point
+      });
+    };
+    return () => { pickRef.current = null; };
+  }, [camera, graph, size.width, size.height, pickRef]);
 
   return (
     <>
@@ -107,9 +156,21 @@ const GraphScene = memo(function GraphScene({ graph, selectedId, adjacentIds, on
             geometry={sphereGeo}
             scale={radius}
             position={[node.x, node.y, node.z]}
-            onClick={(e) => { e.stopPropagation(); onSelect(node); }}
+            // Touch selection is owned by the wrapper's threshold pick, which
+            // fires on `pointerup` — ahead of the compatibility `click` r3f
+            // raycasts here — so a tap that lands on a mesh must not toggle the
+            // same node a second time. `click` is a MouseEvent with no
+            // `pointerType` after a touch, hence the recorded gesture ref.
+            onClick={(e) => {
+              e.stopPropagation();
+              if (touchGestureRef?.current) return;
+              onSelect(node);
+            }}
             onDoubleClick={(e) => { e.stopPropagation(); onFocus(node); }}
-            onPointerOver={(e) => { e.stopPropagation(); onHover(node); }}
+            // Pass the enter event's coordinates up: the wrapper's onPointerMove
+            // only tracks the cursor WHILE a node is hovered, so the tooltip's
+            // first frame has to be placed from this event.
+            onPointerOver={(e) => { e.stopPropagation(); onHover(node, { x: e.clientX, y: e.clientY }); }}
             onPointerOut={() => onHover(null)}
           >
             <meshStandardMaterial
@@ -138,8 +199,10 @@ export default function BrainGraph() {
   const [subLoading, setSubLoading] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
   const [fullRecord, setFullRecord] = useState(null);
-  const [hoveredNode, setHoveredNode] = useState(null);
-  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  // Hover tooltip state + the ref-gated pointer tracking that keeps a plain
+  // mouse move from re-rendering this component when nothing can paint.
+  const { hoveredNode, tooltipPos, handleHover, handlePointerMove } = useHoverTooltip();
+  const { visible: touchHintVisible, showOnFirstTouch } = useFirstTouchHint();
   const [layoutKey, setLayoutKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [confirmingRefresh, setConfirmingRefresh] = useState(false);
@@ -155,6 +218,11 @@ export default function BrainGraph() {
 
   const graphRef = useRef(null);
   const dragStartRef = useRef(null);
+  // Set by GraphScene: (point in canvas-local px) => node | null.
+  const pickRef = useRef(null);
+  // True while the in-flight gesture came from a finger, so the mesh raycast
+  // and onPointerMissed can stand down for the threshold pick below.
+  const touchGestureRef = useRef(false);
 
   const focusId = currentFocusId(focusTrail);
 
@@ -251,6 +319,9 @@ export default function BrainGraph() {
       }).filter(Boolean)
     : [];
 
+  // Prose the detail panel renders for the loaded record (see recordBody).
+  const detailBody = recordBody(fullRecord);
+
   // Fetch full brain record when a node is selected
   useEffect(() => {
     if (!selectedNode) { setFullRecord(null); return; }
@@ -265,12 +336,10 @@ export default function BrainGraph() {
     return () => { cancelled = true; };
   }, [selectedNode]);
 
+  // A null node clears the selection (an empty-space tap); re-selecting the
+  // current node toggles it off.
   const handleSelect = useCallback((node) => {
-    setSelectedNode(prev => prev?.id === node.id ? null : node);
-  }, []);
-
-  const handleHover = useCallback((node) => {
-    setHoveredNode(node);
+    setSelectedNode(prev => (node && prev?.id !== node.id ? node : null));
   }, []);
 
   // Escape always clears selection. Clicking "empty space" is unreliable for
@@ -284,13 +353,43 @@ export default function BrainGraph() {
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedNode]);
 
+  // Mouse only: a touch tap is resolved by handlePointerUp below (which also
+  // owns clearing on an empty-space tap), and would otherwise be undone here by
+  // the compatibility `click` r3f fires afterwards.
   const handlePointerMissed = useCallback((e) => {
-    const start = dragStartRef.current;
-    if (!start) return;
-    if (Math.abs(e.clientX - start.x) < 5 && Math.abs(e.clientY - start.y) < 5) {
+    if (touchGestureRef.current) return;
+    if (isTapGesture(dragStartRef.current, { x: e.clientX, y: e.clientY })) {
       setSelectedNode(null);
     }
   }, []);
+
+  const handlePointerDown = useCallback((e) => {
+    if (!isCanvasGesture(e)) return;
+    showOnFirstTouch(e);
+    // A second finger is a pinch-zoom or two-finger pan, never a tap — drop the
+    // recorded start so neither the threshold pick nor the miss-clear can fire
+    // for it (both gate on `isTapGesture`, which is false without a start).
+    const secondFinger = touchGestureRef.current && !e.isPrimary;
+    dragStartRef.current = secondFinger ? null : { x: e.clientX, y: e.clientY };
+    touchGestureRef.current = e.pointerType === 'touch';
+  }, [showOnFirstTouch]);
+
+  // Touch selection. The raw mesh raycast needs the ray to hit a ~10px sphere;
+  // instead project every node and take the nearest within a finger-sized
+  // radius (see lib/graphPicking.js). Runs on `pointerup` on the wrapper, which
+  // bubbles after the canvas' own pointerup and before the `click` r3f picks
+  // with — so this result is what sticks. Mouse input is untouched.
+  const handlePointerUp = useCallback((e) => {
+    if (!touchGestureRef.current || !isCanvasGesture(e)) return;
+    const end = { x: e.clientX, y: e.clientY };
+    if (!isTapGesture(dragStartRef.current, end)) return; // an orbit drag
+    // The CANVAS rect, not the wrapper's: the wrapper carries a 1px border, and
+    // `size` from useThree measures the canvas, so mixing the two shifts every
+    // projected position against the tap.
+    const rect = e.target.getBoundingClientRect();
+    const picked = pickRef.current?.({ x: end.x - rect.left, y: end.y - rect.top }) ?? null;
+    handleSelect(picked);
+  }, [handleSelect]);
 
   // refresh:true re-embeds already-mapped records — the recovery path for
   // memory entries that diverged before synced-in records were re-vectorized
@@ -344,7 +443,7 @@ export default function BrainGraph() {
   if (!graphData?.nodes?.length) {
     return (
       <div className="text-center py-12 text-gray-500">
-        No brain entities to graph. Add people, projects, ideas, admin items, memories, goals, or journal entries to see relationships.
+        No brain entities to graph. Add people, projects, ideas, admin items, memories, songs, goals, or journal entries to see relationships.
       </div>
     );
   }
@@ -376,6 +475,7 @@ export default function BrainGraph() {
       {/* Search — jump to any memory across the whole brain (not just the
           loaded view) and focus its neighborhood. */}
       <div className="flex items-center gap-2">
+        <label htmlFor="brain-graph-search" className="sr-only">Search memories</label>
         <EntityCombobox
           items={searchItems}
           value={searchValue}
@@ -437,7 +537,7 @@ export default function BrainGraph() {
           ))}
         </div>
 
-        {/* Type filter checkboxes — wrap on mobile (seven of them never fit a
+        {/* Type filter checkboxes — wrap on mobile (eight of them never fit a
             phone row) with a taller tap target than the 12px swatch alone. */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:ml-auto">
           {BRAIN_TYPES.map(type => {
@@ -508,8 +608,9 @@ export default function BrainGraph() {
           desktop, floors at 240px so it stays usable on a short viewport. */}
       <div
         className="relative bg-port-card border border-port-border rounded-lg overflow-hidden h-[clamp(240px,45vh,500px)]"
-        onPointerDown={(e) => { dragStartRef.current = { x: e.clientX, y: e.clientY }; }}
-        onPointerMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerMove={handlePointerMove}
       >
         {graph && (
           <Canvas
@@ -526,8 +627,20 @@ export default function BrainGraph() {
               onSelect={handleSelect}
               onFocus={focusNode}
               onHover={handleHover}
+              pickRef={pickRef}
+              touchGestureRef={touchGestureRef}
             />
           </Canvas>
+        )}
+
+        {touchHintVisible && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute top-3 inset-x-3 z-20 flex justify-center pointer-events-none"
+          >
+            <span className="port-media-overlay rounded-lg px-3 py-2 text-xs">Drag to rotate</span>
+          </div>
         )}
 
         {!graph && (
@@ -688,9 +801,9 @@ export default function BrainGraph() {
           <div className="mb-3">
             {fullRecord ? (
               <div className="space-y-3">
-                {(fullRecord.description || fullRecord.context || fullRecord.oneLiner || fullRecord.notes || fullRecord.content) && (
+                {detailBody && (
                   <p className="text-sm text-gray-300 whitespace-pre-wrap">
-                    {fullRecord.description || fullRecord.context || fullRecord.oneLiner || fullRecord.notes || fullRecord.content}
+                    {detailBody}
                   </p>
                 )}
                 {typeof fullRecord.progress === 'number' && (

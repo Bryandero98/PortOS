@@ -15,7 +15,16 @@ import {
   loadJSON,
   saveJSON
 } from './store.js';
-import { deriveLongevity } from './longevity.js';
+import { applyFreshTimeHorizons, deriveLongevity } from './longevity.js';
+
+/**
+ * Read the longevity snapshot with `timeHorizons` re-derived against today (#4122).
+ * `goals` is passed in rather than re-read because every caller here already holds it.
+ */
+async function loadLongevityFor(goals) {
+  const longevity = await loadJSON(LONGEVITY_FILE, DEFAULT_LONGEVITY);
+  return applyFreshTimeHorizons(longevity, goals?.birthDate);
+}
 
 // === Pure Functions (exported for testing) ===
 
@@ -213,6 +222,25 @@ export async function getGoals(options) {
     }
   }
   if (needsSave) await saveJSON(GOALS_FILE, data);
+
+  // Urgency is only *persisted* when a goal is written or a birth date is set, so the
+  // stored value is as old as that write — and it ranks off `timeHorizons.yearsRemaining`,
+  // which drifts every day. Re-derive it here (after the migration save, so this read-path
+  // refresh never triggers a write of its own) against today's horizons, so every consumer
+  // of getGoals — jobGates, goalCheckIn, telegram — sees a current number (#4122).
+  // Left alone when the horizons can't be recomputed: an install with no birth date keeps
+  // whatever it had rather than having its urgencies silently blanked.
+  const longevity = await loadLongevityFor(data);
+  if (longevity.timeHorizons) {
+    // The record carries its own copy of the horizons (stamped by setBirthDate, and
+    // merged across peers by dataSync) — refresh it too, or the payload would pair
+    // fresh urgencies with a stale `timeHorizons` and federate the stale one onward.
+    data.timeHorizons = longevity.timeHorizons;
+    for (const goal of data.goals) {
+      if (goal.status === 'active') goal.urgency = computeGoalUrgency(goal, longevity.timeHorizons);
+    }
+  }
+
   return data;
 }
 
@@ -245,8 +273,9 @@ export async function setBirthDate(birthDate) {
 }
 
 export async function createGoal({ title, description, horizon, category, goalType, parentId, tags, targetDate, timeBlockConfig, featureAreas }) {
+  // getGoals() already refreshed `goals.timeHorizons` against today, so read it from
+  // there rather than paying for a second longevity load.
   const goals = await getGoals();
-  const longevity = await loadJSON(LONGEVITY_FILE, DEFAULT_LONGEVITY);
 
   // Validate parentId references an existing goal
   if (parentId && !goals.goals.find(g => g.id === parentId)) {
@@ -281,8 +310,8 @@ export async function createGoal({ title, description, horizon, category, goalTy
   };
 
   // Calculate urgency if time horizons available
-  if (longevity.timeHorizons) {
-    goal.urgency = computeGoalUrgency(goal, longevity.timeHorizons);
+  if (goals.timeHorizons) {
+    goal.urgency = computeGoalUrgency(goal, goals.timeHorizons);
   }
 
   goals.goals.push(goal);
@@ -320,10 +349,10 @@ export async function updateGoal(goalId, updates) {
   }
   goal.updatedAt = new Date().toISOString();
 
-  // Recalculate urgency if horizon changed
-  const longevity = await loadJSON(LONGEVITY_FILE, DEFAULT_LONGEVITY);
-  if (longevity.timeHorizons) {
-    goal.urgency = computeGoalUrgency(goal, longevity.timeHorizons);
+  // Recalculate urgency if horizon changed — against the horizons getGoals() already
+  // refreshed, not a second longevity load.
+  if (goals.timeHorizons) {
+    goal.urgency = computeGoalUrgency(goal, goals.timeHorizons);
   }
 
   goals.updatedAt = new Date().toISOString();
@@ -354,7 +383,7 @@ export async function deleteGoal(goalId) {
 
 export async function getGoalsTree() {
   const goals = await getGoals();
-  const longevity = await loadJSON(LONGEVITY_FILE, DEFAULT_LONGEVITY);
+  const longevity = await loadLongevityFor(goals);
   const activities = await getActivities();
 
   // Enrich goals with urgency, feasibility, velocity, and time tracking

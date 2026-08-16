@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'path';
 import express from 'express';
 import { EventEmitter } from 'events';
 import { request } from '../lib/testHelper.js';
 
 // --- Mock the filesystem + subprocess boundary so we can assert ZERO
 // mutations happen when a request fails validation (issue #2390). ---
+// PATHS.data is required here too: scaffold.js pulls in lib/validation.js ->
+// subscriptionSavings.js -> postStreak.js -> activeDays.js -> timezone.js ->
+// services/settings.js, whose module-scope `join(PATHS.data, 'settings.json')`
+// throws on load if this mock omits PATHS (#4211 added the activeDays.js edge).
 vi.mock('../lib/fileUtils.js', () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
-  expandHome: (p) => p
+  expandHome: (p) => p,
+  PATHS: { data: '/mock/data' }
 }));
 
 vi.mock('fs/promises', () => ({
@@ -22,7 +28,7 @@ vi.mock('fs', () => ({
   realpathSync: vi.fn((p) => p)
 }));
 
-vi.mock('child_process', () => ({
+vi.mock('../lib/childProcess.js', () => ({
   exec: vi.fn((cmd, opts, cb) => cb(null, { stdout: '', stderr: '' })),
   spawn: vi.fn(() => {
     const proc = new EventEmitter();
@@ -39,7 +45,8 @@ vi.mock('../services/apps.js', () => ({
 }));
 
 vi.mock('../lib/workspaceRoots.js', () => ({
-  isWithinAllowedRoots: vi.fn(() => true)
+  isWithinAllowedRoots: vi.fn(() => true),
+  outsideAllowedRootsMessage: vi.fn((realPath, { field = 'path' } = {}) => `${field} is outside allowed directories: ${realPath}`)
 }));
 
 vi.mock('./scaffoldVite.js', () => ({ scaffoldVite: vi.fn().mockResolvedValue(undefined) }));
@@ -52,7 +59,7 @@ vi.mock('../services/xcodeScripts.js', () => ({ toTargetName: vi.fn(() => 'TestA
 import scaffoldRoutes from './scaffold.js';
 import { ensureDir } from '../lib/fileUtils.js';
 import { writeFile } from 'fs/promises';
-import { spawn, exec } from 'child_process';
+import { spawn, exec } from '../lib/childProcess.js';
 import { createApp } from '../services/apps.js';
 import { scaffoldVite } from './scaffoldVite.js';
 import { scaffoldPortOS } from './scaffoldPortOS.js';
@@ -146,7 +153,7 @@ describe('POST /api/scaffold — request validation before filesystem mutation (
     expect(res.body.success).toBe(true);
     // Validation passed → the route reached the first filesystem mutation
     // (directory creation) and registered the app.
-    expect(ensureDir).toHaveBeenCalledWith('/tmp/workspace/my-app');
+    expect(ensureDir).toHaveBeenCalledWith(join('/tmp/workspace', 'my-app'));
     expect(createApp).toHaveBeenCalledTimes(1);
   });
 
@@ -160,7 +167,7 @@ describe('POST /api/scaffold — request validation before filesystem mutation (
     expect(res.status).toBe(200);
     expect(scaffoldVite).toHaveBeenCalledTimes(1);
     expect(scaffoldVite).toHaveBeenCalledWith(expect.objectContaining({
-      repoPath: '/tmp/workspace/my-app',
+      repoPath: join('/tmp/workspace', 'my-app'),
       dirName: 'my-app',
       parentDir: '/tmp/workspace',
       template: 'vite-express',
@@ -177,7 +184,7 @@ describe('POST /api/scaffold — request validation before filesystem mutation (
 
     expect(res.status).toBe(200);
     expect(scaffoldPortOS).toHaveBeenCalledWith(expect.objectContaining({
-      repoPath: '/tmp/workspace/my-app',
+      repoPath: join('/tmp/workspace', 'my-app'),
       name: 'My App',
       dirName: 'my-app',
       uiPort: 3100,

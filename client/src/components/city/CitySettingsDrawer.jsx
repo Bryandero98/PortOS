@@ -172,6 +172,11 @@ export default function CitySettingsDrawer({ open, onClose, qualityMode = 'manua
       activeTab={activeTab}
       onTabChange={setActiveTab}
       closeLabel="Close city settings"
+      // Drawer portals to <body>, which leaves the page's `.cybercity-themed`
+      // root behind — and the City HUD palette remap in index.css is written as
+      // `.cybercity-themed <utility>` descendant selectors. Re-apply the class
+      // inside the portal so the panel keeps its themed ink/surfaces.
+      portalClassName="cybercity-themed"
     >
       {activeTab === 'performance' && (
         <div className="space-y-5">

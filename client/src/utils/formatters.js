@@ -633,7 +633,7 @@ export function formatCooldown(ms) {
  * @param {string|null|undefined} sizeStr - Human-readable size string
  * @returns {number|null} Size in GB, or null when unparseable
  */
-export function parseSizeGb(sizeStr) {
+function parseSizeGb(sizeStr) {
   const match = /([\d.]+)\s*(TB|GB|MB|KB)/i.exec(String(sizeStr || ''));
   if (!match) return null;
   const val = parseFloat(match[1]);
@@ -654,3 +654,26 @@ export function recommendedRamGb(sizeBytes, sizeStr) {
   if (!gb || gb <= 0) return null;
   return Math.max(1, Math.ceil(gb * 1.2));
 }
+
+/**
+ * Clamp a numeric value `n` into the inclusive range `[min, max]`.
+ * @param {number} n - Value to clamp
+ * @param {number} min - Lower bound
+ * @param {number} max - Upper bound
+ * @returns {number} Clamped value
+ */
+export function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * Capitalize the first character of a string, leaving the rest untouched
+ * (e.g. "female" → "Female"). Non-strings and empty strings pass through
+ * unchanged rather than throwing.
+ * @param {string} s
+ * @returns {string}
+ */
+export function capitalize(s) {
+  return typeof s === 'string' && s.length ? s[0].toUpperCase() + s.slice(1) : s;
+}
+

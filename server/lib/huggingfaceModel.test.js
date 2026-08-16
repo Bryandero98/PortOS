@@ -131,6 +131,7 @@ describe('classifyHfMediaModel — happy paths', () => {
     expect(classifyHfMediaModel({
       repo: 'notapalindrome/ltx23-mlx-av-q4',
       model: hf({ files: ['model.safetensors'], tags: ['ltx-video'] }),
+      isWindows: false,
     })).toEqual({ kind: 'video', runtime: 'mlx_video', format: 'safetensors' });
   });
 
@@ -138,7 +139,16 @@ describe('classifyHfMediaModel — happy paths', () => {
     expect(classifyHfMediaModel({
       repo: 'dgrauet/ltx-2.3-mlx-q8',
       model: hf({ files: ['model.safetensors'], tags: ['ltx'] }),
+      isWindows: false,
     })).toEqual({ kind: 'video', runtime: 'ltx2', format: 'safetensors' });
+  });
+
+  it('auto-detects an LTX-2.5 MLX repo as the ltx25 runtime', () => {
+    expect(classifyHfMediaModel({
+      repo: 'MrMofer/ltx-2.5-mlx-q8',
+      model: hf({ files: ['transformer-distilled.safetensors'], tags: ['ltx-2.5'] }),
+      isWindows: false,
+    })).toEqual({ kind: 'video', runtime: 'ltx25', format: 'safetensors' });
   });
 
   it('detects a Qwen-Image-Edit repo and stamps the edit pipeline + editOnly', () => {
@@ -156,6 +166,7 @@ describe('classifyHfMediaModel — happy paths', () => {
       repo: 'dgrauet/ltx-2.3-mlx-q8',
       model: hf({ files: ['model.safetensors'], tags: ['ltx'] }),
       runtime: 'ltx2',
+      isWindows: false,
     })).toEqual({ kind: 'video', runtime: 'ltx2', format: 'safetensors' });
   });
 
@@ -230,6 +241,7 @@ describe('classifyHfMediaModel — happy paths', () => {
     expect(() => classifyHfMediaModel({
       repo: 'someone/mystery-video',
       model: hf({ files: ['model.safetensors'], pipeline: 'text-to-video' }),
+      isWindows: false,
     })).toThrow(/Couldn't determine which video runtime/);
   });
 
@@ -238,6 +250,7 @@ describe('classifyHfMediaModel — happy paths', () => {
       repo: 'someone/mystery-video',
       model: hf({ files: ['model.safetensors'], pipeline: 'text-to-video' }),
       runtime: 'mlx_video',
+      isWindows: false,
     })).toEqual({ kind: 'video', runtime: 'mlx_video', format: 'safetensors' });
   });
 });

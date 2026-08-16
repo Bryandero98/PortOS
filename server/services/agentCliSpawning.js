@@ -8,7 +8,7 @@
 import { join } from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { homedir } from 'os';
 import { cosEvents, emitLog } from './cosEvents.js';
 // The DEFINING module, not a barrel (#3450) — see the note in
@@ -36,10 +36,12 @@ import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } 
 import { resolveForgeTokenEnv } from './git.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
-import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { doneSentinelPath } from '../lib/agentSentinel.js';
 import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -341,6 +343,18 @@ export async function spawnDirectly({
   // Ensure workspacePath is valid
   const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
 
+  // Direct CLI agents bypass runner.js, so their Ollama-backed harnesses need
+  // the same daemon context preparation as runner and TUI launches. This is
+  // deliberately before spawn: a per-request window cannot reach a CLI that
+  // talks to Ollama on its own.
+  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  if (ollamaContext?.warning) {
+    emitLog('warn', `Agent ${agentId} Ollama context preparation: ${ollamaContext.warning}`, {
+      agentId,
+      taskId: task.id,
+    });
+  }
+
   // Two independent async env lookups, resolved together: Claude's
   // ~/.claude/settings.json Bedrock config (CLAUDE_CODE_USE_BEDROCK, AWS_PROFILE,
   // etc., present even if PM2 lacks them) and the repo-owner-pinned GH_TOKEN
@@ -385,7 +399,6 @@ export async function spawnDirectly({
     cwd,
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
     env: childEnv
   });
 
@@ -432,6 +445,8 @@ export async function spawnDirectly({
   // handlers `await outputBatcher.flush()` so the final lines persist before
   // the agent is finalized. (output.txt is written separately below.)
   const outputBatcher = createAgentOutputBatcher(agentId);
+  if (ollamaContext?.warning) outputBatcher.push(ollamaContext.warning);
+  if (ollamaContext?.applied) outputBatcher.push(`🪟 Reloaded Ollama at a ${ollamaContext.contextLength}-token context window`);
 
   // Expose a drain hook on the activeAgents entry so the user-terminate/kill
   // paths (agentManagement.js) can flush pending batched output before they
@@ -733,25 +748,32 @@ export async function spawnDirectly({
     const analysisBuffer = rawStreamBuffer || outputBuffer;
     const errorAnalysis = finalSuccess ? null : (immediateFallbackAnalysis || analyzeAgentFailure(analysisBuffer, task, model));
 
-    // Slashdo-capable CLI agents run `/simplify` + `/do:pr` themselves (see
-    // buildCliCompletionSection in agentPromptBuilder.js) — mirror the TUI
-    // cleanup contract so PortOS doesn't double-fire push+PR creation. Resolved
-    // BEFORE finalizeAgent because it also gates the PR-claim verification
-    // (#3358): a PortOS-owned PR is created by the cleanup below, i.e. AFTER
-    // finalize, so only an agent-owned PR can be verified there.
-    //
-    // Uses the SAME `canTypeSlashCommands` predicate the prompt builder and the
-    // runner-mode cleanup already use, not a provider-id allowlist: an allowlist
-    // misses a path-configured `claude` under a custom provider id (told to run
-    // `/do:pr`, then PortOS opens a second PR) and wrongly claims a lean `--bare`
-    // session owns a PR it was never told to open. Whoever the prompt told to
-    // open the PR must be who cleanup and verification believe opened it.
+    // Every CLI agent that is a real coding harness drives its own push → PR →
+    // review → merge (#3733): a slashdo-capable Claude runs `/simplify` +
+    // `/do:pr`, codex/grok/agy/OpenCode run the plain `git`/`gh` equivalent from
+    // the same prompt (see buildCliCompletionSection in agentPromptBuilder.js).
+    // Mirror that here so PortOS doesn't double-fire push+PR creation.
     const directOpenPR = isTruthyMetaFn(task.metadata?.openPR);
-    const directAgentOwnsPR = directOpenPR && canTypeSlashCommands({
+    const directLeanMode = isOllamaClaudeProvider(provider);
+    const directAgentOwnsPR = directOpenPR && agentOwnsPrWorkflow({
+      providerType: PROVIDER_TYPES.CLI,
+      leanMode: directLeanMode,
+    });
+    // PR-claim verification (#3358) stays on the SLASH-command predicate: it runs
+    // BEFORE the cleanup below, and cleanup now backstops a harness that skipped
+    // its own PR step — failing the run here for a PR that is about to exist
+    // would turn a recovered handoff into a false needs-attention.
+    const directPrClaimExpected = directOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
-      leanMode: isOllamaClaudeProvider(provider),
+      leanMode: directLeanMode,
     });
+    // Whether finalize's check ACTUALLY produced a forge answer (filled in from
+    // its return below) — not the same question as whether one was expected.
+    // Finalize substitutes `{ok:true}` for a user-terminated run and for a check
+    // that threw, and a throw from finalize skips the assignment entirely; in all
+    // three cases nothing was verified, so cleanup must ask rather than stand down.
+    let directPrClaimVerified = false;
 
     // try/finally so a throw from finalizeAgent still runs the local
     // cleanup (worktree, pid unregister, activeAgents delete). Mirrors the
@@ -775,17 +797,22 @@ export async function spawnDirectly({
         error: finalError || undefined,
         completionReason: terminatedByUser ? 'user-terminated' : undefined,
         workspacePath,
-        prExpected: directAgentOwnsPR,
+        prExpected: directPrClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
+      directPrClaimVerified = prClaimWasVerified(finalized?.prVerdict);
     } finally {
       const directPrCompletion = resolvePrCompletion(task.metadata);
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
       const reviewOptions = await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn });
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: directAgentOwnsPR ? false : directOpenPR,
+        prCreation: resolvePrCreation({
+          taskOpenPR: directOpenPR,
+          agentOwnsPr: directAgentOwnsPR,
+          prClaimVerified: directPrClaimVerified,
+        }),
         prCompletion: directPrCompletion,
         ...reviewOptions,
         skipMerge: directReviewLoopFollowUp || directAgentOwnsPR,

@@ -6,9 +6,17 @@
  * chunk's output video file — not mode='image' with an extracted last frame.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
+
+const { heavyClaimRelease } = vi.hoisted(() => ({ heavyClaimRelease: vi.fn(async () => {}) }));
+vi.mock('../../lib/heavyJobClaim.js', () => ({
+  claimHeavyLocalJob: vi.fn(async () => ({ ok: true, holder: {}, release: heavyClaimRelease })),
+}));
+vi.mock('../../lib/localMemory.js', () => ({
+  prepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
+}));
 
 // ─── dep mocks (must be declared before the module import) ───────────────────
 
@@ -21,6 +29,32 @@ const MOCK_PATHS = {
   uploads: '/mock/data/uploads',
   loras: '/mock/data/loras',
 };
+
+const isLtx2Python = (bin) => String(bin)
+  .includes(join('.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3'));
+const isLtx25Python = (bin) => String(bin)
+  .includes(join('.portos', 'ltx-2.5-mlx', '.venv', 'bin', 'python3'));
+
+// The two chain helpers below used to sleep a flat 100ms for the timeline
+// stitch and then read the concat spawn / stitched history entry out of the
+// mocks. That is enough on an idle machine and not enough on a contended
+// worker during a full-suite run: the stitch had not landed, those reads came
+// back null, and the tests failed on a TypeError rather than an assertion —
+// while passing in isolation. Poll the real completion condition instead (the
+// stitched history entry is written last, after the concat spawn), and fall
+// through on timeout so a genuine regression still fails on its own assertion.
+const stitchedHistoryEntry = (atomicWriteMock) => atomicWriteMock.mock.calls
+  .flatMap(([, payload]) => (Array.isArray(payload) ? payload : []))
+  .find((entry) => entry?.chainedFrom) || null;
+
+async function waitForStitch() {
+  const { atomicWrite } = await import('../../lib/fileUtils.js');
+  const deadline = Date.now() + 5000;
+  while (!stitchedHistoryEntry(vi.mocked(atomicWrite)) && Date.now() < deadline) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 vi.mock('../../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
@@ -47,6 +81,12 @@ vi.mock('../settings.js', () => ({
 vi.mock('../../lib/mediaModels.js', () => ({
   getVideoModels: vi.fn(() => [
     { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2', repo: 'Lightricks/LTX-Video', steps: 30, guidance: 3.5 },
+    {
+      id: 'ltx25_mlx_q8', name: 'LTX-2.5 MLX Q8', runtime: 'ltx25',
+      repo: 'MrMofer/ltx-2.5-mlx-q8',
+      revision: 'f1b56e7dc89f71a9af2cddac787b89ed22a8b7fc',
+      steps: 8, guidance: 3,
+    },
     // bf16 LTX-2.x mlx_video model — LoRA-capable via the generate_av wrapper.
     { id: 'ltx23_unified', name: 'LTX-2.3 Unified Beta', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av', steps: 25, guidance: 3.0 },
     // quantized mlx_video model — NOT LoRA-capable (out of scope).
@@ -56,7 +96,8 @@ vi.mock('../../lib/mediaModels.js', () => ({
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
       revision: '3ac52081470b0488921c3ec3ba84a39097bf2361',
       supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
-      frameOptions: [124, 141, 158], fpsOptions: [24],
+      frameOptions: [107, 124, 141, 158], fpsOptions: [24],
+      defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
       steps: 8, guidance: 0, samplerLocked: true,
       termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
       requiredWeights: [{
@@ -64,6 +105,20 @@ vi.mock('../../lib/mediaModels.js', () => ({
         revision: '6818f6c32d12b210915e44ad56a4228c2608f160',
         files: ['LICENSE', 'FL2VA/vae/video/config.json'],
       }],
+    },
+    {
+      id: 'minimax_h3_cuda', name: 'MiniMax H3 CUDA int8', runtime: 'minimax_h3_cuda',
+      repo: 'MiniMaxAI/MiniMax-H3',
+      revision: '42ed227ee7df40d41602854ae760620d6eb651fe',
+      repoFiles: ['modular_model_index.json', 'transformer/config.json'],
+      supportedModes: ['text', 'image', 'fflf'], defaultFrames: 124,
+      // Deliberately excludes 107 — the diffusers window starts at 5 s, so the
+      // MLX grid's first point is illegal here and the two entries must not
+      // share a frame list.
+      frameOptions: [124, 141, 158], fpsOptions: [24],
+      defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
+      steps: 8, guidance: 0, samplerLocked: true,
+      termsGate: { id: 'minimax-h3-community-license-2026-08-02' },
     },
     {
       id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
@@ -163,6 +218,13 @@ const { mockInspectModelCache, mockFindCachedRepoFile } = vi.hoisted(() => ({
 vi.mock('../../lib/hfCache.js', () => ({
   inspectModelCache: mockInspectModelCache,
   findCachedRepoFile: mockFindCachedRepoFile,
+  // Built on the singular mock rather than stubbed independently, mirroring the
+  // real helper — so a test that makes ONE file miss (the partial-download
+  // cases) still drives the plural probe's all-or-nothing verdict.
+  findCachedRepoFiles: async (repo, filenames, opts) => {
+    const paths = await Promise.all(filenames.map((name) => mockFindCachedRepoFile(repo, name, opts)));
+    return paths.every(Boolean) ? paths : null;
+  },
 }));
 
 vi.mock('fs', () => ({
@@ -229,7 +291,7 @@ const { makeProc } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('child_process', () => ({
+vi.mock('../../lib/childProcess.js', () => ({
   spawn: vi.fn(() => makeProc()),
   execFile: vi.fn((_bin, _args, _opts, cb) => cb?.(null, '', '')),
 }));
@@ -245,17 +307,35 @@ vi.mock('../../lib/detachedSpawn.js', () => ({
 // Import AFTER all vi.mock calls so the hoisted mocks are in place.
 let generateChainedVideo;
 let generateVideo;
+let extractLastFrame;
 let videoGenEvents;
 
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo, generateVideo } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo, extractLastFrame } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
 afterEach(() => {
+  settingsState.acceptedModelTerms = [];
   vi.clearAllMocks();
+});
+
+describe('extractLastFrame — shared-gallery uploads', () => {
+  it('accepts an uploaded gallery history id', async () => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValueOnce([{
+      id: 'upload-ab12cd34',
+      filename: 'upload-ab12cd34.mp4',
+      prompt: 'example',
+    }]);
+
+    await expect(extractLastFrame('upload-ab12cd34')).resolves.toMatchObject({
+      filename: 'lastframe-upload-ab12cd34.png',
+      path: '/data/images/lastframe-upload-ab12cd34.png',
+    });
+  });
 });
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -326,6 +406,41 @@ async function runChainAndCaptureArgs(chainParams, totalChunks) {
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
+describe('generateChainedVideo — model-aware ETA geometry', () => {
+  it('estimates an omitted H3 canvas at the model native default', async () => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValue([{
+      modelId: 'minimax_h3_8bit',
+      width: 1344,
+      height: 768,
+      numFrames: 124,
+      steps: 8,
+      renderMs: 10_000,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }]);
+    settingsState.acceptedModelTerms = [H3_TERMS];
+    const outerJobId = randomUUID();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let outerCompleted = false;
+    videoGenEvents.on('completed', (event) => {
+      if (event.generationId === outerJobId) outerCompleted = true;
+    });
+
+    await generateChainedVideo({
+      chunks: 2,
+      jobId: outerJobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'test prompt',
+      mode: 'text',
+    });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('2 chunks, eta=20s (measured, n=1)'));
+    await vi.waitFor(() => expect(outerCompleted).toBe(true));
+    videoGenEvents.removeAllListeners('completed');
+    logSpy.mockRestore();
+  });
+});
+
 describe('generateChainedVideo — continuation strategy (context window vs last frame)', () => {
   // numFrames=25 → extendLatentFrames(25) = 3 latents = 24 new pixel frames.
   //
@@ -360,7 +475,7 @@ describe('generateChainedVideo — continuation strategy (context window vs last
   async function runChain(chainParams, totalChunks, probeFrames = null) {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const { trimVideoFromFrame, probeFrameCount } = await import('../../lib/ffmpeg.js');
-    const { spawn } = await import('child_process');
+    const { spawn } = await import('../../lib/childProcess.js');
     const { readJSONFile, atomicWrite } = await import('../../lib/fileUtils.js');
     vi.mocked(spawnDetached).mockClear();
     vi.mocked(trimVideoFromFrame).mockClear();
@@ -417,7 +532,7 @@ describe('generateChainedVideo — continuation strategy (context window vs last
       const id = innerJobIds[i];
       videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForStitch();
     videoGenEvents.removeAllListeners('started');
 
     const spawns = vi.mocked(spawn).mock.calls;
@@ -521,7 +636,7 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     // already rendered. Moving the cut into the concat has to keep that: the
     // untrimmed chunks were never re-encoded, so they're still in codec
     // lockstep and the demuxer can still assemble them.
-    const { spawn } = await import('child_process');
+    const { spawn } = await import('../../lib/childProcess.js');
     const failingProc = () => {
       const listeners = {};
       const proc = {
@@ -742,7 +857,7 @@ describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
       const id = innerJobIds[i];
       videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForStitch();
     videoGenEvents.removeAllListeners('started');
 
     return spawnMock.mock.calls
@@ -800,8 +915,10 @@ describe('generateChainedVideo — per-chunk prompt beats (#3695)', () => {
 });
 
 describe('generateVideo — ltx2 FFLF image resizing', () => {
-  it('resizes both start and end frames before passing them to the ltx2 helper', async () => {
-    const { execFile } = await import('child_process');
+  // Windows uses the separate diffusers runner, which intentionally consumes
+  // only the start image. This assertion is specific to the MLX FFLF helper.
+  it.skipIf(process.platform === 'win32')('resizes both start and end frames before passing them to the ltx2 helper', async () => {
+    const { execFile } = await import('../../lib/childProcess.js');
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const execFileMock = vi.mocked(execFile);
     const spawnMock = vi.mocked(spawnDetached);
@@ -833,7 +950,7 @@ describe('generateVideo — ltx2 FFLF image resizing', () => {
     ]);
 
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args)
         && args.includes('--mode')
         && args.includes('fflf'),
@@ -869,7 +986,7 @@ describe('generateVideo — LTX audio-reactive conditioning', () => {
     });
 
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args)
         && args.includes('--mode')
         && args.includes('a2v'),
@@ -906,7 +1023,7 @@ describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
       // plain T2V: no mode, no conditioning, no explicit steps/guidance
     });
     const call = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args) && args.includes('--mode') && args.includes('text'),
     );
     expect(call).toBeTruthy();
@@ -926,6 +1043,142 @@ describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
     expect(args).not.toContain('--stage2-steps');
     expect(args[args.indexOf('--steps') + 1]).toBe('30');
     expect(args[args.indexOf('--cfg-scale') + 1]).toBe('3.5');
+  });
+});
+
+describe('generateVideo — LTX-2.5 sibling runtime spawn', () => {
+  const renderLtxFamily = async (jobId, modelId) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId,
+      prompt: 'a quiet street at dusk',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+    });
+    return spawnMock.mock.calls;
+  };
+
+  it('spawns the 2.5 venv, omits the shared Gemma 3 encoder, and pins --model to the cached revision', async () => {
+    const calls = await renderLtxFamily('ltx25-spawn', 'ltx25_mlx_q8');
+    const renderCall = calls.find(
+      ([bin, args]) => isLtx25Python(bin)
+        && Array.isArray(args)
+        && args.includes('--mode')
+        && args.includes('text'),
+    );
+    expect(renderCall).toBeTruthy();
+    expect(renderCall[1]).not.toContain('--gemma');
+    expect(renderCall[1][renderCall[1].indexOf('--model') + 1]).toBe('/mock/hf/snap');
+    expect(renderCall[1]).not.toContain('MrMofer/ltx-2.5-mlx-q8');
+    expect(calls.some(([bin]) => isLtx2Python(bin))).toBe(false);
+  });
+
+  it('still threads --gemma through the 2.3 venv and leaves an unpinned repo id on --model', async () => {
+    const calls = await renderLtxFamily('ltx2-gemma-still', 'ltx2_unified');
+    const renderCall = calls.find(
+      ([bin, args]) => isLtx2Python(bin)
+        && Array.isArray(args)
+        && args.includes('--mode')
+        && args.includes('text'),
+    );
+    expect(renderCall).toBeTruthy();
+    expect(renderCall[1]).toEqual(expect.arrayContaining(['--gemma', 'some/text-encoder']));
+    expect(renderCall[1][renderCall[1].indexOf('--model') + 1]).toBe('Lightricks/LTX-Video');
+    expect(calls.some(([bin]) => isLtx25Python(bin))).toBe(false);
+  });
+
+  // Substituted prompt conditioner on 2.5 (#4320). The shim flags and the 2.3
+  // `--gemma` flag are different mechanisms sharing one builder, so each
+  // runtime must emit exactly its own — and neither when nothing was picked.
+  it.each([
+    ['ltx25_mlx_q8', isLtx25Python],
+    ['ltx2_unified', isLtx2Python],
+  ])('adds no text-encoder shim argv to an unswapped %s render', async (modelId, isPython) => {
+    const calls = await renderLtxFamily(`${modelId}-no-shim`, modelId);
+    const [, args] = calls.find(([bin, a]) => isPython(bin) && Array.isArray(a) && a.includes('--mode'));
+    expect(args.filter((arg) => String(arg).startsWith('--text-encoder'))).toEqual([]);
+  });
+
+  // Every ltx25 substitute is still gated behind the coherence check, so the
+  // route/service path must reject its id rather than half-wire a render.
+  it.each(['ltx25-abliterated-4bit', 'ltx25-heretic-8bit'])('rejects the unverified %s', async (textEncoderId) => {
+    await expect(generateVideo({
+      jobId: `ltx25-unverified-${textEncoderId}`,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx25_mlx_q8',
+      prompt: 'a quiet street at dusk',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      textEncoderId,
+    })).rejects.toMatchObject({ status: 400, code: 'VIDEO_TEXT_ENCODER_UNSUPPORTED' });
+  });
+
+  // The flags a resolved substitute produces, exercised directly: the registry
+  // entries that would drive them end-to-end are gated until the A/B render in
+  // #4320 lands, and this is the contract that has to survive that flag flip.
+  describe('ltx25TextEncoderArgs', () => {
+    let ltx25TextEncoderArgs;
+    beforeEach(async () => {
+      ({ ltx25TextEncoderArgs } = await import('./local.js'));
+    });
+
+    it('emits nothing for the stock choice', () => {
+      expect(ltx25TextEncoderArgs(null)).toEqual([]);
+    });
+
+    it('emits one --text-encoder-file per pinned file plus a shim root outside the checkout', () => {
+      const args = ltx25TextEncoderArgs({
+        id: 'ltx25-abliterated-4bit',
+        paths: ['/mock/hf/snap/config.json', '/mock/hf/snap/model-00001-of-00003.safetensors'],
+      });
+      expect(args[args.indexOf('--text-encoder-id') + 1]).toBe('ltx25-abliterated-4bit');
+      expect(args.flatMap((arg, i) => (arg === '--text-encoder-file' ? [args[i + 1]] : [])))
+        .toEqual(['/mock/hf/snap/config.json', '/mock/hf/snap/model-00001-of-00003.safetensors']);
+      const shimRoot = args[args.indexOf('--text-encoder-shim-root') + 1];
+      expect(shimRoot).toContain(join('.portos', 'ltx25-encoder-shims'));
+      expect(shimRoot).not.toContain(join('.portos', 'ltx-2.5-mlx'));
+      // No overrides declared — the config rewrite flag stays off, the same way
+      // the H3 builder omits its key-remap flags for a checkpoint needing none.
+      expect(args).not.toContain('--text-encoder-config-json');
+      // Never the 2.3 mechanism: a 2.5 pack's own tower wins over --gemma.
+      expect(args).not.toContain('--gemma');
+    });
+
+    it('forwards configOverrides as one JSON payload', () => {
+      const args = ltx25TextEncoderArgs({
+        id: 'ltx25-heretic-8bit',
+        paths: ['/mock/hf/snap/config.json'],
+        configOverrides: { model_type: 'gemma4' },
+      });
+      expect(JSON.parse(args[args.indexOf('--text-encoder-config-json') + 1]))
+        .toEqual({ model_type: 'gemma4' });
+    });
+
+    // An empty object is not an override — emitting `{}` would make the runner
+    // rewrite a config for no reason and hide a registry typo behind a no-op.
+    it('omits the config flag for an empty override map', () => {
+      expect(ltx25TextEncoderArgs({ id: 'x', paths: ['/p'], configOverrides: {} }))
+        .not.toContain('--text-encoder-config-json');
+    });
+  });
+
+  it('rejects a missing pinned 2.5 snapshot before spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    mockInspectModelCache.mockResolvedValueOnce({ cached: false, snapshotPath: null, sizeBytes: 0 });
+    await expect(generateVideo({
+      jobId: 'ltx25-uncached',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx25_mlx_q8',
+      prompt: 'a quiet street at dusk',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+    })).rejects.toMatchObject({ code: 'LTX2_MODEL_NOT_CACHED' });
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 });
 
@@ -1693,7 +1946,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     });
 
     const call = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+      ([bin, args]) => isLtx2Python(bin)
         && Array.isArray(args) && args.includes('--user-loras'),
     );
     expect(call).toBeTruthy();
@@ -1741,12 +1994,12 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     });
 
     const call = spawnMock.mock.calls.find(
-      ([bin]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3'),
+      ([bin]) => isLtx2Python(bin),
     );
     expect(call[1]).not.toContain('--user-loras');
   });
 
-  it('routes a bf16 mlx_video LTX model through the generate_av_lora.py wrapper with --user-loras', async () => {
+  it.skipIf(process.platform === 'win32')('routes a bf16 mlx_video LTX model through the generate_av_lora.py wrapper with --user-loras', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
@@ -1779,7 +2032,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     ]);
   });
 
-  it('a non-LoRA mlx_video render still uses the bare generate_av module (no wrapper)', async () => {
+  it.skipIf(process.platform === 'win32')('a non-LoRA mlx_video render still uses the bare generate_av module (no wrapper)', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
@@ -1801,7 +2054,7 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     expect(call[1]).not.toContain(join(MOCK_PATHS.root, 'scripts', 'generate_av_lora.py'));
   });
 
-  it('rejects LoRAs on a quantized (out-of-scope) mlx_video model', async () => {
+  it.skipIf(process.platform === 'win32')('rejects LoRAs on a quantized (out-of-scope) mlx_video model', async () => {
     await expect(generateVideo({
       jobId: 'mlx-q4-lora',
       pythonPath: '/usr/bin/python3',
@@ -1890,7 +2143,7 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       width: 480, height: 256, numFrames: 81, fps: 20,
       steps: 99, guidanceScale: 9, mode: 'text',
     });
-    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_wan22.py')));
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_wan22.py'));
     expect(call).toBeDefined();
     const args = call[1];
     expect(args[args.indexOf('--steps') + 1]).toBe('4');
@@ -1900,8 +2153,8 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
     expect(args[args.indexOf('--solver') + 1]).toBe('euler');
     expect(args[args.indexOf('--model-repo') + 1]).toBe('/mock/hf/snap');
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
-      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors',
-      '/mock/hf/snap/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors',
+      join('/mock/hf/snap', 'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors'),
+      join('/mock/hf/snap', 'Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors'),
     ]);
     expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
       'high_noise_transformer',
@@ -1931,10 +2184,10 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
       sourceImagePath: '/mock/data/images/boat.png',
       width: 480, height: 256, numFrames: 81, fps: 20, mode: 'image',
     });
-    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => String(arg).endsWith('/generate_wan22.py')))[1];
+    const args = spawnMock.mock.calls.find(([, childArgs]) => childArgs.some((arg) => basename(String(arg)) === 'generate_wan22.py'))[1];
     expect(args.flatMap((arg, i) => arg === '--lora-path' ? [args[i + 1]] : [])).toEqual([
-      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors',
-      '/mock/hf/snap/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors',
+      join('/mock/hf/snap', 'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors'),
+      join('/mock/hf/snap', 'Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors'),
     ]);
     expect(args.flatMap((arg, i) => arg === '--lora-target-role' ? [args[i + 1]] : [])).toEqual([
       'high_noise_transformer',
@@ -2005,42 +2258,6 @@ describe('generateVideo — Wan MLX-Gen contract', () => {
 });
 
 describe('generateVideo — MiniMax H3 MLX contract', () => {
-  // Every test below renders H3, which is license-gated: authorization comes
-  // from the install's recorded acknowledgement, re-read here at the render
-  // boundary rather than trusted from the caller's params.
-  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
-
-  it('resolves the license gate from the install record at the render boundary', async () => {
-    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
-    vi.mocked(spawnDetached).mockClear();
-    const base = {
-      jobId: 'h3-terms',
-      modelId: 'minimax_h3_8bit',
-      prompt: 'a fox watches the rain',
-      width: 512, height: 320, numFrames: 141, fps: 24,
-      mode: 'text',
-    };
-
-    settingsState.acceptedModelTerms = [];
-    await expect(generateVideo(base)).rejects.toMatchObject({
-      status: 403,
-      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
-    });
-    // A superseded license revision does not carry forward — a job queued while
-    // the old one was accepted fails closed at execution.
-    settingsState.acceptedModelTerms = ['old-license'];
-    await expect(generateVideo(base)).rejects.toMatchObject({
-      status: 403,
-      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
-    });
-    // A caller cannot assert its own acceptance — only the install record counts.
-    await expect(generateVideo({ ...base, termsAcceptance: H3_TERMS })).rejects.toMatchObject({
-      status: 403,
-      code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED',
-    });
-    expect(spawnDetached).not.toHaveBeenCalled();
-  });
-
   // H3 anchors keyframes at the first/last latent frame only, so the ltx2
   // arbitrary-index array and every non-keyframe conditioning channel stay out.
   it.each([
@@ -2109,7 +2326,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     // Paths are the ffmpeg-resized copies, so assert the anchors and that each
     // one directly follows its own --image rather than the literal input path.
@@ -2135,7 +2352,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
         modelId: 'minimax_h3_8bit',
 
         prompt: 'a fox watches the rain',
-        width: 512, height: 320, numFrames: 141, fps: 24,
+        width: 1536, height: 672, numFrames: 107, fps: 24,
         steps: 99, guidanceScale: 12, mode: 'text',
       });
     } finally {
@@ -2145,16 +2362,19 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     }
 
     const call = spawnMock.mock.calls.find(([, args]) => (
-      Array.isArray(args) && args.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(call).toBeDefined();
     const [bin, args, options] = call;
-    expect(bin).toMatch(/\.portos\/minimax-h3-mlx\/\.venv\/bin\/python3$/);
+    expect(String(bin)).toContain(join('.portos', 'minimax-h3-mlx', '.venv', 'bin', 'python3'));
     expect(args[args.indexOf('--model-repo') + 1]).toBe('pipenetwork/MiniMax-H3-MLX-8bit');
     expect(args[args.indexOf('--model-revision') + 1]).toBe('3ac52081470b0488921c3ec3ba84a39097bf2361');
     expect(args[args.indexOf('--runtime-revision') + 1]).toBe('fcd9e9b79a1d6018d91ac477c0968de1fa067e49');
     expect(args[args.indexOf('--checkpoint-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
     expect(args[args.indexOf('--checkpoint-revision') + 1]).toBe('6818f6c32d12b210915e44ad56a4228c2608f160');
+    expect(args[args.indexOf('--width') + 1]).toBe('1536');
+    expect(args[args.indexOf('--height') + 1]).toBe('672');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('107');
     expect(args[args.indexOf('--steps') + 1]).toBe('8');
     expect(args.flatMap((arg, i) => arg === '--checkpoint-file' ? [args[i + 1]] : []))
       .toEqual(['LICENSE', 'FL2VA/vae/video/config.json']);
@@ -2169,13 +2389,194 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(options.env).not.toHaveProperty('HUGGING_FACE_HUB_TOKEN');
     expect(hfChildEnv).not.toHaveBeenCalled();
   });
+
+  // Substituted prompt conditioner (#4081). The whole override path has to stay
+  // dormant unless it was asked for — an unswapped render's argv must be
+  // byte-identical to what it was before the feature existed.
+  it.each([undefined, null, 'stock'])('adds no text-encoder argv for %j', async (textEncoderId) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-stock-encoder',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+      textEncoderId,
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    expect(args.filter((arg) => String(arg).startsWith('--text-encoder'))).toEqual([]);
+  });
+
+  it('forwards a substituted text encoder as a resolved path plus its key remap', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-swapped-encoder',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+      textEncoderId: 'heretic-bf16',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    expect(args[args.indexOf('--text-encoder-id') + 1]).toBe('heretic-bf16');
+    // A resolved cache path, never a repo id — the helper runs fully offline
+    // (HF_HUB_OFFLINE=1) and cannot look one up.
+    expect(args[args.indexOf('--text-encoder-file') + 1])
+      .toBe(join('/mock/hf/snap', 'qwen3vl_32b_h3_ultra_uncensored_heretic_bf16.safetensors'));
+    // Outside the pinned checkout: anything written inside it would read as
+    // untracked in the pin verification the helper itself runs.
+    const shimRoot = args[args.indexOf('--text-encoder-shim-root') + 1];
+    expect(shimRoot).toContain(join('.portos', 'minimax-h3-encoder-shims'));
+    expect(shimRoot).not.toContain(join('.portos', 'minimax-h3-mlx'));
+    expect(args.flatMap((arg, i) => (arg === '--text-encoder-key-prefix' ? [args[i + 1]] : [])))
+      .toEqual(['model.=model.language_model.', 'visual.=model.visual.']);
+    expect(args[args.indexOf('--text-encoder-final-norm-key') + 1]).toBe('model.norm.weight');
+  });
+
+  // An upstream conditioner arrives as several shards, and the loader globs the
+  // shim directory — so every pinned shard has to reach the helper. Forwarding
+  // just the first would load a module tree with most of its layers missing.
+  it('forwards every shard of a multi-shard text encoder', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { downloadableVideoTextEncoder } = await import('../../lib/videoTextEncoders.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-multishard-encoder',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+      textEncoderId: 'huihui-abliterated',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, a]) => (
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    const forwarded = args.flatMap((arg, i) => (arg === '--text-encoder-file' ? [args[i + 1]] : []));
+    expect(forwarded).toEqual(
+      downloadableVideoTextEncoder('huihui-abliterated').files.map((name) => join('/mock/hf/snap', name)),
+    );
+    // Upstream namespace, own final norm — neither adapter is emitted.
+    expect(args).not.toContain('--text-encoder-key-prefix');
+    expect(args).not.toContain('--text-encoder-final-norm-key');
+  });
+
+  // A partially-cached multi-shard conditioner (one shard interrupted) must fail
+  // as a clean 400, not load a module tree with missing parameters.
+  it('rejects a multi-shard text encoder missing any one shard', async () => {
+    mockFindCachedRepoFile.mockImplementation(async (_repo, filename) => (
+      filename === 'model-00011-of-00014.safetensors' ? null : join('/mock/hf/snap', filename)
+    ));
+    try {
+      await expect(generateVideo({
+        jobId: 'h3-multishard-partial',
+        modelId: 'minimax_h3_8bit',
+        prompt: 'a fox watches the rain',
+        mode: 'text',
+        textEncoderId: 'huihui-abliterated',
+      })).rejects.toMatchObject({ status: 400, code: 'VIDEO_TEXT_ENCODER_NOT_CACHED' });
+    } finally {
+      mockFindCachedRepoFile.mockImplementation(async (_repo, filename) => join('/mock/hf/snap', filename));
+    }
+  });
+
+  // A ~48 GB weight that isn't downloaded must fail as a clean 400 on the
+  // request, not minutes into the render when the helper's cache probe misses.
+  it('rejects a substituted text encoder that is not downloaded', async () => {
+    mockFindCachedRepoFile.mockImplementation(async (_repo, filename) => (
+      filename.includes('ultra_uncensored_heretic') ? null : join('/mock/hf/snap', filename)
+    ));
+    try {
+      await expect(generateVideo({
+        jobId: 'h3-encoder-missing',
+        modelId: 'minimax_h3_8bit',
+        prompt: 'a fox watches the rain',
+        mode: 'text',
+        textEncoderId: 'heretic-bf16',
+      })).rejects.toMatchObject({ status: 400, code: 'VIDEO_TEXT_ENCODER_NOT_CACHED' });
+    } finally {
+      mockFindCachedRepoFile.mockImplementation(async (_repo, filename) => join('/mock/hf/snap', filename));
+    }
+  });
+
+  it('rejects a text encoder the model has no remap for', async () => {
+    await expect(generateVideo({
+      jobId: 'h3-encoder-unknown',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+      textEncoderId: 'not-a-real-encoder',
+    })).rejects.toMatchObject({ status: 400, code: 'VIDEO_TEXT_ENCODER_UNSUPPORTED' });
+  });
+
+  it('uses H3 native dimensions when an internal caller omits resolution', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-native-default',
+      modelId: 'minimax_h3_8bit',
+      prompt: 'a fox watches the rain',
+      mode: 'text',
+    });
+
+    const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
+      Array.isArray(childArgs) && childArgs.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    expect(args[args.indexOf('--width') + 1]).toBe('1344');
+    expect(args[args.indexOf('--height') + 1]).toBe('768');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('124');
+  });
+
+  it('falls back when user-edited model defaults are not valid dimensions', async () => {
+    const mediaModels = await import('../../lib/mediaModels.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const getVideoModelsMock = vi.mocked(mediaModels.getVideoModels);
+    const catalog = getVideoModelsMock();
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    getVideoModelsMock.mockReturnValue(catalog.map((model) => (
+      model.id === 'minimax_h3_8bit'
+        ? { ...model, defaultWidth: '', defaultHeight: 'not-a-number' }
+        : model
+    )));
+
+    try {
+      await generateVideo({
+        jobId: 'h3-invalid-native-default',
+        modelId: 'minimax_h3_8bit',
+        prompt: 'a fox watches the rain',
+        mode: 'text',
+      });
+    } finally {
+      getVideoModelsMock.mockReturnValue(catalog);
+    }
+
+    const [, args] = spawnMock.mock.calls.find(([, childArgs]) => (
+      Array.isArray(childArgs) && childArgs.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
+    ));
+    expect(args[args.indexOf('--width') + 1]).toBe('768');
+    expect(args[args.indexOf('--height') + 1]).toBe('512');
+  });
 });
 
 // H3's DiT is quantized, so LoRAs ride along only if the installed runner
 // applies them at render time from quantization metadata. That is a property of
 // the pinned checkout, so the verdict comes from a probe — and the render path
 // must honor it in both directions rather than blanket-rejecting the runtime.
-describe('MiniMax H3 user LoRAs', () => {
+describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
   const h3Render = (jobId) => generateVideo({
     jobId,
     modelId: 'minimax_h3_8bit',
@@ -2184,6 +2585,7 @@ describe('MiniMax H3 user LoRAs', () => {
     loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
   });
 
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
   afterEach(() => { h3LoraState.capable = false; h3LoraState.cached = null; });
 
   // The model is decorated from the sync cache read, so on a capable install the
@@ -2200,7 +2602,7 @@ describe('MiniMax H3 user LoRAs', () => {
     await expect(h3Render('h3-lora-cold-cache')).resolves.toBeDefined();
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args).toContain('--lora');
   });
@@ -2228,7 +2630,7 @@ describe('MiniMax H3 user LoRAs', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args.flatMap((arg, i) => (
       arg === '--lora' ? [[args[i + 1], args[i + 2] === '--lora-scale' ? args[i + 3] : 'UNPAIRED']] : []
@@ -2252,7 +2654,7 @@ describe('MiniMax H3 user LoRAs', () => {
     });
 
     const [, args] = spawnMock.mock.calls.find(([, a]) => (
-      Array.isArray(a) && a.some((arg) => String(arg).endsWith('/generate_minimax_h3.py'))
+      Array.isArray(a) && a.some((arg) => basename(String(arg)) === 'generate_minimax_h3.py')
     ));
     expect(args).not.toContain('--lora');
     expect(args).not.toContain('--lora-scale');
@@ -2599,7 +3001,7 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
   };
 
   const findIcCall = (spawnMock) => spawnMock.mock.calls.find(
-    ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+    ([bin, args]) => isLtx2Python(bin)
       && Array.isArray(args) && args.includes('--ic-mode'),
   );
 
@@ -2774,7 +3176,7 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
     };
 
     it('materializes each still into a 9-frame clip at the render resolution', async () => {
-      const { execFile } = await import('child_process');
+      const { execFile } = await import('../../lib/childProcess.js');
       const { spawnDetached } = await import('../../lib/detachedSpawn.js');
       const execFileMock = vi.mocked(execFile);
       const spawnMock = vi.mocked(spawnDetached);
@@ -2868,7 +3270,7 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
       // Promise.all rejects at the first failure while siblings are still in
       // flight, so a push-on-success registry would miss the ones that landed
       // afterwards. Every target path is registered before any encode starts.
-      const { execFile } = await import('child_process');
+      const { execFile } = await import('../../lib/childProcess.js');
       const { unlink } = await import('fs/promises');
       const execFileMock = vi.mocked(execFile);
       const unlinkMock = vi.mocked(unlink);
@@ -2911,7 +3313,7 @@ describe('generateVideo — IC-LoRA remix arg threading (#3100)', () => {
       // try/catch, so without explicit cleanup here the resized-source temp
       // file would leak into os.tmpdir() even though the clip temp files
       // themselves were already covered by the test above.
-      const { execFile } = await import('child_process');
+      const { execFile } = await import('../../lib/childProcess.js');
       const { unlink } = await import('fs/promises');
       const execFileMock = vi.mocked(execFile);
       const unlinkMock = vi.mocked(unlink);
@@ -3090,7 +3492,7 @@ describe('generateVideo — durable re-render inputs (#3696)', () => {
     });
     videoGenEvents.off('started', onStarted);
     const renderCall = spawnMock.mock.calls.find(
-      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3') && Array.isArray(args),
+      ([bin, args]) => isLtx2Python(bin) && Array.isArray(args),
     );
     return { started, args: renderCall?.[1] || [] };
   };
@@ -3258,5 +3660,167 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
     expect(await resolveVideoLoras([])).toEqual([]);
     expect(await resolveVideoLoras(undefined)).toEqual([]);
     expect(getLoraKeyLayout).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateVideo — MiniMax H3 CUDA contract', () => {
+  // Same license gate as the MLX entry: it is the same weights under the same
+  // terms, so acceptance is recorded once and honored by both runtimes.
+  beforeEach(() => { settingsState.acceptedModelTerms = [H3_TERMS]; });
+
+  const cudaCall = (spawnMock) => spawnMock.mock.calls.find(([, args]) => (
+    Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_minimax_h3_cuda.py')
+  ));
+
+  it('dispatches to the CUDA helper and venv, never to the MLX port or generate_win.py', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-args',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24,
+      steps: 99, guidanceScale: 12, mode: 'text',
+    });
+
+    const call = cudaCall(spawnMock);
+    expect(call).toBeDefined();
+    const [bin, args, options] = call;
+    expect(String(bin)).toContain(join('.portos', 'minimax-h3-cuda'));
+    // The MLX port's checkout flags describe a runtime this lane doesn't have.
+    expect(args).not.toContain('--runtime-dir');
+    expect(args).not.toContain('--runtime-revision');
+    expect(args).not.toContain('--checkpoint-repo');
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('MiniMaxAI/MiniMax-H3');
+    expect(args[args.indexOf('--model-revision') + 1]).toBe('42ed227ee7df40d41602854ae760620d6eb651fe');
+    expect(args[args.indexOf('--width') + 1]).toBe('1344');
+    expect(args[args.indexOf('--num-frames') + 1]).toBe('141');
+    // The sampler is locked, so a caller's steps/guidance are ignored.
+    expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    // One --repo-file per pinned component file; this is what keeps the runner
+    // cache-only against a repo whose full snapshot is ~498 GB.
+    expect(args.flatMap((arg, i) => (arg === '--repo-file' ? [args[i + 1]] : [])))
+      .toEqual(['modular_model_index.json', 'transformer/config.json']);
+    // H3's repos are public and the runner never reaches the network, so no
+    // ambient credential is handed to the child — same posture as the MLX lane.
+    expect(options.env).toMatchObject({
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+    });
+    expect(options.env).not.toHaveProperty('HF_TOKEN');
+    expect(options.killProcessGroup).toBe(true);
+  });
+
+  it('anchors both keyframes, in packed order', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-fflf',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24,
+      mode: 'fflf', sourceImagePath: '/mock/source.png', lastImagePath: '/mock/last.png',
+    });
+
+    const [, args] = cudaCall(spawnMock);
+    expect(args.flatMap((arg, i) => (
+      arg === '--image' ? [args[i + 2] === '--anchor' ? args[i + 3] : 'UNPAIRED'] : []
+    ))).toEqual(['first', 'last']);
+  });
+
+  it('enforces its own frame window, not the MLX port\'s', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    // 107 is legal on the MLX grid and illegal here — the check has to read the
+    // entry's own frameOptions or the two lanes silently share one window.
+    await expect(generateVideo({
+      jobId: 'h3-cuda-frames',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 107, fps: 24, mode: 'text',
+    })).rejects.toMatchObject({ code: 'MINIMAX_H3_INVALID_FRAME_COUNT' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a negative prompt', { negativePrompt: 'blurry' }, 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED'],
+    ['disabled audio', { disableAudio: true }, 'MINIMAX_H3_AUDIO_REQUIRED'],
+    ['a tiling mode', { tiling: 'spatial' }, 'MINIMAX_H3_TILING_UNSUPPORTED'],
+    ['a non-24 fps', { fps: 30 }, 'MINIMAX_H3_INVALID_FPS'],
+  ])('rejects %s before any child is spawned', async (_label, fields, code) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+
+    await expect(generateVideo({
+      jobId: 'h3-cuda-controls',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+      ...fields,
+    })).rejects.toMatchObject({ code });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  // `offloadProfile` is an optional per-install override in data/media-models.json,
+  // so it arrives unvalidated. The helper's argparse `choices=` would catch a typo
+  // too, but only as an opaque non-zero child exit after the render was queued.
+  it.each([
+    ['int8-lean', true],
+    ['bf16', true],
+    ['int8-leaan', false],
+  ])('validates a declared offloadProfile %j before spawning', async (profile, legal) => {
+    const mediaModels = await import('../../lib/mediaModels.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const getVideoModelsMock = vi.mocked(mediaModels.getVideoModels);
+    const catalog = getVideoModelsMock();
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    getVideoModelsMock.mockReturnValue(catalog.map((model) => (
+      model.id === 'minimax_h3_cuda' ? { ...model, offloadProfile: profile } : model
+    )));
+
+    const render = () => generateVideo({
+      jobId: `h3-cuda-offload-${profile}`,
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    try {
+      if (!legal) {
+        await expect(render()).rejects.toMatchObject({ code: 'VIDEO_MODEL_MISCONFIGURED' });
+        expect(spawnDetached).not.toHaveBeenCalled();
+        return;
+      }
+      await render();
+      const [, args] = cudaCall(spawnMock);
+      expect(args[args.indexOf('--offload-profile') + 1]).toBe(profile);
+    } finally {
+      getVideoModelsMock.mockReturnValue(catalog);
+    }
+  });
+
+  // Absent is the shipped state: the registry syncs between peers and cannot
+  // know what GPU is on the other end, so the helper sizes the recipe itself.
+  it('omits --offload-profile entirely when the entry declares none', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'h3-cuda-offload-default',
+      modelId: 'minimax_h3_cuda',
+      prompt: 'a fox watches the rain',
+      width: 1344, height: 768, numFrames: 141, fps: 24, mode: 'text',
+    });
+
+    const [, args] = cudaCall(spawnMock);
+    expect(args).not.toContain('--offload-profile');
   });
 });

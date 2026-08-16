@@ -233,6 +233,35 @@ describe('Brain SongBook routes', () => {
         .send({ title: 'X' });
       expect(res.status).toBe(404);
     });
+
+    // Cross-links (#4103): absent preserves, explicit [] clears.
+    it('preserves stored links when the key is absent, and clears them on []', async () => {
+      const links = [{ type: 'round', id: 'round-1', label: 'Example Round' }];
+
+      const untouched = mockUpdateWith(baseSong({ links }));
+      const kept = await request(app)
+        .patch(`/api/brain/songbook/${SONG_ID}`)
+        .send({ title: 'New Title' });
+      expect(kept.status).toBe(200);
+      expect('links' in untouched.updates).toBe(false);
+      expect(kept.body.links).toEqual(links);
+
+      const emptied = mockUpdateWith(baseSong({ links }));
+      const cleared = await request(app)
+        .patch(`/api/brain/songbook/${SONG_ID}`)
+        .send({ links: [] });
+      expect(cleared.status).toBe(200);
+      expect(emptied.updates).toEqual({ links: [] });
+      expect(cleared.body.links).toEqual([]);
+    });
+
+    it('400s on a malformed link entry', async () => {
+      const res = await request(app)
+        .patch(`/api/brain/songbook/${SONG_ID}`)
+        .send({ links: [{ type: 'round' }] });
+      expect(res.status).toBe(400);
+      expect(brainStorage.updateWith).not.toHaveBeenCalled();
+    });
   });
 
   describe('DELETE /api/brain/songbook/:id', () => {
@@ -247,6 +276,89 @@ describe('Brain SongBook routes', () => {
     it('404s when already gone', async () => {
       brainStorage.remove.mockResolvedValue(false);
       const res = await request(app).delete(`/api/brain/songbook/${SONG_ID}`);
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ===========================================================================
+  // PRACTICE (#4102)
+  // ===========================================================================
+
+  describe('POST /api/brain/songbook/:id/practice', () => {
+    it('persists a schedule + stage advance computed from the FRESH record', async () => {
+      const seen = mockUpdateWith(baseSong({ stage: 'learning' }));
+      const res = await request(app)
+        .post(`/api/brain/songbook/${SONG_ID}/practice`)
+        .send({ quality: 5 });
+
+      expect(res.status).toBe(200);
+      expect(brainStorage.updateWith).toHaveBeenCalledWith('songs', SONG_ID, expect.any(Function));
+      // Only stage + practice are written — a practice log must not touch the sheet.
+      expect(Object.keys(seen.updates).sort()).toEqual(['practice', 'stage']);
+      expect(seen.updates.stage).toBe('learned');
+      expect(seen.updates.practice).toMatchObject({ intervalDays: 1, sessions: 1, lastQuality: 5 });
+      expect(res.body.stage).toBe('learned');
+      expect(res.body.practice.nextReview).toEqual(expect.any(String));
+      // The rest of the record survives the merge.
+      expect(res.body.content).toEqual({ format: 'tab', text: 'e|--0--|' });
+    });
+
+    it('resurfaces the song and regresses the stage on a failed run', async () => {
+      const seen = mockUpdateWith(baseSong({
+        stage: 'memorized',
+        practice: {
+          ease: 2.5, intervalDays: 30, nextReview: '2026-08-01T00:00:00.000Z',
+          lastReviewed: '2026-07-02T00:00:00.000Z', sessions: 3,
+        },
+      }));
+      const res = await request(app)
+        .post(`/api/brain/songbook/${SONG_ID}/practice`)
+        .send({ quality: 0 });
+
+      expect(res.status).toBe(200);
+      expect(seen.updates.stage).toBe('learned');
+      expect(seen.updates.practice.intervalDays).toBe(0);
+      expect(seen.updates.practice.sessions).toBe(4);
+    });
+
+    it('schedules a song that predates the feature without a backfill', async () => {
+      const seen = mockUpdateWith(baseSong()); // no `practice` key at all
+      const res = await request(app)
+        .post(`/api/brain/songbook/${SONG_ID}/practice`)
+        .send({ quality: 4 });
+
+      expect(res.status).toBe(200);
+      expect(seen.updates.practice).toMatchObject({ intervalDays: 1, sessions: 1 });
+      expect(seen.updates.stage).toBe('learning');
+    });
+
+    it('400s on a grade outside 0..5 or a non-integer', async () => {
+      mockUpdateWith(baseSong());
+      for (const quality of [6, -1, 2.5, 'good']) {
+        const res = await request(app)
+          .post(`/api/brain/songbook/${SONG_ID}/practice`)
+          .send({ quality });
+        expect(res.status).toBe(400);
+      }
+      expect(brainStorage.updateWith).not.toHaveBeenCalled();
+    });
+
+    it('ignores a client-supplied practice object — the schedule is server-managed', async () => {
+      const seen = mockUpdateWith(baseSong({ stage: 'learning' }));
+      const res = await request(app)
+        .post(`/api/brain/songbook/${SONG_ID}/practice`)
+        .send({ quality: 5, practice: { ease: 99, intervalDays: 9999, nextReview: '2099-01-01T00:00:00.000Z' } });
+
+      expect(res.status).toBe(200);
+      expect(seen.updates.practice.intervalDays).toBe(1);
+      expect(seen.updates.practice.ease).toBeLessThanOrEqual(5);
+    });
+
+    it('404s when the song vanished mid-request', async () => {
+      mockUpdateWith(null);
+      const res = await request(app)
+        .post(`/api/brain/songbook/${SONG_ID}/practice`)
+        .send({ quality: 3 });
       expect(res.status).toBe(404);
     });
   });

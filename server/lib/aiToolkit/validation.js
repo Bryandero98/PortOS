@@ -7,6 +7,17 @@ import { MAX_TIMEOUT, MIN_TIMEOUT } from './constants.js';
 // rejected.
 const ALLOWED_SCREENSHOT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
+// Reasoning-effort values accepted by the effort-capable CLI providers. Keep
+// this local because the vendored toolkit must remain self-contained; the
+// runtime mirror lives in server/lib/providerModels.js and the UI mirror lives
+// in client/src/utils/providers.js.
+const PROVIDER_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+
+const providerEffort = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? null : value),
+  z.enum(PROVIDER_EFFORT_LEVELS).nullable().optional()
+);
+
 /**
  * Sanitize the untrusted `screenshots[]` array from POST /api/runs into safe,
  * screenshots-dir-relative basenames. `screenshots[]` is unauthenticated user
@@ -63,6 +74,8 @@ export const providerSchema = z.object({
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
   defaultModel: z.string().nullable().optional(),
+  // Empty string is the UI's "use the provider/CLI default" sentinel.
+  effort: providerEffort,
   lightModel: z.string().nullable().optional(),
   mediumModel: z.string().nullable().optional(),
   heavyModel: z.string().nullable().optional(),
@@ -83,6 +96,10 @@ export const providerSchema = z.object({
   // local Ollama daemon — the "Claude Ollama" pattern. Drives model refresh to
   // pull tool-use-capable Ollama models instead of the static Anthropic list.
   ollamaBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started MTPLX native-MTP
+  // server. This is intentionally distinct from `ollamaBacked`: model weights
+  // and runtime protocol configuration are not interchangeable.
+  mtplxBacked: z.boolean().optional(),
   // Explicit opt-in to attach the provider's API key to an arbitrary
   // (non-local, non-allowlisted) endpoint. Guards against SSRF / key
   // exfiltration to a hostile or mistyped host — see

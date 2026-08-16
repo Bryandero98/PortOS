@@ -75,6 +75,11 @@ export async function getProject(id, options = {}) {
   return (await selectBackend()).getProject(id, options);
 }
 
+/** Batch fetch by id (#4148) — see the backends for the per-store implementation. */
+export async function getProjectsByIds(ids, options = {}) {
+  return (await selectBackend()).getProjectsByIds(ids, options);
+}
+
 /** Live project ids (or all when includeDeleted) — used by tombstone GC sweeps. */
 export async function listProjectIds(options = {}) {
   return (await selectBackend()).listProjectIds(options);

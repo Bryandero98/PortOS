@@ -23,7 +23,7 @@
  * resolves — nothing throws into a route (CLAUDE.md child-process exception).
  */
 
-import { execFile } from 'node:child_process';
+import { execFile } from './childProcess.js';
 
 /**
  * One CSV row per GPU: `<name>, <total VRAM in MiB>`. `nounits` strips the " MiB"
@@ -86,7 +86,7 @@ export async function detectCudaGpus({ execFileImpl = execFile, timeoutMs = 8000
     execFileImpl(
       'nvidia-smi',
       [...NVIDIA_SMI_QUERY_ARGS],
-      { timeout: timeoutMs, windowsHide: true },
+      { timeout: timeoutMs },
       (err, stdout) => resolve({ err, stdout: String(stdout ?? '') }),
     );
   }).catch((err) => ({ err, stdout: '' }));

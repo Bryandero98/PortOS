@@ -7,11 +7,13 @@ import {
   assignmentProviderOptions,
   assignmentModelOptions,
   assignmentDefaultModel,
+  assignmentToolUseState,
   PROVIDER_TYPES,
   filterSelectableModels,
   filterGenerationModels,
   isEmbeddingModel,
   isVisionModel,
+  isVisionCapableCliProvider,
   visionLocalModelFilter,
   isToolUseModel,
   localToolUseHint,
@@ -592,6 +594,21 @@ describe('isVisionModel (mirror of server localModelHeuristics)', () => {
   });
 });
 
+describe('isVisionCapableCliProvider', () => {
+  it('accepts Claude and Codex CLIs, including a path-configured command', () => {
+    expect(isVisionCapableCliProvider({ type: 'cli', command: 'codex' })).toBe(true);
+    expect(isVisionCapableCliProvider({ type: 'cli', command: 'claude' })).toBe(true);
+    expect(isVisionCapableCliProvider({ type: 'cli', command: '/opt/homebrew/bin/claude' })).toBe(true);
+  });
+
+  it('rejects API providers and non-vision CLIs', () => {
+    expect(isVisionCapableCliProvider({ type: 'api', command: 'codex' })).toBe(false);
+    expect(isVisionCapableCliProvider({ type: 'cli', command: 'agy' })).toBe(false);
+    expect(isVisionCapableCliProvider({ type: 'tui', command: 'claude' })).toBe(false);
+    expect(isVisionCapableCliProvider(null)).toBe(false);
+  });
+});
+
 describe('isToolUseModel (mirror of server localModelHeuristics)', () => {
   it('flags known tool-use-capable model ids', () => {
     for (const id of [
@@ -643,6 +660,57 @@ describe('localToolUseHint', () => {
 
   it('returns null for a blank id', () => {
     expect(localToolUseHint('', ollama)).toBeNull();
+  });
+
+  describe('authoritative capability union (useToolUseModelIds)', () => {
+    // The map is keyed by the PROVIDER ID the server enumerated, so the fixture
+    // provider needs one.
+    const ollamaProvider = { id: 'ollama', name: 'Ollama', endpoint: 'http://localhost:11434/v1' };
+
+    it('flags a tool-capable model the id regex does not recognize', () => {
+      // The bug: `phi4-mini` reports the `tools` capability from Ollama's
+      // /api/show, but no TOOL_USE_RE alternative matches it — so the picker
+      // said "⚠ no known tool use" while the Local LLMs tab's Agents badge,
+      // reading the same capabilities, disagreed.
+      expect(localToolUseHint('phi4-mini:latest', ollamaProvider)).toEqual({ toolCapable: false });
+      const ids = { ollama: new Set(['phi4-mini:latest']) };
+      expect(localToolUseHint('phi4-mini:latest', ollamaProvider, ids)).toEqual({ toolCapable: true });
+      expect(withToolUseOptionLabel('phi4-mini:latest', 'phi4-mini:latest', ollamaProvider, ids))
+        .toBe('phi4-mini:latest · 🔧 tool use');
+    });
+
+    it('keeps the regex verdict for a model the server did not list (union, not substitution)', () => {
+      // A fetched-and-legitimately-EMPTY set is not a veto: the server can only
+      // ADD to the regex, never subtract from it, so a regex hit still wins.
+      const ids = { ollama: new Set(), lmstudio: new Set() };
+      expect(localToolUseHint('qwen3.6:35b', ollamaProvider, ids)).toEqual({ toolCapable: true });
+      expect(localToolUseHint('gemma3:4b', ollamaProvider, ids)).toEqual({ toolCapable: false });
+    });
+
+    it('falls back to regex-only when the fetch never landed or failed (null map)', () => {
+      // `null` = not fetched / failed — distinct from a fetched empty map above.
+      // Both degrade to the regex, but only the empty map is a real answer.
+      expect(localToolUseHint('qwen3.6:35b', ollamaProvider, null)).toEqual({ toolCapable: true });
+      expect(localToolUseHint('phi4-mini:latest', ollamaProvider, null)).toEqual({ toolCapable: false });
+      expect(localToolUseHint('phi4-mini:latest', ollamaProvider, undefined)).toEqual({ toolCapable: false });
+    });
+
+    it('never lets one provider vouch for another (keyed by enumerated provider)', () => {
+      // A CUSTOM provider pointed at a DIFFERENT Ollama host resolves to the same
+      // backend but was never enumerated — a matching id there is a coincidence,
+      // and a false "tool-capable" wedges the agent. It stays regex-only.
+      const ids = { ollama: new Set(['phi4-mini:latest']) };
+      const remote = { id: 'ollama-remote', name: 'Remote Ollama', endpoint: 'http://192.0.2.10:11434/v1' };
+      expect(localToolUseHint('phi4-mini:latest', remote, ids)).toEqual({ toolCapable: false });
+      // Same for a renamed Ollama-backed wrapper with its own provider id.
+      const wrapper = { id: 'my-local-agent', name: 'My Local Agent', ollamaBacked: true };
+      expect(localToolUseHint('phi4-mini:latest', wrapper, ids)).toEqual({ toolCapable: false });
+    });
+
+    it('still returns null for cloud providers even with a map present', () => {
+      const cloud = { id: 'openai', name: 'OpenAI', endpoint: 'https://api.openai.com/v1' };
+      expect(localToolUseHint('gpt-4o', cloud, { openai: new Set(['gpt-4o']) })).toBeNull();
+    });
   });
 });
 
@@ -772,13 +840,14 @@ describe('supportsModelRefresh', () => {
     expect(decorated.length).toBeGreaterThan(20);
 
     const withButton = decorated.filter(supportsModelRefresh).map((p) => p.id).sort();
-    // Frozen from the pre-#3620 dispatch chains — the refactor must not change
-    // WHICH shipped provider offers the button.
+    // Intentional shipped-catalog contract: a newly seeded provider must either
+    // have a usable fetcher or stay out of this list.
     expect(withButton).toEqual([
       'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
       'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
-      'cursor-tui', 'grok', 'lmstudio', 'nvidia-kimi', 'ollama',
-      'opencode-ollama', 'opencode-ollama-tui',
+      'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
+      'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama',
+      'opencode-ollama-tui',
     ]);
   });
 });
@@ -998,5 +1067,57 @@ describe('AI Assignments option helpers', () => {
     // Non-vision rows still seed the provider default.
     expect(assignmentDefaultModel({}, providers, 'ollama')).toBe('granite4.1:8b');
     expect(assignmentDefaultModel({}, providers, '')).toBe('');
+  });
+
+  describe('assignmentToolUseState', () => {
+    const ollama = providers.find((p) => p.id === 'ollama');
+    const openai = providers.find((p) => p.id === 'openai');
+    const agentEntry = { needsTools: true };
+
+    it('flags a needsTools row on a local model with no recognized tool use', () => {
+      expect(assignmentToolUseState(agentEntry, ollama, 'llava:latest', null, true))
+        .toEqual({ annotate: true, effectiveModel: 'llava:latest', incapable: true });
+    });
+
+    it('clears once the model is recognized, by regex or by the backend', () => {
+      expect(assignmentToolUseState(agentEntry, ollama, 'llama3.2:latest', null, true).incapable).toBe(false);
+      // Authoritative map wins for an id the regex does not know.
+      const ids = { ollama: new Set(['llava:latest']) };
+      expect(assignmentToolUseState(agentEntry, ollama, 'llava:latest', ids, true).incapable).toBe(false);
+    });
+
+    it('judges the EFFECTIVE model, so a blank pin resolves the provider default', () => {
+      // granite4.1 IS a recognized tool-caller, so a blank pin on ollama is clean…
+      expect(assignmentToolUseState(agentEntry, ollama, '', null, true))
+        .toEqual({ annotate: true, effectiveModel: 'granite4.1:8b', incapable: false });
+      // …while a provider whose default is not gets flagged on the same blank pin.
+      const textOnly = { id: 'ollama', name: 'Ollama', defaultModel: 'llava:latest' };
+      expect(assignmentToolUseState(agentEntry, textOnly, '', null, true))
+        .toEqual({ annotate: true, effectiveModel: 'llava:latest', incapable: true });
+    });
+
+    it('asserts nothing until the capability scan settles', () => {
+      expect(assignmentToolUseState(agentEntry, ollama, 'llava:latest', null, false))
+        .toEqual({ annotate: false, effectiveModel: 'llava:latest', incapable: false });
+    });
+
+    it('stays silent for a non-agent entry, a cloud provider, or an unpinned row', () => {
+      // The server did not mark this assignment — same model, no warning.
+      expect(assignmentToolUseState({ modelFilter: 'vision' }, ollama, 'llava:latest', null, true).incapable).toBe(false);
+      expect(assignmentToolUseState(undefined, ollama, 'llava:latest', null, true).incapable).toBe(false);
+      // Cloud ids do not encode their family, so they are never judged.
+      expect(assignmentToolUseState(agentEntry, openai, 'gpt-4.1', null, true).incapable).toBe(false);
+      expect(assignmentToolUseState(agentEntry, undefined, '', null, true))
+        .toEqual({ annotate: true, effectiveModel: '', incapable: false });
+    });
+
+    it('flags an ollama-BACKED wrapper whose id and name say nothing about ollama', () => {
+      // Only the server-resolved `ollamaBacked` flag identifies it — the exact
+      // provider class the tool-use warning exists for.
+      const wrapper = { id: 'local-agent', name: 'Local Agent', ollamaBacked: true, defaultModel: 'llava:latest' };
+      expect(assignmentToolUseState(agentEntry, wrapper, '', null, true).incapable).toBe(true);
+      // Without the flag it reads as a cloud CLI and is left alone.
+      expect(assignmentToolUseState(agentEntry, { ...wrapper, ollamaBacked: false }, '', null, true).incapable).toBe(false);
+    });
   });
 });

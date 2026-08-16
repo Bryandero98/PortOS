@@ -15,7 +15,7 @@
  * Media History shows them alongside generated clips.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from '../../lib/childProcess.js';
 import { existsSync } from 'fs';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
@@ -24,7 +24,7 @@ import { ensureDir, PATHS, readJSONFile, atomicWrite } from '../../lib/fileUtils
 import { ServerError } from '../../lib/errorHandler.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { findFfmpeg, findFfprobe, safeUnder, generateThumbnail } from '../../lib/ffmpeg.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { attachFfmpegRenderGuard } from '../../lib/ffmpegRenderGuard.js';
 import { loadHistory, mutateVideoHistory } from '../videoGen/local.js';
@@ -179,7 +179,7 @@ const probeAudio = async (videoPath) => {
       '-show_entries', 'stream=codec_type',
       '-of', 'default=nw=1:nk=1',
       videoPath,
-    ], { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
+    ], safeChildProcessOptions({ stdio: ['ignore', 'pipe', 'ignore'] }));
     let out = '';
     proc.stdout.on('data', (c) => { out += c.toString(); });
     proc.on('close', () => resolve(out.trim() === 'audio'));
@@ -373,7 +373,7 @@ export async function renderProject(projectId) {
 
   console.log(`🎞️ Rendering timeline [${jobId.slice(0, 8)}]: project=${projectId.slice(0, 8)} clips=${clips.length} duration=${totalDuration.toFixed(2)}s`);
 
-  const proc = spawn(ffmpeg, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'ignore', 'pipe'] });
+  const proc = spawn(ffmpeg, args, safeChildProcessOptions({ stdio: ['ignore', 'ignore', 'pipe'] }));
   job.process = proc;
 
   // ffmpeg's -progress pipe:2 emits key=value lines, one per line, every

@@ -1518,6 +1518,32 @@ describe('storyBible — trimToClause (boundary-aware prose cap)', () => {
     expect(trimToClause(text, 50)).toBe('The operator said, "Stop now."');
   });
 
+  it('backs off to a clause boundary when the field holds no sentence break', () => {
+    // The shape a saturated 200-char transition label takes: one clause-chained
+    // sentence, no terminator anywhere in budget. Cutting on the last whole word
+    // leaves "...with no repayment lien, no" — a dangling half-clause the next
+    // verification round reports as an incomplete record.
+    const label = 'Proves with the validated block that the takeover cannot reach quorum, then closes the short and escrows the proceeds with no repayment lien, no personal withdrawal key, and no veto';
+    const out = trimToClause(label, 160);
+    expect(out).toBe('Proves with the validated block that the takeover cannot reach quorum, then closes the short and escrows the proceeds with no repayment lien');
+    expect(out.length).toBeLessThanOrEqual(160);
+    expect(/[,;:—–]$/.test(out)).toBe(false);
+  });
+
+  it('prefers a usable sentence break over a later clause break', () => {
+    const text = 'The vote carries after a long night of argument. The crews ratify, the boosters transfer, and the manifest is certified.';
+    expect(trimToClause(text, 70)).toBe('The vote carries after a long night of argument.');
+  });
+
+  it('ignores a clause break so early that honoring it would gut the field', () => {
+    // Comma at ~8% of the budget: keeping only "Yes" is worse than the ragged
+    // whole-word edge, so the word fallback still wins.
+    const text = `Yes, ${'word '.repeat(40)}`;
+    const out = trimToClause(text, 60);
+    expect(out.startsWith('Yes, word')).toBe(true);
+    expect(out.length).toBeGreaterThan(50);
+  });
+
   it('never clips mid-word — falls back to a whole-word boundary on a run-on', () => {
     // No sentence terminator within budget → must still end on a complete word,
     // not "...tracing the brand an".

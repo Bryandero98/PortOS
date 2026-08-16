@@ -9,14 +9,15 @@
  * so it has no dependency back on local.js.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from '../../lib/childProcess.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, cpus, type as osType, release as osRelease } from 'os';
 import { PATHS } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { safeChildProcessOptions } from '../../lib/processEnv.js';
 import { createSingleFlight } from '../../lib/singleFlight.js';
+import { MINIMAX_H3_RUNTIMES, LTX2_FAMILY_RUNTIMES } from '../../lib/runners.js';
 
 // Path to the dgrauet/ltx-2-mlx venv populated by `INSTALL_LTX2=1
 // scripts/setup-image-video.sh`. Used when a model entry has
@@ -25,6 +26,20 @@ import { createSingleFlight } from '../../lib/singleFlight.js';
 // progress protocol (STAGE:/STATUS:/DOWNLOAD:) as the mlx_video CLI.
 export const LTX2_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3');
 export const LTX2_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx2.py');
+
+// LTX-2.5 MLX runtime — MrMofer's ltx25 fork of dgrauet/ltx-2-mlx. Same
+// helper script as `ltx2`, separate checkout so the 2.3 pin stays frozen.
+export const LTX25_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2.5-mlx', '.venv', 'bin', 'python3');
+export const LTX25_REPO_DIR = join(homedir(), '.portos', 'ltx-2.5-mlx');
+export const LTX25_EXPECTED_REVISION = '57952288076766abe27dda3a774b2c24f7346977';
+// Shim roots for a substituted prompt conditioner (lib/videoTextEncoders.js).
+// Unlike the H3 sibling below — which composes a whole checkpoint root and
+// replaces only `text_encoder/` — an ltx25 shim is a standalone Gemma 4
+// checkpoint directory the runner points the pack's PromptEncoder at, so
+// nothing here links back into the model snapshot. Deliberately OUTSIDE
+// LTX25_REPO_DIR for the same reason: anything written inside the checkout
+// would read as untracked in that pin verification.
+export const LTX25_ENCODER_SHIM_DIR = join(homedir(), '.portos', 'ltx25-encoder-shims');
 
 // Wan 2.2 MLX runtime — pinned MLX-Gen checkout provisioned on demand.
 export const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'mlx-gen', '.venv', 'bin', 'python3');
@@ -41,6 +56,34 @@ export const MINIMAX_H3_RUNTIME_PROBE_SCRIPT = join(PATHS.root, 'scripts', 'mini
 export const MINIMAX_H3_LORA_PROBE_SCRIPT = join(PATHS.root, 'scripts', 'minimax_h3_lora_probe.py');
 export const MINIMAX_H3_REPO_DIR = join(homedir(), '.portos', 'minimax-h3-mlx');
 export const MINIMAX_H3_EXPECTED_REVISION = 'fcd9e9b79a1d6018d91ac477c0968de1fa067e49';
+// Composed checkpoint roots for a substituted prompt conditioner
+// (lib/videoTextEncoders.js). Each is a tree of symlinks into the upstream
+// FL2VA snapshot with only `text_encoder/` replaced, so the pinned runtime's
+// own `from_pretrained` loads it unmodified. Deliberately OUTSIDE
+// MINIMAX_H3_REPO_DIR: anything written inside the checkout would show up as
+// untracked in the pin verification that both /status and the render helper run.
+export const MINIMAX_H3_ENCODER_SHIM_DIR = join(homedir(), '.portos', 'minimax-h3-encoder-shims');
+
+// MiniMax H3 on CUDA — the diffusers `MiniMaxH3ModularPipeline` rather than a
+// pinned source checkout, so this runtime is a plain pip venv with no revision
+// to verify and no source package to keep clean.
+//
+// SHIPPED FOR WINDOWS AND LINUX. The venv is not win32-specific (which is why
+// the interpreter is resolved by venv layout below rather than assumed), and
+// since #4142 neither is the catalog: `getVideoModels()` selects `video.cuda`
+// on every non-Darwin platform, so a Linux install sees this runtime's model
+// row exactly as a Windows one does.
+export const MINIMAX_H3_CUDA_REPO_DIR = join(homedir(), '.portos', 'minimax-h3-cuda');
+export const MINIMAX_H3_CUDA_VENV_PYTHON = process.platform === 'win32'
+  ? join(MINIMAX_H3_CUDA_REPO_DIR, '.venv', 'Scripts', 'python.exe')
+  : join(MINIMAX_H3_CUDA_REPO_DIR, '.venv', 'bin', 'python3');
+export const MINIMAX_H3_CUDA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_minimax_h3_cuda.py');
+// Mirrors OFFLOAD_PROFILES in scripts/generate_minimax_h3_cuda.py. Kept in sync
+// by hand — the helper's argparse `choices=` is the enforcement, this list is
+// what lets the server reject a bad `offloadProfile` before queueing a render.
+export const MINIMAX_H3_CUDA_OFFLOAD_PROFILES = Object.freeze([
+  'auto', 'bf16', 'int8-stream', 'int8-lean',
+]);
 
 // HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
 // ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
@@ -76,6 +119,13 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: MINIMAX_H3_VENV_PYTHON,
     repoDir: MINIMAX_H3_REPO_DIR,
     installEnvVar: 'INSTALL_MINIMAX_H3',
+    // Cache-only: the runner never reaches the network, so the spawn site hands
+    // it a bare env and strips any ambient HF credential rather than passing one
+    // it neither needs nor may transmit. Absent means "the runner may fetch".
+    cacheOnly: true,
+    // The runner spawns children of its own (an ffmpeg mux, a git pin probe), so
+    // cancelling has to signal the whole group or they outlive the render.
+    killProcessGroup: true,
     repoUrl: 'https://github.com/PipeNetwork/minimax-h3-mlx',
     expectedRevision: MINIMAX_H3_EXPECTED_REVISION,
     // Source-only runtime: both status and the render helper verify this
@@ -99,6 +149,39 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     loraProbeArgs: [MINIMAX_H3_LORA_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
     fingerprintPackages: ['mlx', 'mlx-metal', 'mlx-vlm', 'transformers', 'huggingface-hub'],
   },
+  minimax_h3_cuda: {
+    id: 'minimax_h3_cuda',
+    label: 'MiniMax H3 CUDA',
+    venvPython: MINIMAX_H3_CUDA_VENV_PYTHON,
+    repoDir: MINIMAX_H3_CUDA_REPO_DIR,
+    installEnvVar: 'INSTALL_MINIMAX_H3_CUDA',
+    // Cache-only: see minimax_h3 above. The Video Gen UI owns every download.
+    cacheOnly: true,
+    killProcessGroup: true,
+    // Everything this runtime executes is an installed distribution, so there
+    // is no `expectedRevision` / `sourcePath` clean-checkout probe to run: the
+    // `==` set in scripts/requirements-minimax-h3-cuda.txt is the pin. `repoUrl`
+    // is therefore the integration's documentation rather than a clone source —
+    // there is no checkout under repoDir, only the venv.
+    repoUrl: 'https://huggingface.co/docs/diffusers/main/en/api/pipelines/minimax_h3',
+    // Because `repoUrl` is documentation here, the install banner must not say
+    // PortOS fetches the runtime "from" it — this names what is actually
+    // installed. Optional: a runtime that clones its repoUrl leaves it unset and
+    // the banner falls back to the URL, which is accurate for those.
+    installSourceLabel: 'pinned PyPI wheels',
+    // Three things must hold before a render is even attempted, and each fails
+    // as an unusable install rather than as a bad render: diffusers must carry
+    // the H3 modular integration (merged to main after v0.39.0 and in no tagged
+    // release yet, so a released wheel imports fine and then has no pipeline —
+    // which is why the requirements file pins a commit), torchao must be present
+    // (int8 weight-only is the only way the 133 GB bf16 pair fits a consumer
+    // card), and CUDA must actually be visible. A CPU-only torch is the trap
+    // here: it installs cleanly on Windows, hides the setup banner, and then
+    // renders a 33B model on the CPU.
+    importProbe: 'import torch; from diffusers import MiniMaxH3Transformer3DModel; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference; import torchao; assert torch.cuda.is_available(), "no CUDA device"',
+    // Mirror scripts/generate_minimax_h3_cuda.py's emit_runtime_fingerprint list.
+    fingerprintPackages: ['torch', 'diffusers', 'transformers', 'torchao', 'accelerate', 'huggingface-hub'],
+  },
   hunyuan: {
     id: 'hunyuan',
     label: 'HunyuanVideo MLX',
@@ -119,6 +202,7 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     venvPython: WAN22_VENV_PYTHON,
     repoDir: WAN22_REPO_DIR,
     installEnvVar: 'INSTALL_WAN22',
+    killProcessGroup: true,
     repoUrl: 'https://github.com/lpalbou/mlx-gen',
     expectedRevision: WAN22_EXPECTED_REVISION,
     pinEnvVar: 'WAN22_PIN',
@@ -140,19 +224,55 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     // Mirror scripts/generate_ltx2.py's emit_runtime_fingerprint package list.
     fingerprintPackages: ['ltx_pipelines_mlx', 'ltx_core_mlx', 'mlx', 'mlx_metal'],
   },
+  ltx25: {
+    id: 'ltx25',
+    label: 'LTX-2.5 MLX',
+    venvPython: LTX25_VENV_PYTHON,
+    repoDir: LTX25_REPO_DIR,
+    installEnvVar: 'INSTALL_LTX25',
+    repoUrl: 'https://github.com/MrMoferFRAN/ltx-2-mlx',
+    expectedRevision: LTX25_EXPECTED_REVISION,
+    pinEnvVar: 'LTX25_PIN',
+    importProbe: 'import ltx_pipelines_mlx',
+    fingerprintPackages: ['ltx_pipelines_mlx', 'ltx_core_mlx', 'mlx', 'mlx_metal'],
+  },
 });
 
 export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(Object.keys(BYOV_RUNTIME_INFO)));
 
+// Per-runtime EXECUTION facts, read off the registry rather than re-derived from
+// a runtime id at the spawn site. Both are "key absent means off", the same
+// convention `loraProbeArgs` / `expectedRevision` already use here — so the next
+// cache-only or group-killed runtime is a line in the table above rather than an
+// edit to the child-spawn path in local.js.
+export const runtimeIsCacheOnly = (runtime) => BYOV_RUNTIME_INFO[runtime]?.cacheOnly === true;
+export const runtimeNeedsProcessGroupKill = (runtime) => BYOV_RUNTIME_INFO[runtime]?.killProcessGroup === true;
+
+// Does this model render through the legacy Windows helper, `generate_win.py`?
+// That script is the fallback `buildArgs` reaches only after every BYOV runtime
+// has declined, so the answer is "on win32, and not a BYOV runtime" — NOT the
+// bare `process.platform === 'win32'` this used to be spelled as at three
+// separate sites in local.js.
+//
+// The distinction became load-bearing the moment Windows gained a BYOV runtime
+// (MiniMax H3 CUDA): `generate_win.py` hardcodes its repo and reads only
+// `--image`, so the platform check was standing in for facts that are true of
+// that ONE script — it takes no repo id, and it never opens the last frame.
+// Applied to an H3 CUDA render those become wrong answers: it does require a
+// pinned repo, and it does anchor both keyframes.
+export const routesToWindowsHelper = (model) => process.platform === 'win32'
+  && !BYOV_VIDEO_RUNTIMES.has(model?.runtime);
+
 // Runtimes whose FFLF *last* frame is a real conditioning anchor rather than an
 // advisory hint: ltx2 runs a true keyframe-interpolation pipeline, and
-// minimax_h3 packs both frames as fl2va conditioning rows. Every other runtime
+// both MiniMax H3 runtimes pack both frames as fl2va conditioning rows (the
+// anchoring is the checkpoint's, so the MLX and CUDA runners agree). Every other runtime
 // conditions on a single frame and drops the other. Declared once here because
 // three consumers must agree — buildArgs (which forwards it), the last-frame
 // resize in local.js (wasted ffmpeg work otherwise), and the client's
 // "last frame is advisory" note, which reads it off the model payload via
 // `lastFrameAnchored`.
-export const LAST_FRAME_ANCHORED_RUNTIMES = Object.freeze(new Set(['ltx2', 'minimax_h3']));
+export const LAST_FRAME_ANCHORED_RUNTIMES = Object.freeze(new Set([...LTX2_FAMILY_RUNTIMES, ...MINIMAX_H3_RUNTIMES]));
 
 export const modelAnchorsLastFrame = (model) => LAST_FRAME_ANCHORED_RUNTIMES.has(model?.runtime);
 
@@ -193,10 +313,9 @@ export async function isByovRuntimeReady(runtimeId) {
 // wedged import can't pin a request open; any spawn/exit failure is `false`.
 function runVenvProbe(venvPython, args) {
   return new Promise((resolve) => {
-    const child = spawn(venvPython, args, {
-      env: safeChildProcessEnv(),
+    const child = spawn(venvPython, args, safeChildProcessOptions({
       stdio: ['ignore', 'ignore', 'ignore'],
-    });
+    }));
     const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve(false); }, 30000);
     child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
     child.on('error', () => { clearTimeout(timer); resolve(false); });
@@ -264,6 +383,15 @@ export function videoLoraUnsupportedError(model, modelId) {
       { status: 400, code: 'MINIMAX_H3_LORA_UNSUPPORTED' },
     );
   }
+  if (model?.runtime === 'minimax_h3_cuda') {
+    // Do NOT fall through to the LTX-2 suggestion below: those are macOS/MLX
+    // entries, and this runtime only appears in the Windows catalog, so the
+    // advice would name models the user cannot select.
+    return new ServerError(
+      `MiniMax H3 on CUDA cannot apply LoRAs. Model "${modelId}" renders through diffusers' MiniMaxH3ModularPipeline, which has no LoRA path for H3. No video model in the Windows catalog takes LoRAs today.`,
+      { status: 400, code: 'MINIMAX_H3_LORA_UNSUPPORTED' },
+    );
+  }
   return new ServerError(
     `LoRAs aren't supported on this model. Model "${modelId}" runs on "${model?.runtime || 'mlx_video'}" — use an LTX-2.x model (dgrauet ltx2, or the bf16 Unified Beta).`,
     { status: 400, code: 'LORAS_REQUIRE_LTX2' },
@@ -288,10 +416,9 @@ export async function isByovRuntimeCurrent(runtimeId) {
     const args = info.sourcePath
       ? ['-C', info.repoDir, 'status', '--porcelain=v2', '--branch', '--untracked-files=all', '--', info.sourcePath]
       : ['-C', info.repoDir, 'rev-parse', 'HEAD'];
-    const child = spawn('git', args, {
-      env: safeChildProcessEnv(),
+    const child = spawn('git', args, safeChildProcessOptions({
       stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    }));
     const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve(false); }, 10000);
     child.stdout.on('data', (chunk) => { if (stdout.length < 128) stdout += chunk.toString(); });
     child.on('close', (code) => {
@@ -352,7 +479,7 @@ async function probeRuntimeFingerprint(runtimeId) {
       const child = spawn(
         info.venvPython,
         [RUNTIME_FINGERPRINT_SCRIPT, runtimeId, ...(info.fingerprintPackages || [])],
-        { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'ignore'] },
+        safeChildProcessOptions({ stdio: ['ignore', 'pipe', 'ignore'] }),
       );
       const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve({ error: 'timeout' }); }, 15000);
       child.stdout.on('data', (c) => { if (out.length < FINGERPRINT_STDOUT_CAP) out += c.toString(); });

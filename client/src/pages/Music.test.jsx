@@ -9,6 +9,7 @@ import { afterEach } from 'vitest';
 vi.mock('../components/music/ArtistsManager', () => ({ default: () => <div data-testid="artists-manager" /> }));
 vi.mock('../components/music/AlbumsManager', () => ({ default: () => <div data-testid="albums-manager" /> }));
 vi.mock('../components/music/TracksManager', () => ({ default: () => <div data-testid="tracks-manager" /> }));
+vi.mock('../components/music/MusicDesigner', () => ({ default: () => <div data-testid="music-designer" /> }));
 
 import Music from './Music.jsx';
 
@@ -42,16 +43,16 @@ describe('<Music>', () => {
     expect(screen.queryByTestId('tracks-manager')).toBeNull();
   });
 
-  it('defaults bare /music to the artists tab', () => {
+  it('defaults bare /music to the stepped designer', () => {
     renderAt('/music');
-    expect(screen.getByTestId('artists-manager')).toBeInTheDocument();
+    expect(screen.getByTestId('music-designer')).toBeInTheDocument();
     expect(screen.queryByTestId('albums-manager')).toBeNull();
   });
 
   it('redirects an unknown tab param to /music/artists', () => {
     renderAt('/music/bogus');
-    expect(screen.getByTestId('location')).toHaveTextContent('/music/artists');
-    expect(screen.getByTestId('artists-manager')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/music/generate');
+    expect(screen.getByTestId('music-designer')).toBeInTheDocument();
   });
 
   it('clicking a TabPill navigates the URL to the matching tab route', () => {

@@ -20,9 +20,14 @@ vi.mock('../lib/fileUtils.js', () => ({
 // assertion holds deterministically (an unpinned `{}` would fall back to the
 // runner's system tz and break these suites off a non-UTC CI runner). tz-specific
 // tests set settingsState.current to a real IANA zone.
-const settingsState = vi.hoisted(() => ({ current: { timezone: 'UTC' } }));
+const settingsState = vi.hoisted(() => ({ current: { timezone: 'UTC' }, onRead: null }));
 vi.mock('../services/settings.js', () => ({
-  getSettings: () => Promise.resolve(settingsState.current),
+  getSettings: () => {
+    const onRead = settingsState.onRead;
+    settingsState.onRead = null;
+    onRead?.();
+    return Promise.resolve(settingsState.current);
+  },
 }));
 
 import { readJSONFile, atomicWrite } from '../lib/fileUtils.js';
@@ -42,6 +47,8 @@ import {
   getMultiplicationProgress,
   getAdaptivePreview,
   getPostStats,
+  getPostSessions,
+  getPostSession,
   deriveTaskAccuracy,
   deriveTaskCompletion,
   getCognitiveProgress,
@@ -955,6 +962,11 @@ describe('resolveDrillConfig — progressive multiplication', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+    settingsState.current = { timezone: 'UTC' };
+  });
+
   it('starts a fresh user at level 0 (single×single) and strips maxDigits', async () => {
     mockSessions([]);
     const { config, progression } = await resolveDrillConfig('multiplication', { count: 10, maxDigits: 2 });
@@ -996,6 +1008,16 @@ describe('resolveDrillConfig — progressive multiplication', () => {
     expect(progression.level).toBe(2);
     expect(progression.floorLevel).toBe(2);
     expect(config.factors).toEqual([1, 1, 1]);
+  });
+
+  it('includes legacy ISO sessions whose user-local day is at the window edge', async () => {
+    settingsState.current = { timezone: 'Asia/Tokyo' };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-18T00:30:00.000Z'));
+    mockSessions([masteredSession(0, 14, 2500, '2026-06-17T15:30:00.000Z')]);
+
+    const progression = await getMultiplicationProgress();
+    expect(progression.level).toBe(1);
   });
 
   it('getMultiplicationProgress exposes the full ladder + thresholds', async () => {
@@ -1283,6 +1305,7 @@ describe('adaptive signal is accuracy-driven — fast-sloppy vs slow-accurate di
 
 describe('getPostStats — byModule averaging, days window cutoff, empty-window shape', () => {
   beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { settingsState.current = { timezone: 'UTC' }; });
 
   function mockSessions(sessions) {
     readJSONFile.mockImplementation((path, defaultValue) => {
@@ -1325,6 +1348,16 @@ describe('getPostStats — byModule averaging, days window cutoff, empty-window 
     const stats = await getPostStats(days);
     expect(stats.sessionCount).toBe(1);
     expect(stats.overall).toBe(100);
+  });
+
+  it('filters legacy ISO session history by the configured local day', async () => {
+    settingsState.current = { timezone: 'America/Los_Angeles' };
+    mockSessions([
+      { date: '2026-07-18T00:30:00.000Z', score: 100, tasks: [] },
+    ]);
+
+    const sessions = await getPostSessions('2026-07-17', '2026-07-17');
+    expect(sessions).toHaveLength(1);
   });
 
   it('returns the zeroed empty-window shape when nothing falls inside the window, but streaks still pass through from all-time history', async () => {
@@ -1371,7 +1404,11 @@ describe('getPostStats — byModule averaging, days window cutoff, empty-window 
 
 describe('getPostStats / submitPostSession — timezone-correct day boundary (issue #2681)', () => {
   beforeEach(() => { vi.clearAllMocks(); });
-  afterEach(() => { vi.useRealTimers(); settingsState.current = { timezone: 'UTC' }; });
+  afterEach(() => {
+    vi.useRealTimers();
+    settingsState.current = { timezone: 'UTC' };
+    settingsState.onRead = null;
+  });
 
   function mockSessions(sessions) {
     readJSONFile.mockImplementation((path, defaultValue) => {
@@ -1425,6 +1462,33 @@ describe('getPostStats / submitPostSession — timezone-correct day boundary (is
     expect(stats.todayScore).toBe(72);
   });
 
+  it('uses the user-local day for legacy ISO sessions in the stats window (Asia/Tokyo)', async () => {
+    // The instant is July 17 in Tokyo but its UTC prefix is July 16. A one-day
+    // local window ending July 18 must still include it.
+    freezeAt('2026-07-18T00:30:00Z', 'Asia/Tokyo');
+    mockSessions([
+      { date: '2026-07-16T15:30:00.000Z', score: 84, tasks: [{ module: 'mental-math', type: 'doubling-chain', score: 84 }] },
+    ]);
+    const stats = await getPostStats(1);
+    expect(stats.sessionCount).toBe(1);
+    expect(stats.overall).toBe(84);
+  });
+
+  it('anchors the read-side day to the request-start instant when settings resolve after midnight', async () => {
+    // The settings read crosses LA midnight. The loaded session still belongs to
+    // the request-start local day; todayInTimezone must use that captured instant
+    // rather than the clock after the awaited settings read.
+    freezeAt('2026-07-18T06:59:59.000Z', 'America/Los_Angeles');
+    settingsState.onRead = () => vi.setSystemTime(new Date('2026-07-18T07:00:01.000Z'));
+    mockSessions([
+      { date: '2026-07-17', score: 91, tasks: [{ module: 'mental-math', type: 'doubling-chain', score: 91 }] },
+    ]);
+
+    const stats = await getPostStats(30);
+    expect(stats.completedToday).toBe(true);
+    expect(stats.todayScore).toBe(91);
+  });
+
   it('submitPostSession stamps a new session date in the user local timezone, not the server UTC day', async () => {
     // UTC day July 16 / LA day July 15 — a freshly submitted session must be
     // dated by the user's local day so completedToday later agrees with it.
@@ -1435,6 +1499,117 @@ describe('getPostStats / submitPostSession — timezone-correct day boundary (is
       tasks: [{ module: 'mental-math', type: 'doubling-chain', questions: [] }],
     });
     expect(session.date).toBe('2026-07-15');
+  });
+});
+
+// =============================================================================
+// Re-derived day keys after a timezone CHANGE (issue #4168)
+//
+// #2681 fixed the steady state: a session is stamped in the zone configured at
+// write time. The residual gap is what happens when the user later CHANGES
+// settings.timezone — the stored `date` is frozen in the old zone and disagrees
+// with the new-zone readers. These tests hold the history fixed (the exact bytes
+// a previous zone wrote) and flip only the setting, which is what a user moving
+// house actually does.
+// =============================================================================
+
+describe('POST readers re-derive day keys after a timezone change (issue #4168)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => {
+    vi.useRealTimers();
+    settingsState.current = { timezone: 'UTC' };
+  });
+
+  // History written while the user was in Los Angeles: each session's `date` is
+  // the LA day, while `startedAt` is the true instant (late local evening, so it
+  // already belongs to the NEXT UTC day).
+  const laHistory = [
+    {
+      date: '2026-07-16',
+      startedAt: '2026-07-17T05:30:00.000Z',
+      completedAt: '2026-07-17T05:45:00.000Z',
+      score: 70,
+      tasks: [{ module: 'mental-math', type: 'doubling-chain', score: 70 }],
+    },
+    {
+      date: '2026-07-17',
+      startedAt: '2026-07-18T05:30:00.000Z',
+      completedAt: '2026-07-18T05:45:00.000Z',
+      score: 90,
+      tasks: [{ module: 'mental-math', type: 'doubling-chain', score: 90 }],
+    },
+  ];
+
+  function mockHistory(sessions) {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      if (String(path).includes('post-sessions')) return Promise.resolve({ sessions });
+      return Promise.resolve(defaultValue);
+    });
+  }
+
+  function freezeAt(utcIso, timezone) {
+    settingsState.current = { timezone };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(utcIso));
+  }
+
+  it('getPostSessions re-keys stored dates into the CURRENT timezone', async () => {
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory(laHistory);
+    const sessions = await getPostSessions();
+    expect(sessions.map(s => s.date)).toEqual(['2026-07-17', '2026-07-18']);
+    // The stored record is untouched — the derived key is a read-time view.
+    expect(laHistory.map(s => s.date)).toEqual(['2026-07-16', '2026-07-17']);
+  });
+
+  it('getPostStats counts the streak and today against the new zone', async () => {
+    // Under UTC the second session lands on 2026-07-18, which IS today there.
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory(laHistory);
+    const stats = await getPostStats(30);
+    // The frozen LA keys would have read completedToday=false (last stored day 07-17).
+    expect(stats.completedToday).toBe(true);
+    expect(stats.todayScore).toBe(90);
+    expect(stats.currentStreak).toBe(2);
+  });
+
+  it('the same history still reads correctly back in the original zone', async () => {
+    // Nothing was rewritten, so moving the setting back restores the LA days.
+    freezeAt('2026-07-18T05:45:00Z', 'America/Los_Angeles');
+    mockHistory(laHistory);
+    const stats = await getPostStats(30);
+    expect(stats.completedToday).toBe(true);
+    expect(stats.todayScore).toBe(90);
+    expect(stats.currentStreak).toBe(2);
+    expect(stats.lastDate).toBe('2026-07-17');
+  });
+
+  it('the from/to range filter matches the re-derived days, not the stored ones', async () => {
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory(laHistory);
+    // '2026-07-16' is nobody's day under UTC — both records moved forward one day.
+    expect(await getPostSessions('2026-07-16', '2026-07-16')).toHaveLength(0);
+    expect(await getPostSessions('2026-07-18', '2026-07-18')).toHaveLength(1);
+  });
+
+  it('getPostSession re-keys the single record the same way the list does', async () => {
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory(laHistory.map((s, i) => ({ ...s, id: `s${i}` })));
+    const session = await getPostSession('s1');
+    expect(session.date).toBe('2026-07-18');
+    expect(await getPostSession('missing')).toBeNull();
+  });
+
+  it('leaves a legacy record with no instant on its authored day', async () => {
+    // Pre-timestamp history carries only a day label — there is nothing to
+    // re-derive from, so it must stay put rather than vanish from the stats.
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory([
+      { date: '2026-07-18', score: 55, tasks: [{ module: 'mental-math', type: 'doubling-chain', score: 55 }] },
+    ]);
+    const stats = await getPostStats(30);
+    expect(stats.completedToday).toBe(true);
+    expect(stats.todayScore).toBe(55);
   });
 });
 

@@ -225,15 +225,15 @@ const DEFAULT_MAX_DIFF_BYTES = 200 * 1024; // 200 KB — a bug fix, not a rewrit
 // Files the autofixer must never modify on the live checkout, even if the diff
 // applies cleanly. Secrets, VCS internals, and CI/hook config are out of scope.
 const FORBIDDEN_PATH_PATTERNS = [
-  /(^|\/)\.git(\/|$)/,
-  /(^|\/)\.env(\.|$)/,
-  /(^|\/)\.npmrc$/,
-  /(^|\/)\.aws(\/|$)/,
-  /(^|\/)\.ssh(\/|$)/,
-  /(^|\/)id_rsa/,
+  /(^|[\\/])\.git([\\/]|$)/,
+  /(^|[\\/])\.env(\.|$)/,
+  /(^|[\\/])\.npmrc$/,
+  /(^|[\\/])\.aws([\\/]|$)/,
+  /(^|[\\/])\.ssh([\\/]|$)/,
+  /(^|[\\/])id_rsa/,
   /\.pem$/,
-  /(^|\/)\.github(\/|$)/,
-  /(^|\/)\.claude(\/|$)/,
+  /(^|[\\/])\.github([\\/]|$)/,
+  /(^|[\\/])\.claude([\\/]|$)/,
 ];
 
 /**

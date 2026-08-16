@@ -9,12 +9,16 @@
  * `mediaKey` image item if one exists, but the in-page add form uses URL/text.
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
-import { ArrowLeft, ImageIcon, FileText, Trash2, Plus, Save, Link2, Unlink, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ImageIcon, FileText, Trash2, Plus, Save, Link2, Unlink, RefreshCw, Images, Film, Play, ScanEye, Copy } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
+import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
+import GalleryVideoPicker from '../components/videoGen/GalleryVideoPicker';
+import { PromptFromMediaModal } from '../components/media/PromptFromMedia';
+import { copyToClipboard } from '../lib/clipboard';
 import {
   getMoodBoard,
   updateMoodBoard,
@@ -25,7 +29,7 @@ import {
   unlinkMoodBoardPinterest,
   syncMoodBoardPinterest,
 } from '../services/api';
-import { moodBoardItemSrc } from '../lib/moodBoardItemSrc';
+import { moodBoardItemSrc, moodBoardItemVideoSrc, moodBoardItemAnalysisSource } from '../lib/moodBoardItemSrc';
 import { timeAgo } from '../utils/formatters';
 import useMounted from '../hooks/useMounted';
 
@@ -46,6 +50,16 @@ export default function MoodBoardDetail() {
   const [caption, setCaption] = useState('');
   const [source, setSource] = useState('');
   const [adding, setAdding] = useState(false);
+
+  // Gallery pickers (#4188) + inline video playback.
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
+  const [videoPickerOpen, setVideoPickerOpen] = useState(false);
+  const [playingItemId, setPlayingItemId] = useState(null);
+
+  // Per-item prompt-from-media analysis (#4188 Phase 3). Track the item by id
+  // (not a snapshot) so the modal's stored-analysis view stays fresh after the
+  // persist PATCH updates the board state.
+  const [analyzeItemId, setAnalyzeItemId] = useState(null);
 
   // Pinterest link/sync.
   const [pinUrl, setPinUrl] = useState('');
@@ -84,6 +98,17 @@ export default function MoodBoardDetail() {
 
   const metaDirty = board && (name.trim() !== (board.name || '') || description !== (board.description || ''));
 
+  // The item under analysis (#4188 Phase 3), re-derived from board state so the
+  // modal's stored-analysis view stays fresh after the persist PATCH. The
+  // source is memoized on the item's identity: PromptFromMedia resets its panel
+  // when its `initialSource` identity changes, so a fresh object every render
+  // would wipe an in-flight run on unrelated re-renders. (Lives above the
+  // loading/not-found early returns — hooks must run unconditionally.)
+  const analyzeItem = analyzeItemId
+    ? ((Array.isArray(board?.items) ? board.items : []).find((it) => it.id === analyzeItemId) || null)
+    : null;
+  const analyzeSource = useMemo(() => moodBoardItemAnalysisSource(analyzeItem), [analyzeItem]);
+
   const handleSaveMeta = async () => {
     if (!name.trim()) { toast.error('Board name is required'); return; }
     setSavingMeta(true);
@@ -115,11 +140,76 @@ export default function MoodBoardDetail() {
     resetAddForm();
   };
 
+  // Gallery-picker pins (#4188). Both pickers hand back a normalized media
+  // item; the payload mirrors PinToMoodBoardMenu's shape — mediaKey for source
+  // linkage + a directly-renderable preview. A video pin's mediaKey ref is the
+  // FILENAME (`video:<file>.mp4`) so playback and peer-sync asset transfer
+  // both resolve without an id→filename lookup.
+  const addPickedItem = async (payload) => {
+    const item = await addMoodBoardItem(id, payload, { silent: true }).catch(() => null);
+    if (!item) { toast.error('Failed to add item'); return; }
+    setBoard((prev) => (prev ? { ...prev, items: [...(prev.items || []), item] } : prev));
+  };
+
+  const handlePickGalleryImage = (picked) => {
+    if (!picked?.previewUrl && !picked?.key) return;
+    addPickedItem({
+      type: 'image',
+      mediaKey: typeof picked.key === 'string' && picked.key.startsWith('image:') ? picked.key : null,
+      imageUrl: picked.previewUrl || null,
+    });
+  };
+
+  const handlePickGalleryVideo = (picked) => {
+    if (!picked?.filename) return;
+    addPickedItem({
+      type: 'video',
+      mediaKey: `video:${picked.filename}`,
+      imageUrl: picked.previewUrl || null,
+    });
+  };
+
   const handleUpdateCaption = async (itemId, nextCaption) => {
     const item = await updateMoodBoardItem(id, itemId, { caption: nextCaption || null }, { silent: true }).catch(() => null);
     if (!item) { toast.error('Failed to update caption'); return; }
     setBoard((prev) => (prev
       ? { ...prev, items: (prev.items || []).map((it) => (it.id === itemId ? item : it)) }
+      : prev));
+  };
+
+  // Persist a prompt-from-media run onto the item (#4188 Phase 3). The
+  // analyzer can return an image and/or a video prompt; store the one that
+  // matches the item's own type, falling back to whichever was generated.
+  const persistAnalysis = async (item, result) => {
+    const preferVideo = item.type === 'video';
+    const primary = preferVideo ? result.videoPrompt : result.imagePrompt;
+    const fallback = preferVideo ? result.imagePrompt : result.videoPrompt;
+    const usedPrimary = primary != null && primary !== '';
+    const prompt = usedPrimary ? primary : fallback;
+    if (!prompt) return;
+    const negative = usedPrimary
+      ? (preferVideo ? result.videoNegativePrompt : result.imageNegativePrompt)
+      : (preferVideo ? result.imageNegativePrompt : result.videoNegativePrompt);
+    const analysis = {
+      prompt,
+      negativePrompt: negative || null,
+      rationale: result.rationale || null,
+      providerId: result.providerId || null,
+      model: result.model || null,
+    };
+    const updated = await updateMoodBoardItem(id, item.id, { analysis }, { silent: true }).catch(() => null);
+    if (!updated) { toast.error('Analysis ran but could not be saved to the item'); return; }
+    setBoard((prev) => (prev
+      ? { ...prev, items: (prev.items || []).map((it) => (it.id === item.id ? updated : it)) }
+      : prev));
+    toast.success('Analysis saved to item');
+  };
+
+  const handleClearAnalysis = async (itemId) => {
+    const updated = await updateMoodBoardItem(id, itemId, { analysis: null }, { silent: true }).catch(() => null);
+    if (!updated) { toast.error('Failed to remove analysis'); return; }
+    setBoard((prev) => (prev
+      ? { ...prev, items: (prev.items || []).map((it) => (it.id === itemId ? updated : it)) }
       : prev));
   };
 
@@ -334,25 +424,44 @@ export default function MoodBoardDetail() {
 
       {/* Add item */}
       <div className="bg-port-card border border-port-border rounded-md p-4 mb-6">
-        <div className="flex items-center gap-2 mb-3" role="tablist" aria-label="Item type">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={itemType === 'image'}
-            onClick={() => setItemType('image')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded transition-colors ${itemType === 'image' ? 'bg-port-accent text-white' : 'bg-port-bg text-gray-400 hover:text-white'}`}
-          >
-            <ImageIcon className="w-4 h-4" aria-hidden="true" /> Image
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={itemType === 'text'}
-            onClick={() => setItemType('text')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded transition-colors ${itemType === 'text' ? 'bg-port-accent text-white' : 'bg-port-bg text-gray-400 hover:text-white'}`}
-          >
-            <FileText className="w-4 h-4" aria-hidden="true" /> Note
-          </button>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="flex items-center gap-2" role="tablist" aria-label="Item type">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={itemType === 'image'}
+              onClick={() => setItemType('image')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded transition-colors ${itemType === 'image' ? 'bg-port-accent text-white' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+            >
+              <ImageIcon className="w-4 h-4" aria-hidden="true" /> Image
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={itemType === 'text'}
+              onClick={() => setItemType('text')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded transition-colors ${itemType === 'text' ? 'bg-port-accent text-white' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+            >
+              <FileText className="w-4 h-4" aria-hidden="true" /> Note
+            </button>
+          </div>
+          {/* Gallery pins (#4188) — pick or upload, added to the board immediately. */}
+          <div className="flex items-center gap-2 sm:ml-auto">
+            <button
+              type="button"
+              onClick={() => setImagePickerOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-port-bg text-gray-400 hover:text-white transition-colors"
+            >
+              <Images className="w-4 h-4" aria-hidden="true" /> Pick from gallery
+            </button>
+            <button
+              type="button"
+              onClick={() => setVideoPickerOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-port-bg text-gray-400 hover:text-white transition-colors"
+            >
+              <Film className="w-4 h-4" aria-hidden="true" /> Pick video
+            </button>
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -429,9 +538,58 @@ export default function MoodBoardDetail() {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {items.map((item) => {
             const src = moodBoardItemSrc(item);
+            const videoSrc = moodBoardItemVideoSrc(item);
+            const analysisSource = moodBoardItemAnalysisSource(item);
             return (
               <div key={item.id} className="bg-port-card border border-port-border rounded-md overflow-hidden flex flex-col">
-                {item.type === 'image' ? (
+                {item.type === 'video' && videoSrc ? (
+                  playingItemId === item.id ? (
+                    // eslint-disable-next-line jsx-a11y/media-has-caption -- reference clips have no caption track
+                    <video
+                      src={videoSrc}
+                      poster={src || undefined}
+                      controls
+                      autoPlay
+                      playsInline
+                      className="w-full aspect-square object-cover bg-black"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setPlayingItemId(item.id)}
+                      aria-label="Play video"
+                      className="relative w-full aspect-square bg-port-bg text-gray-600 group"
+                    >
+                      {src ? (
+                        <img
+                          src={src}
+                          alt={item.caption || ''}
+                          loading="lazy"
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            // A synced board can carry a poster URL whose file
+                            // only exists on the sending machine (a downloaded
+                            // video's thumbnail is named `<id>.jpg`, not
+                            // `<filename-stem>.jpg`). The receiver regenerates
+                            // the stem-named poster when it pulls the video, so
+                            // fall back to that derived name on a 404.
+                            const fallback = moodBoardItemSrc({ ...item, imageUrl: null });
+                            if (fallback && e.currentTarget.getAttribute('src') !== fallback) {
+                              e.currentTarget.src = fallback;
+                            }
+                          }}
+                        />
+                      ) : (
+                        <span className="w-full h-full flex items-center justify-center">
+                          <Film className="w-8 h-8" aria-hidden="true" />
+                        </span>
+                      )}
+                      <span className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <Play className="w-8 h-8 text-white drop-shadow" aria-hidden="true" />
+                      </span>
+                    </button>
+                  )
+                ) : item.type === 'image' || item.type === 'video' ? (
                   src ? (
                     <img src={src} alt={item.caption || ''} loading="lazy" className="w-full aspect-square object-cover bg-port-bg" />
                   ) : (
@@ -447,6 +605,7 @@ export default function MoodBoardDetail() {
                 <div className="p-2 flex flex-col gap-1">
                   <input
                     type="text"
+                    aria-label="Item caption"
                     defaultValue={item.caption || ''}
                     placeholder="Add a caption…"
                     maxLength={2000}
@@ -460,15 +619,28 @@ export default function MoodBoardDetail() {
                     {item.source ? (
                       <span className="text-[10px] text-gray-500 truncate" title={item.source}>{item.source}</span>
                     ) : <span />}
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingItemId(item.id)}
-                      title="Remove item"
-                      aria-label="Remove item"
-                      className="p-1 text-gray-500 hover:text-port-error transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      {analysisSource ? (
+                        <button
+                          type="button"
+                          onClick={() => setAnalyzeItemId(item.id)}
+                          title={item.analysis ? 'View AI analysis' : 'Analyze with AI'}
+                          aria-label={item.analysis ? 'View AI analysis' : 'Analyze with AI'}
+                          className={`p-1 transition-colors ${item.analysis ? 'text-port-accent hover:text-port-accent/80' : 'text-gray-500 hover:text-white'}`}
+                        >
+                          <ScanEye className="w-3.5 h-3.5" aria-hidden="true" />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingItemId(item.id)}
+                        title="Remove item"
+                        aria-label="Remove item"
+                        className="p-1 text-gray-500 hover:text-port-error transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
                   {confirmingItemId === item.id ? (
                     <InlineConfirmRow
@@ -484,6 +656,84 @@ export default function MoodBoardDetail() {
           })}
         </div>
       )}
+
+      <GalleryImagePicker
+        open={imagePickerOpen}
+        onClose={() => setImagePickerOpen(false)}
+        onSelect={handlePickGalleryImage}
+        allowUpload
+      />
+      <GalleryVideoPicker
+        open={videoPickerOpen}
+        onClose={() => setVideoPickerOpen(false)}
+        onSelect={handlePickGalleryVideo}
+        allowUpload
+        uploadToGallery
+      />
+
+      {/* Per-item prompt-from-media analysis (#4188 Phase 3). A successful run
+          auto-persists onto the item; the stored analysis renders above the
+          analyzer with copy/remove. */}
+      {analyzeItem ? (
+        <PromptFromMediaModal
+          item={analyzeSource}
+          open
+          onClose={() => setAnalyzeItemId(null)}
+          kindDefault={analyzeItem.type === 'video' ? 'video' : 'image'}
+          onResult={(result) => persistAnalysis(analyzeItem, result)}
+        >
+          {analyzeItem.analysis ? (
+            <div className="mb-4 p-3 bg-port-bg border border-port-border rounded-lg space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500">
+                  Saved analysis{analyzeItem.analysis.analyzedAt ? ` · ${timeAgo(analyzeItem.analysis.analyzedAt)}` : ''}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(analyzeItem.analysis.prompt, 'Analysis prompt copied')}
+                    className="p-1 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
+                    aria-label="Copy saved analysis prompt"
+                  >
+                    <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleClearAnalysis(analyzeItem.id)}
+                    className="px-2 py-1 rounded text-[11px] text-gray-400 hover:text-port-error transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+              {analyzeItem.analysis.rationale ? (
+                <p className="text-xs text-gray-300">{analyzeItem.analysis.rationale}</p>
+              ) : null}
+              <textarea
+                readOnly
+                value={analyzeItem.analysis.prompt}
+                rows={4}
+                aria-label="Saved analysis prompt"
+                className="w-full bg-port-card border border-port-border rounded-lg p-2 text-xs text-white resize-y"
+              />
+              {analyzeItem.analysis.negativePrompt ? (
+                <textarea
+                  readOnly
+                  value={analyzeItem.analysis.negativePrompt}
+                  rows={2}
+                  aria-label="Saved analysis negative prompt"
+                  className="w-full bg-port-card border border-port-border rounded-lg p-2 text-xs text-gray-300 resize-y"
+                />
+              ) : null}
+              {(analyzeItem.analysis.providerId || analyzeItem.analysis.model) ? (
+                <p className="text-[10px] text-gray-500 truncate">
+                  {[analyzeItem.analysis.providerId, analyzeItem.analysis.model].filter(Boolean).join(' · ')}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </PromptFromMediaModal>
+      ) : null}
     </div>
   );
 }

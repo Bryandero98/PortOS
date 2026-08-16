@@ -1,7 +1,7 @@
 import { readdir, stat, lstat, rm, writeFile as fsWriteFile } from 'fs/promises';
 import { join, relative, resolve, isAbsolute } from 'path';
 import { existsSync } from 'fs';
-import { execFile } from 'child_process';
+import { execFile } from '../lib/childProcess.js';
 import { promisify } from 'util';
 import { PATHS, ensureDir, isTopLevelEntryName } from '../lib/fileUtils.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -54,6 +54,7 @@ export const CATEGORIES = {
   // but installs that predate that move still carry the dir, and backup still excludes it.
   'browser-downloads': { label: 'Browser Downloads', description: 'Files the agent browser downloaded — re-downloadable, safe to purge', archivable: false, deletable: true, purgeScope: 'category' },
   'browser-profile': { label: 'Browser Profile', description: 'Chrome/Chromium browser data', archivable: false, deletable: true, purgeScope: 'category' },
+  cache: { label: 'Remote API Cache', description: 'Cached metadata from remote APIs (Hugging Face repo records) — refetched on demand, safe to purge', archivable: false, deletable: true, purgeScope: 'category' },
   'calendar': { label: 'Calendar', description: 'Calendar sync data', archivable: true, deletable: false },
   'certs': { label: 'TLS Certificates', description: 'HTTPS certificate and private key — purging drops the install back to HTTP', archivable: false, deletable: false },
   'commission-feedback': { label: 'Commission Feedback', description: 'Reactions on creative commissions (file mirror of the Postgres store)', archivable: true, deletable: false },
@@ -168,10 +169,10 @@ const SAFE_NAME = /^[a-z0-9_-]+$/;
 async function getDirSizeAndCount(dirPath) {
   if (!existsSync(dirPath)) return { size: 0, fileCount: 0 };
   const [duOut, findOut] = await Promise.all([
-    execFileAsync('du', ['-sk', dirPath], { windowsHide: true, timeout: 30000 })
+    execFileAsync('du', ['-sk', dirPath], { timeout: 30000 })
       .then(r => r.stdout.trim())
       .catch(() => '0'),
-    execFileAsync('find', [dirPath, '-type', 'f'], { windowsHide: true, timeout: 30000 })
+    execFileAsync('find', [dirPath, '-type', 'f'], { timeout: 30000 })
       .then(r => r.stdout.trim().split('\n').filter(Boolean).length)
       .catch(() => 0)
   ]);
@@ -277,7 +278,7 @@ export async function archiveCategory(categoryKey, options = {}) {
     // Write file list to temp file to avoid shell argument limits
     const listPath = join(backupDir, `.filelist-${Date.now()}.txt`);
     await fsWriteFile(listPath, oldFiles.join('\n'));
-    await execFileAsync('tar', ['-czf', archivePath, '-C', dirPath, '-T', listPath], { timeout: 120000, windowsHide: true });
+    await execFileAsync('tar', ['-czf', archivePath, '-C', dirPath, '-T', listPath], { timeout: 120000 });
     await rm(listPath).catch(() => {});
 
     for (const f of oldFiles) {
@@ -289,7 +290,7 @@ export async function archiveCategory(categoryKey, options = {}) {
   }
 
   // Generic: archive entire category contents
-  await execFileAsync('tar', ['-czf', archivePath, '-C', DATA_DIR, categoryKey], { timeout: 120000, windowsHide: true });
+  await execFileAsync('tar', ['-czf', archivePath, '-C', DATA_DIR, categoryKey], { timeout: 120000 });
   const archiveStat = await stat(archivePath).catch(() => null);
 
   return {

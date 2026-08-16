@@ -9,7 +9,7 @@
  */
 
 import { Router } from 'express';
-import { spawn } from 'child_process';
+import { spawn } from '../../lib/childProcess.js';
 import { basename, join } from 'path';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
 import { deriveProjectInfo } from '../../services/xcodeScripts.js';
@@ -28,7 +28,6 @@ function spawnDetached(cmd, args, options = {}) {
   const child = spawn(cmd, args, {
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
     ...options
   });
   child.on('error', (err) => console.error(`❌ Failed to launch '${cmd}': ${err.message}`));

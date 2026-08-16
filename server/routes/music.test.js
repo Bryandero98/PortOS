@@ -4,26 +4,67 @@ import { request } from '../lib/testHelper.js';
 import { ServerError } from '../lib/errorHandler.js';
 
 // Mock the music-gen service: a small engine registry + a generateMusic that the
-// tests drive per-case. The route only consumes ENGINES/getEngine/isEngineReady/
+// tests drive per-case. The route only consumes ENGINES/getEngine/isEngineHealthy/
 // generateMusic + DEFAULT_ENGINE_ID.
 const gen = vi.hoisted(() => ({
   generateMusic: vi.fn(),
   ready: true,
   readyByEngine: null,
+  healthy: null,
+  healthyByEngine: null,
+  unsupportedPlatform: null,
+}));
+const cuda = vi.hoisted(() => ({ status: 'available' }));
+vi.mock('../lib/cudaCapability.js', () => ({
+  getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: null, error: null })),
 }));
 vi.mock('../services/pipeline/musicGen.js', () => {
   const ENGINES = {
     musicgen: { id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }], defaultModelId: 'm', minDurationSec: 1, maxDurationSec: 30, defaultDurationSec: 12, installEnv: 'INSTALL_MUSICGEN', venvDefault: '/v/mg', resolvePython: () => (gen.ready ? '/v/mg/bin/python3' : null), customModels: true },
     acestep: { id: 'acestep', name: 'ACE-Step', models: [{ id: 'a', name: 'A' }], defaultModelId: 'a', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP', venvDefault: '/v/ace', resolvePython: () => (gen.ready ? '/v/ace/bin/python3' : null), lyrics: true, customModels: false },
+    acestep15: { id: 'acestep15', name: 'ACE-Step 1.5', models: [{ id: 'ace-step-v1.5', repo: 'ACE-Step/Ace-Step1.5', name: 'ACE-Step 1.5' }], defaultModelId: 'ace-step-v1.5', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP15', venvDefault: '/v/ace15', resolvePython: () => (gen.ready ? '/v/ace15/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true },
+    'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3' }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true },
   };
   return {
     ENGINES,
     DEFAULT_ENGINE_ID: 'musicgen',
     getEngine: (id) => ENGINES[id] || ENGINES.musicgen,
     isEngineReady: (engineId) => (gen.readyByEngine ? gen.readyByEngine[engineId] === true : gen.ready),
+    // The route reads readiness through isEngineHealthy (the import probe), so
+    // `gen.healthyByEngine` / `gen.healthy` drive it; both default to the same
+    // `ready` knobs so existing cases keep their meaning.
+    isEnginePlatformSupported: (engineId) => (gen.unsupportedPlatform ? engineId !== gen.unsupportedPlatform : true),
+    enginePlatformLabel: () => 'macOS on Apple Silicon (MLX)',
+    isEngineHealthy: async (engineId) => {
+      if (gen.healthyByEngine) return gen.healthyByEngine[engineId] === true;
+      if (gen.healthy !== null) return gen.healthy;
+      return gen.readyByEngine ? gen.readyByEngine[engineId] === true : gen.ready;
+    },
+    invalidateEngineHealth: vi.fn(),
     generateMusic: gen.generateMusic,
   };
 });
+
+// The install route shells out to scripts/setup-image-video.sh. Stand in a child
+// that closes immediately so the SSE stream terminates instead of running a real
+// multi-GB bash install under the test.
+const setup = vi.hoisted(() => ({ spawn: vi.fn(), exitCode: 0 }));
+vi.mock('../lib/setupScriptRunner.js', async () => ({
+  // Keep the real SETUP_IMAGE_VIDEO_SCRIPT — the route existsSync-checks it.
+  ...(await vi.importActual('../lib/setupScriptRunner.js')),
+  stopSetupScript: vi.fn(),
+  spawnSetupScript: (env) => {
+    setup.spawn(env);
+    const listeners = {};
+    const child = {
+      stdout: { on: () => {} },
+      stderr: { on: () => {} },
+      on: (event, cb) => { listeners[event] = cb; },
+    };
+    Promise.resolve().then(() => listeners.close?.(setup.exitCode));
+    return child;
+  },
+}));
 
 vi.mock('../services/tracks/index.js', () => ({
   getTrack: vi.fn(),
@@ -69,8 +110,16 @@ vi.mock('../services/albums/index.js', () => ({
   updateAlbum: vi.fn(async (id, patch) => ({ id, ...patch })),
 }));
 
+// The stepped designer's two LLM steps (#4305) — stubbed so the route tests pin
+// validation + the exact service call args, not a provider round trip.
+vi.mock('../services/musicDesigner.js', () => ({
+  describeMusic: vi.fn(),
+  writeLyrics: vi.fn(),
+}));
+
 import * as tracks from '../services/tracks/index.js';
 import * as albums from '../services/albums/index.js';
+import * as designer from '../services/musicDesigner.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import musicRoutes from './music.js';
 
@@ -103,8 +152,111 @@ describe('music routes', () => {
     sse.run.mockReset().mockImplementation(async ({ res }) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"type":"complete"}\n\n'); });
     gen.ready = true;
     gen.readyByEngine = null;
+    gen.healthy = null;
+    gen.healthyByEngine = null;
+    gen.unsupportedPlatform = null;
+    setup.spawn.mockReset();
+    setup.exitCode = 0;
     cache.cached = true;
+    cuda.status = 'available';
     models.list.mockResolvedValue([{ id: 'm', name: 'M', userAdded: false }]);
+    designer.describeMusic.mockReset().mockResolvedValue({ description: 'Lush pads over a broken beat.', llm: { provider: 'fake-provider', model: 'fake-model' } });
+    designer.writeLyrics.mockReset().mockResolvedValue({ lyrics: '[verse]\nrain on the window', llm: { provider: 'fake-provider', model: 'fake-model' } });
+  });
+
+  describe('POST /describe', () => {
+    it('passes every designer field through to describeMusic and returns text + attribution', async () => {
+      const r = await request(app).post('/api/music/describe').send({
+        concept: 'a rainy downtempo loop',
+        guidance: 'under 100 BPM',
+        template: 'Be terse.',
+        providerId: 'fake-provider',
+        model: 'fake-model',
+        effort: 'high',
+      });
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({ description: 'Lush pads over a broken beat.', llm: { provider: 'fake-provider', model: 'fake-model' } });
+      expect(designer.describeMusic).toHaveBeenCalledWith({
+        concept: 'a rainy downtempo loop',
+        guidance: 'under 100 BPM',
+        template: 'Be terse.',
+        providerId: 'fake-provider',
+        model: 'fake-model',
+        effort: 'high',
+      });
+    });
+
+    it('normalizes empty picker values to undefined so the service falls back to its defaults', async () => {
+      const r = await request(app).post('/api/music/describe').send({
+        concept: 'a rainy downtempo loop', providerId: '', model: '   ', effort: '',
+      });
+      expect(r.status).toBe(200);
+      expect(designer.describeMusic).toHaveBeenCalledWith({
+        concept: 'a rainy downtempo loop',
+        guidance: undefined,
+        template: undefined,
+        providerId: undefined,
+        model: undefined,
+        effort: undefined,
+      });
+    });
+
+    it('rejects a missing/blank concept', async () => {
+      const missing = await request(app).post('/api/music/describe').send({});
+      expect(missing.status).toBe(400);
+      const blank = await request(app).post('/api/music/describe').send({ concept: '   ' });
+      expect(blank.status).toBe(400);
+      expect(designer.describeMusic).not.toHaveBeenCalled();
+    });
+
+    it('rejects a concept past the prompt-field cap', async () => {
+      const r = await request(app).post('/api/music/describe').send({ concept: 'x'.repeat(8001) });
+      expect(r.status).toBe(400);
+      expect(designer.describeMusic).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the service NO_PROVIDER error through the error middleware', async () => {
+      designer.describeMusic.mockRejectedValue(new ServerError('No AI provider available to describe the music', { status: 503, code: 'NO_PROVIDER' }));
+      const r = await request(app).post('/api/music/describe').send({ concept: 'x' });
+      expect(r.status).toBe(503);
+      expect(r.body.code).toBe('NO_PROVIDER');
+    });
+  });
+
+  describe('POST /lyrics', () => {
+    it('passes every designer field through to writeLyrics and returns lyrics + attribution', async () => {
+      const r = await request(app).post('/api/music/lyrics').send({
+        description: 'warm rhodes soul',
+        guidance: 'about leaving at dawn',
+        template: 'Two verses only.',
+        providerId: 'fake-provider',
+        model: 'fake-model',
+        effort: 'low',
+      });
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({ lyrics: '[verse]\nrain on the window', llm: { provider: 'fake-provider', model: 'fake-model' } });
+      expect(designer.writeLyrics).toHaveBeenCalledWith({
+        description: 'warm rhodes soul',
+        guidance: 'about leaving at dawn',
+        template: 'Two verses only.',
+        providerId: 'fake-provider',
+        model: 'fake-model',
+        effort: 'low',
+      });
+    });
+
+    it('rejects a missing description', async () => {
+      const r = await request(app).post('/api/music/lyrics').send({ guidance: 'about leaving at dawn' });
+      expect(r.status).toBe(400);
+      expect(designer.writeLyrics).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the service LLM_EMPTY error through the error middleware', async () => {
+      designer.writeLyrics.mockRejectedValue(new ServerError('The AI returned empty lyrics.', { status: 502, code: 'LLM_EMPTY' }));
+      const r = await request(app).post('/api/music/lyrics').send({ description: 'warm rhodes soul' });
+      expect(r.status).toBe(502);
+      expect(r.body.code).toBe('LLM_EMPTY');
+    });
   });
 
   it('GET /engines lists engines with readiness + lyric capability + merged models', async () => {
@@ -127,6 +279,31 @@ describe('music routes', () => {
     expect(r.status).toBe(200);
     expect(r.body.engines.find((e) => e.id === 'musicgen').ready).toBe(true);
     expect(r.body.engines.find((e) => e.id === 'acestep').ready).toBe(false);
+  });
+
+  it('GET /engines uses the CUDA capability status to expose installable MiniMax readiness', async () => {
+    cache.cached = false;
+    const supported = await request(app).get('/api/music/engines');
+    expect(supported.body.engines.find((e) => e.id === 'minimax-music3')).toMatchObject({
+      cudaState: 'available', fixedModelInstall: true, modelReady: false, runtimeReady: true, ready: false,
+    });
+
+    cuda.status = 'absent';
+    const unsupported = await request(app).get('/api/music/engines');
+    expect(unsupported.body.engines.find((e) => e.id === 'minimax-music3')).toMatchObject({
+      cudaState: 'absent', ready: false,
+    });
+  });
+
+  it('GET /engines exposes ACE-Step 1.5 as a fixed model install distinct from v1', async () => {
+    cache.cached = false;
+    const r = await request(app).get('/api/music/engines');
+    expect(r.status).toBe(200);
+    expect(r.body.engines.find((e) => e.id === 'acestep15')).toMatchObject({
+      lyrics: true, customModels: false, fixedModelInstall: true,
+      modelReady: false, runtimeReady: true, ready: false,
+      installEnv: 'INSTALL_ACESTEP15',
+    });
   });
 
   it('POST /models rejects an engine that does not support custom models (acestep)', async () => {
@@ -163,6 +340,50 @@ describe('music routes', () => {
     expect(r.status).toBe(200);
     expect(r.text).toContain('"type":"complete"');
     expect(r.text).toContain('Already installed');
+  });
+
+  it('GET /setup/runtime-install proceeds when the interpreter exists but the venv is broken', async () => {
+    // Regression: a failed install leaves the venv's interpreter behind, so the
+    // old interpreter-exists check short-circuited with "already installed" and
+    // the engine could never be repaired from the UI.
+    gen.ready = true;          // resolvePython() finds the leftover interpreter
+    gen.healthy = false;       // ...but the import probe fails
+    const r = await request(app).get('/api/music/setup/runtime-install?runtime=acestep');
+    expect(r.status).toBe(200);
+    expect(r.text).not.toContain('Already installed');
+    expect(r.text).toContain('Starting ACE-Step install.');
+    expect(setup.spawn).toHaveBeenCalled();
+  });
+
+  it('GET /engines reports a broken venv as not ready so the install hint shows', async () => {
+    gen.ready = true;
+    gen.healthy = false;
+    const r = await request(app).get('/api/music/engines');
+    expect(r.status).toBe(200);
+    const acestep = r.body.engines.find((e) => e.id === 'acestep');
+    expect(acestep.runtimeReady).toBe(false);
+    expect(acestep.ready).toBe(false);
+  });
+
+  it('GET /setup/runtime-install refuses on a host that can never run the engine', async () => {
+    // Previously the route spawned the setup script, whose own platform guard
+    // printed "Skipping." and exited 0 — surfaced to the user as "installer
+    // exited 0 but the engine is still not available".
+    gen.unsupportedPlatform = 'musicgen';
+    gen.healthy = false;
+    const r = await request(app).get('/api/music/setup/runtime-install?runtime=musicgen');
+    expect(r.status).toBe(200);
+    expect(r.text).toContain('cannot be installed on this host');
+    expect(setup.spawn).not.toHaveBeenCalled();
+  });
+
+  it('GET /engines flags a host-incompatible engine so the UI can hide Install', async () => {
+    gen.unsupportedPlatform = 'musicgen';
+    const r = await request(app).get('/api/music/engines');
+    const musicgen = r.body.engines.find((e) => e.id === 'musicgen');
+    expect(musicgen.platformSupported).toBe(false);
+    expect(musicgen.platformLabel).toContain('Apple Silicon');
+    expect(r.body.engines.find((e) => e.id === 'acestep').platformSupported).toBe(true);
   });
 
   it('GET /models/:engine returns the merged model list; 404s for an unknown engine', async () => {

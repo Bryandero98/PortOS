@@ -12,7 +12,7 @@ const h3 = (supportedModes) => ({ runtime: 'minimax_h3', name: 'Example H3', sup
 
 describe('videoModeContractError — shared gate', () => {
   it('gates exactly the runtimes that declare a contract row', () => {
-    expect([...VIDEO_MODE_GATED_RUNTIMES].sort()).toEqual(['minimax_h3', 'wan22']);
+    expect([...VIDEO_MODE_GATED_RUNTIMES].sort()).toEqual(['minimax_h3', 'minimax_h3_cuda', 'wan22']);
   });
 
   it.each(['ltx2', 'mlx_video', 'hunyuan', undefined])('leaves the %s runtime ungated', (runtime) => {

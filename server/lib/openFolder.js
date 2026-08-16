@@ -8,7 +8,7 @@
  * logs rather than crashing the Node process.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from './childProcess.js';
 
 /**
  * Open a local path in the system file manager (Finder / Explorer / Nautilus).
@@ -31,7 +31,7 @@ export function openFolderInSystemExplorer(localPath) {
     args = [localPath];
   }
 
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
   child.on('error', (err) => {
     console.error(`❌ openFolderInSystemExplorer spawn failed (${cmd}): ${err.message}`);
   });

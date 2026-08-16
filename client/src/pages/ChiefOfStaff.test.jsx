@@ -85,6 +85,27 @@ const renderConfigTab = () => render(
   </MemoryRouter>,
 );
 
+// #4144 — `/cos` is an `isFullWidth` route, so its `<main>` is a bare
+// `relative overflow-hidden`. The old centered `h-64` BrailleSpinner reserved
+// none of the loaded two-pane shell, and the whole page jumped into place on
+// first paint. jsdom does no layout, so the guard pins the structure that
+// reserves those dimensions: the busy region IS the two-pane grid.
+describe('ChiefOfStaff loading skeleton', () => {
+  it('reserves the two-pane shell instead of a centered spinner while loading', async () => {
+    // Hold the first fetch open so the loading branch is what renders.
+    api.getCosStatus.mockReturnValue(new Promise(() => {}));
+    const { container } = renderConfigTab();
+
+    const busy = await screen.findByRole('status');
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(busy).toHaveAttribute('aria-label', 'Loading Chief of Staff');
+    expect(busy.className).toContain('lg:grid-cols-[320px_1fr]');
+    expect(busy.className).toContain('h-full');
+    // The old spinner shell — a fixed 16rem box centering its child.
+    expect(container.querySelector('.h-64')).toBeNull();
+  });
+});
+
 describe('ChiefOfStaff handleForceEvaluate', () => {
   it('does not toast success or advance the status message when the evaluate fails', async () => {
     api.forceCosEvaluate.mockRejectedValue(new Error('evaluate failed'));
@@ -272,6 +293,19 @@ describe('ChiefOfStaff Learning card skipped label', () => {
     expect(values.length).toBeGreaterThan(0);
     for (const value of values) {
       expect(value.classList.contains('truncate')).toBe(false);
+    }
+  });
+
+  it('paints a skipped tile as critical even if the server status disagrees', async () => {
+    // The tile derives `critical` from `skipped > 0` itself instead of trusting
+    // the server's status chain to keep classifying it that way — this fixture
+    // is deliberately the mismatched combination (skipped 3 / status 'warning').
+    api.getCosLearningSummary.mockResolvedValue(summaryWithSkipped);
+    renderAt('config');
+
+    for (const card of await learningCards()) {
+      expect(within(card).getByText(/skipped/).className).toContain('text-port-error');
+      expect(card.className).toContain('border-port-error');
     }
   });
 

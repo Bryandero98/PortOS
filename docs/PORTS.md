@@ -7,7 +7,7 @@ PortOS uses a contiguous port allocation scheme to make it easy to understand wh
 ### Convention
 
 1. **Contiguous Ranges**: Each app should use a contiguous block of ports
-2. **Labeled Ports**: Define all ports in the top-level `PORTS` object in `ecosystem.config.cjs` (mirrored — manually kept in sync — in `server/lib/ports.js`, since the ESM server can't `require()` the CommonJS config); the per-process label map lives in `server/services/apps.js`. The mirror carries every port literal, including both PostgreSQL ports; the config's mode-dependent `POSTGRES` (resolved from `PGMODE` at load time) is exposed in the mirror as `resolvePostgresPort(pgMode)` over the `POSTGRES_NATIVE` / `POSTGRES_DOCKER` literals, so `server/lib/ports.js` stays free of filesystem reads. `server/lib/ports.test.js` fails if the two drift apart
+2. **Labeled Ports**: Define all ports in the top-level `PORTS` object in `ecosystem.config.cjs` (mirrored — manually kept in sync — in `server/lib/ports.js`, since the ESM server can't `require()` the CommonJS config); the per-process label map for PM2 processes lives in `server/services/apps.js`. Infrastructure dependencies (such as PostgreSQL on 5561) are provisioned via `scripts/setup-db.js` / Docker Compose rather than registered as PM2 processes in `apps.js`. The mirror carries every port literal, including both PostgreSQL ports; the config's mode-dependent `POSTGRES` (resolved from `PGMODE` at load time) is exposed in the mirror as `resolvePostgresPort(pgMode)` over the `POSTGRES_NATIVE` / `POSTGRES_DOCKER` literals, so `server/lib/ports.js` stays free of filesystem reads. `server/lib/ports.test.js` fails if the two drift apart
 3. **No Gaps**: Avoid leaving gaps between port allocations within an app
 
 ### Port Labels
@@ -33,7 +33,7 @@ Common port labels:
 | 5558 | portos-cos | api | CoS Agent Runner (isolated process) |
 | 5559 | portos-autofixer | api | Autofixer daemon API |
 | 5560 | portos-autofixer-ui | ui | Autofixer web UI |
-| 5561 | portos-db | db | PostgreSQL Docker container (native mode uses system pg on 5432) |
+| 5561 | portos-db (Docker container) | - | Infrastructure dependency: PostgreSQL Docker container provisioned by `scripts/setup-db.js` / Docker Compose (not a PM2 process in `server/services/apps.js`; native mode uses system pg on 5432). |
 
 ## How `:5555`, `:5553`, and `:5554` Relate
 
@@ -117,7 +117,7 @@ PortOS automatically detects ports from env vars:
 
 | Range | Purpose |
 |-------|---------|
-| 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and `portos-db` on `:5561`) |
+| 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and the `portos-db` Docker container on `:5561`) |
 | 5562-5569 | Reserved for PortOS extensions |
 | 5570-5599 | User applications |
 
@@ -125,11 +125,13 @@ PostgreSQL in native mode listens on the system default `:5432`, outside these r
 
 ## Viewing Port Usage
 
-The PortOS apps list shows all ports for each process:
+The PortOS apps list (returned by `GET /api/apps`) shows registered PM2 processes and their mapped ports:
 - Single port: `process-name:5555`
 - Multiple ports: `process-name (cdp:5556,health:5557)`
 
-Use the API to get detailed port information:
+Note that `GET /api/apps` only returns PM2 processes defined in `server/services/apps.js` (`portos-server`, `portos-cos`, `portos-ui`, `portos-autofixer`, `portos-autofixer-ui`, `portos-browser`). Infrastructure dependencies like `portos-db` (Docker container on port 5561, managed via `scripts/setup-db.js` / Docker Compose) are not PM2 processes and do not appear in `GET /api/apps`.
+
+Use the API to get detailed port information for registered PM2 processes:
 ```bash
 curl http://localhost:5555/api/apps | jq '.[].processes'
 ```

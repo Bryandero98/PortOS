@@ -20,11 +20,13 @@ import {
   creativeDirectorSceneUpdateSchema,
   creativeDirectorAutoCastSuggestSchema,
   creativeDirectorAutoCastApplySchema,
+  creativeDirectorProjectQuerySchema,
   isPaginationRequested,
   paginateArray,
 } from '../lib/validation.js';
 import {
   listProjects,
+  getProjectsByIds,
   getProject,
   createProject,
   updateProject,
@@ -45,8 +47,16 @@ const router = Router();
 // Backward-compatible by default: returns the full projects array. When a client
 // passes `limit`/`offset`, the response becomes the bounded
 // `{ items, total, limit, offset }` envelope every paginated PortOS list shares.
+//
+// `?ids=a,b,c` (#4148) narrows to a known id set in one round trip — a caller
+// that needs a handful of projects (the Creative Commission detail page
+// resolving its runs' renders) no longer pays for every project on the install.
+// Ids that don't resolve are simply absent, so the response is never padded with
+// placeholders the client would have to filter. Mirrors the catalog's
+// `GET /catalog/ingredients?ids=` batch filter.
 router.get('/', asyncHandler(async (req, res) => {
-  const projects = await listProjects();
+  const { ids } = validateRequest(creativeDirectorProjectQuerySchema, req.query);
+  const projects = ids ? await getProjectsByIds(ids) : await listProjects();
   if (!isPaginationRequested(req.query)) {
     return res.json(projects);
   }

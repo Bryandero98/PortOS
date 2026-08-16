@@ -20,12 +20,17 @@ import {
   CURSOR_COMMAND,
   parseCursorModelList,
 } from './internal/cursor.js';
-import { isOllamaBackedProvider } from './internal/ollamaBacked.js';
-import { canRefreshModels, resolveModelFetcher } from './internal/modelFetchers.js';
+import { isOllamaBackedProvider, ollamaBaseFromProvider } from './internal/ollamaBacked.js';
+import { canRefreshModels, ollamaRefreshGroupKey, resolveModelFetcher } from './internal/modelFetchers.js';
 
 // Re-exported (rather than defined here) so the model-fetcher table can key its
 // ollama row on the same predicate without importing back into this module.
 export { isOllamaBackedProvider };
+// Groups providers that share one daemon + one probe shape, so a host fanning a
+// refresh across them can fetch once instead of once per provider. The base-URL
+// normalizer it keys on stays internal — the group key IS the contract, and an
+// exported normalizer only invites callers to re-derive the grouping rule.
+export { ollamaRefreshGroupKey };
 // The pure capability predicate that both refresh arms below dispatch through —
 // exported so the providers route can decorate its payload with it and the
 // client stops re-deriving refreshability from command/name string sniffing.
@@ -102,7 +107,15 @@ function escapeCmdMetacharsIfUnquoted(value) {
   return str.replace(CMD_METACHAR_RE, '^$&');
 }
 
-const execFileAsync = promisify(execFile);
+// windowsHide is applied here rather than by importing server/lib/childProcess.js:
+// the aiToolkit is contractually self-contained (see aiToolkit/CLAUDE.md), so it
+// carries its own copy of the default. Without it, every CLI probe below spawns
+// a console from PortOS's console-less PM2 fork, which Windows hands off to
+// Windows Terminal as a focus-stealing window. See docs/WINDOWS_CONSOLE.md.
+// Spread last so an explicit windowsHide: false still wins, matching the
+// contract server/lib/childProcess.js states.
+const execFileAsync = (file, args, options) =>
+  promisify(execFile)(file, args, { windowsHide: true, ...options });
 
 // Tool-use (function-calling) capable model families. Inlined here because the
 // aiToolkit is self-contained (no imports out to server/lib). MIRROR of
@@ -124,12 +137,6 @@ const TOOL_USE_RE = new RegExp([
   'smollm2',
   'deepseek-v3', 'deepseek-r1', 'deepseek-v4',
 ].join('|'), 'i');
-
-/** Normalize an Ollama base URL (strip trailing slash + an OpenAI-compat `/v1`). */
-function ollamaBaseFromProvider(provider) {
-  const base = String(provider?.envVars?.ANTHROPIC_BASE_URL || provider?.endpoint || 'http://localhost:11434');
-  return base.replace(/\/+$/, '').replace(/\/v1$/, '');
-}
 
 /**
  * Whether an Ollama model supports tool use. Prefers the authoritative `tools`
@@ -534,6 +541,7 @@ export function createProviderService(config = {}) {
         apiKey: providerData.apiKey || '',
         models: providerData.models || [],
         defaultModel: providerData.defaultModel || null,
+        effort: providerData.effort || null,
         lightModel: providerData.lightModel || null,
         mediumModel: providerData.mediumModel || null,
         heavyModel: providerData.heavyModel || null,
@@ -546,6 +554,10 @@ export function createProviderService(config = {}) {
         // Claude Ollama marker — preserve so adopting the sample via POST drives
         // ollama-backed model refresh (see isOllamaBackedProvider).
         ...(providerData.ollamaBacked === true ? { ollamaBacked: true } : {}),
+        // MTPLX's native MTP runtime is a separate local OpenAI-compatible
+        // backend. Preserve this marker so OpenCode receives the `mtplx/`
+        // namespace and model refresh probes its local endpoint.
+        ...(providerData.mtplxBacked === true ? { mtplxBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
         // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
         // persisted when true so existing keyless/local providers stay clean.
@@ -626,7 +638,7 @@ export function createProviderService(config = {}) {
         // Use execFile (no shell) so user-configured `provider.command` cannot
         // inject extra shell commands via metacharacters.
         const lookup = isWin32 ? 'where' : 'which';
-        const { stdout } = await execFileAsync(lookup, [provider.command])
+        const { stdout } = await execFileAsync(lookup, [provider.command], { windowsHide: true })
           .catch(() => ({ stdout: '', stderr: 'not found' }));
 
         // `where` lists every match (one per line); `which` prints one. Take the
@@ -725,7 +737,23 @@ export function createProviderService(config = {}) {
       return { success: false, error: 'Unknown provider type' };
     },
 
-    async refreshProviderModels(id) {
+    /**
+     * Probe a provider's model list WITHOUT persisting it — the compute half of
+     * {@link refreshProviderModels}.
+     *
+     * Split out so a host fanning a refresh across several providers backed by
+     * the SAME upstream (see {@link ollamaRefreshGroupKey}) can run the probe
+     * once and apply the answer to each of them via `updateProvider`, instead of
+     * re-issuing an identical `/api/tags` + per-model `/api/show` sweep per
+     * provider.
+     *
+     * Same contract as `refreshProviderModels` minus the write: `null` means
+     * ONLY "no such provider"; every other failure throws (with `.status`).
+     *
+     * @param {string} id
+     * @returns {Promise<string[]|null>}
+     */
+    async fetchProviderModels(id) {
       const data = await loadProviders();
       const provider = data.providers[id];
 
@@ -745,8 +773,9 @@ export function createProviderService(config = {}) {
       try {
         // A TUI provider's model is normally fixed by its CLI/config, so only
         // the vendors whose `--model` flag also applies to the interactive
-        // session carry a `tuiMatch` column in the table (ollama-backed,
-        // antigravity, cursor today). One lookup replaces the per-vendor
+        // session carry a `tuiMatch` column in the table (Ollama-backed,
+        // MTPLX-backed, Antigravity, Cursor today). One lookup replaces the
+        // per-vendor
         // `else if` chain this used to be — see internal/modelFetchers.js.
         const tuiFetcher = provider.type === 'tui' ? resolveModelFetcher(provider) : null;
 
@@ -799,14 +828,136 @@ export function createProviderService(config = {}) {
         throw unsupported;
       }
 
-      const updatedProvider = {
-        ...data.providers[id],
-        models
-      };
+      return models;
+    },
 
-      data.providers[id] = updatedProvider;
-      await saveProviders(data);
-      return updatedProvider;
+    /**
+     * Probe AND persist a provider's model list. Thin composition of
+     * {@link fetchProviderModels} + `updateProvider` — keep it that way so the
+     * two halves can't drift.
+     */
+    async refreshProviderModels(id) {
+      const models = await this.fetchProviderModels(id);
+      if (models === null) return null;
+      return this.updateProvider(id, { models });
+    },
+
+    /**
+     * Refresh MANY providers with ONE `providers.json` write.
+     *
+     * `refreshProviderModels` is a per-provider `loadProviders` → mutate →
+     * `saveProviders` round-trip, and `saveProviders` invalidates the cache and
+     * rewrites the whole file. A host fanning a refresh across every provider
+     * backed by one local daemon (PortOS does this after an Ollama install or
+     * delete) therefore paid N full-file writes — each superseded by the next —
+     * plus N cache invalidate/repopulate cycles for any concurrent reader. This
+     * does the same work as three phases: group, probe, then a single write.
+     *
+     * 1. **Group** by {@link ollamaRefreshGroupKey}, so providers sharing a
+     *    daemon AND a probe shape are probed once rather than once each. A
+     *    `null` key is the "not a shared Ollama probe" sentinel, NOT a bucket —
+     *    those providers each become a group of one and keep their own probe.
+     * 2. **Probe** one lead per group, sequentially. Nothing is persisted here,
+     *    so a probe that fails or answers late cannot leave a half-written file.
+     * 3. **Apply + save once.** The providers map is re-read after the probes
+     *    (they are network-bound and outlive the read cache's TTL), every
+     *    probed list is applied in one pass, and `saveProviders` runs exactly
+     *    once — or not at all when nothing was probed successfully.
+     *
+     * Never throws for a per-provider failure: each group carries its own
+     * outcome so the host can log group-level context (one line per group, not
+     * one per member) and decide what a failure means.
+     *
+     * - `updated` — probed successfully; `models` was applied to every member
+     *   still present at save time. `[]` is a real answer (the user deleted
+     *   their last model) and IS persisted; only the two statuses below skip.
+     * - `failed` — the probe threw; `error` carries it. The stored lists are
+     *   left untouched.
+     * - `missing` — no such provider, or the lead was deleted between the
+     *   grouping read and its probe.
+     *
+     * @param {string[]} ids
+     * @returns {Promise<Array<{ ids: string[], leadId: string, status: 'updated'|'failed'|'missing', models?: string[], error?: Error }>>}
+     */
+    async refreshProviderModelsBatch(ids) {
+      const requested = [...new Set(Array.isArray(ids) ? ids : [])];
+      if (requested.length === 0) return [];
+
+      const data = await loadProviders();
+      const groups = [];
+      const byKey = new Map();
+
+      for (const id of requested) {
+        const provider = data.providers[id];
+        if (!provider) {
+          groups.push({ ids: [id], leadId: id, status: 'missing' });
+          continue;
+        }
+        const key = ollamaRefreshGroupKey(provider);
+        const existing = key ? byKey.get(key) : null;
+        if (existing) {
+          existing.ids.push(id);
+          continue;
+        }
+        // `missing` is the starting status for EVERY group, not just the ones
+        // whose id is already unknown: the probe below either upgrades it or
+        // leaves it, which is exactly the answer for a lead that vanished
+        // between this read and its probe.
+        const group = { ids: [id], leadId: id, status: 'missing' };
+        if (key) byKey.set(key, group);
+        groups.push(group);
+      }
+
+      // Sequential, not `Promise.all`: several groups commonly hit the same
+      // local daemon, and this whole call is background work behind an
+      // install/delete, so nothing is waiting on the wall clock.
+      for (const group of groups) {
+        if (!data.providers[group.leadId]) continue;
+        const probed = await this.fetchProviderModels(group.leadId).then(
+          (models) => ({ models }),
+          (error) => ({ error })
+        );
+        if (probed.error) {
+          group.status = 'failed';
+          group.error = probed.error;
+          continue;
+        }
+        // `null` here means the lead vanished mid-probe — the same `missing`
+        // the group already carries, so leave the status alone. Validated as an
+        // ARRAY rather than compared to `null`: `fetchProviderModels` promises
+        // an array or a throw, but a future fetcher that leaks `undefined` must
+        // land on `missing` too, not be persisted as an "updated" catalog (and
+        // then crash the whole batch on the spread below). `[]` is an array, so
+        // a legitimately empty catalog still passes.
+        if (!Array.isArray(probed.models)) continue;
+        group.status = 'updated';
+        group.models = probed.models;
+      }
+
+      const updated = groups.filter((g) => g.status === 'updated');
+      if (updated.length === 0) return groups;
+
+      // Re-read rather than reusing the pre-probe snapshot: the probes above are
+      // network-bound and outlast the read cache's TTL, so `data` may no longer
+      // be the freshest view. Writing our stale copy would drop anything saved
+      // while we were probing.
+      const fresh = await loadProviders();
+      let changed = false;
+      for (const group of updated) {
+        for (const id of group.ids) {
+          const provider = fresh.providers[id];
+          // Deleted between the grouping read and now — nothing to write, and
+          // re-adding it here would resurrect a provider the user removed.
+          if (!provider) continue;
+          // Copy the list per provider so members of one group don't end up
+          // sharing (and later mutating) a single array instance.
+          fresh.providers[id] = { ...provider, models: [...group.models], id };
+          changed = true;
+        }
+      }
+      if (changed) await saveProviders(fresh);
+
+      return groups;
     },
 
     async _refreshAPIProviderModels(provider) {
@@ -876,6 +1027,23 @@ export function createProviderService(config = {}) {
       if (Array.isArray(responseData.models)) return toModelIds(responseData.models, 'models');
 
       throw new Error('Model list response had no recognizable "data" or "models" array');
+    },
+
+    /**
+     * Fetch the catalog from a local MTPLX server for its OpenCode CLI/TUI
+     * wrappers. MTPLX publishes its active native-MTP model through the same
+     * OpenAI-compatible `/v1/models` contract as an API provider, so reuse the
+     * guarded generic parser instead of executing an OpenCode model-list command
+     * (which would inventory the harness, not the MTPLX runtime).
+     *
+     * This only runs from an explicit refresh request; seeding the disabled
+     * provider never starts MTPLX, downloads a model, or issues an LLM call.
+     *
+     * @param {object} provider
+     * @returns {Promise<string[]>}
+     */
+    async _fetchMtplxModels(provider) {
+      return this._refreshAPIProviderModels(provider);
     },
 
     async _refreshCLIProviderModels(provider) {

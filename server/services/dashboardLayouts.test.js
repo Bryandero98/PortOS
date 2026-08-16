@@ -209,30 +209,93 @@ describe('dashboardLayouts service', () => {
     });
   });
 
-  describe('built-in layout grids have no overlapping cells', () => {
-    // A hand-tuned grid edit can place two widgets in the same rows/cols. The
-    // renderer no longer stacks them — it packs measured heights and resolves
-    // any declared overlap — but `y` is what it sorts reading order by, so an
-    // overlap means two widgets with an arbitrary relative order that will
-    // flip on an unrelated edit. Keep every built-in's rectangles pairwise
-    // non-overlapping so the seeded order is the one that was intended.
-    const rectsOverlap = (a, b) =>
-      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-
-    it('no two grid items overlap in any seeded built-in layout', async () => {
+  describe('built-in layout grids declare one coherent sequence', () => {
+    // `order` is the only vertical coordinate the renderer has: it decides
+    // both reading order and the order the pixel pack places cells in. A
+    // duplicate or a gap means two widgets with an arbitrary relative
+    // position that will flip on an unrelated edit, so every seeded built-in
+    // has to arrive as a dense 0..n-1 run — and inside the columns, which are
+    // still declared, no cell may hang off the right edge.
+    it('every seeded built-in layout has a dense, unique order', async () => {
       const state = await svc.getState();
-      const collisions = [];
       for (const layout of state.layouts) {
-        const grid = layout.grid || [];
-        for (let i = 0; i < grid.length; i += 1) {
-          for (let j = i + 1; j < grid.length; j += 1) {
-            if (rectsOverlap(grid[i], grid[j])) {
-              collisions.push(`${layout.id}: ${grid[i].id} ∩ ${grid[j].id}`);
-            }
-          }
+        const orders = (layout.grid || []).map((g) => g.order);
+        expect({ id: layout.id, orders })
+          .toEqual({ id: layout.id, orders: orders.map((_, i) => i) });
+      }
+    });
+
+    it('no seeded built-in cell overflows the column count', async () => {
+      const state = await svc.getState();
+      const overflow = [];
+      for (const layout of state.layouts) {
+        for (const g of layout.grid || []) {
+          if (g.x + g.w > svc.GRID_COLS) overflow.push(`${layout.id}: ${g.id}`);
         }
       }
-      expect(collisions).toEqual([]);
+      expect(overflow).toEqual([]);
+    });
+  });
+
+  describe('grid shape compatibility', () => {
+    // An install that has not run migration 269 (or a restored pre-#4133
+    // backup) still has to open in the arrangement its owner last saw:
+    // reading order was top-to-bottom, then left-to-right.
+    it('derives `order` from a legacy y/x grid, and stops emitting y', async () => {
+      writeJson(STATE_FILE, {
+        activeLayoutId: 'my-custom',
+        layouts: [{
+          id: 'my-custom', name: 'Custom', widgets: ['cos', 'backup', 'apps'],
+          grid: [
+            { id: 'apps', x: 0, y: 5, w: 12, h: 3 },
+            { id: 'backup', x: 6, y: 0, w: 6, h: 2 },
+            { id: 'cos', x: 0, y: 0, w: 6, h: 4 },
+          ],
+        }],
+      });
+      const saved = (await svc.getState()).layouts.find((l) => l.id === 'my-custom');
+      expect(saved.grid).toEqual([
+        { id: 'cos', x: 0, w: 6, order: 0, h: 4 },
+        { id: 'backup', x: 6, w: 6, order: 1, h: 2 },
+        { id: 'apps', x: 0, w: 12, order: 2, h: 3 },
+      ]);
+    });
+
+    // A widget-seeding migration appends `{ x, y, w, h }` to a file this
+    // install already converted. Treating that as "y:0, so it goes first"
+    // would silently hoist the newcomer to the top of the dashboard.
+    it('appends an order-less entry last rather than letting its y win', async () => {
+      writeJson(STATE_FILE, {
+        activeLayoutId: 'my-custom',
+        layouts: [{
+          id: 'my-custom', name: 'Custom', widgets: ['cos', 'backup'],
+          grid: [
+            { id: 'cos', x: 0, w: 6, order: 0, h: 4 },
+            { id: 'backup', x: 0, y: 0, w: 6, h: 2 },
+          ],
+        }],
+      });
+      const saved = (await svc.getState()).layouts.find((l) => l.id === 'my-custom');
+      expect(saved.grid.map((g) => g.id)).toEqual(['cos', 'backup']);
+      expect(saved.grid.map((g) => g.order)).toEqual([0, 1]);
+    });
+
+    it('renumbers a hand-edited grid with duplicate and gapped orders', async () => {
+      writeJson(STATE_FILE, {
+        activeLayoutId: 'my-custom',
+        layouts: [{
+          id: 'my-custom', name: 'Custom', widgets: ['cos', 'backup', 'apps'],
+          grid: [
+            { id: 'cos', x: 0, w: 6, order: 9, h: 4 },
+            { id: 'backup', x: 6, w: 6, order: 2, h: 2 },
+            { id: 'apps', x: 0, w: 12, order: 2, h: 3 },
+          ],
+        }],
+      });
+      const saved = (await svc.getState()).layouts.find((l) => l.id === 'my-custom');
+      // Ties in the new shape fall back to file order, not column.
+      expect(saved.grid.map((g) => g.id)).toEqual(['backup', 'apps', 'cos']);
+      expect(saved.grid.map((g) => g.order)).toEqual([0, 1, 2]);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { logAction } from './history.js';
 import { ALLOWED_COMMANDS, validateCommand } from '../lib/commandSecurity.js';
 import { safeChildProcessEnv } from '../lib/processEnv.js';
@@ -46,8 +46,7 @@ export function executeCommand(command, workspacePath, onData, onComplete) {
   const child = spawn(baseCommand, args, {
     cwd: commandCwd,
     env: withSpawnCwdEnv(safeChildProcessEnv({ FORCE_COLOR: '1' }), commandCwd),
-    shell: false,
-    windowsHide: true
+    shell: false
   });
 
   activeCommands.set(commandId, child);

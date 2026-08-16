@@ -1,31 +1,20 @@
 /**
- * "Advanced" disclosure for the local-backend sampler knobs — frames, chunks
- * (plus their optional per-chunk prompt beats), fps, seed, steps, CFG scale,
- * image strength, tiling and the audio flags.
- *
- * Closed by default so the Generate button sits above the fold on /media/video
- * the way it already does on the sibling /media/image tab (issue #3279), which
- * keeps only Model + Resolution inline too. Every value lives in the VideoGen
- * page's state, so collapsing the panel never discards one — and the collapsed
- * summary line surfaces the values a remix most often carries in (frames, fps,
- * seed) without making the user expand to see them.
+ * Local-backend sampler knobs — frames, chunks (plus optional per-chunk
+ * prompt beats), fps, seed, steps, CFG scale, image strength, tiling and
+ * the audio flags. Always visible in the main form card (no disclosure)
+ * so the right-hand column can host Prompt from media.
  *
  * Presentational: all state and handlers are owned by the VideoGen page.
- *
- * The body is conditionally rendered rather than merely hidden on purpose: a
- * number input that is out of its min/max range while invisible would make the
- * browser refuse the form submit ("invalid form control is not focusable"), so
- * a half-typed Steps/CFG value behind a collapsed panel must not be in the DOM.
  */
-import { useState } from 'react';
-import { ChevronDown, Dice5 } from 'lucide-react';
+import { Dice5 } from 'lucide-react';
 import { FormField } from '../ui/FormField';
 import {
   frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS,
-  isModelAllowedForMode, supportsVideoAudioControls,
+  isModelAllowedForMode, supportsVideoAudioControls, supportsVideoAudioPromptControls,
   CONTEXT_FRAME_OPTIONS, supportsContextWindow,
 } from '../../lib/videoGenParams.js';
 import { VIDEO_TILING_OPTIONS } from '../../lib/videoTilingOptions';
+import { isLtx2FamilyRuntime } from '../../lib/runnerFamilies';
 
 const inputCls = 'w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50';
 
@@ -45,46 +34,37 @@ export default function AdvancedParamsPanel({
   disableAudio, onDisableAudioChange,
   noMusic, onNoMusicChange,
 }) {
-  const [open, setOpen] = useState(false);
   // a2v derives its length + audio track from the uploaded audio, so chunking
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
-  const showModelAudioControls = showAudioFlags && supportsVideoAudioControls(currentModel);
+  const showDisableAudio = showAudioFlags && supportsVideoAudioControls(currentModel);
+  const showPromptAudioControls = showAudioFlags && supportsVideoAudioPromptControls(currentModel);
+  const audioDisabled = showDisableAudio && disableAudio;
   // Chunk chaining seeds chunk N+1 from chunk N's last frame, so it needs i2v —
   // the same predicate the picker uses, not a second reading of supportedModes.
   const showChunks = mode !== 'a2v' && isModelAllowedForMode(currentModel, 'image');
   // ltx2 extend conditions on the source's latent rather than a single frame,
   // so image strength is meaningless for it.
-  const showImageStrength = mode === 'image' || (mode === 'extend' && currentModel?.runtime !== 'ltx2');
+  const showImageStrength = mode === 'image' || (mode === 'extend' && !isLtx2FamilyRuntime(currentModel?.runtime));
   const frameOptions = frameOptionsForModel(currentModel, numFrames);
   const fpsOptions = fpsOptionsForModel(currentModel);
   const samplerLocked = currentModel?.samplerLocked === true;
 
-  const summary = `${numFrames}f @ ${fps}fps · ${(numFrames / fps).toFixed(1)}s · seed ${seed === '' || seed == null ? 'random' : seed}`;
-
   return (
-    <div className="border-t border-port-border pt-2">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls="video-advanced-params"
-        className="w-full flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-white min-h-[32px]"
-      >
-        <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
-        <span>Advanced</span>
-        <span className="font-normal text-[11px] text-gray-500 truncate">{summary}</span>
-      </button>
-
-      {open && (
-        <div id="video-advanced-params" className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
+    <div className="border-t border-port-border pt-3 space-y-3">
+      <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Advanced</h2>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <FormField label="Frames" labelClassName="block text-xs font-medium text-gray-400 mb-1">
             <select
               value={numFrames}
               onChange={(e) => onNumFramesChange(Number(e.target.value))}
               className={inputCls}
             >
-              {frameOptions.map((f) => <option key={f} value={f}>{f} ({(f / fps).toFixed(1)}s @ {fps}fps)</option>)}
+              {frameOptions.map((f) => (
+                <option key={f} value={f}>
+                  {f} ({(f / fps).toFixed(1)}s @ {fps}fps){f === currentModel?.defaultFrames ? ' · default' : ''}
+                </option>
+              ))}
             </select>
             {numFrames > 241 && isModelAllowedForMode(currentModel, 'extend') && (
               <p className="text-[10px] text-gray-500 leading-snug mt-1">
@@ -276,7 +256,7 @@ export default function AdvancedParamsPanel({
             </FormField>
           )}
 
-          {showModelAudioControls && (
+          {showDisableAudio && (
             <label className="col-span-2 sm:col-span-3 flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
               <input
                 type="checkbox"
@@ -287,23 +267,22 @@ export default function AdvancedParamsPanel({
               Disable audio (LTX-2 only — speeds up generation)
             </label>
           )}
-          {showModelAudioControls && (
+          {showPromptAudioControls && (
             <label
-              className={`col-span-2 sm:col-span-3 flex items-center gap-2 text-xs cursor-pointer ${disableAudio ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400'}`}
-              title="LTX-2 conditions audio on the prompt — appending 'no music, no soundtrack' at submit time pushes the model toward ambient/diegetic sound only"
+              className={`col-span-2 sm:col-span-3 flex items-center gap-2 text-xs cursor-pointer ${audioDisabled ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400'}`}
+              title="The model conditions generated audio on the prompt — appending 'no music, no soundtrack' at submit time pushes it toward ambient/diegetic sound only"
             >
               <input
                 type="checkbox"
                 checked={noMusic}
-                disabled={disableAudio}
+                disabled={audioDisabled}
                 onChange={(e) => onNoMusicChange(e.target.checked)}
                 className="rounded"
               />
-              No music — keep ambient/diegetic sound only (LTX-2)
+              No music — keep ambient/diegetic sound only
             </label>
           )}
         </div>
-      )}
     </div>
   );
 }

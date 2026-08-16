@@ -126,6 +126,68 @@ describe('TaskItem blocked reason', () => {
   });
 });
 
+describe('TaskItem block modal state (#4038)', () => {
+  const openBlockModal = () =>
+    fireEvent.click(screen.getByRole('button', { name: 'Mark task as blocked' }));
+  const reasonField = () =>
+    screen.getByPlaceholderText('e.g., Waiting for API access, Needs design review...');
+
+  // Belt-and-braces: today the sole opener re-seeds the field from the task, so a
+  // retained reason is not reachable through the UI and this passes without the
+  // cancel-side clear. It pins the contract for a future second opener that skips
+  // the seed — which is exactly how the leak would become user-visible.
+  it('drops a typed reason when the modal is canceled', () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    openBlockModal();
+    fireEvent.change(reasonField(), { target: { value: 'Waiting on design review' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    openBlockModal();
+    expect(reasonField()).toHaveValue('');
+  });
+
+  it('seeds the field from an auto-written blockedReason, not just a user-set blocker', () => {
+    // The badge already falls back to blockedReason; the edit field must match, or
+    // re-blocking a server-auto-blocked task silently clears the recorded reason.
+    const autoBlocked = { ...task, id: 'sys-auto-block', metadata: { blockedReason: 'Max total spawns exceeded' } };
+    render(<TaskItem task={autoBlocked} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    openBlockModal();
+    expect(reasonField()).toHaveValue('Max total spawns exceeded');
+  });
+
+  it('keeps the modal and the typed reason open when the update fails', async () => {
+    api.updateCosTask.mockRejectedValue(new Error('network down'));
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    openBlockModal();
+    fireEvent.change(reasonField(), { target: { value: 'Waiting on design review' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark Blocked' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('network down'));
+    expect(reasonField()).toHaveValue('Waiting on design review');
+  });
+
+  it('closes and clears once the block succeeds', async () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    openBlockModal();
+    fireEvent.change(reasonField(), { target: { value: 'Waiting on design review' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Mark Blocked' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-model-edit',
+      { status: 'blocked', type: 'internal', blockedReason: 'Waiting on design review' },
+      { silent: true },
+    ));
+    await waitFor(() => expect(screen.queryByText('Mark Task as Blocked')).not.toBeInTheDocument());
+
+    openBlockModal();
+    expect(reasonField()).toHaveValue('');
+  });
+});
+
 describe('TaskItem long-text clamping', () => {
   // The context often holds a task's entire prompt (orchestrator tasks put the
   // whole thing there). Rendering it unclamped turned the pending list into a
@@ -202,6 +264,191 @@ describe('TaskItem long-text clamping', () => {
     const contextField = screen.getByPlaceholderText('Context');
     expect(contextField.tagName).toBe('TEXTAREA');
     expect(contextField).toHaveValue(longPrompt);
+  });
+});
+
+// #4153 — the agent-facing payload moved to `metadata.prompt`; `metadata.context`
+// is now the one-line human note. A task written before the split has no
+// `prompt` at all, so the field must not appear (and must not be PATCHed) then.
+describe('TaskItem prompt field (#4153)', () => {
+  const split = {
+    ...task,
+    id: 'sys-split',
+    metadata: { prompt: 'the agent body\nsecond line', context: 'a short note' },
+  };
+
+  it('renders the prompt and the note as separate blocks', () => {
+    render(<TaskItem task={split} isSystem onRefresh={vi.fn()} providers={providers} />);
+    expect(screen.getByText(/the agent body/)).toBeInTheDocument();
+    expect(screen.getByText('a short note')).toBeInTheDocument();
+  });
+
+  it('offers a Prompt textarea in edit mode and PATCHes the edit', async () => {
+    const onRefresh = vi.fn();
+    render(<TaskItem task={split} isSystem onRefresh={onRefresh} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    const promptField = screen.getByPlaceholderText('Prompt');
+    expect(promptField.tagName).toBe('TEXTAREA');
+    expect(promptField).toHaveValue('the agent body\nsecond line');
+
+    fireEvent.change(promptField, { target: { value: 'rewritten body' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-split',
+      expect.objectContaining({ prompt: 'rewritten body', context: 'a short note' }),
+      { silent: true }
+    ));
+  });
+
+  it('shows the confirm row when only the prompt field changed', () => {
+    render(<TaskItem task={split} isSystem onRefresh={vi.fn()} providers={providers} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByPlaceholderText('Prompt'), { target: { value: 'edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('group', { name: 'Confirm discard task edits' })).toBeInTheDocument();
+  });
+
+  // Writing `prompt: ''` onto every legacy task the user edits would create an
+  // empty key the markdown store then serializes — absent must stay absent.
+  it('omits the Prompt field, and the prompt key, for a legacy context-only task', async () => {
+    const legacy = { ...task, id: 'sys-legacy', metadata: { context: 'legacy body' } };
+    render(<TaskItem task={legacy} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    expect(screen.queryByPlaceholderText('Prompt')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Context'), { target: { value: 'edited note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    const [, payload] = api.updateCosTask.mock.calls.at(-1);
+    expect(payload).not.toHaveProperty('prompt');
+    expect(payload.context).toBe('edited note');
+  });
+
+  it('refreshes the prompt draft when a mounted legacy task gains split metadata', async () => {
+    const legacy = { ...task, id: 'sys-refresh', metadata: { context: 'legacy body' } };
+    const splitTask = {
+      ...legacy,
+      metadata: { prompt: 'the refreshed body\nsecond line', context: 'a short note' },
+    };
+    const { rerender } = render(<TaskItem task={legacy} isSystem onRefresh={vi.fn()} providers={providers} />);
+    rerender(<TaskItem task={splitTask} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    await waitFor(() => expect(screen.getByPlaceholderText('Prompt')).toHaveValue('the refreshed body\nsecond line'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-refresh',
+      expect.objectContaining({ prompt: 'the refreshed body\nsecond line', context: 'a short note' }),
+      { silent: true }
+    ));
+  });
+});
+
+describe('TaskItem cancel-edit confirmation (#4037)', () => {
+  it('discards immediately when Cancel is clicked with no unsaved changes', () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // Back to the read-only view — no confirm row, no edit fields.
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Confirm discard task edits' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit task' })).toBeInTheDocument();
+  });
+
+  it('shows an inline confirm row instead of discarding when there are unsaved changes', () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByDisplayValue(task.description), { target: { value: 'Edited description' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // Still editing — the draft field keeps the typed value, and a confirm row
+    // replaced the Save/Cancel pair instead of silently discarding it.
+    expect(screen.getByDisplayValue('Edited description')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Confirm discard task edits' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+  });
+
+  it('shows the confirm row when only the context field changed', () => {
+    // Pins hasUnsavedEdits' context branch specifically — a regression narrowing
+    // the comparison to description alone would still pass every other test in
+    // this block since they all edit description.
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByPlaceholderText('Context'), { target: { value: 'New context note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.getByRole('group', { name: 'Confirm discard task edits' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+  });
+
+  it('shows the confirm row when only the model select changed', () => {
+    // Pins hasUnsavedEdits' model branch in isolation (provider left untouched).
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    const [, modelSelect] = screen.getAllByRole('combobox');
+    fireEvent.change(modelSelect, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.getByRole('group', { name: 'Confirm discard task edits' })).toBeInTheDocument();
+  });
+
+  it('shows the confirm row when only the provider select changed', () => {
+    // Pins hasUnsavedEdits' provider branch.
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    const [providerSelect] = screen.getAllByRole('combobox');
+    fireEvent.change(providerSelect, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.getByRole('group', { name: 'Confirm discard task edits' })).toBeInTheDocument();
+  });
+
+  it('discards the draft on a second click confirming the discard', () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByDisplayValue(task.description), { target: { value: 'Edited description' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    expect(screen.queryByDisplayValue('Edited description')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit task' })).toBeInTheDocument();
+  });
+
+  it('reverts the draft, not just hides it, so reopening Edit does not resurrect the discarded text', () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByDisplayValue(task.description), { target: { value: 'Edited description' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    expect(screen.getByDisplayValue(task.description)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('Edited description')).not.toBeInTheDocument();
+  });
+
+  it('returns to the edit fields when the discard confirm is itself canceled', () => {
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByDisplayValue(task.description), { target: { value: 'Edited description' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.getByDisplayValue('Edited description')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
   });
 });
 

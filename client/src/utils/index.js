@@ -21,6 +21,7 @@ export * from './animationClips.js';
 export * from './coalesce.js';
 export * from './easing.js';
 export * from './hashString.js';
+export * from './modelFit.js';
 export * from './sleep.js';
 export * from './urlNormalize.js';
 export * from './platform.js';
@@ -29,7 +30,7 @@ export * from './providers.js';
 export * from './layeredIntelligenceReasons.js';
 
 // === Module loading / resilience ===
-export * from './lazyWithReload.js';
+export { lazyWithReload } from './lazyWithReload.js';
 export * from './staleChunkReload.js';
 
 // === File handling ===

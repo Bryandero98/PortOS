@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { EventEmitter } from 'events';
+import { pinPlatform } from '../lib/testHelper.js';
 
 // vi.mock factories are hoisted above the module body, so the mutable holder
 // and the mock objects must come from vi.hoisted (which runs first). The
@@ -47,20 +48,26 @@ const mocks = vi.hoisted(() => ({
     getProviderById: vi.fn(async () => ({ id: 'ollama', enabled: false })),
     getAllProviders: vi.fn(async () => ({ providers: [] })),
     updateProvider: vi.fn(async () => ({})),
-    refreshProviderModels: vi.fn(async (id) => ({ id, models: [] })),
-    // Mirrors the real aiToolkit/providers.js predicate (not a spy — tests
-    // assert against refreshProviderModels calls, not this classification).
-    isOllamaBackedProvider: (provider) => {
-      if (provider?.id === 'ollama') return true;
-      if (provider?.ollamaBacked === true) return true;
-      const base = String(provider?.envVars?.ANTHROPIC_BASE_URL || provider?.endpoint || '');
-      return /:11434\b/.test(base) || /ollama/i.test(base);
-    }
+    // Default: every requested provider lands in one happy group. Tests that
+    // care about a skip queue their own group shapes.
+    refreshProviderModelsBatch: vi.fn(async (ids) => [
+      { ids: [...ids], leadId: ids[0], status: 'updated', models: ['qwen2.5:7b'] }
+    ])
   }
 }));
 vi.mock('./ollamaManager.js', () => mocks.ollama);
 vi.mock('./lmStudioManager.js', () => mocks.lmstudio);
-vi.mock('./providers.js', () => mocks.providers);
+// The classification predicate comes from the REAL toolkit module rather than
+// being re-implemented here: it decides which providers get refreshed at all, so
+// a hand-mirrored copy would let the service and the suite drift together and
+// assert nothing. Everything with a side effect stays a spy.
+vi.mock('./providers.js', async () => {
+  const real = await import('../lib/aiToolkit/providers.js');
+  return {
+    ...mocks.providers,
+    isOllamaBackedProvider: real.isOllamaBackedProvider
+  };
+});
 
 // child_process is mocked so the install/upgrade paths (spawn-based streaming +
 // execFile-based presence checks) are drivable. Defaults are benign for the rest
@@ -80,7 +87,7 @@ const cp = vi.hoisted(() => ({
   spawn: null,
   execFile: null,
 }));
-vi.mock('child_process', () => ({
+vi.mock('../lib/childProcess.js', () => ({
   spawn: (...a) => cp.spawn(...a),
   execFile: (cmd, args, opts, cb) => cp.execFile(cmd, args, opts, cb),
 }));
@@ -108,6 +115,12 @@ const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));
 let svc;
 beforeEach(async () => {
   vi.clearAllMocks(); // clears calls, keeps the default impls defined above
+  // `clearAllMocks` clears recorded CALLS but not queued `…Once` values, and the
+  // provider fan-out is fire-and-forget: a test where it correctly never runs
+  // (a failed pull) leaves its `getAllProviders` answer queued and the NEXT test
+  // silently consumes it. `mockReset` drops the queue and restores the default
+  // implementation each spy was declared with.
+  for (const fn of Object.values(mocks.providers)) fn.mockReset();
   cp.spawn = cp.defaults.spawn; // reset child_process drivers to benign defaults
   cp.execFile = cp.defaults.execFile;
   delete process.env.LLM_BACKEND;
@@ -222,29 +235,104 @@ describe('localLlm', () => {
       // The refresh is fire-and-forget (doesn't block the install response) —
       // flush the microtask queue so the async chain it kicks off has settled.
       await flushMicrotasks();
-      expect(mocks.providers.refreshProviderModels).toHaveBeenCalledWith('ollama');
-      expect(mocks.providers.refreshProviderModels).toHaveBeenCalledWith('claude-ollama');
-      expect(mocks.providers.refreshProviderModels).not.toHaveBeenCalledWith('anthropic');
+      // ONE batch call carrying every ollama-backed id — not a per-provider
+      // loop, which is what cost a full providers.json write per provider. The
+      // grouping/probing/writing inside it is the toolkit's contract and is
+      // covered by lib/aiToolkit/providers.batch.test.js.
+      expect(mocks.providers.refreshProviderModelsBatch).toHaveBeenCalledTimes(1);
+      expect(mocks.providers.refreshProviderModelsBatch).toHaveBeenCalledWith(['ollama', 'claude-ollama']);
     });
     it('refreshes Ollama-backed providers after a successful delete', async () => {
       mocks.providers.getAllProviders.mockResolvedValueOnce({ providers: [{ id: 'ollama' }] });
       await svc.deleteModel('ollama', 'llama3.2');
       await flushMicrotasks();
-      expect(mocks.providers.refreshProviderModels).toHaveBeenCalledWith('ollama');
+      expect(mocks.providers.refreshProviderModelsBatch).toHaveBeenCalledWith(['ollama']);
     });
     it('does not refresh providers when the Ollama pull fails', async () => {
       mocks.ollama.pullModel.mockResolvedValueOnce({ success: false, error: 'boom' });
       mocks.providers.getAllProviders.mockResolvedValueOnce({ providers: [{ id: 'ollama' }] });
       await svc.installModel('ollama', 'llama3.2');
       await flushMicrotasks();
-      expect(mocks.providers.refreshProviderModels).not.toHaveBeenCalled();
+      expect(mocks.providers.refreshProviderModelsBatch).not.toHaveBeenCalled();
     });
-    it('does not fail install when a provider refresh throws', async () => {
+    it('does not call the batch at all when nothing is Ollama-backed', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [{ id: 'anthropic', type: 'api', endpoint: 'https://api.anthropic.com' }]
+      });
+      await svc.installModel('ollama', 'llama3.2');
+      await flushMicrotasks();
+      expect(mocks.providers.refreshProviderModelsBatch).not.toHaveBeenCalled();
+    });
+
+    it('logs ONE line per failed group, not one per member', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [
+          { id: 'local-a', type: 'cli', ollamaBacked: true },
+          { id: 'local-b', type: 'tui', ollamaBacked: true }
+        ]
+      });
+      mocks.providers.refreshProviderModelsBatch.mockResolvedValueOnce([
+        { ids: ['local-a', 'local-b'], leadId: 'local-a', status: 'failed', error: new Error('unreachable') }
+      ]);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await svc.installModel('ollama', 'llama3.2');
+      await flushMicrotasks();
+
+      expect(result.success).toBe(true);
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      expect(String(errSpy.mock.calls[0][0])).toMatch(/2 Ollama-backed provider\(s\) via local-a: unreachable/);
+      errSpy.mockRestore();
+    });
+
+    it('logs rather than silently dropping a group whose lead provider vanished', async () => {
+      // `missing` is a third outcome that must not be confused with a failed
+      // probe or an empty catalog — silently dropping it would leave the
+      // group's siblings stale with no trace of why.
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [
+          { id: 'local-a', type: 'cli', ollamaBacked: true },
+          { id: 'local-b', type: 'tui', ollamaBacked: true }
+        ]
+      });
+      mocks.providers.refreshProviderModelsBatch.mockResolvedValueOnce([
+        { ids: ['local-a', 'local-b'], leadId: 'local-a', status: 'missing' }
+      ]);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await svc.installModel('ollama', 'llama3.2');
+      await flushMicrotasks();
+
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      expect(String(errSpy.mock.calls[0][0])).toMatch(/local-a no longer exists/);
+      errSpy.mockRestore();
+    });
+
+    it('says nothing about the groups that succeeded', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [{ id: 'local-a', type: 'cli', ollamaBacked: true }]
+      });
+      mocks.providers.refreshProviderModelsBatch.mockResolvedValueOnce([
+        // `[]` is a real, empty catalog — an update, not a skip, so no log line.
+        { ids: ['local-a'], leadId: 'local-a', status: 'updated', models: [] }
+      ]);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await svc.deleteModel('ollama', 'llama3.2');
+      await flushMicrotasks();
+
+      expect(errSpy).not.toHaveBeenCalled();
+      errSpy.mockRestore();
+    });
+
+    it('does not fail install when the batch refresh throws', async () => {
       mocks.providers.getAllProviders.mockResolvedValueOnce({ providers: [{ id: 'ollama' }] });
-      mocks.providers.refreshProviderModels.mockRejectedValueOnce(new Error('unreachable'));
+      mocks.providers.refreshProviderModelsBatch.mockRejectedValueOnce(new Error('unreachable'));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const result = await svc.installModel('ollama', 'llama3.2');
       expect(result.success).toBe(true);
       await flushMicrotasks(); // let the rejection be caught internally, not surface as unhandled
+      errSpy.mockRestore();
     });
   });
 
@@ -399,14 +487,13 @@ describe('localLlm', () => {
     });
 
     it('returns a download hint on an unsupported platform (no install attempted)', async () => {
-      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      const restorePlatform = pinPlatform('win32');
       try {
         const r = await svc.installBackend('lmstudio');
         expect(r.success).toBe(false);
         expect(r.error).toMatch(/lmstudio\.ai/); // surfaces the manual download link
       } finally {
-        Object.defineProperty(process, 'platform', orig);
+        restorePlatform();
       }
     });
 
@@ -414,8 +501,7 @@ describe('localLlm', () => {
       // Repro of the real Ollama install failure: `brew install ollama` poured
       // the formula but exited 1 (mlx dep + cleanup/env-hint noise), so PortOS
       // wrongly reported failure for a successful install.
-      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      const restorePlatform = pinPlatform('darwin');
       cp.spawn = () => fakeChild({ code: 1, lines: ['Pouring ollama…', '🍺 ollama installed', 'brew cleanup hint'] });
       // `brew --version` (gate) and `brew list --versions ollama` (presence) succeed.
       cp.execFile = (_cmd, _args, _opts, cb) => cb(null, { stdout: 'ollama 0.30.10', stderr: '' });
@@ -424,13 +510,12 @@ describe('localLlm', () => {
         expect(r.success).toBe(true);
         expect(r.backend).toBe('ollama');
       } finally {
-        Object.defineProperty(process, 'platform', orig);
+        restorePlatform();
       }
     });
 
     it('still reports failure when `brew install` exits non-zero AND the package is absent', async () => {
-      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      const restorePlatform = pinPlatform('darwin');
       cp.spawn = () => fakeChild({ code: 1, lines: ['Error: download failed'] });
       // brew --version succeeds (gate passes); brew list rejects (not installed).
       cp.execFile = (_cmd, args, _opts, cb) =>
@@ -440,7 +525,7 @@ describe('localLlm', () => {
         expect(r.success).toBe(false);
         expect(r.error).toMatch(/Homebrew install failed/);
       } finally {
-        Object.defineProperty(process, 'platform', orig);
+        restorePlatform();
       }
     });
   });
@@ -524,6 +609,85 @@ describe('localLlm', () => {
         { providerId: 'claude-code', backend: 'cli', id: 'claude-opus-4-8', name: 'Claude Code / claude-opus-4-8', vision: true },
         { providerId: 'claude-code', backend: 'cli', id: 'claude-sonnet-4-6', name: 'Claude Code / claude-sonnet-4-6', vision: true },
       ]);
+    });
+  });
+
+  describe('listToolUseModels', () => {
+    it('reports a tool-capable Ollama model whose id the TOOL_USE_RE does not match', async () => {
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([
+        // The bug: /api/show says `tools`, but no id-regex alternative matches
+        // `phi4-mini` — so the agent picker warned "no known tool use".
+        { id: 'phi4-mini:latest', name: 'phi4-mini:latest', family: 'phi3' },
+        { id: 'gemma3:4b', name: 'gemma3:4b', family: 'gemma3' },
+      ]);
+      mocks.ollama.getModelCapabilities.mockImplementation(async (id) =>
+        id === 'phi4-mini:latest' ? ['completion', 'tools'] : ['completion', 'vision']);
+
+      const models = await svc.listToolUseModels();
+      expect(models).toEqual([
+        { providerId: 'ollama', backend: 'ollama', id: 'phi4-mini:latest', name: 'phi4-mini:latest', toolUse: true },
+      ]);
+    });
+
+    it('consults /api/show even for an id the regex already matches', async () => {
+      // Unlike the vision path there is no id short-circuit: an id-regex hit is
+      // exactly what the client can already decide for itself, so skipping the
+      // round-trip would leave this endpoint adding nothing.
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([
+        { id: 'qwen3.6:35b', name: 'qwen3.6:35b', family: 'qwen35moe' },
+      ]);
+      mocks.ollama.getModelCapabilities.mockResolvedValue(['completion', 'tools']);
+
+      const models = await svc.listToolUseModels();
+      expect(models.map((m) => m.id)).toEqual(['qwen3.6:35b']);
+      expect(mocks.ollama.getModelCapabilities).toHaveBeenCalledWith('qwen3.6:35b');
+    });
+
+    it('falls back to the id regex when /api/show reports no capabilities', async () => {
+      // Empty array = the daemon didn't answer / doesn't report — NOT an
+      // explicit "no tools". Regex-only is then the best answer available.
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([
+        { id: 'qwen3.6:35b', name: 'qwen3.6:35b', family: 'qwen35moe' },
+        { id: 'phi4-mini:latest', name: 'phi4-mini:latest', family: 'phi3' },
+      ]);
+      mocks.ollama.getModelCapabilities.mockResolvedValue([]);
+
+      const models = await svc.listToolUseModels();
+      expect(models.map((m) => m.id)).toEqual(['qwen3.6:35b']);
+    });
+
+    it('reads LM Studio tool capability off the normalized catalog badges', async () => {
+      // LM Studio reports no tool flag, so `lmStudioBadgeCapabilities` already
+      // resolved `tools` from the shared id heuristic — reading that keeps this
+      // endpoint and the Local LLMs tab's badges from ever disagreeing.
+      mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([
+        { id: 'mistral-7b-instruct', type: 'llm' },
+        { id: 'nomic-embed-text', type: 'embeddings' },
+        { id: 'some-unknown-model', type: 'llm' },
+      ]);
+
+      const models = await svc.listToolUseModels();
+      expect(models).toEqual([
+        { providerId: 'lmstudio', backend: 'lmstudio', id: 'mistral-7b-instruct', name: 'mistral-7b-instruct', toolUse: true },
+      ]);
+    });
+
+    it('never emits CLI-provider rows (no per-model capability to report)', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [
+          { id: 'claude-code', type: 'cli', command: 'claude', enabled: true, models: ['claude-opus-4-8'] },
+        ],
+      });
+      const models = await svc.listToolUseModels();
+      expect(models.some((m) => m.backend === 'cli')).toBe(false);
+    });
+
+    it('survives a backend being down — the other still reports', async () => {
+      mocks.ollama.getInstalledModels.mockRejectedValueOnce(new Error('ollama down'));
+      mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([{ id: 'mistral-7b-instruct', type: 'llm' }]);
+
+      const models = await svc.listToolUseModels();
+      expect(models.map((m) => m.id)).toEqual(['mistral-7b-instruct']);
     });
   });
 

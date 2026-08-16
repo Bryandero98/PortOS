@@ -106,6 +106,42 @@ claude --version
   - OpenAI: `gpt-5`, `gpt-5-mini`
   - Ollama: Model must be pulled first (`ollama pull llama3`)
 
+### Ollama-backed agent dies with "exceeds the available context size"
+
+**Symptom**: a Claude Ollama / OpenCode Ollama session works for a while, then
+stops with
+
+```
+API Error: 400 {"error":{"code":400,"message":"request (32768 tokens) exceeds the
+available context size (32768 tokens), try increasing it",
+"type":"exceed_context_size_error","n_prompt_tokens":32768,"n_ctx":32768}}
+```
+
+**Cause**: Ollama picks a model's runtime window from available VRAM
+(`OLLAMA_CONTEXT_LENGTH` documents the default as "4k/32k/256k based on VRAM"),
+so a 256K-capable model is commonly *loaded* at 32K. An agent harness ships a
+system prompt, tool schemas, and a growing transcript, and sizes its own
+compaction against the window it thinks it has — so it overruns the real one
+without warning. The task isn't too big; the window is too small.
+
+**Solution**: set **Local num_ctx** on the provider (AI Providers → the provider
+→ Context Window). PortOS reloads the Ollama daemon at that window before the
+next run, because a CLI/TUI harness talks to Ollama directly and nothing else
+can raise it. `OLLAMA_CONTEXT_LENGTH` in the environment works as a machine-wide
+fallback.
+
+Two caveats:
+
+- **Check the model still fits.** A larger window means a larger KV cache. Past
+  what VRAM allows, Ollama silently offloads layers to CPU and the model becomes
+  unusably slow rather than failing loudly. Raise it a step at a time.
+- **A background service can't inherit the setting.** A launchd/systemd-managed
+  `ollama serve` runs from its own unit file, so when a window is configured
+  PortOS starts (or restarts) Ollama itself.
+
+The Local LLM settings card shows the window loaded models are actually running
+at, and flags it when it's below what an agent harness needs.
+
 ## Chief of Staff Issues
 
 ### CoS Not Running
@@ -175,6 +211,20 @@ PortOS no longer falls back silently, so a misconfigured app now surfaces as one
 | `❌ App '<id>' didn't resolve to a repository directory` (CoS task is **blocked**, no agent starts) | The app record has an empty Repository Path, or nothing in Apps matches that id/name at all. Set the path in Apps — or clear the app from the task if it doesn't belong to one — then re-run it. The task stays in **Blocked** until you do. |
 
 **Note for Windows**: use a real filesystem path with a drive letter (`C:\...`). Both `C:\Users\...` and `C:/Users/...` work, as does a leading `~`; a path inside OneDrive-redirected folders is fine as long as it exists locally.
+
+### "path is outside allowed directories" for a Repo on a Secondary Drive
+
+**Symptom**: Opening an app's **Submodules** tab (or another view that sends a repo path to the server) fails, and the server log shows:
+
+```
+❌ Route error [GET /api/git/submodules/status]: path is outside allowed directories
+```
+
+**Cause**: Routes that accept a caller-supplied filesystem path confine it to a set of allowed roots. Those defaults were POSIX-only (`/tmp`, `/Users`, `/Volumes`, `/opt`) — on Windows they resolve to whatever drive the process happens to be running from, so a repo on a second drive (`D:\code\myapp`) matched nothing, and on Linux a repo under `/mnt` or `/media` matched nothing either. Either way the request was rejected with a 403.
+
+**Solution**: Update PortOS. The defaults now cover wherever each platform mounts secondary volumes: `/Volumes` on macOS, `/mnt` and `/media` on Linux, and on Windows your home directory, the temp directory, and any lettered drive that isn't the system drive. The rest of the Windows system drive stays off-limits (`C:\Windows`, `C:\Program Files`), as do UNC paths (`\\server\share`) — map the share to a drive letter if you keep repos on it.
+
+For anywhere else, set `PORTOS_WORKSPACE_ROOTS`. Separate entries with `;` on Windows (`D:\repos;E:\projects`) — a colon would split the value at the drive letter. macOS/Linux still use `:` (`/srv/git:/data/projects`).
 
 ### Memory System Not Working
 

@@ -23,7 +23,7 @@ const agent = {
   status: 'completed',
   startedAt: '2026-07-13T09:00:00.000Z',
   completedAt: '2026-07-13T10:00:00.000Z',
-  metadata: { taskDescription: 'Example task' },
+  metadata: { taskDescription: 'Example task', taskType: 'user' },
   result: { success: true, duration: 3600000 },
 };
 
@@ -36,6 +36,21 @@ afterEach(() => {
 });
 
 describe('AgentCard feedback', () => {
+  it('hides the rating UI for a completed scheduled/autopilot agent (taskType internal)', () => {
+    const internalAgent = {
+      ...agent,
+      metadata: { ...agent.metadata, taskType: 'internal' },
+    };
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={internalAgent} completed />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument();
+  });
+
   it('uses the archived scheduled type for a running agent ETA', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
@@ -211,5 +226,83 @@ describe('AgentCard transcript truncation (#3498)', () => {
 
     await waitFor(() => expect(api.getCosAgent).toHaveBeenCalledWith(agent.id));
     expect(screen.queryByText(/Showing the last/)).not.toBeInTheDocument();
+  });
+});
+
+describe('AgentCard kill confirmation (#4034)', () => {
+  it('requires confirmation before calling onKill', async () => {
+    const user = userEvent.setup();
+    const onKill = vi.fn().mockResolvedValue(true);
+    const runningAgent = {
+      ...agent,
+      status: 'running',
+      completedAt: null,
+    };
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={runningAgent} onKill={onKill} />
+      </MemoryRouter>
+    );
+
+    // Clicking Kill should show confirmation prompt and NOT call onKill immediately
+    await user.click(screen.getByRole('button', { name: 'Force kill agent (SIGKILL)' }));
+    expect(onKill).not.toHaveBeenCalled();
+    expect(screen.getByText('Kill?')).toBeInTheDocument();
+
+    // Clicking Cancel disarms confirmation state
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onKill).not.toHaveBeenCalled();
+    expect(screen.queryByText('Kill?')).not.toBeInTheDocument();
+
+    // Re-arm and click Confirm
+    await user.click(screen.getByRole('button', { name: 'Force kill agent (SIGKILL)' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(onKill).toHaveBeenCalledWith(runningAgent.id);
+  });
+});
+
+
+describe('AgentCard task description (#4170)', () => {
+  // jsdom reports 0 for both scrollHeight and clientHeight, so nothing measures
+  // as overflowing unless we force it.
+  const forceOverflow = () =>
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(500);
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('caps a long description behind an accessible Show more toggle', async () => {
+    const user = userEvent.setup();
+    forceOverflow();
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={agent} completed />
+      </MemoryRouter>
+    );
+
+    const box = document.getElementById(`agent-desc-${agent.id}`);
+    expect(box).toHaveClass('overflow-hidden');
+
+    // The bespoke implementation this replaced carried no aria wiring at all.
+    const toggle = screen.getByRole('button', { name: /Show more/ });
+    expect(toggle).toHaveAttribute('aria-controls', `agent-desc-${agent.id}`);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(toggle);
+    expect(box).not.toHaveClass('overflow-hidden');
+    expect(screen.getByRole('button', { name: /Show less/ })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('offers no toggle for a description that fits', () => {
+    // The replaced implementation gated on `text.length > 200`, so a 201-char
+    // description that fit in the cap still rendered a no-op "Show more".
+    render(
+      <MemoryRouter>
+        <AgentCard agent={{ ...agent, metadata: { ...agent.metadata, taskDescription: 'x'.repeat(300) } }} completed />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
   });
 });

@@ -22,7 +22,7 @@
  * full recheck cadence on a blip.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { emitLog } from './cosEvents.js';
@@ -56,7 +56,7 @@ export const WORK_ITEM_LIMIT = 50;
 function runCli(cmd, args, cwd) {
   return new Promise((resolve) => {
     let stdout = '', stderr = '', settled = false;
-    const child = spawn(cmd, args, { cwd, shell: false, windowsHide: true });
+    const child = spawn(cmd, args, { cwd, shell: false });
     const done = (result) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });

@@ -1082,10 +1082,12 @@ describe('CoS Routes', () => {
       // The raw do:next body must NOT be inlined for the next command.
       expect(loadSlashdoCommand).not.toHaveBeenCalledWith('next');
       const [taskData] = cos.addTask.mock.calls.at(-1);
-      expect(taskData.context).toBe('CLAIM ISSUE PROMPT');
+      // The claim body is the agent PROMPT, not the one-line human note (#4153).
+      expect(taskData.prompt).toBe('CLAIM ISSUE PROMPT');
+      expect(taskData.context).toBeUndefined();
       expect(taskData.description).toContain('GitHub Issues');
       // `next` is the one genuinely special command: its claim prompt IS the
-      // context, so it must NOT also carry a slashdoCommand (which would make the
+      // task prompt, so it must NOT also carry a slashdoCommand (which would make the
       // prompt builder append the whole /do:next body on top of the claim prompt).
       expect(taskData.slashdoCommand).toBeUndefined();
       expect(taskData.description).not.toContain('/do:');
@@ -1251,10 +1253,10 @@ describe('CoS Routes', () => {
       const [taskData, taskType] = cos.addTask.mock.calls.at(-1);
       expect(taskType).toBe('user');
       // Placeholders substituted, ticket constraint appended.
-      expect(taskData.context).toContain('Work MyApp at /repo (app my-app); reviewers: claude.');
-      expect(taskData.context).not.toMatch(/\{appName\}|\{repoPath\}|\{appId\}|\{reviewers\}/);
-      expect(taskData.context).toContain('Target Ticket Constraint');
-      expect(taskData.context).toContain('PROJ-123');
+      expect(taskData.prompt).toContain('Work MyApp at /repo (app my-app); reviewers: claude.');
+      expect(taskData.prompt).not.toMatch(/\{appName\}|\{repoPath\}|\{appId\}|\{reviewers\}/);
+      expect(taskData.prompt).toContain('Target Ticket Constraint');
+      expect(taskData.prompt).toContain('PROJ-123');
       expect(taskData.description).toContain('PROJ-123');
       // claim-issue-jira self-manages its worktree + PR.
       expect(taskData.useWorktree).toBe(false);
@@ -1274,7 +1276,7 @@ describe('CoS Routes', () => {
       expect(response.status).toBe(200);
       const [taskData] = cos.addTask.mock.calls.at(-1);
       expect(taskData.description).toContain('PROJ-7');
-      expect(taskData.context).toContain('PROJ-7');
+      expect(taskData.prompt).toContain('PROJ-7');
     });
 
     it('returns 404 for an unknown app', async () => {

@@ -6,8 +6,8 @@
  */
 
 import { randomUUID } from 'crypto';
-import { userLocalToday } from '../lib/timezone.js';
-import { ymdShift } from '../lib/postStreak.js';
+import { getUserTimezone, todayInTimezone, userLocalToday } from '../lib/timezone.js';
+import { recordDayKey, ymdShift } from '../lib/postStreak.js';
 import { getUnifiedActivityStreak } from './postActivityStreak.js';
 import { loadTrainingLog, saveTrainingLog, getAllTrainingEntries } from './postTrainingLogStore.js';
 
@@ -63,16 +63,22 @@ export async function submitTrainingEntry(entry) {
  * ALL history; only the per-drill breakdown below is windowed.
  */
 export async function getTrainingStats(days = 30) {
+  const atDate = new Date();
   const data = await loadTrainingLog();
   const allEntries = data.entries;
+  const timezone = await getUserTimezone();
+  const todayStr = todayInTimezone(timezone, atDate);
 
   let entries = allEntries;
   if (days > 0) {
     // Window off the user's local today (DST-safe day math) so the cutoff matches
     // the local-day strings the training/practice writers now stamp (issue #2681);
     // a UTC-day cutoff would clip the oldest local day or admit an extra one.
-    const cutoffStr = ymdShift(await userLocalToday(), -days);
-    entries = allEntries.filter(e => String(e.date || '').split('T')[0] >= cutoffStr);
+    const cutoffStr = ymdShift(todayStr, -days);
+    entries = allEntries.filter(e => {
+      const date = recordDayKey(e, timezone);
+      return date && date >= cutoffStr;
+    });
   }
 
   // Group by drill type (windowed)
@@ -84,15 +90,16 @@ export async function getTrainingStats(days = 30) {
     byDrill[key].totalCorrect += e.correctCount || 0;
     byDrill[key].totalQuestions += e.questionCount || 0;
     byDrill[key].totalMs += e.totalMs || 0;
-    byDrill[key].dates.add(String(e.date || '').split('T')[0]);
+    const date = recordDayKey(e, timezone);
+    if (date) byDrill[key].dates.add(date);
   }
 
   // ONE unified streak across sessions + training (shared helper, ALL history).
   // Pass allEntries (already loaded above) rather than re-fetching via
   // getAllTrainingEntries() — postActivityStreak.js takes training as a
   // parameter specifically so it doesn't need to import this module.
-  const { current: currentStreak, longest: longestStreak } = await getUnifiedActivityStreak(allEntries);
-  const activeDays = new Set(entries.map(e => String(e.date || '').split('T')[0])).size;
+  const { current: currentStreak, longest: longestStreak } = await getUnifiedActivityStreak(allEntries, todayStr, timezone);
+  const activeDays = new Set(entries.map(e => recordDayKey(e, timezone)).filter(Boolean)).size;
 
   // Summarize
   const summary = {};
@@ -116,10 +123,13 @@ export async function getTrainingStats(days = 30) {
 }
 
 /**
- * Get recent training entries for display.
+ * Get recent training entries for display. Reads through
+ * `getAllTrainingEntries`, so each entry's `date` is re-derived in the user's
+ * current timezone (#4168) and the history list agrees with the streak/stats
+ * that are computed off the same day keys.
  */
 export async function getTrainingEntries(limit = 20) {
-  const data = await loadTrainingLog();
-  if (!limit) return data.entries.slice().reverse();
-  return data.entries.slice(-limit).reverse();
+  const entries = await getAllTrainingEntries();
+  if (!limit) return entries.slice().reverse();
+  return entries.slice(-limit).reverse();
 }

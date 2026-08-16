@@ -101,6 +101,13 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(PASTE_MARKER_PATTERN.test('[PastedContent2431chars]')).toBe(true);
   });
 
+  it('PASTE_MARKER_PATTERN matches OpenCode paste-commit chips', () => {
+    expect(PASTE_MARKER_PATTERN.test('[Pasted ~46 lines]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pasted~46lines]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pasted ~1 line]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pasted ~46 chars]')).toBe(false);
+  });
+
   it('PASTE_MARKER_PATTERN matches the SPACE-COLLAPSED form left after ANSI strip', () => {
     // The raw PTY stream renders the marker with absolute-column cursor moves
     // between tokens (`[Pasted\x1b[11Gtext\x1b[16G#1…`), so once ANSI is stripped
@@ -896,8 +903,8 @@ describe('tuiHandshake.applyCommandDefaults', () => {
     expect(applyCommandDefaults('kimi', [])).toEqual(['--yolo']);
     // Seeded default already carries --yolo — no duplicate.
     expect(applyCommandDefaults('kimi', ['--yolo'])).toEqual(['--yolo']);
-    // A user-pinned posture (-y / --afk) is respected.
-    expect(applyCommandDefaults('kimi', ['--afk'])).toEqual(['--afk']);
+    // A user-pinned short posture is respected.
+    expect(applyCommandDefaults('kimi', ['-y'])).toEqual(['-y']);
   });
 });
 
@@ -1288,6 +1295,59 @@ describe('createInputReadyTracker', () => {
     expect(agy.needsTrust).toBe(true);
   });
 
+  // Claude Code v2.1.233's auto-mode offer. Unlike the trust gate it paints with
+  // bracketed paste ALREADY ON, so `ready` was true and the prompt went into a
+  // modal that ignored it — four agents died `paste-not-rendered` on 2026-08-14.
+  describe('claude auto-mode default offer', () => {
+    // Verbatim wording from agent-f71b794e's transcript.
+    const OFFER = 'Make auto mode your default permission mode?\n'
+      + '   ❯ 1. Yes, set auto mode as my default permission mode\n'
+      + '     2. No, keep don\'t ask\n';
+
+    const readyTracker = () => {
+      const tracker = createInputReadyTracker();
+      tracker.observe(`${PASTE_OFF}${PASTE_ON}`, '');
+      return tracker;
+    };
+
+    it('suppresses ready while the offer is up, even with paste mode on', () => {
+      const tracker = readyTracker();
+      expect(tracker.ready).toBe(true); // composer live...
+
+      tracker.observe('', OFFER);
+      expect(tracker.needsAutoModeChoice).toBe(true);
+      expect(tracker.ready).toBe(false); // ...but the modal owns input now
+    });
+
+    it('re-arms ready once the spawner acks the dismissal', () => {
+      const tracker = readyTracker();
+      tracker.observe('', OFFER);
+      tracker.ackAutoModeChoice();
+      expect(tracker.needsAutoModeChoice).toBe(false);
+      expect(tracker.ready).toBe(true);
+    });
+
+    // The rolling tail keeps the modal text for 4000 chars after the dialog is
+    // gone. Without a terminal ack that stale text re-arms the flag on the next
+    // chunk — re-answering forever and pinning `ready` false to the 45s deadline.
+    it('does not re-arm from the stale tail after being answered', () => {
+      const tracker = readyTracker();
+      tracker.observe('', OFFER);
+      tracker.ackAutoModeChoice();
+
+      tracker.observe('', 'bypass permissions on'); // tail still holds the offer
+      expect(tracker.needsAutoModeChoice).toBe(false);
+      expect(tracker.ready).toBe(true);
+    });
+
+    it('leaves the tracker alone when no offer appears', () => {
+      const tracker = readyTracker();
+      tracker.observe('', 'Try "fix lint errors"');
+      expect(tracker.needsAutoModeChoice).toBe(false);
+      expect(tracker.ready).toBe(true);
+    });
+  });
+
   it('matches a marker split across two PTY chunks (rolling tail)', () => {
     const tracker = createInputReadyTracker();
     tracker.observe('', '> Yes, I trust th');
@@ -1326,6 +1386,14 @@ describe('createInputReadyTracker', () => {
     const tracker = createInputReadyTracker({ directLaunch: true });
     expect(tracker.ready).toBe(false); // banner painting, paste mode not yet on
     tracker.observe(PASTE_ON, '');
+    expect(tracker.ready).toBe(true);
+  });
+
+  it('directLaunch: carries a split bracketed-paste toggle across PTY chunks', () => {
+    const tracker = createInputReadyTracker({ directLaunch: true });
+    tracker.observe('\x1b[?2004', '');
+    expect(tracker.ready).toBe(false);
+    tracker.observe('h', '');
     expect(tracker.ready).toBe(true);
   });
 
@@ -1433,6 +1501,12 @@ describe('tuiHandshake.isPasteConfirmed', () => {
   it('confirms when the prompt text DID render inline (markerless small paste)', () => {
     const inlineBuffer = '❯ Onthetaskspagewhenwerenderpending/active/blockedtaskcards Begin working on the task now.';
     expect(isPasteConfirmed(inlineBuffer, { verifiablePrefix: prefix, promptMarkerCount: 0 })).toBe(true);
+  });
+
+  it('confirms an OpenCode line-count chip even when the prompt body is hidden', () => {
+    const opencodeBuffer = 'Build · hf.co/example/model Ollama [Pasted ~46 lines]';
+    expect(verifyPasteRendered(opencodeBuffer, prefix)).toBe(false);
+    expect(isPasteConfirmed(opencodeBuffer, { verifiablePrefix: prefix, promptMarkerCount: 0 })).toBe(true);
   });
 
   it('does NOT confirm when neither the marker nor the text appears (paste swallowed by a not-ready TUI)', () => {

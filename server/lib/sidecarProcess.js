@@ -14,7 +14,8 @@
  * instead.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from './childProcess.js';
+import { safeChildProcessOptions } from './processEnv.js';
 
 // Only the trailing RESULT: line is ever consumed, and sidecar runs are
 // long-lived (first-run weight downloads, multi-minute inference) — so both
@@ -60,7 +61,7 @@ export function runSidecarProcess({ bin, args, env, signal, onStage, onProcess }
       resolve({ ok: false, canceled: true, reason: 'cancelled (aborted before spawn)', stdout: '' });
       return;
     }
-    const proc = spawn(bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(bin, args, safeChildProcessOptions({ env, stdio: ['ignore', 'pipe', 'pipe'] }));
     onProcess?.(proc);
     let stdoutTail = '';
     let stderrTail = '';

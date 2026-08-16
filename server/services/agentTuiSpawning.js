@@ -21,8 +21,9 @@ import { PATHS } from '../lib/fileUtils.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
-import { resolvePrCompletion } from '../lib/prDisposition.js';
-import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
+import { PR_CREATION, prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
+import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
+import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
@@ -76,7 +77,9 @@ import {
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
-import { execFile } from 'child_process';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
+import { execFile } from '../lib/childProcess.js';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
 // runner — agents stay alive much longer and write a sentinel file when done).
@@ -546,11 +549,11 @@ function createPasteRetryController({
     };
 
     // Confirms the TUI actually received the paste before we submit. The
-    // paste-commit MARKER ([Pasted text #N]) is authoritative — Claude Code
-    // collapses a multi-line paste into that chip and HIDES the body text, so a
-    // literal text check false-negatives on every multi-line prompt (real
-    // incident 2026-07-05: agent-656efa6e et al. failed `paste-not-rendered`
-    // despite the marker being present). Literal-text verification is only the
+    // paste-commit marker is authoritative — Claude Code and OpenCode can
+    // collapse a multi-line paste into a chip and HIDE the body text, so a
+    // literal text check false-negatives on multi-line prompts (real incident
+    // 2026-07-05: agent-656efa6e et al. failed `paste-not-rendered` despite
+    // Claude's marker being present). Literal-text verification is only the
     // fallback for the markerless path — see isPasteConfirmed.
     const pasteConfirmed = (buffer) =>
       isPasteConfirmed(buffer, { verifiablePrefix, promptMarkerCount });
@@ -803,6 +806,7 @@ export async function spawnTuiAgent({
     directLaunch: useDurableRunner,
   });
   let trustAccepted = false;
+  let autoModeDeclined = false;
   // True once shell.js actually injects the `claude` command (after its
   // round-trip readiness probe). The probe runs its OWN shell command first,
   // which toggles bracketed-paste mode and would otherwise advance the
@@ -861,7 +865,7 @@ export async function spawnTuiAgent({
   // `merged` starts false and only a `known` MERGED answer flips it: a gh we
   // could not run (firewalled, offline) is NOT evidence of anything and must
   // leave the pre-existing verdicts untouched. GitHub only — `gh pr view`
-  // against a GitLab MR answers nothing, so those follow-ups keep prior behavior.
+  // against a GitLab MR or an unresolved host answers nothing, so those follow-ups keep prior behavior.
   const prFollowUpRef = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp)
     && detectForgeCli(task.metadata?.reviewLoopPRHost) === 'gh'
     ? (task.metadata?.reviewLoopPRUrl || task.metadata?.reviewLoopPRNumber || null)
@@ -1063,22 +1067,30 @@ export async function spawnTuiAgent({
       completionError: finalError,
     });
 
-    // A slashdo-capable Claude TUI owns /do:pr itself. Slashdo-free TUIs
-    // (Codex, Antigravity, OpenCode, lean Claude) only commit and signal;
-    // PortOS must own their push + PR + reviewer/merge follow-up. Derive this
-    // from the same predicate used by the prompt builder so neither side can
-    // believe the other owns the PR.
-    //
-    // Resolved BEFORE finalizeAgent (not just in the cleanup below) because it is
-    // also the gate for the PR-claim verification (#3358): only a run that owned
-    // its own PR creation can be expected to have produced one by finalize time.
+    // Every TUI that is a real coding harness drives its own push → PR → review
+    // → merge, whether or not it can type `/do:pr` (#3733) — a Claude TUI runs
+    // the slashdo command, codex/antigravity/grok/OpenCode run the plain
+    // `git`/`gh` equivalent from the same prompt. Only a lean `--bare` session
+    // still hands the lifecycle back to PortOS. Derived from the same predicate
+    // the prompt builder used so neither side can believe the other owns the PR.
     const taskOpenPR = isTruthyMetaFn(task.metadata?.openPR);
     const taskReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
-    const agentOwnsPR = taskOpenPR && canTypeSlashCommands({
+    const agentOwnsPR = taskOpenPR && agentOwnsPrWorkflow({ providerType: PROVIDER_TYPES.TUI, leanMode });
+    // …but PR-claim verification (#3358) stays keyed on the SLASH-command
+    // predicate. A run PortOS still backstops (it re-checks the forge at cleanup
+    // and opens the PR itself when the agent skipped it) must not be failed here
+    // for a PR that is about to exist — finalize runs before that net.
+    const prClaimExpected = taskOpenPR && canTypeSlashCommands({
       providerId: provider?.id,
       providerCommand: provider?.command,
       leanMode,
     });
+    // Whether finalize's check ACTUALLY produced a forge answer, filled in from
+    // its return below. Deliberately not `prClaimExpected`: finalize substitutes
+    // `{ok:true}` for a user-terminated run and for a check that threw, and a
+    // throw from finalize itself skips the assignment entirely — in all three
+    // cases nothing was verified, so cleanup must ask rather than stand down.
+    let prClaimVerified = false;
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
     // hook crash) still runs the local cleanup — sentinel removal, worktree
@@ -1107,17 +1119,22 @@ export async function spawnTuiAgent({
         error: finalError || undefined,
         completionReason: reason,
         workspacePath,
-        prExpected: agentOwnsPR,
+        prExpected: prClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
       });
       if (finalized && typeof finalized.success === 'boolean') cleanupSuccess = finalized.success;
+      prClaimVerified = prClaimWasVerified(finalized?.prVerdict);
     } finally {
       // This run's sentinel only — a sibling agent sharing this workspace owns
       // its own file and may still be running.
       if (doneSentinelPath) await rm(doneSentinelPath).catch(() => {});
 
-      const reviewOptions = cleanupSuccess && taskOpenPR && !agentOwnsPR
+      const prCreation = resolvePrCreation({ taskOpenPR, agentOwnsPr: agentOwnsPR, prClaimVerified });
+      // Only the two modes that can still open a PR (and thus spawn a follow-up
+      // that needs these) pay for the resolve. `never` — the dominant path, an
+      // agent that opened and landed its own PR — discards them.
+      const reviewOptions = prCreation !== PR_CREATION.NEVER
         ? await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn })
           .catch(err => {
             emitLog('warn', `TUI review options unavailable for ${agentId}: ${err.message}`, { agentId });
@@ -1125,7 +1142,7 @@ export async function spawnTuiAgent({
           })
         : {};
       await cleanupWorktreeFn(agentId, cleanupSuccess, {
-        openPR: agentOwnsPR ? false : taskOpenPR,
+        prCreation,
         prCompletion: resolvePrCompletion(task.metadata),
         ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,
@@ -1403,6 +1420,17 @@ export async function spawnTuiAgent({
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
 
+  // Ollama-backed harnesses talk to the daemon directly, so their context
+  // window is whatever Ollama loaded the model at — no per-request `num_ctx`
+  // reaches them. Hold the daemon at the provider's configured window (or warn
+  // when it's below what an agent harness needs) BEFORE the TUI starts: the
+  // failure mode otherwise is an hour of work lost to a 400 at 100% context.
+  // Gated on the predicate here (not just inside the helper) so a cloud-provider
+  // spawn — the overwhelmingly common case — takes no async hop at all.
+  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  if (ollamaContext?.warning) appendLine(ollamaContext.warning);
+  if (ollamaContext?.applied) appendLine(`🪟 Reloaded Ollama at a ${ollamaContext.contextLength}-token context window`);
+
   // A spawn failure here (a runner 400 for a command missing from its allowlist,
   // an unreachable runner, a PTY that won't open) used to propagate raw out of
   // spawnTuiAgent. The caller in subAgentSpawner only logs it, so the agent
@@ -1470,7 +1498,7 @@ export async function spawnTuiAgent({
   // failure mode that left the input empty. The `\r` is split from the paste
   // write because a fixed delay races Claude Code's paste-commit on large
   // prompts; instead we poll Claude Code's raw output for its
-  // `[Pasted text #N +M lines]` marker, then wait an extra
+  // provider paste-commit marker, then wait an extra
   // PASTE_TO_ENTER_MIN_DELAY_MS before submitting. A fallback timer fires
   // the Enter unconditionally if the marker never appears (very small
   // prompts won't trigger the marker). All timers are tracked so finish()
@@ -1575,6 +1603,21 @@ export async function spawnTuiAgent({
         trustAccepted = true;
         shellService.writeToSession(sessionId, '\r');
         appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
+        return;
+      }
+      // Decline claude's "make auto mode your default permission mode?" offer
+      // (v2.1.233+). Unlike the trust gate this one paints AFTER the composer is
+      // live, so it swallows the paste and every retry unless it is cleared
+      // first — see TUI_AUTO_MODE_PROMPT_PATTERN. Arrow-down + Enter rather than
+      // the digit `2`: it lands on "No, keep don't ask" under both of Ink's
+      // selection models (digit-immediate-select and navigate-then-confirm),
+      // whereas a bare `\r` would accept the highlighted option 1 and rewrite the
+      // user's global permission default.
+      if (inputReady.needsAutoModeChoice && !autoModeDeclined) {
+        autoModeDeclined = true;
+        shellService.writeToSession(sessionId, '\x1b[B\r');
+        inputReady.ackAutoModeChoice();
+        appendLine(`📟 Declined ${tuiConfig.command} auto-mode default offer for session ${sessionId.slice(0, 8)}`);
         return;
       }
       if (inputReady.ready && elapsed >= tuiConfig.promptDelayMs) {

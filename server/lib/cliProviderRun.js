@@ -16,7 +16,7 @@
  * lightweight cousin for fire-and-collect prompts.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from './childProcess.js';
 import { buildCliArgs, prepareCliPrompt } from './cliProviderArgs.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn } from './bufferedSpawn.js';
 import { buildCliChildEnv } from './cliChildEnv.js';
@@ -94,6 +94,10 @@ export function runCliProviderPrompt(args = {}) {
   // Deliver the prompt per provider convention: antigravity gets it as the
   // --print VALUE (no stdin); grok's `--prompt-file /dev/stdin` is fed via stdin
   // on POSIX / a temp file on Windows (useStdin=false); everyone else via stdin.
+  // NOTE: extraArgs land AFTER buildCliArgs' output, so for antigravity they sit
+  // past the trailing `--print` marker. prepareAntigravityPrompt relocates the
+  // `--print <prompt>` pair to the very end to absorb that (#4110) — don't
+  // "fix" it by re-ordering the concatenation above.
   const { args: spawnArgs, useStdin, cleanup: cleanupPromptFile } = prepareCliPrompt(provider.command, builtArgs, prompt);
 
   return new Promise((resolve) => {
@@ -127,7 +131,6 @@ export function runCliProviderPrompt(args = {}) {
       cwd: effectiveCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
-      windowsHide: true,
     });
 
     // Single settlement gate — the timer, spawn error, and close handler all

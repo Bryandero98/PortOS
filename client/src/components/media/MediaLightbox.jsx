@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X, Copy, Sparkles, Film, Image as ImageIcon, Download, Eraser, Wand2,
-  ChevronLeft, ChevronRight, Maximize2, Minimize2, Star, Box,
+  ChevronLeft, ChevronRight, Maximize2, Minimize2, Star, Box, ScanEye,
 } from 'lucide-react';
 import PromptRefineModal from './PromptRefineModal';
+import { PromptFromMediaModal } from './PromptFromMedia';
 import AddToCollectionMenu from './AddToCollectionMenu';
 import PinToMoodBoardMenu from './PinToMoodBoardMenu';
 import MediaImage from '../MediaImage';
@@ -32,8 +34,9 @@ import { formatDateTime, formatDateNumeric } from '../../utils/formatters';
 // (A mobile tap-to-open bottom-sheet drawer existed pre-ed0e4859 and was
 // removed because it covered the image area in fullscreen.)
 // Opting out means owning the dialog semantics Modal would have supplied:
-// the overlay carries role="dialog"/aria-modal and runs useFocusTrap itself,
-// and `a11yConventions.test.js` allowlists it on that basis.
+// the overlay carries role="dialog"/aria-modal, runs useFocusTrap itself, and
+// portals to <body> in place of Modal's `usePortal` (see the render below);
+// `a11yConventions.test.js` allowlists it on that basis.
 
 const NOTE_MAX = 2000;
 const NOTE_DEBOUNCE_MS = 500;
@@ -108,6 +111,7 @@ export default function MediaLightbox({
 }) {
   const [fullScreen, setFullScreen] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
+  const [promptFromOpen, setPromptFromOpen] = useState(false);
   useScrollLock(!!item);
   // Read callbacks + frequently-changing values from refs so the keydown
   // listener and the note-save debounce don't tear down on every parent
@@ -150,6 +154,7 @@ export default function MediaLightbox({
       const cb = refs.current;
       if (e.key === 'Escape') {
         if (refineOpen) { setRefineOpen(false); return; }
+        if (promptFromOpen) { setPromptFromOpen(false); return; }
         if (fullScreen) { setFullScreen(false); return; }
         cb.onClose();
         return;
@@ -179,10 +184,10 @@ export default function MediaLightbox({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [item, hasPrevious, hasNext, fullScreen, refineOpen]);
+  }, [item, hasPrevious, hasNext, fullScreen, refineOpen, promptFromOpen]);
 
   // Reset refine modal when the previewed item changes.
-  useEffect(() => { setRefineOpen(false); }, [item?.key]);
+  useEffect(() => { setRefineOpen(false); setPromptFromOpen(false); }, [item?.key]);
 
   const { onTouchStart, onTouchEnd } = useSwipeNav({ onPrevious, onNext, hasPrevious, hasNext });
 
@@ -235,7 +240,15 @@ export default function MediaLightbox({
   // — bottom-anchoring would bury them in the SettingsPane underneath.
   const chevronPositionClass = fullScreen ? 'bottom-4' : 'top-1/2 -translate-y-1/2';
 
-  return (
+  // Portal to <body>. The overlay is a hand-rolled `fixed inset-0` (this file
+  // opts out of <ui/Modal> and its `usePortal`, see the note at the top), and
+  // the lightbox is opened from inside themed gallery cards. On "glass" themes
+  // (`--port-backdrop-filter` non-none) `index.css` gives every bordered/rounded
+  // `.bg-port-card` a backdrop-filter, which makes it the containing block for
+  // position:fixed descendants — an inline overlay would be sized to the card
+  // instead of the viewport. Same fix as GalleryImagePicker / FolderPicker,
+  // reached through createPortal directly because Modal isn't in play here.
+  return createPortal(
     <div
       ref={overlayRef}
       role="dialog"
@@ -243,7 +256,6 @@ export default function MediaLightbox({
       aria-label={`Media viewer — ${item.filename || item.key || 'item'}`}
       className={`fixed inset-0 z-50 bg-black/90 flex items-center justify-center ${overlayPad}`}
       onClick={onClose}
-      onKeyDown={(e) => e.key === 'Escape' && onClose()}
     >
       {hasPrevious && (
         <button
@@ -356,6 +368,7 @@ export default function MediaLightbox({
             regenBounds={regenBounds}
             copy={copy}
             onRefine={() => setRefineOpen(true)}
+            onPromptFrom={() => setPromptFromOpen(true)}
             annotation={annotation}
             onAnnotationChange={onAnnotationChange}
             variantGroup={variantGroup}
@@ -364,7 +377,9 @@ export default function MediaLightbox({
         )}
       </div>
       <PromptRefineModal item={item} open={refineOpen} onClose={() => setRefineOpen(false)} />
-    </div>
+      <PromptFromMediaModal item={item} open={promptFromOpen} onClose={() => setPromptFromOpen(false)} />
+    </div>,
+    document.body
   );
 }
 
@@ -396,7 +411,7 @@ function PeerNotes({ others }) {
 function SettingsPane({
   item, meta, isVideo,
   onClose, onRemix, onSendToImage, onSendToVideo, onSendTo3d, onContinue, onClean, onRegenerate, onRemoveWatermark, regenAvailable, regenBounds,
-  copy, onRefine,
+  copy, onRefine, onPromptFrom,
   annotation, onAnnotationChange,
   variantGroup, onSelectVariant,
 }) {
@@ -640,6 +655,16 @@ function SettingsPane({
             className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded"
           >
             <Sparkles className="w-3.5 h-3.5" /> Refine Prompt
+          </button>
+        )}
+        {onPromptFrom && (
+          <button
+            type="button"
+            onClick={onPromptFrom}
+            title="Ask a vision model to write the image and/or video prompt that would recreate this"
+            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded"
+          >
+            <ScanEye className="w-3.5 h-3.5" /> Prompt from this
           </button>
         )}
         {onRemix && (

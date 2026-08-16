@@ -26,8 +26,22 @@ const WAN_TI2V = { id: 'wan-ti2v', name: 'Wan TI2V', runtime: 'wan22', supported
 const H3 = {
   id: 'minimax-h3', name: 'MiniMax H3', runtime: 'minimax_h3', supportedModes: ['text', 'image', 'fflf'],
   lastFrameAnchored: true,
-  frameOptions: [124, 141, 158], fpsOptions: [24], defaultFrames: 124,
+  frameOptions: [107, 124, 141, 158], fpsOptions: [24], defaultFrames: 124,
+  defaultWidth: 1344, defaultHeight: 768, resolutionStep: 32,
+  resolutionOptions: [
+    { label: '1536x672', w: 1536, h: 672 },
+    { label: '1344x768', w: 1344, h: 768 },
+    { label: '768x1344', w: 768, h: 1344 },
+  ],
   supportsNegativePrompt: false, supportsTiling: false, supportsDisableAudio: false,
+  samplerLocked: true,
+  // Server-decorated per model (videoGen/local.js#decorateVideoModel) — the
+  // client never derives this from a runtime name, so the fixture carries it
+  // exactly as the /models payload does.
+  textEncoderOptions: [
+    { id: 'stock', label: 'Stock', description: 'Ships with the model.', builtIn: true },
+    { id: 'heretic-bf16', label: 'Ultra-Heretic', description: 'Uncensored.', builtIn: false, sizeBytes: 51506295440 },
+  ],
 };
 const MODELS = [MLX, LTX2];
 const STATUS = { connected: true, defaultModel: MLX.id };
@@ -275,8 +289,101 @@ describe('useVideoGenForm', () => {
       fps: 24,
       tiling: 'auto',
       disableAudio: 'false',
+      width: 1344,
+      height: 768,
     });
-    expect(payload.prompt).toBe('a fox watches the rain');
+    expect(payload.prompt).toBe('a fox watches the rain\n\nno music, no soundtrack');
+  });
+
+  // Substitutable prompt conditioner (#4081).
+  describe('text encoder selection', () => {
+    const renderWithH3 = async () => {
+      const rendered = render({ models: [MLX, H3], status: { connected: true, defaultModel: MLX.id } });
+      await waitFor(() => expect(rendered.result.current.modelId).toBe(MLX.id));
+      act(() => rendered.result.current.handleModelChange(H3.id));
+      await waitFor(() => expect(rendered.result.current.modelId).toBe(H3.id));
+      return rendered;
+    };
+
+    // An empty list is what hides the picker; a model with substitutions
+    // exposes them straight off the server-decorated entry.
+    it('exposes only the selected model’s options', async () => {
+      const { result } = render({ models: [MLX, H3], status: { connected: true, defaultModel: MLX.id } });
+      await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+      expect(result.current.textEncoderOptions).toEqual([]);
+      act(() => result.current.handleModelChange(H3.id));
+      await waitFor(() => expect(result.current.textEncoderOptions).toHaveLength(2));
+    });
+
+    // The stock choice must submit the same body a request that never knew
+    // about this knob would — the server treats absence and 'stock' identically,
+    // so sending the sentinel would only add noise to persisted job params.
+    it('drops the stock choice from the payload', async () => {
+      const { result } = await renderWithH3();
+      expect(result.current.textEncoderId).toBe('stock');
+      act(() => result.current.setPrompt('a fox'));
+      expect(result.current.buildGeneratePayload().textEncoderId).toBeUndefined();
+    });
+
+    it('submits an explicitly chosen substitute', async () => {
+      const { result } = await renderWithH3();
+      act(() => {
+        result.current.setPrompt('a fox');
+        result.current.setTextEncoderId('heretic-bf16');
+      });
+      await waitFor(() => expect(result.current.textEncoderId).toBe('heretic-bf16'));
+      expect(result.current.buildGeneratePayload().textEncoderId).toBe('heretic-bf16');
+    });
+
+    // Switching to a model that can't load the selection has to snap it back,
+    // or the <select> sits on a value with no matching <option> and the submit
+    // 400s with VIDEO_TEXT_ENCODER_UNSUPPORTED.
+    it('resets to stock when the model changes to one without that option', async () => {
+      const { result } = await renderWithH3();
+      act(() => result.current.setTextEncoderId('heretic-bf16'));
+      await waitFor(() => expect(result.current.textEncoderId).toBe('heretic-bf16'));
+
+      act(() => result.current.handleModelChange(MLX.id));
+      await waitFor(() => expect(result.current.textEncoderId).toBe('stock'));
+      act(() => result.current.setPrompt('a fox'));
+      expect(result.current.buildGeneratePayload().textEncoderId).toBeUndefined();
+    });
+
+    // History records the conditioner only for a non-stock render, so a remix
+    // of a stock render must CLEAR a leftover selection rather than carry it
+    // into a render the user asked to reproduce faithfully.
+    it.each([
+      ['restores a recorded substitute', { textEncoderId: 'heretic-bf16' }, 'heretic-bf16', H3.id],
+      ['clears the selection when the record has none', {}, 'stock', MLX.id],
+    ])('%s on remix', async (_label, extra, expected, expectedModelId) => {
+      const { result } = await renderWithH3();
+      act(() => result.current.setTextEncoderId('heretic-bf16'));
+      await waitFor(() => expect(result.current.textEncoderId).toBe('heretic-bf16'));
+
+      act(() => result.current.applyRemix({ modelId: H3.id, prompt: 'a fox', ...extra }));
+      await waitFor(() => expect(result.current.textEncoderId).toBe(expected));
+      expect(result.current.modelId).toBe(expectedModelId);
+    });
+
+    it('restores a resumed in-flight render’s conditioner', async () => {
+      const { result } = await renderWithH3();
+      act(() => result.current.applyResumedParams({ modelId: H3.id, prompt: 'a fox', textEncoderId: 'heretic-bf16' }));
+      await waitFor(() => expect(result.current.textEncoderId).toBe('heretic-bf16'));
+    });
+  });
+
+  it('preserves H3 native 32px-grid geometry in the submitted payload', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+    act(() => result.current.handleModelChange(H3.id));
+    await waitFor(() => expect(result.current.modelId).toBe(H3.id));
+    act(() => result.current.handleResolutionChange(1536, 672));
+    expect(result.current.width).toBe(1536);
+    expect(result.current.height).toBe(672);
+    expect(result.current.buildGeneratePayload()).toMatchObject({ width: 1536, height: 672 });
   });
 
   // H3's fl2va path anchors keyframes at the first/last latent frame, so image
@@ -578,6 +685,51 @@ describe('useVideoGenForm', () => {
     expect(result.current.selectedLoras).toEqual([
       { filename: 'v.safetensors', name: 'v.safetensors', scale: 0.5 },
     ]);
+  });
+
+  it('moves a fixed-profile remix to an editable model while preserving its restored controls', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+    });
+    await waitFor(() => expect(result.current.modelId).toBe(MLX.id));
+
+    act(() => result.current.applyRemix({
+      modelId: H3.id,
+      prompt: 'a fox in rain',
+      negativePrompt: 'blurry',
+      steps: 9,
+      guidanceScale: 0,
+    }));
+
+    await waitFor(() => expect(result.current.remixModelFallback).toEqual({
+      sourceName: H3.name,
+      targetName: MLX.name,
+      samplerLocked: true,
+      negativePromptUnsupported: true,
+    }));
+    expect(result.current.modelId).toBe(MLX.id);
+    expect(result.current.negativePrompt).toBe('blurry');
+    expect(result.current.steps).toBe('9');
+    expect(result.current.guidanceScale).toBe('0');
+  });
+
+  it('uses the same editable-model fallback for a cross-page Remix handoff', async () => {
+    const { result } = render({
+      models: [MLX, H3],
+      status: { connected: true, defaultModel: MLX.id },
+      url: `/media/video?modelId=${H3.id}&numFrames=124&steps=9&guidanceScale=0`,
+    });
+
+    await waitFor(() => expect(result.current.remixModelFallback).toEqual({
+      sourceName: H3.name,
+      targetName: MLX.name,
+      samplerLocked: true,
+      negativePromptUnsupported: true,
+    }));
+    expect(result.current.modelId).toBe(MLX.id);
+    expect(result.current.steps).toBe('9');
+    expect(result.current.guidanceScale).toBe('0');
   });
 
   it('applyRemix clears fields the record does not carry rather than leaving stale ones', async () => {

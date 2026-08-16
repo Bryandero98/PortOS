@@ -11,9 +11,16 @@ const router = Router();
  * Whenever an `appId` names a real record, it gets the precondition check —
  * even alongside an explicit `repoPath`, so passing both can't smuggle a
  * refused app past the gate. Standardization rewrites the target repo, so an
- * app PortOS never runs under PM2 (and PortOS itself) is refused here rather
- * than relying on the button being hidden in the UI. A bare `repoPath` has no
- * app record to type-check, so it is taken at face value.
+ * app PortOS never runs under PM2 (or a non-Node repo, or PortOS itself) is
+ * refused here rather than relying on the button being hidden in the UI. A bare
+ * `repoPath` has no app record to type-check, so it is taken at face value.
+ *
+ * The checked record's OWN `repoPath` is what gets returned — a companion
+ * `repoPath` is ignored rather than preferred. Typing an app record and then
+ * rewriting a different directory would make the gate decorative: a permitted
+ * Node `appId` alongside some other repo's path would carry a Python or Docker
+ * project straight past the refusal. No caller sends both (the client wrappers
+ * in `apiSystem.js` send one or the other), so this only closes the hole.
  */
 async function resolveStandardizeTarget({ repoPath, appId }) {
   if (appId) {
@@ -25,7 +32,7 @@ async function resolveStandardizeTarget({ repoPath, appId }) {
     if (refusal) {
       throw new ServerError(refusal, { status: 400, code: 'NOT_STANDARDIZABLE' });
     }
-    return repoPath || app.repoPath;
+    return app.repoPath;
   }
 
   if (repoPath) return repoPath;

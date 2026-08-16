@@ -1,15 +1,14 @@
 import { readFile, writeFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, basename, relative } from 'path';
-import { exec } from 'child_process';
+import { exec, spawn } from '../lib/childProcess.js';
 import { promisify } from 'util';
 import { getActiveProvider, getProviderById } from './providers.js';
-import { spawn } from 'child_process';
 import { safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { getReservedPorts, getAllApps } from './apps.js';
 import { PORTOS_APP_ID } from '../lib/appIdentity.js';
-import { usesPm2 } from './streamingDetect.js';
+import { usesPm2, isStandardizable } from './streamingDetect.js';
 import { getListeningPorts } from '../lib/platform.js';
 
 const execAsync = promisify(exec);
@@ -51,6 +50,12 @@ export function standardizeRefusalFor(app) {
   }
   if (!usesPm2(app?.type)) {
     return `${app?.type} apps are not run under PM2, so there is no ecosystem config to standardize`;
+  }
+  if (!isStandardizable(app?.type)) {
+    // The analysis prompt below opens with "You are analyzing a Node.js
+    // application" — on a Python/Go/Docker/static repo it doesn't fail, it
+    // confidently writes a Node ecosystem config. A type check, not prose.
+    return `${app?.type} apps are not Node.js projects, so there is no Node ecosystem config to generate`;
   }
   return null;
 }
@@ -447,7 +452,7 @@ export async function createGitBackup(repoPath) {
   }
 
   // Refuse to overwrite uncommitted changes
-  const { stdout: statusOut } = await execAsync('git status --porcelain', { cwd: repoPath, windowsHide: true });
+  const { stdout: statusOut } = await execAsync('git status --porcelain', { cwd: repoPath });
   if (statusOut.trim()) {
     return { success: false, code: 'DIRTY_WORKTREE', reason: 'Working tree has uncommitted changes — commit or discard them before standardizing' };
   }
@@ -458,7 +463,7 @@ export async function createGitBackup(repoPath) {
   // Create backup branch from current HEAD (captures committed state without stashing)
   // Use spawn with shell:false to avoid shell injection via branch name
   await new Promise((resolve, reject) => {
-    const proc = spawn('git', ['branch', branch], { cwd: repoPath, shell: false, windowsHide: true });
+    const proc = spawn('git', ['branch', branch], { cwd: repoPath, shell: false });
     let stderr = '';
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`git branch failed: ${stderr.trim()}`)));

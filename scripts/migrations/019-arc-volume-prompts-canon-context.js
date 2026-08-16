@@ -64,7 +64,7 @@ export const ACCEPTED_OLD_MD5 = {
 export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-overview.md':   '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
   'pipeline-arc-verify.md':     '9f32e91bd33b97d30e1cbb2e697f4fc3', // post-263 world category canon
-  'pipeline-arc-resolve.md':    '2349bce80e9df8caafa391a6106327b6', // post-259 (measured text budgets)
+  'pipeline-arc-resolve.md':    'aa2e463ebe0857859d79aa0c6ccb0256', // post-267 (character-arc budgets)
   'pipeline-volume-verify.md':  '49458d36700cb94e34806d536ffe2940', // post-019
 };
 

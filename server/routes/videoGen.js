@@ -8,25 +8,23 @@
 
 import { Router } from 'express';
 import { existsSync } from 'fs';
-import { join, basename } from 'path';
-import { spawn } from 'child_process';
+import { basename } from 'path';
 import os from 'os';
 import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
-import { PATHS } from '../lib/fileUtils.js';
 import { videoModelTermsSchema } from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
 import {
-  VIDEO_BACKEND_DISCLOSURES, isVideoModelTermsAccepted, acceptedVideoModelTerms,
-  videoModelTermsGateId, videoModelTermsError,
+  VIDEO_BACKEND_DISCLOSURES, acceptedVideoModelTerms,
+  videoModelTermsGateId,
 } from '../lib/videoDisclosure.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
-import { safeChildProcessEnv } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
+import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
   listVideoModels,
   defaultVideoModelId,
@@ -39,6 +37,7 @@ import {
   invalidateRuntimeFingerprintCache,
   resolveRuntimeFingerprint,
   loadHistory,
+  getHistoryItem,
   deleteHistoryItem,
   setHistoryItemHidden,
   extractLastFrame,
@@ -54,11 +53,17 @@ import {
   icLoraWeightCandidates, findCachedIcLoraWeight,
 } from '../lib/icLoraWeights.js';
 import {
+  downloadableVideoTextEncoders, downloadableVideoTextEncoder, publicTextEncoderOption,
+  isStockTextEncoder,
+} from '../lib/videoTextEncoders.js';
+import {
   inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
   verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
   isSafeHfRepoRelativePath,
 } from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
+import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
+import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 
 const router = Router();
@@ -158,6 +163,11 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
   seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
   imageStrength: optionalNum(0, 1, 'imageStrength'),
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
+  // Which prompt conditioner reads the prompt (lib/videoTextEncoders.js).
+  // Validated loosely here and resolved against the MODEL's own option list in
+  // the service — the set is per-runtime, so a route-level enum would either
+  // have to enumerate every runtime's options or reject a legitimate one.
+  textEncoderId: z.string().min(1).max(64).optional(),
 });
 
 const generateBodySchema = z.object({
@@ -315,10 +325,11 @@ const generateBodySchema = z.object({
 router.get('/status', asyncHandler(async (_req, res) => {
   const s = await getSettings();
   const py = s.imageGen?.local?.pythonPath || null;
-  const { connected, reason, missing } = await resolveLocalPythonHealth(py);
+  const { connected, reason, missing, pythonVersion } = await resolveLocalPythonHealth(py);
   res.json({
     connected,
     pythonPath: py,
+    pythonVersion: pythonVersion || null,
     reason,
     missingPackages: missing,
     // Each entry carries its optional `disclosure` block (provenance, weights/
@@ -422,6 +433,7 @@ router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
     venvPath: info.venvPython,
     repoDir: info.repoDir,
     repoUrl: info.repoUrl,
+    installSourceLabel: info.installSourceLabel,
     installEnvVar: info.installEnvVar,
   });
 }));
@@ -453,10 +465,7 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     if (info && runtimeInstallInFlight.get(info.id) === null) {
       runtimeInstallInFlight.delete(info.id);
     }
-    if (child && !child.killed && child.pid) {
-      try { process.kill(-child.pid, 'SIGTERM'); }
-      catch { child.kill('SIGTERM'); }
-    }
+    stopSetupScript(child);
   });
 
   if (!info) {
@@ -497,10 +506,9 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   invalidateByovLoraCapabilityCache(info.id);
   invalidateRuntimeFingerprintCache(info.id);
 
-  const scriptPath = join(PATHS.root, 'scripts', 'setup-image-video.sh');
-  if (!existsSync(scriptPath)) {
+  if (!existsSync(SETUP_IMAGE_VIDEO_SCRIPT)) {
     runtimeInstallInFlight.delete(info.id);
-    send({ type: 'error', message: `Installer script not found at ${scriptPath}` });
+    send({ type: 'error', message: `Installer script not found at ${SETUP_IMAGE_VIDEO_SCRIPT}` });
     return safeEnd();
   }
 
@@ -510,20 +518,13 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   const installLog = createInstallLogger({ installer: info.label, target: info.venvPython });
   const emit = (ev) => { installLog.onEvent(ev); send(ev); };
   installLog.start();
-  // `detached: true` puts bash in its own process group so a cancel from the
-  // client can take down uv / pip / git children too. Without it, SIGTERM on
-  // bash leaves a multi-GB `git clone` (and any subsequent pip downloads)
-  // orphaned to init — the user sees the modal close but the bandwidth keeps
-  // burning until the network drops or the snapshot completes.
   const installEnv = {
     [info.installEnvVar]: '1',
     ...(info.pinEnvVar && info.expectedRevision ? { [info.pinEnvVar]: info.expectedRevision } : {}),
   };
-  child = spawn('bash', [scriptPath], {
-    env: safeChildProcessEnv(installEnv),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
+  // spawnSetupScript owns the interpreter / path / process-group details that a
+  // cancel and a Windows box each depend on — see lib/setupScriptRunner.js.
+  child = spawnSetupScript(installEnv);
   runtimeInstallInFlight.set(info.id, child);
 
   // `splitRe: /[\r\n]+/` so a bash/pip/tqdm progress bar that redraws with a
@@ -572,18 +573,19 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
 }));
 
 async function resolveLocalPythonHealth(py) {
-  if (!py) return { connected: false, reason: 'Local Python not configured', missing: [] };
-  if (!isAllowedPython(py)) return { connected: false, reason: 'Saved pythonPath is not a python interpreter', missing: [] };
+  if (!py) return { connected: false, reason: 'Local Python not configured', missing: [], pythonVersion: null };
+  if (!isAllowedPython(py)) return { connected: false, reason: 'Saved pythonPath is not a python interpreter', missing: [], pythonVersion: null };
   try {
-    const { missing } = await checkPackages(py);
-    if (missing.length === 0) return { connected: true, reason: null, missing };
+    const { missing, pythonVersion } = await checkPackages(py);
+    if (missing.length === 0) return { connected: true, reason: null, missing, pythonVersion };
     return {
       connected: false,
       reason: `${missing.length} python package${missing.length === 1 ? '' : 's'} missing: ${missing.join(', ')}`,
       missing,
+      pythonVersion,
     };
   } catch (err) {
-    return { connected: false, reason: `Python probe failed: ${err.message || err}`, missing: [] };
+    return { connected: false, reason: `Python probe failed: ${err.message || err}`, missing: [], pythonVersion: null };
   }
 }
 
@@ -594,23 +596,62 @@ router.get('/models', (_req, res) => {
 // Resolve the repo set an integrity scan should cover. A specific `modelId`
 // scopes to that model's repo; no modelId scans every model repo plus the
 // shared text encoder.
+// One definition of "a valid `only` list" for every download target this file
+// builds — model repos, their required weights, and the substitutable prompt
+// conditioners. `owner` is only used to name the offender in the error, so a
+// conditioner entry can pass its own registry id.
+const safeOnlyList = (owner, files, label) => {
+  const only = Array.isArray(files) ? files.filter((file) => typeof file === 'string' && file.length > 0) : [];
+  if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
+    throw new ServerError(
+      `${owner} has an unsafe ${label} path. Use repo-relative POSIX filenames only.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  return only;
+};
+
+const videoModelLabel = (model) => `Video model "${model?.id}"`;
+
 const modelDownloadTargets = (model) => {
   const repo = repoForModel(model);
   if (!repo) return [];
-  const targets = [{ repo, revision: model?.revision || null, only: [] }];
+  // `repoFiles` narrows the model's OWN repo to an explicit file list, the way
+  // `requiredWeights[].files` already does for a secondary repo. It is required
+  // — not an optimization — whenever the model's repo is an aggregate that
+  // holds more than the one component set the runner loads: MiniMax H3 ships
+  // its diffusers layout, a second transformer partition and the original
+  // non-diffusers layout in one ~498 GB repo, so the default whole-snapshot
+  // target would pull 3.5x what the render path can use. Absent (every other
+  // model) still means "snapshot the repo".
+  const targets = [{
+    repo,
+    revision: model?.revision || null,
+    only: safeOnlyList(videoModelLabel(model), model?.repoFiles, 'repo-file'),
+  }];
   for (const dep of Array.isArray(model?.requiredWeights) ? model.requiredWeights : []) {
     if (typeof dep?.repo !== 'string') continue;
-    const only = Array.isArray(dep.files) ? dep.files.filter((file) => typeof file === 'string' && file.length > 0) : [];
-    if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
-      throw new ServerError(
-        `Video model "${model.id}" has an unsafe required-weight path. Use repo-relative POSIX filenames only.`,
-        { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
-      );
-    }
+    const only = safeOnlyList(videoModelLabel(model), dep.files, 'required-weight');
     if (only.length > 0) targets.push({ repo: dep.repo, revision: dep.revision || null, only });
   }
   return targets;
 };
+
+// One download target per substitutable prompt conditioner. Each names an
+// explicit file list inside a repo that holds more than the loader can use —
+// quantizations and generation tails in a repack, or the language layers past
+// the conditioning depth in an upstream checkpoint — so these are ALWAYS scoped
+// to `only: entry.files`. A repo-wide snapshot would pull ~130 GB of unusable
+// variants for the repack and ~10 GB of never-built layers for the upstream one.
+const textEncoderDownloadTarget = (entry) => ({
+  repo: entry.repo,
+  revision: entry.revision || null,
+  only: safeOnlyList(`Text encoder "${entry.id}"`, entry.files, 'weight-file'),
+});
+// Paired with its entry so the status lane can project the registry fields
+// (label, size) alongside the cache verdict without a second lookup.
+const textEncoderDownloadTargets = () => downloadableVideoTextEncoders()
+  .map((entry) => ({ entry, target: textEncoderDownloadTarget(entry) }));
 
 const targetKey = (target) => `${target.repo}@${target.revision || 'latest'}::${target.only.join(',')}`;
 const targetVerifyOptions = (target, deep) => ({
@@ -632,6 +673,10 @@ const reposToVerify = (modelId) => {
   const targets = listVideoModels().flatMap(modelDownloadTargets);
   const enc = getTextEncoderRepo();
   if (isHfRepoId(enc)) targets.push({ repo: enc, only: [] });
+  // Substitutable prompt conditioners are single pinned files the render path
+  // depends on, so an unscoped scan must reach them too — a truncated one
+  // otherwise only surfaces as a load failure minutes into a render.
+  targets.push(...textEncoderDownloadTargets().map(({ target }) => target));
   // IC-LoRA remix weights are separate HF pulls that the render path depends
   // on, so an unscoped integrity scan must cover them too — otherwise a
   // corrupt IC weight only surfaces as a garbled render.
@@ -679,7 +724,7 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
   // can distinguish "not downloaded" from "served from LM Studio".
   const encoderRepo = getTextEncoderRepo();
   const verifyCache = new Map();
-  const [models, textEncoder, icLoras] = await Promise.all([
+  const [models, textEncoder, textEncoderOptions, icLoras] = await Promise.all([
     Promise.all(listVideoModels().map(async (m) => {
       return { id: m.id, ...await modelCacheStatus(m, verifyCache) };
     })),
@@ -687,6 +732,27 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
       if (!isHfRepoId(encoderRepo)) return { repo: encoderRepo, cached: true, sizeBytes: 0, integrity: null };
       return { repo: encoderRepo, ...await repoCacheStatus(encoderRepo) };
     })(),
+    // Substitutable prompt conditioners (lib/videoTextEncoders.js) — the same
+    // `{ id, repo, cached, sizeBytes, integrity }` badge shape as the models and
+    // the IC weights, so the video form renders their Download button and
+    // Repair banner with the existing components. Scoped to the ONE pinned file
+    // (never the repo) for the reason in textEncoderDownloadTargets.
+    Promise.all(textEncoderDownloadTargets().map(async ({ entry, target }) => {
+      // Through the shared target verifier, so the badge, the integrity scan
+      // and the repair route can't drift on how a pinned single-file target is
+      // checked.
+      const verify = await verifyDownloadTarget(target);
+      const cached = verify.status === 'ok';
+      return {
+        ...publicTextEncoderOption(entry),
+        estimatedBytes: entry.sizeBytes,
+        cached,
+        sizeBytes: verify.sizeBytes || 0,
+        // Same rule as repoCacheStatus: a not-yet-downloaded file gets the
+        // Download badge, not a Repair banner.
+        integrity: cached ? summarizeVerify(verify) : null,
+      };
+    })),
     // IC-LoRA remix weights (issue #3100). Each is a separate several-hundred-MB
     // pull the IC render path needs, so they get the same cached/size/integrity
     // shape as the models — that's what lets the mode panel render a Download
@@ -720,7 +786,7 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
       };
     })),
   ]);
-  res.json({ models, textEncoder, icLoras });
+  res.json({ models, textEncoder, textEncoderOptions, icLoras });
 }));
 
 // POST /models/verify — force an integrity re-scan on demand. `deep:true` adds
@@ -766,12 +832,6 @@ router.post('/models/:modelId/repair', asyncHandler(async (req, res) => {
 router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   const model = listVideoModels().find((m) => m.id === req.params.modelId);
   if (!model) throw new ServerError(`Unknown video model: ${req.params.modelId}`, { status: 404 });
-  // Only a gated model needs the recorded acknowledgement list — skip the
-  // settings read (and its deep clone) for every ordinary model.
-  if (videoModelTermsGateId(model)
-    && !isVideoModelTermsAccepted(model, acceptedVideoModelTerms(await getSettings()))) {
-    throw videoModelTermsError(model, 'download');
-  }
   const repos = modelDownloadTargets(model);
   if (repos.length === 0) throw new ServerError(`Model "${model.id}" has no HuggingFace repo on file.`, { status: 400, code: 'NO_REPO_FOR_MODEL' });
   const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];
@@ -839,6 +899,55 @@ router.post('/ic-loras/:mode/repair', asyncHandler(async (req, res) => {
   }
   const result = await repairModelCache(spec.repo, { deep });
   res.json({ deep, deleted: result.deleted.map((name) => ({ repo: result.repoId, name })), repos: [spec.repo] });
+}));
+
+// Substitutable prompt conditioners (lib/videoTextEncoders.js) get their own
+// download/repair pair for the same reason the IC-LoRA weights do: the render
+// path depends on them but they are NOT listVideoModels() entries, so the
+// model-id-keyed routes can't reach them. Keyed by the registry id the client
+// also puts in the render payload.
+//
+// Distinct from the /text-encoder/* pair below, which is the SHARED LTX encoder
+// (one repo, install-wide, selected in the media-models registry). These are
+// per-model alternatives chosen per render.
+const textEncoderFromParam = (id) => {
+  const entry = downloadableVideoTextEncoder(id);
+  if (!entry) {
+    const known = downloadableVideoTextEncoders().map((e) => e.id);
+    throw new ServerError(
+      `Unknown text encoder: ${id}${known.length ? ` (expected one of ${known.join(', ')})` : ''}`,
+      { status: 404, code: 'VIDEO_TEXT_ENCODER_UNKNOWN' },
+    );
+  }
+  return entry;
+};
+
+// Always the entry's pinned file list, never a snapshot: these repos publish
+// more than the loader can read — INT8 ConvRot / NVFP4 quantizations and 50-63
+// generation tails in a repack, the language layers past the conditioning depth
+// in an upstream checkpoint — so a repo-wide pull would cost ~130 GB for ~48 GB
+// of usable weights.
+router.get('/text-encoders/:id/download', asyncHandler(async (req, res) => {
+  const entry = textEncoderFromParam(req.params.id);
+  await startHfDownloadStream({
+    req,
+    res,
+    repos: [textEncoderDownloadTarget(entry)],
+    force: req.query.force === '1',
+  });
+}));
+
+router.post('/text-encoders/:id/repair', asyncHandler(async (req, res) => {
+  const entry = textEncoderFromParam(req.params.id);
+  const parsed = z.object({ deep: z.boolean().optional() }).safeParse(req.body || {});
+  if (!parsed.success) failValidation(parsed);
+  const deep = parsed.data.deep || false;
+  const result = await repairDownloadTarget(textEncoderDownloadTarget(entry), { deep });
+  res.json({
+    deep,
+    deleted: result.deleted.map((name) => ({ repo: entry.repo, name })),
+    repos: [entry.repo],
+  });
 }));
 
 // POST /text-encoder/repair — delete the flagged (corrupt/truncated) weight
@@ -951,6 +1060,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     guidanceScale: body.guidanceScale,
     seed: body.seed,
     tiling: body.tiling || 'auto',
+    // Only a SUBSTITUTE is persisted: an explicit `textEncoderId: 'stock'` is
+    // semantically identical to omitting the field, so storing it would make a
+    // resumed/remixed render carry a knob that never applied — and would differ
+    // from what the service records in history for the same render.
+    ...(isStockTextEncoder(body.textEncoderId) ? {} : { textEncoderId: body.textEncoderId }),
     disableAudio: body.disableAudio === true || body.disableAudio === 'true',
     sourceImagePath,
     audioFilePath,
@@ -1006,6 +1120,9 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
   'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
+  // A registry id, not a path — safe to echo so a reloading page restores the
+  // conditioner the in-flight render is actually using.
+  'textEncoderId',
   'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain
@@ -1113,6 +1230,49 @@ router.get('/history', asyncHandler(async (_req, res) => {
   res.json(await loadHistory());
 }));
 
+// One history entry by id (#4165). A history id is NOT the filename stem — the
+// timeline renderer mints `timeline-<project>-<ts>.mp4` beside an independent
+// `randomUUID()` id — so a client holding only an id (a Creative Director
+// `finalVideoId`, an EpisodeVideoStage final) has to ask the server which file
+// it points at. Before this route existed, every such surface pulled the WHOLE
+// history list to find one row.
+//
+// The id is validated loosely on purpose: `historyIdSchema`'s UUID check below
+// suits ids this install MINTS, but entries also arrive from a caller-supplied
+// download id and from federated peers, so a `.guid()` gate here would 400 rows
+// that are legitimately in the list. Nothing is interpolated into a path — the
+// value is only compared against stored ids — so a length-capped string is the
+// right bound.
+const historyLookupIdSchema = z.string().min(1).max(200);
+
+router.get('/history/:id', asyncHandler(async (req, res) => {
+  const parsed = historyLookupIdSchema.safeParse(req.params.id);
+  if (!parsed.success) failValidation(parsed);
+  const entry = await getHistoryItem(parsed.data);
+  if (!entry) throw new ServerError('Not found', { status: 404, code: 'NOT_FOUND' });
+  res.json(entry);
+}));
+
+// Upload a video into the shared gallery (#4188) — the video counterpart of
+// POST /api/image-gen/upload. Lands the bytes under PATHS.videos with a
+// `source: 'upload'` history entry so the file federates via the peer-sync
+// asset manifest (unlike POST /api/uploads → data/uploads/, which does not).
+// The schema's string cap is the JSON body-parser limit itself — anything
+// longer 413s at the parser before this route runs — and the reachable cap
+// is the binary MAX_GALLERY_VIDEO_UPLOAD_BYTES check in the saver, both
+// derived from server/lib/uploadLimits.js so there is one source of truth.
+const uploadVideoSchema = z.object({
+  data: z.string().min(1).max(JSON_BODY_LIMIT_BYTES),
+  filename: z.string().max(255).optional(),
+});
+
+router.post('/upload', asyncHandler(async (req, res) => {
+  const parsed = uploadVideoSchema.safeParse(req.body || {});
+  if (!parsed.success) failValidation(parsed);
+  const { data, filename } = parsed.data;
+  res.json(await saveUploadedGalleryVideo(data, filename));
+}));
+
 router.delete('/history/:id', asyncHandler(async (req, res) => {
   res.json(await deleteHistoryItem(req.params.id));
 }));
@@ -1121,16 +1281,20 @@ router.post('/history/:id/visibility', asyncHandler(async (req, res) => {
   res.json(await setHistoryItemHidden(req.params.id, !!req.body?.hidden));
 }));
 
-router.post('/last-frame/:id', asyncHandler(async (req, res) => {
-  res.json(await extractLastFrame(req.params.id));
-}));
+// Render jobs use UUID history ids, while shared-gallery uploads use an
+// `upload-<uuid8>` id. These mutating operations only resolve a stored history
+// record and subsequently derive the path from its guarded filename, so both
+// known id forms are valid here.
+const historyIdSchema = z.string().regex(
+  /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|upload-[a-f0-9]{8})$/i,
+  'invalid history id',
+);
 
-// History ids are produced by crypto.randomUUID(), so validate them as
-// UUIDs rather than the looser /^[a-f0-9-]{36}$/ pattern (which happily
-// accepts e.g. 36 hyphens). `.guid()` is Zod 4's name for the 8-4-4-4-12
-// hex-group check Zod 3's `.uuid()` performed (version-agnostic); matches
-// the .guid() usage in the other route schemas.
-const historyIdSchema = z.string().guid('invalid history id');
+router.post('/last-frame/:id', asyncHandler(async (req, res) => {
+  const parsed = historyIdSchema.safeParse(req.params.id);
+  if (!parsed.success) failValidation(parsed);
+  res.json(await extractLastFrame(parsed.data));
+}));
 
 router.post('/upscale/:id', asyncHandler(async (req, res) => {
   const parsed = historyIdSchema.safeParse(req.params.id);

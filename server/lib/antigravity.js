@@ -78,8 +78,9 @@ export function parseAntigravityModelList(stdout) {
 
 // agy print flags. Unlike the old Gemini CLI (which read the prompt from stdin),
 // `agy --print`/`-p`/`--prompt` takes the prompt as the flag's VALUE and does
-// NOT read stdin at all. So the print flag must be the FINAL token, with the
-// prompt spliced in right after it at spawn time by prepareAntigravityPrompt.
+// NOT read stdin at all. So `--print <prompt>` must be the FINAL pair in the
+// argv; prepareAntigravityPrompt relocates the flag to the end and appends the
+// prompt as its value at spawn time.
 export const ANTIGRAVITY_PRINT_FLAGS = ['--print', '-p', '--prompt'];
 
 /**
@@ -172,6 +173,11 @@ export function ensureAntigravityPrintArgs(args = [], overrides = {}) {
   // (e.g. --dangerously-skip-permissions) after --print would make agy consume
   // THAT flag as the prompt text (the bug that shipped the flag name to the
   // model instead of the task — see server/lib/antigravity.js history).
+  //
+  // Callers may still append after this (cliProviderRun.js#runCliProviderPrompt
+  // concatenates the call's `extraArgs` onto buildCliArgs' output), so "last"
+  // here is only true at build time — prepareAntigravityPrompt re-anchors the
+  // pair at spawn time (#4110).
   out.push('--print');
   return out;
 }
@@ -179,28 +185,42 @@ export function ensureAntigravityPrintArgs(args = [], overrides = {}) {
 const NOOP_CLEANUP = () => {};
 
 /**
- * Spawn-time prompt delivery for the antigravity CLI: splice the prompt in as
- * the VALUE of the trailing print flag (agy does not read stdin). Mirrors the
- * `{ args, useStdin, cleanup }` shape of grok.js#prepareGrokPromptFile so the
- * spawn sites can dispatch through a single helper (see prepareCliPrompt).
+ * Spawn-time prompt delivery for the antigravity CLI: re-anchor the print flag
+ * at the END of the argv and append the prompt as its VALUE (agy does not read
+ * stdin). Mirrors the `{ args, useStdin, cleanup }` shape of
+ * grok.js#prepareGrokPromptFile so the spawn sites can dispatch through a
+ * single helper (see prepareCliPrompt).
+ *
+ * MOVING the flag rather than splicing after it in place is what makes this
+ * correct for a non-empty `extraArgs` call (#4110):
+ * `cliProviderRun.js#runCliProviderPrompt` appends extraArgs *after* the
+ * trailing `--print` marker `ensureAntigravityPrintArgs` left, so an in-place
+ * splice would leave `--print <prompt> <extraArg>…` and turn every extraArg into
+ * a stray positional agy may reject. Relocating the pair keeps `--print
+ * <prompt>` the final two tokens no matter what got concatenated on, and is a
+ * no-op for the already-trailing case.
+ *
+ * The flag's original SPELLING is preserved (`-p` / `--prompt` / `--print`) so a
+ * user-baked short form still reaches agy as they wrote it — the LAST spelling
+ * wins, matching which flag agy itself would have honored.
+ *
+ * EVERY print flag is lifted, not just the last one. `ensureAntigravityPrintArgs`
+ * strips baked print flags from the provider's saved argv, but the `extraArgs`
+ * concatenated on afterwards are never stripped — so leaving an earlier `-p`
+ * behind would have agy consume the token following IT as the prompt.
  *
  * @param {string[]} args - argv as built by ensureAntigravityPrintArgs
  * @param {string} prompt - the full prompt text
  * @returns {{ args: string[], useStdin: false, cleanup: () => void }}
  */
 export function prepareAntigravityPrompt(args = [], prompt = '') {
-  const out = [...args];
-  // Find the LAST print flag so the prompt lands as its value even if the argv
-  // carries stray tokens (it shouldn't, post-ensureAntigravityPrintArgs).
-  let idx = -1;
-  for (let i = out.length - 1; i >= 0; i--) {
-    if (ANTIGRAVITY_PRINT_FLAGS.includes(out[i])) { idx = i; break; }
+  let flag = '--print';
+  const out = [];
+  for (const arg of args) {
+    if (ANTIGRAVITY_PRINT_FLAGS.includes(arg)) flag = arg;
+    else out.push(arg);
   }
-  if (idx === -1) {
-    out.push('--print', prompt);
-  } else {
-    out.splice(idx + 1, 0, prompt);
-  }
+  out.push(flag, prompt);
   return { args: out, useStdin: false, cleanup: NOOP_CLEANUP };
 }
 

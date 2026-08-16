@@ -20,8 +20,7 @@
  * multimodal). See `server/lib/localLlmDisk.js` for the disk logic.
  */
 
-import { execFile, spawn } from 'child_process'
-import { promisify } from 'util'
+import { execFile, spawn } from '../lib/childProcess.js';import { promisify } from 'util'
 import { readFileSync, createWriteStream } from 'fs'
 import { rm } from 'fs/promises'
 import { join } from 'path'
@@ -36,7 +35,7 @@ import { recommendEditorialModel, isVisionModel, isVisionCapableCliProvider, isT
 import { commandExists } from '../lib/commandExists.js'
 import * as ollamaManager from './ollamaManager.js'
 import * as lmStudioManager from './lmStudioManager.js'
-import { getProviderById, getAllProviders, updateProvider, refreshProviderModels, isOllamaBackedProvider } from './providers.js'
+import { getProviderById, getAllProviders, updateProvider, refreshProviderModelsBatch, isOllamaBackedProvider } from './providers.js'
 
 const execFileAsync = promisify(execFile)
 const ENV_PATH = join(PATHS.root, '.env')
@@ -783,6 +782,62 @@ export async function listVisionModels() {
 }
 
 /**
+ * Tool-use (function-calling) capable installed models across both local
+ * backends, tagged with the aiToolkit provider id (`ollama` / `lmstudio`) that
+ * serves them. Each entry: `{ providerId, backend, id, name, toolUse: true }`.
+ *
+ * Powers the AGENT model pickers' tool-use annotation, whose client-side
+ * `isToolUseModel` id regex is a positive allowlist that goes stale every time a
+ * new function-calling family ships — so a genuinely tool-capable model whose id
+ * the regex doesn't know (`phi4-mini`, a newer function-calling Gemma build) got
+ * flagged "⚠ no known tool use" while the Local LLMs tab's "Agents" badge, which
+ * reads these same authoritative capabilities, said otherwise.
+ *
+ * Deliberately NOT a mirror of `listVisionModels`' CLI expansion: a CLI provider
+ * has no enumerable per-model capability, and its tool-calling comes from the CLI
+ * harness rather than the model, so there is nothing authoritative to report.
+ * Callers union this with the id regex, so an unlisted model still falls back to
+ * the regex rather than being asserted incapable.
+ */
+export async function listToolUseModels() {
+  // Cache-first for both backends — same rationale as listVisionModels: the
+  // model-list caches are busted on install/delete, so they stay accurate.
+  const [ollama, lmstudio] = await Promise.all([
+    listModels('ollama').catch(() => []),
+    listModels('lmstudio').catch(() => [])
+  ])
+  // Ollama's /api/tags carries no capability flags at all, so `normalizeModels`
+  // could only regex-guess. /api/show reports an authoritative `tools`
+  // capability (cached per model), which is what makes this endpoint worth more
+  // than the client's own regex — consult it for every model. Unlike the vision
+  // path there is no id short-circuit: an id-regex hit is exactly the case the
+  // client can already decide for itself, so skipping the round-trip would leave
+  // this list adding nothing beyond what the caller already knows.
+  const ollamaToolUse = await Promise.all(ollama.map(async (m) => {
+    const capabilities = await ollamaManager.getModelCapabilities(m.id).catch(() => [])
+    // `isToolUseModel` treats a NON-EMPTY capabilities array as authoritative in
+    // both directions; an empty one (daemon didn't report, or /api/show failed)
+    // falls back to the id regex.
+    return { ...m, toolUse: isToolUseModel({ id: m.id, capabilities }) }
+  }))
+  // LM Studio reports no tool-calling flag, so `lmStudioBadgeCapabilities`
+  // already resolved `tools` from the shared id heuristic — read that rather
+  // than re-deriving it, so this endpoint and the Local LLMs tab's badges can
+  // never disagree about the same model.
+  const lmStudioToolUse = lmstudio.map((m) => ({
+    ...m,
+    toolUse: (m.capabilities || []).includes('tools')
+  }))
+  const tag = (backend, models) => models
+    .filter((m) => m.toolUse)
+    .map((m) => ({ providerId: PROVIDER_ID[backend], backend, id: m.id, name: m.name || m.id, toolUse: true }))
+  return [
+    ...tag('ollama', ollamaToolUse),
+    ...tag('lmstudio', lmStudioToolUse),
+  ]
+}
+
+/**
  * Vision-capable CLI providers (codex / claude-code), expanded to one entry per
  * configured model so the caption picker can offer e.g. "codex / gpt-5" or
  * "claude-code / claude-opus-5". A disabled provider is skipped. Each entry
@@ -814,13 +869,32 @@ async function listVisionCliModels() {
  * wait on an extra round-trip to Ollama per matching provider. Best-effort per
  * provider — one failing refresh (e.g. Ollama briefly unreachable mid-pull)
  * must not block the others.
+ *
+ * The grouping, probing and persistence all live in the toolkit's
+ * `refreshProviderModelsBatch`: it dedupes providers that share a daemon AND a
+ * probe shape so `/api/tags` + the per-model `/api/show` capability sweep runs
+ * once rather than once per provider, and it collapses the whole fan-out into a
+ * SINGLE `providers.json` write instead of one full-file save per provider.
+ * All this function adds is the host-side log line — one per group, because
+ * every member of a group failed identically against the same daemon and N
+ * copies of one error is noise, not information.
  */
 function refreshOllamaBackedProviders() {
   getAllProviders().then(({ providers }) => {
     const targets = (providers || []).filter(isOllamaBackedProvider)
-    return Promise.all(targets.map((p) => refreshProviderModels(p.id).catch((err) => {
-      console.error(`⚠️ Failed to refresh models for provider ${p.id} after Ollama model change: ${err.message}`)
-    })))
+    if (targets.length === 0) return null
+    return refreshProviderModelsBatch(targets.map((p) => p.id)).then((groups) => {
+      for (const group of groups) {
+        if (group.status === 'failed') {
+          console.error(`⚠️ Failed to refresh models for ${group.ids.length} Ollama-backed provider(s) via ${group.leadId}: ${group.error?.message}`)
+        } else if (group.status === 'missing') {
+          // The lead was deleted between listing the providers and probing it.
+          // Say so — silently dropping the group would leave its siblings stale
+          // with no trace of why.
+          console.error(`⚠️ Skipped refreshing ${group.ids.length} Ollama-backed provider(s): lead provider ${group.leadId} no longer exists`)
+        }
+      }
+    })
   }).catch((err) => {
     console.error(`⚠️ Failed to list providers for post-install Ollama refresh: ${err.message}`)
   })

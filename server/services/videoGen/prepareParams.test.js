@@ -1,4 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resolve as resolvePath } from 'path';
+
+// These assertions describe the COMPOSITION of a staged path, not its
+// separator. prepareParams builds them with path.join/resolve, which emit '\'
+// on Windows, so compare against a separator-normalized copy.
+const posix = (p) => String(p).split('\\').join('/');
 
 vi.mock('../settings.js', () => ({
   getSettings: vi.fn(async () => ({
@@ -72,15 +78,19 @@ const H3_MODEL = {
   runtime: 'minimax_h3',
   supportedModes: ['text', 'image', 'fflf'],
   defaultFrames: 124,
-  frameOptions: [124, 141, 158],
+  frameOptions: [107, 124, 141, 158],
   fpsOptions: [24],
   termsGate: { id: H3_TERMS },
 };
 
 // Paths unlinked under PATHS.uploads — i.e. the durable copies the service
 // staged, as opposed to the OS temp files the multipart parser wrote.
+// Normalize BEFORE filtering: the staged paths are built with path.join, so on
+// Windows they are '\mock\uploads\…' and a startsWith('/mock/uploads/') filter
+// matches nothing — which silently emptied this list and made every assertion
+// below compare against [] instead of the paths it meant to check.
 const unlinkedDurablePaths = () => unlink.mock.calls
-  .map(([p]) => p)
+  .map(([p]) => posix(p))
   .filter((p) => typeof p === 'string' && p.startsWith('/mock/uploads/'));
 
 describe('withStagedRollback', () => {
@@ -129,7 +139,7 @@ describe('prepareVideoGenParams', () => {
       expect(prepared.backend).toBe('local');
       expect(prepared.effectiveModelId).toBe('ltx2_unified');
       expect(prepared.effectiveChunks).toBe(2);
-      expect(prepared.sourceImagePath).toMatch(/^\/mock\/uploads\/video-source-.*\.png$/);
+      expect(posix(prepared.sourceImagePath)).toMatch(/^\/mock\/uploads\/video-source-.*\.png$/);
       // The start-frame upload rides the legacy single field so already-persisted
       // jobs from before the array field still clean up correctly.
       expect(prepared.uploadedTempPath).toBe(prepared.sourceImagePath);
@@ -166,7 +176,9 @@ describe('prepareVideoGenParams', () => {
       loadHistory.mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111', filename: 'prior.mp4' }]);
       const ic = await prepare({ mode: 'ic-control', icReferenceVideoIds: ['11111111-1111-4111-8111-111111111111'] });
       expect(ic.effectiveChunks).toBe(1);
-      expect(ic.icReferencePaths).toEqual(['/mock/videos/prior.mp4']);
+      // resolve() stamps a drive letter on Windows, so build the expectation the
+      // same way rather than hardcoding a POSIX absolute path.
+      expect(ic.icReferencePaths).toEqual([resolvePath('/mock/videos/prior.mp4')]);
     });
   });
 
@@ -291,6 +303,25 @@ describe('prepareVideoGenParams', () => {
         .rejects.toMatchObject({ status: 400, code: 'MUSIC_VIDEO_SOURCE_REQUIRED' });
     });
 
+    // Rejected here rather than in the worker: the request that named the bad
+    // conditioner is the only place that can report it, and a persisted job
+    // would otherwise sit in the queue only to die on dispatch.
+    it('rejects a text encoder the selected model cannot load, before staging', async () => {
+      await expect(prepare(
+        { textEncoderId: 'heretic-bf16' },
+        { sourceImage: upload('sourceImage') },
+      )).rejects.toMatchObject({ status: 400, code: 'VIDEO_TEXT_ENCODER_UNSUPPORTED' });
+      expect(unlink).toHaveBeenCalledWith('/tmp/multipart-sourceImage-frame.png');
+      expect(unlinkedDurablePaths()).toEqual([]);
+    });
+
+    // 'stock' and absence are the same request, so neither may reject — the
+    // route drops the sentinel from persisted params, which means a resumed
+    // render sends absence where the original sent 'stock'.
+    it.each([undefined, 'stock'])('accepts %j on a model with no substitutions', async (textEncoderId) => {
+      await expect(prepare({ textEncoderId })).resolves.toMatchObject({ effectiveModelId: 'ltx2_unified' });
+    });
+
     it('rejects a history id that is not in the render history', async () => {
       await expect(prepare({ extendFromVideoId: '22222222-2222-4222-8222-222222222222' }))
         .rejects.toMatchObject({ status: 404, code: 'EXTEND_SOURCE_NOT_FOUND' });
@@ -388,19 +419,8 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
     getSettings.mockResolvedValue(settingsWith([H3_TERMS]));
   });
 
-  // A render kicked off from a surface with no terms UI of its own (the music
-  // video board, a pipeline stage) is authorized by the acknowledgement the
-  // user recorded once — anywhere — rather than 403ing with nowhere to go.
-  it('requires the install to have recorded this exact reviewed license', async () => {
+  it('prepares an H3 text render without a recorded license acknowledgement', async () => {
     getSettings.mockResolvedValueOnce(settingsWith(undefined));
-    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
-      .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
-
-    // A superseded license revision does not carry forward to this one.
-    getSettings.mockResolvedValueOnce(settingsWith(['some-older-license']));
-    await expect(prepare({ modelId: H3_MODEL.id, mode: 'text' }))
-      .rejects.toMatchObject({ status: 403, code: 'VIDEO_MODEL_TERMS_ACCEPTANCE_REQUIRED' });
-
     const prepared = await prepare({ modelId: H3_MODEL.id, mode: 'text' });
     expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
     expect(prepared.effectiveChunks).toBe(1);

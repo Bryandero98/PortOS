@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { posixPath as toPosix } from '../lib/testHelper.js';
 
 // In-memory filesystem keyed by absolute path.
 let files = {};
@@ -27,17 +28,17 @@ vi.mock('../lib/migrationMarker.js', () => ({
 
 vi.mock('fs/promises', () => ({
   readFile: vi.fn(async (path) => {
-    if (!(path in files)) {
+    if (!(toPosix(path) in files)) {
       const err = new Error('ENOENT');
       err.code = 'ENOENT';
       throw err;
     }
-    return files[path];
+    return files[toPosix(path)];
   }),
   rename: vi.fn(async (from, to) => {
     if (renameShouldFail) throw new Error('EACCES: rename failed');
-    files[to] = files[from];
-    delete files[from];
+    files[toPosix(to)] = files[toPosix(from)];
+    delete files[toPosix(from)];
   }),
 }));
 

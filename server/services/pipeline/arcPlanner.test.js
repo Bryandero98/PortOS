@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
@@ -907,6 +908,60 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     });
   });
 
+  // Transition labels cap at 200 and the sanitizer CLIPS an overrun instead of
+  // rejecting it, so a resolver writing blind lands a half-clause milestone that
+  // the next spine round reports as an incomplete record — the budget block is
+  // what tells it the cap it is actually measured against.
+  it('publishes per-transition character-arc budgets to the resolve prompt', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'seed', summary: 'The queue claim changes hands.', status: 'draft' },
+      characterArcs: [{
+        characterId: 'chr-11111111-2222-3333-4444-555555555555',
+        characterName: 'Queue broker',
+        want: 'To keep the queue claim.',
+        transitions: [{
+          id: 'trn-11111111-2222-3333-4444-555555555555',
+          kind: 'point-of-no-return',
+          atIssue: 14,
+          label: 'Escrows the proceeds with no lien.',
+          note: 'The queue claim passes to the coalition.',
+        }],
+      }],
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { notes: '' }, runId: 'r1', providerId: 'p', model: 'm',
+    }));
+    await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'medium', problem: 'milestone is incomplete', suggestion: 'complete it' }],
+    });
+
+    const budgets = JSON.parse(stageRunnerSpy.mock.calls[0][1].textBudgetsJson);
+    expect(budgets.characterArcs).toHaveLength(1);
+    const [arcBudget] = budgets.characterArcs;
+    expect(arcBudget.characterId).toBe('chr-11111111-2222-3333-4444-555555555555');
+    expect(arcBudget.want).toEqual({
+      current: 'To keep the queue claim.'.length,
+      max: 1000,
+      remaining: 1000 - 'To keep the queue claim.'.length,
+    });
+    expect(arcBudget.transitions[0]).toEqual({
+      id: 'trn-11111111-2222-3333-4444-555555555555',
+      atIssue: 14,
+      label: {
+        current: 'Escrows the proceeds with no lien.'.length,
+        max: 200,
+        remaining: 200 - 'Escrows the proceeds with no lien.'.length,
+      },
+      note: {
+        current: 'The queue claim passes to the coalition.'.length,
+        max: 1000,
+        remaining: 1000 - 'The queue claim passes to the coalition.'.length,
+      },
+    });
+  });
+
   it('rejects ambiguous, whole-field, and over-limit exact text edits', () => {
     expect(planner.applyExactTextEdits(
       'repeat here; repeat here',
@@ -961,6 +1016,97 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     expect(out.applied).toBe(false);
     expect(out.rejectedExactEdits).toBe(1);
     expect(out.series.seasons[0].endingHook).toBe(originalHook);
+    // Categorical, so the stall diagnosis can tell a patch whose anchors no
+    // longer match from a resolver that declined to propose anything.
+    expect(out.noChangeReason).toBe('exact-edits-rejected');
+    expect(out.mutations).toEqual({ arcFieldsEdited: 0, volumesEdited: 0, characterArcsEdited: 0, episodesEdited: 0 });
+  });
+
+  it('counts what a spine-scope resolve wrote, per record kind (#3843)', async () => {
+    // An arc-spine resolver may not touch episodes at all, so `episodesEdited`
+    // is 0 on every one of its rounds — the gate reported that alone and a
+    // round that rewrote the arc and two volumes read as a no-op.
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'old logline', summary: 'old summary' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Vol 1', synopsis: 'v1 old', episodeCountTarget: 3 });
+    const v2 = await seasonsSvc.createSeason(s.id, { number: 2, title: 'Vol 2', synopsis: 'v2 old', episodeCountTarget: 3 });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { resolves: ['f1'], logline: 'old logline', summary: 'new summary' },
+        seasons: [
+          { resolves: ['f1'], id: v1.id, synopsis: 'v1 new' },
+          { resolves: ['f1'], id: v2.id, synopsis: 'v2 new' },
+        ],
+        notes: '',
+      },
+      runId: 'r-spine', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      spineOnly: true,
+      findings: [{ id: 'f1', severity: 'high', problem: 'the vow is never paid off', suggestion: 'pay it off in V2' }],
+    });
+
+    expect(out.applied).toBe(true);
+    // One arc field moved (`summary`); `logline` came back identical and is not
+    // counted as a rewrite.
+    expect(out.mutations).toEqual({ arcFieldsEdited: 1, volumesEdited: 2, characterArcsEdited: 0, episodesEdited: 0 });
+    expect(out.noChangeReason).toBeNull();
+  });
+
+  it('names the reason when a spine resolve answers with episode edits it may not apply (#3843)', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    const v1 = await seasonsSvc.createSeason(s.id, { number: 1, title: 'Vol 1', episodeCountTarget: 1 });
+    await issuesSvc.createIssue({ seriesId: s.id, seasonId: v1.id, title: 'Pilot' });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        episodes: [{ resolves: ['f1'], seasonNumber: 1, episodeNumber: 1, synopsis: 'a rewritten synopsis' }],
+        notes: '',
+      },
+      runId: 'r-out-of-scope', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      spineOnly: true,
+      findings: [{ id: 'f1', severity: 'high', problem: 'the pilot contradicts the volume', suggestion: 'fix it' }],
+    });
+
+    expect(out.applied).toBe(false);
+    // Not "the resolver did nothing" — it answered at an altitude this gate
+    // forbids, which is a different defect with a different fix.
+    expect(out.noChangeReason).toBe('edits-out-of-scope');
+  });
+
+  it('documents every no-change reason in the prompts that are handed one (#3843)', () => {
+    // The reasons only earn their keep if the diagnosis can read them. A value
+    // the legend never explains reaches the model as an unglossed token, which
+    // is the misreading this telemetry exists to end.
+    const legends = ['pipeline-observer.md', 'pipeline-self-improve.md'].map((file) => readFileSync(
+      new URL(`../../../data.reference/prompts/stages/${file}`, import.meta.url),
+      'utf8',
+    ));
+    for (const reason of planner.RESOLVE_NO_CHANGE_REASONS) {
+      for (const legend of legends) expect(legend).toContain(`\`${reason}\``);
+    }
+  });
+
+  it('reports a resolver that proposed nothing at all as a content-level refusal (#3843)', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { notes: 'I cannot resolve this without inventing canon.' },
+      runId: 'r-refusal', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ id: 'f1', severity: 'high', problem: 'the vow is never paid off', suggestion: 'pay it off' }],
+    });
+
+    expect(out.applied).toBe(false);
+    expect(out.noChangeReason).toBe('no-edits-returned');
   });
 
   it('re-runs verify when no findings are supplied and short-circuits on a clean arc', async () => {

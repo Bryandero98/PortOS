@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { posixPath } from '../../lib/testHelper.js';
+
 import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -21,13 +23,25 @@ const makeFakeChild = () => {
   child.signalCode = null;
   return child;
 };
-vi.mock('child_process', async (importOriginal) => {
+vi.mock('../../lib/childProcess.js', async (importOriginal) => {
   const actual = await importOriginal();
+  const { readFileSync } = await import('fs');
   return {
     ...actual,
     spawn: vi.fn((bin, args) => {
       const child = makeFakeChild();
-      spawnCalls.push({ bin, args, child });
+      // On Windows grok cannot read /dev/stdin, so prepareGrokPromptFile writes
+      // the prompt to a temp file and rewrites --prompt-file to point at it —
+      // then unlinks that file once the run closes. Capture its contents HERE,
+      // between the write and the cleanup, so promptOf() can report the prompt
+      // on both platforms instead of reading an always-empty stdin buffer.
+      let promptFromFile = null;
+      const pfIdx = args?.indexOf?.('--prompt-file');
+      const pfPath = pfIdx >= 0 ? args[pfIdx + 1] : null;
+      if (pfPath && pfPath !== '/dev/stdin') {
+        try { promptFromFile = readFileSync(pfPath, 'utf8'); } catch { promptFromFile = null; }
+      }
+      spawnCalls.push({ bin, args, child, promptFromFile });
       return child;
     }),
   };
@@ -51,7 +65,9 @@ const { imageGenEvents } = await import('../imageGenEvents.js');
 
 const flush = () => new Promise((r) => setImmediate(r));
 const stagingPathFor = (jobId) => join(tmpdir(), `portos-grok-${jobId}`, 'output.png');
-const promptOf = (i = 0) => spawnCalls[i].child.stdin.written;
+// POSIX delivers the prompt over stdin; Windows through the rewritten
+// --prompt-file temp file (captured at spawn time above).
+const promptOf = (i = 0) => spawnCalls[i].promptFromFile ?? spawnCalls[i].child.stdin.written;
 const closeChild = async (i = 0, code = 1) => {
   spawnCalls[i].child.exitCode = code;
   spawnCalls[i].child.emit('close', code, null);
@@ -101,7 +117,12 @@ describe('grok provider — generateImage', () => {
     // prompt via /dev/stdin (POSIX), no --model pin.
     expect(args).toEqual(expect.arrayContaining(['--output-format', 'plain']));
     expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'bypassPermissions']));
-    expect(args).toEqual(expect.arrayContaining(['--prompt-file', '/dev/stdin']));
+    // Windows has no /dev/stdin, so prepareGrokPromptFile rewrites the sentinel
+    // to a real temp file. Assert the per-platform value — both ship.
+    expect(args).toEqual(expect.arrayContaining([
+      '--prompt-file',
+      process.platform === 'win32' ? expect.stringMatching(/grok-prompt-.*\.txt$/) : '/dev/stdin',
+    ]));
     expect(args).not.toContain('--model');
     // The agent prompt names the tool, the image prompt, and the directed path.
     const prompt = promptOf();
@@ -132,7 +153,7 @@ describe('grok provider — generateImage', () => {
 
   it('honors grokPath override (custom binary)', async () => {
     await grok.generateImage({ prompt: 'a fox', grokPath: '/opt/custom/grok' });
-    expect(spawnCalls[0].bin).toBe('/opt/custom/grok');
+    expect(posixPath(spawnCalls[0].bin)).toBe('/opt/custom/grok');
     await closeChild();
   });
 
@@ -193,7 +214,7 @@ describe('grok provider — generateImage', () => {
   it('drops a reference path that escapes the gallery (defense-in-depth)', async () => {
     await grok.generateImage({ prompt: 'a fox', referenceImagePaths: ['/etc/passwd'] });
     const prompt = promptOf();
-    expect(prompt).not.toContain('/etc/passwd');
+    expect(posixPath(prompt)).not.toContain('/etc/passwd');
     // Nothing survived, so it falls back to plain text-to-image.
     expect(prompt).not.toContain('image_edit');
     await closeChild();
@@ -203,7 +224,7 @@ describe('grok provider — generateImage', () => {
     await grok.generateImage({ prompt: 'cover art', initImagePath: '/etc/passwd', initImageStrength: 0.2 });
     const prompt = promptOf();
     expect(prompt).not.toContain('image_edit');
-    expect(prompt).not.toContain('/etc/passwd');
+    expect(posixPath(prompt)).not.toContain('/etc/passwd');
     await closeChild();
   });
 

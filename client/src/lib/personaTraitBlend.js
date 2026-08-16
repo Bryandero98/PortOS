@@ -18,6 +18,8 @@
  * test file (`personaTraitBlend.test.js`) is the contract.
  */
 
+import { clamp } from '../utils/formatters.js';
+
 // communicationProfile.formality / .verbosity live on a 1..10 scale; a persona
 // nudges them with a relative integer delta in this range.
 export const COMM_DELTA_MIN = -9;
@@ -41,8 +43,6 @@ export const BIG_FIVE_LEAN = {
   A: { more: 'warmer and more accommodating', less: 'more direct and challenging' },
   N: { more: 'more emotionally expressive', less: 'more even-keeled and calm' }
 };
-
-const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
 // Bin a delta's magnitude into slightly / notably / much against the [notably,
 // much] thresholds for its scale. One ladder, two scales (1..10 comm deltas use

@@ -8,7 +8,16 @@ import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { rebuildTrusted, NPM } from './trusted-rebuilds.js';
+import { rebuildTrusted } from './trusted-rebuilds.js';
+// Node refuses to spawn npm's `.cmd` shim under `shell:false` (CVE-2024-27980),
+// so every npm spawn goes through this wrap. Safe to import before `npm install`
+// has ever run — bufferedSpawn's whole import graph is Node builtins only.
+import { prepareCliSpawn } from '../server/lib/bufferedSpawn.js';
+
+const npmSpawn = (args, options) => {
+  const { command, args: spawnArgs } = prepareCliSpawn('npm', args);
+  return execFileSync(command, spawnArgs, options);
+};
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -108,7 +117,7 @@ function cleanWorkspaceDeps(dir) {
 
 function install(dir, label) {
   try {
-    execFileSync(NPM, ['install'], { cwd: dir, stdio: 'inherit', windowsHide: true });
+    npmSpawn(['install'], { cwd: dir, stdio: 'inherit', windowsHide: true });
     return rebuildTrusted(dir, label);
   } catch (err) {
     console.error(`⚠️  npm install failed for ${label}: ${err.message ?? err}`);
@@ -120,7 +129,7 @@ function install(dir, label) {
       return false;
     }
     try {
-      execFileSync(NPM, ['install'], { cwd: dir, stdio: 'inherit', windowsHide: true });
+      npmSpawn(['install'], { cwd: dir, stdio: 'inherit', windowsHide: true });
       return rebuildTrusted(dir, label);
     } catch (retryErr) {
       console.error(`❌ npm install failed for ${label} after retry: ${retryErr.message ?? retryErr}`);

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 
 import { TRUSTED_REBUILDS, discoverWorkspaces, workspaceDir, rebuildTrusted, runCli } from './trusted-rebuilds.js';
+import { prepareCliSpawn } from '../server/lib/bufferedSpawn.js';
 
 // Discovered, not hand-listed: a hardcoded roster here would silently miss a
 // workspace added later, leaving it with no `ignore-scripts` guard while this
@@ -225,8 +227,15 @@ describe('rebuildTrusted failure semantics', () => {
 
   it('spawns one npm rebuild per group, with the group\'s packages', () => {
     const calls = [];
-    rebuildTrusted('/tmp', 'server', { spawn: (_bin, args) => calls.push(args) });
-    expect(calls).toEqual(TRUSTED_REBUILDS.server.map((group) => ['rebuild', ...group.pkgs]));
+    rebuildTrusted('/tmp', 'server', { spawn: (bin, args) => calls.push([bin, args]) });
+    // Compared against prepareCliSpawn rather than a hardcoded `npm` + args pair:
+    // the launchable form is platform-dependent (on Windows npm is a `.cmd` shim
+    // that has to be wrapped), so pinning the POSIX shape would fail the suite on
+    // a Windows checkout.
+    expect(calls).toEqual(TRUSTED_REBUILDS.server.map((group) => {
+      const { command, args } = prepareCliSpawn('npm', ['rebuild', ...group.pkgs]);
+      return [command, args];
+    }));
   });
 
   it('fails when a fatal group fails', () => {
@@ -249,6 +258,26 @@ describe('rebuildTrusted failure semantics', () => {
     const calls = [];
     expect(rebuildTrusted('/tmp', 'client', { spawn: (...a) => calls.push(a) })).toBe(true);
     expect(calls).toEqual([]);
+  });
+});
+
+// Node ≥18.20.2 REFUSES to spawn a `.cmd`/`.bat` target under `shell:false` and
+// throws `spawnSync npm.cmd EINVAL`. Because the node-pty group is fatal, that
+// throw made `trusted-rebuilds.js server` exit 1, which made `update.ps1` exit
+// before the client build and the pm2 restart — so every Windows update left the
+// UI reporting "the served client build is older than the UI source", with no
+// way to clear it by updating again. bufferedSpawn owns the wrap; this asserts
+// the end-to-end property that regressed, on whatever platform CI runs.
+describe('npm spawn shape', () => {
+  it('never hands a bare .cmd/.bat to a shell-less spawn', () => {
+    const { command } = prepareCliSpawn('npm', ['rebuild', 'node-pty']);
+    expect(command, 'a .cmd target under shell:false throws EINVAL').not.toMatch(/\.(cmd|bat)$/i);
+  });
+
+  it('actually runs npm on this platform', () => {
+    const { command, args } = prepareCliSpawn('npm', ['--version']);
+    const out = execFileSync(command, args, { encoding: 'utf8', windowsHide: true });
+    expect(out.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
 

@@ -20,7 +20,7 @@
  * http(s) URL (SSRF-guarded) — so the core never sees an unvetted URL.
  */
 
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { existsSync } from 'fs';
 import { readdir, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -28,7 +28,7 @@ import { join, dirname } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { findFfmpeg } from '../lib/ffmpeg.js';
 import { findYtDlp } from '../lib/ytdlp.js';
-import { safeChildProcessEnv } from '../lib/processEnv.js';
+import { safeChildProcessOptions } from '../lib/processEnv.js';
 import { createLineReader } from '../lib/streamLines.js';
 
 const TITLE_PREFIX = 'PORTOS_TITLE:';
@@ -121,7 +121,7 @@ export async function downloadAudioToTempMp3({
     url,
   ];
 
-  const proc = spawn(ytDlp, args, { env: safeChildProcessEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(ytDlp, args, safeChildProcessOptions({ stdio: ['ignore', 'pipe', 'pipe'] }));
   registerProcess(proc);
 
   const onLine = (line) => {

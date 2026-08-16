@@ -362,12 +362,12 @@ export async function buildTrackAssetManifest(track) {
  * VIDEO renders are NOT hashed here: they live in the project's linked media
  * collection, which federates as its own record and ships its bytes via that
  * collection's manifest — duplicating them here would double the transfer.
- * The music bed has no such alternate channel (unlike scene video, it isn't
- * filed into the linked collection), so without bundling it here a subscribed
- * peer would receive a dangling `musicBed.filename` reference — mirrors how
- * `buildTrackAssetManifest` / `buildMusicVideoAssetManifest` bundle their
- * `PATHS.music` audio. Each direct asset is missing-local-file skipped
- * silently (mirrors buildAuthorAssetManifest).
+ * Directive-plan render steps do not enter that collection, so their settled
+ * image/video job ids are bundled directly. The music bed has no alternate
+ * channel either, so without bundling it a subscribed peer would receive a
+ * dangling `musicBed.filename` reference — mirrors how `buildTrackAssetManifest`
+ * / `buildMusicVideoAssetManifest` bundle their `PATHS.music` audio. Each direct
+ * asset is missing-local-file skipped silently (mirrors buildAuthorAssetManifest).
  */
 export async function buildProjectAssetManifest(project) {
   const entries = [];
@@ -381,22 +381,93 @@ export async function buildProjectAssetManifest(project) {
     const musicEntry = await hashSimpleAsset(musicBedFilename, 'music', PATHS.music);
     if (musicEntry) entries.push(musicEntry);
   }
+  const planSteps = Array.isArray(project?.plan?.steps) ? project.plan.steps : [];
+  const renderEntries = await Promise.all(planSteps.map((step) => {
+    const jobId = step?.status === 'done' && isStr(step?.result?.jobId) && step.result.jobId.trim()
+      ? step.result.jobId.trim()
+      : null;
+    if (!jobId) return null;
+    if (step.toolName === 'media_enqueueImageJob') {
+      return hashImageForManifest(`${jobId}.png`);
+    }
+    if (step.toolName === 'media_enqueueVideoJob') {
+      return hashSimpleAsset(`${jobId}.mp4`, 'video', PATHS.videos);
+    }
+    return null;
+  }));
+  const seen = new Set(entries.map((entry) => `${entry.kind}:${entry.filename}`));
+  for (const entry of renderEntries) {
+    const key = entry && `${entry.kind}:${entry.filename}`;
+    if (entry && !seen.has(key)) {
+      seen.add(key);
+      entries.push(entry);
+    }
+  }
   return entries;
 }
 
 // `data/video-history.json` is a FLAT array of video-generation rows
-// (`{ id, filename, ... }`). The same store dataSync's `videoHistory` category
-// federates as metadata; here we read it only to resolve a scene's
-// `videoHistoryId` to its on-disk basename under PATHS.videos. Mirrors
-// dataSync's direct readJSONFile (no videoGen import — that drags in
-// ffmpeg/spawn machinery we don't need on the manifest path).
-async function videoHistoryFilenamesById() {
+// (`{ id, filename, thumbnail, ... }`). The same store dataSync's `videoHistory`
+// category federates as metadata; the two lookups below read it to map between a
+// row's id, its on-disk basename under PATHS.videos, and its poster basename
+// under PATHS.videoThumbnails. Mirrors dataSync's direct readJSONFile (no
+// videoGen import — that drags in ffmpeg/spawn machinery we don't need here).
+async function readVideoHistoryRows() {
   const raw = await readJSONFile(join(PATHS.data, 'video-history.json'), []);
+  return Array.isArray(raw) ? raw : [];
+}
+
+// Resolve a scene's `videoHistoryId` to its on-disk basename.
+async function videoHistoryFilenamesById() {
   const map = new Map();
-  for (const row of Array.isArray(raw) ? raw : []) {
+  for (const row of await readVideoHistoryRows()) {
     if (isStr(row?.id) && isStr(row?.filename)) map.set(row.id, row.filename);
   }
   return map;
+}
+
+// The reverse lookup (#4162): given an on-disk video basename, what THUMBNAIL
+// basename does its history row declare? Returns `null` when no row carries the
+// filename or its `thumbnail` isn't a safe basename.
+//
+// A history id is NOT the video filename stem. `videoGen/local.js` names a clip
+// `<jobId>.mp4` beside `thumbnail: '<jobId>.jpg'`, so stem-derivation happens to
+// land on the right name there — but `videoTimeline/local.js` mints an
+// independent `randomUUID()` id for a stitched final whose file is
+// `timeline-<projectId-slice>-<ts>.mp4`. Every poster URL the UI builds is
+// `/data/video-thumbnails/<row.id>.jpg`, so a stem-derived regeneration writes a
+// name nothing ever requests and the card stays on MediaImage's "Syncing"
+// placeholder forever.
+//
+// `row.thumbnail` rode the wire from a peer, so it goes through
+// `sanitizeAssetFilename` before it can become a path segment.
+async function videoThumbnailNameForVideo(filename) {
+  for (const row of await readVideoHistoryRows()) {
+    if (row?.filename !== filename) continue;
+    return isStr(row?.thumbnail) ? sanitizeAssetFilename(row.thumbnail) : null;
+  }
+  return null;
+}
+
+// Regenerate a video poster under the history row's declared name. The helper
+// also runs for a hash-matched video: metadata and bytes can arrive in either
+// order, and a first pull may have made only the filename-stem fallback before
+// a later videoHistory sync declared an independent poster name.
+async function reconcileVideoThumbnail(filename, videoPath, peerId) {
+  const rowThumbnail = await videoThumbnailNameForVideo(filename).catch(() => null);
+  const jobId = (rowThumbnail || filename).replace(/\.[a-z0-9]+$/i, '');
+  const expectedFilename = `${jobId}.jpg`;
+  if (existsSync(join(PATHS.videoThumbnails, expectedFilename))) return null;
+
+  const thumbFilename = await generateThumbnail(videoPath, jobId).catch(() => null);
+  if (thumbFilename) {
+    peerSyncEvents.emit('asset-arrived', {
+      filename: thumbFilename,
+      kind: 'video-thumbnail',
+      peerId,
+    });
+  }
+  return thumbFilename;
 }
 
 /**
@@ -494,7 +565,12 @@ export async function buildMusicVideoAssetManifest(project) {
 export async function buildBoardAssetManifest(board) {
   const dedup = new Map();
   for (const it of board?.items || []) {
-    if (!it || it.type !== 'image') continue;
+    // `video` items (#4188) carry a `video:<filename>` mediaKey (the ref IS
+    // the on-disk filename, so collectionVideoRefToFilename passes it through
+    // untouched) plus an optional poster-thumbnail imageUrl. Thumbnails under
+    // /data/video-thumbnails are NOT shipped — the receiver's video pull
+    // regenerates `<stem>.jpg` locally (see doPullOneAsset's video branch).
+    if (!it || (it.type !== 'image' && it.type !== 'video')) continue;
     const pending = [];
     if (typeof it.mediaKey === 'string') {
       const parsed = parseKey(it.mediaKey);
@@ -864,6 +940,9 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
         // Bytes already up-to-date. Images still reconcile their sidecar, since
         // that may be the only reason this entry was flagged.
         if (entry.kind === 'image') await pullSidecarForImage(peer, base, safeName).catch(() => {});
+        // A video can have arrived before its video-history metadata. Recheck
+        // the declared poster even though the mp4 itself does not need a pull.
+        if (entry.kind === 'video') await reconcileVideoThumbnail(safeName, localFullPath, peer.instanceId);
         return;
       }
     }
@@ -891,17 +970,9 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
     await pullSidecarForImage(peer, base, safeName).catch(() => {});
   }
   // After a video pull, regenerate the thumbnail LOCALLY rather than pulling it
-  // as a sibling asset. Cheaper end-to-end: no new asset kind / URL-prefix /
-  // manifest-diff plumbing, and the thumbnail filename is deterministic
-  // (`<jobId>.jpg`, where jobId === the video filename minus `.mp4`). The
-  // synced video-history row already carries `thumbnail: '<jobId>.jpg'`, so
-  // once this file exists on disk `normalizeVideo` renders the collection
-  // tile. Best-effort: if ffmpeg is missing the row still syncs (the item
-  // stops being filtered as "missing"); the tile just falls back to no
-  // preview. Mirrors generateThumbnail's null-on-failure contract.
+  // as a sibling asset. Its own `asset-arrived` event lets a poster that already
+  // 404'd leave MediaImage's "Syncing" placeholder without a remount.
   if (entry.kind === 'video') {
-    const jobId = safeName.replace(/\.[a-z0-9]+$/i, '');
-    const videoPath = join(localDir, safeName);
-    await generateThumbnail(videoPath, jobId).catch(() => null);
+    await reconcileVideoThumbnail(safeName, fullPath, peer.instanceId);
   }
 }

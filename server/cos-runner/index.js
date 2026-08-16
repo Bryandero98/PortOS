@@ -9,7 +9,7 @@
  */
 
 import express from 'express';
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import * as pty from 'node-pty';
 import { join, basename } from 'path';
 import { writeFile, readFile } from 'fs/promises';
@@ -390,8 +390,7 @@ app.post('/spawn', async (req, res) => {
     cwd,
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: childEnv,
-    windowsHide: true
+    env: childEnv
   });
 
   // Detect if stream-json format is active (Claude CLI with streaming)

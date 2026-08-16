@@ -109,6 +109,8 @@ export default function PromptManager() {
   const [pendingJobSkill, setPendingJobSkill] = useState(null);
   const [jobSkillMeta, setJobSkillMeta] = useState({});
   const [jobSkillPreview, setJobSkillPreview] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewSeqRef = useRef(0);
   const isJobSkillDirty = Boolean(selectedJobSkill) && jobSkillContent !== savedJobSkillContent;
   // `saveJobSkill` resumes after an await holding the values its closure captured
   // at click time, so it reads the live selection/text through these refs to tell
@@ -317,6 +319,8 @@ export default function PromptManager() {
   // PREVIOUS skill's template rendered under the newly selected skill's heading.
   useEffect(() => {
     setJobSkillPreview('');
+    setPreviewLoading(false);
+    previewSeqRef.current++;
     setJobSkillContent('');
     setSavedJobSkillContent('');
     setPendingJobSkill(null);
@@ -390,12 +394,18 @@ export default function PromptManager() {
 
   const previewJobSkill = async () => {
     const previewFor = selectedJobSkill;
+    const seq = ++previewSeqRef.current;
+    setPreviewLoading(true);
     const res = await apiPreviewJobSkill(previewFor, { silent: true })
       .catch((err) => { toast.error(`Failed to preview: ${err.message || 'Unknown error'}`); return null; });
+    if (previewSeqRef.current === seq) {
+      setPreviewLoading(false);
+    }
     if (!res) return;
     // A preview that lands after the user moved on belongs to the previous
     // skill — rendering it under the new one's heading would misattribute it.
     if (previewFor !== jobSkillLiveRef.current.selected) return;
+    if (previewSeqRef.current !== seq) return;
     setJobSkillPreview(res.preview || '');
   };
 
@@ -972,7 +982,8 @@ export default function PromptManager() {
                     <div className="flex gap-2">
                       <button
                         onClick={previewJobSkill}
-                        className="flex items-center gap-1 px-3 py-1 text-sm bg-port-border hover:bg-port-border/80 text-white rounded"
+                        disabled={previewLoading}
+                        className="flex items-center gap-1 px-3 py-1 text-sm bg-port-border hover:bg-port-border/80 text-white rounded disabled:opacity-50"
                       >
                         <Eye size={14} /> Preview
                       </button>

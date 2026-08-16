@@ -11,7 +11,8 @@ import { request } from '../lib/testHelper.js';
 
 // resolveBashBinary and the db.sh path are resolved at module load — mock
 // the dependencies before the route is imported.
-vi.mock('../lib/bashResolver.js', () => ({
+vi.mock('../lib/bashResolver.js', async (importOriginal) => ({
+  ...(await importOriginal()),   // real toBashPath — only the binary needs pinning
   resolveBashBinary: vi.fn(() => 'bash'),
 }));
 
@@ -33,7 +34,7 @@ vi.mock('../lib/db.js', () => ({
 }));
 
 // Mock child_process.execFile + spawn at the module level.
-vi.mock('child_process', async (importOriginal) => {
+vi.mock('../lib/childProcess.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
@@ -42,7 +43,7 @@ vi.mock('child_process', async (importOriginal) => {
   };
 });
 
-import { execFile, spawn } from 'child_process';
+import { execFile, spawn } from '../lib/childProcess.js';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { writeFileSync, mkdtempSync } from 'fs';

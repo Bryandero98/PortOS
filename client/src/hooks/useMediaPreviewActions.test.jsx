@@ -19,6 +19,46 @@ const parseNav = () => {
   return { path, params: new URLSearchParams(qs) };
 };
 
+describe('useMediaPreviewActions.handleRemix', () => {
+  beforeEach(() => navigate.mockReset());
+
+  it('sends a video back to /media/video with prompt and render settings', () => {
+    const { result } = renderHook(() => useMediaPreviewActions());
+    result.current.handleRemix({
+      kind: 'video',
+      prompt: 'a fox in rain',
+      negativePrompt: 'blurry',
+      modelId: 'ltx2-dev',
+      width: 768,
+      height: 512,
+      numFrames: 121,
+      fps: 24,
+      raw: { seed: 42, steps: 8, guidanceScale: 3, tiling: 'none', disableAudio: true },
+    });
+    const { path, params } = parseNav();
+    expect(path).toBe('/media/video');
+    expect(params.get('prompt')).toBe('a fox in rain');
+    expect(params.get('negativePrompt')).toBe('blurry');
+    expect(params.get('modelId')).toBe('ltx2-dev');
+    expect(params.get('w')).toBe('768');
+    expect(params.get('h')).toBe('512');
+    expect(params.get('numFrames')).toBe('121');
+    expect(params.get('fps')).toBe('24');
+    expect(params.get('seed')).toBe('42');
+    expect(params.get('steps')).toBe('8');
+    expect(params.get('guidanceScale')).toBe('3');
+    expect(params.get('tiling')).toBe('none');
+    expect(params.get('disableAudio')).toBe('1');
+  });
+
+  it('skips the (no prompt) placeholder so a remixed clip does not seed that literal', () => {
+    const { result } = renderHook(() => useMediaPreviewActions());
+    result.current.handleRemix({ kind: 'video', prompt: '(no prompt)', width: 512, height: 512 });
+    const { params } = parseNav();
+    expect(params.get('prompt')).toBeNull();
+  });
+});
+
 describe('useMediaPreviewActions.handleSendToImage', () => {
   beforeEach(() => navigate.mockReset());
 

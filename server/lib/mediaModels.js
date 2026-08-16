@@ -8,13 +8,36 @@
  * cached at boot — there's no hot-reload).
  *
  * Schema (see seed defaults below for the full picture):
- *   - video.macos[], video.windows[]: { id, name, repo?, steps, guidance, broken?, disclosure? }
+ *   - video.mlx[], video.cuda[]: { id, name, repo?, steps, guidance, broken?, disclosure? }
+ *       The two buckets split on RUNTIME FAMILY, not operating system: `mlx`
+ *       holds the Apple-MLX runtimes, `cuda` the plain torch+CUDA ones (which
+ *       run on Windows AND Linux). They were keyed `macos` / `windows` before
+ *       issue #4142; both spellings still load — see lib/mediaModelBuckets.js.
+ *       Models may also declare `defaultWidth` / `defaultHeight`,
+ *       `resolutionStep`, and `resolutionOptions[]` when their native canvas
+ *       differs from the shared Video Gen presets.
+ *       `repoFiles[]` (optional) narrows the model's OWN `repo` to an explicit
+ *       list of repo-relative POSIX filenames, the way `requiredWeights[].files`
+ *       already does for a secondary repo. Absent means "snapshot the whole
+ *       repo", which is right for a repo that holds exactly one model. Declare
+ *       it when the repo is an AGGREGATE holding more than the runner loads —
+ *       `MiniMaxAI/MiniMax-H3` ships three layouts totalling ~498 GB where the
+ *       CUDA runner needs ~144 GB of them — since the download, cache-status,
+ *       integrity-verify and repair paths all fan out from the same
+ *       `modelDownloadTargets()` in routes/videoGen.js and would otherwise pull
+ *       and checksum the lot.
+ *       `offloadProfile` (optional, `minimax_h3_cuda` only) pins the weight
+ *       offload recipe to one of `auto` / `bf16` / `int8-stream` / `int8-lean`
+ *       instead of letting the runner size one from the card's own VRAM. Left
+ *       absent on the shipped entry deliberately: the registry syncs between
+ *       peers and cannot know what GPU is on the other end. Validated in
+ *       services/videoGen/local.js against MINIMAX_H3_CUDA_OFFLOAD_PROFILES.
  *       `disclosure` is optional provenance/licensing metadata (issue #3674):
  *       { modelCardUrl?, weightsLicense?: { name, url }, runtimeLicense?: { name, url },
  *         estimatedDownloadGb?, reviewedAt? }. Every key is optional and an
  *       absent key means "not established" — the UI renders it as Unknown
  *       rather than guessing. Canonical fields (repo/revision/runtime/memoryGb/
- *       supportedModes/requiredWeights) are NOT duplicated inside it. Shipped
+ *       supportedModes/requiredWeights/repoFiles) are NOT duplicated inside it. Shipped
  *       values live in lib/videoDisclosure.js and are backfilled at load.
  *       `finishModelId` (optional, issue #3696) names the delivery model a
  *       fast draft entry finishes into — declared in lib/videoFinishProfiles.js,
@@ -23,7 +46,8 @@
  *       getVideoModels() from lib/videoModeProfiles.js's per-runtime table when
  *       the entry doesn't declare its own, so no consumer has to treat "absent"
  *       as "supports everything". A declared list always wins.
- *   - video.defaultMacos / video.defaultWindows: id of the default model
+ *   - video.defaultMlx / video.defaultCuda: id of the default model
+ *     (legacy `defaultMacos` / `defaultWindows` still read)
  *   - image[]: { id, name, steps, guidance, broken? }
  *   - textEncoders[]: { id, label, repo, localPath? }
  *   - selectedTextEncoder: id of the active text encoder
@@ -33,6 +57,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { PATHS, expandHome } from './fileUtils.js';
 import { isPlainObject } from './objects.js';
+import {
+  LEGACY_VIDEO_KEYS,
+  VIDEO_BUCKETS,
+  VIDEO_DEFAULT_KEYS,
+  activeVideoBucket,
+  matchesVideoBucket,
+  readVideoBucket,
+  readVideoDefault,
+  resolveVideoBucketKey,
+} from './mediaModelBuckets.js';
 import { RUNNER_FAMILIES } from './runners.js';
 import { ServerError } from './errorHandler.js';
 import { applyVideoDisclosures } from './videoDisclosure.js';
@@ -45,7 +79,179 @@ import { applyVideoSupportedModes } from './videoModeProfiles.js';
 // Allow tests + non-standard deployments to point at a different file
 // without monkey-patching PATHS. Defaults to data/media-models.json.
 const REGISTRY_FILE = process.env.PORTOS_MEDIA_MODELS_FILE || join(PATHS.data, 'media-models.json');
-const IS_WIN = process.platform === 'win32';
+
+// Migration 267 and the load-time normalizer share this exact shipped-profile
+// contract. The load-time half is essential because route imports can cache the
+// registry before bootstrap migrations run; a later registry edit would
+// otherwise persist that stale object over the migrated file in the same boot.
+// MiniMax H3's canvas contract — a property of the CHECKPOINT, so it is
+// identical on the MLX port and the diffusers CUDA path. H3-Base was trained on
+// a native 768px short edge; its canvas resolver caps area at 768x1344 and
+// rounds each edge to 32px, and these are the exact outputs for the aspect
+// ratios MiniMax documents. Both model entries spread this rather than restating
+// it — `mediaModels.test.js` asserts they stay identical.
+export const MINIMAX_H3_CANVAS = Object.freeze({
+  defaultWidth: 1344,
+  defaultHeight: 768,
+  resolutionStep: 32,
+  resolutionOptions: Object.freeze([
+    Object.freeze({ label: '1536x672 (21:9 H3 native)', w: 1536, h: 672 }),
+    Object.freeze({ label: '1344x768 (16:9 H3 default)', w: 1344, h: 768 }),
+    Object.freeze({ label: '1024x768 (4:3 H3 native)', w: 1024, h: 768 }),
+    Object.freeze({ label: '768x768 (1:1 H3 native)', w: 768, h: 768 }),
+    Object.freeze({ label: '768x1024 (3:4 H3 native)', w: 768, h: 1024 }),
+    Object.freeze({ label: '768x1344 (9:16 H3 native)', w: 768, h: 1344 }),
+  ]),
+});
+
+// H3's video VAE decodes only frame counts on the 17n+5 grid, so every frame
+// list PortOS ships is an arithmetic sequence stepping by 17 — the runners
+// enforce the same modulus. Generated rather than typed out for the reason
+// `shardFiles` below is: a single wrong digit among the ~45 literals these three
+// lists would otherwise need is invisible in review and surfaces only as a
+// rejected render, and the three lists could silently disagree about the grid.
+const h3FrameGrid = (min, max) => {
+  const out = [];
+  for (let frames = min; frames <= max; frames += 17) out.push(frames);
+  return Object.freeze(out);
+};
+
+// The MLX entry's output profile: the shared canvas above PLUS the upgrade
+// machinery migration 267 and `upgradeMiniMaxH3OutputControls` key off (the id,
+// the repo it was checked against, and the frame list it supersedes). That
+// upgrade half is specific to this one registry row, which is why the canvas is
+// factored out rather than left tangled with it.
+export const MINIMAX_H3_OUTPUT_PROFILE = Object.freeze({
+  id: 'minimax_h3_8bit',
+  shippedRepo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+  oldFrameOptions: h3FrameGrid(124, 362),
+  frameOptions: h3FrameGrid(107, 362),
+  oldMlxSteps: 8,
+  mlxSteps: 9,
+  oldMlxSamplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.',
+  mlxSamplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the MLX reference 9-point sigma schedule (8 DiT forwards) and does not use CFG.',
+  ...MINIMAX_H3_CANVAS,
+});
+
+// Expand one diffusers sharded-component file set. Written out rather than
+// listed literally because these are 14- and 3-way shards whose names differ
+// only by index — a hand-typed list is 30+ near-identical lines in which a
+// single wrong digit is invisible in review and surfaces only as a failed
+// cache resolve mid-render.
+const shardFiles = (dir, stem, count) => Array.from(
+  { length: count },
+  (_, i) => `${dir}/${stem}-${String(i + 1).padStart(5, '0')}-of-${String(count).padStart(5, '0')}.safetensors`,
+);
+
+// MiniMax H3 on CUDA loads through diffusers' `MiniMaxH3ModularPipeline`, whose
+// `fl2va` workflow reads the `transformer/` partition plus the shared
+// conditioner, VAEs, tokenizers and schedulers.
+//
+// This MUST stay an explicit file list rather than a repo snapshot.
+// `MiniMaxAI/MiniMax-H3` is ~498 GB: it ships the diffusers layout enumerated
+// here (~144 GB), the `transformer_ref/` partition for the `ref2va` workflow
+// PortOS does not expose (~66 GB), and the ORIGINAL non-diffusers `FL2VA/` +
+// `Ref2VA/` layouts (~144 GB each) that the MLX port consumes. A snapshot would
+// pull 3.5x what the render path can use.
+const MINIMAX_H3_CUDA_REPO_FILES = Object.freeze([
+  'LICENSE',
+  'modular_model_index.json',
+  'transformer/config.json',
+  'transformer/diffusion_pytorch_model.safetensors.index.json',
+  ...shardFiles('transformer', 'diffusion_pytorch_model', 14),
+  'text_encoder/config.json',
+  'text_encoder/model.safetensors.index.json',
+  ...shardFiles('text_encoder', 'model', 14),
+  'text_encoder/chat_template.json',
+  'text_encoder/merges.txt',
+  'text_encoder/preprocessor_config.json',
+  'text_encoder/tokenizer.json',
+  'text_encoder/tokenizer_config.json',
+  'text_encoder/video_preprocessor_config.json',
+  'text_encoder/vocab.json',
+  'vae/config.json',
+  'vae/diffusion_pytorch_model.safetensors.index.json',
+  ...shardFiles('vae', 'diffusion_pytorch_model', 3),
+  'audio_vae/config.json',
+  'audio_vae/diffusion_pytorch_model.safetensors',
+  // The Qwen3-VL processor/tokenizer pair the keyframe (image / FFLF) path
+  // runs conditioning images through. ~20 MB, so it rides along rather than
+  // becoming a second opt-in pull the way a multi-GB component would.
+  'processor/chat_template.json',
+  'processor/merges.txt',
+  'processor/preprocessor_config.json',
+  'processor/tokenizer.json',
+  'processor/tokenizer_config.json',
+  'processor/video_preprocessor_config.json',
+  'processor/vocab.json',
+  'tokenizer/merges.txt',
+  'tokenizer/tokenizer.json',
+  'tokenizer/tokenizer_config.json',
+  'tokenizer/vocab.json',
+  'scheduler/scheduler_config.json',
+  'audio_scheduler/scheduler_config.json',
+]);
+
+// The diffusers integration's duration window, which is NARROWER than the MLX
+// port's at both ends: frames are snapped up to the next 17n+5 and the RESULTING
+// duration must land in 5-15 s, so 107 (4.46 s) is under the floor and 362
+// (15.08 s) is over the ceiling. Mirrored by MIN_FRAMES / MAX_FRAMES in
+// scripts/generate_minimax_h3_cuda.py, which rejects the same values.
+const MINIMAX_H3_CUDA_FRAME_OPTIONS = h3FrameGrid(124, 345);
+
+const sameValues = (left, right) => (
+  Array.isArray(left)
+  && left.length === right.length
+  && left.every((value, index) => value === right[index])
+);
+
+const upgradeMiniMaxH3DenoisingCountEntry = (entry, profile) => {
+  if (!isPlainObject(entry) || entry.id !== profile.id || entry.repo !== profile.shippedRepo) return entry;
+  // The MLX port treats `steps` as sigma-grid points, with the terminal zero
+  // excluded from transformer evaluation. The old shipped value therefore
+  // ran seven forwards, while the reference quality example uses nine grid
+  // points for eight forwards. Preserve a hand-tuned sampler contract.
+  const samplerIsLegacyShipped = entry.steps === profile.oldMlxSteps
+    && (!Object.hasOwn(entry, 'guidance') || entry.guidance === 0)
+    && (!Object.hasOwn(entry, 'samplerLocked') || entry.samplerLocked === true)
+    && (!Object.hasOwn(entry, 'samplerNote') || entry.samplerNote === profile.oldMlxSamplerNote);
+  return samplerIsLegacyShipped
+    ? { ...entry, steps: profile.mlxSteps, samplerNote: profile.mlxSamplerNote }
+    : entry;
+};
+
+export const upgradeMiniMaxH3DenoisingCount = (list) => {
+  if (!Array.isArray(list)) return list;
+  const profile = MINIMAX_H3_OUTPUT_PROFILE;
+  return list.map((entry) => upgradeMiniMaxH3DenoisingCountEntry(entry, profile));
+};
+
+export const upgradeMiniMaxH3OutputControls = (list) => {
+  if (!Array.isArray(list)) return list;
+  const profile = MINIMAX_H3_OUTPUT_PROFILE;
+  const withGeometry = list.map((entry) => {
+    if (!isPlainObject(entry) || entry.id !== profile.id || entry.repo !== profile.shippedRepo) return entry;
+    let next = entry;
+    if (sameValues(next.frameOptions, profile.oldFrameOptions)) {
+      next = { ...next, frameOptions: [...profile.frameOptions] };
+    }
+    if (!Object.hasOwn(next, 'defaultWidth') && !Object.hasOwn(next, 'defaultHeight')) {
+      next = { ...next, defaultWidth: profile.defaultWidth, defaultHeight: profile.defaultHeight };
+    }
+    // The step and presets describe one geometry contract. If either side was
+    // customized, preserve the pair rather than installing presets that may be
+    // off-grid for the user's declared step (or vice versa).
+    if (!Object.hasOwn(next, 'resolutionStep') && !Object.hasOwn(next, 'resolutionOptions')) {
+      next = {
+        ...next,
+        resolutionStep: profile.resolutionStep,
+        resolutionOptions: profile.resolutionOptions.map((preset) => ({ ...preset })),
+      };
+    }
+    return next;
+  });
+  return upgradeMiniMaxH3DenoisingCount(withGeometry);
+};
 
 const DEFAULT_REGISTRY = {
   _doc: 'PortOS media model registry. Edit to add models, tune defaults, or switch the text encoder. Restart the server to apply changes.',
@@ -57,7 +263,7 @@ const DEFAULT_REGISTRY = {
     // `applyVideoFinishProfiles` attaches the shipped draft → delivery
     // `finishModelId` edges (lib/videoFinishProfiles.js) the same way, so the
     // Finish relationship is declared in one place instead of inline here.
-    macos: applyVideoFinishProfiles(applyVideoDisclosures([
+    mlx: applyVideoFinishProfiles(applyVideoDisclosures([
       // notapalindrome's mlx-video-with-audio runtime — single PyPI package,
       // T2V/I2V only, FFLF degrades to last-frame conditioning (one --image arg).
       // LTX-2 Unified (the older 42 GB model) was retired in favour of 2.3 —
@@ -72,6 +278,9 @@ const DEFAULT_REGISTRY = {
       // via `INSTALL_LTX2=1 bash scripts/setup-image-video.sh`.
       { id: 'ltx23_dgrauet_q4',   name: 'LTX-2.3 dgrauet Q4 (~16 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q8',   name: 'LTX-2.3 dgrauet Q8 (~25 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q8', runtime: 'ltx2', steps: 8, guidance: 3.0 },
+      // LTX-2.5 Q8 on MrMofer's ltx25 fork of dgrauet/ltx-2-mlx. The 2.3 pin
+      // cannot load these weights; INSTALL_LTX25 provisions a sibling venv.
+      { id: 'ltx25_mlx_q8', name: 'LTX-2.5 MLX Q8 (~68 GB, Apple Silicon)', repo: 'MrMofer/ltx-2.5-mlx-q8', revision: 'f1b56e7dc89f71a9af2cddac787b89ed22a8b7fc', runtime: 'ltx25', steps: 8, guidance: 3.0 },
       // MiniMax H3 joint video+audio through PipeNetwork's pinned MLX port.
       // The quantized DiT is one HF snapshot; the released conditioner + VAEs
       // are an exact selective file set from MiniMax's upstream snapshot. Both
@@ -88,14 +297,22 @@ const DEFAULT_REGISTRY = {
         // at the first / last latent frame. 'image' anchors one at 'first',
         // 'fflf' anchors both.
         supportedModes: ['text', 'image', 'fflf'],
+        // The upstream model supports 4-15 seconds. H3's VAE snaps duration
+        // UP to a 17n+5 frame grid, so 4s becomes 107 frames and the port's
+        // recommended 5s default becomes 124. Keep the shortest recommended
+        // run as the default: dense attention already makes it a multi-hour
+        // render on current Apple Silicon.
         defaultFrames: 124,
-        frameOptions: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
+        frameOptions: [...MINIMAX_H3_OUTPUT_PROFILE.frameOptions],
         fpsOptions: [24],
+        // The checkpoint's canvas contract, shared verbatim with the CUDA entry.
+        ...MINIMAX_H3_CANVAS,
+        resolutionOptions: MINIMAX_H3_CANVAS.resolutionOptions.map((preset) => ({ ...preset })),
         memoryGb: 128,
-        steps: 8,
+        steps: MINIMAX_H3_OUTPUT_PROFILE.mlxSteps,
         guidance: 0,
         samplerLocked: true,
-        samplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.',
+        samplerNote: MINIMAX_H3_OUTPUT_PROFILE.mlxSamplerNote,
         supportsNegativePrompt: false,
         supportsTiling: false,
         supportsDisableAudio: false,
@@ -269,11 +486,45 @@ const DEFAULT_REGISTRY = {
         deprecated: true,
       },
     ])),
-    windows: applyVideoFinishProfiles(applyVideoDisclosures([
+    cuda: applyVideoFinishProfiles(applyVideoDisclosures([
       { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
+      // MiniMax H3 on NVIDIA, through diffusers' MiniMaxH3ModularPipeline —
+      // the same joint video+audio model the MLX list runs on Apple Silicon, so it
+      // shares H3's canvas grid, its fixed 24 fps, its locked CFG-distilled
+      // sampler and the same license gate. Generation is cache-only: PortOS
+      // owns the explicit file-list download (see MINIMAX_H3_CUDA_REPO_FILES —
+      // never a snapshot of this repo) and the runtime is provisioned only
+      // after the user selects Install in Video Gen.
+      {
+        id: 'minimax_h3_cuda',
+        name: 'MiniMax H3 CUDA int8 (joint video + audio, ~144 GB download, 24 GB VRAM + 96 GB RAM)',
+        repo: 'MiniMaxAI/MiniMax-H3',
+        revision: '42ed227ee7df40d41602854ae760620d6eb651fe',
+        repoFiles: [...MINIMAX_H3_CUDA_REPO_FILES],
+        runtime: 'minimax_h3_cuda',
+        supportedModes: ['text', 'image', 'fflf'],
+        defaultFrames: 124,
+        frameOptions: [...MINIMAX_H3_CUDA_FRAME_OPTIONS],
+        fpsOptions: [24],
+        ...MINIMAX_H3_CANVAS,
+        resolutionOptions: MINIMAX_H3_CANVAS.resolutionOptions.map((preset) => ({ ...preset })),
+        // HOST RAM, not VRAM: at int8 the transformer's blocks and the
+        // conditioner's leaves are streamed from CPU memory, so ~75 GB of the
+        // weights are resident off-GPU for the whole render. The card itself
+        // needs ~24 GB, and the runner steps down to a leaner offload profile
+        // on a smaller one (see scripts/generate_minimax_h3_cuda.py).
+        memoryGb: 96,
+        steps: 8,
+        guidance: 0,
+        samplerLocked: true,
+        samplerNote: 'MiniMax H3 is CFG-distilled; this profile locks the validated 8-point sigma schedule and does not use CFG.',
+        supportsNegativePrompt: false,
+        supportsTiling: false,
+        supportsDisableAudio: false,
+      },
     ])),
-    defaultMacos: 'ltx23_distilled_q4',
-    defaultWindows: 'ltx_video',
+    defaultMlx: 'ltx23_distilled_q4',
+    defaultCuda: 'ltx_video',
   },
   image: [
     // mflux runner — MLX-only, Flux 1 (dev/schnell). `runner` defaults to 'mflux'.
@@ -477,9 +728,9 @@ const seedIfMissing = () => {
 
 // Merge user-edited registry over DEFAULT_REGISTRY so missing top-level keys
 // (e.g. someone deletes `video` or saves `{}`) don't blow up consumers that
-// assume `reg.video.macos`. We also coerce array-shaped fields back to the
+// assume `reg.video.mlx`. We also coerce array-shaped fields back to the
 // defaults when the user's JSON is parseable but wrong-shape (e.g.
-// `image: {}` or `video.macos: "ltx"`) — otherwise getImageModels /
+// `image: {}` or `video.mlx: "ltx"`) — otherwise getImageModels /
 // getVideoModels / buildAppModels would throw at module import-time and
 // take down server startup. If a user supplies a real array, that's their
 // list, full stop — we don't deep-merge entries.
@@ -653,7 +904,7 @@ const backfillRuntime = (list) => {
 // edit. Without this the migration's deletion is undone by the same boot that
 // applied it.
 //
-// `replacement` repoints a `defaultMacos`/`defaultWindows` that named the
+// `replacement` repoints a `defaultMlx`/`defaultCuda` that named the
 // retired model. getDefaultVideoModelId() would otherwise fall back to the
 // first available entry, which is not necessarily the intended successor.
 //
@@ -696,7 +947,7 @@ const resolveRetiredDefault = (configuredId, entries) => {
   return entries.some((entry) => entry?.id === replacement) ? replacement : configuredId;
 };
 
-// Build the initial shippedIds set for one platform on first encounter
+// Build the initial shippedIds set for one bucket on first encounter
 // (no _shippedDefaults field yet).
 //
 // Pre-snapshot bootstrap: existing installs without _shippedDefaults can't
@@ -712,7 +963,7 @@ const resolveRetiredDefault = (configuredId, entries) => {
 // built-ins can delete media-models.json and restart to re-seed from scratch,
 // or add the entries manually.
 //
-// When the platform key is absent from their registry (e.g. the whole `video`
+// When the bucket key is absent from their registry (e.g. the whole `video`
 // section is missing), we return an empty set so the defaults are treated as
 // genuinely new and get added as on a fresh install.
 const bootstrapShippedIds = (userList, defaultList) => {
@@ -730,33 +981,28 @@ const normalizeRegistry = (parsed) => {
 
   // _shippedDefaults tracks which built-in ids have ever been delivered
   // to this install, so we can distinguish "user deleted it" from "genuinely
-  // new in this release". Tracked separately for video (per-platform) and
-  // image (single list — image entries cover both platforms).
+  // new in this release". Tracked separately for video (per-bucket) and
+  // image (single list — image entries cover both buckets).
   const shippedVideo = isPlainObject(safe._shippedDefaults?.video) ? safe._shippedDefaults.video : null;
   const isVideoBootstrap = shippedVideo === null;
 
-  const shippedMacosIds = isVideoBootstrap
-    ? bootstrapShippedIds(safeVideo.macos, DEFAULT_REGISTRY.video.macos)
-    : new Set(arrayOrDefault(shippedVideo.macos, []));
-  const shippedWindowsIds = isVideoBootstrap
-    ? bootstrapShippedIds(safeVideo.windows, DEFAULT_REGISTRY.video.windows)
-    : new Set(arrayOrDefault(shippedVideo.windows, []));
+  // Every read goes through readVideoBucket / readVideoDefault so a registry
+  // still keyed `macos` / `windows` (any install written before #4142) resolves
+  // exactly as it did before. The OUTPUT below is canonical-only.
+  const shippedIdsFor = (bucket) => (isVideoBootstrap
+    ? bootstrapShippedIds(readVideoBucket(safeVideo, bucket), DEFAULT_REGISTRY.video[bucket])
+    : new Set(arrayOrDefault(readVideoBucket(shippedVideo, bucket), [])));
 
-  const macosResult = appendNewlyShippedEntries(
-    safeVideo.macos,
-    DEFAULT_REGISTRY.video.macos,
-    shippedMacosIds,
-  );
-  const windowsResult = appendNewlyShippedEntries(
-    safeVideo.windows,
-    DEFAULT_REGISTRY.video.windows,
-    shippedWindowsIds,
-  );
+  const shippedIds = Object.fromEntries(VIDEO_BUCKETS.map((b) => [b, shippedIdsFor(b)]));
+  const bucketResults = Object.fromEntries(VIDEO_BUCKETS.map((bucket) => [bucket, appendNewlyShippedEntries(
+    readVideoBucket(safeVideo, bucket),
+    DEFAULT_REGISTRY.video[bucket],
+    shippedIds[bucket],
+  )]));
 
-  const updatedShippedVideo = {
-    macos: [...shippedMacosIds, ...macosResult.newlyShipped],
-    windows: [...shippedWindowsIds, ...windowsResult.newlyShipped],
-  };
+  const updatedShippedVideo = Object.fromEntries(VIDEO_BUCKETS.map((bucket) => [
+    bucket, [...shippedIds[bucket], ...bucketResults[bucket].newlyShipped],
+  ]));
 
   // Image upgrade path. Same shape as video, single list. The flux2 upgrade
   // (upgradeImageEntries) runs first so legacy `broken: 'macos'` entries get
@@ -800,10 +1046,19 @@ const normalizeRegistry = (parsed) => {
   // model this install deleted — or a hand-edited typo — is dropped with a
   // warning instead of surfacing a Finish button targeting nothing.
   const videoEntries = (entries) => sanitizeFinishProfiles(applyVideoFinishProfiles(
-    applyVideoDisclosures(backfillRuntime(dropRetiredEntries(entries))),
+    applyVideoDisclosures(backfillRuntime(upgradeMiniMaxH3OutputControls(dropRetiredEntries(entries)))),
   ));
-  const macosEntries = videoEntries(macosResult.entries);
-  const windowsEntries = videoEntries(windowsResult.entries);
+  const normalizedBuckets = Object.fromEntries(
+    VIDEO_BUCKETS.map((bucket) => [bucket, videoEntries(bucketResults[bucket].entries)]),
+  );
+
+  // Spread the user's own `video` keys but NOT the legacy bucket spellings: the
+  // canonical keys below already carry those lists, and leaving both on the
+  // object would persist two spellings of the same bucket into a file users
+  // hand-edit — a later edit to the stale copy would silently do nothing.
+  const carriedVideo = Object.fromEntries(
+    Object.entries(safeVideo).filter(([key]) => !LEGACY_VIDEO_KEYS.includes(key)),
+  );
 
   return {
     ...DEFAULT_REGISTRY,
@@ -812,15 +1067,15 @@ const normalizeRegistry = (parsed) => {
     textEncoders: arrayOrDefault(safe.textEncoders, DEFAULT_REGISTRY.textEncoders),
     video: {
       ...DEFAULT_REGISTRY.video,
-      ...safeVideo,
-      macos: macosEntries,
-      windows: windowsEntries,
-      defaultMacos: resolveRetiredDefault(
-        safeVideo.defaultMacos ?? DEFAULT_REGISTRY.video.defaultMacos, macosEntries,
-      ),
-      defaultWindows: resolveRetiredDefault(
-        safeVideo.defaultWindows ?? DEFAULT_REGISTRY.video.defaultWindows, windowsEntries,
-      ),
+      ...carriedVideo,
+      ...normalizedBuckets,
+      ...Object.fromEntries(VIDEO_BUCKETS.map((bucket) => [
+        VIDEO_DEFAULT_KEYS[bucket],
+        resolveRetiredDefault(
+          readVideoDefault(safeVideo, bucket) ?? DEFAULT_REGISTRY.video[VIDEO_DEFAULT_KEYS[bucket]],
+          normalizedBuckets[bucket],
+        ),
+      ])),
     },
     _shippedDefaults: {
       ...(safe._shippedDefaults || {}),
@@ -849,21 +1104,20 @@ const normalizeRegistry = (parsed) => {
 // re-add and delete the entry again from the UI. We surface it anyway
 // because the silent-skipping behaviour was the original bug.
 //
-// `kind` is either 'image' (single list at `_shippedDefaults.image.list`)
-// or 'video' (per-platform arrays at `_shippedDefaults.video.macos` /
-// `_shippedDefaults.video.windows`).
-const warnDrift = (kind, platform, shippedIds, defaultIds, presentIds) => {
+// `where` and `shippedKey` are the two on-disk paths the warning quotes, and
+// both are resolved by the CALLER rather than assembled here: image keeps its
+// ids at `_shippedDefaults.image.list` while video keeps them at
+// `_shippedDefaults.video.{mlx,cuda}`, and either half of a pre-#4142 registry
+// may still be spelled `macos` / `windows` (migration 242 can write a canonical
+// snapshot onto a legacy-keyed `video`). A copy-paste out of this warning has to
+// land on a key that actually exists in the user's file.
+const warnDrift = ({ where, shippedKey }, shippedIds, defaultIds, presentIds) => {
   const shippedSet = new Set(shippedIds || []);
   const defaultSet = new Set(defaultIds || []);
   const presentSet = new Set(presentIds || []);
   for (const id of shippedSet) {
     if (!defaultSet.has(id)) continue;     // not a current built-in; ignore
     if (presentSet.has(id)) continue;      // present — no drift
-    // shippedIds for image lives at `_shippedDefaults.image.list`; for video
-    // it's `_shippedDefaults.video.{macos,windows}` directly. Surface the
-    // accurate key so a copy-paste from the warning lands in the right place.
-    const where = platform ? `${kind}.${platform}` : kind;
-    const shippedKey = platform ? `_shippedDefaults.${kind}.${platform}` : `_shippedDefaults.${kind}.list`;
     console.log(`⚠️ media-models drift: built-in "${id}" was shipped but is missing from ${where}[] — if the deletion is intentional this warning will repeat each boot (no silence-without-restore path exists); to restore, either re-add the entry manually or delete ${shippedKey} entirely to re-bootstrap`);
   }
 };
@@ -894,32 +1148,37 @@ export const loadMediaModels = () => {
     const sd = parsed._shippedDefaults;
     if (isPlainObject(sd.image) && Array.isArray(parsed.image)) {
       warnDrift(
-        'image',
-        null,
+        { where: 'image', shippedKey: '_shippedDefaults.image.list' },
         Array.isArray(sd.image.list) ? sd.image.list : [],
         DEFAULT_REGISTRY.image.map((m) => m.id),
         parsed.image.map((m) => m?.id).filter((id) => typeof id === 'string'),
       );
     }
-    if (isPlainObject(sd.video) && isPlainObject(parsed.video)) {
-      if (Array.isArray(sd.video.macos) && Array.isArray(parsed.video.macos)) {
-        warnDrift(
-          'video',
-          'macos',
-          sd.video.macos,
-          DEFAULT_REGISTRY.video.macos.map((m) => m.id),
-          parsed.video.macos.map((m) => m?.id).filter((id) => typeof id === 'string'),
-        );
-      }
-      if (Array.isArray(sd.video.windows) && Array.isArray(parsed.video.windows)) {
-        warnDrift(
-          'video',
-          'windows',
-          sd.video.windows,
-          DEFAULT_REGISTRY.video.windows.map((m) => m.id),
-          parsed.video.windows.map((m) => m?.id).filter((id) => typeof id === 'string'),
-        );
-      }
+    // Only the CURRENT machine's video bucket is worth warning about. The
+    // pickers, downloads, and every edit path read one bucket's array
+    // (`getVideoModels`), so drift in the other one is invisible and
+    // unactionable here — and because the warning has no silence-without-
+    // restore path, a CUDA box would print the MLX rows on every single
+    // boot forever with nothing the user can usefully do about them. The
+    // machine that actually runs that bucket still gets the warning.
+    const driftBucket = activeVideoBucket();
+    const shippedDrift = readVideoBucket(sd.video, driftBucket);
+    const presentDrift = readVideoBucket(parsed.video, driftBucket);
+    if (
+      isPlainObject(sd.video) &&
+      isPlainObject(parsed.video) &&
+      Array.isArray(shippedDrift) &&
+      Array.isArray(presentDrift)
+    ) {
+      warnDrift(
+        {
+          where: `video.${resolveVideoBucketKey(parsed.video, driftBucket)}`,
+          shippedKey: `_shippedDefaults.video.${resolveVideoBucketKey(sd.video, driftBucket)}`,
+        },
+        shippedDrift,
+        DEFAULT_REGISTRY.video[driftBucket].map((m) => m.id),
+        presentDrift.map((m) => m?.id).filter((id) => typeof id === 'string'),
+      );
     }
   }
   cached = normalizeRegistry(parsed);
@@ -935,10 +1194,20 @@ export const loadMediaModels = () => {
       : null;
     const normalizedVideo = cached._shippedDefaults.video;
     const normalizedImage = cached._shippedDefaults.image;
+    // A pre-#4142 bucket spelling still on disk counts as a change: the
+    // normalized object is canonical-only, so the file has to be rewritten once
+    // or the two spellings diverge the next time anything edits the registry.
+    // (Migration 270 performs the same rename; this is its load-time twin, for
+    // the same reason applyVideoDisclosures mirrors migration 237.)
+    const carriesLegacyKeys = (obj) => isPlainObject(obj)
+      && LEGACY_VIDEO_KEYS.some((key) => Object.hasOwn(obj, key));
     const videoChanged =
       parsedShippedVideo === null ||
-      normalizedVideo.macos.length !== (parsedShippedVideo.macos?.length ?? 0) ||
-      normalizedVideo.windows.length !== (parsedShippedVideo.windows?.length ?? 0);
+      carriesLegacyKeys(parsed.video) ||
+      carriesLegacyKeys(parsedShippedVideo) ||
+      VIDEO_BUCKETS.some((bucket) => (
+        normalizedVideo[bucket].length !== (readVideoBucket(parsedShippedVideo, bucket)?.length ?? 0)
+      ));
     const imageChanged =
       parsedShippedImage === null ||
       normalizedImage.list.length !== (parsedShippedImage.list?.length ?? 0);
@@ -979,15 +1248,17 @@ const persistRegistry = (reg) => {
 export const isUserModelEntry = (entry) => entry?.source === 'user';
 
 // Locate a model entry by id, returning `{ entry, list, listKey, idx }` or null.
-// Scans the CURRENT platform's video list + the image list — NOT the other
-// platform's video list. The other platform's rows aren't visible to
+// Scans the CURRENT machine's video bucket + the image list — NOT the other
+// bucket's video list. The other bucket's rows aren't visible to
 // getVideoModels()/the render path on this install, and scanning both would
-// make patch/remove ambiguous when a shared media-models.json (macOS+Windows
-// peer) legitimately holds the same custom id in both platform lists — a
-// remove(id) meant for the Windows row would hit the macOS row first. `listKey`
-// ('macos' | 'windows' | 'image') lets the mutators rebuild just that list.
+// make patch/remove ambiguous when a shared media-models.json (an MLX box and a
+// CUDA box syncing as peers) legitimately holds the same custom id in both
+// buckets — a remove(id) meant for the CUDA row would hit the MLX row first.
+// `listKey` ('mlx' | 'cuda' | 'image') lets the mutators rebuild just that list.
+// The registry passed in is always post-normalizeRegistry, so its bucket keys
+// are canonical.
 const findModelLocation = (reg, id) => {
-  const videoKey = IS_WIN ? 'windows' : 'macos';
+  const videoKey = activeVideoBucket();
   const lists = [
     [videoKey, reg.video?.[videoKey]],
     ['image', reg.image],
@@ -1009,7 +1280,7 @@ const withList = (reg, listKey, nextList) =>
     : { ...reg, video: { ...reg.video, [listKey]: nextList } };
 
 // Add a user model entry to the registry. `kind` selects the target list:
-// 'video' → the current platform's video list; 'image' → the image list.
+// 'video' → the current machine's video bucket; 'image' → the image list.
 // Throws on a duplicate id (a repo already added). Persists + hot-reloads.
 export const addUserModelEntry = (entry, { kind }) => {
   if (!entry || typeof entry.id !== 'string') {
@@ -1019,13 +1290,13 @@ export const addUserModelEntry = (entry, { kind }) => {
     throw new ServerError(`Unknown model kind "${kind}" — expected "image" or "video".`, { status: 400, code: 'BAD_MODEL_KIND' });
   }
   const reg = loadMediaModels();
-  const listKey = kind === 'video' ? (IS_WIN ? 'windows' : 'macos') : 'image';
+  const listKey = kind === 'video' ? activeVideoBucket() : 'image';
   // Conflict-check against the ACTIVE-on-this-install lists — the current
-  // platform's video list + the image list — via findModelLocation (which
+  // machine's video bucket + the image list — via findModelLocation (which
   // scopes to exactly those). This rejects a collision between the current
   // video list and the image list (both mutable through the same :id-only
   // PATCH/DELETE, so a dup would make one row unaddressable), while still
-  // allowing the same custom video id to be added on the OTHER platform's list
+  // allowing the same custom video id to be added on the OTHER bucket's list
   // of a shared media-models.json (that list isn't scanned, so no false 409).
   if (findModelLocation(reg, entry.id)) {
     throw new ServerError(
@@ -1093,8 +1364,11 @@ export const removeUserModelEntry = (id) => {
   return { ok: true, id };
 };
 
+// `broken` is either `true` (broken everywhere) or the name of the ONE bucket
+// it's broken on. Pre-#4142 entries spell that name `macos` / `windows`, so
+// matchesVideoBucket accepts both spellings for the active bucket.
 const platformBroken = (broken) =>
-  broken === true || (typeof broken === 'string' && broken === (IS_WIN ? 'windows' : 'macos'));
+  broken === true || matchesVideoBucket(broken, activeVideoBucket());
 
 // `supportedModes` is resolved HERE rather than in normalizeRegistry (#3737):
 // deriving on read covers the load path, the user-model mutators (which bypass
@@ -1103,30 +1377,31 @@ const platformBroken = (broken) =>
 // *declared* list that no later correction to VIDEO_RUNTIME_MODES could reach.
 export const getVideoModels = () => {
   const reg = loadMediaModels();
-  const list = IS_WIN ? (reg.video.windows || []) : (reg.video.macos || []);
+  const list = readVideoBucket(reg.video, activeVideoBucket()) || [];
   return applyVideoSupportedModes(list.filter((m) => !platformBroken(m.broken)));
 };
 
 export const getDefaultVideoModelId = () => {
   const reg = loadMediaModels();
-  // Note: defaultMacos / defaultWindows may legitimately point at a model
+  // Note: defaultMlx / defaultCuda may legitimately point at a model
   // flagged `deprecated: true` — the dgrauet (non-deprecated) runtime
   // requires an opt-in venv (`INSTALL_LTX2=1 bash scripts/setup-image-video.sh`),
   // so the shipped default must stay on a model that works out of the box.
   // The UI dropdowns surface dgrauet at the top via the `Legacy` optgroup
   // pattern; user-driven migration > auto-rolling forward.
-  const configuredId = IS_WIN ? reg.video.defaultWindows : reg.video.defaultMacos;
-  // Validate against the platform's available (non-broken) list — a typo or
-  // a model marked broken on this platform would otherwise surface as
+  const bucket = activeVideoBucket();
+  const configuredId = readVideoDefault(reg.video, bucket);
+  // Validate against the bucket's available (non-broken) list — a typo or
+  // a model marked broken on this bucket would otherwise surface as
   // "Unknown video model" the first time the UI tries to use the default.
   const available = getVideoModels();
   if (available.some((m) => m.id === configuredId)) return configuredId;
   const fallback = available[0]?.id;
   if (fallback) {
-    console.log(`⚠️ Unknown default video model "${configuredId}" for ${IS_WIN ? 'windows' : 'macos'}; falling back to "${fallback}"`);
+    console.log(`⚠️ Unknown default video model "${configuredId}" for ${bucket}; falling back to "${fallback}"`);
     return fallback;
   }
-  console.log(`⚠️ Unknown default video model "${configuredId}" for ${IS_WIN ? 'windows' : 'macos'}; no available models to fall back to`);
+  console.log(`⚠️ Unknown default video model "${configuredId}" for ${bucket}; no available models to fall back to`);
   return configuredId;
 };
 

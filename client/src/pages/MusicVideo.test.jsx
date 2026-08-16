@@ -80,6 +80,11 @@ vi.mock('../services/apiImageVideo.js', () => ({
     ],
   })),
   listVideoHistory: vi.fn(async () => [{ id: 'rh-9', filename: 'final.mp4' }]),
+  // By-id resolver behind useVideoFileSrc (#4165) — 404s (rejects) for any
+  // other id, exactly as the real endpoint does.
+  getVideoHistoryItem: vi.fn(async (id) => (id === 'rh-9'
+    ? { id: 'rh-9', filename: 'final.mp4' }
+    : Promise.reject(Object.assign(new Error('Not found'), { status: 404 })))),
   // Restricted-model license gate — none of the models above carry a
   // `termsGate`, so the board renders no acceptance panel and nothing blocks.
   getVideoModelTerms: vi.fn(async () => ({ accepted: [] })),
@@ -112,9 +117,7 @@ import {
   deleteMusicVideoProject, transcribeMusicVideoMidi,
 } from '../services/apiMusicVideo.js';
 import { importTrackFromYoutube, trackImportEventsUrl, listTracks } from '../services/apiTracks.js';
-import {
-  generateVideo, getVideoGenStatus, getVideoModelTerms, setVideoModelTerms,
-} from '../services/apiImageVideo.js';
+import { generateVideo, getVideoGenStatus } from '../services/apiImageVideo.js';
 
 const PROJECT_ANALYZED = {
   ...PROJECT_NO_CLIP,
@@ -370,9 +373,9 @@ describe('MusicVideo project video renderer', () => {
   });
 });
 
-// A restricted model selected here used to 403 at generate time with the
-// acknowledgement UI living only on the Video Gen page — the user saw an error
-// naming terms they had no way to accept from this board.
+// A model that used to carry a blocking license checkbox still generates
+// from this board with no acknowledgement UI — the license lives on the
+// Video Gen disclosure, not as a per-render gate.
 describe('MusicVideo restricted-model license gate', () => {
   const GATE = {
     id: 'example-community-license-2026-01-01',
@@ -381,40 +384,19 @@ describe('MusicVideo restricted-model license gate', () => {
     acknowledgement: 'I am eligible and accept the Example Community License.',
     licenseUrl: 'https://example.com/license',
   };
-  const gatedStatus = (accepted) => {
+
+  it('does not ask for an eligibility acknowledgement before generating', async () => {
     getVideoGenStatus.mockResolvedValueOnce({
       connected: true,
       defaultModel: 'gated_model',
       models: [{ id: 'gated_model', name: 'Gated Model', runtime: 'ltx2', termsGate: GATE }],
     });
-    getVideoModelTerms.mockResolvedValueOnce({ accepted });
-  };
-
-  it('shows the acknowledgement inline and blocks generation until it is accepted', async () => {
-    gatedStatus([]);
-    setVideoModelTerms.mockResolvedValueOnce({ accepted: [GATE.id] });
-    await openProject(PROJECT_NO_CLIP);
-
-    const checkbox = await screen.findByRole('checkbox', { name: /I am eligible/ });
-    expect(checkbox).not.toBeChecked();
-    const generate = screen.getByRole('button', { name: /^Generate video$/ });
-    expect(generate).toBeDisabled();
-    expect(generate.title).toMatch(/must be accepted before generating/);
-
-    fireEvent.click(checkbox);
-    // Persisted install-wide, so every other render surface is authorized too.
-    await waitFor(() => expect(setVideoModelTerms).toHaveBeenCalledWith(GATE.id, true, { silent: true }));
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Generate video$/ })).toBeEnabled());
-  });
-
-  it('does not re-ask when the install already accepted these exact terms', async () => {
-    gatedStatus([GATE.id]);
     generateVideo.mockResolvedValue({ jobId: 'gated-job' });
     await openProject(PROJECT_NO_CLIP);
 
     const generate = await screen.findByRole('button', { name: /^Generate video$/ });
     await waitFor(() => expect(generate).toBeEnabled());
-    expect(screen.getByRole('checkbox', { name: /I am eligible/ })).toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: /I am eligible/ })).toBeNull();
     fireEvent.click(generate);
     await waitFor(() => expect(generateVideo).toHaveBeenCalled());
   });
@@ -852,7 +834,7 @@ describe('MusicVideo media lightbox (#3718)', () => {
   });
 
   it('opens the final render from the resolved filename, not the history-id reconstruction', async () => {
-    // listVideoHistory is mocked → { id: 'rh-9', filename: 'final.mp4' }; the
+    // getVideoHistoryItem is mocked → { id: 'rh-9', filename: 'final.mp4' }; the
     // final-render id is NOT its filename stem, so /data/videos/rh-9.mp4 404s.
     await openProject({ ...PROJECT_WITH_CLIP, renderHistoryId: 'rh-9' });
     const expand = await screen.findByRole('button', { name: 'View final video full size' });

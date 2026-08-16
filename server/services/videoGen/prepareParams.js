@@ -33,8 +33,11 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { safeUnder } from '../../lib/ffmpeg.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
-import { isVideoModelTermsAccepted, acceptedVideoModelTerms, videoModelTermsError } from '../../lib/videoDisclosure.js';
-import { videoLoraFamily } from '../../lib/runners.js';
+import { videoLoraFamily, isMiniMaxH3Runtime, isLtx2FamilyRuntime } from '../../lib/runners.js';
+import {
+  isStockTextEncoder, supportsVideoTextEncoder, videoTextEncoderUnsupportedError,
+} from '../../lib/videoTextEncoders.js';
+import { minimaxH3ControlError } from './minimaxH3Controls.js';
 import { resolveContextFrames } from '../../lib/videoContinuity.js';
 import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode,
@@ -159,14 +162,15 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
       { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' },
     );
   }
-  // Reject a gated model here so the caller gets a synchronous, actionable 403
-  // instead of a doomed queue entry. The render itself re-checks (local.js) —
-  // this is the early half of the same gate, authorized by the same recorded
-  // acknowledgement (POST /api/video-gen/model-terms).
-  if (backend !== VIDEO_GEN_MODE.GROK && effectiveModel
-    && !isVideoModelTermsAccepted(effectiveModel, acceptedVideoModelTerms(settings))) {
+  // Substituted prompt conditioner (#4081). A pure registry lookup with no
+  // dependency on anything staged, so it belongs with the other pre-staging
+  // model gates: the request that named the bad conditioner is the only place
+  // that can report it, and rejecting later would first write durable copies of
+  // every upload for a render that was never going to run.
+  if (effectiveModel && !isStockTextEncoder(body.textEncoderId)
+    && !supportsVideoTextEncoder(effectiveModel, body.textEncoderId)) {
     await cleanupMultipartTemp(uploads);
-    throw videoModelTermsError(effectiveModel);
+    throw videoTextEncoderUnsupportedError(effectiveModel, body.textEncoderId);
   }
   // Reject up-front when the local python isn't configured AND the model's
   // runtime needs it. ltx2/wan22/hunyuan bring their own venv (resolved
@@ -364,7 +368,7 @@ async function resolvePreparedParams({
     }
     // IC-LoRA remix is an LTX-2 primitive (ICLoraPipeline). Fail before enqueue
     // so a bad modelId can't pollute the persisted queue with a doomed job.
-    if (effectiveModel && effectiveModel.runtime !== 'ltx2') {
+    if (effectiveModel && !isLtx2FamilyRuntime(effectiveModel.runtime)) {
       await cleanupStaged();
       throw new ServerError(
         `${icSpec.label} mode requires an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,
@@ -393,7 +397,7 @@ async function resolvePreparedParams({
   // A2V_REQUIRES_LTX2), but checking here keeps the route's "fail fast
   // before enqueue" contract so a bad modelId can't pollute the persisted
   // queue with a doomed entry.
-  if (body.mode === 'a2v' && effectiveModel && effectiveModel.runtime !== 'ltx2') {
+  if (body.mode === 'a2v' && effectiveModel && !isLtx2FamilyRuntime(effectiveModel.runtime)) {
     await cleanupStaged();
     throw new ServerError(
       `a2v mode requires an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,
@@ -432,47 +436,23 @@ async function resolvePreparedParams({
     await cleanupStaged();
     throw modeContractError;
   }
-  // MiniMax H3's released MLX path is fixed-24fps, joint A/V and CFG-distilled.
-  // These are the runtime's non-mode controls; the mode gate above already ran.
-  // Fail before queue persistence so a direct API caller cannot enqueue a
-  // request whose controls the runtime would silently ignore.
-  if (effectiveModel?.runtime === 'minimax_h3') {
-    if (body.negativePrompt?.trim()) {
+  // MiniMax H3 is fixed-24fps, joint A/V and CFG-distilled on both its runtimes
+  // (MLX and CUDA). These are the model's non-mode controls; the mode gate
+  // above already ran. Fail before queue persistence so a direct API caller
+  // cannot enqueue a request whose controls the runtime would silently ignore —
+  // the render boundary re-checks with the same helper.
+  if (isMiniMaxH3Runtime(effectiveModel?.runtime)) {
+    const controlError = minimaxH3ControlError({
+      model: effectiveModel,
+      negativePrompt: body.negativePrompt,
+      disableAudio: body.disableAudio,
+      tiling: body.tiling,
+      numFrames: body.numFrames ?? effectiveModel.defaultFrames,
+      fps: body.fps ?? 24,
+    });
+    if (controlError) {
       await cleanupStaged();
-      throw new ServerError(
-        'MiniMax H3 is CFG-distilled and does not accept a negative prompt.',
-        { status: 400, code: 'MINIMAX_H3_NEGATIVE_PROMPT_UNSUPPORTED' },
-      );
-    }
-    if (body.disableAudio === true || body.disableAudio === 'true') {
-      await cleanupStaged();
-      throw new ServerError(
-        'MiniMax H3 jointly generates video and audio; its audio track cannot be disabled.',
-        { status: 400, code: 'MINIMAX_H3_AUDIO_REQUIRED' },
-      );
-    }
-    if (body.tiling && body.tiling !== 'auto') {
-      await cleanupStaged();
-      throw new ServerError(
-        'MiniMax H3 does not expose a tiling mode.',
-        { status: 400, code: 'MINIMAX_H3_TILING_UNSUPPORTED' },
-      );
-    }
-    const frames = Number(body.numFrames ?? effectiveModel.defaultFrames);
-    if (!Array.isArray(effectiveModel.frameOptions) || !effectiveModel.frameOptions.includes(frames)) {
-      await cleanupStaged();
-      throw new ServerError(
-        `MiniMax H3 requires a 17n+5 frame count between 124 and 362; got ${frames}.`,
-        { status: 400, code: 'MINIMAX_H3_INVALID_FRAME_COUNT' },
-      );
-    }
-    const fps = Number(body.fps ?? 24);
-    if (fps !== 24) {
-      await cleanupStaged();
-      throw new ServerError(
-        `MiniMax H3 runs at a fixed 24 fps; got ${fps}.`,
-        { status: 400, code: 'MINIMAX_H3_INVALID_FPS' },
-      );
+      throw controlError;
     }
   }
   // Wan profiles have a narrower temporal-shape contract than the shared
@@ -635,7 +615,7 @@ async function resolvePreparedParams({
     // pipeline has no equivalent. Mirror the a2v guard above so a bad
     // modelId can't enqueue a doomed job that will only fail in the
     // worker (with KEYFRAMES_REQUIRE_LTX2).
-    if (effectiveModel && effectiveModel.runtime !== 'ltx2') {
+    if (effectiveModel && !isLtx2FamilyRuntime(effectiveModel.runtime)) {
       await cleanupStaged();
       throw new ServerError(
         `keyframes mode requires an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,

@@ -1,7 +1,7 @@
 import { writeFile, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn } from '../lib/childProcess.js';
 import { atomicWrite, ensureDir } from '../lib/fileUtils.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
 
@@ -20,8 +20,7 @@ export async function scaffoldVite({ repoPath, dirName, parentDir, template, uiP
   const { stderr } = await new Promise((resolve) => {
     const child = spawn('npm', ['create', 'vite@latest', dirName, '--', '--template', 'react'], {
       cwd: parentDir,
-      shell: process.platform === 'win32',
-      windowsHide: true
+      shell: process.platform === 'win32'
     });
     let stderr = '';
     child.stderr.on('data', (data) => { stderr += data.toString(); });

@@ -74,6 +74,13 @@ const selectJobs = (family, { jobId = null, force = false, completions = {} } = 
 };
 
 /**
+ * The two fields of a pending-probe the page actually renders. An allowlist
+ * rather than an omit so a job type that starts returning something new has to
+ * opt into the wire deliberately.
+ */
+const wireShape = (pending) => ({ count: pending?.count ?? 0, detail: pending?.detail ?? '' });
+
+/**
  * The plan, re-anchored to start just AFTER the job this family last dispatched.
  *
  * A burn plan is an ordered ROTATION, not a priority list. Without this the walk
@@ -280,6 +287,10 @@ async function evaluate({ trigger = 'scheduled', familyId = null, jobId = null, 
   if (!quotas) return finish({ dispatched: false, reason: 'provider quota read failed' });
 
   const [dispatches, blocks] = await Promise.all([getQuotaBurnDispatches(), getActiveQuotaBurnBlocks()]);
+  // An unreadable dispatch ledger reads as "0 used this window", which would
+  // walk straight past `maxDispatchesPerWindow` and spend quota the user already
+  // spent (#4115). Same posture as the provider-quota read above: skip the cycle.
+  if (!dispatches) return finish({ dispatched: false, reason: 'dispatch ledger read failed' });
   // `force` is the page's per-job "Run now" — the window/reserve/cap/denial gates
   // that bound UNATTENDED burns don't apply to a run the user just asked for. It
   // goes through the same selection, so the candidate still carries the family's
@@ -409,7 +420,11 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
       console.error(`❌ Quota-burn status could not read provider quota: ${err.message}`);
       return [];
     }),
-    getQuotaBurnDispatches(),
+    // Degrades to "no dispatches counted" on an unreadable ledger for the same
+    // reason the completions read below does: on the STATUS path the cost of
+    // being wrong is a stale `N/M used` label, not re-spent quota. The cycle's
+    // read of the same ledger refuses to run instead.
+    getQuotaBurnDispatches().then((ledger) => ledger || {}),
     getActiveQuotaBurnBlocks(),
     // An unreadable ledger degrades to "no badges" here rather than failing the
     // whole status read — the opposite of the CYCLE's posture, and deliberately
@@ -463,7 +478,12 @@ export async function getQuotaBurnStatus({ refresh = false } = {}) {
           return {
             id: job.id,
             ranAt,
-            pending: family.enabled && !spent ? await countJobPending({ job, family }) : null,
+            // `context` is stripped: it is the probe→run hand-off (see the job
+            // registry), and it holds whatever the probe already computed —
+            // for the universe jobs a picked-universe payload. The page renders
+            // `count` and `detail` only, so shipping the rest would put probe
+            // internals on the wire and grow with every job type.
+            pending: family.enabled && !spent ? wireShape(await countJobPending({ job, family })) : null,
           };
         })),
       };

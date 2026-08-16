@@ -43,12 +43,13 @@ export function pickGhAccountForOwner(ownerLogin, availableAccounts) {
 
 /**
  * Pick which forge CLI to use for a given remote host.
- *   github.com         → 'gh'
- *   gitlab.com / *gitlab* → 'glab'   (covers self-hosted GitLab like gitlab.example.com)
- *   anything else      → 'gh'        (default; harmless when gh isn't authed for that host)
+ *   github.com                 → 'gh'
+ *   gitlab.com / *gitlab*         → 'glab'   (covers self-hosted GitLab like gitlab.example.com)
+ *   falsy / null / undefined / '' → 'unknown' (unresolved host; cannot assume gh)
+ *   anything else              → 'gh'     (default; harmless when gh isn't authed for that host)
  */
 export function detectForgeCli(host) {
-  if (!host) return 'gh';
+  if (!host) return 'unknown';
   if (host === 'github.com') return 'gh';
   if (host === 'gitlab.com' || /(^|\.)gitlab\./i.test(host)) return 'glab';
   return 'gh';

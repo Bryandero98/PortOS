@@ -4,8 +4,10 @@ import {
   SLASHDO_INVOCATION_STYLES,
   SLASHDO_REVIEWER_INCLUDES,
   SLASHDO_REVIEWER_INCLUDE_NAMES,
+  agentOwnsPrWorkflow,
   buildSlashdoSection,
   canTypeSlashCommands,
+  resolveOwnsPrWorkflow,
   isValidSlashdoCommand,
   resolveSlashdoInvocation,
   resolveSlashdoStyle,
@@ -147,6 +149,57 @@ describe('canTypeSlashCommands', () => {
     // The api path opts out: an unidentified HTTP-API provider is not a latent
     // local `claude` the way a blank CLI/TUI provider is.
     expect(canTypeSlashCommands({ assumeClaudeWhenUnknown: false })).toBe(false);
+  });
+});
+
+describe('agentOwnsPrWorkflow (#3733)', () => {
+  it('is true for every local coding harness, slash commands or not', () => {
+    expect(agentOwnsPrWorkflow({ providerType: 'tui' })).toBe(true);
+    expect(agentOwnsPrWorkflow({ providerType: 'cli' })).toBe(true);
+  });
+
+  it('is a WEAKER question than canTypeSlashCommands — that is the whole point', () => {
+    // codex/grok/agy can't type `/do:pr` (slashdo installs there as skills), but
+    // they run `gh pr create` and the reviewer CLIs perfectly well. Conflating
+    // the two is what forced a second `sys-rl-*` agent onto every one of their runs.
+    for (const providerId of ['codex-tui', 'grok-tui', 'antigravity-tui', 'opencode-ollama-tui']) {
+      expect(canTypeSlashCommands({ providerId })).toBe(false);
+      expect(agentOwnsPrWorkflow({ providerType: 'tui' })).toBe(true);
+    }
+  });
+
+  it('is false for a lean --bare session, which fumbles multi-step flows', () => {
+    expect(agentOwnsPrWorkflow({ providerType: 'tui', leanMode: true })).toBe(false);
+    expect(agentOwnsPrWorkflow({ providerType: 'cli', leanMode: true })).toBe(false);
+  });
+
+  it('is false for an HTTP api provider and for an unknown type — neither has a shell', () => {
+    expect(agentOwnsPrWorkflow({ providerType: 'api' })).toBe(false);
+    expect(agentOwnsPrWorkflow({})).toBe(false);
+    expect(agentOwnsPrWorkflow()).toBe(false);
+  });
+});
+
+describe('resolveOwnsPrWorkflow (#3733)', () => {
+  it('trusts the stamp — cleanup must act on what the prompt actually said', () => {
+    // Including when the stamp disagrees with a fresh derivation: a provider
+    // reconfigured mid-run must not change the answer for an agent already
+    // prompted under the old one.
+    expect(resolveOwnsPrWorkflow({ persisted: true, providerId: 'codex', providerCommand: 'codex' })).toBe(true);
+    expect(resolveOwnsPrWorkflow({ persisted: false, providerId: 'claude-code', providerCommand: 'claude' })).toBe(false);
+  });
+
+  it('falls back to the slash-command gate for a pre-#3733 record', () => {
+    // Those runs really were prompted by the old builder, whose gate this was.
+    expect(resolveOwnsPrWorkflow({ persisted: undefined, providerId: 'claude-code', providerCommand: 'claude' })).toBe(true);
+    expect(resolveOwnsPrWorkflow({ persisted: undefined, providerId: 'codex', providerCommand: 'codex' })).toBe(false);
+    expect(resolveOwnsPrWorkflow({ persisted: undefined, providerId: 'claude-ollama', providerCommand: 'claude', leanMode: true })).toBe(false);
+  });
+
+  it('treats a non-boolean stamp as absent, not as false', () => {
+    // `null` from a JSON round-trip must not silently claim PortOS owns the PR.
+    expect(resolveOwnsPrWorkflow({ persisted: null, providerId: 'claude-code' })).toBe(true);
+    expect(resolveOwnsPrWorkflow({ persisted: 'true', providerId: 'codex', providerCommand: 'codex' })).toBe(false);
   });
 });
 

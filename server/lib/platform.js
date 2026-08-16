@@ -1,4 +1,4 @@
-import { exec, execSync } from 'child_process';
+import { exec, execSync } from './childProcess.js';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -91,7 +91,7 @@ function portProbeFor(targetPlatform) {
 export async function getListeningPorts({ platform: targetPlatform = platform, exec: run = execAsync } = {}) {
   const command = portProbeFor(targetPlatform);
   try {
-    const { stdout } = await run(command, { windowsHide: true });
+    const { stdout } = await run(command);
     return parseListeningPorts(stdout, targetPlatform);
   } catch (cause) {
     const error = new Error(`Unable to discover listening ports with ${command}: ${cause.message}`);
