@@ -1,8 +1,22 @@
 import { useEffect, useState } from 'react';
-import { Save, Loader2, Users, ShieldCheck } from 'lucide-react';
+import { Save, Loader2, Users, ShieldCheck, Network } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
-import { getSettings, updateSettings } from '../../services/api';
+import { getAuthStatus, getSettings, listMusicEngines, updateSettings } from '../../services/api';
+
+const modelKey = ({ engine, modelId }) => `${engine}\u0000${modelId}`;
+const normalizeSelectedModels = (models) => Array.isArray(models)
+  ? models.filter((model) => model && typeof model.engine === 'string' && typeof model.modelId === 'string')
+    .map((model) => ({ ...model, engine: model.engine, modelId: model.modelId }))
+  : [];
+const stableModels = (models) => normalizeSelectedModels(models).map(modelKey).sort().join('\n');
+
+function modelReady(engine, model) {
+  if (!engine.runtimeReady || !engine.platformSupported) return false;
+  if (engine.cudaRequired && engine.cudaState !== 'available') return false;
+  if (engine.fixedModelInstall && engine.modelReadyById?.[model.id] !== true) return false;
+  return true;
+}
 
 export function SharingTab() {
   const [loading, setLoading] = useState(true);
@@ -16,10 +30,29 @@ export function SharingTab() {
   // The settings PATCH shallow-merges top-level keys, so `federation` is
   // replaced wholesale — carry the rest of the slice forward on every write.
   const [federationSettings, setFederationSettings] = useState({});
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [musicEngines, setMusicEngines] = useState([]);
+  const [providerSettings, setProviderSettings] = useState({});
+  const [providerEnabled, setProviderEnabled] = useState(false);
+  const [providerMaxQueuedJobs, setProviderMaxQueuedJobs] = useState(2);
+  const [providerModels, setProviderModels] = useState([]);
+  const [savedProviderEnabled, setSavedProviderEnabled] = useState(false);
+  const [savedProviderMaxQueuedJobs, setSavedProviderMaxQueuedJobs] = useState(2);
+  const [savedProviderModels, setSavedProviderModels] = useState([]);
+  const [providerSaving, setProviderSaving] = useState(false);
 
   useEffect(() => {
-    getSettings({ silent: true })
-      .then((settings) => {
+    // Engine health probes may spawn local Python checks on a cold cache. Load
+    // them independently so the existing sharing controls do not wait on that
+    // optional provider catalog.
+    listMusicEngines({ silent: true })
+      .then((music) => setMusicEngines(Array.isArray(music?.engines) ? music.engines : []))
+      .catch(() => setMusicEngines([]));
+    Promise.all([
+      getSettings({ silent: true }),
+      getAuthStatus({ silent: true }).catch(() => ({ enabled: false })),
+    ])
+      .then(([settings, auth]) => {
         const display = settings?.sharingDisplayName || '';
         const b = settings?.sharingBio || '';
         setDisplayName(display);
@@ -29,12 +62,29 @@ export function SharingTab() {
         const federation = settings?.federation && typeof settings.federation === 'object' ? settings.federation : {};
         setFederationSettings(federation);
         setStrictPull(federation.strictPullAuthorization === true);
+        setAuthEnabled(auth?.enabled === true);
+        const provider = federation.mediaProvider && typeof federation.mediaProvider === 'object'
+          ? federation.mediaProvider
+          : {};
+        const enabled = provider.enabled === true;
+        const maxQueuedJobs = Number.isInteger(provider.maxQueuedJobs) ? provider.maxQueuedJobs : 2;
+        const models = normalizeSelectedModels(provider.audioModels);
+        setProviderSettings(provider);
+        setProviderEnabled(enabled);
+        setProviderMaxQueuedJobs(maxQueuedJobs);
+        setProviderModels(models);
+        setSavedProviderEnabled(enabled);
+        setSavedProviderMaxQueuedJobs(maxQueuedJobs);
+        setSavedProviderModels(models);
       })
       .catch(() => toast.error('Failed to load settings'))
       .finally(() => setLoading(false));
   }, []);
 
   const dirty = displayName !== savedDisplayName || bio !== savedBio;
+  const providerDirty = providerEnabled !== savedProviderEnabled
+    || providerMaxQueuedJobs !== savedProviderMaxQueuedJobs
+    || stableModels(providerModels) !== stableModels(savedProviderModels);
 
   const handleSave = async () => {
     setSaving(true);
@@ -61,6 +111,47 @@ export function SharingTab() {
     setFederationSettings(federation);
     setStrictPull(next);
     toast.success(next ? 'Strict pull authorization on' : 'Strict pull authorization off');
+  };
+
+  const toggleProviderModel = (engine, modelId, checked) => {
+    const selected = { engine, modelId };
+    const key = modelKey(selected);
+    setProviderModels((current) => checked
+      ? (current.some((model) => modelKey(model) === key) ? current : [...current, selected])
+      : current.filter((model) => modelKey(model) !== key));
+  };
+
+  const handleProviderSave = async () => {
+    if (providerEnabled && !authEnabled) {
+      toast.error('Enable an instance password before sharing media capacity');
+      return;
+    }
+    if (providerEnabled && providerModels.length === 0) {
+      toast.error('Select at least one audio model');
+      return;
+    }
+    const maxQueuedJobs = Math.max(1, Math.min(20, Number(providerMaxQueuedJobs) || 1));
+    const mediaProvider = {
+      ...providerSettings,
+      enabled: providerEnabled,
+      maxQueuedJobs,
+      audioModels: normalizeSelectedModels(providerModels),
+    };
+    const federation = { ...federationSettings, mediaProvider };
+    setProviderSaving(true);
+    const merged = await updateSettings({ federation }, { silent: true }).catch(() => null);
+    setProviderSaving(false);
+    if (!merged) {
+      toast.error('Failed to save media provider settings');
+      return;
+    }
+    setFederationSettings(federation);
+    setProviderSettings(mediaProvider);
+    setProviderMaxQueuedJobs(maxQueuedJobs);
+    setSavedProviderEnabled(providerEnabled);
+    setSavedProviderMaxQueuedJobs(maxQueuedJobs);
+    setSavedProviderModels(normalizeSelectedModels(providerModels));
+    toast.success(providerEnabled ? 'Media provider enabled' : 'Media provider disabled');
   };
 
   if (loading) return <BrailleSpinner />;
@@ -131,7 +222,7 @@ export function SharingTab() {
             id="federation-strict-pull"
             type="checkbox"
             checked={strictPull}
-            disabled={strictPullSaving}
+            disabled={strictPullSaving || providerSaving}
             onChange={(e) => handleStrictPullToggle(e.target.checked)}
             className="mt-1 h-4 w-4 accent-port-accent disabled:opacity-40"
           />
@@ -140,6 +231,105 @@ export function SharingTab() {
             {strictPullSaving && <Loader2 size={12} className="inline ml-2 animate-spin" />}
           </span>
         </label>
+      </div>
+
+      <div className="bg-port-card border border-port-border rounded-lg p-4 sm:p-6">
+        <div className="flex items-center gap-2 mb-2">
+          <Network size={16} className="text-port-accent" />
+          <h3 className="text-lg font-semibold text-white">Federated media provider</h3>
+        </div>
+        <p className="text-sm text-gray-400 mb-4">
+          Let registered PortOS peers submit allowlisted audio renders to this machine&apos;s durable media queue.
+          Prompts and job details stay out of capability status, and completed downloads include a SHA-256 integrity hash.
+        </p>
+
+        {!authEnabled && (
+          <div className="mb-4 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+            An instance password is required for peer jobs. Configure one in the Security tab before enabling this provider.
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <label htmlFor="federated-media-enabled" className="flex items-start gap-3 cursor-pointer">
+            <input
+              id="federated-media-enabled"
+              type="checkbox"
+              checked={providerEnabled}
+              disabled={providerSaving || strictPullSaving || (!authEnabled && !providerEnabled)}
+              onChange={(event) => setProviderEnabled(event.target.checked)}
+              className="mt-1 h-4 w-4 accent-port-accent disabled:opacity-40"
+            />
+            <span className="text-sm text-white">Accept audio generation jobs from authenticated registered peers</span>
+          </label>
+
+          <div>
+            <label htmlFor="federated-media-max-queued" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
+              Shared active-job limit
+            </label>
+            <input
+              id="federated-media-max-queued"
+              type="number"
+              min="1"
+              max="20"
+              value={providerMaxQueuedJobs}
+              disabled={providerSaving || strictPullSaving}
+              onChange={(event) => setProviderMaxQueuedJobs(Number(event.target.value))}
+              className="w-28 px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm disabled:opacity-40"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Remote admission stops when this many local and remote media jobs are already active.
+            </p>
+          </div>
+
+          <fieldset>
+            <legend className="block text-xs uppercase tracking-wider text-gray-500 mb-2">Allowed audio models</legend>
+            {musicEngines.length === 0 ? (
+              <p className="text-sm text-gray-500">The local music engine catalog is not available to configure.</p>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                {musicEngines.map((engine, engineIndex) => (
+                  <div key={engine.id} className="rounded border border-port-border bg-port-bg/40 p-3">
+                    <div className="text-sm font-medium text-white mb-2">{engine.name}</div>
+                    <div className="space-y-2">
+                      {(engine.models || []).map((model, modelIndex) => {
+                        const selection = { engine: engine.id, modelId: model.id };
+                        const checked = providerModels.some((candidate) => modelKey(candidate) === modelKey(selection));
+                        const ready = modelReady(engine, model);
+                        const inputId = `federated-media-model-${engineIndex}-${modelIndex}`;
+                        return (
+                          <label key={model.id} htmlFor={inputId} className="flex items-start gap-2 text-sm cursor-pointer">
+                            <input
+                              id={inputId}
+                              type="checkbox"
+                              checked={checked}
+                              disabled={providerSaving || strictPullSaving || (!ready && !checked)}
+                              onChange={(event) => toggleProviderModel(engine.id, model.id, event.target.checked)}
+                              className="mt-0.5 h-4 w-4 accent-port-accent disabled:opacity-40"
+                            />
+                            <span className={ready ? 'text-gray-200' : 'text-gray-500'}>
+                              {model.name}{!ready && ' (not ready)'}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </fieldset>
+
+          <button
+            type="button"
+            onClick={handleProviderSave}
+            disabled={!providerDirty || providerSaving || strictPullSaving
+              || (providerEnabled && (!authEnabled || providerModels.length === 0))}
+            className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {providerSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {providerSaving ? 'Saving...' : 'Save provider'}
+          </button>
+        </div>
       </div>
     </div>
   );
