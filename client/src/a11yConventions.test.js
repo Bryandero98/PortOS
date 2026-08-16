@@ -159,18 +159,21 @@ function tagNameAt(src, from) {
  * dropping it, because "is there a tag here" and "should an unreadable one
  * count" are different questions and only the caller knows the second.
  *
- * Keyed by SOURCE, not by path, so it is a pure-function cache with nothing to
- * invalidate: a probe's stand-in source and the real file it stands in for are
- * different strings, and no entry can ever answer for the other.
+ * Keyed by SOURCE and its starting mode, not by path, so it is a pure-function
+ * cache with nothing to invalidate: a probe's stand-in source and the real file
+ * it stands in for are different strings, and no entry can ever answer for the
+ * other. A JSX-text slice is not code, even when its characters equal another
+ * slice that a caller reads as code.
  */
 const tagIndexBySource = new Map();
 
-function tagIndexOf(src) {
-  const cached = tagIndexBySource.get(src);
+function tagIndexOf(src, { startMode = 'code' } = {}) {
+  const indexesByStartMode = tagIndexBySource.get(src);
+  const cached = indexesByStartMode?.get(startMode);
   if (cached) return cached;
   const nodes = [];
   const openByStart = new Map();
-  for (const token of jsxScanner(src)) {
+  for (const token of jsxScanner(src, { mode: startMode })) {
     if (token.kind !== 'char') continue;
     if (token.opensTag) {
       const closing = src.startsWith('</', token.index);
@@ -221,14 +224,16 @@ function tagIndexOf(src) {
     node.parent = openElements.at(-1) ?? null;
     if (!node.selfClosing) openElements.push(node);
   }
-  tagIndexBySource.set(src, nodes);
+  const cache = indexesByStartMode ?? new Map();
+  cache.set(startMode, nodes);
+  tagIndexBySource.set(src, cache);
   return nodes;
 }
 
 // Every tag named `name` — closers and unterminated tags included. Omit `name`
 // to walk every element; a name is matched literally against the name the
 // scanner read, never as a pattern.
-function* forEachTag(src, name) {
+function* forEachTag(src, name, { startMode = 'code' } = {}) {
   // Lexing a whole file to look for a name that does not occur in it is the
   // one cost this walk added over the regex it replaced: a named regex walk
   // scanned natively and boundary-scanned only its own matches, where the index
@@ -237,7 +242,7 @@ function* forEachTag(src, name) {
   // there, the substring is — and it skips the ~30% of tracked files that hold
   // no `<button` or `<input` at all.
   if (name !== undefined && !src.includes(name)) return;
-  for (const node of tagIndexOf(src)) {
+  for (const node of tagIndexOf(src, { startMode })) {
     if (name === undefined || node.name === name) yield node;
   }
 }
@@ -248,8 +253,8 @@ function* forEachTag(src, name) {
 // unreadable tag to contribute a `false` rather than vanish — and both walk
 // `forEachTag` instead. Keeping that choice in a filter rather than inside the
 // walk is what let the last hand-rolled scanner fold onto this one.
-function* forEachOpeningTag(src, name) {
-  for (const node of forEachTag(src, name)) {
+function* forEachOpeningTag(src, name, options) {
+  for (const node of forEachTag(src, name, options)) {
     if (!node.closing && node.tag !== null) yield node;
   }
 }
@@ -901,7 +906,7 @@ const isHiddenFromAccessibility = (tag) => HIDDEN_ACCESSIBILITY_ATTRIBUTE.test(t
 
 function stripHiddenElementContent(body) {
   const spans = [];
-  for (const node of forEachOpeningTag(body)) {
+  for (const node of forEachOpeningTag(body, undefined, { startMode: 'jsx-text' })) {
     if (!isHiddenFromAccessibility(node.tag)) continue;
     const end = node.selfClosing ? node.contentStart : node.matchingClose?.contentStart;
     if (end !== undefined) spans.push({ start: node.index, end });
@@ -1200,7 +1205,7 @@ function* labelElements(body) {
 // otherwise the tail of a tag survives as "text" and its attributes read as
 // rendered props.
 function stripJsxTags(source) {
-  const nodes = tagIndexOf(source);
+  const nodes = tagIndexOf(source, { startMode: 'jsx-text' });
   const incomplete = nodes.find((node) => node.tag === null);
   const spans = nodes
     .filter((node) => node.tag !== null)
@@ -2429,6 +2434,19 @@ describe('a11y conventions', () => {
     expect(isNamed('<label htmlFor="x"><span title=">"></span></label>\n<input id="x" />')).toBe(false);
     expect(isNamed('<label htmlFor="x"><span title=">">Rounds</span></label>\n<input id="x" />')).toBe(true);
     expect(isNamed('<span id="x" aria-hidden={true}>Hidden</span>\n<input aria-labelledby="x" />')).toBe(false);
+
+    // These helpers receive an element BODY, so their first character is JSX
+    // text rather than JavaScript. An apostrophe there must not open a fake
+    // string and hide the structural tags that follow it.
+    const apostropheThenHidden = "don't <span aria-hidden=\"true\">Hidden</span>";
+    const hiddenStripped = stripHiddenElementContent(apostropheThenHidden);
+    expect(hiddenStripped).not.toContain('Hidden');
+    expect(hiddenStripped).not.toContain('<span');
+    const tagsStripped = stripJsxTags("don't <span>Visible</span>");
+    expect(tagsStripped).toContain("don't");
+    expect(tagsStripped).toContain('Visible');
+    expect(tagsStripped).not.toContain('<span');
+    expect(tagsStripped).not.toContain('</span>');
 
     // An expression can contain a string that looks like a tag. It is still
     // one direct child of FormField, so the clone reaches the real input; only
