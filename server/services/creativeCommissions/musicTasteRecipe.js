@@ -84,8 +84,12 @@ function normalizeCandidates(observedWindow) {
     seen.add(key);
     candidates.push({ kind, name, ...(artist ? { artist } : {}), count: normalizeCount(raw.count), source: 'observed' });
   };
-  for (const artist of observedWindow?.listen?.topArtists || []) add('artist', artist);
-  for (const track of observedWindow?.listen?.topTracks || []) add('track', track);
+  const topArtists = Array.isArray(observedWindow?.listen?.topArtists)
+    ? observedWindow.listen.topArtists.slice(0, MUSIC_TASTE_RECIPE_MAX_CANDIDATES) : [];
+  const topTracks = Array.isArray(observedWindow?.listen?.topTracks)
+    ? observedWindow.listen.topTracks.slice(0, MUSIC_TASTE_RECIPE_MAX_CANDIDATES) : [];
+  for (const artist of topArtists) add('artist', artist);
+  for (const track of topTracks) add('track', track);
   return candidates.slice(0, MUSIC_TASTE_RECIPE_MAX_CANDIDATES);
 }
 
@@ -158,7 +162,7 @@ function explorationDirection(base, effective) {
 export function sanitizeMusicTasteRecipe(raw) {
   if (!isObject(raw) || raw.version !== MUSIC_TASTE_RECIPE_VERSION || raw.source !== 'digital-twin') return null;
   const anchors = Array.isArray(raw.anchors)
-    ? raw.anchors.map((anchor) => {
+    ? raw.anchors.slice(0, COMMISSION_MUSIC_TASTE_ANCHOR_MAX).map((anchor) => {
       if (!isObject(anchor) || !['artist', 'track'].includes(anchor.kind) || !isString(anchor.name)) return null;
       const name = anchor.name.trim().slice(0, 120);
       if (!name) return null;
