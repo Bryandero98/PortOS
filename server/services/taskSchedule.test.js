@@ -307,6 +307,10 @@ describe('taskSchedule', () => {
       expect(prompt).toContain('{appName}')
       expect(prompt).toContain('{repoPath}')
       expect(prompt).toContain('{slashdoReplan}')
+      expect(prompt).toContain('Issue-quality gate')
+      expect(prompt).toContain('useful to do now')
+      expect(prompt).toContain('let a later audit rediscover it')
+      expect(prompt).toContain('A refactor is valid when current evidence shows it pays off now')
     })
   })
 
@@ -423,6 +427,7 @@ describe('taskSchedule', () => {
     // claim-issue-jira are router-reached prompts with no DEFAULT_TASK_INTERVALS
     // entry, so their preservation is asserted in taskPromptDefaults.test.js instead.
     it.each([
+      'do-replan',
       'documentation',
       'plan-task',
       'claim-issue',

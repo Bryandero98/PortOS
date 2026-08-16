@@ -15,6 +15,22 @@ import { PORTOS_API_URL } from '../../lib/ports.js';
 // When a schedule has no promptVersion, we check if the stored prompt matches
 // any known previous default. If so, it's safe to auto-upgrade (not user-customized).
 export const PREVIOUS_DEFAULT_PROMPTS = {
+  'do-replan': [
+    // v1 default prompt
+    `[Improvement: {appName}] Replan — Audit PLAN.md
+
+Run the project's \`/do:replan\` slashdo command for {appName} in autonomous (non-interactive) mode.
+
+Repository: {repoPath}
+
+The full \`/do:replan\` command body follows. Apply it to {repoPath} exactly as written, then commit any changes. Default mode is autonomous — do NOT prompt the user; run \`--interactive\` only if the user has explicitly asked for it (they have not).
+
+Scope: this task operates against the managed app's repository, NOT PortOS. All edits must land in {repoPath} (PLAN.md, GOALS.md, docs/, the changelog) — never write to PortOS itself.
+
+---
+
+{slashdoReplan}`,
+  ],
   'feature-ideas': [
     // v1 default prompt
     `[Improvement: {appName}] Feature Review and Development

@@ -1677,6 +1677,9 @@ describe('buildPrompt', () => {
     expect(bare).toContain('Goal Alignment Check');
     // NOT_PLANNED = roadmap conflict is the headline rejection heuristic.
     expect(bare).toContain('NOT_PLANNED');
+    expect(bare).toContain('Future-triggered refactor');
+    expect(bare).toContain('third consumer appears');
+    expect(bare).toContain('return `proposal: null`');
     // Rendered under its dedicated heading, never dumped as a generic source block.
     expect(bare).toContain('apply it as a hard constraint');
   });
