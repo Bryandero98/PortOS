@@ -35,8 +35,8 @@ export default function Music() {
   if (!VALID.has(active)) return <Navigate to="/music/generate" replace />;
 
   return (
-    <div>
-      <div className="flex items-center gap-3 mb-4">
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-3 border-b border-port-border p-4">
         <MusicIcon className="w-6 h-6 text-port-accent" />
         <h1 className="text-2xl font-bold text-white">Music</h1>
       </div>
@@ -49,13 +49,14 @@ export default function Music() {
         activeTab={active}
         onChange={(id) => navigate(`/music/${id}`)}
         ariaLabel="Music sections"
-        className="mb-6"
       />
 
-      {active === 'generate' && <MusicDesigner />}
-      {active === 'artists' && <ArtistsManager />}
-      {active === 'albums' && <AlbumsManager />}
-      {active === 'tracks' && <TracksManager />}
+      <div className="flex-1 overflow-auto p-4">
+        {active === 'generate' && <MusicDesigner />}
+        {active === 'artists' && <ArtistsManager />}
+        {active === 'albums' && <AlbumsManager />}
+        {active === 'tracks' && <TracksManager />}
+      </div>
     </div>
   );
 }

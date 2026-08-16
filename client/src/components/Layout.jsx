@@ -556,6 +556,10 @@ const FULL_WIDTH_PATH_PREFIXES = [
 ];
 
 const FULL_WIDTH_PATH_REGEXES = [
+  // Music mirrors the Media Gen page shell: title bar + tabs over a separately
+  // scrolling body. Keep this boundary-specific so `/music-video` retains its
+  // own route classification.
+  /^\/music(?:\/|$)/,
   // Only Game DETAIL workspaces own an internal scroll region; the
   // bare /game index stays on the normal padded page layout.
   /^\/game\/[^/]+\/?$/,
