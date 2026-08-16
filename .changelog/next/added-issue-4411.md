@@ -1,0 +1,1 @@
+- Added an opt-in, loopback-only MCP agent-context surface with bounded read-only tools, privacy profiles, and Settings controls (#4411).
