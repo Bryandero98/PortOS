@@ -12,7 +12,7 @@
  * fires them on its own (AI Provider Usage Policy).
  *
  * Generation runs the engine-agnostic `generateMusic` (server/services/pipeline/
- * musicGen.js) — MusicGen / AudioLDM2 / ACE-Step behind one contract — lands the
+ * musicGen.js) — MusicGen / AudioLDM2 / ACE-Step / MiniMax-Music3 behind one contract — lands the
  * WAV in the shared music library (data/music/), then creates a new Track (or
  * updates an existing one via `trackId`) with the audio pointer + the prompt /
  * lyrics / engine / model / duration metadata. The pipeline audio stage has its
@@ -52,11 +52,24 @@ const router = Router();
 router.get('/engines', asyncHandler(async (_req, res) => {
   const cuda = await getCudaCapability();
   const engines = await Promise.all(Object.values(ENGINES).map(async (engine) => {
+    const fixedModels = engine.fixedModelInstall ? engine.models : [];
+    const modelReadyById = engine.fixedModelInstall
+      ? Object.fromEntries(await Promise.all(fixedModels.map(async (model) => [
+        model.id,
+        (await inspectModelCache(model.repo, { revision: model.revision }).catch(() => ({ cached: false }))).cached === true,
+      ])))
+      : null;
+    // `modelReady` remains an aggregate for older clients. Newer clients gate
+    // generation against the selected model in `modelReadyById`, so having the
+    // smaller MLX checkpoint cached does not falsely green-light its BF16 peer.
+    const modelReady = modelReadyById ? Object.values(modelReadyById).some(Boolean) : true;
     // The one checkpoint a fixed-model engine installs. Resolved by
     // defaultModelId, not position, so readiness + size stay attached to the
     // model the client actually downloads and renders with.
     const fixedModel = engine.fixedModelInstall ? getEngineModel(engine.id, engine.defaultModelId) : null;
-    const modelCache = fixedModel ? await inspectModelCache(fixedModel.repo).catch(() => ({ cached: false })) : null;
+    const modelSizeGbById = engine.fixedModelInstall
+      ? Object.fromEntries(fixedModels.map((model) => [model.id, model.downloadSizeGb ?? null]))
+      : null;
     // isEngineHealthy, not isEngineReady: a half-built venv (install died
     // mid-pip) still has its interpreter, and reporting that as runtimeReady
     // hides the install affordance on a backend that cannot generate.
@@ -76,10 +89,12 @@ router.get('/engines', asyncHandler(async (_req, res) => {
       // checkpoint via checkpoint_dir, so custom repos don't apply to it.
       customModels: engine.customModels === true,
       fixedModelInstall: engine.fixedModelInstall === true,
-      modelReady: modelCache ? modelCache.cached === true : true,
+      modelReady,
+      ...(modelReadyById ? { modelReadyById } : {}),
       // Rough download footprint for the fixed weights, so the install button can
       // say how big the pull is before the user commits to it.
       modelSizeGb: fixedModel?.downloadSizeGb ?? null,
+      ...(modelSizeGbById ? { modelSizeGbById } : {}),
       runtimeReady,
       cudaRequired: engine.cudaRequired === true,
       // false when this host can never run the backend (e.g. MLX MusicGen off
@@ -88,7 +103,7 @@ router.get('/engines', asyncHandler(async (_req, res) => {
       platformSupported: isEnginePlatformSupported(engine.id),
       platformLabel: enginePlatformLabel(engine.id),
       cudaState: engine.cudaRequired ? cuda.status : 'available',
-      ready: runtimeReady && (!engine.cudaRequired || cuda.status === 'available') && (!modelCache || modelCache.cached === true),
+      ready: runtimeReady && (!engine.cudaRequired || cuda.status === 'available') && modelReady,
       installEnv: engine.installEnv,
       venvDefault: engine.venvDefault,
     });
@@ -275,15 +290,18 @@ router.post('/models', asyncHandler(async (req, res) => {
   // A shipped fixed model may declare `downloadIgnore` to skip repo paths its
   // runtime never loads (see MINIMAX_MUSIC3_MODELS) — a user-added repo has no
   // such contract, so it always gets the full snapshot.
+  const downloadTarget = { repo: body.repo, ignore: fixedModel?.downloadIgnore ?? [] };
+  if (fixedModel?.revision) downloadTarget.revision = fixedModel.revision;
   await startHfDownloadStream({
     req,
     res,
-    repos: [{ repo: body.repo, ignore: fixedModel?.downloadIgnore ?? [] }],
+    repos: [downloadTarget],
   });
   // Roll back if the weights aren't actually present now (failed/cancelled
   // download) so a bogus repo doesn't persist. Best-effort: a rollback failure
   // is logged by the service, not surfaced (the response already closed).
-  const cached = await inspectModelCache(body.repo).catch(() => ({ cached: false }));
+  const cacheOptions = fixedModel?.revision ? { revision: fixedModel.revision } : {};
+  const cached = await inspectModelCache(body.repo, cacheOptions).catch(() => ({ cached: false }));
   if (!cached.cached) {
     if (!fixedModel) await removeAudioModel({ engine: body.engine, id: body.repo }).catch(() => {});
   }

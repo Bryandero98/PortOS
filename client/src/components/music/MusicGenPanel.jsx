@@ -2,17 +2,17 @@
  * MusicGenPanel — on-device music generation for the Track editor.
  *
  * Lets the user pick a generation engine (MusicGen / AudioLDM2 / ACE-Step /
- * MiniMax Music 3), pick or install a model, and Generate audio from the track's
- * prompt (+ lyrics for lyric-aware engines like ACE-Step and MiniMax Music 3).
- * On success the parent receives the updated track (the server attaches the
- * audio + gen metadata).
+ * MiniMax Music 3 and MiniMax Music 3 MLX), pick or install a model, and Generate
+ * audio from the track's prompt (+ lyrics for lyric-aware engines like ACE-Step
+ * and MiniMax Music 3). On success the parent receives the updated track (the
+ * server attaches the audio + gen metadata).
  *
  * Engines that aren't provisioned (their opt-in venv is missing) are shown with
  * an in-app install action and the Generate button is gated — mirroring the FLUX.2
  * venv gate in image gen. Additional HuggingFace checkpoints can be installed
  * inline (streamed download), then selected immediately.
  *
- * A fixed-model engine (MiniMax Music 3) needs BOTH a runtime venv and a fixed
+ * A fixed-model engine (MiniMax-Music3) needs BOTH a runtime venv and a fixed
  * weights download, and neither is useful alone. The setup banner therefore
  * carries ONE action that installs whatever is still missing: it opens the
  * runtime installer first when that's absent, then — once the refreshed engine
@@ -42,10 +42,11 @@ import RuntimeInstallModal from '../install/RuntimeInstallModal';
  * or it's CUDA-only on a host with no usable NVIDIA GPU, where an install button
  * would just be a slower way to fail.
  */
-function engineSetupState(engine) {
+function engineSetupState(engine, selectedModelReady = null, selectedModelSizeGb = null) {
   if (!engine) return null;
   const needsRuntime = engine.runtimeReady !== true;
-  const needsWeights = engine.fixedModelInstall === true && engine.modelReady === false;
+  const needsWeights = engine.fixedModelInstall === true
+    && (selectedModelReady === null ? engine.modelReady === false : selectedModelReady === false);
   const blocked = engine.platformSupported === false
     || (engine.cudaRequired === true && engine.cudaState !== 'available');
 
@@ -55,10 +56,10 @@ function engineSetupState(engine) {
   else if (engine.cudaRequired === true && engine.cudaState !== 'available') message = `${engine.name} requires an NVIDIA CUDA GPU and is unavailable on this host.`;
   else if (engine.runtimeReady === false && needsWeights) message = `${engine.name} needs its runtime and model weights before generation.`;
   else if (engine.runtimeReady === false) message = `${engine.name} needs its runtime before generation.`;
-  else if (needsWeights) message = `${engine.name} model weights are not installed yet.`;
+  else if (needsWeights) message = `${engine.name} ${engine.modelReadyById && selectedModelReady === false ? 'selected model weights' : 'model weights'} are not installed yet.`;
   else message = `${engine.name} is not installed yet. Install the runtime to enable generation.`;
 
-  const size = formatDownloadGb(engine.modelSizeGb);
+  const size = formatDownloadGb(selectedModelSizeGb ?? engine.modelSizeGb);
   const suffix = size ? ` (${size})` : '';
   let label = null;
   if (!blocked && needsRuntime && needsWeights) label = `Install runtime + weights${suffix}`;
@@ -127,6 +128,19 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   }, [generating]);
 
   const engine = useMemo(() => engines.find((e) => e.id === engineId) || null, [engines, engineId]);
+  const selectedModel = engine?.models?.find((item) => item.id === modelId)
+    || engine?.models?.find((item) => item.id === engine.defaultModelId)
+    || engine?.models?.[0]
+    || null;
+  // A native <select> displays its first option while React is applying the
+  // engine's default id. Use that effective option for readiness and generation
+  // too, so the first paint cannot briefly disable an otherwise ready engine.
+  const selectedModelId = selectedModel?.id || modelId;
+  const selectedModelReady = !engine?.fixedModelInstall
+    ? true
+    : engine?.modelReadyById
+      ? engine.modelReadyById[selectedModelId] === true
+      : engine.modelReady === true;
   const autoDurationAvailable = supportsAutoDuration(engine);
   const lyricDuration = useMemo(() => analyzeMusicLyrics(lyrics, {
     minDurationSec: Math.max(60, engine?.defaultDurationSec || 60),
@@ -166,14 +180,18 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
-  const canGenerate = !!engine?.ready && !!prompt?.trim() && !generating;
-  const setup = engineSetupState(engine);
+  const canGenerate = !!engine?.ready && selectedModelReady && !!prompt?.trim() && !generating;
+  const selectedModelSizeGb = engine?.modelSizeGbById?.[selectedModelId] ?? null;
+  const setup = engineSetupState(engine, selectedModelReady, selectedModelSizeGb);
 
   // `target` is the engine record to install for — passed explicitly by the
   // post-runtime chain, which holds a fresher record than component state does.
   const installFixedModel = async (target) => {
     const eng = target || engine;
-    const model = eng?.models?.find((item) => item.id === eng.defaultModelId) || eng?.models?.[0];
+    const selectedId = eng?.id === engine?.id ? selectedModelId : '';
+    const model = eng?.models?.find((item) => item.id === selectedId)
+      || eng?.models?.find((item) => item.id === eng.defaultModelId)
+      || eng?.models?.[0];
     if (!eng || !model?.repo) return;
     setInstalling(true);
     setSetupProgress({ message: `Starting ${model.name}…` });
@@ -206,7 +224,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     const list = await loadEngines();
     if (!mountedRef.current) return;
     const fresh = list.find((e) => e.id === engineId);
-    const freshSetup = engineSetupState(fresh);
+    const freshSelectedModelReady = !fresh?.fixedModelInstall
+      ? true
+      : fresh?.modelReadyById
+        ? fresh.modelReadyById[selectedModelId] === true
+        : fresh.modelReady === true;
+    const freshSetup = engineSetupState(fresh, freshSelectedModelReady, fresh?.modelSizeGbById?.[selectedModelId] ?? null);
     if (freshSetup && !freshSetup.blocked && !freshSetup.needsRuntime && freshSetup.needsWeights) {
       await installFixedModel(fresh);
     }
@@ -220,7 +243,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
       prompt: prompt.trim(),
       lyrics: engine.lyrics ? (lyrics || '') : '',
       engine: engine.id,
-      modelId,
+      modelId: selectedModelId,
     };
     if (track?.id) body.trackId = track.id;
     else {
@@ -276,7 +299,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   if (engines.length === 0) return <div className="text-xs text-gray-500">No music generators available.</div>;
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
-  const showRuntimeInstallHint = !!engine && !engine.ready && (!!prompt?.trim() || userSelectedEngine);
+  const showRuntimeInstallHint = !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -406,7 +429,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           type="button"
           onClick={handleGenerate}
           disabled={!canGenerate}
-          title={!prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Complete engine setup first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
+          title={!prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Complete engine setup first' : !selectedModelReady ? 'Install the selected model first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
         >
           {generating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
@@ -439,7 +462,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           <p className="mt-1.5 text-[11px] text-gray-500">
             {engine?.id === 'minimax-music3'
               ? 'MiniMax Music 3 does not report an exact percentage yet; a 60-second track can take tens of minutes on a 24 GB GPU.'
-              : 'Generation is still active. Longer requested durations take more time.'}
+              : engine?.id === 'minimax-music3-mlx'
+                ? 'MiniMax Music 3 MLX does not report an exact percentage yet; the first render includes model loading.'
+                : 'Generation is still active. Longer requested durations take more time.'}
           </p>
         </div>
       ) : null}

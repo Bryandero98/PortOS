@@ -57,7 +57,7 @@ export function onClientDisconnect(_req, res, onDisconnect) {
   });
 }
 
-export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, cachedFile = null, alreadyDownloadedMessage, force = false, pythonPath = null }) {
+export async function startHfDownloadStream({ req, res, repo, revision = null, repos, fallbacks, cachedFile = null, alreadyDownloadedMessage, force = false, pythonPath = null }) {
   // Three input shapes, two semantics:
   //  - `repo` (single string) / `repos` (ordered array) — ALL must succeed. Used
   //    when a model has auxiliary repos that must be present alongside the main
@@ -95,7 +95,10 @@ export async function startHfDownloadStream({ req, res, repo, repos, fallbacks, 
     };
   };
   const firstSuccessWins = Array.isArray(fallbacks);
-  const targets = (firstSuccessWins ? fallbacks : (Array.isArray(repos) ? repos : [repo]))
+  const targetInputs = firstSuccessWins
+    ? fallbacks
+    : (Array.isArray(repos) ? repos : [revision ? { repo, revision } : repo]);
+  const targets = targetInputs
     .map(normalizeTarget)
     .filter(Boolean);
   const { send, safeEnd } = openSseStream(res);

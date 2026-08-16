@@ -24,6 +24,10 @@ vi.mock('../services/pipeline/musicGen.js', () => {
     acestep: { id: 'acestep', name: 'ACE-Step', models: [{ id: 'a', name: 'A' }], defaultModelId: 'a', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP', venvDefault: '/v/ace', resolvePython: () => (gen.ready ? '/v/ace/bin/python3' : null), lyrics: true, customModels: false },
     acestep15: { id: 'acestep15', name: 'ACE-Step 1.5', models: [{ id: 'ace-step-v1.5', repo: 'ACE-Step/Ace-Step1.5', name: 'ACE-Step 1.5' }], defaultModelId: 'ace-step-v1.5', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP15', venvDefault: '/v/ace15', resolvePython: () => (gen.ready ? '/v/ace15/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true },
     'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3', downloadIgnore: ['qwen_7B/*', 'flowmatching_vae.pth', 'dav.pth', 'figures/*'], downloadSizeGb: 29 }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true, autoDuration: true },
+    'minimax-music3-mlx': { id: 'minimax-music3-mlx', name: 'MiniMax Music 3 (MLX)', models: [
+      { id: 'minimax-music3-mlx-8bit', repo: 'mlx-community/MiniMax-Music3-8bit', revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5', downloadSizeGb: 14, name: 'MiniMax Music 3 MLX 8-bit' },
+      { id: 'minimax-music3-mlx-bf16', repo: 'mlx-community/MiniMax-Music3-bf16', revision: '83a5f2d365673689df5c8f36e21e108751fd92ea', downloadSizeGb: 29, name: 'MiniMax Music 3 MLX BF16' },
+    ], defaultModelId: 'minimax-music3-mlx-8bit', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3_MLX', venvDefault: '/v/minimax-mlx', resolvePython: () => (gen.ready ? '/v/minimax-mlx/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, autoDuration: true },
   };
   return {
     ENGINES,
@@ -103,8 +107,11 @@ vi.mock('../lib/sseDownload.js', () => ({
 }));
 
 // Register-after-download gates on whether the repo landed in the cache.
-const cache = vi.hoisted(() => ({ cached: true }));
-vi.mock('../lib/hfCache.js', () => ({ inspectModelCache: vi.fn(async () => ({ cached: cache.cached })) }));
+const cache = vi.hoisted(() => ({ cached: true, byRevision: null, calls: [] }));
+vi.mock('../lib/hfCache.js', () => ({ inspectModelCache: vi.fn(async (repo, options = {}) => {
+  cache.calls.push({ repo, ...options });
+  return { cached: cache.byRevision?.[options.revision] ?? cache.cached };
+}) }));
 
 vi.mock('../services/albums/index.js', () => ({
   getAlbum: vi.fn(async () => null),
@@ -159,6 +166,8 @@ describe('music routes', () => {
     setup.spawn.mockReset();
     setup.exitCode = 0;
     cache.cached = true;
+    cache.byRevision = null;
+    cache.calls.length = 0;
     cuda.status = 'available';
     models.list.mockResolvedValue([{ id: 'm', name: 'M', userAdded: false }]);
     designer.describeMusic.mockReset().mockResolvedValue({ description: 'Lush pads over a broken beat.', llm: { provider: 'fake-provider', model: 'fake-model' } });
@@ -300,6 +309,29 @@ describe('music routes', () => {
     });
   });
 
+  it('GET /engines reports MLX readiness separately for the 8-bit and BF16 snapshots', async () => {
+    cache.byRevision = {
+      '10aa4ca578d04c6f5256c1bc22fc8405a09602b5': true,
+      '83a5f2d365673689df5c8f36e21e108751fd92ea': false,
+    };
+    const r = await request(app).get('/api/music/engines');
+    expect(r.status).toBe(200);
+    expect(r.body.engines.find((e) => e.id === 'minimax-music3-mlx')).toMatchObject({
+      modelReady: true,
+      modelReadyById: {
+        'minimax-music3-mlx-8bit': true,
+        'minimax-music3-mlx-bf16': false,
+      },
+      ready: true,
+      platformSupported: true,
+      installEnv: 'INSTALL_MINIMAX_MUSIC3_MLX',
+    });
+    expect(cache.calls).toEqual(expect.arrayContaining([
+      { repo: 'mlx-community/MiniMax-Music3-8bit', revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5' },
+      { repo: 'mlx-community/MiniMax-Music3-bf16', revision: '83a5f2d365673689df5c8f36e21e108751fd92ea' },
+    ]));
+  });
+
   it('GET /engines exposes ACE-Step 1.5 as a fixed model install distinct from v1', async () => {
     cache.cached = false;
     const r = await request(app).get('/api/music/engines');
@@ -409,6 +441,25 @@ describe('music routes', () => {
     }));
     // Registered only AFTER the download landed in the cache.
     expect(models.add).toHaveBeenCalledWith({ engine: 'musicgen', repo: 'facebook/musicgen-large', name: undefined });
+  });
+
+  it('POST /models pins a fixed MLX download to the shipped revision', async () => {
+    const r = await request(app).post('/api/music/models').send({
+      engine: 'minimax-music3-mlx', repo: 'mlx-community/MiniMax-Music3-8bit',
+    });
+    expect(r.status).toBe(200);
+    expect(models.add).not.toHaveBeenCalled();
+    expect(sse.run).toHaveBeenCalledWith(expect.objectContaining({
+      repos: [{
+        repo: 'mlx-community/MiniMax-Music3-8bit',
+        ignore: [],
+        revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5',
+      }],
+    }));
+    expect(cache.calls).toContainEqual({
+      repo: 'mlx-community/MiniMax-Music3-8bit',
+      revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5',
+    });
   });
 
   it('POST /models forwards a shipped fixed model\'s downloadIgnore to the download stream', async () => {
