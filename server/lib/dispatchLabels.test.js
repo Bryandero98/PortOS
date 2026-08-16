@@ -5,6 +5,9 @@ import {
   DISPATCH_LABEL_COLORS,
   DISPATCH_HINT_GUIDANCE,
   JIRA_DISPATCH_HINT_GUIDANCE,
+  PORTOS_AREA_LABELS,
+  PORTOS_AREA_LABEL_GUIDANCE,
+  REPO_STUDY_LABEL_CONTRACT,
   GOOD_FIRST_ISSUE_LABEL,
   HELP_WANTED_LABEL,
   JIRA_GOOD_FIRST_ISSUE_LABEL,
@@ -164,5 +167,16 @@ describe('shared guidance', () => {
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('good-first-issue');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).toContain('help-wanted');
     expect(JIRA_DISPATCH_HINT_GUIDANCE).not.toMatch(/model:light/);
+  });
+
+  it('keeps the PortOS area vocabulary and repo-study complete-label contract explicit', () => {
+    expect(PORTOS_AREA_LABELS).toContain('area:cos-agents');
+    expect(PORTOS_AREA_LABELS).toContain('area:media');
+    expect(PORTOS_AREA_LABEL_GUIDANCE).toContain('area:*');
+    expect(PORTOS_AREA_LABEL_GUIDANCE).toContain('gh label list --search area:');
+    expect(REPO_STUDY_LABEL_CONTRACT.forgeFlags)
+      .toBe('--label area:<area> --label model:<tier> --label effort:<level>');
+    expect(REPO_STUDY_LABEL_CONTRACT.jiraFlags).toContain('model-<tier>');
+    expect(REPO_STUDY_LABEL_CONTRACT.instructions).toContain('complete-label contract (mandatory)');
   });
 });

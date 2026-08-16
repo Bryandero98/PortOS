@@ -99,6 +99,8 @@ describe('queueRepoStudy', () => {
     expect(taskData.repoStudy).toEqual({ linkId: 'link-1' });
     expect(taskData.context).toContain('gh issue create');
     expect(taskData.context).toContain('repo-study-');
+    expect(taskData.context).toContain('Repo-study complete-label contract (mandatory)');
+    expect(taskData.context).toContain('--label area:<area> --label model:<tier> --label effort:<level>');
   });
 
   // `analysisType` enrolls a task in taskSchedule's per-type consecutive-failure

@@ -139,3 +139,27 @@ describe('formatTrackerInstructions — ux preset (#3273)', () => {
     }
   });
 });
+
+describe('formatTrackerInstructions — repo-study complete labels', () => {
+  const repoStudy = TRACKER_FILING_PRESETS['repo-study'];
+
+  it('requires area, model, and effort labels on every new GitHub proposal', () => {
+    const github = formatTrackerInstructions('github', repoStudy);
+    expect(github).toContain('Repo-study complete-label contract (mandatory)');
+    expect(github).toContain('area:*');
+    expect(github).toContain('model:light|medium|heavy');
+    expect(github).toContain('effort:low|medium|high|xhigh|max');
+    expect(github).toContain('--label repo-study --label plan --label area:<area> --label model:<tier> --label effort:<level>');
+    expect(github).toContain('gh label list --search area:');
+  });
+
+  it('uses the same complete-label contract on GitLab and JIRA', () => {
+    const gitlab = formatTrackerInstructions('gitlab', repoStudy);
+    expect(gitlab).toContain('--label repo-study --label plan --label area:<area> --label model:<tier> --label effort:<level>');
+    expect(gitlab).toContain('glab label list');
+
+    const jira = formatTrackerInstructions('jira', repoStudy);
+    expect(jira).toContain('Repo-study complete-label contract (mandatory)');
+    expect(jira).toContain('`area:<area>` + `model-<tier>` + `effort-<level>`');
+  });
+});
