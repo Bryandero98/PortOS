@@ -187,8 +187,8 @@ export function isNonCommittingCoordinatorTask(task) {
  * accepted for EVERY task type (`cosValidation.js` ALLOWED keys → `POST
  * /api/apps/:id/task-types` → merged into `metadata` in
  * cosTaskGenerator.js#generateManagedAppImprovementTaskForType). It exists to
- * opt a run out of the TUI idle-complete clean-tree gate; someone setting it
- * there is not asking to disable success validation. Ungated, a `security` task
+ * mark a run's deliverable as outside the worktree; someone setting it there is
+ * not asking to disable success validation. Ungated, a `security` task
  * carrying it would exit 0 having committed nothing and be recorded as a pass
  * instead of the honest miss it is.
  *

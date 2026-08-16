@@ -54,14 +54,14 @@ PortOS runs MANY apps under one shared pm2 daemon. To restart an app, use a SCOP
 
 // Also appended to every agent briefing. A CoS agent runs headless: the TUI has
 // no human attached, so an interactive selector or approval gate is a dead end —
-// the session repaints it until the idle reaper kills the run and the work is
+// the session can sit there until its wall-clock runtime ceiling and the work is
 // discarded. Nothing in the briefing used to SAY that, so a `/do:plan-task` run
 // (whose skill shows its drafted issue for approval before filing) parked on a
 // scope question for its whole life and was retried into the same gate three
 // times, filing nothing. The rule names the escape hatch too: slash commands
 // that gate on approval take a flag to skip it.
 export const UNATTENDED_RUN_RULE = `## ⚠️ Unattended Run (no human is present)
-PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session sits there until the idle reaper kills it and **your work is thrown away**.
+PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session can sit there until its runtime ceiling and **your work may be thrown away**.
 - **Never ask the user to choose or approve.** Make the call yourself, state the assumption in your summary, and proceed.
 - **Invoke commands and skills in their non-interactive form.** If one drafts something and gates on approval before acting, pass the flag that skips that gate (\`--yes\` for the slashdo commands that have one).
 - **Ambiguous task?** Pick the most reasonable reading, do the work, and note the alternatives you rejected in your completion summary.
@@ -926,7 +926,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   // Where the loop hands control back. A follow-up agent's whole task WAS the
   // loop, so it exits; an inline loop is one step of a larger completion
   // workflow that still owes the run its `.agent-done` sentinel — telling it to
-  // "exit" here is how a finished merge idles into a false timeout.
+  // "exit" here leaves a finished merge without the sentinel that records it.
   const exitStep = inline
     ? `6. ${inlineExitStep}`
     : `6. Exit. Do **not** run \`/do:push\` or open a new PR${leaveOpen ? '' : ' — the merge handles everything'}. The system will clean up your worktree on exit.`;
@@ -1323,9 +1323,9 @@ export function buildProgrammaticOutputCompletionSection(sentinelPath) {
  *
  * A TUI agent still needs a `.agent-done` sentinel to signal completion — the 2s
  * sentinel poll in `spawnTuiAgent` is the primary finalize path and the channel
- * that ingests the run summary. Without it a read-only TUI run only finalizes via
- * the idle reaper / shell-exit fallback, so the resolution summary is never
- * captured cleanly (the bug this repairs). CLI/API read-only agents complete on
+ * that ingests the run summary. Without it a read-only TUI run relies on shell
+ * exit or the runtime ceiling, so the resolution summary is not captured
+ * cleanly (the bug this repairs). CLI/API read-only agents complete on
  * process exit and never poll a sentinel, so they get the bare notice only.
  */
 export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = null } = {}) {
@@ -1346,7 +1346,7 @@ export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = n
  * nothing to commit or push, and telling the agent to run `/do:push` just makes it
  * load that skill for no reason (and can contradict the task prompt's own
  * "on a 200 your task is complete"). A TUI agent still writes a `.agent-done`
- * sentinel so the 2s poll finalizes it promptly instead of waiting on the idle
+ * sentinel so the 2s poll finalizes it promptly instead of waiting for a runtime
  * reaper.
  */
 export function buildActionOutputCompletionSection({ isTui = false, sentinelPath = null } = {}) {
@@ -2496,7 +2496,7 @@ function buildInlineReviewLoopSection({
 }) {
   // Where control goes after the merge. A TUI run still owes PortOS its
   // `.agent-done` sentinel — telling it to "exit" here is how a finished merge
-  // idles into a false timeout — while a CLI run signals completion by exiting.
+  // can otherwise sit without recording completion — while a CLI run signals completion by exiting.
   const inlineExitStep = writesSentinel
     ? 'Return to the **Completion Workflow** above and write the completion sentinel — the run is not done until you have. Do NOT open a second PR.'
     : 'You are done — exit. Do NOT open a second PR or push anything further.';

@@ -33,16 +33,15 @@
  * absent-vs-empty rule) — it does NOT mean false.
  *
  * The two postures below differ ONLY in `worktreeChangesExpected`, which declares
- * the workflow's DELIVERABLE (#3636). The TUI idle reaper fails a run as
- * `idle-no-changes` when the worktree is clean and no commit landed during the
- * run (`worktreeHasWorkEvidence`), so a workflow whose output never touches the
- * repo has to opt out — the reaper cannot see a filed issue or a printed report.
+ * the workflow's DELIVERABLE (#3636). The metadata remains useful to downstream
+ * task bookkeeping: a workflow whose output never touches the repo must not be
+ * mistaken for a code-editing run merely because its worktree stays clean.
  */
 
 /**
  * Commit-shaped workflows: `next` / `better` / `better-swift` / `depfree` /
- * `release` / `push` land a commit (usually behind their own PR), so the
- * reaper's evidence probe covers them and the clean-tree gate stays armed.
+ * `release` / `push` land a commit (usually behind their own PR), so their
+ * deliverable posture expects repository changes.
  */
 export const WORKFLOW_OWNS_ITS_OWN_GIT = Object.freeze({
   useWorktree: false, openPR: false, simplify: false, worktreeChangesExpected: true,

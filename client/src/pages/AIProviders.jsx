@@ -635,7 +635,7 @@ export default function AIProviders() {
                       )}
                       {isTuiProvider(provider) && (
                         <p className="text-xs break-words">
-                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, idle complete <span className="text-gray-300">{provider.tuiIdleTimeoutMs || 180000}ms</span>
+                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, completion by sentinel, process exit, or runtime ceiling
                         </p>
                       )}
                       {provider.fallbackProvider && (
@@ -811,8 +811,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     envVars: provider?.envVars || {},
     secretEnvVars: provider?.secretEnvVars || [],
     headlessArgs: provider?.headlessArgs?.join(' ') || '',
-    tuiPromptDelayMs: provider?.tuiPromptDelayMs || 2500,
-    tuiIdleTimeoutMs: provider?.tuiIdleTimeoutMs || 180000
+    tuiPromptDelayMs: provider?.tuiPromptDelayMs || 2500
   });
 
   const [newEnvKey, setNewEnvKey] = useState('');
@@ -890,16 +889,11 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     e.preventDefault();
 
     const tuiPromptDelay = parseInt(formData.tuiPromptDelayMs, 10);
-    const tuiIdleTimeout = parseInt(formData.tuiIdleTimeoutMs, 10);
-    // Three cases for the timeout field on submit:
-    //   1. valid integer within bounds → send the parsed number
-    //   2. blank/whitespace → omit so the server keeps the current value
-    //      (Number('') is 0, which would 400 against the min-1000 rule)
-    //   3. non-empty but invalid (e.g. '1e3', '500', 'abc') → send the
-    //      RAW STRING. Number() would accept '1e3' as 1000, silently
-    //      saving an exponent form the client/runner reject as invalid;
-    //      the server's digit-only preprocess will leave the string
-    //      alone and z.number() will produce a clear validation error.
+    // Blank input is omitted so the server keeps the current value. Non-empty
+    // invalid input (e.g. '1e3', '500', 'abc') is sent as the raw string so
+    // Number() cannot silently save an exponent form the client/runner reject;
+    // the server's digit-only preprocess leaves it alone and z.number() produces
+    // a clear validation error.
     const parsedTimeout = parseTimeoutMs(formData.timeout);
     const timeoutInput = String(formData.timeout ?? '').trim();
     const data = {
@@ -934,11 +928,8 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     if (formData.type === 'tui') {
       if (Number.isFinite(tuiPromptDelay)) data.tuiPromptDelayMs = tuiPromptDelay;
       else delete data.tuiPromptDelayMs;
-      if (Number.isFinite(tuiIdleTimeout)) data.tuiIdleTimeoutMs = tuiIdleTimeout;
-      else delete data.tuiIdleTimeoutMs;
     } else {
       delete data.tuiPromptDelayMs;
-      delete data.tuiIdleTimeoutMs;
     }
 
     // Only send apiKey if user entered a new value (avoid overwriting existing key with empty string)
@@ -1057,18 +1048,8 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
                       className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                     />
                   </FormField>
-                  <FormField label="Idle Complete (ms)">
-                    <input
-                      type="number"
-                      min="10000"
-                      max="1800000"
-                      value={formData.tuiIdleTimeoutMs}
-                      onChange={(e) => setFormData(prev => ({ ...prev, tuiIdleTimeoutMs: e.target.value }))}
-                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                    />
-                  </FormField>
                   <p className="sm:col-span-2 text-xs text-gray-500">
-                    TUI providers open an attachable shell session, paste the agent prompt, parse terminal output, and complete after the terminal is idle.
+                    TUI providers stay attached while the provider is silent; they finish on the completion sentinel, process exit, explicit failure, or the max-runtime ceiling.
                   </p>
                 </div>
               )}

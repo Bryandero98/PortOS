@@ -11,10 +11,10 @@
  *
  * The shipped `OPENCODE_CONFIG_CONTENT` declared the Ollama provider but omitted
  * that models map, so OpenCode (>=1.17) rejected every `--model ollama/<id>` as
- * "Model ollama/… is not valid" — the pasted prompt sat in the input box, the
- * agent produced zero output, and the idle reaper marked it complete (issue
- * -2190). This module builds the config dynamically at spawn time, declaring the
- * provider's configured models (+ the model being run) under
+ * "Model ollama/… is not valid" — the pasted prompt sat in the input box and
+ * the agent produced zero output (issue -2190). This module builds the config
+ * dynamically at spawn time, declaring the provider's configured models (+ the
+ * model being run) under
  * `provider.<local-backend>.models` with bare ids.
  */
 

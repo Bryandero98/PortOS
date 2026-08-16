@@ -7,35 +7,19 @@ import {
   PASTE_MARKER_PATTERN,
   detectPasteMarker,
   countPasteMarkers,
-  WORK_COUNTER_PATTERN,
-  MIN_WORK_COUNTER_SAMPLES,
-  MIN_WORK_COUNTER_SPAN_MS,
-  extractWorkCounterSeconds,
-  createWorkActivityTracker,
   createGenerationActivityTracker,
   createSelfClearingSignalGate,
   SELF_CLEARING_RESUBMIT_INTERVAL_MS,
   SELF_CLEARING_RESUBMIT_ECHO_MS,
-  MERGE_QUEUE_IDLE_TIMEOUT_MS,
-  isMergeQueueSignal,
-  createMergeQueueTracker,
-  REVIEW_LOOP_IDLE_TIMEOUT_MS,
-  isReviewLoopSignal,
-  createReviewLoopTracker,
-  BACKGROUND_SHELL_IDLE_TIMEOUT_MS,
-  isBackgroundShellSignal,
-  createBackgroundShellTracker,
   MCP_BOOT_PASTE_DEADLINE_MS,
   MCP_BOOT_PASTE_RETRY_DELAY_MS,
   isMcpBootSignal,
   createMcpBootTracker,
-  rendersWorkCounter,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   SUBMIT_ENTER_ATTEMPTS,
   SUBMIT_ENTER_SPACING_MS,
   DEFAULT_TUI_PROMPT_DELAY_MS,
-  DEFAULT_TUI_IDLE_TIMEOUT_MS,
   RAW_BUFFER_CAP,
   RAW_BUFFER_HEADROOM,
   OUTPUT_BUFFER_CAP,
@@ -187,69 +171,6 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(echoInStrippedBuffer > countPasteMarkers(strippedPrompt)).toBe(false);
   });
 
-  it('extractWorkCounterSeconds parses the TUI bullet-suffixed working counter', () => {
-    // Claude Code: `(1s · …`; Codex: `(57s • …`.
-    expect(extractWorkCounterSeconds('(1s · thinking with high effort)')).toEqual([1]);
-    expect(extractWorkCounterSeconds('(57s • esc to interrupt)')).toEqual([57]);
-    expect(extractWorkCounterSeconds('(0s · Churning…)')).toEqual([0]);
-    // Multiple bulleted counters in one buffer (e.g. an accumulated screen).
-    expect(extractWorkCounterSeconds('(1s · a (2s • b (3s · c')).toEqual([1, 2, 3]);
-  });
-
-  it('extractWorkCounterSeconds ignores bare (Ns) durations in prose/logs (echo-proof)', () => {
-    // The #1229 review fix: a bare `(5s)` in a pasted prompt / log line must NOT
-    // count — only the TUI's bullet-suffixed status-line counter does. Without
-    // this, an echoed prompt containing duration literals could fake "work".
-    expect(extractWorkCounterSeconds('please respond within (5s) of receiving this')).toEqual([]);
-    expect(extractWorkCounterSeconds('[12:00:01] (3s) elapsed (4s) total')).toEqual([]);
-    expect(extractWorkCounterSeconds('● high · /effort')).toEqual([]);
-    expect(extractWorkCounterSeconds('')).toEqual([]);
-    expect(extractWorkCounterSeconds(null)).toEqual([]);
-  });
-
-  it('extractWorkCounterSeconds is stateless across calls (no lastIndex carryover)', () => {
-    // A module-level /g regex would skip matches on the 2nd call; assert it doesn't.
-    expect(extractWorkCounterSeconds('(4s · x')).toEqual([4]);
-    expect(extractWorkCounterSeconds('(4s · x')).toEqual([4]);
-  });
-
-  it('createWorkActivityTracker activates only when the counter ticks across real time (echo-proof)', () => {
-    const tracker = createWorkActivityTracker();
-    expect(tracker.active).toBe(false);
-    // Bare duration literals echoed from the prompt — no bullet → not the counter.
-    expect(tracker.observe('finish within (1s) and definitely under (2s)', 0)).toBe(false);
-    // A single bulleted counter value must NOT activate (one sample).
-    expect(tracker.observe('(5s · thinking)', 1000)).toBe(false);
-    expect(tracker.observe('(5s · thinking)', 1100)).toBe(false);
-    expect(tracker.active).toBe(false);
-    // A second DISTINCT bulleted value — and ≥750ms after the first — activates.
-    expect(tracker.observe('(6s · thinking)', 2000)).toBe(true);
-    expect(tracker.active).toBe(true);
-    // Stays active once tripped.
-    expect(tracker.observe('● high · /effort', 3000)).toBe(true);
-  });
-
-  it('createWorkActivityTracker rejects an echoed transcript with two distinct counters arriving at once', () => {
-    // The #1229 round-3 review case: a task that pastes a TUI transcript can echo
-    // two distinct bulleted counters — but they all arrive in the same paste-render
-    // burst (same instant), so the time-span requirement keeps them from faking work.
-    const tracker = createWorkActivityTracker();
-    expect(tracker.observe('analyze this log: (1s · thinking) then (2s · thinking)', 5000)).toBe(false);
-    // Even repainted later as a whole (still the SAME two values, not new ones).
-    expect(tracker.observe('analyze this log: (1s · thinking) then (2s · thinking)', 9000)).toBe(false);
-    expect(tracker.active).toBe(false);
-  });
-
-  it('createWorkActivityTracker stays inactive on pure stuck/idle chrome', () => {
-    const tracker = createWorkActivityTracker();
-    // The exact chrome from the #1229 false-success transcript (no counter).
-    tracker.observe('⏵⏵ bypass permissions on (shift+tab to cycle)', 0);
-    tracker.observe('● high · /effort', 1000);
-    tracker.observe('paste again to expand', 2000);
-    tracker.observe('Begin working on the task now.', 3000);
-    tracker.observe('Opus 4.8 │ agent-92ed2c56', 4000);
-    expect(tracker.active).toBe(false);
-  });
 
   // Verdict for agy's self-clearing eligibility banner: did the provider come
   // back? The chrome below is lifted from real transcripts — healthy agy runs
@@ -508,41 +429,20 @@ describe('tuiHandshake — paste timing constants', () => {
       });
 
       // Cross-file invariant between the signal that sets the window and the gate
-      // that spends it. Too short and the window is back to being a pause in
-      // front of a fail-over; past the idle timeout and the reaper finalizes the
-      // deliberately-silent session first — as an `idle-complete` SUCCESS that
-      // scrapes the banner as the answer, since agy renders no work counter.
-      it("sizes agy's eligibility window for several retries, still inside the idle timeout", () => {
+      // that spends it. The grace window must allow several retries before the
+      // provider is classified as requiring fallback.
+      it("sizes agy's eligibility window for several retries", () => {
         const signal = detectImmediateFallbackSignal(
           "We're finishing verifying your account eligibility. This usually takes a moment. Please try again shortly."
         );
         expect(signal.graceMs).toBeGreaterThanOrEqual(3 * SELF_CLEARING_RESUBMIT_INTERVAL_MS);
-        expect(signal.graceMs).toBeLessThan(DEFAULT_TUI_IDLE_TIMEOUT_MS);
+        expect(signal.graceMs).toBeGreaterThan(0);
       });
     });
   });
 
-  it('pins work-activity detection constants', () => {
-    expect(WORK_COUNTER_PATTERN).toBeInstanceOf(RegExp);
-    expect(MIN_WORK_COUNTER_SAMPLES).toBe(2);
-    expect(MIN_WORK_COUNTER_SPAN_MS).toBe(750);
-  });
-
-  it('rendersWorkCounter is true only for the counter-rendering TUIs (Claude Code / Codex)', () => {
-    // The idle gate may downgrade to failure ONLY for providers that render the
-    // counter; others must keep the permissive idle-complete (codex P2 / #1229).
-    expect(rendersWorkCounter('claude')).toBe(true);
-    expect(rendersWorkCounter('codex')).toBe(true);
-    expect(rendersWorkCounter('/usr/local/bin/claude')).toBe(true);
-    expect(rendersWorkCounter('agy')).toBe(false);
-    expect(rendersWorkCounter('gemini')).toBe(false);
-    expect(rendersWorkCounter('')).toBe(false);
-    expect(rendersWorkCounter(null)).toBe(false);
-  });
-
   it('pins provider-default constants', () => {
     expect(DEFAULT_TUI_PROMPT_DELAY_MS).toBe(2500);
-    expect(DEFAULT_TUI_IDLE_TIMEOUT_MS).toBe(180000);
   });
 
   it('pins buffer caps with headroom > cap (defensive growth allowance)', () => {
@@ -561,187 +461,12 @@ describe('tuiHandshake — paste timing constants', () => {
   });
 });
 
-// Issue #2074 — a swarm orchestrator in its Phase C serialized merge queue goes
-// silent for minutes per PR (each rebases + re-runs CI). Detection latches so the
-// idle reaper can extend its grace and not reap a still-working orchestrator.
-describe('tuiHandshake — merge-queue idle suppression (#2074)', () => {
-  it('extends the idle timeout well past the default 3-minute window', () => {
-    expect(MERGE_QUEUE_IDLE_TIMEOUT_MS).toBe(900000);
-    expect(MERGE_QUEUE_IDLE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TUI_IDLE_TIMEOUT_MS);
-  });
-
-  it('isMergeQueueSignal matches Phase C merge-queue chrome (case-insensitive)', () => {
-    expect(isMergeQueueSignal('### Swarm Phase C — Serialized merge queue')).toBe(true);
-    expect(isMergeQueueSignal('Running: gh pr checks 2071 --required --watch --fail-fast')).toBe(true);
-    expect(isMergeQueueSignal('gh pr merge 2071 --merge --delete-branch')).toBe(true);
-    expect(isMergeQueueSignal('PHASE C: serialized MERGE QUEUE begins')).toBe(true);
-  });
-
-  it('isMergeQueueSignal ignores ordinary implementation/output chrome', () => {
-    expect(isMergeQueueSignal('Editing server/services/agentTuiSpawning.js')).toBe(false);
-    expect(isMergeQueueSignal('● high · (12s · running tests)')).toBe(false);
-    expect(isMergeQueueSignal('')).toBe(false);
-    expect(isMergeQueueSignal(null)).toBe(false);
-    expect(isMergeQueueSignal(undefined)).toBe(false);
-  });
-
-  it('createMergeQueueTracker latches on first signal and stays active through silence', () => {
-    const tracker = createMergeQueueTracker();
-    expect(tracker.active).toBe(false);
-    tracker.observe('implementing the fix, running the suite');
-    expect(tracker.active).toBe(false);
-    // Enters Phase C — latches.
-    expect(tracker.observe('gh pr merge 2071 --merge --delete-branch')).toBe(true);
-    expect(tracker.active).toBe(true);
-    // Subsequent quiet CI-wait chunks (no marker) must NOT un-latch it — the
-    // whole point is that the silent gap is when the grace is needed.
-    tracker.observe('waiting...');
-    tracker.observe('');
-    expect(tracker.active).toBe(true);
-  });
-});
-
-// Observed 2026-07-02 (agent-61508f36) — a do:release run's multi-reviewer
-// loop correctly backgrounded a slow codex review and polled for it rather
-// than blocking, but the reviewer's silent working stretch exceeded the
-// 3-minute default and the runner reaped the still-waiting release as a false
-// `idle-complete` success before it reached the merge gate, leaving PR #2084
-// open. Mirrors the merge-queue suppression above.
-describe('tuiHandshake — review-loop idle suppression', () => {
-  it('extends the idle timeout well past the default 3-minute window', () => {
-    expect(REVIEW_LOOP_IDLE_TIMEOUT_MS).toBe(900000);
-    expect(REVIEW_LOOP_IDLE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TUI_IDLE_TIMEOUT_MS);
-  });
-
-  it('isReviewLoopSignal matches multi-reviewer-loop chrome (case-insensitive)', () => {
-    expect(isReviewLoopSignal('Review plan: [claude, codex] (mode: series, stop-mode: all)')).toBe(true);
-    expect(isReviewLoopSignal('--- Review pass 1/2: codex ---')).toBe(true);
-  });
-
-  it('isReviewLoopSignal ignores ordinary implementation/output chrome', () => {
-    expect(isReviewLoopSignal('Editing server/services/agentTuiSpawning.js')).toBe(false);
-    expect(isReviewLoopSignal('● high · (12s · running tests)')).toBe(false);
-    expect(isReviewLoopSignal('')).toBe(false);
-    expect(isReviewLoopSignal(null)).toBe(false);
-    expect(isReviewLoopSignal(undefined)).toBe(false);
-  });
-
-  // Regression for false-positive latches found across three rounds of local
-  // review: bare substrings ('review pass', 'review loop', 'multi-reviewer',
-  // 'multi-reviewer summary') would match this project's own CLAUDE.md
-  // convention ("run a simplify/self-review pass before committing") and this
-  // repo's bundled slashdo docs — which say "review loop"/"multi-reviewer"
-  // dozens of times, include the literal instruction text "Review plan:
-  // {REVIEW_AGENTS}...", AND (codex review's finding) render a fully-formed
-  // example of their own "## Multi-Reviewer Summary" aggregate-report heading
-  // in a sample output block — latching the tracker for ANY CoS agent's
-  // ordinary narration or docs-editing, not just an actual do:release/do:pr/
-  // do:rpr run.
-  it('isReviewLoopSignal does NOT match ordinary self-review narration or doc prose', () => {
-    expect(isReviewLoopSignal('running the self-review pass before committing')).toBe(false);
-    expect(isReviewLoopSignal('## Local Agent Code Review Loop')).toBe(false);
-    expect(isReviewLoopSignal('You are a Copilot review loop agent.')).toBe(false);
-    expect(isReviewLoopSignal('the multi-reviewer wrapper dispatches each listed agent')).toBe(false);
-    expect(isReviewLoopSignal('Print the resolved plan before starting: `Review plan: {REVIEW_AGENTS} (mode: ...)`')).toBe(false);
-    expect(isReviewLoopSignal('## Multi-Reviewer Summary')).toBe(false);
-  });
-
-  it('createReviewLoopTracker latches on first signal and stays active through silence', () => {
-    const tracker = createReviewLoopTracker();
-    expect(tracker.active).toBe(false);
-    tracker.observe('implementing the fix, running the suite');
-    expect(tracker.active).toBe(false);
-    // Enters the multi-reviewer loop — latches.
-    expect(tracker.observe('Review plan: [claude, codex] (mode: series, stop-mode: all)')).toBe(true);
-    expect(tracker.active).toBe(true);
-    // Subsequent quiet reviewer-wait chunks (no marker) must NOT un-latch it —
-    // the whole point is that the silent gap is when the grace is needed.
-    tracker.observe('waiting for codex...');
-    tracker.observe('');
-    expect(tracker.active).toBe(true);
-  });
-
-  // Regression for codex review [P2] (iteration 2): a real TUI can deliver
-  // the banner split across two onData chunks (token-by-token streaming),
-  // so checking only the current chunk in isolation would miss it.
-  it('createReviewLoopTracker latches on a marker split across two chunks', () => {
-    const tracker = createReviewLoopTracker();
-    // Split right before the '[' that anchors the pattern — neither half
-    // alone contains "review plan: [".
-    tracker.observe('Now starting the review loop. Review plan:');
-    expect(tracker.active).toBe(false);
-    expect(tracker.observe(' [claude, codex] (mode: series, stop-mode: all)')).toBe(true);
-    expect(tracker.active).toBe(true);
-  });
-});
-
-// Incident 2026-08-09, task-mslczmtr: three consecutive attempts were reaped
-// while `/do:pr`'s self-review gate waited on backgrounded reviewers (an Ollama
-// per-file pass, a headless codex pass). Between reviewer completions the model
-// sits at the prompt and the TUI emits NOTHING, so the 3-minute default fired
-// on a session that was working correctly. The branch ended with three commits
-// pushed and no PR. The review-loop tracker above did NOT cover it: that keys
-// on the multi-reviewer LOOP banners, which only print when configReviewLoop is
-// on — this run had it off (zero marker hits across all three transcripts).
-describe('tuiHandshake — background-shell idle grace (task-mslczmtr)', () => {
-  it('extends the idle timeout well past the default 3-minute window', () => {
-    expect(BACKGROUND_SHELL_IDLE_TIMEOUT_MS).toBe(900000);
-    expect(BACKGROUND_SHELL_IDLE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TUI_IDLE_TIMEOUT_MS);
-  });
-
-  it('isBackgroundShellSignal matches the outstanding-shell footer', () => {
-    expect(isBackgroundShellSignal('✻ Baked for 20s · 2 shells still running')).toBe(true);
-    expect(isBackgroundShellSignal('✻ Cooked for 2s · 1 shell still running')).toBe(true);
-    expect(isBackgroundShellSignal('SAUTÉED FOR 1M 8S · 3 SHELLS STILL RUNNING')).toBe(true);
-  });
-
-  // The TUI repaints DIFFERENTIALLY, so a redraw that rewrites only the changed
-  // cells can drop the space between the count and the noun. This exact string
-  // is the ONLY rendering of the footer in the agent-839255ca transcript — a
-  // pattern requiring a literal space would have missed that run entirely.
-  it('isBackgroundShellSignal tolerates the space dropped by a differential repaint', () => {
-    expect(isBackgroundShellSignal('✻ Baked for 34m 33s · 1shell still running')).toBe(true);
-  });
-
-  it('isBackgroundShellSignal ignores ordinary narration and non-strings', () => {
-    expect(isBackgroundShellSignal('the dev server is still running on :5555')).toBe(false);
-    expect(isBackgroundShellSignal('shells still running')).toBe(false);
-    expect(isBackgroundShellSignal('Ran 5 shell commands')).toBe(false);
-    expect(isBackgroundShellSignal('')).toBe(false);
-    expect(isBackgroundShellSignal(null)).toBe(false);
-    expect(isBackgroundShellSignal(undefined)).toBe(false);
-  });
-
-  it('createBackgroundShellTracker latches on first signal and stays active through silence', () => {
-    const tracker = createBackgroundShellTracker();
-    expect(tracker.active).toBe(false);
-    tracker.observe('implementing the fix, running the suite');
-    expect(tracker.active).toBe(false);
-    expect(tracker.observe('✻ Baked for 20s · 2 shells still running')).toBe(true);
-    expect(tracker.active).toBe(true);
-    // The silent reviewer wait is exactly when the grace is needed, so quiet
-    // chunks must not un-latch it.
-    tracker.observe('Standing by for the review to finish.');
-    tracker.observe('');
-    expect(tracker.active).toBe(true);
-  });
-
-  it('createBackgroundShellTracker latches on a marker split across two chunks', () => {
-    const tracker = createBackgroundShellTracker();
-    tracker.observe('✻ Baked for 20s · 2 shells');
-    expect(tracker.active).toBe(false);
-    expect(tracker.observe(' still running')).toBe(true);
-    expect(tracker.active).toBe(true);
-  });
-});
-
 describe('tuiHandshake — codex MCP-boot paste patience (agent-c5a26b40)', () => {
-  it('deadline covers a node_repl startup_timeout_sec=120 plus margin, under the idle-reap window', () => {
+  it('deadline covers a node_repl startup_timeout_sec=120 plus margin', () => {
     // Long enough for the documented 120s node_repl startup + an npx cold
-    // download, short enough to resolve before the 180s default idle reaper.
+    // download, with a bounded retry window for a genuinely hung boot.
     expect(MCP_BOOT_PASTE_DEADLINE_MS).toBe(150000);
     expect(MCP_BOOT_PASTE_DEADLINE_MS).toBeGreaterThan(120000);
-    expect(MCP_BOOT_PASTE_DEADLINE_MS).toBeLessThan(DEFAULT_TUI_IDLE_TIMEOUT_MS);
     expect(MCP_BOOT_PASTE_RETRY_DELAY_MS).toBe(5000);
   });
 

@@ -36,40 +36,6 @@ export { commitsSince };
 export const RAW_TAIL_ANALYSIS_BYTES = 1024 * 1024;
 
 /**
- * Check if a worktree has any uncommitted changes. Returns true when the
- * working tree is dirty (staged or unstaged changes exist). Used to gate
- * idle-complete success — an agent that idled out with zero file changes
- * should fail, not succeed.
- */
-export async function worktreeHasChanges(workspacePath) {
-  if (!workspacePath || typeof workspacePath !== 'string') return false;
-  const status = await git.getStatus(workspacePath).catch(() => null);
-  return status && !status.clean;
-}
-
-/**
- * Did this agent leave any evidence of work behind? Dirty tree OR at least one
- * commit made during the run.
- *
- * The commit half is what makes this correct for jobs whose deliverable is a
- * COMMIT rather than a dirty tree — `/do:release` and `/do:pr` runs commit,
- * push, and open a PR, so by the time they idle the tree is clean *because they
- * succeeded*. Gating on `worktreeHasChanges` alone scored those as
- * `idle-no-changes` failures: two consecutive release runs on 2026-08-08 each
- * cut the release commit and opened/repaired the release PR, were reported as
- * failures, and the task retried — holding the release for two days.
- *
- * Accepted trade-off: a run that pulls in a merge commit another agent pushed
- * mid-run sees that commit stamped inside the window and counts it as work.
- * That false success is rarer, and far cheaper, than failing every
- * commit-and-push job.
- */
-export async function worktreeHasWorkEvidence(workspacePath, sinceMs) {
-  if (await worktreeHasChanges(workspacePath)) return true;
-  return (await commitsSince(workspacePath, sinceMs)) > 0;
-}
-
-/**
  * Capture the git diff (staged + unstaged) from a worktree and save it to the
  * agent archive dir. Called before worktree cleanup so post-mortems can see
  * what changes existed even if the worktree is deleted. Non-throwing — a
@@ -110,8 +76,8 @@ export async function captureWorktreeDiff(workspacePath, agentDir) {
  * short-circuits the analysis entirely.
  *
  * `completionReason` / `completionError` carry the finalize path's OWN verdict
- * (idle reaper, max runtime, spawn failure). The analyzer prefers that structural
- * signal over a loose keyword match in the transcript — a repaint-driven PTY
+ * (legacy idle-reaper reason, max runtime, spawn failure). The analyzer prefers
+ * that structural signal over a loose keyword match in the transcript — a repaint-driven PTY
  * transcript is a whole session's worth of text, and any keyword in it (including
  * ones the agent itself typed) would otherwise classify the failure.
  *

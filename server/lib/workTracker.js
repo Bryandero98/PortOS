@@ -131,8 +131,8 @@ export function forgeCliForTracker(tracker) {
  * (on-commit) and `resolveReferenceWatchBlock` (the WEEKLY scheduled task) — to
  * stamp `worktreeChangesExpected` on the spawned task off the SAME resolved
  * value that picks the prompt's {trackerInstructions} block, so the flag can't
- * drift from the instructions the agent actually got (see agentTuiSpawning.js's
- * idle-complete gate, #3102/#3140).
+ * drift from the instructions the agent actually got (see agentTuiSpawning.js,
+ * #3102/#3140).
  * An unknown/absent tracker is treated as file-based, matching
  * formatTrackerInstructions' PLAN.md fallback.
  */

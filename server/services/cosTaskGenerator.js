@@ -2792,12 +2792,12 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // for the app's resolved work tracker.
   const trackerFiling = await resolveTrackerFilingBlock(app, taskType);
   if (trackerFiling.workTracker) {
-    // Traceability + the TUI idle-complete gate, derived from the SAME resolved
-    // tracker that selected the {trackerInstructions} block above so the flag
-    // can't drift from the instructions the agent actually got: the PLAN.md path
-    // commits checklist items (dirty tree), while github/gitlab/jira file
-    // issues/tickets and leave the tree CLEAN. Without this a scheduled
-    // forge-tracker run is recorded as an `idle-no-changes` failure (#3102).
+    // Traceability + deliverable posture, derived from the SAME resolved tracker
+    // that selected the {trackerInstructions} block above so the flag can't drift
+    // from the instructions the agent actually got: the PLAN.md path commits
+    // checklist items (dirty tree), while github/gitlab/jira file issues/tickets
+    // and leave the tree CLEAN. Without this downstream bookkeeping mistakes a
+    // scheduled forge-tracker run for missing code work (#3102).
     metadata.workTracker = trackerFiling.workTracker;
     // Stamped unconditionally — a schedule/per-app `worktreeChangesExpected`
     // override would let the flag disagree with the instructions the agent

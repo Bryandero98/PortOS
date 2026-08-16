@@ -617,7 +617,8 @@ const TUI_PLACEHOLDER_HINT_PATTERN = /^\s*[❯>]\s*Try\s+["'].*$/gm;
  * "lines". That defeated a line-only window entirely — the "last 200 lines" was
  * the WHOLE 17-minute session, so a keyword anywhere in it (in the pasted prompt,
  * or in a `grep -rn "maxTokens\|max_tokens"` the agent itself ran) classified the
- * failure. That is exactly how an idle-reaper kill got labelled `context-length`.
+ * failure. That is exactly how an earlier idle-reaper kill got labelled
+ * `context-length`.
  *
  * So: strip escape sequences, treat CR as a line break (repaints overwrite a
  * line rather than starting one), drop blanks, then bound by lines AND by
@@ -657,14 +658,17 @@ function resolvePatternOrigin(errorDef, analysisOutput) {
 /**
  * Runner-resolved completion reasons → the failure they actually describe.
  *
- * When the spawner's own finalize path already KNOWS why a run ended (the idle
- * reaper fired, max runtime elapsed, the shell session never came up), that is a
- * structural signal about the process — strictly better evidence than a regex
+ * When the spawner's own finalize path already KNOWS why a run ended (a legacy
+ * idle reaper fired, max runtime elapsed, or the shell session never came up),
+ * that is a structural signal about the process — strictly better evidence than a regex
  * sweep over the transcript. Keyed by the `reason` each `finish()` call passes;
  * see `server/services/agentTuiSpawning.js`. Categories are deliberately reused
  * from ERROR_PATTERNS so downstream taxonomies (task-learning metrics,
  * layeredIntelligenceExecutionFailures) keep classifying them without a new token.
  */
+// Legacy idle-out reasons remain readable for archived agent records and retries;
+// the current CoS TUI path completes by sentinel, process exit, explicit provider
+// failure, or its wall-clock runtime ceiling.
 export const COMPLETION_REASON_ANALYSES = {
   'idle-no-changes': {
     category: 'no-changes',
@@ -802,8 +806,8 @@ export const COMPLETION_REASON_ANALYSES = {
 /**
  * Screen signatures of a TUI parked on an interactive prompt — a multiple-choice
  * selector, an approval gate, a confirmation. A CoS agent is unattended, so
- * nothing ever answers: the session repaints the prompt until the idle reaper
- * kills it, and the run lands as a plain idle-out. That verdict is true but
+ * nothing ever answers: older TUI handling repaints the prompt until its idle
+ * fallback kills it, and the run lands as a plain idle-out. That verdict is true but
  * diagnostically useless — it sends the reader hunting for a stalled provider
  * request, and a retry re-runs the same command straight into the same gate.
  * (Observed cost: three identical `/do:plan-task` attempts, each parked on a
@@ -837,8 +841,8 @@ export function endsAwaitingUserInput(analysisOutput) {
 }
 
 /**
- * Idle-out reasons worth re-explaining as an unanswered prompt. All three are
- * "the reaper killed it" verdicts, so when the tail shows a selector or approval
+ * Legacy idle-out reasons worth re-explaining as an unanswered prompt. All three
+ * are "the reaper killed it" verdicts, so when the tail shows a selector or approval
  * gate that IS the proximate cause — including for a programmatic-I/O run, whose
  * payload went unwritten precisely because it never got past the prompt.
  */
@@ -855,7 +859,7 @@ const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-ac
 const STARTUP_GATE_REFINABLE_REASONS = new Set(['paste-not-rendered', 'tui-not-ready']);
 
 /**
- * Re-word a run whose transcript ends on an unanswered prompt — an idle-out that
+ * Re-word a run whose transcript ends on an unanswered prompt — a legacy idle-out that
  * stalled ON one, or a startup verdict where a dialog was up BEFORE the prompt
  * could land (the two groups get different prose; see the reason sets). The
  * original `category` is preserved — downstream taxonomies (auto-fix tiers,
@@ -878,7 +882,7 @@ function refineIdleReasonAnalysis(def, completionReason, analysisOutput) {
   return {
     ...def,
     message: 'Agent stalled on an interactive prompt with nobody to answer it',
-    suggestedFix: 'The transcript ends on an unanswered prompt (a choice selector or approval gate), so the agent never got past it and the idle reaper killed the run. Agents run unattended — re-running as-is will stall the same way. Invoke the command in its non-interactive form (e.g. `/do:plan-task --yes`) or reword the task so no approval is needed.'
+    suggestedFix: 'The transcript ends on an unanswered prompt (a choice selector or approval gate), so the agent never got past it and the old idle fallback killed the run. Agents run unattended — re-running as-is will stall the same way. Invoke the command in its non-interactive form (e.g. `/do:plan-task --yes`) or reword the task so no approval is needed.'
   };
 }
 
@@ -910,7 +914,7 @@ function structuralReasonAnalysis(def, completionReason, completionError) {
  * becomes the default classification, and only a STRUCTURED provider/runner
  * signal in the transcript (an `API Error: NNN` line, a Node error code) may
  * override it — a loose output-scan keyword match may not. Without that gate an
- * idle-reaper kill was labelled `context-length` (actionable → task blocked +
+ * an idle-reaper kill was labelled `context-length` (actionable → task blocked +
  * investigation filed) purely because the agent had run a grep for `max_tokens`
  * fifteen minutes earlier.
  */

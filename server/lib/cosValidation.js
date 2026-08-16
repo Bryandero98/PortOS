@@ -999,8 +999,8 @@ export const createCosTaskSchema = z.object({
   ),
   // The slashdo catalog's deliverable posture (#3636): whether this run is
   // EXPECTED to leave commits in its worktree. A report-shaped workflow
-  // (`/do:review`) carries `false` so the TUI idle reaper doesn't score its
-  // correctly-clean tree as `idle-no-changes`. Carried onto the task by
+  // (`/do:review`) carries `false` so downstream bookkeeping does not treat its
+  // correctly-clean tree as missing code work. Carried onto the task by
   // `cosTaskStore.js` only on a strict boolean — absent means "no opinion".
   worktreeChangesExpected: z.preprocess(
     v => v === 'true' ? true : v === 'false' ? false : v,
@@ -1186,8 +1186,8 @@ export const createCosJobSchema = z.object({
     openPR: z.boolean().optional(),
     prCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
     simplify: z.boolean().optional(),
-    // Absent = true (a clean worktree at idle-out is a failure). `false` opts the
-    // job out of the TUI idle-complete worktree-changes gate — see
+    // Absent = true for code-shaped work. `false` marks a report-shaped job whose
+    // deliverable is intentionally outside the worktree — see
     // ALLOWED_TASK_METADATA_KEYS below and agentTuiSpawning.js (#3102).
     worktreeChangesExpected: z.boolean().optional(),
   }).optional(),
@@ -1367,11 +1367,10 @@ const ALLOWED_TASK_METADATA_KEYS = [
   // agent can't land code. See agentWorktreeCleanup.js.
   'discardWorktree',
   // Whether a successful run is EXPECTED to leave file changes in the worktree
-  // (#3102). Default (absent) = true: the TUI idle-complete gate fails a run that
-  // idled out on a clean tree. `false` opts a task type out of that gate — e.g. a
-  // reference-watch run against a GitHub/GitLab/JIRA work tracker files its
-  // proposals as issues and, per the prompt, edits no application code, so a
-  // clean worktree is the SUCCESS shape. See agentTuiSpawning.js.
+  // (#3102). Default (absent) = true for code-shaped work. `false` marks a task
+  // type whose deliverable is outside the repo — e.g. a reference-watch run
+  // against a GitHub/GitLab/JIRA work tracker files its proposals as issues and,
+  // per the prompt, edits no application code, so a clean worktree is expected.
   'worktreeChangesExpected'
 ];
 
