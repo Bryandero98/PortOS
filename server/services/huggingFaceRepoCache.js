@@ -24,7 +24,10 @@ import { PATHS, readJSONFileStrict, atomicWrite, ensureDir } from '../lib/fileUt
 const CACHE_FILE = join(PATHS.data, 'cache', 'huggingface-repos.json')
 // Bump when the envelope shape changes — a mismatch drops the file and refetches
 // rather than trying to read an older layout.
-const CACHE_SCHEMA_VERSION = 1
+// v2 invalidates legacy `model: null` entries, which may represent a cached
+// 401/403 from before auth denials became retryable (#4365). Their envelope did
+// not retain the HTTP status, so selective migration is impossible.
+const CACHE_SCHEMA_VERSION = 2
 // 7 days. Long because the payload is near-immutable (published file sizes never
 // change); bounded because a repo CAN gain a new quant, and a stale card would
 // hide it indefinitely.
