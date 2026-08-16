@@ -256,6 +256,12 @@ export default function IssuesTab({ appId, appName }) {
     replaceClaims(prev => ({ ...prev, [issue.number]: { status: 'queuing', taskId: null } }));
     const result = await api.createSlashdoTask('next', appId, {
       target: String(issue.number),
+      issueContext: {
+        number: issue.number,
+        title: issue.title || '',
+        body: issue.body || '',
+        ...(issue.url ? { url: issue.url } : {})
+      },
       provider: selectedProviderId || undefined,
       model: selectedModel || undefined,
       effort: effort || undefined,

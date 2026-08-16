@@ -24,7 +24,9 @@ export const getAppWorkItems = (id, { issueAuthorFilter } = {}, options) => {
 // Every OPEN issue on the forge this app's git origin points at (GitHub via gh,
 // GitLab via glab): { forge, fullName, issues: [{ number, title, body, labels,
 // assignees, author, url, createdAt, updatedAt }], reason, transient }. Backs the
-// app Issues tab. Read-only; the tab owns its own error UI, so default to silent.
+// app Issues tab; a manual claim reuses the selected row's title/body as
+// `issueContext` so the agent does not fetch the same issue content again.
+// Read-only; the tab owns its own error UI, so default to silent.
 export const getAppIssues = (id, options) =>
   request(`/apps/${id}/issues`, { silent: true, ...options });
 // Effective Layered Intelligence config (self-improvement loop) for an app —
