@@ -149,6 +149,38 @@ function generationFieldSchema(def) {
 
 export const COMMISSION_NAME_MAX = 200;
 export const COMMISSION_INTENT_MAX = 2000;
+export const COMMISSION_MUSIC_TASTE_ANCHOR_MAX = 5;
+export const COMMISSION_MUSIC_TASTE_PERCENT_MAX = 100;
+export const COMMISSION_MUSIC_TASTE_ENGINE_MAX = 64;
+
+export const CREATIVE_COMMISSION_MUSIC_TASTE_WINDOWS = Object.freeze(['week', 'month']);
+
+const musicTasteEngineId = z.string().trim().max(COMMISSION_MUSIC_TASTE_ENGINE_MAX).nullable().optional();
+
+// This is deliberately configuration only. Raw Digital Twin answers, Spotify
+// caches, and selected source records stay on the owning machine; the bounded
+// recipe produced at fire time is local run provenance, not commission brief
+// data. The brief itself can federate this non-sensitive opt-in configuration.
+export const creativeCommissionMusicTasteSchema = z.object({
+  source: z.literal('digital-twin').default('digital-twin'),
+  window: z.enum(CREATIVE_COMMISSION_MUSIC_TASTE_WINDOWS).default('month'),
+  anchorCount: z.number().int().min(1).max(COMMISSION_MUSIC_TASTE_ANCHOR_MAX).default(3),
+  explorationPercent: z.number().int().min(0).max(COMMISSION_MUSIC_TASTE_PERCENT_MAX).default(20),
+  musicEngineId: musicTasteEngineId,
+  musicModelId: musicTasteEngineId,
+});
+
+// No defaults on PATCH: omitted fields must preserve the stored taste config,
+// while null explicitly disables taste mode. The service performs the same
+// absent-vs-empty merge as the other brief fields.
+export const creativeCommissionMusicTasteUpdateSchema = z.object({
+  source: z.literal('digital-twin').optional(),
+  window: z.enum(CREATIVE_COMMISSION_MUSIC_TASTE_WINDOWS).optional(),
+  anchorCount: z.number().int().min(1).max(COMMISSION_MUSIC_TASTE_ANCHOR_MAX).optional(),
+  explorationPercent: z.number().int().min(0).max(COMMISSION_MUSIC_TASTE_PERCENT_MAX).optional(),
+  musicEngineId: musicTasteEngineId,
+  musicModelId: musicTasteEngineId,
+}).nullable();
 
 // The brief the commission steers by. `intent` is the free-text core ("something
 // surreal, dreamlike, unsettlingly beautiful"); `genre`/`category` are optional
@@ -166,6 +198,7 @@ export const creativeCommissionBriefSchema = z.object({
   // Catalog ingredient ids to seed future generations from (Phase 3+ folds these
   // into the CD cast). Accepted now so the record shape is forward-stable.
   seedRefs: z.array(z.string().trim().max(64)).max(50).default([]),
+  musicTaste: creativeCommissionMusicTasteSchema.nullable().optional(),
 });
 
 // A cadence descriptor. Per-kind fields are validated in `superRefine` so a
@@ -323,6 +356,7 @@ export const creativeCommissionBriefUpdateSchema = z.object({
     seriesId: z.string().max(120).nullable().optional(),
   }).optional(),
   seedRefs: z.array(z.string().trim().max(64)).max(50).optional(),
+  musicTaste: creativeCommissionMusicTasteUpdateSchema.optional(),
 });
 
 // A user reaction to a specific commission run (#2657, Phase 2 — the taste

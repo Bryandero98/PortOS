@@ -40,6 +40,10 @@ describe('PORTOS_SCHEMA_VERSIONS', () => {
   it('declares mediaCollections layout version', () => {
     expect(PORTOS_SCHEMA_VERSIONS.mediaCollections).toBe(1);
   });
+
+  it('version-gates the additive Creative Commission taste brief shape', () => {
+    expect(PORTOS_SCHEMA_VERSIONS.creativeCommissions).toBe(4);
+  });
 });
 
 describe('buildPortosMeta', () => {
