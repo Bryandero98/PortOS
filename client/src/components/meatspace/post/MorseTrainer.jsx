@@ -284,14 +284,31 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
     const gen = ++toneGenRef.current;
     // Claimed BEFORE the resume await so the context comes up on the `playback`
     // session — the sidetone is output-only and the iPhone's ring/silent switch
-    // would otherwise mute the whole send drill. A rejected resume never
-    // reaches stopTone, so it hands the claim back on its way out.
+    // would otherwise mute the whole send drill.
     claimSession();
-    const ctx = await ensureCtx().catch((err) => { releaseSession(); throw err; });
+    const ctx = await ensureCtx().catch((err) => {
+      // claimSession has one slot. A newer key press replaces this claim while
+      // the first resume is pending, so an older failure must not release the
+      // newer press's playback session.
+      if (gen === toneGenRef.current) {
+        releaseSession();
+        pressingRef.current = false;
+        setPressing(false);
+      }
+      console.error(`❌ Morse sidetone unavailable: ${err.message}`);
+      return null;
+    });
     // Unmounting close()s and nulls the per-mount context, so a press parked in
     // the unlock window resumes with nothing to sound into (same bail as
     // CopyDrill.playPrompt). Release rather than throwing into createOscillator.
-    if (!ctx) { releaseSession(); return; }
+    if (!ctx) {
+      if (gen === toneGenRef.current) {
+        releaseSession();
+        pressingRef.current = false;
+        setPressing(false);
+      }
+      return;
+    }
     // A fast tap can release (endPress → stopTone), or a newer press can start,
     // before the first-press-only resume await settles. Bail if the key is no
     // longer held (`!pressingRef.current`) OR a newer press superseded this one
@@ -917,6 +934,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
   const [results, setResults] = useState([]);
   const [feedback, setFeedback] = useState(null);
   const [playing, setPlaying] = useState(false);
+  const [playbackError, setPlaybackError] = useState(null);
   const [done, setDone] = useState(false);
   const inputRef = useRef(null);
   const roundStartRef = useRef(0);
@@ -945,18 +963,27 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
   async function playPrompt(isNew) {
     if (playingRef.current) return;
     playingRef.current = true;
+    setPlaybackError(null);
     // Claimed BEFORE the resume await so the context comes up on the iOS
     // `playback` session — this drill is pure synth with no media element, so
     // on the default `auto` session the ring/silent switch mutes the prompt
-    // while the UI still says "playing...". A rejected resume never reaches the
-    // release below, so it hands the claim back on its way out.
+    // while the UI still says "playing...".
     claimSession();
-    const ctx = await ensureCtx().catch((err) => { releaseSession(); throw err; });
+    const ctx = await ensureCtx().catch((err) => {
+      console.error(`❌ Morse prompt audio unavailable: ${err.message}`);
+      return null;
+    });
     // The per-mount context is close()d and nulled on unmount, so a play that
     // was still inside the iOS unlock window when the trainer went away has
     // nothing left to sound into. Bail rather than throwing into playMorse — and
     // hand the claim back, since no teardown will run for this play.
-    if (!ctx) { releaseSession(); playingRef.current = false; return; }
+    if (!ctx) {
+      releaseSession();
+      setPlaying(false);
+      playingRef.current = false;
+      setPlaybackError('Audio playback could not start. Check your browser audio settings and try again.');
+      return;
+    }
     const text = isNew ? pickKochPrompt(prefs.kochLevel) : prompt;
     if (isNew) {
       setPrompt(text);
@@ -964,14 +991,22 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
       setFeedback(null);
     }
     setPlaying(true);
-    // `finally`, not a plain sequence: a scheduling failure that rejects here
-    // would otherwise strand the session claim AND leave `playingRef` true,
-    // which silently blocks every later Start Round / replay for the session.
-    await playMorse(ctx, text, prefs).finally(() => {
+    // Handle a synthesis failure locally: the handlers that call this function
+    // intentionally fire-and-forget, so rethrowing would create an unhandled
+    // rejection and strand the round's synchronous re-entrancy guard.
+    const played = await playMorse(ctx, text, prefs).then(
+      () => true,
+      (err) => {
+        console.error(`❌ Morse prompt playback failed: ${err.message}`);
+        setPlaybackError('Audio playback could not finish. Try replaying the prompt.');
+        return false;
+      },
+    ).finally(() => {
       releaseSession();
       setPlaying(false);
       playingRef.current = false;
     });
+    if (!played) return;
     questionStartRef.current = Date.now();
     setTimeout(() => inputRef.current?.focus(), 50);
   }
@@ -1087,6 +1122,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
             ? 'Listen to a 10-question round. No code hints on the results screen — pure recall. Hit 90% to unlock the next letter.'
             : 'Listen to a 10-question round. Hit 90% to unlock the next letter.'}
         </p>
+        {playbackError && <p role="alert" className="text-sm text-port-error">{playbackError}</p>}
         <button
           onClick={startRound}
           className="px-6 py-3 bg-port-accent hover:bg-port-accent/80 text-white font-medium rounded-lg transition-colors inline-flex items-center gap-2"
@@ -1099,6 +1135,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
 
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-6 space-y-4">
+      {playbackError && <p role="alert" className="text-sm text-port-error">{playbackError}</p>}
       <div className="flex items-center justify-between text-xs text-gray-500">
         <span>Question {results.length + 1} / {ROUND_SIZE}</span>
         <button

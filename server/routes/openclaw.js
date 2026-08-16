@@ -11,6 +11,7 @@ import {
   streamSessionMessage
 } from '../integrations/openclaw/api.js';
 import { onClientDisconnect, openSseStream } from '../lib/sseDownload.js';
+import { awaitWritableDrain } from '../lib/streamBackpressure.js';
 
 const router = express.Router();
 
@@ -203,7 +204,7 @@ router.post('/sessions/:id/messages/stream', asyncHandler(async (req, res) => {
       if (done || clientDisconnected || res.writableEnded || res.destroyed) break;
       if (value) {
         const canContinue = res.write(decoder.decode(value, { stream: true }));
-        if (!canContinue) await new Promise(resolve => res.once('drain', resolve));
+        if (!canContinue) await awaitWritableDrain(res);
       }
     }
     const tail = decoder.decode();

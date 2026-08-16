@@ -307,18 +307,35 @@ vi.mock('../../lib/detachedSpawn.js', () => ({
 // Import AFTER all vi.mock calls so the hoisted mocks are in place.
 let generateChainedVideo;
 let generateVideo;
+let extractLastFrame;
 let videoGenEvents;
 
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo, generateVideo } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo, extractLastFrame } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
 afterEach(() => {
   settingsState.acceptedModelTerms = [];
   vi.clearAllMocks();
+});
+
+describe('extractLastFrame — shared-gallery uploads', () => {
+  it('accepts an uploaded gallery history id', async () => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValueOnce([{
+      id: 'upload-ab12cd34',
+      filename: 'upload-ab12cd34.mp4',
+      prompt: 'example',
+    }]);
+
+    await expect(extractLastFrame('upload-ab12cd34')).resolves.toMatchObject({
+      filename: 'lastframe-upload-ab12cd34.png',
+      path: '/data/images/lastframe-upload-ab12cd34.png',
+    });
+  });
 });
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

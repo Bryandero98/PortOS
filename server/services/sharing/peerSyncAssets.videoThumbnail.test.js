@@ -140,6 +140,31 @@ describe('#4162 — pulled-video thumbnail naming + arrival event', () => {
     expect(arrivals.map((a) => a.filename)).toContain('ffffffff-0000-1111-2222-333333333333.jpg');
   });
 
+  it('reconciles an independent poster name after video-history metadata arrives', async () => {
+    const filename = 'timeline-deadbeef-1700000000000.mp4';
+    const bytes = Buffer.from('timeline-bytes');
+    await pullVideo(filename, bytes);
+    expect(vi.mocked(generateThumbnail).mock.calls[0][1]).toBe('timeline-deadbeef-1700000000000');
+
+    writeVideoHistory([{
+      id: '22222222-3333-4444-5555-666666666666',
+      filename,
+      thumbnail: '22222222-3333-4444-5555-666666666666.jpg',
+    }]);
+    vi.mocked(generateThumbnail).mockClear();
+
+    const arrivals = await pullVideo(filename, bytes);
+
+    expect(vi.mocked(generateThumbnail)).toHaveBeenCalledWith(
+      join(tempRoot, 'videos', filename),
+      '22222222-3333-4444-5555-666666666666',
+    );
+    expect(arrivals).toEqual([expect.objectContaining({
+      filename: '22222222-3333-4444-5555-666666666666.jpg',
+      kind: 'video-thumbnail',
+    })]);
+  });
+
   it('ignores a traversal-shaped `thumbnail` from a peer row and falls back to the stem', async () => {
     writeVideoHistory([{
       id: 'evil',

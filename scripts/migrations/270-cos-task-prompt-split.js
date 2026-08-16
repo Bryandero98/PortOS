@@ -178,7 +178,17 @@ export function splitPromptMetadata(markdown, { stamp }) {
  */
 async function queuePaths(rootDir) {
   const raw = await readFile(join(rootDir, 'data', 'cos', 'state.json'), 'utf-8').catch(() => null);
-  const config = raw ? JSON.parse(raw)?.config ?? {} : {};
+  let config = {};
+  if (raw) {
+    try {
+      config = JSON.parse(raw)?.config ?? {};
+    } catch {
+      // State recovery is intentionally tolerant elsewhere. A malformed
+      // optional config file must not prevent this migration from splitting
+      // the default queues and letting the normal state loader repair it.
+      console.warn('⚠️ migration 270: invalid CoS state; using default task queue paths');
+    }
+  }
   return QUEUE_FILES.map(({ configKey, file }) => (
     typeof config[configKey] === 'string' && config[configKey] ? config[configKey] : file
   ));

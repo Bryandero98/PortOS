@@ -518,6 +518,87 @@ describe('OpenClaw Routes', () => {
       }
     });
 
+    it('leaves a backpressured SSE wait when its client disconnects', async () => {
+      openclawApi.isConfigured.mockResolvedValue(CONFIGURED_STATUS);
+
+      let finishRead;
+      const pendingRead = new Promise((resolve) => { finishRead = resolve; });
+      let markReaderCancelled;
+      const readerCancelled = new Promise((resolve) => { markReaderCancelled = resolve; });
+      let reads = 0;
+      const mockReader = {
+        read: vi.fn(() => {
+          if (reads++ === 0) return Promise.resolve({ done: false, value: Buffer.from('data: first\\n\\n') });
+          return pendingRead;
+        }),
+        cancel: vi.fn(async () => {
+          markReaderCancelled();
+          finishRead({ done: true, value: undefined });
+        }),
+      };
+      openclawApi.streamSessionMessage.mockResolvedValue({
+        response: { ok: true, body: { getReader: vi.fn(() => mockReader) } },
+      });
+
+      let markBackpressured;
+      const backpressured = new Promise((resolve) => { markBackpressured = resolve; });
+      let markRouteEnded;
+      const routeEnded = new Promise((resolve) => { markRouteEnded = resolve; });
+      const backpressureApp = express();
+      backpressureApp.use(express.json({ limit: '55mb' }));
+      backpressureApp.use((_req, res, next) => {
+        const write = res.write.bind(res);
+        const end = res.end.bind(res);
+        let firstWrite = true;
+        res.write = (...args) => {
+          if (firstWrite) {
+            firstWrite = false;
+            markBackpressured();
+            return false;
+          }
+          return write(...args);
+        };
+        res.end = (...args) => {
+          markRouteEnded();
+          return end(...args);
+        };
+        next();
+      });
+      backpressureApp.use('/api/openclaw', openclawRoutes);
+
+      const server = await startLoopbackServer(backpressureApp);
+      let client;
+      try {
+        const body = JSON.stringify({ message: 'Disconnect while backpressured' });
+        client = httpRequest({
+          hostname: '127.0.0.1',
+          port: server.address().port,
+          method: 'POST',
+          path: '/api/openclaw/sessions/main/messages/stream',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body),
+          },
+        });
+        client.on('error', () => {});
+        client.end(body);
+
+        await backpressured;
+        client.destroy();
+        await readerCancelled;
+        await Promise.race([
+          routeEnded,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('route remained backpressured after close')), 1000)),
+        ]);
+
+        expect(mockReader.cancel).toHaveBeenCalledTimes(1);
+      } finally {
+        client?.destroy();
+        finishRead({ done: true, value: undefined });
+        await closeLoopbackServer(server);
+      }
+    });
+
     it('should write an error SSE event when upstream body is null', async () => {
       openclawApi.isConfigured.mockResolvedValue({ configured: true, enabled: true });
       openclawApi.streamSessionMessage.mockResolvedValue({ response: { ok: true, body: null } });

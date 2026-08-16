@@ -449,6 +449,27 @@ async function videoThumbnailNameForVideo(filename) {
   return null;
 }
 
+// Regenerate a video poster under the history row's declared name. The helper
+// also runs for a hash-matched video: metadata and bytes can arrive in either
+// order, and a first pull may have made only the filename-stem fallback before
+// a later videoHistory sync declared an independent poster name.
+async function reconcileVideoThumbnail(filename, videoPath, peerId) {
+  const rowThumbnail = await videoThumbnailNameForVideo(filename).catch(() => null);
+  const jobId = (rowThumbnail || filename).replace(/\.[a-z0-9]+$/i, '');
+  const expectedFilename = `${jobId}.jpg`;
+  if (existsSync(join(PATHS.videoThumbnails, expectedFilename))) return null;
+
+  const thumbFilename = await generateThumbnail(videoPath, jobId).catch(() => null);
+  if (thumbFilename) {
+    peerSyncEvents.emit('asset-arrived', {
+      filename: thumbFilename,
+      kind: 'video-thumbnail',
+      peerId,
+    });
+  }
+  return thumbFilename;
+}
+
 /**
  * Build a Music Video project's asset manifest (#1772). Unlike the Creative
  * Director store, a music video project has NO auto-linked media collection, so
@@ -919,6 +940,9 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
         // Bytes already up-to-date. Images still reconcile their sidecar, since
         // that may be the only reason this entry was flagged.
         if (entry.kind === 'image') await pullSidecarForImage(peer, base, safeName).catch(() => {});
+        // A video can have arrived before its video-history metadata. Recheck
+        // the declared poster even though the mp4 itself does not need a pull.
+        if (entry.kind === 'video') await reconcileVideoThumbnail(safeName, localFullPath, peer.instanceId);
         return;
       }
     }
@@ -946,32 +970,9 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
     await pullSidecarForImage(peer, base, safeName).catch(() => {});
   }
   // After a video pull, regenerate the thumbnail LOCALLY rather than pulling it
-  // as a sibling asset. Cheaper end-to-end: no new asset kind / URL-prefix /
-  // manifest-diff plumbing. The NAME comes from the synced video-history row's
-  // `thumbnail` field (#4162) — NOT the mp4 stem, which is only coincidentally
-  // right for videoGen clips and flatly wrong for a stitched timeline final (see
-  // `videoThumbnailNameForVideo`). The stem stays the fallback for the window
-  // where the bytes beat the `videoHistory` metadata category across.
-  //
-  // The regenerated thumbnail then gets its OWN `asset-arrived` emit: the video
-  // emit above names the `.mp4`, and `MediaImage` matches on filename alone, so
-  // without this a poster `<img>` that already 404'd sits on the "Syncing"
-  // placeholder until a remount even though the bytes are on disk.
-  //
-  // Best-effort throughout: if ffmpeg is missing the row still syncs (the item
-  // stops being filtered as "missing"); the tile just falls back to no preview.
-  // Mirrors generateThumbnail's null-on-failure contract.
+  // as a sibling asset. Its own `asset-arrived` event lets a poster that already
+  // 404'd leave MediaImage's "Syncing" placeholder without a remount.
   if (entry.kind === 'video') {
-    const rowThumbnail = await videoThumbnailNameForVideo(safeName).catch(() => null);
-    const jobId = (rowThumbnail || safeName).replace(/\.[a-z0-9]+$/i, '');
-    const videoPath = join(localDir, safeName);
-    const thumbFilename = await generateThumbnail(videoPath, jobId).catch(() => null);
-    if (thumbFilename) {
-      peerSyncEvents.emit('asset-arrived', {
-        filename: thumbFilename,
-        kind: 'video-thumbnail',
-        peerId: peer.instanceId,
-      });
-    }
+    await reconcileVideoThumbnail(safeName, fullPath, peer.instanceId);
   }
 }

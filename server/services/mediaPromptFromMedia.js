@@ -35,7 +35,10 @@ const MAX_PROMPT_LEN = 8000;
 const MAX_REASON_LEN = 1200;
 const MAX_FRAMES = 5;
 const VISION_TIMEOUT_MS = 180000;
-const VIDEO_ID_RE = /^[a-f0-9-]{36}$/i;
+// Render jobs use UUID history ids, while gallery uploads deliberately use an
+// `upload-<uuid8>` stem for their id, video filename, and thumbnail. Both are
+// gallery history records, so prompt-from-media must resolve either form.
+const VIDEO_ID_RE = /^(?:[a-f0-9-]{36}|upload-[a-f0-9]{8})$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
 const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|mkv)$/i;
 

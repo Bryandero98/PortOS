@@ -1281,16 +1281,20 @@ router.post('/history/:id/visibility', asyncHandler(async (req, res) => {
   res.json(await setHistoryItemHidden(req.params.id, !!req.body?.hidden));
 }));
 
-router.post('/last-frame/:id', asyncHandler(async (req, res) => {
-  res.json(await extractLastFrame(req.params.id));
-}));
+// Render jobs use UUID history ids, while shared-gallery uploads use an
+// `upload-<uuid8>` id. These mutating operations only resolve a stored history
+// record and subsequently derive the path from its guarded filename, so both
+// known id forms are valid here.
+const historyIdSchema = z.string().regex(
+  /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|upload-[a-f0-9]{8})$/i,
+  'invalid history id',
+);
 
-// History ids are produced by crypto.randomUUID(), so validate them as
-// UUIDs rather than the looser /^[a-f0-9-]{36}$/ pattern (which happily
-// accepts e.g. 36 hyphens). `.guid()` is Zod 4's name for the 8-4-4-4-12
-// hex-group check Zod 3's `.uuid()` performed (version-agnostic); matches
-// the .guid() usage in the other route schemas.
-const historyIdSchema = z.string().guid('invalid history id');
+router.post('/last-frame/:id', asyncHandler(async (req, res) => {
+  const parsed = historyIdSchema.safeParse(req.params.id);
+  if (!parsed.success) failValidation(parsed);
+  res.json(await extractLastFrame(parsed.data));
+}));
 
 router.post('/upscale/:id', asyncHandler(async (req, res) => {
   const parsed = historyIdSchema.safeParse(req.params.id);

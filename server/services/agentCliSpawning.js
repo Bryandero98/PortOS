@@ -40,6 +40,8 @@ import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../l
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
 import { doneSentinelPath } from '../lib/agentSentinel.js';
 import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -341,6 +343,18 @@ export async function spawnDirectly({
   // Ensure workspacePath is valid
   const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
 
+  // Direct CLI agents bypass runner.js, so their Ollama-backed harnesses need
+  // the same daemon context preparation as runner and TUI launches. This is
+  // deliberately before spawn: a per-request window cannot reach a CLI that
+  // talks to Ollama on its own.
+  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  if (ollamaContext?.warning) {
+    emitLog('warn', `Agent ${agentId} Ollama context preparation: ${ollamaContext.warning}`, {
+      agentId,
+      taskId: task.id,
+    });
+  }
+
   // Two independent async env lookups, resolved together: Claude's
   // ~/.claude/settings.json Bedrock config (CLAUDE_CODE_USE_BEDROCK, AWS_PROFILE,
   // etc., present even if PM2 lacks them) and the repo-owner-pinned GH_TOKEN
@@ -431,6 +445,8 @@ export async function spawnDirectly({
   // handlers `await outputBatcher.flush()` so the final lines persist before
   // the agent is finalized. (output.txt is written separately below.)
   const outputBatcher = createAgentOutputBatcher(agentId);
+  if (ollamaContext?.warning) outputBatcher.push(ollamaContext.warning);
+  if (ollamaContext?.applied) outputBatcher.push(`🪟 Reloaded Ollama at a ${ollamaContext.contextLength}-token context window`);
 
   // Expose a drain hook on the activeAgents entry so the user-terminate/kill
   // paths (agentManagement.js) can flush pending batched output before they

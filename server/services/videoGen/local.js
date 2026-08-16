@@ -102,6 +102,10 @@ const AV_LORA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_av_lora.py')
 const execFileAsync = promisify(execFile);
 
 const MODULE_NOT_FOUND_RE = /ModuleNotFoundError: No module named ['"]([^'"]+)['"]/;
+// Shared-gallery uploads use the upload filename stem as their history id.
+// Rendered clips retain their UUID ids, so service callers may act on either
+// form after route validation.
+const UPLOADED_HISTORY_ID_RE = /^upload-[a-f0-9]{8}$/i;
 
 // Panel-side SIGKILL watchdog (defense-in-depth at the Node layer).
 //
@@ -2330,6 +2334,12 @@ async function setHistoryItemsHidden(ids, hidden) {
 // Extract the last frame of a video as a PNG into data/images/ — used to
 // chain a clip into Imagine for "continue from last frame" remixing.
 export async function extractLastFrame(historyId) {
+  // Keep this service safe for callers outside the route layer too. Shared
+  // gallery uploads deliberately use `upload-<uuid8>` ids, while generated
+  // clips retain UUID ids.
+  if (typeof historyId !== 'string' || (!UUID_RE.test(historyId) && !UPLOADED_HISTORY_ID_RE.test(historyId))) {
+    throw new ServerError('Invalid history id', { status: 400, code: 'VALIDATION_ERROR' });
+  }
   const history = await loadHistory();
   const item = history.find((h) => h.id === historyId);
   if (!item) throw new ServerError('Video not found', { status: 404, code: 'NOT_FOUND' });
@@ -2344,9 +2354,10 @@ export async function extractLastFrame(historyId) {
   await ensureDir(PATHS.images);
   // Same path-traversal concern as `item.filename` above — `item.id` could
   // contain path separators or `..` if history.json was tampered with.
-  // generateVideo writes ids via randomUUID() (matches /^[a-f0-9-]{36}$/),
-  // so reject anything else outright.
-  if (!/^[a-f0-9-]{36}$/i.test(item.id)) {
+  // Generated clips use UUID ids and uploads use `upload-<uuid8>`; both forms
+  // are filename-safe. Do not trust a tampered stored record simply because
+  // the caller's id passed validation above.
+  if (typeof item.id !== 'string' || (!UUID_RE.test(item.id) && !UPLOADED_HISTORY_ID_RE.test(item.id))) {
     throw new ServerError('Invalid history id', { status: 400, code: 'VALIDATION_ERROR' });
   }
   const frameFilename = `lastframe-${item.id}.png`;
@@ -2664,9 +2675,10 @@ export async function upscaleHistoryItem(historyId) {
   // Validate the input arg first — failing here surfaces a clean 400 even if
   // the history file happens to contain a record with a malformed id, and
   // it short-circuits the loadHistory I/O for obviously-bogus requests.
-  // Use the shared strict UUID regex (the prior /^[a-f0-9-]{36}$/i pattern
-  // accepted non-UUID 36-char strings like all-hyphens).
-  if (typeof historyId !== 'string' || !UUID_RE.test(historyId)) {
+  // Rendered clips use UUIDs; shared-gallery uploads use their `upload-<uuid8>`
+  // filename stem as the id. Keep the strict UUID check for render ids while
+  // allowing the upload producer's documented id shape.
+  if (typeof historyId !== 'string' || (!UUID_RE.test(historyId) && !UPLOADED_HISTORY_ID_RE.test(historyId))) {
     throw new ServerError('Invalid history id', { status: 400, code: 'VALIDATION_ERROR' });
   }
   const history = await loadHistory();

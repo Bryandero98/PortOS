@@ -498,6 +498,31 @@ describe('MorseTrainer iOS audio session', () => {
     await waitFor(() => expect(navigator.audioSession.type).toBe('auto'));
   });
 
+  it('recovers the copy drill after an audio resume rejection', async () => {
+    let resumes = 0;
+    class FlakyAudioContext extends MockAudioContext {
+      constructor() { super(); this.state = 'suspended'; }
+      resume() {
+        resumes += 1;
+        if (resumes === 1) return Promise.reject(new Error('permission denied'));
+        this.state = 'running';
+        return Promise.resolve();
+      }
+    }
+    window.AudioContext = FlakyAudioContext;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await renderMorse({ mode: 'copy', onSelectMode: vi.fn(), onExitMode: vi.fn() });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Start Round/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Audio playback could not start');
+    expect(navigator.audioSession.type).toBe('auto');
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Round/i }));
+    await screen.findByPlaceholderText('????');
+    expect(resumes).toBe(2);
+    errorSpy.mockRestore();
+  });
+
   it('claims playback while the send sidetone is keyed and hands it back on release', async () => {
     await renderMorse({ mode: 'send', onSelectMode: vi.fn(), onExitMode: vi.fn() });
     await act(async () => { fireEvent.keyDown(window, { code: 'Space' }); });
@@ -528,6 +553,32 @@ describe('MorseTrainer iOS audio session', () => {
     await act(async () => { unlock(); });
     // The superseded startTone must not re-declare on its way out.
     expect(navigator.audioSession.type).toBe('auto');
+  });
+
+  it('keeps a newer sidetone claim when an older resume fails', async () => {
+    const resumes = [];
+    class DeferredAudioContext extends MockAudioContext {
+      constructor() { super(); this.state = 'suspended'; }
+      resume() {
+        return new Promise((resolve, reject) => resumes.push({ resolve, reject }));
+      }
+    }
+    window.AudioContext = DeferredAudioContext;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await renderMorse({ mode: 'send', onSelectMode: vi.fn(), onExitMode: vi.fn() });
+
+    fireEvent.keyDown(window, { code: 'Space' });
+    fireEvent.keyUp(window, { code: 'Space' });
+    fireEvent.keyDown(window, { code: 'Space' });
+    expect(navigator.audioSession.type).toBe('playback');
+
+    await act(async () => { resumes[0].reject(new Error('first resume failed')); });
+    expect(navigator.audioSession.type).toBe('playback');
+
+    await act(async () => { resumes[1].resolve(); });
+    fireEvent.keyUp(window, { code: 'Space' });
+    expect(navigator.audioSession.type).toBe('auto');
+    errorSpy.mockRestore();
   });
 
   // Unmounting inside the unlock window close()s and nulls the per-mount

@@ -10,7 +10,7 @@
 // REFERENCED by a synced record (e.g. a mood-board item), because
 // /api/uploads' scratch dir does not federate.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X, RefreshCw, Upload } from 'lucide-react';
 import Modal from '../ui/Modal';
 import FilePickerButton from '../ui/FilePickerButton';
@@ -30,6 +30,14 @@ export default function GalleryVideoPicker({ open, onClose, onSelect, allowUploa
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState('');
+  // Invalidate on every open/close transition and on unmount. A host can
+  // change its selected record while an upload is reading or posting; a late
+  // completion must leave the saved gallery asset unselected.
+  const sessionRef = useRef(0);
+  useEffect(() => {
+    sessionRef.current += 1;
+    return () => { sessionRef.current += 1; };
+  }, [open]);
 
   useEffect(() => {
     if (!open) { setQuery(''); return undefined; }
@@ -62,14 +70,17 @@ export default function GalleryVideoPicker({ open, onClose, onSelect, allowUploa
       toast.error(`Video is too large (${formatBytes(file.size)}). Max ${formatBytes(JSON_UPLOAD_MAX_FILE_SIZE)}.`);
       return;
     }
+    const session = sessionRef.current;
     setUploading(true);
     const base64 = await readFileAsBase64(file).catch(() => null);
+    if (sessionRef.current !== session) return;
     if (!base64) { setUploading(false); toast.error(`Failed to read ${file.name}`); return; }
     if (uploadToGallery) {
       const entry = await uploadGalleryVideo(base64, file.name, { silent: true }).catch((err) => {
-        toast.error(err?.message || 'Upload failed');
+        if (sessionRef.current === session) toast.error(err?.message || 'Upload failed');
         return null;
       });
+      if (sessionRef.current !== session) return;
       setUploading(false);
       if (!entry?.filename) return;
       onSelect?.(normalizeVideo(entry));
@@ -77,9 +88,10 @@ export default function GalleryVideoPicker({ open, onClose, onSelect, allowUploa
       return;
     }
     const saved = await uploadFile(base64, file.name, { silent: true }).catch((err) => {
-      toast.error(err?.message || 'Upload failed');
+      if (sessionRef.current === session) toast.error(err?.message || 'Upload failed');
       return null;
     });
+    if (sessionRef.current !== session) return;
     setUploading(false);
     if (!saved?.filename) return;
     onSelect?.({

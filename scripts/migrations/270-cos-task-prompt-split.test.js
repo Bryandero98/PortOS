@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -214,5 +214,17 @@ describe('migration 270 up()', () => {
     await writeFile(moved, queue(task('sys-1', { context: AGENT_BODY })));
     await expect(migration.up({ rootDir, now: STAMP })).resolves.toMatchObject({ ok: true, split: 1 });
     expect(parseTasksMarkdown(await readFile(moved, 'utf-8'))[0].metadata.prompt).toBe(AGENT_BODY);
+  });
+
+  it('falls back to the default queues when CoS state is malformed', async () => {
+    await mkdir(join(rootDir, 'data', 'cos'), { recursive: true });
+    await writeFile(join(rootDir, 'data', 'cos', 'state.json'), '{not valid json');
+    await writeFile(cosTasks(), queue(task('sys-1', { context: AGENT_BODY })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(migration.up({ rootDir, now: STAMP })).resolves.toMatchObject({ ok: true, split: 1 });
+
+    expect(parseTasksMarkdown(await readFile(cosTasks(), 'utf-8'))[0].metadata.prompt).toBe(AGENT_BODY);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid CoS state'));
   });
 });

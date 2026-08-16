@@ -2155,6 +2155,25 @@ describe('videoGen routes', () => {
     });
   });
 
+  describe('POST /last-frame/:id', () => {
+    it('forwards a shared-gallery upload id to extractLastFrame', async () => {
+      const uploadId = 'upload-ab12cd34';
+      videoGenService.extractLastFrame.mockResolvedValue({ filename: `lastframe-${uploadId}.png` });
+
+      const r = await request(app).post(`/api/video-gen/last-frame/${uploadId}`).send({});
+
+      expect(r.status).toBe(200);
+      expect(videoGenService.extractLastFrame).toHaveBeenCalledWith(uploadId);
+    });
+
+    it('rejects malformed ids before extracting a frame', async () => {
+      const r = await request(app).post('/api/video-gen/last-frame/not-a-history-id').send({});
+
+      expect(r.status).toBe(400);
+      expect(videoGenService.extractLastFrame).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /stitch', () => {
     const validId = (n) => `aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaa${n}`;
 
@@ -2181,13 +2200,21 @@ describe('videoGen routes', () => {
       expect(r.body.video.id).toBe('s1');
       expect(videoGenService.stitchVideos).toHaveBeenCalledWith([validId(1), validId(2)]);
     });
+
+    it('accepts a shared-gallery upload history id', async () => {
+      videoGenService.stitchVideos.mockResolvedValue({ id: 's1', filename: 's1.mp4' });
+      const uploadId = 'upload-ab12cd34';
+      const r = await request(app).post('/api/video-gen/stitch').send({ videoIds: [uploadId, validId(2)] });
+      expect(r.status).toBe(200);
+      expect(videoGenService.stitchVideos).toHaveBeenCalledWith([uploadId, validId(2)]);
+    });
   });
 
   describe('POST /upscale/:id', () => {
     const validHistoryId = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaa1';
     const otherValidId = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbb2';
 
-    it('rejects history ids that do not match the UUID shape', async () => {
+    it('rejects history ids outside known render and upload shapes', async () => {
       const r = await request(app).post('/api/video-gen/upscale/not-a-uuid').send({});
       expect(r.status).toBe(400);
       expect(videoGenService.upscaleHistoryItem).not.toHaveBeenCalled();
@@ -2201,6 +2228,14 @@ describe('videoGen routes', () => {
       expect(r.body.ok).toBe(true);
       expect(r.body.video).toEqual(upscaled);
       expect(videoGenService.upscaleHistoryItem).toHaveBeenCalledWith(validHistoryId);
+    });
+
+    it('forwards a shared-gallery upload id to upscaleHistoryItem', async () => {
+      const uploadId = 'upload-ab12cd34';
+      videoGenService.upscaleHistoryItem.mockResolvedValue({ id: otherValidId, filename: `${otherValidId}.mp4`, upscaledFrom: uploadId });
+      const r = await request(app).post(`/api/video-gen/upscale/${uploadId}`).send({});
+      expect(r.status).toBe(200);
+      expect(videoGenService.upscaleHistoryItem).toHaveBeenCalledWith(uploadId);
     });
 
     it('returns the ServerError status when the service rejects', async () => {

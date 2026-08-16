@@ -97,9 +97,17 @@ vi.mock('../lib/childProcess.js', () => ({
 vi.mock('./agentWorktreeCleanup.js', () => ({
   releaseRetryHold: vi.fn().mockResolvedValue({}),
 }));
+vi.mock('./ollamaAgentContext.js', () => ({
+  ensureOllamaAgentContext: vi.fn(async () => ({ skipped: true })),
+}));
+vi.mock('./providers.js', () => ({
+  isOllamaBackedProvider: vi.fn(() => false),
+}));
 
 import { buildCliSpawnConfig, createStreamJsonParser, spawnDirectly } from './agentCliSpawning.js';
 import { releaseRetryHold } from './agentWorktreeCleanup.js';
+import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+import { isOllamaBackedProvider } from './providers.js';
 // Real module — the flag is a plain process-local boolean, so driving it
 // directly exercises the same code path production does.
 import { markHostShuttingDown, resetHostShutdownFlagForTests } from '../lib/hostShutdown.js';
@@ -531,6 +539,8 @@ describe('stream error containment', () => {
     (await import('./agentFinalization.js')).finalizeAgent.mockResolvedValue(undefined);
     minimalArgs.cleanupWorktreeFn.mockResolvedValue(undefined);
     vi.mocked(existsSync).mockReturnValue(false);
+    vi.mocked(isOllamaBackedProvider).mockReturnValue(false);
+    vi.mocked(ensureOllamaAgentContext).mockResolvedValue({ skipped: true });
     // Reset the resolve+wrap helper to its POSIX passthrough before each test
     // (afterEach's restoreAllMocks can clear the factory implementation).
     vi.mocked(prepareCliSpawn).mockImplementation((command, args) => ({ command, args }));
@@ -581,6 +591,36 @@ describe('stream error containment', () => {
       (args) => typeof args[0] === 'string' && args[0].startsWith('❌ agent agent-test output batch flush failed:')
     );
     expect(logged).toBe(true);
+  });
+
+  it('prepares the configured Ollama context before a direct CLI agent spawns', async () => {
+    vi.mocked(spawn).mockClear();
+    vi.mocked(ensureOllamaAgentContext).mockClear();
+    vi.mocked(isOllamaBackedProvider).mockReturnValue(true);
+    vi.mocked(ensureOllamaAgentContext).mockResolvedValue({
+      skipped: false,
+      applied: true,
+      contextLength: 131072,
+      warning: '⚠️ Example context warning',
+    });
+
+    const spawnPromise = spawnDirectly({
+      ...minimalArgs,
+      provider: { ...minimalArgs.provider, id: 'claude-ollama', ollamaBacked: true },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(ensureOllamaAgentContext).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-ollama' }));
+    expect(ensureOllamaAgentContext.mock.invocationCallOrder[0]).toBeLessThan(spawn.mock.invocationCallOrder[0]);
+
+    fakeProcess.emit('close', 0);
+    await spawnPromise;
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(agentStateMocks.appendAgentOutputLines).toHaveBeenCalledWith('agent-test', [
+      '⚠️ Example context warning',
+      '🪟 Reloaded Ollama at a 131072-token context window',
+    ]);
   });
 
   it('drains stderr output on close and a failed batch flush is logged, not leaked as an unhandled rejection', async () => {

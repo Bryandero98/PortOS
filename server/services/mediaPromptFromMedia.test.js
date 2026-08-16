@@ -193,6 +193,28 @@ describe('promptFromMedia', () => {
     expect(result.frameCount).toBe(2);
   });
 
+  it('samples an uploaded gallery video by its upload history id', async () => {
+    providers.getProviderById.mockResolvedValue(CLI_PROVIDER);
+    visionCli.describeImagesFromPaths.mockResolvedValue({ text: JSON_BOTH });
+    history.loadHistory.mockResolvedValue([
+      { id: 'upload-ab12cd34', filename: 'upload-ab12cd34.mp4' },
+    ]);
+
+    const result = await promptFromMedia({
+      sourceKind: 'video',
+      videoId: 'upload-ab12cd34',
+      targets: ['video'],
+      providerId: 'codex',
+    });
+
+    expect(ffmpeg.extractEvaluationFrames).toHaveBeenCalledWith(
+      '/mock/videos/upload-ab12cd34.mp4',
+      'pfm-upload-ab12cd34',
+      expect.any(Number),
+    );
+    expect(result.mediaKind).toBe('video');
+  });
+
   it('resolves a gallery video by FILENAME when no videoId is given (mood-board item — #4188)', async () => {
     providers.getProviderById.mockResolvedValue(CLI_PROVIDER);
     visionCli.describeImagesFromPaths.mockResolvedValue({ text: JSON_BOTH });
