@@ -1,0 +1,1 @@
+- CoS agents now receive focused Three.js scene guidance alongside their task workflow.

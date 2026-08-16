@@ -123,6 +123,21 @@ const SKILL_MATCHERS = [
   }
 ];
 
+// Domain templates complement (rather than replace) the lifecycle template
+// selected above. Keep this list narrow: broad graphics terms would add prompt
+// weight to tasks that do not involve scene construction or rendering.
+const DOMAIN_SKILL_MATCHERS = [
+  {
+    skill: 'threejs-visual',
+    patterns: [
+      /\bthree(?:\.?js)\b/,
+      /\breact[-\s]?three[-\s]?fiber\b/,
+      /\br3f\b/,
+      /\bwebgl\s+scene\b/,
+    ],
+  },
+];
+
 /**
  * Detect the best matching skill template for a task based on description keywords.
  * @param {Object} task - Task object with description
@@ -139,6 +154,32 @@ export function detectSkillTemplate(task) {
 }
 
 /**
+ * Detect one optional domain template to append after the primary lifecycle
+ * template. Domain routing is deliberately independent so, for example, a
+ * Three.js security audit keeps its security guidance.
+ * @param {Object} task - Task object with description
+ * @returns {string|null} Domain skill template name or null
+ */
+export function detectDomainSkillTemplate(task) {
+  const desc = (task?.description || '').toLowerCase();
+  for (const matcher of DOMAIN_SKILL_MATCHERS) {
+    if (matcher.patterns.some((pattern) => pattern.test(desc))) {
+      return matcher.skill;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the primary lifecycle template and at most one domain guide.
+ * @param {Object} task - Task object with description
+ * @returns {string[]} Ordered template names
+ */
+export function detectSkillTemplates(task) {
+  return [detectSkillTemplate(task), detectDomainSkillTemplate(task)].filter(Boolean);
+}
+
+/**
  * Load a skill template from disk if it exists.
  * @param {string} skillName - Name of the skill template file (without .md)
  * @returns {Promise<string|null>} Template content or null
@@ -147,6 +188,23 @@ export async function loadSkillTemplate(skillName) {
   const content = await tryReadFile(join(SKILLS_DIR, `${skillName}.md`));
   if (content) console.log(`🎯 Loaded skill template: ${skillName}`);
   return content;
+}
+
+/**
+ * Load ordered templates as one prompt section, retaining the primary guidance
+ * even when an optional domain template is unavailable on an older install.
+ * @param {string[]} skillNames - Ordered skill template names
+ * @param {(skillName: string) => Promise<string|null>} loadTemplate - Loader seam for tests
+ * @returns {Promise<string|null>} Joined template content or null
+ */
+export async function loadSkillTemplates(skillNames, loadTemplate = loadSkillTemplate) {
+  const templates = await Promise.all(skillNames.map((skillName) => (
+    Promise.resolve(loadTemplate(skillName)).catch((err) => {
+      console.log(`⚠️ Skill template load failed for ${skillName}: ${err.message}`);
+      return null;
+    })
+  )));
+  return templates.filter(Boolean).join('\n\n') || null;
 }
 
 // Nested-CLAUDE.md discovery bounds (#3866). On-demand nested memory files are a
@@ -1744,14 +1802,9 @@ Include the ticket ID (${task.metadata.jiraTicketId}) in your commit messages, e
 ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch branches.' : ''}
 ` : '';
 
-  // Detect and load task-type-specific skill template (only when matched)
-  const matchedSkill = detectSkillTemplate(task);
-  const skillSection = matchedSkill
-    ? await loadSkillTemplate(matchedSkill).catch(err => {
-        console.log(`⚠️ Skill template load failed for ${matchedSkill}: ${err.message}`);
-        return null;
-      })
-    : null;
+  // Keep the existing lifecycle template first, then append one narrow domain
+  // guide when the task explicitly concerns a supported visual stack.
+  const skillSection = await loadSkillTemplates(detectSkillTemplates(task));
 
   // Build onboard tools section for agent awareness
   const toolsSection = await getToolsSummaryForPrompt().catch(err => {
