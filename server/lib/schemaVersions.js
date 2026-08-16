@@ -471,7 +471,12 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // `sanitizeGenerationFor` keeps only the keys it knows, so it would silently
   // strip the user's pinned backend on receive and then push the un-pinned
   // downgrade back via LWW.
-  creativeCommissions: 3,
+  // v4 = opt-in Digital Twin musicTaste configuration in the federated brief
+  // (#4347). The bounded config is understood by this sanitizer; a v3 peer
+  // would reconstruct the brief without it and could push that downgrade back
+  // through the brief-scoped LWW merge. Per-run recipes remain local because
+  // syncWire already strips `runs[]`.
+  creativeCommissions: 4,
   // v1 = standalone media-library federation (#1566). NOT a record kind — it's
   // the wire contract for the library-level asset manifest a full-sync peer
   // advertises at GET /api/peer-sync/library-manifest. The receiver-pull sweep

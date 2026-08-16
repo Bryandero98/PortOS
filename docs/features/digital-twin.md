@@ -65,6 +65,25 @@ and can be retried. Manual JSON upload remains available as a fallback.
 Routes: `GET /import/sources`, `POST /import/analyze`, `POST /import/save`,
 `POST /import/spotify/browser/open`, and `POST /import/spotify/browser/import`.
 
+## Taste-aware Music Commissions
+
+Music Creative Commissions can opt into a bounded Digital Twin recipe. The
+scheduled fire reads the stated music summary and the selected observed rollup
+window, then deterministically chooses a small set of artist/track anchors and
+an exploration level. Ratings and the existing feedback tags adjust the next
+recipe; no provider call is made to build the recipe.
+
+The commission brief carries only the non-sensitive opt-in configuration. Raw
+Spotify caches, activity events, full Digital Twin responses, and the selected
+recipe remain machine-local. Recipes are recorded as bounded run provenance and
+are removed by the Creative Commission wire projection along with all local run
+history. If taste mode has no usable observed anchors, the run records
+`taste-source-unavailable` instead of silently generating a generic track.
+
+This slice does not yet expose taste controls in the Creative Commission UI or
+propagate engine/model pins through the audio job and completion-hook path; those
+are follow-up work for issue #4347.
+
 ## Transcript & Image Analysis
 
 Multi-modal capture works on pasted/uploaded artifacts — there is no live audio or video capture infrastructure:

@@ -16,10 +16,10 @@
  * (`createRecordWriteQueue`, identical to universeBuilder), and delegates only
  * plain leaf I/O to the selected backend.
  *
- * The COMMISSION stays MACHINE-LOCAL and NOT federated — the same rationale as
- * `seriesAutopilotScheduler`'s settings-based schedules: a schedule that
- * federated across sync peers would double-run on every machine. The DB row
- * carries no sync cursor/tombstone (deletes are hard deletes, mirroring tribe).
+ * The scheduled RUNNER stays MACHINE-LOCAL — schedule/runs/assignment/enabled
+ * never cross peers, because a synced schedule would double-run on every
+ * machine. The commission BRIEF and feedback federate separately below, with a
+ * brief-scoped LWW clock and tombstone so peers converge without arming a cron.
  *
  * FEEDBACK, by contrast, IS federated as of #2686 (split-record federation): the
  * taste reactions live in their own `commissionFeedback` record kind (see
@@ -70,6 +70,7 @@ import {
 import { emitRecordUpdated, emitRecordDeleted, autoSubscribeRecordToAllPeers } from '../sharing/recordEvents.js';
 import { commissionToCron } from './directive.js';
 import { getAbilityAdapter } from './abilityAdapters.js';
+import { normalizeMusicTasteConfig, sanitizeMusicTasteRecipe } from './musicTasteRecipe.js';
 import {
   recordFeedback,
   listFeedbackForCommission,
@@ -124,6 +125,16 @@ export function sanitizeFeedbackEntry(raw) {
   };
 }
 
+function sanitizeRunHistoryEntry(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !('tasteRecipe' in raw)) return raw;
+  const tasteRecipe = sanitizeMusicTasteRecipe(raw.tasteRecipe);
+  if (!tasteRecipe) {
+    const { tasteRecipe: _discarded, ...withoutRecipe } = raw;
+    return withoutRecipe;
+  }
+  return { ...raw, tasteRecipe };
+}
+
 /**
  * Normalize a raw record into the canonical stored shape. Returns null for a
  * non-object / id-less record (so a malformed on-disk / on-row record can't
@@ -158,6 +169,7 @@ export function sanitizeCommission(raw) {
     ? assignment.providerId.trim() : null;
   const assignmentModel = assignmentProviderId && isStr(assignment.model) && assignment.model.trim()
     ? assignment.model.trim() : null;
+  const musicTaste = normalizeMusicTasteConfig(brief.musicTaste);
   return {
     id: raw.id,
     name: isStr(raw.name) ? raw.name : 'Untitled Commission',
@@ -172,6 +184,7 @@ export function sanitizeCommission(raw) {
       styleSpec: isStr(brief.styleSpec) ? brief.styleSpec : '',
       constraints: brief.constraints && typeof brief.constraints === 'object' ? brief.constraints : {},
       seedRefs: Array.isArray(brief.seedRefs) ? brief.seedRefs : [],
+      ...(musicTaste ? { musicTaste } : {}),
     },
     schedule: {
       kind: isStr(schedule.kind) ? schedule.kind : 'DAILY',
@@ -199,7 +212,7 @@ export function sanitizeCommission(raw) {
       ? raw.feedback.map(sanitizeFeedbackEntry).filter(Boolean).slice(-MAX_PERSISTED_FEEDBACK)
       : [],
     feedbackWindow: Number.isInteger(raw.feedbackWindow) ? raw.feedbackWindow : 5,
-    runs: Array.isArray(raw.runs) ? raw.runs.slice(-MAX_PERSISTED_RUNS) : [],
+    runs: Array.isArray(raw.runs) ? raw.runs.slice(-MAX_PERSISTED_RUNS).map(sanitizeRunHistoryEntry) : [],
     createdAt: isStr(raw.createdAt) ? raw.createdAt : now,
     updatedAt: isStr(raw.updatedAt) ? raw.updatedAt : (isStr(raw.createdAt) ? raw.createdAt : now),
     // Brief-scoped LWW clock (#2686). The federation compares THIS, not `updatedAt`
@@ -577,6 +590,11 @@ export async function updateCommission(id, patch) {
       brief: patch.brief ? {
         ...current.brief,
         ...patch.brief,
+        musicTaste: Object.hasOwn(patch.brief, 'musicTaste')
+          ? (patch.brief.musicTaste === null
+            ? null
+            : { ...(current.brief.musicTaste || {}), ...patch.brief.musicTaste })
+          : current.brief.musicTaste,
         constraints: patch.brief.constraints
           ? { ...current.brief.constraints, ...patch.brief.constraints }
           : current.brief.constraints,
@@ -650,6 +668,7 @@ export async function recordCommissionRun(id, runEntry) {
     const currentRaw = await store.readRaw(id);
     if (!currentRaw) return null;
     const current = sanitizeCommission(currentRaw);
+    const tasteRecipe = sanitizeMusicTasteRecipe(runEntry.tasteRecipe);
     const run = {
       id: runEntry.id || `run-${randomUUID()}`,
       ranAt: runEntry.ranAt || new Date().toISOString(),
@@ -662,6 +681,7 @@ export async function recordCommissionRun(id, runEntry) {
       promptUsed: isStr(runEntry.promptUsed) ? runEntry.promptUsed : null,
       reason: isStr(runEntry.reason) ? runEntry.reason : null,
       error: isStr(runEntry.error) ? runEntry.error : null,
+      ...(tasteRecipe ? { tasteRecipe } : {}),
     };
     const runs = [...(current.runs || []), run].slice(-MAX_PERSISTED_RUNS);
     await store.writeRaw(id, { ...current, runs, updatedAt: new Date().toISOString() });
