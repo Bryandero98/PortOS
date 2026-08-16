@@ -14,6 +14,11 @@ vi.mock('../../ui/Toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
 
+const copyToClipboard = vi.fn();
+vi.mock('../../../lib/clipboard', () => ({
+  copyToClipboard: (...args) => copyToClipboard(...args),
+}));
+
 import * as api from '../../../services/api';
 import AgentCard from './AgentCard';
 
@@ -160,6 +165,25 @@ describe('AgentCard feedback', () => {
       { rating: 'positive', comment: detailedAgent.feedback.comment },
       { silent: true }
     );
+  });
+});
+
+describe('AgentCard agent ID', () => {
+  it.each([
+    ['active', { ...agent, status: 'running', completedAt: null }],
+    ['historical', agent],
+  ])('copies the full ID from the %s card', async (_label, cardAgent) => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={cardAgent} completed={cardAgent.status === 'completed'} />
+      </MemoryRouter>
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Copy agent ID' }));
+
+    expect(copyToClipboard).toHaveBeenCalledWith(cardAgent.id, 'Agent ID copied to clipboard');
   });
 });
 
