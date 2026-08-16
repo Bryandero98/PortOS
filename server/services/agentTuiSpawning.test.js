@@ -635,6 +635,16 @@ describe('spawnTuiAgent runtime', () => {
     await completeDone;
   });
 
+  it('makes the login shell exit with the TUI command instead of lingering after it exits', async () => {
+    runSpawn();
+    await flushMicrotasks();
+
+    expect(shellService.createShellSession).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ initialCommand: 'codex; exit $?' }),
+    );
+  });
+
   it('skips the owner-token probe when the provider supplies its own GITHUB_TOKEN so the explicit credential wins', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
