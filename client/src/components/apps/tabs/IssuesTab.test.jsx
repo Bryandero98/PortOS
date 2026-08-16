@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+
+const { socketHandlers, socketMock } = vi.hoisted(() => {
+  const handlers = new Map();
+  const mock = {
+    connected: true,
+    on: vi.fn((event, handler) => handlers.set(event, handler)),
+    off: vi.fn((event, handler) => {
+      if (handlers.get(event) === handler) handlers.delete(event);
+    }),
+    emit: vi.fn()
+  };
+  return { socketHandlers: handlers, socketMock: mock };
+});
+
+vi.mock('../../../services/socket', () => ({ default: socketMock }));
 
 vi.mock('../../../services/api', () => ({
   getAppIssues: vi.fn(),
@@ -41,6 +56,10 @@ const renderTab = () => render(
 );
 
 beforeEach(() => {
+  socketHandlers.clear();
+  socketMock.on.mockClear();
+  socketMock.off.mockClear();
+  socketMock.emit.mockClear();
   api.getAppIssues.mockResolvedValue(okPayload([ISSUE]));
   api.createSlashdoTask.mockResolvedValue({ id: 'task-1' });
   api.getProviders.mockResolvedValue({ providers: [] });
@@ -85,6 +104,43 @@ describe('IssuesTab', () => {
       'next', 'app-1', { target: '42' }, { silent: true }
     ));
     expect(await screen.findByRole('link', { name: /Queued/ })).toBeInTheDocument();
+  });
+
+  it('tracks the claimed task from queued through active and completed over the CoS socket', async () => {
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
+    expect(await screen.findByRole('link', { name: /Queued/ })).toBeInTheDocument();
+
+    act(() => socketHandlers.get('cos:tasks:changed')({
+      task: { id: 'task-1', status: 'in_progress' }
+    }));
+    expect(await screen.findByRole('link', { name: /Active/ })).toBeInTheDocument();
+
+    act(() => socketHandlers.get('cos:tasks:changed')({
+      task: { id: 'task-1', status: 'completed' }
+    }));
+    expect(await screen.findByRole('link', { name: /Completed/ })).toBeInTheDocument();
+  });
+
+  it('does not lose an active socket update that arrives before the POST response', async () => {
+    let resolveClaim;
+    api.createSlashdoTask.mockImplementation(() => new Promise(resolve => { resolveClaim = resolve; }));
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
+    act(() => socketHandlers.get('cos:tasks:changed')({
+      task: {
+        id: 'task-1', status: 'in_progress',
+        metadata: { app: 'app-1', claimTarget: '42' }
+      }
+    }));
+    expect(await screen.findByRole('link', { name: /Active/ })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveClaim({ id: 'task-1', status: 'pending' });
+    });
+    expect(screen.getByRole('link', { name: /Active/ })).toBeInTheDocument();
   });
 
   it('sends the page-level provider/model/effort pin along with a claim', async () => {
