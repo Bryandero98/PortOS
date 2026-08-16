@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'child_process';
+import { appendFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { prepareCliSpawn } from '../server/lib/bufferedSpawn.js';
@@ -59,6 +60,15 @@ export function toRunnerPath(scope, path) {
   return `../${path}`;
 }
 
+export function recordVitestDuration(scope, label, startedAt) {
+  const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const line = `⏱ ${scope} ${label}: ${seconds}s`;
+  console.log(line);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${line}\n`);
+  }
+}
+
 function spawnNpm(scope, extraArgs, label) {
   const args = ['run', 'test:ci', '--prefix', scope];
   if (extraArgs.length > 0) args.push('--', ...extraArgs);
@@ -67,11 +77,13 @@ function spawnNpm(scope, extraArgs, label) {
   // `shell:false` and throws EINVAL, so this script could never run on a
   // Windows checkout. See server/lib/bufferedSpawn.js.
   const { command, args: spawnArgs } = prepareCliSpawn('npm', args);
+  const startedAt = Date.now();
   const result = spawnSync(command, spawnArgs, {
     stdio: 'inherit',
     env: process.env,
     cwd: repoRoot,
   });
+  recordVitestDuration(scope, label, startedAt);
   if (result.error) {
     console.error(result.error.message);
     return 1;

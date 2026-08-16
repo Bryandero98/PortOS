@@ -26,6 +26,23 @@ plan, so no impact scope can drop it — currently
 documentation-only PR therefore still runs the server job with those files
 selected.
 
+### Vitest runner tuning
+
+On GitHub Actions, `CI=true` caps each Vitest runner at `maxWorkers: 2`
+(`scripts/vitestCiPool.js`, spread into `server/vitest.config.js` and
+`client/vitest.config.js`). Standard hosted runners are 2 vCPU / 7GB;
+uncapped forks oversubscribe those cores during transform. Local `npm test`
+is unbounded. File-level parallelism stays on for unit tests so the two
+workers stay busy; the DB suite already serializes files because those tests
+share one Postgres.
+
+Each test job restores Vite/Vitest transform artifacts
+(`node_modules/.vite`, `node_modules/.vitest`) **after** `npm ci` — install
+wipes `node_modules`, so a pre-install restore is lost. `scripts/run-ci-tests.js`
+writes Vitest wall time to the job summary so later runs can be compared
+against the pre-change full-suite job wall on `main` (2026-08-16, run
+`31951919659`): server ~300s, client+build ~467s, Windows ~463s.
+
 The selected work is split across parallel jobs:
 
 - **Server tests** — full, related, or explicit feature test files. Smoke-boots

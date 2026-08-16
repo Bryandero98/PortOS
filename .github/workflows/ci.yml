@@ -103,6 +103,20 @@ jobs:
       - name: Install server dependencies
         run: npm ci --prefix server
 
+      # After npm ci: it wipes node_modules, so a pre-install restore is lost.
+      # Vite/Vitest write transform artifacts under node_modules/.vite (and
+      # historically .vitest). Reusing them skips re-transforming unchanged files.
+      - name: Cache Vitest transform artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/node_modules/.vite
+            server/node_modules/.vitest
+          key: vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json', 'server/vitest.config.js', 'scripts/vitestCiPool.js') }}
+          restore-keys: |
+            vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
+            vitest-server-${{ runner.os }}-
+
       # server/.npmrc pins ignore-scripts=true, so the native deps npm skipped
       # need the explicit allowlist rebuild to be usable (node-pty et al).
       # Always-run-only plans (prompt-upgrade + changelog fragment guards)
@@ -148,6 +162,17 @@ jobs:
 
       - name: Install client dependencies
         run: npm ci --prefix client
+
+      - name: Cache Vitest transform artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/node_modules/.vite
+            client/node_modules/.vitest
+          key: vitest-client-${{ runner.os }}-${{ hashFiles('client/package-lock.json', 'client/vitest.config.js', 'scripts/vitestCiPool.js') }}
+          restore-keys: |
+            vitest-client-${{ runner.os }}-${{ hashFiles('client/package-lock.json') }}-
+            vitest-client-${{ runner.os }}-
 
       - name: Lint client
         if: needs.impact.outputs.lint_mode != 'skip'
@@ -205,6 +230,17 @@ jobs:
       - name: Install server dependencies
         run: npm ci --prefix server
 
+      - name: Cache Vitest transform artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/node_modules/.vite
+            server/node_modules/.vitest
+          key: vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json', 'server/vitest.config.js', 'server/vitest.config.db.js', 'scripts/vitestCiPool.js') }}
+          restore-keys: |
+            vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
+            vitest-server-${{ runner.os }}-
+
       # server/.npmrc pins ignore-scripts=true — DB suites that touch sharp /
       # node-pty still need the explicit allowlist rebuild.
       - name: Rebuild trusted native dependencies
@@ -214,7 +250,14 @@ jobs:
         run: npm run setup:db:test --prefix server
 
       - name: Run DB-backed tests (portos_test)
-        run: npm run test:db:ci --prefix server
+        run: |
+          set +e
+          start=$(date +%s)
+          npm run test:db:ci --prefix server
+          status=$?
+          elapsed=$(( $(date +%s) - start ))
+          echo "⏱ server db suite: ${elapsed}s" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit $status
         env:
           PGDATABASE: portos_test
 
@@ -260,6 +303,17 @@ jobs:
 
       - name: Install server dependencies
         run: npm ci --prefix server
+
+      - name: Cache Vitest transform artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/node_modules/.vite
+            server/node_modules/.vitest
+          key: vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json', 'server/vitest.config.js', 'scripts/vitestCiPool.js') }}
+          restore-keys: |
+            vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
+            vitest-server-${{ runner.os }}-
 
       - name: Rebuild trusted native dependencies
         run: node scripts/trusted-rebuilds.js server

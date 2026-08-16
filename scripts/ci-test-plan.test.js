@@ -92,6 +92,7 @@ describe('CI test impact planner', () => {
       'client/lint-no-random-uuid.grit',
       'client/lint-react-legacy-apis.grit',
       'scripts/run-ci-tests.test.js',
+      'scripts/vitestCiPool.js',
     ]) {
       const plan = buildCiTestPlan([path], { trackedFiles: TRACKED });
       expect(plan.full, path).toBe(true);
