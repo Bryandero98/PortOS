@@ -1628,6 +1628,55 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
+  it('spools the runner exit tail when an immediate exit beat live TUI output', async () => {
+    const { appendFile } = await import('fs/promises');
+    const spawnPromise = runSpawn({ useDurableRunner: true });
+    await flushMicrotasks();
+
+    await capturedOnExit({
+      exitCode: 1,
+      killed: false,
+      outputTail: 'OpenCode startup error: configured model is unavailable',
+    });
+    await flushMicrotasks();
+    await spawnPromise;
+
+    const rawTail = vi.mocked(appendFile).mock.calls.find(
+      ([path, contents]) => typeof path === 'string' && path.endsWith('raw.txt') && String(contents).includes('OpenCode startup error'),
+    );
+    expect(rawTail).toBeDefined();
+  });
+
+  it('does not revive an agent when the durable runner exits before its spawn response', async () => {
+    let resolveRunnerSession;
+    let exitPromise;
+    const session = {
+      sessionId: SESSION_ID,
+      pid: 4321,
+      ptyProcess: { pid: 4321, kill: vi.fn() },
+    };
+    vi.mocked(spawnTuiSessionViaRunner).mockImplementationOnce((options) => {
+      capturedOnData = options.onData;
+      capturedOnExit = options.onExit;
+      // The socket relay registers this callback before its POST resolves, so
+      // a CLI that exits immediately can finalize while the response is held.
+      exitPromise = options.onExit({ exitCode: 1, killed: false, outputTail: 'startup failed' });
+      return new Promise((resolve) => { resolveRunnerSession = resolve; });
+    });
+
+    const spawnPromise = runSpawn({ useDurableRunner: true });
+    await flushMicrotasks();
+    resolveRunnerSession(session);
+
+    await spawnPromise;
+    await exitPromise;
+
+    expect(activeAgents.has('agent-1')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(shellService.killSession).toHaveBeenCalledWith(SESSION_ID);
+    expect(cosAgentLifecycle.updateAgent).not.toHaveBeenCalled();
+  });
+
   // ── 4. Killed / user-terminated path ────────────────────────────────────────
   it('user-terminated: finalizeAgent receives terminatedByUser:true + error=Agent terminated by user', async () => {
     // Mark agent as user-terminated before the exit fires
@@ -2022,6 +2071,23 @@ describe('spawnTuiAgent runtime', () => {
           success: false,
           completionReason: 'spawn-rejected',
           error: expect.stringContaining(expectedFragment),
+        })
+      );
+    });
+
+    it('classifies a runner executable preflight failure as command-not-found', async () => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        new Error('Command executable unavailable: opencode did not pass the CoS Runner capability check. Reinstall it or update the provider command.'),
+      );
+
+      await expect(runSpawn({ useDurableRunner: true })).resolves.toBeNull();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'command-not-found',
+          error: expect.stringContaining('did not pass the CoS Runner capability check'),
         })
       );
     });
