@@ -11,6 +11,24 @@ import {
   destroyGitSandbox,
 } from './gitTestRepo.js';
 
+describe('template exit hook', () => {
+  it('registers a single process-exit listener across module re-imports', async () => {
+    // First sandbox builds the worker template and should arm the hook.
+    const box = await makeGitSandbox({ prefix: 'portos-git-fx-hook-' });
+    sandboxes.push(box.scratch);
+    const before = process.listenerCount('exit');
+    // A second build in this same module uses the cached template promise
+    // and must not add another listener. The watch-mode case (fresh module
+    // cache) is the same function: rememberTemplate no-ops once hooked.
+    const box2 = await makeGitSandbox({ prefix: 'portos-git-fx-hook2-' });
+    sandboxes.push(box2.scratch);
+    expect(process.listenerCount('exit')).toBe(before);
+    expect(globalThis.__portosGitTemplateExitHooked).toBe(true);
+    expect(Array.isArray(globalThis.__portosGitTemplateDirs)).toBe(true);
+    expect(globalThis.__portosGitTemplateDirs.length).toBeGreaterThan(0);
+  });
+});
+
 const sandboxes = [];
 afterEach(async () => {
   await Promise.all(sandboxes.splice(0).map((s) => destroyGitSandbox(s)));

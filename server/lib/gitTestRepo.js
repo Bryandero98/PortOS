@@ -54,6 +54,23 @@ function wipeSync(scratch) {
   try { rmSync(scratch, { recursive: true, force: true }); } catch { /* already gone */ }
 }
 
+// Vitest isolates the module cache per test file, so `buildTemplate` can
+// run more than once in a worker. Track every template dir on globalThis
+// and register a single process-exit hook — otherwise watch-mode reruns
+// stack `process.on('exit')` listeners until MaxListenersExceededWarning.
+const TEMPLATE_DIRS_KEY = '__portosGitTemplateDirs';
+const TEMPLATE_HOOK_KEY = '__portosGitTemplateExitHooked';
+
+function rememberTemplate(scratch) {
+  const dirs = (globalThis[TEMPLATE_DIRS_KEY] ??= []);
+  dirs.push(scratch);
+  if (globalThis[TEMPLATE_HOOK_KEY]) return;
+  globalThis[TEMPLATE_HOOK_KEY] = true;
+  process.on('exit', () => {
+    for (const dir of dirs) wipeSync(dir);
+  });
+}
+
 async function buildTemplate() {
   const scratch = await mkdtemp(join(tmpdir(), TEMPLATE_PREFIX));
   const repo = join(scratch, 'primary');
@@ -69,7 +86,7 @@ async function buildTemplate() {
   // Copied sandboxes are torn down per-test; the template itself lives for
   // the worker. Wipe it on process exit so watch-mode / repeated runs do
   // not accumulate repos under os.tmpdir().
-  process.on('exit', () => wipeSync(scratch));
+  rememberTemplate(scratch);
   return { scratch, repo, origin };
 }
 
