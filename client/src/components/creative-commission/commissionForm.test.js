@@ -22,6 +22,10 @@ describe('commissionForm helpers', () => {
         videoMode: 'auto', videoModelId: null,
       });
       expect(f.assignment).toEqual({ providerId: '', model: '' });
+      expect(f.musicTaste).toEqual({
+        enabled: false, source: 'digital-twin', window: 'month', anchorCount: 3,
+        explorationPercent: 20, musicEngineId: '', musicModelId: '',
+      });
       expect(f.feedbackWindow).toBe(5);
     });
 
@@ -62,6 +66,25 @@ describe('commissionForm helpers', () => {
       const form = { ...blankForm(), brief: { intent: 'x', genre: '  ', styleSpec: '' } };
       expect(toPayload(form).brief.genre).toBeNull();
     });
+
+    it('round-trips taste controls only for an opted-in music commission', () => {
+      const form = toForm({
+        name: 'Taste study', targetAbility: 'music', brief: {
+          intent: 'original ambient track',
+          musicTaste: {
+            source: 'digital-twin', window: 'week', anchorCount: 4, explorationPercent: 35,
+            musicEngineId: 'acestep', musicModelId: 'example-model',
+          },
+        },
+      });
+      expect(form.musicTaste).toMatchObject({ enabled: true, anchorCount: 4, explorationPercent: 35 });
+      expect(toPayload(form).brief.musicTaste).toEqual({
+        source: 'digital-twin', window: 'week', anchorCount: 4, explorationPercent: 35,
+        musicEngineId: 'acestep', musicModelId: 'example-model',
+      });
+      form.musicTaste.enabled = false;
+      expect(toPayload(form).brief.musicTaste).toBeNull();
+    });
   });
 
   describe('validateForm', () => {
@@ -83,6 +106,14 @@ describe('commissionForm helpers', () => {
     });
     it('rejects an out-of-range feedback window', () => {
       expect(validateForm({ ...base(), feedbackWindow: 99 })).toMatch(/feedback window/i);
+    });
+    it('validates bounded taste controls when enabled', () => {
+      const form = toForm({ name: 'Taste', targetAbility: 'music', brief: { intent: 'x', musicTaste: { source: 'digital-twin' } } });
+      form.musicTaste.anchorCount = 0;
+      expect(validateForm(form)).toMatch(/anchor count/i);
+      form.musicTaste.anchorCount = 3;
+      form.musicTaste.explorationPercent = 101;
+      expect(validateForm(form)).toMatch(/exploration/i);
     });
   });
 

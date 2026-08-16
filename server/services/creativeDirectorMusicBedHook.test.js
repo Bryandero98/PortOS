@@ -7,6 +7,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const updateProject = vi.fn(async (id, patch) => ({ id, ...patch }));
 const getProject = vi.fn(async () => ({ id: 'proj-1' }));
 vi.mock('./creativeDirector/local.js', () => ({ updateProject, getProject }));
+const recordCommissionMusicOutput = vi.fn(async () => ({}));
+vi.mock('./creativeCommissions/store.js', () => ({
+  recordCommissionMusicOutput: (...args) => recordCommissionMusicOutput(...args),
+}));
 
 const { mediaJobEvents } = await import('./mediaJobQueue/index.js');
 const hook = await import('./creativeDirectorMusicBedHook.js');
@@ -37,6 +41,7 @@ describe('creativeDirectorMusicBedHook', () => {
     updateProject.mockImplementation(async (id, patch) => ({ id, ...patch }));
     getProject.mockReset();
     getProject.mockImplementation(async (id) => ({ id }));
+    recordCommissionMusicOutput.mockClear();
   });
 
   afterEach(() => {
@@ -52,6 +57,22 @@ describe('creativeDirectorMusicBedHook', () => {
         generatedAt: expect.any(String),
       }),
     });
+  });
+
+  it('records bounded taste provenance on the machine-local commission run', async () => {
+    mediaJobEvents.emit('completed', completedAudioJob({
+      params: { creativeDirectorMusicBed: tag() },
+      result: { provenance: {
+        kind: 'creative-commission-music-taste', commissionId: 'commission-example', runId: 'run-example',
+        recipeVersion: 1, sourceHash: 'example-hash',
+      } },
+    }));
+    await waitFor(() => recordCommissionMusicOutput.mock.calls.length > 0);
+    expect(recordCommissionMusicOutput).toHaveBeenCalledWith('commission-example', 'run-example', expect.objectContaining({
+      filename: 'music-gen-x.wav', engine: 'musicgen', modelId: 'musicgen-medium',
+      recipeVersion: 1, sourceHash: 'example-hash', completedAt: expect.any(String),
+    }));
+    expect(updateProject.mock.calls[0][1].musicBed).not.toHaveProperty('provenance');
   });
 
   it('ignores a completed job with no creativeDirectorMusicBed tag', async () => {

@@ -80,13 +80,24 @@ describe('buildMusicTasteRecipe', () => {
     expect(result.recipe.anchors.every((anchor) => anchor.name.length <= 120)).toBe(true);
   });
 
-  it('avoids the most recent exact anchor combination when another exists', () => {
+  it('changes the rated anchor combination when feedback asks for new anchors', () => {
     const first = buildMusicTasteRecipe(sourceArgs({ config: config({ anchorCount: 2, explorationPercent: 0 }) })).recipe;
     const next = buildMusicTasteRecipe(sourceArgs({
       config: config({ anchorCount: 2, explorationPercent: 0 }),
       recentRuns: [{ id: 'run-previous', tasteRecipe: first }],
+      feedback: [{ runId: 'run-previous', rating: 'down', tags: ['change-anchors'] }],
     })).recipe;
     expect(combo(next)).not.toBe(combo(first));
+  });
+
+  it('reuses the rated combination when feedback asks to keep its anchors', () => {
+    const first = buildMusicTasteRecipe(sourceArgs({ config: config({ anchorCount: 2, explorationPercent: 20 }) })).recipe;
+    const next = buildMusicTasteRecipe(sourceArgs({
+      config: config({ anchorCount: 2, explorationPercent: 20 }),
+      recentRuns: [{ id: 'run-previous', tasteRecipe: first }],
+      feedback: [{ runId: 'run-previous', rating: 'up', tags: ['keep-anchors'] }],
+    })).recipe;
+    expect(combo(next)).toBe(combo(first));
   });
 
   it('returns an explicit unavailable result without observed anchors', () => {

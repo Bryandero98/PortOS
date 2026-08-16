@@ -231,12 +231,17 @@ describe('syncWire', () => {
       expect(JSON.stringify(withPins)).toBe(JSON.stringify(preField));
     });
 
-    it('strips local commission runs, including taste recipes, from the brief wire form (#4347)', () => {
+    it('strips local commission runs, including taste and audio provenance, from the brief wire form (#4347)', () => {
       const withLocalRun = sanitizeRecordForWire('creativeCommission', {
         id: 'commission-example',
         name: 'Example Commission',
         brief: { intent: 'ambient', musicTaste: { source: 'digital-twin', window: 'month' } },
-        runs: [{ id: 'run-example', tasteRecipe: { source: 'digital-twin', sourceHash: 'private-local' } }],
+        runs: [{
+          id: 'run-example',
+          tasteRecipe: { source: 'digital-twin', sourceHash: 'private-local' },
+          musicGeneration: { engine: 'musicgen', modelId: 'example-model', durationSec: 45 },
+          musicOutput: { filename: 'example.wav', sourceHash: 'private-local' },
+        }],
         schedule: { kind: 'DAILY' },
         assignment: { providerId: 'local-only' },
         feedback: [],
