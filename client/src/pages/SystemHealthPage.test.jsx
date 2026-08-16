@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 
 const HEALTH = {
@@ -85,5 +86,22 @@ describe('SystemHealthPage remediation links', () => {
     const nav = await screen.findByRole('navigation', { name: 'System drill-downs' });
     const cards = screen.getByText('Memory').closest('section');
     expect(nav.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('refreshes the displayed stats from the page control', async () => {
+    const user = userEvent.setup();
+    api.getSystemHealth
+      .mockResolvedValueOnce(HEALTH)
+      .mockResolvedValueOnce({
+        ...HEALTH,
+        system: { ...HEALTH.system, memory: { ...HEALTH.system.memory, usagePercent: 55 } },
+      });
+    renderPage();
+
+    await screen.findByText('40%');
+    await user.click(screen.getByRole('button', { name: 'Refresh system health' }));
+
+    await waitFor(() => expect(screen.getByText('55%')).toBeInTheDocument());
+    expect(api.getSystemHealth).toHaveBeenCalledTimes(2);
   });
 });
