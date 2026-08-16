@@ -7,6 +7,7 @@ import ChronotypeOverlay from './ChronotypeOverlay';
 import { buildSubcalendarColorMap } from './calendarUtils';
 import { formatDateFull } from '../../utils/formatters';
 import BrailleSpinner from '../BrailleSpinner';
+import useUrlParams from '../../hooks/useUrlParams';
 
 const START_HOUR = 6;
 const END_HOUR = 23;
@@ -105,7 +106,7 @@ export default function DayView({ accounts }) {
   });
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [searchParams, updateParams] = useUrlParams();
 
   const fetchEvents = useCallback(async () => {
     const startDate = date.toISOString();
@@ -141,6 +142,8 @@ export default function DayView({ accounts }) {
   const timedEvents = useMemo(() => events.filter(e => !e.isAllDay), [events]);
   const layout = useMemo(() => layoutEvents(timedEvents), [timedEvents]);
   const colorMap = useMemo(() => buildSubcalendarColorMap(accounts), [accounts]);
+  const selectedEventKey = searchParams.get('event');
+  const selectedEvent = events.find((event) => `${event.accountId}:${event.id}` === selectedEventKey) || null;
 
   // Current time indicator — update every 60s so the red line moves
   const [now, setNow] = useState(() => new Date());
@@ -185,7 +188,7 @@ export default function DayView({ accounts }) {
                 return (
                   <button
                     key={`${event.accountId}-${event.id}`}
-                    onClick={() => setSelectedEvent(event)}
+                    onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                     className="w-full text-left px-3 py-2 rounded text-sm transition-colors hover:brightness-125"
                     style={{
                       backgroundColor: adColor ? `${adColor}20` : 'rgb(59 130 246 / 0.1)',
@@ -235,7 +238,7 @@ export default function DayView({ accounts }) {
                 return (
                   <button
                     key={key}
-                    onClick={() => setSelectedEvent(event)}
+                    onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                     className={`absolute px-1.5 py-0.5 border-l-2 rounded text-left overflow-hidden transition-colors ${eventColor ? 'hover:brightness-125' : 'hover:bg-port-accent/30'}`}
                     style={{
                       top,
@@ -269,7 +272,7 @@ export default function DayView({ accounts }) {
         </>
       )}
 
-      {selectedEvent && <EventDetail event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
+      {selectedEvent && <EventDetail event={selectedEvent} onClose={() => updateParams({ event: null })} />}
     </div>
   );
 }

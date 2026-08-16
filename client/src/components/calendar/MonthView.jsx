@@ -6,6 +6,7 @@ import EventDetail from './EventDetail';
 import { buildSubcalendarColorMap } from './calendarUtils';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatMonthYear, formatTimeOfDay } from '../../utils/formatters';
+import useUrlParams from '../../hooks/useUrlParams';
 
 function getMonthGrid(year, month) {
   const firstDay = new Date(year, month, 1);
@@ -39,7 +40,7 @@ export default function MonthView({ accounts }) {
   const [month, setMonth] = useState(now.getMonth());
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [searchParams, updateParams] = useUrlParams();
 
   const cells = getMonthGrid(year, month);
   const monthLabel = formatMonthYear(new Date(year, month));
@@ -85,6 +86,8 @@ export default function MonthView({ accounts }) {
   }
 
   const colorMap = useMemo(() => buildSubcalendarColorMap(accounts), [accounts]);
+  const selectedEventKey = searchParams.get('event');
+  const selectedEvent = events.find((event) => `${event.accountId}:${event.id}` === selectedEventKey) || null;
   const todayStr = now.toDateString();
 
   return (
@@ -146,7 +149,7 @@ export default function MonthView({ accounts }) {
                       return (
                         <button
                           key={`${event.accountId}-${event.id}`}
-                          onClick={() => setSelectedEvent(event)}
+                          onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                           className="w-full text-left px-1 py-0.5 rounded text-[10px] truncate transition-colors hover:brightness-125"
                           style={{
                             backgroundColor: evColor ? `${evColor}20` : 'rgb(59 130 246 / 0.15)',
@@ -173,7 +176,7 @@ export default function MonthView({ accounts }) {
         </div>
       )}
 
-      {selectedEvent && <EventDetail event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
+      {selectedEvent && <EventDetail event={selectedEvent} onClose={() => updateParams({ event: null })} />}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import PageHeader from '../components/PageHeader';
 import TabPills from '../components/ui/TabPills';
 import { useValidTab } from '../hooks/useValidTab';
+import useUrlParams from '../hooks/useUrlParams';
 
 import AgendaTab from '../components/calendar/AgendaTab';
 import DayView from '../components/calendar/DayView';
@@ -32,6 +33,7 @@ export const TABS = [
 export default function Calendar() {
   const navigate = useNavigate();
   const activeTab = useValidTab(TABS, 'agenda');
+  const [searchParams] = useUrlParams();
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -46,7 +48,8 @@ export default function Calendar() {
   }, [fetchAccounts]);
 
   const handleTabChange = (tabId) => {
-    navigate(`/calendar/${tabId}`);
+    const query = searchParams.toString();
+    navigate(`/calendar/${tabId}${query ? `?${query}` : ''}`);
   };
 
   const renderTabContent = () => {
