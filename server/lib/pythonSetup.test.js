@@ -97,6 +97,16 @@ const resetState = () => {
   mockState.uvPythonDirs = null;
 };
 
+describe('REQUIRED_PACKAGES', () => {
+  beforeEach(resetState);
+
+  it('includes the diffusers CUDA stack on Linux', async () => {
+    mockState.platform = 'linux';
+    const { REQUIRED_PACKAGES } = await loadModule();
+    expect(REQUIRED_PACKAGES).toEqual(expect.arrayContaining(['torch', 'diffusers']));
+  });
+});
+
 describe('HOST_ARCH', () => {
   beforeEach(resetState);
 
