@@ -952,10 +952,7 @@ function isNestedInLabel(src, index) {
 }
 
 function hasUsableAccessibleNameAttribute(tag, name) {
-  const value = normalizedAttributeValue(attributeValue(tag, name));
-  if (value === null || value === '') return false;
-  const trimmed = value.trim();
-  return trimmed !== '' && !/^(?:undefined|null)$/i.test(trimmed);
+  return isUsableLabelAttributeValue(normalizedAttributeValue(attributeValue(tag, name)));
 }
 
 function hasUsableNativeInputName(tag) {
@@ -2072,6 +2069,8 @@ describe('a11y conventions', () => {
     expect(isNamed('<textarea value={notes} rows={3} />', 'textarea')).toBe(false);
 
     expect(isNamed('<select aria-label="Sort by" value={sort} />', 'select')).toBe(true);
+    expect(isNamed('<select aria-label={false} value={sort} />', 'select')).toBe(false);
+    expect(isNamed('<select aria-label={true} value={sort} />', 'select')).toBe(false);
     expect(isNamed('<label htmlFor="sort">Sort by</label>\n<select id="sort" />', 'select')).toBe(true);
     expect(isNamed('<label>Sort by<select value={sort} /></label>', 'select')).toBe(true);
     expect(isNamed('<span id="notes-h">Notes</span>\n<textarea aria-labelledby="notes-h" />', 'textarea')).toBe(true);

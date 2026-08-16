@@ -11,7 +11,9 @@ import {
   topCounts,
   noveltyRatio,
   listenArtistNames,
+  listenTrackEntries,
   listenGenreNames,
+  topTrackCounts,
   rollupListen,
   rollupWatch,
   chronotypeHistogram,
@@ -81,6 +83,27 @@ describe('listenArtistNames / listenGenreNames', () => {
   });
 });
 
+describe('listenTrackEntries / topTrackCounts', () => {
+  it('normalizes live Spotify and extended-history track shapes', () => {
+    expect(listenTrackEntries({ metadata: { trackName: 'Track A', artists: [{ name: 'Artist A' }] } }))
+      .toEqual([{ name: 'Track A', artist: 'Artist A' }]);
+    expect(listenTrackEntries({ title: 'Track B', metadata: { artist: 'Artist B', trackUri: 'spotify:track:2' } }))
+      .toEqual([{ name: 'Track B', artist: 'Artist B' }]);
+    expect(listenTrackEntries({ title: 'Example Episode', metadata: { type: 'episode' } })).toEqual([]);
+  });
+
+  it('counts tracks by name and artist with deterministic tie ordering', () => {
+    expect(topTrackCounts([
+      { name: 'Track B', artist: 'Artist B' },
+      { name: 'Track A', artist: 'Artist A' },
+      { name: 'Track B', artist: 'Artist B' },
+    ])).toEqual([
+      { name: 'Track B', artist: 'Artist B', count: 2 },
+      { name: 'Track A', artist: 'Artist A', count: 1 },
+    ]);
+  });
+});
+
 describe('rollupListen / rollupWatch', () => {
   const listens = [
     { kind: 'media.listen', title: 'T1', metadata: { trackId: 't1', artists: [{ name: 'A' }], genres: ['ambient'] } },
@@ -92,6 +115,10 @@ describe('rollupListen / rollupWatch', () => {
     const r = rollupListen(listens);
     expect(r.total).toBe(3);
     expect(r.topArtists).toEqual([{ name: 'A', count: 2 }, { name: 'B', count: 1 }]);
+    expect(r.topTracks).toEqual([
+      { name: 'T1', artist: 'A', count: 2 },
+      { name: 'T2', artist: 'B', count: 1 },
+    ]);
     expect(r.topGenres).toEqual([{ name: 'ambient', count: 2 }]);
     // 3 plays, t1 twice → 2 distinct.
     expect(r.novelty).toEqual({ total: 3, distinct: 2, repeats: 1, noveltyRatio: 0.667 });

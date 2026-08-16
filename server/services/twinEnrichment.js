@@ -114,6 +114,39 @@ export function listenGenreNames(ev) {
   return genres.map((g) => String((typeof g === 'string' ? g : g?.name) || '').trim()).filter(Boolean);
 }
 
+// Flatten track identity across the live-sync and extended-history shapes.
+// Episodes are listening activity but not music anchors, so they are excluded
+// from the bounded top-track rollup. The artist is retained only as normalized
+// display metadata; raw Spotify records remain outside the evidence file.
+export function listenTrackEntries(ev) {
+  if (ev?.metadata?.type === 'episode') return [];
+  const name = String(ev?.metadata?.trackName || ev?.title || '').trim();
+  if (!name) return [];
+  const artists = ev?.metadata?.artists;
+  const artist = Array.isArray(artists)
+    ? artists.map((a) => String((typeof a === 'string' ? a : a?.name) || '').trim()).filter(Boolean).join(', ')
+    : String(ev?.metadata?.artist || '').trim();
+  return [{ name, artist: artist || null }];
+}
+
+// Bounded deterministic top-track rollup. Ties are sorted by track then artist
+// so the evidence file remains stable across peers and recomputes.
+export function topTrackCounts(entries, limit = 10) {
+  const counts = new Map();
+  for (const entry of entries || []) {
+    const name = String(entry?.name || '').trim();
+    if (!name) continue;
+    const artist = String(entry?.artist || '').trim();
+    const key = `${name}\u0000${artist}`;
+    counts.set(key, { name, artist: artist || null, count: (counts.get(key)?.count || 0) + 1 });
+  }
+  return [...counts.values()]
+    .sort((a, b) => (b.count - a.count)
+      || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+      || (String(a.artist || '') < String(b.artist || '') ? -1 : String(a.artist || '') > String(b.artist || '') ? 1 : 0))
+    .slice(0, Math.max(0, limit));
+}
+
 // A stable per-play key for novelty counting. Track identity across both source
 // shapes: sync's `trackId`, import's `trackUri`, then isrc, then title —
 // falling to dedupeKey only as a last resort (per-play, so it never collapses
@@ -132,13 +165,16 @@ export function rollupListen(events, topN = 10) {
   const listens = (events || []).filter((e) => e?.kind === MEDIA_LISTEN);
   const artistKeys = [];
   const genreKeys = [];
+  const trackEntries = [];
   for (const ev of listens) {
     artistKeys.push(...listenArtistNames(ev));
     genreKeys.push(...listenGenreNames(ev));
+    trackEntries.push(...listenTrackEntries(ev));
   }
   return {
     total: listens.length,
     topArtists: topCounts(artistKeys, topN),
+    topTracks: topTrackCounts(trackEntries, topN),
     topGenres: topCounts(genreKeys, topN),
     novelty: noveltyRatio(listens.map(listenNoveltyKey)),
   };
