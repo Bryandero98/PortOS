@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const AGENT_CONTEXT_SCHEMA_VERSION = 1;
+export const AGENT_CONTEXT_SCHEMA_VERSION = 2;
 export const AGENT_CONTEXT_PROTOCOL_VERSION = '2025-11-25';
 export const AGENT_CONTEXT_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze([
   '2025-03-26',
@@ -16,6 +16,7 @@ export const AGENT_CONTEXT_LIMITS = Object.freeze({
   maxResults: 25,
   maxSummaryChars: 320,
   maxResponseChars: 20_000,
+  maxApproxTokens: 5_000,
   maxSourceItems: 1_000,
   maxQueryChars: 200,
   maxRefChars: 180,
@@ -75,11 +76,13 @@ export const agentContextSearchOutputSchema = z.object({
   total: z.number().int().min(0),
   truncated: z.boolean(),
   sourceTruncated: z.boolean(),
+  sourceStatus: z.enum(['fresh', 'stale']),
 }).strict();
 
 export const agentContextGetOutputSchema = z.object({
   item: agentContextItemSchema.nullable(),
   sourceTruncated: z.boolean(),
+  sourceStatus: z.enum(['fresh', 'stale']),
 }).strict();
 
 export const agentContextListOutputSchema = z.object({
@@ -88,9 +91,13 @@ export const agentContextListOutputSchema = z.object({
   nextCursor: z.number().int().min(0).nullable(),
   truncated: z.boolean(),
   sourceTruncated: z.boolean(),
+  sourceStatus: z.enum(['fresh', 'stale']),
 }).strict();
 
-export const agentContextNavigationOutputSchema = z.object({ match: agentContextItemSchema.nullable() }).strict();
+export const agentContextNavigationOutputSchema = z.object({
+  match: agentContextItemSchema.nullable(),
+  sourceStatus: z.enum(['fresh', 'stale']),
+}).strict();
 
 export const agentContextProfileOutputSchema = z.object({
   profile: z.enum(AGENT_CONTEXT_PROFILES),
@@ -100,6 +107,7 @@ export const agentContextProfileOutputSchema = z.object({
     maxResults: z.number().int().positive(),
     maxSummaryChars: z.number().int().positive(),
     maxResponseChars: z.number().int().positive(),
+    maxApproxTokens: z.number().int().positive(),
     maxSourceItems: z.number().int().positive(),
   }).strict(),
   exclusions: z.array(z.string()),

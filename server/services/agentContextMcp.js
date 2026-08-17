@@ -83,9 +83,14 @@ const workspaceItem = (workspace, profile) => ({
   searchText: searchableText(`${workspace.appName} workspace app ${workspace.appId}`),
 });
 
-const brainText = (record) => Object.entries(record)
-  .filter(([key, value]) => key !== 'id' && key !== '_rank' && typeof value === 'string')
-  .map(([, value]) => value)
+const BRAIN_CONTEXT_TEXT_FIELDS = Object.freeze([
+  'name', 'title', 'description', 'context', 'oneLiner', 'artist', 'notes',
+  'nextAction', 'mood', 'capturedText', 'url', 'content',
+]);
+
+const brainText = (record) => BRAIN_CONTEXT_TEXT_FIELDS
+  .filter((key) => typeof record[key] === 'string')
+  .map((key) => record[key])
   .join(' ');
 
 const brainItem = (type, record, profile) => {
@@ -120,23 +125,34 @@ const identityItem = ([key, section]) => ({
   searchText: searchableText(`${key} ${section.label || ''} identity export ${section.present ? 'present' : 'absent'}`),
 });
 
-const SOURCE_LOADERS = Object.freeze({
+const normalizeSourceStatus = (value) => value === 'stale' ? 'stale' : 'fresh';
+
+const createSourceLoaders = ({
+  navigationCommands,
+  listWorkspaceContexts,
+  brainSearchTypes,
+  getBrainRecords,
+  previewIdentityExport,
+  getSourceStatus,
+}) => Object.freeze({
   navigation: async () => ({
-    items: NAV_COMMANDS.slice(0, AGENT_CONTEXT_LIMITS.maxSourceItems).map(navigationItem),
-    sourceTruncated: NAV_COMMANDS.length > AGENT_CONTEXT_LIMITS.maxSourceItems,
+    items: navigationCommands.slice(0, AGENT_CONTEXT_LIMITS.maxSourceItems).map(navigationItem),
+    sourceTruncated: navigationCommands.length > AGENT_CONTEXT_LIMITS.maxSourceItems,
+    sourceStatus: normalizeSourceStatus(await getSourceStatus('navigation')),
   }),
   workspaces: async (profile) => {
-    const workspaces = await listContexts();
+    const workspaces = await listWorkspaceContexts();
     return {
       items: workspaces.slice(0, AGENT_CONTEXT_LIMITS.maxSourceItems)
         .map((item) => workspaceItem(item, profile)),
       sourceTruncated: workspaces.length > AGENT_CONTEXT_LIMITS.maxSourceItems,
+      sourceStatus: normalizeSourceStatus(await getSourceStatus('workspaces')),
     };
   },
   brain: async (profile) => {
-    const byType = await Promise.all(BRAIN_SEARCH_TYPES.map(async (type) => ({
+    const byType = await Promise.all(brainSearchTypes.map(async (type) => ({
       type,
-      records: await getBrainProjections(type),
+      records: await getBrainRecords(type),
     })));
     const candidates = [];
     for (const { type, records } of byType) {
@@ -147,26 +163,29 @@ const SOURCE_LOADERS = Object.freeze({
     return {
       items: candidates,
       sourceTruncated: byType.reduce((total, entry) => total + entry.records.length, 0) > candidates.length,
+      sourceStatus: normalizeSourceStatus(await getSourceStatus('brain')),
     };
   },
   identity: async () => {
-    const sections = Object.entries((await previewLegacyExport()).sections ?? {});
+    const sections = Object.entries((await previewIdentityExport()).sections ?? {});
     return {
       items: sections.slice(0, AGENT_CONTEXT_LIMITS.maxSourceItems).map(identityItem),
       sourceTruncated: sections.length > AGENT_CONTEXT_LIMITS.maxSourceItems,
+      sourceStatus: normalizeSourceStatus(await getSourceStatus('identity')),
     };
   },
 });
 
-const loadItems = async (config, scopes) => {
+const loadItems = async (config, scopes, sourceLoaders) => {
   const sources = await Promise.all(scopes.map(async (scope) => {
-    const loader = SOURCE_LOADERS[scope];
+    const loader = sourceLoaders[scope];
     if (!loader) throw new Error(`Unsupported context scope: ${scope}`);
     return loader(config.profile);
   }));
   return {
     items: sources.flatMap((source) => source.items),
     sourceTruncated: sources.some((source) => source.sourceTruncated),
+    sourceStatus: sources.some((source) => source.sourceStatus === 'stale') ? 'stale' : 'fresh',
   };
 };
 
@@ -181,7 +200,9 @@ const fitItems = (items, limit) => {
   const selected = [];
   for (const candidate of items.slice(0, limit)) {
     const next = [...selected, candidate.item];
-    if (JSON.stringify(next).length > AGENT_CONTEXT_LIMITS.maxResponseChars) break;
+    const serialized = JSON.stringify(next);
+    if (serialized.length > AGENT_CONTEXT_LIMITS.maxResponseChars
+      || Math.ceil(serialized.length / 4) > AGENT_CONTEXT_LIMITS.maxApproxTokens) break;
     selected.push(candidate.item);
   }
   return { items: selected, truncated: selected.length < items.length };
@@ -195,16 +216,17 @@ const profileOutput = (config) => ({
     maxResults: AGENT_CONTEXT_LIMITS.maxResults,
     maxSummaryChars: AGENT_CONTEXT_LIMITS.maxSummaryChars,
     maxResponseChars: AGENT_CONTEXT_LIMITS.maxResponseChars,
+    maxApproxTokens: AGENT_CONTEXT_LIMITS.maxApproxTokens,
     maxSourceItems: AGENT_CONTEXT_LIMITS.maxSourceItems,
   },
   exclusions: [...AGENT_CONTEXT_EXCLUSIONS],
 });
 
 const TOOL_HANDLERS = Object.freeze({
-  search_context: async (input, config) => {
+  search_context: async (input, config, runtime) => {
     const scopes = requestedScopes(config, input.scopes);
     const query = input.query.toLowerCase();
-    const loaded = await loadItems(config, scopes);
+    const loaded = await loadItems(config, scopes, runtime.sourceLoaders);
     const matches = loaded.items
       .filter((candidate) => candidate.searchText.toLowerCase().includes(query));
     const fitted = fitItems(matches, input.limit ?? AGENT_CONTEXT_LIMITS.defaultResults);
@@ -212,21 +234,23 @@ const TOOL_HANDLERS = Object.freeze({
       ...fitted,
       total: matches.length,
       sourceTruncated: loaded.sourceTruncated,
+      sourceStatus: loaded.sourceStatus,
       truncated: fitted.truncated || loaded.sourceTruncated,
     };
   },
-  get_context: async (input, config) => {
+  get_context: async (input, config, runtime) => {
     const scope = input.ref.split(':', 1)[0];
-    if (!config.scopes.includes(scope)) return { item: null, sourceTruncated: false };
-    const loaded = await loadItems(config, [scope]);
+    if (!config.scopes.includes(scope)) return { item: null, sourceTruncated: false, sourceStatus: 'fresh' };
+    const loaded = await loadItems(config, [scope], runtime.sourceLoaders);
     return {
       item: loaded.items.find((candidate) => candidate.item.ref === input.ref)?.item ?? null,
       sourceTruncated: loaded.sourceTruncated,
+      sourceStatus: loaded.sourceStatus,
     };
   },
-  list_context: async (input, config) => {
+  list_context: async (input, config, runtime) => {
     requestedScopes(config, [input.scope]);
-    const loaded = await loadItems(config, [input.scope]);
+    const loaded = await loadItems(config, [input.scope], runtime.sourceLoaders);
     const all = loaded.items;
     const cursor = input.cursor ?? 0;
     const page = all.slice(cursor);
@@ -237,13 +261,17 @@ const TOOL_HANDLERS = Object.freeze({
       total: all.length,
       nextCursor: nextOffset < all.length ? nextOffset : null,
       sourceTruncated: loaded.sourceTruncated,
+      sourceStatus: loaded.sourceStatus,
       truncated: fitted.truncated || loaded.sourceTruncated,
     };
   },
-  resolve_navigation: async (input, config) => {
+  resolve_navigation: async (input, config, runtime) => {
     requestedScopes(config, ['navigation']);
-    const match = resolveNavCommand(input.query);
-    return { match: match?.command ? navigationItem(match.command).item : null };
+    const match = runtime.resolveNavigation(input.query);
+    return {
+      match: match?.command ? navigationItem(match.command).item : null,
+      sourceStatus: normalizeSourceStatus(await runtime.getSourceStatus('navigation')),
+    };
   },
   context_profile: async (_input, config) => profileOutput(config),
 });
@@ -258,47 +286,75 @@ const successToolResult = (output) => ({
   structuredContent: output,
 });
 
-export async function getAgentContextManifest(settings) {
-  const current = settings ?? await getSettings();
-  const config = resolveAgentContextConfig(current);
-  return {
-    kind: 'portos-agent-context',
-    schemaVersion: AGENT_CONTEXT_SCHEMA_VERSION,
-    protocolVersion: AGENT_CONTEXT_PROTOCOL_VERSION,
-    enabled: config.enabled,
-    configurationValid: !config.invalid,
-    transport: {
-      type: 'streamable-http',
-      endpoint: '/api/agent-context/mcp',
-      loopbackOnly: true,
-      stateful: false,
-    },
-    profile: config.profile,
-    scopes: config.scopes,
-    limits: profileOutput(config).limits,
-    exclusions: [...AGENT_CONTEXT_EXCLUSIONS],
-    tools: advertiseAgentContextTools(config.scopes),
+export function createAgentContextContract({
+  readSettings = getSettings,
+  navigationCommands = NAV_COMMANDS,
+  resolveNavigation = resolveNavCommand,
+  listWorkspaceContexts = listContexts,
+  brainSearchTypes = BRAIN_SEARCH_TYPES,
+  getBrainRecords = getBrainProjections,
+  previewIdentityExport = previewLegacyExport,
+  getSourceStatus = async () => 'fresh',
+} = {}) {
+  const sourceLoaders = createSourceLoaders({
+    navigationCommands,
+    listWorkspaceContexts,
+    brainSearchTypes,
+    getBrainRecords,
+    previewIdentityExport,
+    getSourceStatus,
+  });
+  const runtime = { sourceLoaders, resolveNavigation, getSourceStatus };
+
+  const getManifest = async (settings) => {
+    const current = settings ?? await readSettings();
+    const config = resolveAgentContextConfig(current);
+    return {
+      kind: 'portos-agent-context',
+      schemaVersion: AGENT_CONTEXT_SCHEMA_VERSION,
+      protocolVersion: AGENT_CONTEXT_PROTOCOL_VERSION,
+      enabled: config.enabled,
+      configurationValid: !config.invalid,
+      transport: {
+        type: 'streamable-http',
+        endpoint: '/api/agent-context/mcp',
+        loopbackOnly: true,
+        stateful: false,
+      },
+      profile: config.profile,
+      scopes: config.scopes,
+      limits: profileOutput(config).limits,
+      exclusions: [...AGENT_CONTEXT_EXCLUSIONS],
+      tools: advertiseAgentContextTools(config.scopes),
+    };
   };
+
+  const callTool = async (name, args, settings) => {
+    const current = settings ?? await readSettings();
+    const config = resolveAgentContextConfig(current);
+    if (!config.enabled || config.invalid) return errorToolResult('Agent context is disabled or invalid.');
+
+    const tool = AGENT_CONTEXT_TOOL_REGISTRY.find((candidate) => candidate.name === name);
+    if (!tool || !TOOL_HANDLERS[name]) return errorToolResult(`Unknown tool: ${cap(name, 120)}`);
+    if (tool.requiredScope && !config.scopes.includes(tool.requiredScope)) {
+      return errorToolResult(`Tool requires the ${tool.requiredScope} scope.`);
+    }
+
+    const parsed = tool.inputSchema.safeParse(args ?? {});
+    if (!parsed.success) {
+      const paths = parsed.error.issues.map((issue) => issue.path.join('.') || 'input').join(', ');
+      return errorToolResult(`Invalid tool input at: ${paths}`);
+    }
+
+    return Promise.resolve(TOOL_HANDLERS[name](parsed.data, config, runtime))
+      .then((output) => successToolResult(tool.outputSchema.parse(output)))
+      .catch(() => errorToolResult('Context source unavailable for this request.'));
+  };
+
+  return Object.freeze({ getManifest, callTool });
 }
 
-export async function callAgentContextTool(name, args, settings) {
-  const current = settings ?? await getSettings();
-  const config = resolveAgentContextConfig(current);
-  if (!config.enabled || config.invalid) return errorToolResult('Agent context is disabled or invalid.');
+const defaultAgentContextContract = createAgentContextContract();
 
-  const tool = AGENT_CONTEXT_TOOL_REGISTRY.find((candidate) => candidate.name === name);
-  if (!tool || !TOOL_HANDLERS[name]) return errorToolResult(`Unknown tool: ${cap(name, 120)}`);
-  if (tool.requiredScope && !config.scopes.includes(tool.requiredScope)) {
-    return errorToolResult(`Tool requires the ${tool.requiredScope} scope.`);
-  }
-
-  const parsed = tool.inputSchema.safeParse(args ?? {});
-  if (!parsed.success) {
-    const paths = parsed.error.issues.map((issue) => issue.path.join('.') || 'input').join(', ');
-    return errorToolResult(`Invalid tool input at: ${paths}`);
-  }
-
-  return Promise.resolve(TOOL_HANDLERS[name](parsed.data, config))
-    .then((output) => successToolResult(tool.outputSchema.parse(output)))
-    .catch(() => errorToolResult('Context source unavailable for this request.'));
-}
+export const getAgentContextManifest = (settings) => defaultAgentContextContract.getManifest(settings);
+export const callAgentContextTool = (name, args, settings) => defaultAgentContextContract.callTool(name, args, settings);
