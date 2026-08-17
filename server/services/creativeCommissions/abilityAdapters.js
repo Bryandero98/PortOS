@@ -79,7 +79,17 @@ function briefContext(commission, leadSentence) {
   if (brief.category) lines.push(`Category: ${brief.category}.`);
   if (brief.styleSpec) lines.push(`Style: ${brief.styleSpec}.`);
   const digest = renderFeedbackDigest(commission?.feedback, commission?.feedbackWindow ?? 5);
-  const constraints = {};
+  // Preserve the user's structured form choices alongside the prose brief.
+  // The planner uses targetAbility to receive a matching tool subset and sees
+  // generation as authoritative starting configuration rather than guessing
+  // renderer/model controls from the intent text.
+  const constraints = {
+    targetAbility: commission?.targetAbility,
+    generation: sanitizeGenerationFor(
+      CREATIVE_COMMISSION_ABILITIES.includes(commission?.targetAbility) ? commission.targetAbility : 'video',
+      commission?.generation,
+    ),
+  };
   if (brief.constraints?.universeId) constraints.universeId = brief.constraints.universeId;
   if (brief.constraints?.seriesId) constraints.seriesId = brief.constraints.seriesId;
   return { lines, digest, constraints };
@@ -143,7 +153,7 @@ function buildVideoGeometryParams(commission, { defaultVideoModelId } = {}) {
     // (lib/creativeDirectorPrompts.js) and the teaser tool inherits. Neither set
     // ⇒ the install default, exactly as before.
     modelId: gen?.videoModelId || gen?.model || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined),
-    targetDurationSeconds: gen?.targetDurationSeconds || 10,
+    targetDurationSeconds: gen?.targetDurationSeconds || gen?.lengthSeconds || 10,
     // Only passed when the commission actually pinned a backend (#3135), so an
     // unpinned commission's createProject call is byte-identical to a hand-made
     // project's — both omit the arg and buildProjectRecord stores `null`, exactly

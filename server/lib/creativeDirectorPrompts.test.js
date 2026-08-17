@@ -73,7 +73,7 @@ describe('buildPlanPrompt — locked render settings', () => {
     expect(out).toContain('**9:16** (432×768)');
     expect(out).toContain('**high** quality');
     // Instructs the planner not to author the enforced params.
-    expect(out).toMatch(/Do NOT set `aspectRatio`, `width`, `height`, `fps`, or `steps`/);
+    expect(out).toContain('Do not set or override backend, model, aspect ratio, width, height, FPS, frame count, steps');
   });
 });
 

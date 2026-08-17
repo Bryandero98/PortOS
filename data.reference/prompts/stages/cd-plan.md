@@ -16,6 +16,8 @@ You are the Creative Director acting as a general creative ORCHESTRATOR. Your jo
 
 **Constraints (JSON):** {{directive.constraintsJson}}
 
+For a Creative Commission, these constraints contain the user's authoritative `targetAbility` and sanitized `generation` form choices. Start from them. Do not substitute a different output type, backend, model, duration, count, quality, or aspect ratio.
+
 {{#hasCurrentPlan}}
 ## Current plan (revise this)
 
@@ -38,7 +40,9 @@ Parameters (JSON schema): {{parametersJson}}
 
 ## Locked render settings
 
-This project is locked to **{{render.aspectRatio}}** ({{render.width}}×{{render.height}}), **{{render.quality}}** quality, target ~{{render.targetDurationSeconds}}s. For any `media_enqueueVideoJob` step, set ONLY the creative params (`prompt`, `negativePrompt`, `style`, and optionally a shorter per-beat `durationSeconds`). Do NOT set `aspectRatio`, `width`, `height`, `fps`, or `steps` — the server forces the locked geometry onto every render, so any values you supply for those are ignored.
+This project is locked to **{{render.aspectRatio}}** ({{render.width}}×{{render.height}}), **{{render.quality}}** quality, target ~{{render.targetDurationSeconds}}s, using **{{render.modelName}}** (`{{render.modelId}}`). The selected model exposes these same options in the Video Gen UI: {{render.modelOptionsJson}}.
+
+For any `media_enqueueVideoJob` step, set only `prompt`, `style`, and optionally a shorter per-beat `durationSeconds`.{{#render.supportsNegativePrompt}} You may also set `negativePrompt`.{{/render.supportsNegativePrompt}}{{^render.supportsNegativePrompt}} Do NOT set `negativePrompt`; this model does not expose it in the UI.{{/render.supportsNegativePrompt}} Do not set or override backend, model, aspect ratio, width, height, FPS, frame count, steps, guidance, tiling, or audio controls. The server derives them from the user's commission and snaps them to the selected model's advertised options.
 
 ## Referencing a prior step's result
 

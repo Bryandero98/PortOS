@@ -239,6 +239,13 @@ router.patch('/:id/treatment', asyncHandler(async (req, res) => {
 // the plan advance loop so execution begins on the returned plan.
 router.patch('/:id/plan', asyncHandler(async (req, res) => {
   const plan = validateRequest(creativeDirectorPlanSchema, req.body);
+  const project = await getProject(req.params.id);
+  if (!project) throw new ServerError('Project not found', { status: 404, code: 'NOT_FOUND' });
+  const { getCommissionPlanError } = await import('../services/creative/toolRegistry.js');
+  const commissionPlanError = getCommissionPlanError(plan, project.directive);
+  if (commissionPlanError) {
+    throw new ServerError(commissionPlanError, { status: 400, code: 'INVALID_COMMISSION_PLAN' });
+  }
   const updated = await setPlan(req.params.id, plan);
   const { advanceAfterPlanStepSettled } = await import('../services/creativeDirector/planAdvance.js');
   advanceAfterPlanStepSettled(req.params.id)

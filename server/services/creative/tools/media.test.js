@@ -14,7 +14,7 @@ vi.mock('../../creativeCommissions/store.js', () => ({
 import { enqueueJob } from '../../mediaJobQueue/index.js';
 import { getSettings } from '../../settings.js';
 import { getProject } from '../../creativeDirector/local.js';
-import { MEDIA_TOOLS } from './media.js';
+import { MEDIA_TOOLS, reconcileVideoParamsWithModel } from './media.js';
 
 const tool = (name) => MEDIA_TOOLS.find((t) => t.name === name);
 const run = (name, params, ctx = {}) => tool(name).execute({ params }, ctx);
@@ -29,6 +29,39 @@ beforeEach(() => {
   getSettings.mockResolvedValue({});
   getProject.mockResolvedValue(null);
   getCommissionMusicContextForProject.mockResolvedValue(null);
+});
+
+describe('model-aware autonomous video controls', () => {
+  it('uses the same H3 options as Video Gen and drops controls its UI disables', () => {
+    const params = reconcileVideoParamsWithModel({
+      prompt: 'an example shot',
+      negativePrompt: 'blur',
+      disableAudio: true,
+      tiling: 'spatial',
+    }, {
+      aspectRatio: '16:9', quality: 'standard', targetDurationSeconds: 10,
+      modelId: 'minimax-h3-example',
+    }, [{
+      id: 'minimax-h3-example',
+      resolutionOptions: [{ w: 1344, h: 768 }, { w: 768, h: 1344 }],
+      fpsOptions: [24],
+      frameOptions: [226, 243],
+      samplerLocked: true,
+      supportsNegativePrompt: false,
+      supportsDisableAudio: false,
+      supportsTiling: false,
+    }]);
+
+    expect(params).toMatchObject({
+      prompt: 'an example shot', modelId: 'minimax-h3-example',
+      width: 1344, height: 768, fps: 24, numFrames: 243,
+    });
+    expect(params).not.toHaveProperty('negativePrompt');
+    expect(params).not.toHaveProperty('disableAudio');
+    expect(params).not.toHaveProperty('tiling');
+    expect(params).not.toHaveProperty('steps');
+    expect(params).not.toHaveProperty('guidanceScale');
+  });
 });
 
 describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135)', () => {
@@ -125,6 +158,19 @@ describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135
 });
 
 describe('render-backend pin — image (#3135)', () => {
+  it('locks an image commission to the form aspect and quality presets', async () => {
+    getProject.mockResolvedValue({
+      id: 'cd-1', aspectRatio: '9:16', quality: 'high',
+      directive: { constraints: { targetAbility: 'image' } },
+    });
+    await run('media_enqueueImageJob', {
+      prompt: 'p', width: 1024, height: 1024, steps: 4, cfgScale: 12,
+    }, { projectId: 'cd-1' });
+    expect(enqueued().params).toMatchObject({
+      prompt: 'p', width: 432, height: 768, steps: 30, guidance: 3.5, cfgScale: 3.5,
+    });
+  });
+
   it('forces a codex pin onto the job params, overriding the planner LLM', async () => {
     getSettings.mockResolvedValue({ imageGen: { codex: { enabled: true, codexPath: '/bin/codex', model: 'example-model', effort: 'low' } } });
     getProject.mockResolvedValue(projectWithPin({ image: { mode: 'codex' } }));
@@ -183,6 +229,15 @@ describe('render-backend pin — image (#3135)', () => {
 });
 
 describe('render-backend pin — video (#3135)', () => {
+  it('locks a video commission to the form duration instead of a planner beat', async () => {
+    getProject.mockResolvedValue({
+      id: 'cd-1', aspectRatio: '16:9', quality: 'standard', targetDurationSeconds: 10,
+      directive: { constraints: { targetAbility: 'video' } },
+    });
+    await run('media_enqueueVideoJob', { prompt: 'p', durationSeconds: 5 }, { projectId: 'cd-1' });
+    expect(enqueued().params.durationSeconds).toBe(10);
+  });
+
   it('forces a grok pin with the grok discriminator + the semantic in videoMode', async () => {
     getSettings.mockResolvedValue({ imageGen: { grok: { enabled: true, grokPath: '/bin/grok', aspectRatio: '9:16' } } });
     getProject.mockResolvedValue(projectWithPin({ video: { mode: 'grok' } }));
@@ -322,11 +377,25 @@ describe('render-backend pin — video (#3135)', () => {
 });
 
 describe('audio enqueues', () => {
-  it('tags the music bed without reading the project or settings', async () => {
+  it('tags a general project music bed without reading settings', async () => {
     await run('media_enqueueAudioJob', { prompt: 'a mournful synth score' }, { projectId: 'cd-1' });
     expect(enqueued().params.creativeDirectorMusicBed).toEqual({ projectId: 'cd-1' });
-    expect(getProject).not.toHaveBeenCalled();
+    expect(getProject).toHaveBeenCalledTimes(1);
     expect(getSettings).not.toHaveBeenCalled();
+  });
+
+  it('locks a non-taste music commission to its form duration and install renderer', async () => {
+    getProject.mockResolvedValue({
+      id: 'cd-1', targetDurationSeconds: 75,
+      directive: { constraints: { targetAbility: 'music', generation: { lengthSeconds: 75 } } },
+    });
+    await run('media_enqueueAudioJob', {
+      prompt: 'a mournful synth score', engine: 'planner-engine', modelId: 'planner-model', durationSec: 5,
+    }, { projectId: 'cd-1' });
+    expect(enqueued().params).toEqual({
+      prompt: 'a mournful synth score', durationSec: 75,
+      creativeDirectorMusicBed: { projectId: 'cd-1' },
+    });
   });
 
   it('authoritatively applies a taste commission recipe and configured renderer', async () => {

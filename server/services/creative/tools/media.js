@@ -13,6 +13,7 @@ import { renderTargetDefaults, resolveRenderTargetConfig } from '../../imageGen/
 import { RENDER_TARGET } from '../../../lib/renderTargets.js';
 import { VIDEO_GEN_MODE, VIDEO_GEN_MODES } from '../../videoGen/modes.js';
 import { grokVideoJobParams, resolveVideoBackendPin } from '../../videoGen/backendPin.js';
+import { getDefaultVideoModelId, getVideoModels } from '../../../lib/mediaModels.js';
 import { COST_RENDER, resolveOwner } from './shared.js';
 
 const paramsSchema = z.object({ params: z.record(z.any()).default({}), owner: z.string().optional() });
@@ -30,11 +31,12 @@ const paramsSchema = z.object({ params: z.record(z.any()).default({}), owner: z.
  * them deterministically here rather than trusting the LLM to reproduce them.
  *
  * The planner still owns the CREATIVE params (`prompt`, `negativePrompt`,
- * `style`, `durationSeconds`). Only the render geometry is enforced. An
+ * `style`). Commission duration is form-locked; a general CD project may use
+ * shorter per-step beats. Only render controls are enforced. An
  * unrecognized aspect/quality (hand-edited/legacy project) falls through to the
  * LLM's params untouched — best-effort, never throws.
  */
-async function enforceVideoRenderPreset(params, project) {
+function enforceVideoRenderPreset(params, project) {
   // Only a directive-driven CD project locks a preset; a bare enqueue (no
   // recognized aspect/quality) keeps the caller's params as-is.
   if (!project || !ASPECT_PRESETS[project.aspectRatio] || !QUALITY_PRESETS[project.quality]) {
@@ -42,8 +44,12 @@ async function enforceVideoRenderPreset(params, project) {
   }
   // The planner may legitimately ask for a shorter beat than the project target,
   // so a positive per-step durationSeconds wins; otherwise use the project's.
+  const targetAbility = project.directive?.constraints?.targetAbility;
+  const commissionLocked = targetAbility === 'video' || targetAbility === 'music-video';
   const stepDuration = Number(params?.durationSeconds);
-  const durationSeconds = stepDuration > 0 ? stepDuration : (project.targetDurationSeconds || 10);
+  const durationSeconds = commissionLocked
+    ? (project.targetDurationSeconds || 10)
+    : (stepDuration > 0 ? stepDuration : (project.targetDurationSeconds || 10));
   const preset = presetToRenderParams({
     aspectRatio: project.aspectRatio,
     quality: project.quality,
@@ -54,6 +60,7 @@ async function enforceVideoRenderPreset(params, project) {
   const { aspectRatio: _ignored, ...rest } = params || {};
   return {
     ...rest,
+    durationSeconds,
     width: preset.width,
     height: preset.height,
     fps: preset.fps,
@@ -61,6 +68,64 @@ async function enforceVideoRenderPreset(params, project) {
     steps: preset.steps,
     guidanceScale: preset.guidanceScale,
   };
+}
+
+function enforceImageRenderPreset(params, project) {
+  const targetAbility = project?.directive?.constraints?.targetAbility;
+  if ((targetAbility !== 'image' && targetAbility !== 'music-video')
+      || !ASPECT_PRESETS[project.aspectRatio] || !QUALITY_PRESETS[project.quality]) {
+    return params;
+  }
+  const aspect = ASPECT_PRESETS[project.aspectRatio];
+  const quality = QUALITY_PRESETS[project.quality];
+  const { aspectRatio: _ignored, ...rest } = params || {};
+  return {
+    ...rest,
+    width: aspect.width,
+    height: aspect.height,
+    steps: quality.steps,
+    guidance: quality.guidance,
+    cfgScale: quality.guidance,
+  };
+}
+
+export function reconcileVideoParamsWithModel(params, project, models = getVideoModels()) {
+  const locked = enforceVideoRenderPreset(params, project);
+  if (locked === params) return params;
+  const requestedModelId = locked.modelId || project.modelId || getDefaultVideoModelId();
+  const model = models.find((entry) => entry.id === requestedModelId) || null;
+  const aspectValue = locked.width / locked.height;
+  const resolution = Array.isArray(model?.resolutionOptions) && model.resolutionOptions.length
+    ? model.resolutionOptions.reduce((best, option) => {
+      const distance = Math.abs((Number(option.w) / Number(option.h)) - aspectValue);
+      return !best || distance < best.distance ? { option, distance } : best;
+    }, null)?.option
+    : null;
+  const fpsOptions = Array.isArray(model?.fpsOptions) ? model.fpsOptions.filter(Number.isFinite) : [];
+  const fps = fpsOptions.includes(locked.fps) ? locked.fps : (fpsOptions[0] || locked.fps);
+  const requestedFrames = Math.max(1, Math.round((locked.numFrames / locked.fps) * fps));
+  const frameOptions = Array.isArray(model?.frameOptions) ? model.frameOptions.filter(Number.isFinite) : [];
+  const numFrames = frameOptions.length
+    ? frameOptions.reduce((best, value) => (
+      Math.abs(value - requestedFrames) < Math.abs(best - requestedFrames) ? value : best
+    ))
+    : locked.numFrames;
+  const reconciled = {
+    ...locked,
+    modelId: requestedModelId,
+    width: Number(resolution?.w) || locked.width,
+    height: Number(resolution?.h) || locked.height,
+    fps,
+    numFrames,
+  };
+  if (model?.samplerLocked) {
+    delete reconciled.steps;
+    delete reconciled.guidanceScale;
+  }
+  if (model?.supportsNegativePrompt === false) delete reconciled.negativePrompt;
+  if (model?.supportsDisableAudio === false) delete reconciled.disableAudio;
+  if (model?.supportsTiling === false) delete reconciled.tiling;
+  return reconciled;
 }
 
 /**
@@ -80,14 +145,35 @@ async function enforceVideoRenderPreset(params, project) {
  */
 async function configureMusicJob(params, ctx) {
   if (!ctx?.projectId) return params;
+  const project = await loadOwningProject(ctx);
+  if ((ctx.targetAbility === 'music' || ctx.targetAbility === 'music-video') && !project) {
+    throw new Error('commission-project-unavailable');
+  }
   const { getCommissionMusicContextForProject } = await import('../../creativeCommissions/store.js');
   // Do not collapse a failed local provenance lookup into "not a taste run".
   // That would let planner-authored renderer/prompt guesses escape onto an
   // opted-in commission precisely when the local store is unavailable.
   const context = await getCommissionMusicContextForProject(ctx.projectId);
   if (!context) {
-    if (params?.creativeDirectorMusicBed) return params;
-    return { ...params, creativeDirectorMusicBed: { projectId: ctx.projectId } };
+    const targetAbility = project?.directive?.constraints?.targetAbility;
+    if (targetAbility !== 'music' && targetAbility !== 'music-video') {
+      if (params?.creativeDirectorMusicBed) return params;
+      return { ...params, creativeDirectorMusicBed: { projectId: ctx.projectId } };
+    }
+    const {
+      engine: _plannerEngine,
+      modelId: _plannerModel,
+      repo: _plannerRepo,
+      durationSec: _plannerDuration,
+      durationMode: _plannerDurationMode,
+      provenance: _plannerProvenance,
+      ...rest
+    } = params || {};
+    return {
+      ...rest,
+      durationSec: project.targetDurationSeconds,
+      creativeDirectorMusicBed: { projectId: ctx.projectId },
+    };
   }
   if (typeof context.prompt !== 'string' || !context.prompt.trim()) {
     throw new Error('taste-commission-prompt-unavailable');
@@ -261,8 +347,18 @@ const mediaTool = (kind, label) => ({
       // Image + video both consult the owning project: video for its locked
       // geometry preset, both for a pinned render backend (#3135).
       const project = await loadOwningProject(ctx);
-      if (kind === 'video') params = await enforceVideoRenderPreset(params, project);
+      if (ctx.targetAbility && !project) throw new Error('commission-project-unavailable');
+      if (kind === 'video') params = enforceVideoRenderPreset(params, project);
+      if (kind === 'image') params = enforceImageRenderPreset(params, project);
       params = await enforceRenderBackendPin(kind, params, project);
+      // Resolve the selected local model AFTER the backend ladder has applied
+      // project/install pins. The same model-catalog fields that drive Video
+      // Gen's visible controls then snap the autonomous job onto that model's
+      // canvas/FPS/frame options and remove controls the UI disables (for
+      // example MiniMax H3's negative prompt and sampler knobs).
+      if (kind === 'video' && params?.mode !== VIDEO_GEN_MODE.GROK) {
+        params = reconcileVideoParamsWithModel(params, project);
+      }
     }
     return enqueueJob({ kind, params, owner: resolveOwner(args, ctx) });
   },
