@@ -1076,10 +1076,11 @@ describe('desiredEndState', () => {
     expect(instruction).not.toContain('<num>');
   });
 
-  // A repo without Copilot review enabled never produces one — an unbounded
-  // "await the review" would strand a green PR open forever.
-  it('time-boxes the IN_REVIEW Copilot gate', () => {
-    expect(desiredEndState('IN_REVIEW', {})).toContain('within 10 minutes');
+  it('does not request or gate an IN_REVIEW branch on Copilot', () => {
+    const instruction = desiredEndState('IN_REVIEW', {});
+    expect(instruction).toContain('CI is green and the PR is MERGEABLE');
+    expect(instruction.toLowerCase()).not.toContain('copilot');
+    expect(instruction).not.toContain('request/await');
   });
 });
 
