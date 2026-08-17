@@ -567,6 +567,7 @@ describe('taskSchedule', () => {
       const schedule = await loadSchedule()
       expect(schedule.tasks['plan-task'].taskMetadata.useWorktree).toBe(false)
       expect(schedule.tasks['plan-task'].taskMetadata.openPR).toBe(false)
+      expect(schedule.tasks['plan-task'].taskMetadata.claimFlow).toBe(true)
       // Non-managed flags pass through untouched
       expect(schedule.tasks['plan-task'].taskMetadata.simplify).toBe(true)
     })
@@ -574,7 +575,7 @@ describe('taskSchedule', () => {
     it('exposes managedAgentOptions in getScheduleStatus for plan-task', async () => {
       mockSchedule()
       const status = await getScheduleStatus()
-      expect(status.tasks['plan-task'].managedAgentOptions).toEqual(['useWorktree', 'openPR'])
+      expect(status.tasks['plan-task'].managedAgentOptions).toEqual(['useWorktree', 'openPR', 'claimFlow'])
       // Other tasks should not carry the field
       expect(status.tasks['security'].managedAgentOptions).toBeUndefined()
     })
@@ -586,6 +587,7 @@ describe('taskSchedule', () => {
       })
       expect(result.taskMetadata.useWorktree).toBe(false)
       expect(result.taskMetadata.openPR).toBe(false)
+      expect(result.taskMetadata.claimFlow).toBe(true)
       expect(result.taskMetadata.simplify).toBe(true)
     })
 
@@ -606,6 +608,7 @@ describe('taskSchedule', () => {
       const schedule = await loadSchedule()
       expect(schedule.tasks['plan-task'].taskMetadata.useWorktree).toBe(false)
       expect(schedule.tasks['plan-task'].taskMetadata.openPR).toBe(false)
+      expect(schedule.tasks['plan-task'].taskMetadata.claimFlow).toBe(true)
     })
   })
 
@@ -1265,7 +1268,8 @@ describe('taskSchedule', () => {
       // so CoS must keep both off (and lock them).
       expect(cfg.taskMetadata.useWorktree).toBe(false)
       expect(cfg.taskMetadata.openPR).toBe(false)
-      expect(MANAGED_AGENT_OPTIONS['claim-issue']).toEqual(['useWorktree', 'openPR'])
+      expect(cfg.taskMetadata.claimFlow).toBe(true)
+      expect(MANAGED_AGENT_OPTIONS['claim-issue']).toEqual(['useWorktree', 'openPR', 'claimFlow'])
     })
   })
 

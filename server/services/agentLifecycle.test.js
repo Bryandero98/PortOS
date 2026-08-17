@@ -668,6 +668,14 @@ describe('runAgentSpawn source — instance provenance + claim ordering (#1563)'
     expect(metaSlice).toMatch(/\binstanceId,/);
     expect(metaSlice.indexOf('instanceId,')).toBeLessThan(metaSlice.indexOf('workspacePath'));
   });
+
+  it('records claimFlow separately from CoS-managed PR/worktree flags', () => {
+    const registerIdx = AGENT_LIFECYCLE_SRC.indexOf('registerAgent(agentId, task.id, {');
+    const metaSlice = AGENT_LIFECYCLE_SRC.slice(registerIdx, registerIdx + 8_000);
+    expect(metaSlice).toContain('configOpenPR: isTruthyMeta(task.metadata?.openPR)');
+    expect(metaSlice).toContain('configClaimFlow: isClaimFlowTask(task, isTruthyMeta)');
+    expect(metaSlice.indexOf('configClaimFlow')).toBeGreaterThan(metaSlice.indexOf('configOpenPR'));
+  });
 });
 
 // These used to be three source-regex assertions pinning a hand-spread env

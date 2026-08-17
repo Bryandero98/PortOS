@@ -328,12 +328,16 @@ describe('claim-work single-source routing', () => {
 
   it('pulls the delegated flow isolation posture from DEFAULT_TASK_INTERVALS metadata', () => {
     // claim-work forces useWorktree/openPR=false, correct for all four
-    // self-managing claim prompts (plan/github/gitlab/jira). The hook stays so a
-    // future delegated type that DOES need CoS-managed isolation would have its
+    // self-managing claim prompts (plan/github/gitlab/jira). `claimFlow` is the
+    // separate lifecycle marker that prevents those false/false flags from
+    // selecting the generic commit-only handoff. The hook stays so a future
+    // delegated type that DOES need CoS-managed isolation would have its
     // DEFAULT_TASK_INTERVALS metadata applied here.
     expect(GEN_SRC).toContain('taskSchedule.DEFAULT_TASK_INTERVALS[promptTaskType]?.taskMetadata');
     expect(GEN_SRC).toContain("'useWorktree' in delegatedMeta");
     expect(GEN_SRC).toContain("'openPR' in delegatedMeta");
+    expect(GEN_SRC).toContain('const taskMetadata = { claimFlow: true }');
+    expect(GEN_SRC).toContain('metadata.claimFlow = true');
   });
 
   it('exposes buildClaimWorkTask so the manual /do:next button reuses the same router', () => {
@@ -504,8 +508,9 @@ describe('buildJiraTicketTask', () => {
     expect(prompt).toContain('PROJ-1234');
     // Ticket key normalized to upper-case.
     expect(ticketKey).toBe('PROJ-1234');
-    // claim-issue-jira self-manages worktree + PR.
-    expect(taskMetadata).toEqual({ useWorktree: false, openPR: false });
+    // claim-issue-jira self-manages worktree + PR; claimFlow keeps that
+    // lifecycle from falling into CoS's generic false/false handoff.
+    expect(taskMetadata).toEqual({ useWorktree: false, openPR: false, claimFlow: true });
   });
 
   it('is exported so the /tasks/jira-ticket route reuses the shared assembly', () => {

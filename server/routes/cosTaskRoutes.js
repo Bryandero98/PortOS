@@ -204,8 +204,10 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
       // claim.taskMetadata overrides the catalog posture only where it carries a
       // key. All current claim flows (plan-task / claim-issue / claim-issue-gitlab
       // / claim-issue-jira) self-manage their worktree + MR/PR, so false/false
-      // stands; the spread stays for a future delegated type that needs
-      // CoS-managed isolation. `worktreeChangesExpected` is one such key: the
+      // remains the CoS provisioning posture. `claimFlow` is a separate
+      // lifecycle marker so the prompt builder cannot mistake false/false for a
+      // commit-only handoff. The spread stays for a future delegated type that
+      // needs CoS-managed isolation. `worktreeChangesExpected` is one such key: the
       // claim flow derives it from the app's RESOLVED work tracker (a file
       // tracker commits its checklist, a forge tracker doesn't), which is more
       // specific than the catalog's commit-shaped default, so the spread wins.
@@ -214,7 +216,8 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
         openPR,
         worktreeChangesExpected,
         ...(claim.target ? { claimTarget: claim.target } : {}),
-        ...claim.taskMetadata
+        ...claim.taskMetadata,
+        claimFlow: true
       },
     };
   } else {
