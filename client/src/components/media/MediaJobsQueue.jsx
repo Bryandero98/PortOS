@@ -702,6 +702,11 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];
   const encoderOptions = textEncoderOptionsForModel(currentModel);
   const originalEncoder = normalizeTextEncoderForModel(p.textEncoderId || STOCK_TEXT_ENCODER_ID, currentModel);
+  // Multi-keyframe inputs are not exposed in the sanitized queue projection,
+  // but FFLF is their persisted semantic mode. IC/a2v conditioning also pins
+  // a single render, so keep the shared chaining controls consistent with the
+  // normal VideoGen form for those retry records.
+  const chainingLocked = p.mode === 'fflf' || p.mode === 'a2v' || p.mode?.startsWith('ic-');
   const handleModelChange = (event) => {
     const nextModelId = event.target.value;
     const nextModel = models.find((model) => model.id === nextModelId) || null;
@@ -784,8 +789,8 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
       <AdvancedParamsPanel
         mode={p.mode || 'text'} currentModel={currentModel}
         numFrames={numFrames} onNumFramesChange={setNumFrames}
-        chunks={chunks} onChunksChange={setChunks} keyframesActive={false}
-        chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chunks > 1}
+        chunks={chunks} onChunksChange={setChunks} keyframesActive={chainingLocked}
+        chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chunks > 1 && !chainingLocked}
         contextFrames={contextFrames} onContextFramesChange={setContextFrames}
         fps={fps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
         steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}

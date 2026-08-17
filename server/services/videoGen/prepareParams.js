@@ -84,12 +84,27 @@ export function validateVideoRetryParams(params = {}) {
   if (Number(params.chunks || 1) > 1) {
     const chainError = videoChainUnsupportedError(model);
     if (chainError) throw chainError;
+    if (Array.isArray(params.keyframes) && params.keyframes.length > 0) {
+      throw new ServerError(
+        'keyframes cannot be combined with chunks > 1 — keyframes anchor a single clip.',
+        { status: 400, code: 'KEYFRAMES_CHUNKS_CONFLICT' },
+      );
+    }
+    if (icLoraSpecForMode(mode) || (Array.isArray(params.icReferencePaths) && params.icReferencePaths.length > 0)) {
+      throw new ServerError(
+        'IC-LoRA modes cannot be combined with chunks > 1 — the reference clip anchors a single render.',
+        { status: 400, code: 'IC_LORA_CHUNKS_CONFLICT' },
+      );
+    }
   }
   if ((mode === 'a2v' || icLoraSpecForMode(mode)) && !isLtx2FamilyRuntime(model.runtime)) {
     throw new ServerError(
       `${mode} mode requires an ltx2-runtime model. Model "${modelId}" runs on "${model.runtime || 'mlx_video'}".`,
       { status: 400, code: mode === 'a2v' ? 'A2V_REQUIRES_LTX2' : 'IC_LORA_REQUIRES_LTX2' },
     );
+  }
+  if (Array.isArray(params.loras) && params.loras.length > 0 && !videoLoraFamily(model)) {
+    throw videoLoraUnsupportedError(model, modelId);
   }
   const numFrames = params.numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   const fps = params.fps ?? 24;
