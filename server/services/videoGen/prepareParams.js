@@ -59,7 +59,7 @@ import {
 import { videoModeContractError, videoChainUnsupportedError } from './modeContract.js';
 import { resolveByovRuntimeLoraCapable, videoLoraUnsupportedError } from './runtimes.js';
 
-export function validateVideoRetryParams(params = {}) {
+export async function validateVideoRetryParams(params = {}) {
   const modelId = params.modelId || defaultVideoModelId();
   const model = listVideoModels().find((entry) => entry.id === modelId);
   if (!model) {
