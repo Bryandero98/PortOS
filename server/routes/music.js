@@ -30,7 +30,8 @@ import { createLineReader } from '../lib/streamLines.js';
 import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
   ENGINES, getEngine, isEngineHealthy, isEnginePlatformSupported,
-  enginePlatformLabel,
+  enginePlatformLabel, resolveEngineVramReadiness, MUSIC_VRAM_READINESS,
+  formatEngineVramReadinessMessage,
 } from '../services/pipeline/musicGen.js';
 import { listEngineModels, addAudioModel, removeAudioModel, isValidRepoId } from '../services/audioModels.js';
 import { listMusicEngineCapabilities } from '../services/musicEngineCapabilities.js';
@@ -102,6 +103,11 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
       send({ type: 'error', message: cuda.status === 'unknown'
         ? `${engine.name} cannot be installed because CUDA availability could not be determined.`
         : `${engine.name} requires an NVIDIA CUDA GPU and cannot be installed on this host.` });
+      return safeEnd();
+    }
+    const vram = resolveEngineVramReadiness(engine.id, cuda);
+    if (vram.state !== MUSIC_VRAM_READINESS.SUFFICIENT) {
+      send({ type: 'error', message: formatEngineVramReadinessMessage(engine.id, vram, 'installed') });
       return safeEnd();
     }
   }

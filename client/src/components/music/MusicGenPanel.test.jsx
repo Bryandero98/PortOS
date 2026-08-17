@@ -162,6 +162,48 @@ describe('MusicGenPanel', () => {
     expect(screen.queryByRole('button', { name: /download model weights/i })).not.toBeInTheDocument();
   });
 
+  it('explains an insufficient CUDA VRAM profile and hides install actions', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [minimax({
+        ready: false,
+        runtimeReady: true,
+        modelReady: true,
+        vramState: 'insufficient',
+        minVramGb: 32,
+        maxVramGb: 24,
+        vramProfileLabel: 'CUDA BF16 (single GPU)',
+      })],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="cinematic score" lyrics="Example lyrics" />);
+
+    expect(await screen.findByText(/requires at least 32 GB of VRAM/i)).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /insufficient VRAM/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^generate$/i })).toBeDisabled();
+  });
+
+  it('keeps an unknown-size CUDA profile distinct from insufficient VRAM', async () => {
+    api.listMusicEngines.mockResolvedValue({
+      defaultEngine: 'minimax-music3',
+      engines: [minimax({
+        ready: false,
+        runtimeReady: true,
+        modelReady: true,
+        vramState: 'unknown-size',
+        maxVramGb: null,
+        minVramGb: null,
+      })],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="cinematic score" lyrics="Example lyrics" />);
+
+    expect(await screen.findByText(/VRAM requirement has not been measured/i)).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /VRAM unknown/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
+  });
+
   it('generates an unsaved standalone track without requiring a title or associations', async () => {
     api.listMusicEngines.mockResolvedValue({
       defaultEngine: 'musicgen',

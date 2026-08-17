@@ -15,16 +15,16 @@ const gen = vi.hoisted(() => ({
   unsupportedPlatform: null,
 }));
 const mediaQueue = vi.hoisted(() => ({ jobs: [], enqueue: vi.fn() }));
-const cuda = vi.hoisted(() => ({ status: 'available' }));
+const cuda = vi.hoisted(() => ({ status: 'available', maxVramGb: 40 }));
 vi.mock('../lib/cudaCapability.js', () => ({
-  getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: null, error: null })),
+  getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: cuda.maxVramGb, error: null })),
 }));
 vi.mock('../services/pipeline/musicGen.js', () => {
   const ENGINES = {
     musicgen: { id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }], defaultModelId: 'm', minDurationSec: 1, maxDurationSec: 30, defaultDurationSec: 12, installEnv: 'INSTALL_MUSICGEN', venvDefault: '/v/mg', resolvePython: () => (gen.ready ? '/v/mg/bin/python3' : null), customModels: true },
     acestep: { id: 'acestep', name: 'ACE-Step', models: [{ id: 'a', name: 'A' }], defaultModelId: 'a', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP', venvDefault: '/v/ace', resolvePython: () => (gen.ready ? '/v/ace/bin/python3' : null), lyrics: true, customModels: false },
     acestep15: { id: 'acestep15', name: 'ACE-Step 1.5', models: [{ id: 'ace-step-v1.5', repo: 'ACE-Step/Ace-Step1.5', name: 'ACE-Step 1.5' }], defaultModelId: 'ace-step-v1.5', minDurationSec: 1, maxDurationSec: 240, defaultDurationSec: 60, installEnv: 'INSTALL_ACESTEP15', venvDefault: '/v/ace15', resolvePython: () => (gen.ready ? '/v/ace15/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true },
-    'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3', downloadIgnore: ['qwen_7B/*', 'flowmatching_vae.pth', 'dav.pth', 'figures/*'], downloadSizeGb: 29 }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true, autoDuration: true },
+    'minimax-music3': { id: 'minimax-music3', name: 'MiniMax Music 3', models: [{ id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3', downloadIgnore: ['qwen_7B/*', 'flowmatching_vae.pth', 'dav.pth', 'figures/*'], downloadSizeGb: 29 }], defaultModelId: 'minimax-music3', minDurationSec: 1, maxDurationSec: 300, defaultDurationSec: 60, installEnv: 'INSTALL_MINIMAX_MUSIC3', venvDefault: '/v/minimax', resolvePython: () => (gen.ready ? '/v/minimax/bin/python3' : null), lyrics: true, customModels: false, fixedModelInstall: true, cudaRequired: true, autoDuration: true, executionProfile: 'cuda-bf16-single-gpu', vramProfiles: { 'cuda-bf16-single-gpu': { label: 'CUDA BF16 (single GPU)', minVramGb: null, recommendedVramGb: null } } },
     'minimax-music3-mlx': { id: 'minimax-music3-mlx', name: 'MiniMax Music 3 (MLX)', models: [
       { id: 'minimax-music3-mlx-8bit', repo: 'mlx-community/MiniMax-Music3-8bit', revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5', downloadSizeGb: 14, name: 'MiniMax Music 3 MLX 8-bit' },
       { id: 'minimax-music3-mlx-bf16', repo: 'mlx-community/MiniMax-Music3-bf16', revision: '83a5f2d365673689df5c8f36e21e108751fd92ea', downloadSizeGb: 29, name: 'MiniMax Music 3 MLX BF16' },
@@ -41,6 +41,30 @@ vi.mock('../services/pipeline/musicGen.js', () => {
     // `ready` knobs so existing cases keep their meaning.
     isEnginePlatformSupported: (engineId) => (gen.unsupportedPlatform ? engineId !== gen.unsupportedPlatform : true),
     enginePlatformLabel: () => 'macOS on Apple Silicon (MLX)',
+    resolveEngineVramReadiness: (engineId, capability) => {
+      const engine = ENGINES[engineId] || ENGINES.musicgen;
+      const profile = engine.vramProfiles?.[engine.executionProfile];
+      const state = !engine.cudaRequired
+        ? 'sufficient'
+        : profile?.minVramGb == null || capability.status !== 'available' || !Number.isFinite(capability.maxVramGb)
+          ? 'unknown-size'
+          : capability.maxVramGb >= profile.minVramGb ? 'sufficient' : 'insufficient';
+      return {
+        state,
+        executionProfile: engine.executionProfile || null,
+        profileLabel: profile?.label || null,
+        minVramGb: profile?.minVramGb ?? null,
+        recommendedVramGb: profile?.recommendedVramGb ?? null,
+        maxVramGb: Number.isFinite(capability.maxVramGb) ? capability.maxVramGb : null,
+      };
+    },
+    MUSIC_VRAM_READINESS: { SUFFICIENT: 'sufficient', INSUFFICIENT: 'insufficient', UNKNOWN_SIZE: 'unknown-size' },
+    formatEngineVramReadinessMessage: (engineId, readiness, action = 'run') => {
+      const engine = ENGINES[engineId] || ENGINES.musicgen;
+      if (readiness.state === 'insufficient') return `${engine.name} requires at least ${readiness.minVramGb} GB of VRAM for the ${readiness.profileLabel || 'selected'} profile; this host reports ${readiness.maxVramGb} GB.`;
+      if (readiness.state === 'unknown-size') return `${engine.name} cannot be ${action} because the GPU VRAM requirement has not been measured for the ${readiness.profileLabel || 'selected'} execution profile.`;
+      return null;
+    },
     isEngineHealthy: async (engineId) => {
       if (gen.healthyByEngine) return gen.healthyByEngine[engineId] === true;
       if (gen.healthy !== null) return gen.healthy;
@@ -178,6 +202,7 @@ describe('music routes', () => {
     cache.byRevision = null;
     cache.calls.length = 0;
     cuda.status = 'available';
+    cuda.maxVramGb = 40;
     models.list.mockResolvedValue([{ id: 'm', name: 'M', userAdded: false }]);
     designer.describeMusic.mockReset().mockResolvedValue({ description: 'Lush pads over a broken beat.', llm: { provider: 'fake-provider', model: 'fake-model' } });
     designer.writeLyrics.mockReset().mockResolvedValue({ lyrics: '[verse]\nrain on the window', llm: { provider: 'fake-provider', model: 'fake-model' } });
@@ -305,7 +330,8 @@ describe('music routes', () => {
     cache.cached = false;
     const supported = await request(app).get('/api/music/engines');
     expect(supported.body.engines.find((e) => e.id === 'minimax-music3')).toMatchObject({
-      cudaState: 'available', fixedModelInstall: true, modelReady: false, runtimeReady: true, ready: false,
+      cudaState: 'available', vramState: 'unknown-size', fixedModelInstall: true, modelReady: false, runtimeReady: true, ready: false,
+      executionProfile: 'cuda-bf16-single-gpu', minVramGb: null, recommendedVramGb: null, maxVramGb: 40,
       // The UI puts this on the install button so the user knows the size of the
       // pull before starting it.
       modelSizeGb: 29,
@@ -314,8 +340,15 @@ describe('music routes', () => {
     cuda.status = 'absent';
     const unsupported = await request(app).get('/api/music/engines');
     expect(unsupported.body.engines.find((e) => e.id === 'minimax-music3')).toMatchObject({
-      cudaState: 'absent', ready: false,
+      cudaState: 'absent', vramState: 'unknown-size', ready: false,
     });
+  });
+
+  it('refuses MiniMax runtime installation when profile VRAM is unknown', async () => {
+    const r = await request(app).get('/api/music/setup/runtime-install?runtime=minimax-music3');
+    expect(r.status).toBe(200);
+    expect(r.text).toContain('VRAM requirement has not been measured');
+    expect(setup.spawn).not.toHaveBeenCalled();
   });
 
   it('GET /engines reports MLX readiness separately for the 8-bit and BF16 snapshots', async () => {

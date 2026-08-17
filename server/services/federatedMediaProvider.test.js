@@ -155,6 +155,15 @@ describe('federated media provider capacity and idempotency', () => {
     expect(status.capabilities[0]).not.toHaveProperty('_engine');
   });
 
+  it('reports an unmeasured CUDA VRAM profile as unavailable instead of optimistic capacity', async () => {
+    state.capabilities.engines = [readyEngine({ vramState: 'unknown-size' })];
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status).toMatchObject({ status: 'unavailable' });
+    expect(status.capabilities[0]).toMatchObject({
+      ready: false, unavailableReason: 'vram-unknown-size',
+    });
+  });
+
   it('queues allowlisted audio without exposing the prompt in its response', async () => {
     const result = await submitFederatedMediaJob({
       callerId: 'peer-example', config: config(), input: input(), idempotencyKey: 'commission-1',

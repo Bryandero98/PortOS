@@ -92,6 +92,12 @@ function readinessReason(engine, modelReady) {
   if (engine.cudaRequired && engine.cudaState !== 'available') {
     return engine.cudaState === 'unknown' ? 'cuda-unknown' : 'cuda-absent';
   }
+  // Mixed-version compatibility: older capability payloads omit vramState and
+  // retain the pre-VRAM behavior, while newer local capabilities fail closed
+  // for an insufficient or unmeasured CUDA execution profile.
+  if (engine.cudaRequired && engine.vramState && engine.vramState !== 'sufficient') {
+    return engine.vramState === 'unknown-size' ? 'vram-unknown-size' : 'vram-insufficient';
+  }
   if (!modelReady) return 'model-unavailable';
   return null;
 }
