@@ -9,7 +9,7 @@ import DrillQuestionReview from './DrillQuestionReview';
 // History render identically. `drillResults` is the live hook's results array
 // OR a saved session's `tasks` array (same task shape); `sessionScore` is the
 // blended session score.
-export default function PostSessionSummary({ drillResults = [], sessionScore = 0, isTraining = false }) {
+export default function PostSessionSummary({ drillResults = [], sessionScore = 0, isTraining = false, plan = null, actualDurationMs = null }) {
   const [expandedDrill, setExpandedDrill] = useState(null);
 
   const scoreColor = sessionScore >= 80 ? 'text-port-success' :
@@ -31,6 +31,19 @@ export default function PostSessionSummary({ drillResults = [], sessionScore = 0
           </div>
         )}
       </div>
+
+      {plan && (
+        <div className="bg-port-card border border-port-border rounded-lg p-3 text-sm text-gray-400">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span>Quick target: {Math.round(plan.targetDurationSec / 60)} min</span>
+            <span>Estimated: {Math.ceil(plan.estimatedDurationSec / 60)} min</span>
+            {actualDurationMs != null && <span>Actual: {Math.ceil(actualDurationMs / 60000)} min</span>}
+          </div>
+          {plan.omittedDomains?.length > 0 && (
+            <div className="mt-1 text-xs">Omitted domains: {plan.omittedDomains.join(', ')}</div>
+          )}
+        </div>
+      )}
 
       {/* Domain Scores (for multi-domain sessions) */}
       {(() => {

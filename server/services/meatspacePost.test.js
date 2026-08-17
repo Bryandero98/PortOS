@@ -47,6 +47,7 @@ import {
   getMultiplicationProgress,
   getAdaptivePreview,
   getPostStats,
+  getPostConfig,
   getPostSessions,
   getPostSession,
   deriveTaskAccuracy,
@@ -56,6 +57,13 @@ import {
   getSessionSkillContext,
   getPostReviewReps,
 } from './meatspacePost.js';
+
+describe('Quick POST config', () => {
+  it('defaults a new install to the five-minute preset', async () => {
+    const config = await getPostConfig();
+    expect(config.quickDurationMin).toBe(5);
+  });
+});
 
 // =============================================================================
 // DOUBLING CHAIN TESTS
@@ -1874,6 +1882,34 @@ describe('submitPostSession — non-memory task types', () => {
     expect(persisted.tags).toEqual({ mood: 'focused' });
     expect(persisted.id).toBeTruthy();
     expect(persisted.date).toBeTruthy();
+  });
+
+  it('persists the Quick plan and wall-clock actual duration separately from task duration', async () => {
+    const startedAt = new Date(Date.now() - 5000).toISOString();
+    const plan = {
+      targetDurationSec: 300,
+      estimatedDurationSec: 270,
+      toleranceSec: 30,
+      omittedDomains: ['imagination'],
+      selectedTypes: ['doubling-chain'],
+    };
+    const session = await submitPostSession({
+      modules: ['mental-math'],
+      tasks: [{
+        module: 'mental-math', type: 'doubling-chain',
+        config: { startValue: 4, steps: 1 },
+        questions: [{ prompt: '4 x 2', answered: 8, responseMs: 500 }],
+        totalMs: 1234,
+      }],
+      startedAt,
+      plan,
+      tags: {},
+    });
+
+    expect(session.plan).toEqual(plan);
+    expect(session.startedAt).toBe(startedAt);
+    expect(session.actualDurationMs).toBeGreaterThanOrEqual(5000);
+    expect(session.durationMs).toBe(1234);
   });
 });
 

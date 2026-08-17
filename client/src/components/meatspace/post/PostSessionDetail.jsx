@@ -62,7 +62,12 @@ export default function PostSessionDetail({ id, onBack }) {
         <span className="text-sm text-gray-500">{session.date}</span>
       </div>
 
-      <PostSessionSummary drillResults={session.tasks || []} sessionScore={session.score || 0} />
+      <PostSessionSummary
+        drillResults={session.tasks || []}
+        sessionScore={session.score || 0}
+        plan={session.plan}
+        actualDurationMs={session.actualDurationMs}
+      />
     </div>
   );
 }

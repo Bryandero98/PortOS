@@ -11,6 +11,8 @@ import {
   LLM_DRILL_TYPES,
   POST_MODULES,
   POST_SUPPORTED_MEMORY_TYPES,
+  POST_QUICK_DURATION_MINUTES,
+  postQuickSessionPlanSchema,
 } from './postValidation.js';
 import { getTopic, POST_TOPICS } from './postTopics.js';
 
@@ -297,6 +299,33 @@ describe('postConfigUpdateSchema goals (issue #2100)', () => {
     expect(() => postConfigUpdateSchema.parse({ goals: { streakTarget: 1.5 } })).toThrow();
     expect(() => postConfigUpdateSchema.parse({ goals: { morseWpmTarget: 200 } })).toThrow();
     expect(() => postConfigUpdateSchema.parse({ goals: { weeklySessions: 'lots' } })).toThrow();
+  });
+});
+
+describe('Quick POST session budget validation', () => {
+  it('accepts and preserves every supported persisted duration preset', () => {
+    for (const quickDurationMin of POST_QUICK_DURATION_MINUTES) {
+      expect(postConfigUpdateSchema.parse({ quickDurationMin }).quickDurationMin).toBe(quickDurationMin);
+    }
+    expect(() => postConfigUpdateSchema.parse({ quickDurationMin: 7 })).toThrow();
+  });
+
+  it('accepts the preview metadata persisted with a composed session', () => {
+    const plan = postQuickSessionPlanSchema.parse({
+      targetDurationSec: 300,
+      estimatedDurationSec: 270,
+      toleranceSec: 30,
+      omittedDomains: ['imagination'],
+      omittedReviews: ['Old powers'],
+      selectedTypes: ['multiplication', 'n-back'],
+    });
+    expect(plan.targetDurationSec).toBe(300);
+    expect(postSessionSubmitSchema.parse({
+      modules: ['mental-math'],
+      tasks: [{ module: 'mental-math', type: 'doubling-chain', totalMs: 100 }],
+      startedAt: '2026-08-17T12:00:00.000Z',
+      plan,
+    }).plan).toEqual(plan);
   });
 });
 

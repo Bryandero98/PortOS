@@ -141,6 +141,10 @@ const DEFAULT_CONFIG = {
   // installs that persisted the old
   // `['mental-math']` default are upgraded to this by migration 159.
   sessionModules: ['mental-math', 'cognitive'],
+  // Quick-session target presets are persisted so a user's chosen budget is
+  // stable across launcher visits and refreshes. The client mirrors these
+  // four values; validation rejects anything outside the supported presets.
+  quickDurationMin: 5,
   // Optional practice goals (issue #2100). All fields absent by default so a
   // fresh/legacy install shows no goal UI until the user sets one. Bounds are
   // enforced by postGoalsSchema (server/lib/postValidation.js).
@@ -341,6 +345,17 @@ export async function submitPostSession(sessionData) {
   const existingIndex = data.sessions.findIndex(s => s.id === sessionId);
   let isNewSession = existingIndex < 0;
   const existing = isNewSession ? null : data.sessions[existingIndex];
+  const requestedStartedAtMs = Date.parse(sessionData.startedAt || '');
+  const requestedStartedAt = Number.isFinite(requestedStartedAtMs)
+    && requestedStartedAtMs <= nowDate.getTime()
+    && nowDate.getTime() - requestedStartedAtMs <= 24 * 60 * 60 * 1000
+    ? new Date(requestedStartedAtMs).toISOString()
+    : now;
+  const startedAt = existing?.startedAt ?? requestedStartedAt;
+  const startedAtMs = Date.parse(startedAt);
+  const actualDurationMs = Number.isFinite(startedAtMs)
+    ? Math.max(0, nowDate.getTime() - startedAtMs)
+    : 0;
 
   let session = {
     id: sessionId,
@@ -349,14 +364,16 @@ export async function submitPostSession(sessionData) {
     // new date, which would corrupt history ordering and streak math. Only a
     // fresh insert stamps "now".
     date: existing?.date ?? todayLocal,
-    startedAt: existing?.startedAt ?? now,
+    startedAt,
     completedAt: now,
     durationMs: rescoredTasks.reduce((sum, t) => sum + (t.totalMs || 0), 0),
+    actualDurationMs,
     cadence: sessionData.cadence || 'daily',
     modules: sessionData.modules,
     tasks: rescoredTasks,
     score: computeSessionScore(rescoredTasks, config.scoring?.weights),
-    tags: sessionData.tags || {}
+    tags: sessionData.tags || {},
+    ...(sessionData.plan ? { plan: sessionData.plan } : {}),
   };
 
   const stored = await saveStoredPostSession(session);
