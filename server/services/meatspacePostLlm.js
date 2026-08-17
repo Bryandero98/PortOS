@@ -13,6 +13,7 @@ import { getActiveProvider, getProviderById } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import {
   LEGACY_POST_LLM_PROVENANCE,
+  POST_LLM_MAX_SEMANTIC_CANDIDATES,
   buildPostLlmGeneratorProvenance,
   buildPostLlmScorerProvenance,
   postLlmEvaluationSchema,
@@ -37,8 +38,6 @@ export const LLM_DRILL_TYPES = [
   'invention-pitch',
   'reframe',
 ];
-
-const MAX_SEMANTIC_CANDIDATES = 200;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI CALLER (mirrors brain.js pattern)
@@ -500,8 +499,8 @@ function evaluationWithProvenance(type, drillData, evaluation, kind, providerId 
 
 async function semanticVerdicts(candidates, prompt, providerId, model, label) {
   if (candidates.length === 0) return { verdicts: new Map(), providerId: 'local', model: 'local' };
-  if (candidates.length > MAX_SEMANTIC_CANDIDATES) {
-    throw new Error(`Cannot score ${candidates.length} open-ended items in one bounded batch (max ${MAX_SEMANTIC_CANDIDATES})`);
+  if (candidates.length > POST_LLM_MAX_SEMANTIC_CANDIDATES) {
+    throw new Error(`Cannot score ${candidates.length} open-ended items in one bounded batch (max ${POST_LLM_MAX_SEMANTIC_CANDIDATES})`);
   }
   const response = await callAI(prompt, providerId, model);
   const parsed = validatePostLlmSemanticVerdicts(parseJsonFromAI(response.text), candidates, label);

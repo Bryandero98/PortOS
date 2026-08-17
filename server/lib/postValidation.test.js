@@ -396,6 +396,25 @@ describe('postLlmScoreRequestSchema', () => {
       timeLimitMs: 60000
     })).toThrow();
   });
+
+  it('rejects semantic drill requests above the one-batch item limit', () => {
+    const hundredItems = Array.from({ length: 100 }, (_, index) => `item-${index}`);
+    const request = {
+      type: 'verbal-fluency',
+      drillData: {},
+      responses: [
+        { items: hundredItems, responseMs: 1000 },
+        { items: hundredItems, responseMs: 1000 },
+      ],
+      timeLimitMs: 60000,
+    };
+
+    expect(postLlmScoreRequestSchema.parse(request).responses).toHaveLength(2);
+    expect(() => postLlmScoreRequestSchema.parse({
+      ...request,
+      responses: [...request.responses, { items: ['overflow'], responseMs: 1000 }],
+    })).toThrow(/at most 200 items/i);
+  });
 });
 
 describe('postSessionSubmitSchema LLM evaluation contract', () => {

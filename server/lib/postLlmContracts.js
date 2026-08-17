@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const POST_LLM_GENERATOR_SCHEMA_VERSION = '1';
+export const POST_LLM_MAX_SEMANTIC_CANDIDATES = 200;
 export const POST_LLM_PROMPT_VERSIONS = Object.freeze({
   'word-association': '1',
   'story-recall': '1',
@@ -182,6 +183,23 @@ const currentEvaluationSchema = z.object({
   provenance: postLlmEvaluationProvenanceSchema,
 });
 
+const historicalEvaluationScoreSchema = z.object({
+  score: z.number().min(0).max(100).optional(),
+  feedback: z.string(),
+  validCount: z.number().int().min(0).optional(),
+  validItems: z.array(z.string()).optional(),
+  invalidItems: z.array(z.string()).optional(),
+  duplicateItems: z.array(z.string()).optional(),
+  missedExamples: z.array(z.string()).optional(),
+});
+
+const historicalEvaluationSchema = z.object({
+  overallScore: z.number().min(0).max(100).optional(),
+  scores: z.array(historicalEvaluationScoreSchema),
+  summary: z.string(),
+  provenance: postLlmEvaluationProvenanceSchema,
+});
+
 function legacyEvaluation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   if ('overallScore' in value) {
@@ -197,7 +215,7 @@ function legacyEvaluation(value) {
       score: item?.score,
       feedback: item?.feedback || '',
     }));
-    const derivedScore = scores.length
+    const derivedScore = scores.length && scores.every((item) => Number.isFinite(item.score))
       ? Math.round(scores.reduce((sum, item) => sum + item.score, 0) / scores.length)
       : undefined;
     return {
@@ -207,10 +225,16 @@ function legacyEvaluation(value) {
       provenance: LEGACY_POST_LLM_PROVENANCE,
     };
   }
-  return value;
+  return {
+    overallScore: undefined,
+    scores: [],
+    summary: 'Legacy evaluation',
+    provenance: LEGACY_POST_LLM_PROVENANCE,
+  };
 }
 
 export const postLlmEvaluationSchema = z.preprocess(legacyEvaluation, currentEvaluationSchema);
+const historicalPostLlmEvaluationSchema = z.preprocess(legacyEvaluation, historicalEvaluationSchema);
 
 function contractError(label, issues) {
   const details = issues
@@ -289,4 +313,8 @@ export function buildPostLlmScorerProvenance(type, kind, providerId, model) {
 
 export function normalizePostLlmEvaluation(value) {
   return postLlmEvaluationSchema.parse(value);
+}
+
+export function normalizeHistoricalPostLlmEvaluation(value) {
+  return historicalPostLlmEvaluationSchema.parse(value);
 }

@@ -11,7 +11,7 @@ import { EventEmitter } from 'events';
 import { atomicWrite, PATHS, ensureDir, readJSONFile } from '../lib/fileUtils.js';
 import { deepMerge } from '../lib/objects.js';
 import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from '../lib/postValidation.js';
-import { normalizePostLlmEvaluation } from '../lib/postLlmContracts.js';
+import { normalizeHistoricalPostLlmEvaluation, normalizePostLlmEvaluation } from '../lib/postLlmContracts.js';
 import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
 import { resolveMultiplicationLevel, MASTERY_DEFAULTS } from '../lib/postMultiplicationLadder.js';
@@ -247,7 +247,7 @@ function normalizeHistoricalLlmEvaluations(session) {
     ...session,
     tasks: (session?.tasks || []).map((task) => (
       LLM_DRILL_TYPES.includes(task?.type) && task.evaluation
-        ? { ...task, evaluation: normalizePostLlmEvaluation(task.evaluation) }
+        ? { ...task, evaluation: normalizeHistoricalPostLlmEvaluation(task.evaluation) }
         : task
     )),
   };

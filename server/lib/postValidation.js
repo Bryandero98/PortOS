@@ -3,7 +3,7 @@ import { CACHEABLE_TYPES } from '../services/meatspacePostDrillCache.js';
 import { COGNITIVE_DRILL_TYPES } from '../services/meatspacePostCognitive.js';
 import { TOPIC_IDS } from './postTopics.js';
 import { HHMM_STRICT_RE } from './timezone.js';
-import { postLlmEvaluationSchema } from './postLlmContracts.js';
+import { POST_LLM_MAX_SEMANTIC_CANDIDATES, postLlmEvaluationSchema } from './postLlmContracts.js';
 
 // =============================================================================
 // POST (Power On Self Test) VALIDATION SCHEMAS
@@ -366,6 +366,16 @@ export const postLlmScoreRequestSchema = z.object({
   timeLimitMs: z.number().min(1000),
   providerId: z.string().min(1).max(300).optional(),
   model: z.string().min(1).max(300).optional()
+}).superRefine((request, ctx) => {
+  if (!['compound-chain', 'verbal-fluency'].includes(request.type)) return;
+  const itemCount = request.responses.reduce((sum, response) => sum + (response.items?.length || 0), 0);
+  if (itemCount > POST_LLM_MAX_SEMANTIC_CANDIDATES) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['responses'],
+      message: `semantic drill responses support at most ${POST_LLM_MAX_SEMANTIC_CANDIDATES} items per scoring batch`,
+    });
+  }
 });
 
 // Explicit, user-consented request to warm the wordplay drill cache

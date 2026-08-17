@@ -1643,6 +1643,7 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
   });
 
   it('normalizes historical LLM evaluations with explicit legacy provenance on read', async () => {
+    const historicalFeedback = 'f'.repeat(2501);
     freezeAt('2026-07-18T12:00:00Z', 'UTC');
     mockHistory([{
       date: '2026-07-17',
@@ -1650,7 +1651,7 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
       score: 70,
       tasks: [{
         module: 'llm-drills', type: 'word-association', score: 70,
-        evaluation: { score: 70, breakdown: [{ score: 70, feedback: 'Historical feedback' }] },
+        evaluation: { score: 70, breakdown: [{ score: 70, feedback: historicalFeedback }] },
       }],
     }]);
 
@@ -1658,7 +1659,7 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
 
     expect(session.tasks[0].evaluation).toMatchObject({
       overallScore: 70,
-      scores: [{ score: 70, feedback: 'Historical feedback' }],
+      scores: [{ score: 70, feedback: historicalFeedback }],
       provenance: {
         generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
         scorer: { kind: 'legacy', rubricVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
