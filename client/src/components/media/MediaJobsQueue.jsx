@@ -738,7 +738,8 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     if (numFrames !== '' && numberChanged(numFrames, p.numFrames)) overrides.numFrames = Number(numFrames);
     if (fps !== '' && numberChanged(fps, p.fps)) overrides.fps = Number(fps);
     if (numberChanged(chunks, p.chunks ?? 1)) overrides.chunks = Number(chunks);
-    if (JSON.stringify(chunkPrompts) !== JSON.stringify(p.chunkPrompts || [])) overrides.chunkPrompts = chunkPrompts;
+    if (Number(chunks) <= 1 && Number(p.chunks ?? 1) > 1) overrides.chunkPrompts = [];
+    else if (JSON.stringify(chunkPrompts) !== JSON.stringify(p.chunkPrompts || [])) overrides.chunkPrompts = chunkPrompts;
     if (numberChanged(contextFrames, p.contextFrames ?? 0)) overrides.contextFrames = Number(contextFrames);
     const setNumericOverride = (key, value, original, clearable = false) => {
       if (value === '') {
