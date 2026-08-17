@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router';
 import { getPostProgress } from '../../../services/api';
 import useChartColors from '../../../hooks/useChartColors.js';
 import { formatDurationMin } from '../../../utils/formatters';
-import { DRILL_TO_DOMAIN, domainLabel } from './constants';
+import { DRILL_LABELS, DRILL_TO_DOMAIN, domainLabel } from './constants';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import PostHistory from './PostHistory';
 
@@ -131,7 +131,8 @@ export default function PostProgress({ subtab, onBack }) {
 
   const streak = progress?.streak || { current: 0, longest: 0 };
   const totals = progress?.totals || { minutesTrained: 0, sessions: 0, practiceEntries: 0 };
-  const mastery = progress?.mastery || { multiplication: null, memoryItems: [], reviews: null };
+  const mastery = progress?.mastery || { multiplication: null, cognitive: {}, memoryItems: [], reviews: null };
+  const cognitiveMastery = Object.values(mastery.cognitive || {}).filter(Boolean);
   const dueTotal = (mastery.memoryItems || []).reduce((n, m) => n + (m.dueCount || 0), 0);
   const reviews = mastery.reviews || null;
   const hasAny = totals.sessions > 0 || totals.practiceEntries > 0;
@@ -273,6 +274,48 @@ export default function PostProgress({ subtab, onBack }) {
                 </div>
                 <div className="text-xs text-gray-500 mt-1">
                   Earned floor: L{mastery.multiplication.floorLevel}
+                </div>
+              </div>
+            )}
+
+            {cognitiveMastery.length > 0 && (
+              <div className="bg-port-card border border-port-border rounded-lg p-4 xl:col-span-2">
+                <h3 className="text-sm font-medium text-gray-400 mb-3">Cognitive Ladders</h3>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {cognitiveMastery.map(info => {
+                    const current = (info.levels || []).find(level => level.level === info.level) || {};
+                    const targetAccuracy = info.thresholds?.targetAccuracy ?? 0;
+                    const minSamples = info.thresholds?.minSamples ?? 0;
+                    const action = info.decision?.action || (info.currentMastered ? 'mastered' : 'hold');
+                    return (
+                      <div key={info.type} className="rounded-lg border border-port-border/60 bg-port-bg/40 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-sm text-white">{DRILL_LABELS[info.type] || info.type}</div>
+                            <div className="text-xs text-gray-500">Level {info.level + 1} of {info.levels?.length || 0} · {info.label}</div>
+                          </div>
+                          <span className={`text-[0.65rem] uppercase tracking-wide px-2 py-0.5 rounded-full ${
+                            action === 'promote' || action === 'mastered'
+                              ? 'bg-port-success/15 text-port-success'
+                              : 'bg-port-warning/15 text-port-warning'
+                          }`}>
+                            {action === 'promote' ? 'promoted' : action}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400">
+                          <span>{current.samples || 0}/{minSamples} exact-rung runs</span>
+                          <span>{Math.round((current.accuracy || 0) * 100)}% / {Math.round(targetAccuracy * 100)}% accuracy</span>
+                          {info.thresholds?.minCompletion != null && (
+                            <span>{Math.round((current.completion || 0) * 100)}% avg completion (≥{Math.round(info.thresholds.minCompletion * 100)}% qualifies)</span>
+                          )}
+                          {current.incompleteSamples > 0 && <span>{current.incompleteSamples} incomplete excluded</span>}
+                          {current.targetMs != null && (
+                            <span>{current.avgResponseMs > 0 ? `${(current.avgResponseMs / 1000).toFixed(1)}s` : '—'} / ≤{(current.targetMs / 1000).toFixed(1)}s</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

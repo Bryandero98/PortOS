@@ -26,9 +26,8 @@
  * requires the level's average response time to clear the target, and a level
  * with no timed samples is never "instantly mastered") — this is the
  * multiplication behaviour. A ladder without it is *accuracy-only*: mastery is
- * purely samples + accuracy, which is what the cognitive drills use (their
- * difficulty ramp lives in the rung knobs — a higher n, a longer span, a bigger
- * grid — not in a per-question speed bar).
+ * purely samples + accuracy. Cognitive ladders opt into the speed gate only
+ * where response latency is part of the trained skill (Schulte and Stroop).
  */
 
 // Shared mastery thresholds. Ladder definitions override any subset via
@@ -84,11 +83,13 @@ export function createProgression(def) {
     const samples = Number.isFinite(stat?.samples) ? stat.samples : 0;
     const accuracy = Number.isFinite(stat?.accuracy) ? stat.accuracy : 0;
     const avgResponseMs = Number.isFinite(stat?.avgResponseMs) ? stat.avgResponseMs : 0;
+    const timedSamples = Number.isFinite(stat?.timedSamples) ? stat.timedSamples : avgResponseMs > 0 ? samples : 0;
     if (samples < options.minSamples) return false;
     if (accuracy < options.targetAccuracy) return false;
     const target = speedTargetForLevel ? speedTargetForLevel(clamp(level), options) : null;
     if (target != null && Number.isFinite(target) && target > 0) {
       // avgResponseMs of 0 means no timed samples — never "instant mastery".
+      if (timedSamples < options.minSamples) return false;
       if (avgResponseMs <= 0) return false;
       return avgResponseMs <= target;
     }
@@ -107,18 +108,26 @@ export function createProgression(def) {
     const rungs = levels.map((descriptor, level) => {
       const stat = levelStats?.[level] || levelStats?.[String(level)] || {};
       const samples = Number.isFinite(stat.samples) ? stat.samples : 0;
+      const attempts = Number.isFinite(stat.attempts) ? stat.attempts : samples;
       const accuracy = Number.isFinite(stat.accuracy) ? stat.accuracy : 0;
+      const completion = Number.isFinite(stat.completion) ? stat.completion : 0;
+      const incompleteSamples = Number.isFinite(stat.incompleteSamples) ? stat.incompleteSamples : 0;
       const avgResponseMs = Number.isFinite(stat.avgResponseMs) ? stat.avgResponseMs : 0;
+      const timedSamples = Number.isFinite(stat.timedSamples) ? stat.timedSamples : avgResponseMs > 0 ? samples : 0;
       const targetMs = speedTargetForLevel ? speedTargetForLevel(level, options) : null;
       return {
         level,
         descriptor,
         label: def.describeLevel(level),
         samples,
+        attempts,
         accuracy,
+        completion,
+        incompleteSamples,
         avgResponseMs,
+        timedSamples,
         targetMs,
-        mastered: isLevelMastered({ samples, accuracy, avgResponseMs }, level, options),
+        mastered: isLevelMastered({ samples, accuracy, avgResponseMs, timedSamples }, level, options),
       };
     });
 
@@ -168,10 +177,10 @@ export function createProgression(def) {
 // the config/preview badge. reaction-time is deliberately absent — it's a
 // measurement baseline, not a skill ladder.
 //
-// Mastery is accuracy-only (no per-question speed gate): the difficulty ramp is
-// the knob itself (higher n, faster stimulus, longer span, bigger grid, more
-// trials), so "mastered this rung" means sustained high accuracy AT that knob
-// setting. For n-back the accuracy stamped per task is the balanced /
+// Mastery always uses exact-rung samples + accuracy + completion-qualified
+// runs. Schulte and Stroop additionally gate on average response latency because
+// speed/response pressure is part of those skills; the other ladders deliberately
+// remain accuracy-only. For n-back the accuracy stamped per task is the balanced
 // signal-detection accuracy from #2094, so the do-nothing exploit can't bank a
 // rung.
 
@@ -187,6 +196,7 @@ export const COGNITIVE_MASTERY_DEFAULTS = {
   // (n-back completion is always 1 — go/no-go — so this never gates it.)
   minCompletion: 0.75,
   windowDays: 30,
+  responseMsCap: 120000,
 };
 
 export const COGNITIVE_LADDERS = {
@@ -223,26 +233,30 @@ export const COGNITIVE_LADDERS = {
       { size: 6 },
     ],
     describe: rung => `${rung.size}×${rung.size}`,
+    speedTargetsMs: [2500, 3000, 3500],
   },
-  // Spatial reasoning: more trials per run (time pressure via volume).
+  // Spatial reasoning: add transformation range and mirrored visual competition.
+  // Run length may rise too, but it is never the sole difficulty change.
   'mental-rotation': {
     levels: [
-      { count: 6 },
-      { count: 8 },
-      { count: 10 },
-      { count: 12 },
+      { count: 6, rotationComplexity: 1, optionCount: 2 },
+      { count: 6, rotationComplexity: 2, optionCount: 3 },
+      { count: 8, rotationComplexity: 3, optionCount: 3 },
+      { count: 8, rotationComplexity: 3, optionCount: 4 },
     ],
-    describe: rung => `${rung.count} trials`,
+    describe: rung => `${rung.rotationComplexity === 1 ? '90°' : rung.rotationComplexity === 2 ? '90–180°' : 'any rotation'} · ${rung.optionCount} options`,
   },
-  // Attention/inhibition: more trials per run.
+  // Attention/inhibition: raise the proportion of conflicting word/ink trials.
+  // Count can vary for evidence volume, but conflict is the real rung lever.
   'stroop': {
     levels: [
-      { count: 10 },
-      { count: 15 },
-      { count: 20 },
-      { count: 25 },
+      { count: 10, incongruentPct: 50 },
+      { count: 12, incongruentPct: 65 },
+      { count: 15, incongruentPct: 80 },
+      { count: 18, incongruentPct: 90 },
     ],
-    describe: rung => `${rung.count} trials`,
+    describe: rung => `${rung.incongruentPct}% conflict · ${rung.count} trials`,
+    speedTargetsMs: [1500, 1400, 1300, 1200],
   },
 };
 
@@ -261,7 +275,9 @@ export function cognitiveProgression(type) {
       levels: ladder.levels,
       describeLevel: level => ladder.describe(ladder.levels[level]),
       mastery: COGNITIVE_MASTERY_DEFAULTS,
-      // No speedTargetForLevel → accuracy-only mastery.
+      ...(Array.isArray(ladder.speedTargetsMs) && {
+        speedTargetForLevel: level => ladder.speedTargetsMs[level],
+      }),
     });
   }
   return cognitiveProgressions[type];
@@ -292,14 +308,53 @@ export function resolveCognitiveProgression(type, levelStats = {}, floorLevel = 
   const prog = cognitiveProgression(type);
   if (!prog) return null;
   const res = prog.resolveLevel(levelStats, {}, floorLevel);
+  const levels = res.levels.map(rung => ({
+    ...rung,
+    criteria: {
+      samples: {
+        actual: rung.samples,
+        target: COGNITIVE_MASTERY_DEFAULTS.minSamples,
+        met: rung.samples >= COGNITIVE_MASTERY_DEFAULTS.minSamples,
+      },
+      accuracy: {
+        actual: rung.accuracy,
+        target: COGNITIVE_MASTERY_DEFAULTS.targetAccuracy,
+        met: rung.accuracy >= COGNITIVE_MASTERY_DEFAULTS.targetAccuracy,
+      },
+      completion: {
+        actual: rung.completion,
+        target: COGNITIVE_MASTERY_DEFAULTS.minCompletion,
+        excluded: rung.incompleteSamples,
+      },
+      speed: rung.targetMs == null ? null : {
+        actualMs: rung.avgResponseMs,
+        targetMs: rung.targetMs,
+        timedSamples: rung.timedSamples,
+        met: rung.timedSamples >= COGNITIVE_MASTERY_DEFAULTS.minSamples
+          && rung.avgResponseMs > 0
+          && rung.avgResponseMs <= rung.targetMs,
+      },
+    },
+  }));
+  const current = levels[res.level];
+  const reasons = [];
+  if (current.samples < COGNITIVE_MASTERY_DEFAULTS.minSamples) reasons.push('samples');
+  if (current.accuracy < COGNITIVE_MASTERY_DEFAULTS.targetAccuracy) reasons.push('accuracy');
+  if (current.targetMs != null && !current.criteria.speed.met) reasons.push('speed');
   return {
     ...res,
+    levels,
     type,
     config: cognitiveLevelConfig(type, res.level),
     windowDays: COGNITIVE_MASTERY_DEFAULTS.windowDays,
+    decision: {
+      action: res.level > res.floorLevel ? 'promote' : res.atHardest && res.currentMastered ? 'mastered' : 'hold',
+      reasons,
+    },
     thresholds: {
       minSamples: COGNITIVE_MASTERY_DEFAULTS.minSamples,
       targetAccuracy: COGNITIVE_MASTERY_DEFAULTS.targetAccuracy,
+      minCompletion: COGNITIVE_MASTERY_DEFAULTS.minCompletion,
     },
   };
 }

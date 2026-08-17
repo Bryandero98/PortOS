@@ -220,6 +220,23 @@ describe('questionResultSchema chunkId/element (issue #2016)', () => {
   });
 });
 
+describe('postSessionSubmitSchema Schulte evidence metrics', () => {
+  it('preserves server-recomputed attempt and error counts on the task shape', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['cognitive'],
+      tasks: [{
+        module: 'cognitive',
+        type: 'schulte-table',
+        questions: [{ prompt: '1', index: 0, expected: 1, answered: 2, correct: false, responseMs: 300 }],
+        attemptCount: 2,
+        errorCount: 1,
+        totalMs: 300,
+      }],
+    });
+    expect(parsed.tasks[0]).toMatchObject({ attemptCount: 2, errorCount: 1 });
+  });
+});
+
 describe('postSessionSubmitSchema.modules — enum of known modules (issue #2099, fix #6)', () => {
   // Regression: `modules` (session-level) and each task's `module` were both
   // z.array(z.string())/z.string() — any typo'd string passed validation and
@@ -366,12 +383,26 @@ describe('drillTypeConfigSchema numeric bounds', () => {
     expect(() => postDrillRequestSchema.parse({ type: 'estimation', config: { tolerancePct: 51 } })).toThrow();
   });
 
-  it('accepts cognitive-drill knobs within bounds (n, length, size, choices)', () => {
+  it('accepts cognitive-drill knobs within bounds', () => {
     const parsed = postDrillRequestSchema.parse({
-      type: 'n-back',
-      config: { n: 3, length: 60, size: 7, choices: 4 },
+      type: 'mental-rotation',
+      config: { n: 3, length: 60, size: 7, choices: 4, incongruentPct: 90, rotationComplexity: 3, optionCount: 4 },
     });
-    expect(parsed.config).toMatchObject({ n: 3, length: 60, size: 7, choices: 4 });
+    expect(parsed.config).toMatchObject({
+      n: 3,
+      length: 60,
+      size: 7,
+      choices: 4,
+      incongruentPct: 90,
+      rotationComplexity: 3,
+      optionCount: 4,
+    });
+  });
+
+  it('rejects out-of-range interference and rotation complexity knobs', () => {
+    expect(() => postDrillRequestSchema.parse({ type: 'stroop', config: { incongruentPct: 101 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'mental-rotation', config: { rotationComplexity: 4 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'mental-rotation', config: { optionCount: 1 } })).toThrow();
   });
 
   it('rejects an out-of-range n-back n (must be 1-3)', () => {
