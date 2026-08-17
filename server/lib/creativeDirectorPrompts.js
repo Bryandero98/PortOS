@@ -25,6 +25,7 @@ import {
   presetToRenderParams,
 } from './creativeDirectorPresets.js';
 import { PORTOS_API_URL } from './ports.js';
+import { getVideoModels } from './mediaModels.js';
 import { buildPrompt } from '../services/promptService.js';
 
 // Shared project-block view used by both prompt stages. Defaults out
@@ -99,12 +100,22 @@ function buildPlanView(project, toolSpecs) {
   // server forces these onto every video render (see media.js
   // enforceVideoRenderPreset). `width`/`height` degrade to 0 on an unknown ratio.
   const aspect = resolveAspectDimensions(project.aspectRatio, { width: 0, height: 0 });
+  const videoModel = getVideoModels().find((model) => model.id === project.modelId) || null;
   const render = {
     aspectRatio: project.aspectRatio,
     quality: project.quality,
     width: aspect.width,
     height: aspect.height,
     targetDurationSeconds: project.targetDurationSeconds,
+    modelId: project.modelId,
+    modelName: videoModel?.name || project.modelId,
+    supportsNegativePrompt: videoModel?.supportsNegativePrompt !== false,
+    modelOptionsJson: JSON.stringify({
+      resolutions: videoModel?.resolutionOptions || [],
+      frameCounts: videoModel?.frameOptions || [],
+      fps: videoModel?.fpsOptions || [],
+      samplerLocked: videoModel?.samplerLocked === true,
+    }),
   };
   return {
     project: buildProjectView(project),

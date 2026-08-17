@@ -68,6 +68,15 @@ describe('Creative Director agent bridge model assignments', () => {
     expect(task.metadata.noCodeOutput).toBe(true);
   });
 
+  it('requests only the tool set matching a commission project output type', async () => {
+    await enqueuePlanTask({
+      ...project,
+      directive: { constraints: { targetAbility: 'image' } },
+    });
+
+    expect(mocks.getToolSpecs).toHaveBeenCalledWith({ targetAbility: 'image' });
+  });
+
   it('prefers the project-level override over the global assignment', async () => {
     mocks.getSettings.mockResolvedValue({
       creativeDirector: { treatment: { providerId: 'global-agent', model: 'global-model' } },

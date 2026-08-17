@@ -66,6 +66,12 @@ export const creativeDirectorDirectiveSchema = z.object({
     seriesId: z.string().max(120).nullable().optional(),
     formats: z.array(z.string().min(1).max(64)).max(20).optional(),
     budgetCap: z.number().int().min(0).max(100000).nullable().optional(),
+    // Structured commission provenance for the planner. The output type is the
+    // same enum the commission form selected; generation is the already-
+    // sanitized set of form choices. They are context/locking inputs, not a
+    // second mutable configuration surface.
+    targetAbility: z.enum(['video', 'image', 'music', 'music-video', 'series']).optional(),
+    generation: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
   }).default({}),
 });
 
@@ -517,4 +523,3 @@ export const importerCommitSchema = z.object({
   // Defaults to false to preserve the additive merge behavior.
   replaceMode: z.boolean().optional().default(false),
 }).strict();
-

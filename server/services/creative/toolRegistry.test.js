@@ -137,6 +137,19 @@ describe('registry shape', () => {
     }
   });
 
+  it('limits a commission planner to tools for the selected UI output type', () => {
+    expect(getToolSpecs({ targetAbility: 'video' }).map((s) => s.function.name))
+      .toEqual(['media_enqueueVideoJob']);
+    expect(getToolSpecs({ targetAbility: 'image' }).map((s) => s.function.name))
+      .toEqual(['media_enqueueImageJob']);
+    expect(getToolSpecs({ targetAbility: 'music' }).map((s) => s.function.name))
+      .toEqual(['media_enqueueAudioJob']);
+    expect(getToolSpecs({ targetAbility: 'music-video' }).map((s) => s.function.name).sort())
+      .toEqual(['media_enqueueAudioJob', 'media_enqueueImageJob', 'media_enqueueVideoJob']);
+    expect(getToolSpecs({ targetAbility: 'series' }).every((s) =>
+      s.function.name.startsWith('pipeline_') || s.function.name.startsWith('universe_'))).toBe(true);
+  });
+
   it('hydrates catalog_searchIngredients from the voice tool\'s RESOLVED spec (custom types survive)', () => {
     const meta = getCreativeToolMetadata('catalog_searchIngredients');
     expect(meta.description).toBe('VOICE catalog search description');

@@ -33,7 +33,8 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     expect(directive.goal).toContain('Genre: surrealism.');
     expect(directive.goal).toContain('Style: flat color, Magritte.');
     expect(directive.deliverables).toEqual(['One rendered video matching the brief']);
-    expect(directive.constraints).toEqual({ universeId: 'u-123' });
+    expect(directive.constraints).toMatchObject({ universeId: 'u-123', targetAbility: 'video' });
+    expect(directive.constraints.generation).toMatchObject({ quality: 'standard', videoMode: 'auto' });
   });
 
   it('folds recent feedback into the goal', () => {
@@ -47,8 +48,9 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     expect(directive.goal).toContain('Recent dislikes: less horror.');
   });
 
-  it('omits absent constraints', () => {
-    expect(buildCommissionDirective({ targetAbility: 'video', brief: { intent: 'x' } }).constraints).toEqual({});
+  it('always carries the selected output and sanitized generation starting point', () => {
+    expect(buildCommissionDirective({ targetAbility: 'video', brief: { intent: 'x' } }).constraints)
+      .toMatchObject({ targetAbility: 'video', generation: { quality: 'standard', videoMode: 'auto' } });
   });
 
   it('clamps the goal under the CD 5000-char cap with a large feedback window + long notes', () => {
@@ -124,7 +126,7 @@ describe('per-ability directives steer the planner to the right tools', () => {
     const withU = buildCommissionDirective({ targetAbility: 'series', brief: { intent: 'noir', constraints: { universeId: 'u-9' } }, generation: { episodeCount: 2 } });
     expect(withU.goal).toContain('Create the series within the provided universe');
     expect(withU.goal).toContain('first 2 issues/episodes');
-    expect(withU.constraints).toEqual({ universeId: 'u-9' });
+    expect(withU.constraints).toMatchObject({ universeId: 'u-9', targetAbility: 'series', generation: { episodeCount: 2 } });
 
     const noU = buildCommissionDirective({ targetAbility: 'series', brief: { intent: 'noir' }, generation: { episodeCount: 1 } });
     expect(noU.goal).toContain('Invent a fitting universe');

@@ -79,7 +79,17 @@ function briefContext(commission, leadSentence) {
   if (brief.category) lines.push(`Category: ${brief.category}.`);
   if (brief.styleSpec) lines.push(`Style: ${brief.styleSpec}.`);
   const digest = renderFeedbackDigest(commission?.feedback, commission?.feedbackWindow ?? 5);
-  const constraints = {};
+  // Preserve the user's structured form choices alongside the prose brief.
+  // The planner uses targetAbility to receive a matching tool subset and sees
+  // generation as authoritative starting configuration rather than guessing
+  // renderer/model controls from the intent text.
+  const constraints = {
+    targetAbility: commission?.targetAbility,
+    generation: sanitizeGenerationFor(
+      CREATIVE_COMMISSION_ABILITIES.includes(commission?.targetAbility) ? commission.targetAbility : 'video',
+      commission?.generation,
+    ),
+  };
   if (brief.constraints?.universeId) constraints.universeId = brief.constraints.universeId;
   if (brief.constraints?.seriesId) constraints.seriesId = brief.constraints.seriesId;
   return { lines, digest, constraints };

@@ -14,7 +14,7 @@ vi.mock('../../creativeCommissions/store.js', () => ({
 import { enqueueJob } from '../../mediaJobQueue/index.js';
 import { getSettings } from '../../settings.js';
 import { getProject } from '../../creativeDirector/local.js';
-import { MEDIA_TOOLS } from './media.js';
+import { MEDIA_TOOLS, reconcileVideoParamsWithModel } from './media.js';
 
 const tool = (name) => MEDIA_TOOLS.find((t) => t.name === name);
 const run = (name, params, ctx = {}) => tool(name).execute({ params }, ctx);
@@ -29,6 +29,39 @@ beforeEach(() => {
   getSettings.mockResolvedValue({});
   getProject.mockResolvedValue(null);
   getCommissionMusicContextForProject.mockResolvedValue(null);
+});
+
+describe('model-aware autonomous video controls', () => {
+  it('uses the same H3 options as Video Gen and drops controls its UI disables', () => {
+    const params = reconcileVideoParamsWithModel({
+      prompt: 'an example shot',
+      negativePrompt: 'blur',
+      disableAudio: true,
+      tiling: 'spatial',
+    }, {
+      aspectRatio: '16:9', quality: 'standard', targetDurationSeconds: 10,
+      modelId: 'minimax-h3-example',
+    }, [{
+      id: 'minimax-h3-example',
+      resolutionOptions: [{ w: 1344, h: 768 }, { w: 768, h: 1344 }],
+      fpsOptions: [24],
+      frameOptions: [226, 243],
+      samplerLocked: true,
+      supportsNegativePrompt: false,
+      supportsDisableAudio: false,
+      supportsTiling: false,
+    }]);
+
+    expect(params).toMatchObject({
+      prompt: 'an example shot', modelId: 'minimax-h3-example',
+      width: 1344, height: 768, fps: 24, numFrames: 243,
+    });
+    expect(params).not.toHaveProperty('negativePrompt');
+    expect(params).not.toHaveProperty('disableAudio');
+    expect(params).not.toHaveProperty('tiling');
+    expect(params).not.toHaveProperty('steps');
+    expect(params).not.toHaveProperty('guidanceScale');
+  });
 });
 
 describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135)', () => {

@@ -134,8 +134,28 @@ const toSpec = (t) => {
 export const filterDestructive = (tools, includeDestructive) =>
   tools.filter((t) => includeDestructive || !t.destructive);
 
-export const getToolSpecs = ({ includeDestructive = false } = {}) =>
-  filterDestructive(CREATIVE_TOOLS, includeDestructive).map(toSpec);
+// A commission has already chosen its output type in the UI. Give its planner
+// only the tools capable of producing that output, instead of asking the LLM to
+// rediscover the choice from prose while staring at the entire creative suite.
+// Hand-created/general Creative Director projects have no targetAbility and
+// retain the full registry.
+const ABILITY_TOOL_NAMES = Object.freeze({
+  video: new Set(['media_enqueueVideoJob']),
+  image: new Set(['media_enqueueImageJob']),
+  music: new Set(['media_enqueueAudioJob']),
+  'music-video': new Set(['media_enqueueAudioJob', 'media_enqueueImageJob', 'media_enqueueVideoJob']),
+});
+
+export const filterForTargetAbility = (tools, targetAbility) => {
+  if (targetAbility === 'series') {
+    return tools.filter((tool) => tool.name.startsWith('pipeline_') || tool.name.startsWith('universe_'));
+  }
+  const allowed = ABILITY_TOOL_NAMES[targetAbility];
+  return allowed ? tools.filter((tool) => allowed.has(tool.name)) : tools;
+};
+
+export const getToolSpecs = ({ includeDestructive = false, targetAbility = null } = {}) =>
+  filterForTargetAbility(filterDestructive(CREATIVE_TOOLS, includeDestructive), targetAbility).map(toSpec);
 
 export const getAllCreativeToolNames = () => CREATIVE_TOOLS.map((t) => t.name);
 
