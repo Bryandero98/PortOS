@@ -199,7 +199,7 @@ const imageAdapter = {
   label: 'Image',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('image', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission, { defaultVideoModelId } = {}) {
+  buildDirective(commission) {
     const count = genValue(commission, 'imageCount');
     const noun = count === 1 ? 'a single still image' : `${count} still images`;
     const lead = `Produce ${noun}. Use the image / catalog generation tools; do NOT plan a video or music render.`;
