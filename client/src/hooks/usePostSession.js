@@ -536,6 +536,7 @@ export function usePostSession() {
           questionCount,
           correctCount,
           latencyMs: r.totalMs || 0,
+          ...(r.drillData ? { drillData: r.drillData } : {}),
           correct: questionCount > 0 ? correctCount === questionCount : null,
           score: r.score !== undefined ? r.score : (questionCount > 0 ? (correctCount / questionCount) * 100 : null),
           completion: r.completion !== undefined ? r.completion : (questionCount > 0 ? answeredCount / questionCount : null),
@@ -543,6 +544,13 @@ export function usePostSession() {
           confidence: r.confidence ?? null,
           inputMode,
           scorerProvenance: isLlmDrill ? 'server-llm' : 'client-deterministic',
+          ...Object.fromEntries([
+            'accuracy', 'avgResponseMs', 'answeredCount', 'totalCount', 'attemptCount', 'errorCount',
+            'medianMs', 'bestMs', 'span', 'hits', 'misses', 'omissions', 'commissionErrors',
+            'falseAlarms', 'correctRejections', 'switchCostMs', 'switchAccuracy', 'repeatAccuracy',
+            'congruencyCostMs', 'congruentAccuracy', 'incongruentAccuracy', 'falseAlarmRate',
+            'latencyDistributionMs',
+          ].filter(key => r[key] !== undefined).map(key => [key, r[key]])),
           ...((questions || Array.isArray(r.questions)) ? { questions: questions || r.questions } : {}),
         };
       });

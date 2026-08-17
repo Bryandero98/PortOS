@@ -27,6 +27,7 @@ import {
   getTrainingStats,
   getTrainingEntries,
 } from './meatspacePostTraining.js';
+import { generateFlanker } from './meatspacePostCognitive.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -152,6 +153,76 @@ describe('submitTrainingRun (#4441)', () => {
     expect(stored.entries.map((entry) => entry.runId)).toEqual([payload.id, payload.id, payload.id]);
     expect(stored.entries[2].memoryItemId).toBe('memory-1');
     expect(stored.entries.map((entry) => entry.timestamp)).toEqual(firstTimestamps);
+  });
+
+  it('server-rescores deterministic executive attempts and stores unified task metrics', async () => {
+    let stored = { entries: [] };
+    readJSONFile.mockImplementation(async () => stored);
+    atomicWrite.mockImplementation(async (path, value) => {
+      if (String(path).includes('post-training-log')) stored = value;
+    });
+    const drillData = generateFlanker({ seed: 'training-flanker', count: 6, congruentPct: 50 });
+    const questions = drillData.trials.map((trial, index) => ({
+      index,
+      answered: trial.target,
+      correct: false,
+      responseMs: trial.congruent ? 300 : 650,
+    }));
+
+    const saved = await submitTrainingRun({
+      id: '22222222-2222-4222-8222-222222222222',
+      attempts: [{
+        id: 'executive-attempt',
+        module: 'cognitive',
+        drillType: 'flanker',
+        difficulty: drillData.config,
+        drillData,
+        questions,
+        questionCount: questions.length,
+        correctCount: 0,
+        latencyMs: 2400,
+        score: 0,
+        completion: 0,
+        scorerProvenance: 'client-deterministic',
+      }],
+    });
+
+    expect(saved.attempts[0]).toMatchObject({
+      id: 'executive-attempt',
+      score: 94,
+      correctCount: 6,
+      accuracy: 1,
+      completion: 1,
+      congruencyCostMs: 350,
+      congruentAccuracy: 1,
+      incongruentAccuracy: 1,
+      scorerProvenance: 'server-deterministic',
+    });
+    expect(stored.entries[0].latencyDistributionMs).toHaveLength(6);
+    expect(stored.entries[0].questions.every(question => question.correct)).toBe(true);
+  });
+
+  it('preserves legacy cognitive results when no generated answer key is present', async () => {
+    const saved = await submitTrainingRun({
+      id: '33333333-3333-4333-8333-333333333333',
+      attempts: [{
+        id: 'legacy-stroop',
+        module: 'cognitive',
+        drillType: 'stroop',
+        questionCount: 2,
+        correctCount: 1,
+        latencyMs: 1500,
+        score: 50,
+        questions: [{ answered: 'red', correct: true }, { answered: 'blue', correct: false }],
+      }],
+    });
+
+    expect(saved.attempts[0]).toMatchObject({
+      id: 'legacy-stroop',
+      correctCount: 1,
+      score: 50,
+      scorerProvenance: 'post-client',
+    });
   });
 });
 

@@ -64,6 +64,9 @@ export function cognitiveSummary(type, cfg) {
   if (type === 'stroop') return `${cfg.incongruentPct ?? 75}% conflict`;
   if (type === 'mental-rotation') return `${cfg.optionCount ?? 4} options`;
   if (type === 'reaction-time') return `${cfg.count ?? 15} trials (${cfg.mode ?? 'simple'})`;
+  if (type === 'task-switching') return `${cfg.ruleCount ?? 2} rules · ${cfg.switchRatePct ?? 50}% switch`;
+  if (type === 'go-no-go') return `${cfg.noGoPct ?? 25}% no-go · ${cfg.lureSimilarity ?? 'low'} similarity`;
+  if (type === 'flanker') return `${100 - (cfg.congruentPct ?? 60)}% conflict · strength ${cfg.flankerStrength ?? 2}`;
   return cfg.count ? `${cfg.count} trials` : '';
 }
 
@@ -277,6 +280,15 @@ export default function PostSessionLauncher({
     minDelayMs: cfg.minDelayMs,
     maxDelayMs: cfg.maxDelayMs,
     choices: cfg.choices,
+    ruleCount: cfg.ruleCount,
+    switchRatePct: cfg.switchRatePct,
+    cueStimulusIntervalMs: cfg.cueStimulusIntervalMs,
+    responseDeadlineMs: cfg.responseDeadlineMs,
+    noGoPct: cfg.noGoPct,
+    lureSimilarity: cfg.lureSimilarity,
+    congruentPct: cfg.congruentPct,
+    flankerDistance: cfg.flankerDistance,
+    flankerStrength: cfg.flankerStrength,
   });
 
   // Composed sessions (Full POST / Quick) honor `sessionModules` (issue #2100):

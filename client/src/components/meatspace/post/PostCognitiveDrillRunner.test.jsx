@@ -9,6 +9,12 @@ import PostCognitiveDrillRunner, {
   scoreStroopTrial,
   scoreMentalRotationTrial,
   scoreSchulteClick,
+  scoreTaskSwitchTrial,
+  scoreGoNoGoTrial,
+  scoreFlankerTrial,
+  localTaskSwitchMetrics,
+  localGoNoGoMetrics,
+  localFlankerMetrics,
   getDrillTutorial,
   hasSeenDrillTutorial,
   markDrillTutorialSeen,
@@ -305,6 +311,81 @@ describe('scoreSchulteClick', () => {
   });
 });
 
+describe('executive-control result builders', () => {
+  it('task switching grades by the active rule and records switch cost', () => {
+    const repeat = scoreTaskSwitchTrial({
+      trial: { rule: 'color', stimulus: { color: 'blue', shape: 'triangle' }, switched: false, incongruent: true },
+      index: 0,
+      answer: 'left',
+      responseMs: 300,
+    });
+    const switched = scoreTaskSwitchTrial({
+      trial: { rule: 'shape', stimulus: { color: 'blue', shape: 'triangle' }, switched: true, incongruent: true },
+      index: 1,
+      answer: 'right',
+      responseMs: 700,
+    });
+    expect(repeat.correct).toBe(true);
+    expect(switched.correct).toBe(true);
+    expect(localTaskSwitchMetrics([repeat, switched])).toMatchObject({
+      accuracy: 1,
+      switchCostMs: 400,
+      switchAccuracy: 1,
+      repeatAccuracy: 1,
+      omissions: 0,
+    });
+  });
+
+  it('go/no-go distinguishes omissions from false alarms', () => {
+    const hit = scoreGoNoGoTrial({ trial: { kind: 'go', symbol: '●' }, index: 0, pressed: true, responseMs: 250 });
+    const omission = scoreGoNoGoTrial({ trial: { kind: 'go', symbol: '●' }, index: 1, pressed: false, responseMs: 1000 });
+    const falseAlarm = scoreGoNoGoTrial({ trial: { kind: 'no-go', symbol: '■' }, index: 2, pressed: true, responseMs: 200 });
+    const rejection = scoreGoNoGoTrial({ trial: { kind: 'no-go', symbol: '■' }, index: 3, pressed: false, responseMs: 1000 });
+    expect(localGoNoGoMetrics([hit, omission, falseAlarm, rejection])).toMatchObject({
+      accuracy: 0.5,
+      hits: 1,
+      omissions: 1,
+      falseAlarms: 1,
+      commissionErrors: 1,
+      correctRejections: 1,
+      falseAlarmRate: 0.5,
+    });
+  });
+
+  it('flanker grades the center arrow and records congruency cost', () => {
+    const congruent = scoreFlankerTrial({ trial: { target: 'left', flanker: 'left', congruent: true }, index: 0, answer: 'left', responseMs: 300 });
+    const incongruent = scoreFlankerTrial({ trial: { target: 'right', flanker: 'left', congruent: false }, index: 1, answer: 'right', responseMs: 650 });
+    expect(localFlankerMetrics([congruent, incongruent])).toMatchObject({ accuracy: 1, congruencyCostMs: 350, congruentAccuracy: 1, incongruentAccuracy: 1 });
+  });
+
+  it('buildCognitiveResult carries task-specific measures into the unified result', () => {
+    const questions = [
+      scoreFlankerTrial({ trial: { target: 'left', flanker: 'left', congruent: true }, index: 0, answer: 'left', responseMs: 300 }),
+      scoreFlankerTrial({ trial: { target: 'right', flanker: 'left', congruent: false }, index: 1, answer: 'right', responseMs: 600 }),
+    ];
+    const result = buildCognitiveResult({ type: 'flanker', drill: { type: 'flanker', config: {} }, questions, totalMs: 900 });
+    expect(result).toMatchObject({ module: 'cognitive', type: 'flanker', accuracy: 1, congruencyCostMs: 300, totalMs: 900 });
+    expect(result.latencyDistributionMs).toEqual([300, 600]);
+  });
+
+  it('keeps a partial executive result completion-aware', () => {
+    const question = scoreFlankerTrial({
+      trial: { target: 'left', flanker: 'right', congruent: false },
+      index: 0,
+      answer: 'left',
+      responseMs: 300,
+    });
+    const result = buildCognitiveResult({
+      type: 'flanker',
+      drill: { type: 'flanker', config: { responseDeadlineMs: 1500 }, trials: Array.from({ length: 4 }, () => ({})) },
+      questions: [question],
+      totalMs: 300,
+    });
+    expect(result).toMatchObject({ accuracy: 1, completion: 0.25, totalCount: 4 });
+    expect(result.score).toBeLessThan(25);
+  });
+});
+
 describe('SchulteTableRunner error recording', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -582,5 +663,96 @@ describe('first-run tutorial gate', () => {
     );
     expect(screen.queryByRole('button', { name: /start drill/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /wait for the signal/i })).toBeInTheDocument();
+  });
+});
+
+describe('executive-control runners', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    markDrillTutorialSeen('task-switching');
+    markDrillTutorialSeen('go-no-go');
+    markDrillTutorialSeen('flanker');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('task switching supports keyboard answers, visible instructions, and accessible live state', () => {
+    const onComplete = vi.fn();
+    render(<PostCognitiveDrillRunner
+      drill={{
+        type: 'task-switching',
+        config: { cueStimulusIntervalMs: 100, responseDeadlineMs: 1000 },
+        rules: [{ id: 'color', values: ['blue', 'orange'] }, { id: 'shape', values: ['circle', 'triangle'] }],
+        trials: [{ rule: 'color', stimulus: { color: 'blue', shape: 'triangle' }, switched: false, incongruent: true }],
+      }}
+      drillIndex={0}
+      drillCount={1}
+      onComplete={onComplete}
+      isTraining={false}
+    />);
+    expect(screen.getByText(/cued rule/i)).toBeInTheDocument();
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByLabelText('blue triangle')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    act(() => vi.advanceTimersByTime(250));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toMatchObject({ type: 'task-switching', accuracy: 1, omissions: 0 });
+  });
+
+  it('go/no-go supports touch, advances withheld trials at the deadline, and records errors separately', () => {
+    const onComplete = vi.fn();
+    render(<PostCognitiveDrillRunner
+      drill={{
+        type: 'go-no-go',
+        config: { stimulusMs: 100, responseDeadlineMs: 500 },
+        trials: [{ kind: 'go', symbol: '●', tone: 'green' }, { kind: 'no-go', symbol: '■', tone: 'red' }],
+      }}
+      drillIndex={0}
+      drillCount={1}
+      onComplete={onComplete}
+      isTraining={false}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'filled circle' }));
+    act(() => vi.advanceTimersByTime(251));
+    expect(screen.getByRole('button', { name: 'filled square' })).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(501));
+    act(() => vi.advanceTimersByTime(251));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toMatchObject({ hits: 1, correctRejections: 1, falseAlarms: 0, omissions: 0, accuracy: 1 });
+  });
+
+  it('flanker supports touch controls and ignores the distractor direction', () => {
+    const onComplete = vi.fn();
+    render(<PostCognitiveDrillRunner
+      drill={{ type: 'flanker', config: { responseDeadlineMs: 800, flankerDistance: 1, flankerStrength: 3 }, trials: [{ target: 'right', flanker: 'left', congruent: false }] }}
+      drillIndex={0}
+      drillCount={1}
+      onComplete={onComplete}
+      isTraining={false}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /right/i }));
+    act(() => vi.advanceTimersByTime(250));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toMatchObject({ type: 'flanker', accuracy: 1, incongruentAccuracy: 1 });
+  });
+
+  it('cleans timers on early exit and can restart the same drill cleanly on resume', () => {
+    const drill = { type: 'go-no-go', config: { stimulusMs: 200, responseDeadlineMs: 800 }, trials: [{ kind: 'go', symbol: '●', tone: 'green' }] };
+    const abandoned = vi.fn();
+    const first = render(<PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={abandoned} isTraining={false} />);
+    first.unmount();
+    act(() => vi.advanceTimersByTime(2000));
+    expect(abandoned).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+
+    const resumed = vi.fn();
+    render(<PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={resumed} isTraining={false} />);
+    fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+    act(() => vi.advanceTimersByTime(250));
+    expect(resumed).toHaveBeenCalledTimes(1);
+    expect(resumed.mock.calls[0][0].questions).toHaveLength(1);
   });
 });

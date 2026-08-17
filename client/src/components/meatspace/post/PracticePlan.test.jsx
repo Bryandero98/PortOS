@@ -181,7 +181,7 @@ describe('PracticePlan save', () => {
     const [patch] = updatePostConfig.mock.calls[0];
     expect(Object.keys(patch.llmDrills.drillTypes)).toHaveLength(14);
     expect(Object.keys(patch.mentalMath.drillTypes)).toHaveLength(5);
-    expect(Object.keys(patch.cognitive.drillTypes)).toHaveLength(6);
+    expect(Object.keys(patch.cognitive.drillTypes)).toHaveLength(9);
     expect(Object.keys(patch.memory.drillTypes)).toHaveLength(3);
     // A drill type absent from the saved config is persisted as disabled — the
     // launcher already ignored it, so seeding must not silently switch it on.
