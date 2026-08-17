@@ -77,7 +77,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiModelPersonality.js` | LLM personality self-profile tests: run, history, delete, scorer settings. |
 | `apiGoals.js` | Identity / goals tracking. |
 | `apiHealth.js` | Apple Health. |
-| `apiMeatspace.js` | MeatSpace (genome + location). |
+| `apiMeatspace.js` | MeatSpace health, genome, POST, memory-practice, and atomic POST training-run APIs. |
 | `apiMortalLoom.js` | Mortality tracking. |
 | `apiMoodBoard.js` | Mood boards (inspiration canvas + items). |
 | `apiTribe.js` | Tribe people (relationship rings + contacts). |

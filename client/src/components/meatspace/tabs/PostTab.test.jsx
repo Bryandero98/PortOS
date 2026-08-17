@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 import PostTab from './PostTab';
@@ -44,7 +44,7 @@ vi.mock('../../RapidReader', () => ({ RapidReaderModal: () => null }));
 
 // Hoisted so the api mock factory (which vitest lifts above imports) can close
 // over it — a plain `const` declared below would be in the TDZ at mock time.
-const { MEMORY_ITEM, ELEMENTS_ITEM, getPostRecommendations } = vi.hoisted(() => ({
+const { MEMORY_ITEM, ELEMENTS_ITEM, getPostRecommendations, POST_SESSION_OVERRIDE } = vi.hoisted(() => ({
   MEMORY_ITEM: {
     id: 'raven',
     title: 'The Raven',
@@ -66,10 +66,11 @@ const { MEMORY_ITEM, ELEMENTS_ITEM, getPostRecommendations } = vi.hoisted(() => 
     mastery: { overallPct: 0, chunks: {}, elements: {} },
   },
   getPostRecommendations: vi.fn().mockResolvedValue({ recommendations: [] }),
+  POST_SESSION_OVERRIDE: { current: null },
 }));
 
 vi.mock('../../../hooks/usePostSession', () => ({
-  usePostSession: () => ({
+  usePostSession: () => POST_SESSION_OVERRIDE.current || ({
     state: 'idle',
     drills: [],
     currentDrillIndex: 0,
@@ -80,12 +81,46 @@ vi.mock('../../../hooks/usePostSession', () => ({
   }),
 }));
 
+afterEach(() => {
+  POST_SESSION_OVERRIDE.current = null;
+});
+
 // Surfaces the live URL so the test can assert mode transitions keep the ?ref
 // query param — the "mode AND reference view are both deep-linkable" contract.
 function LocationProbe() {
   const loc = useLocation();
   return <div data-testid="loc">{loc.pathname}{loc.search}</div>;
 }
+
+describe('PostTab saved-run routing (#4441)', () => {
+  it('returns a saved training run to the launcher instead of a scored-session detail', async () => {
+    POST_SESSION_OVERRIDE.current = {
+      state: 'complete',
+      drills: [],
+      currentDrillIndex: 0,
+      currentDrill: null,
+      drillCount: 0,
+      drillResults: [],
+      sessionScore: 0,
+      isTraining: true,
+      saveSession: vi.fn().mockResolvedValue({ id: 'training-run', training: true }),
+      reset: vi.fn(),
+    };
+    render(
+      <MemoryRouter initialEntries={['/post/session/run']}>
+        <Routes>
+          <Route path="/post/*" element={<><PostTab tab="session" subtab="run" /><LocationProbe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await settle();
+
+    await act(async () => { fireEvent.click(screen.getByText('Log Training')); });
+
+    expect(screen.getByTestId('loc').textContent).toBe('/post/launcher');
+    expect(POST_SESSION_OVERRIDE.current.reset).toHaveBeenCalledOnce();
+  });
+});
 
 describe('PostTab morse deep-linking', () => {
   // A wildcard route keeps the probe mounted after navigation moves the URL to a

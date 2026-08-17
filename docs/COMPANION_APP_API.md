@@ -162,26 +162,28 @@ are **not** interchangeable with these routes — pick per your need:
 `/api/meatspace/post/*` (`server/routes/meatspacePostRoutes.js`). These are the
 read/write endpoints for POST config, sessions, and progress on a single instance.
 
-> **Note — POST progress does not cross-peer federate today.** The `meatspace`
-> peer-sync category (`MEATSPACE_FILES` in `server/services/dataSync.js`) covers the
-> daily-log and health-record files but **not** the POST files
-> (`post-sessions.json`, `post-config.json`, …), so POST progress written to one
-> instance stays local to it. Cross-instance POST reconciliation is a deferred
-> follow-up (see below) — either add the POST files to the sync category or ship the
-> iCloud import endpoint. A companion app that shows POST progress across instances
-> must read each instance's `/api/meatspace/post/*` directly until then.
+> **Note — POST progress is intentionally machine-local today.** Normalized
+> history lives in PostgreSQL `post_runs` / `post_attempts` with no peer-sync
+> cursor or record kind; cognitive-performance history never rides federation.
+> A companion app that shows multiple instances must read each instance's
+> `/api/meatspace/post/*` directly.
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` / `PUT` | `/api/meatspace/post/config` | Read / update POST config. |
-| `GET` | `/api/meatspace/post/sessions` | List training sessions. |
-| `POST` | `/api/meatspace/post/sessions` | Record a session. |
+| `GET` | `/api/meatspace/post/sessions` | List scored test sessions. |
+| `POST` | `/api/meatspace/post/sessions` | Record an idempotent scored test session. |
+| `POST` | `/api/meatspace/post/training/runs` | Atomically record one completed training run and all attempts. |
+| `POST` | `/api/meatspace/post/training` | Backward-compatible single-attempt adapter. |
 | `GET` | `/api/meatspace/post/progress` | Current progress. |
 | `GET` | `/api/meatspace/post/stats` | Aggregate stats. |
 | `GET` | `/api/meatspace/post/recommendations` | Recommended next drills. |
 
-The app can *prompt* the user to run POST training from the phone and POST the
-resulting session, or sync progress via the iCloud pattern below.
+For a training run, generate one UUID run id and stable attempt ids before the
+request. Retry the identical payload after transport failure; the server upserts
+those ids in one transaction and returns success only after the full batch is
+durable. Use `/sessions` only for scored tests, keeping training evidence out of
+benchmark history.
 
 ## 6. iCloud-JSON sync precedent (POST-progress reconciliation)
 
@@ -192,16 +194,14 @@ is MortalLoom (`server/routes/mortalloom.js`, `server/services/mortalLoomStore.j
 - `POST /api/mortalloom/import` — non-destructive **by-id merge** of the shared
   iCloud JSON into `data/`.
 
-A POST-progress iCloud reconciliation endpoint mirroring this
-(`POST /api/…/import`, non-destructive by-id merge into `data/meatspace/post/*`) is
-**out of scope for this foundation** and will be filed as its own follow-up. Until
-it lands there is no cross-instance POST reconciliation — a companion app reads and
-writes each instance's `/api/meatspace/post/*` routes directly (see the note in
-§5).
+A POST-progress iCloud reconciliation endpoint would need an explicit privacy
+design before it can mirror this precedent. Until then there is no cross-instance
+POST reconciliation — a companion app reads and writes each instance's
+`/api/meatspace/post/*` routes directly (see the note in §5).
 
 ## Deferred follow-ups (filed separately)
 
-- POST-progress iCloud reconciliation import endpoint (mirrors `mortalloom.js`).
+- Privacy-reviewed POST-progress reconciliation design (no federation by default).
 - Server-side audio/STT upload endpoint — only if on-device transcription is
   abandoned.
 - Push-notification / reminder plumbing to prompt POST training from the phone.

@@ -133,6 +133,44 @@ describe('getPostProgress bucketing', () => {
     expect(p.series.byDrill['multiplication'][0].date).toBe(d);
   });
 
+  it('uses training as skill evidence without contaminating scored history (#4441)', async () => {
+    const d = todayStr();
+    state.training = [{
+      id: 'attempt-1', runId: 'run-1', date: d, timestamp: `${d}T12:00:00.000Z`,
+      module: 'mental-math', drillType: 'multiplication', difficulty: { level: 0 },
+      questionCount: 2, correctCount: 1, score: 50, completion: 1, totalMs: 4000,
+      questions: [q(true), q(false)],
+    }];
+
+    const [progress, stats] = await Promise.all([
+      getPostProgress({ days: 30 }),
+      getPostStats(30),
+    ]);
+    expect(progress.series.byDomain['mental-math'][0]).toMatchObject({ date: d, score: 50, accuracy: 0.5 });
+    expect(progress.series.byDrill.multiplication[0]).toMatchObject({ date: d, score: 50, accuracy: 0.5 });
+    expect(progress.series.byDay[0]).toMatchObject({ date: d, score: null, sessions: 0 });
+    expect(stats).toMatchObject({
+      sessionCount: 0,
+      overall: null,
+      evidenceByDrillCount: { 'mental-math:multiplication': 1 },
+      evidenceByDrillAccuracy: { 'mental-math:multiplication': 0.5 },
+    });
+  });
+
+  it('preserves irreconstructible legacy training scores as unknown', async () => {
+    const d = todayStr();
+    state.training = [{
+      id: 'legacy-attempt', runId: 'legacy-run', date: d, timestamp: `${d}T12:00:00.000Z`,
+      module: 'mental-math', drillType: 'multiplication', legacy: true,
+      inputMode: 'unknown', scorerProvenance: 'legacy', totalMs: 1000,
+    }];
+
+    const progress = await getPostProgress({ days: 30 });
+    expect(progress.series.byDomain['mental-math'][0]).toMatchObject({
+      date: d, score: null, accuracy: null,
+    });
+  });
+
   it('includes multiplication, cognitive evidence, and memory items in the mastery block', async () => {
     state.memoryItems = [
       { id: 'm1', title: 'Elements', mastery: { overallPct: 42 }, schedule: { nextReview: '2000-01-01T00:00:00.000Z' } },

@@ -19,10 +19,10 @@ import {
   mergeScheduleAdvance,
   scheduleOrDefault,
 } from '../lib/spacedRepetition.js';
+import { listStoredTrainingEntries, saveStoredTrainingRun } from './postRunStore.js';
 
 const MEATSPACE_DIR = PATHS.meatspace;
 const MEMORY_ITEMS_FILE = join(MEATSPACE_DIR, 'post-memory-items.json');
-const TRAINING_LOG_FILE = join(MEATSPACE_DIR, 'post-training-log.json');
 
 // =============================================================================
 // SPACED-REPETITION SCHEDULER (SM-2 inspired)
@@ -386,15 +386,6 @@ async function saveMemoryItems(items) {
   await atomicWrite(MEMORY_ITEMS_FILE, { items });
 }
 
-async function loadTrainingLog() {
-  return readJSONFile(TRAINING_LOG_FILE, { entries: [] }, { allowArray: false });
-}
-
-async function saveTrainingLog(log) {
-  await ensureDir(MEATSPACE_DIR);
-  await atomicWrite(TRAINING_LOG_FILE, log);
-}
-
 // =============================================================================
 // MEMORY ITEMS CRUD
 // =============================================================================
@@ -626,9 +617,11 @@ export async function submitPractice(id, practiceData) {
   await saveMemoryItems(items);
 
   // Log the practice session
-  const log = await loadTrainingLog();
-  log.entries.push({
-    id: randomUUID(),
+  const practiceId = randomUUID();
+  const runId = `memory-practice:${practiceId}`;
+  const record = {
+    id: practiceId,
+    runId,
     memoryItemId: id,
     mode,
     chunkId: chunkId || null,
@@ -637,11 +630,35 @@ export async function submitPractice(id, practiceData) {
     totalMs: totalMs || 0,
     date: todayLocal,
     timestamp: now,
+    inputMode: 'unknown',
+    scorerProvenance: 'memory-practice',
+  };
+  await saveStoredTrainingRun({
+    id: runId,
+    mode: 'training',
+    localDay: todayLocal,
+    startedAt: now,
+    completedAt: now,
+    status: 'completed',
+    planned: { modules: ['memory'] },
+    data: { id: runId, mode: 'training' },
+    attempts: [{
+      id: practiceId,
+      module: 'memory',
+      drillType: mode || 'unknown',
+      correct: results.length > 0 ? correctCount === results.length : null,
+      score: results.length > 0 ? (correctCount / results.length) * 100 : null,
+      latencyMs: totalMs || 0,
+      completion: results.length > 0 ? 1 : null,
+      hintUsed: results.some((result) => result?.hintUsed === true),
+      inputMode: 'unknown',
+      scorerProvenance: 'memory-practice',
+      data: record,
+    }],
   });
-  await saveTrainingLog(log);
 
   console.log(`🧠 Practice logged: "${item.title}" mode=${mode} ${correctCount}/${results.length} → next review in ${item.schedule.intervalDays}d`);
-  return { mastery: item.mastery, schedule: item.schedule, practiceId: log.entries[log.entries.length - 1].id };
+  return { mastery: item.mastery, schedule: item.schedule, practiceId };
 }
 
 /**
@@ -823,8 +840,7 @@ export async function getMastery(id) {
 }
 
 export async function getTrainingLog(memoryItemId, limit = 50) {
-  const log = await loadTrainingLog();
-  let entries = log.entries || [];
+  let entries = await listStoredTrainingEntries();
   if (memoryItemId) entries = entries.filter(e => e.memoryItemId === memoryItemId);
   return entries.slice(-limit);
 }

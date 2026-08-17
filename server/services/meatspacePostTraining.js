@@ -9,46 +9,130 @@ import { randomUUID } from 'crypto';
 import { getUserTimezone, todayInTimezone, userLocalToday } from '../lib/timezone.js';
 import { recordDayKey, ymdShift } from '../lib/postStreak.js';
 import { getUnifiedActivityStreak } from './postActivityStreak.js';
-import { loadTrainingLog, saveTrainingLog, getAllTrainingEntries } from './postTrainingLogStore.js';
+import { getAllTrainingEntries } from './postTrainingLogStore.js';
+import { saveStoredTrainingRun } from './postRunStore.js';
 
 export { getAllTrainingEntries };
+
+function trainingAttempt(runId, attempt, position, localDay, startedAt) {
+  const questionCount = attempt.questionCount ?? attempt.questions?.length ?? 0;
+  const correctCount = attempt.correctCount
+    ?? attempt.questions?.filter((question) => question?.correct === true).length
+    ?? 0;
+  const score = attempt.score !== undefined
+    ? attempt.score
+    : (questionCount > 0 ? (correctCount / questionCount) * 100 : null);
+  const id = attempt.id || `${runId}:attempt:${position}`;
+  const record = {
+    id,
+    runId,
+    date: localDay,
+    timestamp: startedAt,
+    module: attempt.module,
+    drillType: attempt.drillType,
+    ...(attempt.memoryItemId ? { memoryItemId: attempt.memoryItemId } : {}),
+    questionCount,
+    correctCount,
+    totalMs: attempt.latencyMs ?? attempt.totalMs ?? 0,
+    ...(Array.isArray(attempt.questions) ? { questions: attempt.questions } : {}),
+    difficulty: attempt.difficulty !== undefined ? attempt.difficulty : (attempt.config ?? null),
+    configVersion: attempt.configVersion || null,
+    correct: attempt.correct !== undefined ? attempt.correct : (questionCount > 0 ? correctCount === questionCount : null),
+    score,
+    completion: attempt.completion !== undefined ? attempt.completion : (questionCount > 0 ? 1 : null),
+    hintUsed: attempt.hintUsed === true,
+    confidence: attempt.confidence ?? null,
+    inputMode: attempt.inputMode || 'unknown',
+    scorerProvenance: attempt.scorerProvenance || 'post-client',
+  };
+  return {
+    id,
+    module: record.module,
+    drillType: record.drillType,
+    difficulty: record.difficulty,
+    configVersion: record.configVersion,
+    correct: record.correct,
+    score: record.score,
+    latencyMs: record.totalMs,
+    completion: record.completion,
+    hintUsed: record.hintUsed,
+    confidence: record.confidence,
+    inputMode: record.inputMode,
+    scorerProvenance: record.scorerProvenance,
+    data: record,
+  };
+}
+
+/** Atomically save a complete training run. Stable ids make retries idempotent. */
+export async function submitTrainingRun(input) {
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const startedAt = input.startedAt || now;
+  const completedAt = input.completedAt || now;
+  const localDay = await userLocalToday(new Date(startedAt));
+  const run = {
+    id: input.id,
+    mode: 'training',
+    localDay,
+    startedAt,
+    completedAt,
+    status: 'completed',
+    planned: input.planned || {
+      modules: [...new Set(input.attempts.map((attempt) => attempt.module))],
+      drillTypes: input.attempts.map((attempt) => attempt.drillType),
+    },
+    data: { id: input.id, mode: 'training', localDay, startedAt, completedAt },
+    attempts: input.attempts.map((attempt, position) => trainingAttempt(input.id, attempt, position, localDay, startedAt)),
+  };
+  const saved = await saveStoredTrainingRun(run);
+  // Training is skill evidence, so a newly-saved run also reconciles the same
+  // mastered-skill retention schedule as a scored session. Keep this AFTER the
+  // atomic run transaction and gate it to first insert: a dropped-response retry
+  // must not advance/reset retention twice. As with scored-session bookkeeping,
+  // a secondary schedule failure cannot turn a durable save into a false 500.
+  if (saved.isNew) {
+    try {
+      const { syncReviewScheduleForSession } = await import('./meatspacePost.js');
+      await syncReviewScheduleForSession({
+        tasks: saved.run.attempts.map((attempt) => ({
+          ...(attempt.data || {}),
+          module: attempt.module,
+          type: attempt.drillType,
+          config: attempt.difficulty || {},
+          questions: attempt.data?.questions || [],
+          score: attempt.score,
+          accuracy: attempt.data?.questionCount > 0
+            ? attempt.data.correctCount / attempt.data.questionCount
+            : null,
+          completion: attempt.completion,
+        })),
+      }, new Date(saved.run.completedAt || now));
+    } catch (err) {
+      console.error(`❌ POST training retention sync failed (run ${run.id} still saved): ${err.message}`);
+    }
+  }
+  console.log(`🏋️ Training run ${saved.isNew ? 'saved' : 'updated'}: ${run.attempts.length} attempt(s)`);
+  return {
+    id: saved.run.id,
+    mode: 'training',
+    localDay: saved.run.localDay,
+    startedAt: saved.run.startedAt,
+    completedAt: saved.run.completedAt,
+    attemptCount: saved.run.attempts.length,
+    attempts: saved.run.attempts.map((attempt) => attempt.data),
+  };
+}
 
 /**
  * Submit a training practice entry after a training-mode drill completes.
  */
 export async function submitTrainingEntry(entry) {
-  const data = await loadTrainingLog();
-  const nowDate = new Date();
-  const now = nowDate.toISOString();
-  // Stamp the entry's day in the user's local timezone (issue #2681). Training
-  // entries feed the SHARED unified streak (getUnifiedActivityStreak in
-  // postActivityStreak.js), which now compares against the user's local
-  // `today` — a bare UTC-day stamp here would
-  // date a local-evening practice on tomorrow's UTC day and drop it from today's
-  // streak. Derive the day from the SAME `nowDate` used for `timestamp` so a
-  // midnight boundary can't split them onto different days.
-  const todayLocal = await userLocalToday(nowDate);
-
-  const record = {
-    id: randomUUID(),
-    date: todayLocal,
-    timestamp: now,
-    module: entry.module,
-    drillType: entry.drillType,
-    questionCount: entry.questionCount ?? 0,
-    correctCount: entry.correctCount ?? 0,
-    totalMs: entry.totalMs ?? 0,
-  };
-  // Per-question breakdown (issue #2114) is optional — only wordplay training
-  // currently supplies it. Gate on Array.isArray (not truthiness/length) so an
-  // absent field stays absent rather than being coerced to `[]`, keeping
-  // legacy/no-breakdown entries indistinguishable from before this change.
-  if (Array.isArray(entry.questions)) {
-    record.questions = entry.questions;
-  }
-
-  data.entries.push(record);
-  await saveTrainingLog(data);
+  const runId = entry.runId || (entry.id ? `training-entry:${entry.id}` : randomUUID());
+  const result = await submitTrainingRun({
+    id: runId,
+    attempts: [{ ...entry, id: entry.id || randomUUID(), latencyMs: entry.totalMs }],
+  });
+  const record = result.attempts[0];
   console.log(`🏋️ Training logged: ${record.module}/${record.drillType} ${record.correctCount}/${record.questionCount}`);
   return record;
 }
@@ -64,8 +148,7 @@ export async function submitTrainingEntry(entry) {
  */
 export async function getTrainingStats(days = 30) {
   const atDate = new Date();
-  const data = await loadTrainingLog();
-  const allEntries = data.entries;
+  const allEntries = await getAllTrainingEntries();
   const timezone = await getUserTimezone();
   const todayStr = todayInTimezone(timezone, atDate);
 

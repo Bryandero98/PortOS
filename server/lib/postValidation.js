@@ -153,6 +153,9 @@ const drillTypeConfigSchema = z.object({
 // Task result within a session
 // score is optional — the server recomputes it via scoreDrill
 const taskResultSchema = z.object({
+  // Stable client attempt id. Optional for legacy scored-session clients; the
+  // store derives a deterministic id from run id + position when absent.
+  id: z.string().min(1).max(200).optional(),
   module: z.enum(POST_MODULES),
   type: z.enum(DRILL_TYPES),
   config: drillTypeConfigSchema.optional().default({}),
@@ -186,6 +189,10 @@ const taskResultSchema = z.object({
   misses: z.number().int().min(0).optional(),
   falseAlarms: z.number().int().min(0).optional(),
   correctRejections: z.number().int().min(0).optional(),
+  hintUsed: z.boolean().optional(),
+  confidence: z.number().min(0).max(1).nullable().optional(),
+  inputMode: z.string().min(1).max(50).optional(),
+  scorerProvenance: z.string().min(1).max(100).optional(),
   evaluation: z.object({
     score: z.number().min(0).max(100).optional(),
     breakdown: z.array(z.object({
@@ -510,6 +517,10 @@ const trainingQuestionSchema = z.object({
 
 // Training log entry submission
 export const trainingEntrySchema = z.object({
+  // Optional stable ids let newer callers retry through the legacy one-entry
+  // adapter without duplication. Old callers remain valid and get server ids.
+  id: z.string().min(1).max(200).optional(),
+  runId: z.string().min(1).max(200).optional(),
   module: z.string(),
   // Training log entries also cover Morse (client-side scored, never a scored
   // POST session) — union in MORSE_DRILL_TYPES here rather than in the shared
@@ -520,6 +531,64 @@ export const trainingEntrySchema = z.object({
   correctCount: z.number().int().min(0),
   totalMs: z.number().min(0),
   questions: z.array(trainingQuestionSchema).optional(),
+  difficulty: z.record(z.string(), z.unknown()).nullable().optional(),
+  configVersion: z.string().max(100).nullable().optional(),
+  correct: z.boolean().nullable().optional(),
+  score: z.number().min(0).max(100).nullable().optional(),
+  completion: z.number().min(0).max(1).nullable().optional(),
+  hintUsed: z.boolean().optional(),
+  confidence: z.number().min(0).max(1).nullable().optional(),
+  inputMode: z.string().min(1).max(50).optional(),
+  scorerProvenance: z.string().min(1).max(100).optional(),
+});
+
+const trainingAttemptSchema = z.object({
+  id: z.string().min(1).max(200),
+  module: z.string().min(1).max(100),
+  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES]),
+  memoryItemId: z.string().min(1).max(200).nullable().optional(),
+  difficulty: z.record(z.string(), z.unknown()).nullable().optional(),
+  configVersion: z.string().max(100).nullable().optional(),
+  questionCount: z.number().int().min(0),
+  correctCount: z.number().int().min(0),
+  latencyMs: z.number().min(0),
+  // Deterministic drills retain answer/latency detail for ladder/adaptive
+  // evidence; wordplay keeps its established compact training-question shape.
+  questions: z.array(z.union([questionResultSchema, trainingQuestionSchema])).max(500).optional(),
+  correct: z.boolean().nullable().optional(),
+  score: z.number().min(0).max(100).nullable().optional(),
+  completion: z.number().min(0).max(1).nullable().optional(),
+  hintUsed: z.boolean().optional().default(false),
+  confidence: z.number().min(0).max(1).nullable().optional(),
+  inputMode: z.string().min(1).max(50).optional().default('unknown'),
+  scorerProvenance: z.string().min(1).max(100).optional().default('post-client'),
+}).superRefine((attempt, ctx) => {
+  if (attempt.correctCount > attempt.questionCount) {
+    ctx.addIssue({ code: 'custom', path: ['correctCount'], message: 'correctCount cannot exceed questionCount' });
+  }
+});
+
+// Complete training-run batch. Validation finishes before the service opens a
+// transaction, so malformed attempt N can never leave attempts 0..N-1 saved.
+export const trainingRunSubmitSchema = z.object({
+  id: z.string().uuid(),
+  mode: z.literal('training').optional().default('training'),
+  startedAt: z.string().datetime().optional(),
+  completedAt: z.string().datetime().optional(),
+  planned: z.object({
+    modules: z.array(z.string().min(1).max(100)).max(20).optional(),
+    drillTypes: z.array(z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES])).max(100).optional(),
+  }).optional(),
+  attempts: z.array(trainingAttemptSchema).min(1).max(100),
+}).superRefine((run, ctx) => {
+  const ids = new Set();
+  run.attempts.forEach((attempt, index) => {
+    if (ids.has(attempt.id)) ctx.addIssue({ code: 'custom', path: ['attempts', index, 'id'], message: 'attempt ids must be unique within a run' });
+    ids.add(attempt.id);
+  });
+  if (run.startedAt && run.completedAt && Date.parse(run.completedAt) < Date.parse(run.startedAt)) {
+    ctx.addIssue({ code: 'custom', path: ['completedAt'], message: 'completedAt cannot precede startedAt' });
+  }
 });
 
 export { LLM_DRILL_TYPES, MATH_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES, POST_MODULES, COGNITIVE_DRILL_TYPES, MORSE_DRILL_TYPES };

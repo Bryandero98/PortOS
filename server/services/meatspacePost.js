@@ -9,7 +9,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { atomicWrite, PATHS, ensureDir, readJSONFile } from '../lib/fileUtils.js';
-import { deepMerge, isPlainObject } from '../lib/objects.js';
+import { deepMerge } from '../lib/objects.js';
 import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from '../lib/postValidation.js';
 import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
@@ -38,6 +38,7 @@ import { getAllTrainingEntries } from './postTrainingLogStore.js';
 import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
 import { computePostStreaks, computeUnifiedStreak, normalizeYmd, recordDayKey, withDerivedDayKeys, ymdToUTC, ymdShift } from '../lib/postStreak.js';
 import { getUserTimezone, todayInTimezone, userLocalToday as localToday } from '../lib/timezone.js';
+import { getStoredPostSession, listPostSessions, saveStoredPostSession } from './postRunStore.js';
 
 // Re-export the shared streak helper so existing importers of
 // `computePostStreaks` from this module keep working after it moved to
@@ -55,7 +56,6 @@ export { computePostStreaks };
 // first-visit/handled markers (#2666).
 
 const MEATSPACE_DIR = PATHS.meatspace;
-const SESSIONS_FILE = join(MEATSPACE_DIR, 'post-sessions.json');
 const CONFIG_FILE = join(MEATSPACE_DIR, 'post-config.json');
 
 // Tiny pub/sub (mirrors settingsEvents in server/services/settings.js) so
@@ -227,15 +227,7 @@ export async function updatePostConfig(updates) {
  *   that COUNT sessions opt in — a fake 0 there is a lie, not a default (#2726).
  */
 async function loadSessions({ strict = false } = {}) {
-  const raw = await readJSONFile(SESSIONS_FILE, { sessions: [] }, { allowArray: false, strict });
-  // Under strict, a file that parsed to a non-countable shape is as untrustworthy as
-  // one that failed to parse — validate rather than silently substituting an empty.
-  if (strict && (!isPlainObject(raw) || !Array.isArray(raw.sessions))) {
-    throw new Error(`POST sessions malformed: ${SESSIONS_FILE}`);
-  }
-  const data = isPlainObject(raw) ? raw : { sessions: [] };
-  if (!Array.isArray(data.sessions)) data.sessions = [];
-  return data;
+  return { sessions: await listPostSessions({ strict }) };
 }
 
 /**
@@ -269,8 +261,7 @@ export async function getPostSessions(from, to, options) {
  * history row beside it shows the re-keyed one.
  */
 export async function getPostSession(id) {
-  const data = await loadSessions();
-  const session = data.sessions.find(s => s.id === id);
+  const session = await getStoredPostSession(id);
   if (!session) return null;
   return { ...session, date: recordDayKey(session, await getUserTimezone()) };
 }
@@ -348,10 +339,10 @@ export async function submitPostSession(sessionData) {
   // clients / direct service callers) falls back to a fresh uuid.
   const sessionId = sessionData.id || randomUUID();
   const existingIndex = data.sessions.findIndex(s => s.id === sessionId);
-  const isNewSession = existingIndex < 0;
+  let isNewSession = existingIndex < 0;
   const existing = isNewSession ? null : data.sessions[existingIndex];
 
-  const session = {
+  let session = {
     id: sessionId,
     // Preserve the ORIGINAL day/start on an idempotent re-submit — a retry that
     // crosses midnight (or just arrives later) must not move the session to a
@@ -368,11 +359,9 @@ export async function submitPostSession(sessionData) {
     tags: sessionData.tags || {}
   };
 
-  if (isNewSession) data.sessions.push(session);
-  else data.sessions[existingIndex] = session;
-  data.sessions.sort((a, b) => a.date.localeCompare(b.date));
-  await ensureMeatspaceDir();
-  await atomicWrite(SESSIONS_FILE, data);
+  const stored = await saveStoredPostSession(session);
+  session = stored.session;
+  isNewSession = stored.isNew;
   console.log(`🧪 POST session ${isNewSession ? 'saved' : 'updated'}: score=${session.score} modules=${session.modules.join(',')}`);
 
   // A memory drill completed inside this session IS a review — mirror the
@@ -664,6 +653,68 @@ export function deriveTaskAvgResponseMs(task) {
   return Math.round(timed.reduce((sum, q) => sum + q.responseMs, 0) / timed.length);
 }
 
+function trainingEntryTask(entry) {
+  const rawQuestionCount = Number(entry?.questionCount);
+  const rawCorrectCount = Number(entry?.correctCount);
+  const questionCount = Number.isFinite(rawQuestionCount) && rawQuestionCount > 0 ? rawQuestionCount : 0;
+  const correctCount = Number.isFinite(rawCorrectCount)
+    ? Math.max(0, Math.min(questionCount, rawCorrectCount))
+    : 0;
+  const accuracy = questionCount > 0 ? correctCount / questionCount : null;
+  return {
+    id: entry?.id,
+    module: entry?.module,
+    type: entry?.drillType,
+    config: entry?.difficulty || {},
+    questions: Array.isArray(entry?.questions) ? entry.questions : [],
+    score: Number.isFinite(entry?.score) ? entry.score : (accuracy == null ? null : accuracy * 100),
+    accuracy,
+    completion: typeof entry?.completion === 'number' ? entry.completion : (questionCount > 0 ? 1 : null),
+    avgResponseMs: questionCount > 0 ? (entry?.totalMs || 0) / questionCount : null,
+    totalMs: entry?.totalMs || 0,
+    totalCount: questionCount,
+  };
+}
+
+function skillEvidenceSessions(sessions, training) {
+  return [
+    ...sessions,
+    ...training.map((entry) => ({
+      id: entry.runId || entry.id,
+      date: entry.date,
+      startedAt: entry.timestamp,
+      completedAt: entry.timestamp,
+      evidenceMode: 'training',
+      tasks: [trainingEntryTask(entry)],
+    })),
+  ];
+}
+
+function summarizeSkillEvidence(sessions, training) {
+  const accuracyLists = {};
+  const completionLists = {};
+  const counts = {};
+  const add = (task) => {
+    if (!task?.module || !task?.type) return;
+    const key = `${task.module}:${task.type}`;
+    counts[key] = (counts[key] || 0) + 1;
+    const accuracy = deriveTaskAccuracy(task);
+    if (accuracy != null) (accuracyLists[key] ||= []).push(accuracy);
+    const completion = deriveTaskCompletion(task);
+    if (completion != null) (completionLists[key] ||= []).push(completion);
+  };
+  for (const session of sessions) for (const task of session.tasks || []) add(task);
+  for (const entry of training) add(trainingEntryTask(entry));
+  const meanMap = (lists) => Object.fromEntries(
+    Object.entries(lists).map(([key, values]) => [key, values.reduce((sum, value) => sum + value, 0) / values.length]),
+  );
+  return {
+    evidenceByDrillCount: counts,
+    evidenceByDrillAccuracy: meanMap(accuracyLists),
+    evidenceByDrillCompletion: meanMap(completionLists),
+  };
+}
+
 export async function getPostStats(days = 30) {
   const atDate = new Date();
   const sessions = await getPostSessions();
@@ -685,6 +736,7 @@ export async function getPostStats(days = 30) {
     lastDate: unified.lastActiveDate,
   };
   let recent = sessions;
+  let recentTraining = training;
   if (days > 0) {
     // Window the stats relative to the user's local today (day-string math via
     // UTC midnight, DST-safe) so the cutoff matches the tz-correct session dates.
@@ -693,10 +745,16 @@ export async function getPostStats(days = 30) {
       const date = recordDayKey(s, timezone);
       return date && date >= cutoffStr;
     });
+    recentTraining = training.filter((entry) => {
+      const date = recordDayKey(entry, timezone);
+      return date && date >= cutoffStr;
+    });
   }
 
+  const evidence = summarizeSkillEvidence(recent, recentTraining);
+
   if (recent.length === 0) {
-    return { days, sessionCount: 0, overall: null, byModule: {}, byDrill: {}, byDrillCount: {}, byDrillAccuracy: {}, byDrillCompletion: {}, ...streaks };
+    return { days, sessionCount: 0, overall: null, byModule: {}, byDrill: {}, byDrillCount: {}, byDrillAccuracy: {}, byDrillCompletion: {}, ...evidence, ...streaks };
   }
 
   const scores = recent.map(s => s.score);
@@ -740,7 +798,7 @@ export async function getPostStats(days = 30) {
   const byDrillCompletion = {};
   for (const key of Object.keys(byDrillCompletionList)) byDrillCompletion[key] = avgFrac(byDrillCompletionList[key]);
 
-  return { days, sessionCount: recent.length, overall, byModule, byDrill, byDrillCount, byDrillAccuracy, byDrillCompletion, ...streaks };
+  return { days, sessionCount: recent.length, overall, byModule, byDrill, byDrillCount, byDrillAccuracy, byDrillCompletion, ...evidence, ...streaks };
 }
 
 // =============================================================================
@@ -874,6 +932,13 @@ export async function getPostProgress({ days = 90 } = {}) {
     const date = recordDayKey(e, timezone);
     if (!date) continue;
     ensureDay(date).minutes += (e.totalMs || 0) / 60000;
+    const task = trainingEntryTask(e);
+    const accuracy = deriveTaskAccuracy(task);
+    const responseMs = deriveTaskAvgResponseMs(task);
+    // Training updates skill/domain evidence, but it does not enter the scored
+    // benchmark headline (`byDay.score`, session count, or overall score).
+    pushMetricSeries(domainMap, task.module, date, task.score, accuracy, responseMs);
+    pushMetricSeries(drillMap, task.type, date, task.score, accuracy, responseMs);
   }
 
   const byDay = Array.from(dayMap.entries())
@@ -963,8 +1028,8 @@ const DRILL_LABEL = (type) =>
  * `"<module>:<type>"`.
  */
 export function weakestSkillFromStats(stats) {
-  const acc = stats?.byDrillAccuracy || {};
-  const counts = stats?.byDrillCount || {};
+  const acc = stats?.evidenceByDrillAccuracy || stats?.byDrillAccuracy || {};
+  const counts = stats?.evidenceByDrillCount || stats?.byDrillCount || {};
   let worst = null;
   for (const [key, a] of Object.entries(acc)) {
     if (typeof a !== 'number' || Number.isNaN(a)) continue;
@@ -1567,9 +1632,9 @@ export function generateDrill(type, config = {}) {
 async function getAdaptiveSignal(type) {
   const stats = await getPostStats(ADAPTIVE_DEFAULTS.windowDays);
   const key = `${MATH_MODULE}:${type}`;
-  const accuracy = stats.byDrillAccuracy?.[key];
-  const samples = stats.byDrillCount?.[key] || 0;
-  const completion = stats.byDrillCompletion?.[key];
+  const accuracy = stats.evidenceByDrillAccuracy?.[key];
+  const samples = stats.evidenceByDrillCount?.[key] || 0;
+  const completion = stats.evidenceByDrillCompletion?.[key];
   return {
     score: accuracy == null ? null : Math.round(accuracy * 100),
     samples,
@@ -1594,7 +1659,8 @@ async function getAdaptiveSignal(type) {
  */
 async function getMultiplicationLevelStats(windowDays = MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
-  const sessions = await getPostSessions();
+  const [scoredSessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
+  const sessions = skillEvidenceSessions(scoredSessions, training);
   // Window off the user's local today (DST-safe day math) so the cutoff stays
   // consistent with the tz-correct session dates submitPostSession now stamps
   // (issue #2681) — a UTC-day cutoff would skew the window edge by the tz offset.
@@ -1641,7 +1707,8 @@ async function getMultiplicationLevelStats(windowDays = MASTERY_DEFAULTS.windowD
 
 async function getPowersLevelStats(windowDays = POWERS_MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
-  const sessions = await getPostSessions();
+  const [scoredSessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
+  const sessions = skillEvidenceSessions(scoredSessions, training);
   const timezone = await getUserTimezone();
   const todayStr = todayInTimezone(timezone, atDate);
   const cutoffStr = windowDays > 0 ? ymdShift(todayStr, -windowDays) : null;
@@ -1723,7 +1790,8 @@ export async function getPowersProgress() {
  */
 async function getCognitiveLevelStats(type, windowDays = COGNITIVE_MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
-  const sessions = await getPostSessions();
+  const [scoredSessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
+  const sessions = skillEvidenceSessions(scoredSessions, training);
   // Window off the user's local today (DST-safe) so the cutoff stays consistent
   // with the tz-correct session dates submitPostSession now stamps (issue #2681).
   const timezone = await getUserTimezone();

@@ -41,7 +41,7 @@ The launcher offers two ways to start (`DrillTransition.jsx` handles the between
 The session launcher (`PostSessionLauncher.jsx`) has a per-session Test/Train toggle:
 
 - **Test** — timed, scored, saved to session history (`POST /api/meatspace/post/sessions`).
-- **Train** — immediate feedback, hints on wrong answers, not scored; entries go to a separate training log (`POST /api/meatspace/post/training`) with its own stats, streaks, and entries endpoints (`server/services/meatspacePostTraining.js` → `data/meatspace/post-training-log.json`).
+- **Train** — immediate feedback and hints on wrong answers. The client saves the completed run once through `POST /api/meatspace/post/training/runs`; the server validates the full batch and commits the run plus every attempt in one PostgreSQL transaction. Stable run/attempt ids make retries idempotent. The results screen reports success only after that durable acknowledgement and leaves a failed save retryable. `POST /api/meatspace/post/training` remains as the backward-compatible one-entry adapter for standalone trainers and older clients.
 
 ## Memory Builder
 
@@ -61,7 +61,7 @@ Configurable memory training for songs, poems, sequences, speeches, or any order
 
 ## Adaptive Difficulty
 
-Opt-in adaptive tuning for math drills (`server/lib/postAdaptive.js`): recent scored performance nudges drill parameters, with a transparent preview of what would change (`GET /api/meatspace/post/adaptive-preview`). Multiplication is a special case: whenever the progressive ladder is on (the default), it owns multiplication's difficulty entirely and the preview reflects the ladder rung, not the generic `maxDigits` knob — the two are mutually exclusive per drill type, never blended.
+Opt-in adaptive tuning for math drills (`server/lib/postAdaptive.js`): recent test and training attempts both inform skill evidence and nudge drill parameters, with a transparent preview of what would change (`GET /api/meatspace/post/adaptive-preview`). Training also feeds domain/drill progress, recommendations, progressive-ladder mastery, and mastered-skill retention scheduling. Benchmark/test history remains isolated: training never increments scored-session counts or changes the benchmark headline/overall score. Multiplication is a special case: whenever the progressive ladder is on (the default), it owns multiplication's difficulty entirely and the preview reflects the ladder rung, not the generic `maxDigits` knob — the two are mutually exclusive per drill type, never blended.
 
 ## Drill Cache
 
@@ -71,13 +71,14 @@ The four cacheable wordplay types are pre-generated so drills serve instantly (`
 
 `server/services/meatspacePostReminder.js` schedules an optional daily POST reminder, re-registered whenever the config changes.
 
-## Data Files
+## Storage
 
 - `data/meatspace/post-config.json` — drill settings, enabled domains, time limits
-- `data/meatspace/post-sessions.json` — scored test session history
+- PostgreSQL `post_runs` + `post_attempts` — normalized test/benchmark/training history (machine-local; never federated)
 - `data/meatspace/post-memory-items.json` — memory builder content and mastery
-- `data/meatspace/post-training-log.json` — unscored training/practice log
 - `data/meatspace/post-drill-cache.json` — pre-generated wordplay drills
+
+On upgrade, `migratePostRunsToDB.js` imports the former `post-sessions.json` and `post-training-log.json` idempotently, preserves authored dates/timestamps, marks unknown legacy fields explicitly, and parks each source as `.imported`. The JSON implementation remains only for `NODE_ENV=test` / `MEMORY_BACKEND=file` development coverage.
 
 ## Routes
 
@@ -90,7 +91,8 @@ All under `/api/meatspace` (`server/routes/meatspacePostRoutes.js`):
 - `GET /post/adaptive-preview` — adaptive-difficulty preview
 - `POST /post/score-llm` — score LLM drill responses
 - `GET /post/drill-cache/status`, `POST /post/drill-cache/fill` — wordplay cache
-- `POST /post/training`, `GET /post/training/{stats,entries}` — training log
+- `POST /post/training/runs` — atomic, idempotent completed training-run save
+- `POST /post/training`, `GET /post/training/{stats,entries}` — one-entry compatibility adapter and training reads
 - `GET/POST /post/memory-items`, `GET/PUT/DELETE /post/memory-items/:id` — memory item CRUD
 - `GET /post/memory-items/due` — spaced-repetition due list
 - `POST /post/memory-items/:id/practice` — submit practice result, update mastery

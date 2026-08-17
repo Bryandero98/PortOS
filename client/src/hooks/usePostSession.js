@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { generatePostDrill, submitPostSession, scorePostLlmDrill, submitTrainingEntry } from '../services/api';
+import { generatePostDrill, submitPostSession, scorePostLlmDrill, submitTrainingRun } from '../services/api';
 import toast from '../components/ui/Toast';
 import { uuidv4 } from '../lib/uuid.js';
 import {
@@ -30,12 +30,8 @@ function loadRunSnapshot() {
   try { snap = JSON.parse(raw); } catch { return null; } // corrupt storage → start fresh
   if (!snap || typeof snap !== 'object') return null;
   if (snap.state === 'saving') {
-    // A scored session re-saves idempotently (client-supplied id → upsert), so
-    // restoring a mid-save run to `complete` is safe. A TRAINING save instead
-    // loops non-idempotent training-log writes; restoring it would let a re-save
-    // double-log every drill — and the entries were most likely already posted —
-    // so drop it rather than resume.
-    if (snap.isTraining) return null;
+    // Both scored and training saves use stable client run/attempt ids, so an
+    // interrupted request can safely return to the results screen and retry.
     snap.state = 'complete';
   }
   if (!RESTORABLE_STATES.has(snap.state)) return null;
@@ -118,6 +114,8 @@ export function usePostSession() {
   // reload, under-counting time and inflating the speed bonus.
   const questionStartRef = useRef(restored?.questionStartedAt ?? Date.now());
   const drillStartRef = useRef(restored?.drillStartedAt ?? Date.now());
+  const runStartedAtRef = useRef(restored?.runStartedAt ?? null);
+  const runCompletedAtRef = useRef(restored?.runCompletedAt ?? null);
   const finishDrillRef = useRef(null);
 
   // Persist the live run to sessionStorage on every meaningful change; clear it
@@ -144,6 +142,8 @@ export function usePostSession() {
       // refresh resumes the clock instead of restarting it.
       questionStartedAt: questionStartRef.current,
       drillStartedAt: drillStartRef.current,
+      runStartedAt: runStartedAtRef.current,
+      runCompletedAt: runCompletedAtRef.current,
     }));
   }, [runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex, answers, drillResults, sessionScore, isTraining, tags]);
 
@@ -160,6 +160,8 @@ export function usePostSession() {
     setDrillResults([]);
     setSavedSession(null);
     setLastAnswer(null);
+    runStartedAtRef.current = new Date().toISOString();
+    runCompletedAtRef.current = null;
     // New run → new client-side id (also the future /post/session/:id) and the
     // tags to submit, so both survive a mid-run refresh via the snapshot.
     setRunId(newRunId());
@@ -197,6 +199,7 @@ export function usePostSession() {
 
     const isMemoryDrill = MEMORY_DRILL_TYPES.includes(currentDrill.type);
     const result = {
+      id: newRunId(),
       module: isMemoryDrill ? 'memory' : 'mental-math',
       type: currentDrill.type,
       config: currentDrill.config,
@@ -216,6 +219,7 @@ export function usePostSession() {
     if (currentDrillIndex + 1 < drills.length) {
       setState(STATES.BETWEEN_DRILLS);
     } else {
+      runCompletedAtRef.current = new Date().toISOString();
       setSessionScore(computeSessionScoreFromResults(newResults));
       setState(STATES.COMPLETE);
     }
@@ -381,12 +385,14 @@ export function usePostSession() {
       }
     }
 
+    scoredResult = { ...scoredResult, id: scoredResult.id || newRunId() };
     const newResults = [...drillResults, scoredResult];
     setDrillResults(newResults);
 
     if (currentDrillIndex + 1 < drills.length) {
       setState(STATES.BETWEEN_DRILLS);
     } else {
+      runCompletedAtRef.current = new Date().toISOString();
       setSessionScore(computeSessionScoreFromResults(newResults));
       setState(STATES.COMPLETE);
     }
@@ -398,12 +404,13 @@ export function usePostSession() {
   // deterministically from drillData on submit. Mirrors completeLlmDrill's
   // advance/complete bookkeeping.
   const completeCognitiveDrill = useCallback((drillResult) => {
-    const newResults = [...drillResults, drillResult];
+    const newResults = [...drillResults, { ...drillResult, id: drillResult.id || newRunId() }];
     setDrillResults(newResults);
 
     if (currentDrillIndex + 1 < drills.length) {
       setState(STATES.BETWEEN_DRILLS);
     } else {
+      runCompletedAtRef.current = new Date().toISOString();
       setSessionScore(computeSessionScoreFromResults(newResults));
       setState(STATES.COMPLETE);
     }
@@ -415,9 +422,11 @@ export function usePostSession() {
     // an explicit arg still wins per-key for a live save.
     const finalTags = { ...tags, ...(overrideTags || {}) };
 
-    // Training mode: log each drill to the training log, don't save scored session
+    // Training mode: one validated batch + one transaction for the whole run.
+    // Stable run/attempt ids make a failed-response retry idempotent.
     if (isTraining) {
-      for (const r of drillResults) {
+      const trainingRunId = runId || newRunId();
+      const attempts = drillResults.map((r, index) => {
         const questionCount = r.questions?.length || r.responses?.length || 0;
         // LLM drills score via completeLlmDrill, which stores the scored
         // responses under `r.responses` (with an `llmScore` field) rather
@@ -449,18 +458,54 @@ export function usePostSession() {
             correct: (resp.llmScore ?? 0) >= LLM_TRAINING_CORRECT_THRESHOLD,
           }))
           : undefined;
-        await submitTrainingEntry({
+        const answeredCount = isLlmDrill
+          ? (r.responses || []).length
+          : (r.questions || []).filter((question) => question?.answered != null).length;
+        const inputMode = r.inputMode || (
+          isLlmDrill || MEMORY_DRILL_TYPES.includes(r.type)
+            ? 'text'
+            : r.module === 'cognitive' ? 'interactive' : 'numeric'
+        );
+        return {
+          id: r.id || `${trainingRunId}:attempt:${index}`,
           module: r.module,
           drillType: r.type,
+          ...(r.memoryItemId ? { memoryItemId: r.memoryItemId } : {}),
+          difficulty: r.config || null,
+          configVersion: r.configVersion || null,
           questionCount,
           correctCount,
-          totalMs: r.totalMs || 0,
-          ...(questions ? { questions } : {}),
-        }).catch(() => {});
-      }
+          latencyMs: r.totalMs || 0,
+          correct: questionCount > 0 ? correctCount === questionCount : null,
+          score: r.score !== undefined ? r.score : (questionCount > 0 ? (correctCount / questionCount) * 100 : null),
+          completion: r.completion !== undefined ? r.completion : (questionCount > 0 ? answeredCount / questionCount : null),
+          hintUsed: (r.questions || []).some((question) => question?.hintUsed === true),
+          confidence: r.confidence ?? null,
+          inputMode,
+          scorerProvenance: isLlmDrill ? 'server-llm' : 'client-deterministic',
+          ...((questions || Array.isArray(r.questions)) ? { questions: questions || r.questions } : {}),
+        };
+      });
+      const training = await submitTrainingRun({
+        id: trainingRunId,
+        mode: 'training',
+        ...(runStartedAtRef.current ? { startedAt: runStartedAtRef.current } : {}),
+        ...(runCompletedAtRef.current ? { completedAt: runCompletedAtRef.current } : {}),
+        planned: {
+          modules: [...new Set(attempts.map((attempt) => attempt.module))],
+          drillTypes: attempts.map((attempt) => attempt.drillType),
+        },
+        attempts,
+      }, { silent: true }).catch((err) => {
+        toast.error(`Failed to save training session: ${err.message}`);
+        setState(STATES.COMPLETE);
+        return null;
+      });
+      if (!training) return null;
+      setSavedSession(training);
       toast.success('Training session logged');
       setState(STATES.SAVED);
-      return { training: true };
+      return { ...training, training: true };
     }
 
     const modules = [...new Set(drillResults.map(r => r.module))];
@@ -504,6 +549,8 @@ export function usePostSession() {
     setSavedSession(null);
     setIsTraining(false);
     setRunId(null);
+    runStartedAtRef.current = null;
+    runCompletedAtRef.current = null;
     setTags({});
     setLastAnswer(null);
     clearRunSnapshot();
