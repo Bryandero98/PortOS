@@ -3,7 +3,7 @@ import { GitBranch, Plus, RefreshCw, Trash2, CheckCircle, AlertCircle, Edit3, X 
 import toast from '../ui/Toast';
 import FormField from '../ui/FormField';
 import * as api from '../../services/api';
-import { formatDateTime } from '../../utils/formatters';
+import { formatDateTime, formatDurationMs } from '../../utils/formatters';
 
 // The add-reference form is dense, so its labels sit a step below FormField's
 // default size rather than the config-page default.
@@ -138,6 +138,11 @@ export default function ReferenceReposPanel({ appId, appName }) {
       return;
     }
     setSnapshots((prev) => ({ ...prev, [ref.id]: snap }));
+    if (snap.stale) {
+      toast.error(`${ref.name}: latest check failed — showing the saved result from ${formatDateTime(snap.fetchedAt)}. Retry before relying on it.`);
+      fetch();
+      return;
+    }
     const commitMsg = `${ref.name}: ${snap.commitCount} new commit${snap.commitCount === 1 ? '' : 's'}`;
     if (snap.analysis?.queued) {
       toast.success(`${commitMsg} — analysis task queued`);
@@ -247,6 +252,13 @@ export default function ReferenceReposPanel({ appId, appName }) {
 }
 
 function StatusBadge({ status, lastError }) {
+  if (status === 'stale') {
+    return (
+      <span className="px-1.5 py-0.5 bg-port-warning/20 text-port-warning text-[10px] rounded inline-flex items-center gap-1" title={lastError || 'Latest check failed; showing a saved result'}>
+        <AlertCircle size={10} /> stale
+      </span>
+    );
+  }
   if (status === 'error') {
     return (
       <span className="px-1.5 py-0.5 bg-port-error/20 text-port-error text-[10px] rounded inline-flex items-center gap-1" title={lastError || 'Last check failed'}>
@@ -363,6 +375,12 @@ function RefRow({ reference, snapshot, checking, editingNotes, onCheck, onMarkRe
           {reference.notes}
         </div>
       ) : null}
+
+      {snapshot?.stale && (
+        <div role="status" className="bg-port-warning/10 border border-port-warning/40 text-port-warning text-xs rounded p-2 inline-flex items-center gap-2">
+          <AlertCircle size={12} /> Latest check failed. Showing saved results from {formatDateTime(snapshot.fetchedAt)} ({formatDurationMs(snapshot.staleAgeMs)} old); retry before marking this reference reviewed. {snapshot.error?.message || reference.lastError}
+        </div>
+      )}
 
       {snapshot?.commits?.length > 0 && (
         <details className="text-xs text-gray-300">
