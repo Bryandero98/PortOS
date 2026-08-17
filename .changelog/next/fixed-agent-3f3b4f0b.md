@@ -1,0 +1,1 @@
+- Branch reconciliation now detects clean, unowned claim PR worktrees for dispatch.
