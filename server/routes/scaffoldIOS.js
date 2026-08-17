@@ -1,10 +1,14 @@
 import { chmod, writeFile } from 'fs/promises';
 import { join } from 'path';
+import { promisify } from 'util';
+import { exec } from '../lib/childProcess.js';
 import { ensureDir, ensureDirs } from '../lib/fileUtils.js';
 import {
   XCODE_TEAM_ID, XCODE_BUNDLE_PREFIX, XCODE_ENV_EXAMPLE,
   generateDeployScript, toBundleId, toTargetName,
 } from '../services/xcodeScripts.js';
+
+const execAsync = promisify(exec);
 
 export async function scaffoldIOS(repoPath, name, dirName, addStep) {
   const bundleId = toBundleId(name);
