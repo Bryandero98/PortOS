@@ -802,7 +802,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
           fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
           steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
           imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
-          disableAudio={disableAudio} onDisableAudioChange={setDisableAudio} noMusic={false} onNoMusicChange={() => {}}
+          disableAudio={disableAudio} onDisableAudioChange={setDisableAudio}
           idPrefix={`retry-video-${job.id}`}
         />
       )}
