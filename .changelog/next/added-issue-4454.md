@@ -1,0 +1,1 @@
+- Added a distinct climax arc role across story planning, imports, issue editing, and cross-version sync.

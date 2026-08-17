@@ -293,7 +293,7 @@ export async function applyIncomingPush(payload) {
     // the parent is marked ephemeral, so without this gate a stale reverse
     // subscription could overwrite the private fork's issue stages.
     if (!localEphemeral && Array.isArray(issues) && issues.length > 0) {
-      await mergeIssuesFromSync(issues, { source });
+      await mergeIssuesFromSync(issues, { source, senderSchemaVersions });
     }
     // Merge the bundled manuscript-review sibling doc, LWW-per-comment. Same
     // guards as the issue batch + linkedCollection below: skip for local-

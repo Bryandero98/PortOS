@@ -59,18 +59,19 @@ Pace the episodes you write so the season's fortune trajectory matches this plac
 
 Plan an arc *within* the season that bends from "pickup state" (the natural starting point given prior seasons + the protagonist arc) to the **ending hook** in exactly `episodeCountTarget` beats. Common shapes:
 
-- **5-act season** — pilot, complication, midpoint pivot, all-is-lost, finale.
-- **8-episode arc** — pilot, complication, complication, midpoint, complication, complication, all-is-lost, finale.
+- **6-beat season** — pilot, complication, midpoint pivot, all-is-lost, climax, finale.
+- **8-episode arc** — pilot, complication, complication, midpoint, complication, all-is-lost, climax, finale.
 - **12+** — add B-plot episodes between the structural beats; don't waste the count on filler.
 
 ### Structure rules (enforce while beating out the season)
 
-- **Try-fail mandate.** 60%+ of the middle episodes (everything between pilot and finale) must end in complication, not clean success — "Yes, but…" (they get what they wanted, but it costs or backfires) or "No, and…" (they fail, and it gets worse). A run of clean wins stalls momentum.
+- **Try-fail mandate.** 60%+ of the middle episodes (everything between pilot and climax) must end in complication, not clean success — "Yes, but…" (they get what they wanted, but it costs or backfires) or "No, and…" (they fail, and it gets worse). A run of clean wins stalls momentum.
 - **Beat rules.**
   - Catalyst / pilot inciting event is EXTERNAL — it happens TO the protagonist; they don't choose it.
   - The pivot into the season's main conflict (Break Into Two) is a protagonist CHOICE — they decide to engage.
   - The all-is-lost beat includes a DEATH — literal, or the death of a hope, a relationship, or an identity.
-- **Finale = the protagonist's hardest ACTIVE choice** between what they WANT (external goal) and what they NEED (the truth). They drive the climax; it does not resolve itself around them.
+- **Climax = the protagonist's hardest ACTIVE choice** between what they WANT (external goal) and what they NEED (the truth). They drive the decisive confrontation; it does not resolve itself around them.
+- **Finale = consequence and denouement after the climax.** Pay off the season ending hook, land the emotional arc, and establish the new state without replaying the decisive confrontation.
 
 For each episode write:
 
@@ -79,14 +80,14 @@ For each episode write:
 - **`logline`** — one sentence; the question / image this episode opens with → resolves to.
 - **`synopsis`** — 2–3 sentences. What *happens* in this episode at the arc level. Don't write scene blocking — keep it at the level a season planner needs.
 - **`primaryCharacters`** — array of CAPS character names from the bible who carry the episode. Usually 1–3; never empty for a main character series.
-- **`arcRole`** — single token describing the episode's structural job in this season. Pick one of: `pilot` / `complication` / `midpoint` / `b-plot` / `all-is-lost` / `finale`. Used downstream to verify the season has balanced shape.
+- **`arcRole`** — single token describing the episode's structural job in this season. Pick one of: `pilot` / `complication` / `midpoint` / `b-plot` / `all-is-lost` / `climax` / `finale`. Used downstream to verify the season has balanced shape. The `climax` must precede a distinct later `finale`.
 - **`lengthProfile`** — single token sizing this episode for downstream prose / script / video generation. Pick one of:
   - `teaser` — promo / cold-open / mini-issue (~8 pages comic / ~10 min episode). Use sparingly, mostly for B-plot or anthology beats.
   - `standard` — the working default (~22 pages / ~24 min). Use for most episodes.
-  - `extended` — premiere / set-piece episodes (~32 pages / ~36 min). Use for pilots that have to establish a lot of world, or mid-season turning points that earn extra runtime.
-  - `finale` — season climax (~44 pages / ~48 min). Reserve for the actual `arcRole: 'finale'` episode (and occasionally `all-is-lost` if the budget allows). Don't apply to every episode — finale-length used everywhere becomes meaningless.
+  - `extended` — premiere / set-piece episodes (~32 pages / ~36 min). This is the preferred default for `arcRole: 'climax'`, giving the decisive confrontation room without forcing the denouement to share its issue.
+  - `finale` — season-closing issue (~44 pages / ~48 min). Reserve for the actual `arcRole: 'finale'` episode (and occasionally `all-is-lost` if the budget allows). Don't apply to every episode — finale-length used everywhere becomes meaningless.
 
-  Default to `standard` when nothing argues for a different size.
+  Default `climax` to `extended`, `finale` to `finale`, and all other roles to `standard` when nothing argues for a different size.
 
 ## Output contract
 

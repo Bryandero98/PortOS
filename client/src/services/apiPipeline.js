@@ -68,6 +68,8 @@ export const PIPELINE_STAGE_STATUS_COLOR = Object.freeze({
   error: 'text-port-error',
 });
 
+export const getPipelineConfig = (options = {}) => request('/pipeline/config', options);
+
 // ---- Series ----
 // `options` lets a caller suppress request()'s auto-toast with `{ silent: true }`
 // (e.g. an optional join that should fail quietly) — see CLAUDE.md.
