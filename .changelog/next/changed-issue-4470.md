@@ -1,0 +1,1 @@
+- Pinned an LTX-specific Gemma 4 conditioner candidate while keeping it unavailable until the repeated-seed LTX-2.5 behavior gate passes.

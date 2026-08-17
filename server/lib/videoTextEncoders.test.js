@@ -107,12 +107,16 @@ describe('videoTextEncoders', () => {
     expect(finalNormKey.startsWith('model.language_model.')).toBe(false);
   });
 
-  // The ltx25 substitutes are declared but not yet coherence-checked against
-  // the pack's connector (#4320 step 6), so they must be unreachable: not in
-  // the picker, not accepted by route validation, and not downloadable — an
-  // 11-13 GB pull for something no render can select is pure waste.
+  // Failed or not-yet-complete ltx25 gates remain unreachable: not in the
+  // picker, not accepted by route validation, and not downloadable. Declaring
+  // a pinned candidate is not permission to spend 11-13 GB on weights a render
+  // still cannot select.
   describe('unverified substitutes', () => {
-    const UNVERIFIED = ['ltx25-abliterated-4bit', 'ltx25-heretic-8bit'];
+    const UNVERIFIED = [
+      'ltx25-abliterated-4bit',
+      'ltx25-heretic-8bit',
+      'ltx25-ltx-heretic-mxfp8',
+    ];
 
     it('offers ltx25 only its built-in conditioner', () => {
       expect(videoTextEncoderOptions(LTX25).map((option) => option.id)).toEqual([STOCK_TEXT_ENCODER_ID]);
@@ -186,6 +190,9 @@ describe('videoTextEncoders', () => {
         .find((entry) => entry.id === 'ltx25-abliterated-4bit').configOverrides).toBeUndefined();
       expect(declaredVideoTextEncoders()
         .find((entry) => entry.id === 'ltx25-heretic-8bit').configOverrides)
+        .toEqual({ model_type: 'gemma4' });
+      expect(declaredVideoTextEncoders()
+        .find((entry) => entry.id === 'ltx25-ltx-heretic-mxfp8').configOverrides)
         .toEqual({ model_type: 'gemma4' });
     });
   });
