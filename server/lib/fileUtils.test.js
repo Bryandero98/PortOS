@@ -1627,10 +1627,10 @@ describe('watchForFile', () => {
   // after a watched temp directory is removed, even after FSWatcher emits
   // `close`. Linux covers the native integration; agentTuiSpawning tests cover
   // the close-event and process-exit races with a platform-neutral watcher.
-  it.skipIf(process.platform === 'win32')('detects a newly written file without interval polling', async () => {
+  it.skipIf(process.platform === 'win32')('detects a newly written file with the event watcher and fallback poll', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'watch-file-test-'));
     const target = join(dir, 'done.sentinel');
-    const detected = new Promise((resolve) => watchForFile(target, resolve, { settleMs: 0 }));
+    const detected = new Promise((resolve) => watchForFile(target, resolve, { settleMs: 0, pollMs: 10 }));
     await new Promise((resolve) => setImmediate(resolve));
     await writeFile(target, 'done');
     await expect(detected).resolves.toBeUndefined();

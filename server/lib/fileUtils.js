@@ -38,14 +38,16 @@ const WIN_RETRY_DELAY_MS = 10;
 const WIN_RENAME_LOCK_CODES = ['EPERM', 'EACCES', 'EEXIST'];
 // read failures with the same transient meaning on the reader side.
 const WIN_READ_LOCK_CODES = ['EPERM', 'EACCES', 'EBUSY'];
+const FILE_WATCH_FALLBACK_POLL_MS = 5000;
 
 /** Watch for a file to appear without repeatedly stat'ing its parent directory. */
-export function watchForFile(filePath, onDetected, { settleMs = 50 } = {}) {
+export function watchForFile(filePath, onDetected, { settleMs = 50, pollMs = FILE_WATCH_FALLBACK_POLL_MS } = {}) {
   const targetName = basename(filePath);
   const targetDir = dirname(filePath);
   let closed = false;
   let detected = false;
   let settleTimer = null;
+  let pollTimer = null;
 
   const notify = () => {
     Promise.resolve(onDetected()).catch((err) => {
@@ -56,6 +58,7 @@ export function watchForFile(filePath, onDetected, { settleMs = 50 } = {}) {
     if (closed) return;
     closed = true;
     if (settleTimer) clearTimeout(settleTimer);
+    if (pollTimer) clearInterval(pollTimer);
     if (onClosed) watcher.once('close', onClosed);
     watcher.close();
   };
@@ -75,6 +78,10 @@ export function watchForFile(filePath, onDetected, { settleMs = 50 } = {}) {
   const watcher = watchFileSystem(targetDir, (_eventType, changedName) => {
     if (changedName == null || changedName.toString() === targetName) detect();
   });
+  // fs.watch is low-latency but best-effort: native backends can miss a file
+  // creation or atomic rename. Keep a deliberately relaxed fallback so a
+  // missed event cannot strand an agent indefinitely.
+  pollTimer = setInterval(() => detect(), pollMs);
   detect(false);
   return close;
 }
