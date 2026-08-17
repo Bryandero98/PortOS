@@ -107,7 +107,7 @@ export const FORESHADOW_LIMITS = Object.freeze({
 // Per-episode arc roles produced by the season-episodes generator and
 // persisted on the issue so downstream stages (idea-expansion in particular)
 // know whether they're writing a pilot vs. midpoint vs. finale episode.
-export const ARC_ROLES = Object.freeze(['pilot', 'complication', 'midpoint', 'b-plot', 'all-is-lost', 'finale']);
+export const ARC_ROLES = Object.freeze(['pilot', 'complication', 'midpoint', 'b-plot', 'all-is-lost', 'climax', 'finale']);
 
 // Kurt Vonnegut's eight story shapes. The client owns the sparkline rendering
 // but the points + descriptions live here too so prompt contexts have a

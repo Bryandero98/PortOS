@@ -421,7 +421,7 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
     expect(out.episodes[0].logline).not.toMatch(/conseque$/);
   });
 
-  it('rejects the `custom` length sentinel and derives a finale-role fallback to `finale`', async () => {
+  it('rejects the `custom` length sentinel and derives distinct climax/finale fallbacks', async () => {
     const { series, seasons } = await setupSeriesWithSeasons();
     stageRunnerSpy = vi.fn(async () => ({
       content: {
@@ -429,6 +429,9 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
           // LLM emitted `custom` without page/minute companions → reject sentinel,
           // fall back via arcRole. arcRole=finale → finale preset.
           { number: 1, title: 'Finale', arcRole: 'finale', lengthProfile: 'custom' },
+          // Climax independently defaults to extended rather than borrowing
+          // the later finale's full-runtime profile.
+          { number: 4, title: 'Climax', arcRole: 'climax', lengthProfile: 'custom' },
           // arcRole=midpoint and missing lengthProfile → default profile (standard).
           { number: 2, title: 'Midpoint', arcRole: 'midpoint' },
           // Valid preset is kept as-is.
@@ -440,6 +443,7 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
     const out = await planner.generateSeasonEpisodes(series.id, seasons[0].id);
     const byTitle = Object.fromEntries(out.episodes.map((e) => [e.title, e]));
     expect(byTitle.Finale.lengthProfile).toBe('finale');
+    expect(byTitle.Climax.lengthProfile).toBe('extended');
     expect(byTitle.Midpoint.lengthProfile).toBe('standard');
     expect(byTitle.Extra.lengthProfile).toBe('extended');
   });
@@ -592,13 +596,14 @@ describe('arcPlanner — verifyArc', () => {
   // pilot and finale still reported "zero pilot/finale" on every pass — and
   // because the foundation gate's structure arm reverts whenever verifyArc
   // leaves any blocker, that permanent false positive stalled the gate.
-  it('renders each episode arcRole so the arc-role imbalance check can see it', async () => {
+  it('renders climax and later finale roles with independent length profiles', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'S' } });
     const sea = await seasonsSvc.createSeason(s.id, { title: 'V1' });
     await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 1', seasonId: sea.id, arcPosition: 1, arcRole: 'pilot' });
     await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 2', seasonId: sea.id, arcPosition: 2 });
-    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 3', seasonId: sea.id, arcPosition: 3, arcRole: 'finale' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 3', seasonId: sea.id, arcPosition: 3, arcRole: 'climax', lengthProfile: 'extended' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 4', seasonId: sea.id, arcPosition: 4, arcRole: 'finale', lengthProfile: 'finale' });
 
     stageRunnerSpy = vi.fn(async () => ({ content: { issues: [] }, runId: 'r1', providerId: 'p', model: 'm' }));
     await planner.verifyArc(s.id);
@@ -606,7 +611,8 @@ describe('arcPlanner — verifyArc', () => {
     const tree = JSON.parse(stageRunnerSpy.mock.calls[0][1].seasonsTreeJson);
     // null (not absent) for the middle episode — "no role" has to be legible as
     // a value, or the check can't tell an unset role from a dropped field.
-    expect(tree[0].episodes.map((e) => e.arcRole)).toEqual(['pilot', null, 'finale']);
+    expect(tree[0].episodes.map((e) => e.arcRole)).toEqual(['pilot', null, 'climax', 'finale']);
+    expect(tree[0].episodes.map((e) => e.lengthProfile)).toEqual(['standard', 'standard', 'extended', 'finale']);
   });
 
   it('drops malformed verify issues + defaults severity to medium', async () => {

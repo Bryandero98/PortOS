@@ -29,7 +29,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-idea-expansion.md': 'd6fa86a435f978336661dcabca67258f', // post-127 (scene markers)
+  'pipeline-idea-expansion.md': 'a032e4a724251ed3e3495d33c4dbab8e', // post-127 (scene markers)
   'pipeline-prose.md': '4cb3ef48309f3673570cf80e4d544b54', // post-169 (cross-issue continuity)
   'pipeline-comic-script.md': '49af30c05f008b20f6998a0f113f7d87', // post-127 (scene markers)
 };

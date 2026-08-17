@@ -25,7 +25,7 @@ const FILENAME = 'importer-issue-proposal.md';
 // Set by migration 016 (importer-fence-source).
 const OLD_SHIPPED_MD5 = '192f824a02885010d380aaacb4df67b5';
 // New screenplay-block hash after this migration runs.
-const NEW_SHIPPED_MD5 = 'a6838832f8289932836db84ee565b870';
+const NEW_SHIPPED_MD5 = '9ba2ff965fba61efb85a3568bb530055';
 
 const md5 = (text) => createHash('md5')
   .update(text.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
