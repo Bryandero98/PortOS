@@ -102,9 +102,11 @@ function genValue(commission, key) {
   return coerceGenerationValue(key, commission?.generation);
 }
 
-function videoPromptGuidanceFor(commission) {
+function videoPromptGuidanceFor(commission, { defaultVideoModelId } = {}) {
   const generation = commission?.generation;
-  return buildVideoPromptGuidance(generation?.videoModelId || generation?.model);
+  const modelId = generation?.videoModelId || generation?.model
+    || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined);
+  return buildVideoPromptGuidance(modelId);
 }
 
 /**
@@ -183,11 +185,11 @@ const videoAdapter = {
   label: 'Video',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('video', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission) {
+  buildDirective(commission, { defaultVideoModelId } = {}) {
     const duration = commission?.generation?.durationMode === 'auto'
       ? ' Choose an appropriate duration between 5 and 600 seconds for the brief.' : '';
     const { lines, digest, constraints } = briefContext(commission, `Create a short-form video piece.${duration}`);
-    lines.unshift(videoPromptGuidanceFor(commission));
+    lines.unshift(videoPromptGuidanceFor(commission, { defaultVideoModelId }));
     return { goal: composeDirectiveGoal(lines, digest), deliverables: ['One rendered video matching the brief'], constraints };
   },
 };
@@ -197,7 +199,7 @@ const imageAdapter = {
   label: 'Image',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('image', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission) {
+  buildDirective(commission, { defaultVideoModelId } = {}) {
     const count = genValue(commission, 'imageCount');
     const noun = count === 1 ? 'a single still image' : `${count} still images`;
     const lead = `Produce ${noun}. Use the image / catalog generation tools; do NOT plan a video or music render.`;
@@ -234,12 +236,12 @@ const musicVideoAdapter = {
   label: 'Music video',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('music-video', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission) {
+  buildDirective(commission, { defaultVideoModelId } = {}) {
     const duration = commission?.generation?.durationMode === 'auto'
       ? ' Choose an appropriate video duration between 5 and 600 seconds for the brief.' : '';
     const lead = `Create a short-form music video:${duration} Generate an original music bed AND a matching video scored to it.`;
     const { lines, digest, constraints } = briefContext(commission, lead);
-    lines.unshift(videoPromptGuidanceFor(commission));
+    lines.unshift(videoPromptGuidanceFor(commission, { defaultVideoModelId }));
     return {
       goal: composeDirectiveGoal(lines, digest),
       deliverables: ['One original music bed', 'One video matching the brief, scored to the music bed'],

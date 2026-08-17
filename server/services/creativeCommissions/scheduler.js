@@ -277,7 +277,10 @@ async function fireCommission(commission, trigger) {
       import('../videoGen/local.js'),
     ]);
 
-    const directive = buildCommissionDirective(commission, { tasteRecipe: startedTasteRecipe });
+    const directive = buildCommissionDirective(commission, {
+      tasteRecipe: startedTasteRecipe,
+      defaultVideoModelId,
+    });
     // Fan the commission's single LLM pin onto BOTH CD cognitive stages
     // (treatment + plan) as the project's `modelOverrides`, so the scheduled
     // fire is processed by the provider/model the user chose rather than the
