@@ -39,11 +39,11 @@ import { ensureContextWindow, getBaseUrl, getRuntimeContextLength } from './olla
  * `isOllamaBackedProvider` too, so a cloud run takes no async hop at all; this
  * guard is the module's own contract, not the hot path.
  *
- * @param {{id?:string, name?:string, numCtx?:number|null, envVars?:object, endpoint?:string, ollamaBacked?:boolean}|null} provider
- * @param {{ env?: Record<string, string|undefined> }} [options]
+ * @param {{id?:string, name?:string, defaultModel?:string|null, numCtx?:number|null, envVars?:object, endpoint?:string, ollamaBacked?:boolean}|null} provider
+ * @param {{ env?: Record<string, string|undefined>, model?: string|null }} [options]
  * @returns {Promise<{ skipped: boolean, contextLength?: number|null, applied?: boolean, warning?: string|null }>}
  */
-export async function ensureOllamaAgentContext(provider, { env = process.env } = {}) {
+export async function ensureOllamaAgentContext(provider, { env = process.env, model = provider?.defaultModel ?? null } = {}) {
   if (!provider || !isOllamaBackedProvider(provider)) return { skipped: true }
   // A provider can point at a REMOTE Ollama host. `ollamaManager` only ever
   // starts, stops, and inspects the local daemon, so acting on one of those
@@ -57,7 +57,7 @@ export async function ensureOllamaAgentContext(provider, { env = process.env } =
   const providerName = provider.name || provider.id || null
 
   if (!contextLength) {
-    const runtime = await getRuntimeContextLength().catch(() => null)
+    const runtime = await (model ? getRuntimeContextLength(model) : getRuntimeContextLength()).catch(() => null)
     const warning = runtime != null && runtime < OLLAMA_AGENT_MIN_CONTEXT
       ? describeOllamaContextTooSmall(runtime, { providerName })
       : null
@@ -65,7 +65,10 @@ export async function ensureOllamaAgentContext(provider, { env = process.env } =
     return { skipped: false, contextLength: null, applied: false, warning }
   }
 
-  const result = await ensureContextWindow(contextLength).catch((err) => ({
+  const result = await (model
+    ? ensureContextWindow(contextLength, model)
+    : ensureContextWindow(contextLength)
+  ).catch((err) => ({
     applied: false, reason: 'error', error: err.message
   }))
   const warning = result.error

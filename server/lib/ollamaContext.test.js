@@ -115,6 +115,13 @@ describe('isSameOllamaDaemon', () => {
     expect(isSameOllamaDaemon('https://LOCALHOST:11434/', 'http://localhost:11434')).toBe(true)
   })
 
+  it('matches loopback aliases, including IPv6 and an empty OLLAMA_HOST hostname', () => {
+    expect(isSameOllamaDaemon('http://127.0.0.1:11434', 'http://localhost:11434')).toBe(true)
+    expect(isSameOllamaDaemon('http://[::1]:11434/v1', 'http://localhost:11434')).toBe(true)
+    expect(isSameOllamaDaemon(':11434', 'http://localhost:11434')).toBe(true)
+    expect(isSameOllamaDaemon('http://:11434', 'http://127.0.0.1:11434')).toBe(true)
+  })
+
   it('rejects a different host or port — PortOS only manages the daemon it points at', () => {
     expect(isSameOllamaDaemon('http://192.0.2.10:11434', 'http://localhost:11434')).toBe(false)
     expect(isSameOllamaDaemon('http://localhost:11435', 'http://localhost:11434')).toBe(false)

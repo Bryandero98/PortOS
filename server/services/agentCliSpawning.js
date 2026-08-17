@@ -347,7 +347,9 @@ export async function spawnDirectly({
   // the same daemon context preparation as runner and TUI launches. This is
   // deliberately before spawn: a per-request window cannot reach a CLI that
   // talks to Ollama on its own.
-  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  const ollamaContext = isOllamaBackedProvider(provider)
+    ? await ensureOllamaAgentContext(provider, { model })
+    : null;
   if (ollamaContext?.warning) {
     emitLog('warn', `Agent ${agentId} Ollama context preparation: ${ollamaContext.warning}`, {
       agentId,

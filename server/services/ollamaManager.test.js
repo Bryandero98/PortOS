@@ -669,17 +669,27 @@ describe('ollamaManager context window', () => {
 
   // Answers /api/version (reachable) and /api/ps with the given resident models.
   function stubPs(models) {
-    const bodyFor = (url) => (String(url).endsWith('/api/ps') ? { models } : { version: '0.32.13' })
+    const bodyFor = (url) => (String(url).endsWith('/api/ps')
+      ? { models: typeof models === 'function' ? models() : models }
+      : { version: '0.32.13' })
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       const body = bodyFor(url)
       return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
     }))
   }
 
-  it('reports the largest window across resident models', async () => {
+  it('reports the smallest window across resident models when no model is selected', async () => {
     stubPs([{ name: 'a', context_length: 32768 }, { name: 'b', context_length: 131072 }])
     const { getRuntimeContextLength } = await loadManager()
-    expect(await getRuntimeContextLength()).toBe(131072)
+    expect(await getRuntimeContextLength()).toBe(32768)
+  })
+
+  it('reports the selected model window instead of a larger resident sibling', async () => {
+    stubPs([{ name: 'a', context_length: 32768 }, { name: 'b', context_length: 131072 }])
+    const { getRuntimeContextLength } = await loadManager()
+    expect(await getRuntimeContextLength('a')).toBe(32768)
+    expect(await getRuntimeContextLength('b')).toBe(131072)
+    expect(await getRuntimeContextLength('not-resident')).toBe(32768)
   })
 
   it('reports null when nothing is resident — Ollama has not committed to a window yet', async () => {
@@ -713,7 +723,9 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
   afterEach(() => { vi.unstubAllGlobals(); restorePlatform?.(); restorePlatform = null })
 
   function stubPs(models) {
-    const bodyFor = (url) => (String(url).endsWith('/api/ps') ? { models } : { version: '0.32.13' })
+    const bodyFor = (url) => (String(url).endsWith('/api/ps')
+      ? { models: typeof models === 'function' ? models() : models }
+      : { version: '0.32.13' })
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       const body = bodyFor(url)
       return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
@@ -746,6 +758,27 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
     expect(calls.some((c) => c.includes('services stop'))).toBe(false)
   })
 
+  it('reloads when the selected model is small even if another resident model is large', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubPs([{ name: 'small', context_length: 32768 }, { name: 'large', context_length: 131072 }])
+    const calls = []
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { ensureContextWindow } = await loadManager()
+    const result = await ensureContextWindow(65536, 'small')
+
+    expect(result).toMatchObject({ applied: true, reason: 'service-restarted', contextLength: 65536, runtimeContextLength: 32768 })
+    expect(calls).toContain('launchctl setenv OLLAMA_CONTEXT_LENGTH 65536')
+  })
+
   // An idle daemon (nothing resident) is the NORMAL state between runs. Skipping
   // it would make `numCtx` a no-op exactly when it matters: the window Ollama
   // picks when the harness loads its model is the VRAM-based default the setting
@@ -773,12 +806,14 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
 
   it('does not reload twice for the same window once it has been handed over', async () => {
     restorePlatform = pinPlatform('darwin')
-    stubPs([{ name: 'a', context_length: 32768 }])
+    let models = [{ name: 'a', context_length: 32768 }]
+    stubPs(() => models)
     let restarts = 0
     execMock.impl = (cmd, args, opts, cb) => {
       const a = (args || []).join(' ')
       if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
       if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
       if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
       if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
       return cb(new Error(`unexpected exec: ${cmd} ${a}`))
@@ -786,13 +821,46 @@ describe('ollamaManager context window — launch-at-login daemons', () => {
 
     const { ensureContextWindow } = await loadManager()
     await ensureContextWindow(131072)
-    // Ollama may still load a model at less than the requested window (it fits
-    // the KV cache to VRAM). That must not read as "not applied" and bounce the
-    // daemon before every agent spawn.
+    // Ollama may evict the model immediately after the restart, leaving /api/ps
+    // empty. Model absence is not daemon-identity evidence and must not bounce
+    // the daemon before every agent spawn.
+    models = []
     const second = await ensureContextWindow(131072)
 
     expect(restarts).toBe(1)
     expect(second).toMatchObject({ applied: false, reason: 'already-applied' })
+  })
+
+  it('reapplies the window when the daemon process identity changes', async () => {
+    restorePlatform = pinPlatform('darwin')
+    let models = [{ name: 'a', context_length: 32768 }]
+    const identities = ['101 /usr/local/bin/ollama serve', '202 /usr/local/bin/ollama serve', '303 /usr/local/bin/ollama serve']
+    let identityReads = 0
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      const body = String(url).endsWith('/api/ps') ? { models } : { version: '0.32.13' }
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+    }))
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') {
+        const identity = identities[Math.min(identityReads++, identities.length - 1)]
+        return cb(null, { stdout: `${identity}\n`, stderr: '' })
+      }
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { ensureContextWindow } = await loadManager()
+    await ensureContextWindow(131072, 'a')
+    models = []
+    const result = await ensureContextWindow(131072, 'a')
+
+    expect(restarts).toBe(2)
+    expect(result).toMatchObject({ applied: true, reason: 'service-restarted' })
   })
 
   it('reports the systemd drop-in instead of tearing the unit down', async () => {

@@ -62,6 +62,7 @@ const AVAILABILITY_PROBE_TIMEOUT_MS = 5_000
 const START_TIMEOUT_MS = 12_000
 const STOP_TIMEOUT_MS = 8_000
 const SERVICE_COMMAND_TIMEOUT_MS = 20_000
+const PROCESS_IDENTITY_TIMEOUT_MS = 2_000
 
 const DEFAULT_CONFIG = {
   // Ollama uses OLLAMA_HOST (host:port, no scheme) by convention; also accept
@@ -96,6 +97,14 @@ let managedProcessPid = null
 // bounce the daemon before every single agent spawn. Once a window has been
 // handed over, that request is done.
 let appliedContextLength = null
+// PID set for the daemon that received the context-window handoff. An empty
+// /api/ps response is normal after model eviction and immediately after a
+// restart, so model absence cannot invalidate the latch. When the host can
+// identify the Ollama process, a changed PID set is reliable evidence that the
+// daemon was replaced behind PortOS's back. A missing identity is deliberately
+// treated as "no evidence" so an unavailable process probe cannot create a
+// restart loop.
+let appliedDaemonIdentity = null
 
 const status = { lastError: null, lastSuccessAt: null, consecutiveErrors: 0 }
 
@@ -202,6 +211,7 @@ async function checkOllamaAvailable(forceRefresh = false) {
     // The daemon we handed a window to is gone; whatever comes up next has to
     // be re-checked rather than credited with that window.
     appliedContextLength = null
+    appliedDaemonIdentity = null
     status.lastError = err.message
     status.consecutiveErrors++
     lastCheckAt = now
@@ -280,6 +290,7 @@ async function startServer({ contextLength = null } = {}) {
   const running = await waitForAvailability(true, START_TIMEOUT_MS)
   if (running) {
     appliedContextLength = contextLength || null
+    appliedDaemonIdentity = contextLength ? String(child.pid) : null
     const window = contextLength ? ` (context ${contextLength})` : ''
     console.log(`▶️ Started Ollama server (pid ${child.pid})${window}`)
     return { success: true, running: true, pid: child.pid }
@@ -428,22 +439,77 @@ async function ensureRunning({ preferPersistent = false } = {}) {
 }
 
 /**
- * The context window the daemon actually loaded models at, read from `/api/ps`.
- * Ollama reports it per resident model; we take the largest, since that is the
- * window a request routed to an already-resident model will get.
- *
- * `null` means unknowable right now — no model is resident, so Ollama has not
- * yet committed to a window. Callers must treat that as "no evidence", never as
- * "too small": the daemon's own default may well be generous.
- * @returns {Promise<number|null>}
+ * Identify the live Ollama server process without using model residency as a
+ * proxy for daemon identity. `ps` is available on macOS/Linux; tasklist gives
+ * us the equivalent PID set on Windows. A failed/unsupported probe returns
+ * null, which is intentionally treated as no evidence by the context latch.
  */
-async function getRuntimeContextLength() {
+async function getOllamaProcessIdentity() {
+  if (process.platform === 'win32') {
+    const { stdout } = await execFileAsync(
+      'tasklist',
+      ['/FI', 'IMAGENAME eq ollama.exe', '/FO', 'CSV', '/NH'],
+      { timeout: PROCESS_IDENTITY_TIMEOUT_MS },
+    ).catch(() => ({ stdout: '' }))
+    const pids = stdout.split('\n')
+      .map((line) => {
+        const fields = [...line.matchAll(/"([^"]*)"/g)].map((match) => match[1])
+        return fields[1] ? Number(fields[1]) : null
+      })
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+      .sort((a, b) => a - b)
+    return pids.length ? pids.join(',') : null
+  }
+
+  const { stdout } = await execFileAsync(
+    'ps',
+    ['-Ao', 'pid=,command='],
+    { timeout: PROCESS_IDENTITY_TIMEOUT_MS },
+  ).catch(() => ({ stdout: '' }))
+  const pids = stdout.split('\n')
+    .map((line) => {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/)
+      return match && /\bollama(?:\.exe)?\s+serve\b/i.test(match[2]) ? Number(match[1]) : null
+    })
+    .filter((pid) => Number.isInteger(pid) && pid > 0)
+    .sort((a, b) => a - b)
+  return pids.length ? pids.join(',') : null
+}
+
+async function getRuntimeModels() {
   if (!(await checkOllamaAvailable())) return null
   const data = await ollamaRequest('/api/ps').catch(() => null)
-  const windows = (Array.isArray(data?.models) ? data.models : [])
-    .map((m) => Number(m?.context_length))
+  return Array.isArray(data?.models) ? data.models : []
+}
+
+const modelNames = (model) => [model?.name, model?.model]
+  .filter((name) => typeof name === 'string' && name.trim())
+  .map((name) => name.trim())
+
+/**
+ * The context window the daemon actually loaded at, read from `/api/ps`.
+ * Ollama reports it per resident model. When a model is selected, only that
+ * model is considered; without a selection, the smallest resident window is
+ * used so a large sibling model cannot hide a smaller model's limit.
+ *
+ * If a selected model is not resident yet, the fallback is the smallest window
+ * among all resident models: every relevant resident model must meet the target
+ * before the daemon can be treated as safe. `null` means no model is resident.
+ * @param {string|null} [selectedModel]
+ * @returns {Promise<number|null>}
+ */
+async function getRuntimeContextLength(selectedModel = null) {
+  const models = await getRuntimeModels()
+  if (models == null) return null
+  const wanted = typeof selectedModel === 'string' ? selectedModel.trim() : ''
+  const selected = wanted
+    ? models.filter((model) => modelNames(model).includes(wanted))
+    : []
+  const resident = selected.length ? selected : models
+  const windows = resident
+    .map((model) => Number(model?.context_length))
     .filter((n) => Number.isFinite(n) && n > 0)
-  return windows.length ? Math.max(...windows) : null
+  return windows.length ? Math.min(...windows) : null
 }
 
 /**
@@ -457,9 +523,10 @@ async function getRuntimeContextLength() {
  * the VRAM-based default `numCtx` exists to override.
  *
  * @param {number|null} contextLength
+ * @param {string|null} [selectedModel] - model the next request will use
  * @returns {Promise<{ applied: boolean, reason: string, contextLength: number|null, runtimeContextLength?: number|null, error?: string }>}
  */
-async function ensureContextWindow(contextLength) {
+async function ensureContextWindow(contextLength, selectedModel = null) {
   const target = Number(contextLength) > 0 ? Math.floor(Number(contextLength)) : null
   if (!target) return { applied: false, reason: 'not-configured', contextLength: null }
   if (!(await checkOllamaAvailable(true))) {
@@ -470,7 +537,18 @@ async function ensureContextWindow(contextLength) {
   }
 
   if (Number(appliedContextLength) >= target) {
-    return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
+    // Availability alone cannot identify an Ollama process: an external
+    // restart can become reachable before PortOS observes a failed probe. A
+    // changed process identity is the positive live evidence needed to
+    // invalidate the old process's latch. An empty /api/ps response is not
+    // evidence — normal model eviction and a just-completed restart both make
+    // it empty.
+    const currentIdentity = await getOllamaProcessIdentity()
+    if (!appliedDaemonIdentity || !currentIdentity || currentIdentity === appliedDaemonIdentity) {
+      return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
+    }
+    appliedContextLength = null
+    appliedDaemonIdentity = null
   }
 
   // `runtime == null` means nothing is resident, which is the NORMAL idle state
@@ -479,7 +557,7 @@ async function ensureContextWindow(contextLength) {
   // user set `numCtx` to override, so leaving it alone here would make the
   // setting a no-op in the common case. Apply it; the `appliedContextLength`
   // latch keeps this to one reload per daemon.
-  const runtime = await getRuntimeContextLength()
+  const runtime = await getRuntimeContextLength(selectedModel)
   if (runtime != null && runtime >= target) {
     return { applied: false, reason: 'already-large-enough', contextLength: target, runtimeContextLength: runtime }
   }
@@ -545,6 +623,7 @@ async function restartServiceWithContext(service, contextLength) {
     return { applied: false, reason: 'restart-unreachable', error: 'Ollama restarted, but the API did not become reachable.' }
   }
   appliedContextLength = contextLength
+  appliedDaemonIdentity = await getOllamaProcessIdentity()
   console.log(`▶️ Restarted the Ollama ${service.manager} service at a ${contextLength}-token context window`)
   return { applied: true, reason: 'service-restarted' }
 }

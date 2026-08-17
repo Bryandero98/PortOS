@@ -610,7 +610,10 @@ describe('stream error containment', () => {
     });
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(ensureOllamaAgentContext).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-ollama' }));
+    expect(ensureOllamaAgentContext).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'claude-ollama' }),
+      { model: 'claude-3' },
+    );
     expect(ensureOllamaAgentContext.mock.invocationCallOrder[0]).toBeLessThan(spawn.mock.invocationCallOrder[0]);
 
     fakeProcess.emit('close', 0);

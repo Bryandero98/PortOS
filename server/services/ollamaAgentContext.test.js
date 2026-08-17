@@ -51,6 +51,12 @@ describe('ensureOllamaAgentContext', () => {
     expect(result).toMatchObject({ skipped: false, contextLength: 131072, applied: true, warning: null })
   })
 
+  it('passes the selected model through to runtime context management', async () => {
+    ensureContextWindow.mockResolvedValue({ applied: true, reason: 'restarted' })
+    await ensureOllamaAgentContext({ ...claudeOllamaTui, numCtx: 131072 }, { env: {}, model: 'small-model' })
+    expect(ensureContextWindow).toHaveBeenCalledWith(131072, 'small-model')
+  })
+
   it('warns but does not block the spawn when the reload fails', async () => {
     ensureContextWindow.mockResolvedValue({ applied: false, reason: 'stop-failed', error: 'still reachable' })
     const result = await ensureOllamaAgentContext({ ...claudeOllamaTui, numCtx: 131072 }, { env: {} })
