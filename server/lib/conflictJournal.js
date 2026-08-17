@@ -120,7 +120,12 @@ const HASH_FIELDS = Object.freeze({
   // — nothing enforces the two staying in lockstep; it's fine for them to
   // diverge (a wire-compat bump doesn't always change what the local hash
   // cares about, and vice versa).
-  track: Object.freeze({ 3: Object.freeze(['chiptuneScore', 'chiptunePrompt']) }),
+  // v4: concept, the user-authored creative brief used by resumable music
+  // designer drafts.
+  track: Object.freeze({
+    3: Object.freeze(['chiptuneScore', 'chiptunePrompt']),
+    4: Object.freeze(['concept']),
+  }),
 });
 
 // Precomputed field→version lookup per kind, inverted from HASH_FIELDS once
@@ -431,7 +436,7 @@ export const RESTORABLE_FIELDS = Object.freeze({
   // #2912, DO participate in the content hash via the version-gated HASH_FIELDS
   // mechanism (see above) — a base hash predating the field just compares at
   // its own stored version until the next sync re-stamps it.
-  track: ['title', 'albumId', 'artistId', 'artist', 'lyrics', 'prompt', 'engine', 'modelId', 'durationSec', 'audioFilename', 'renders', 'chiptuneScore', 'chiptunePrompt'],
+  track: ['title', 'albumId', 'artistId', 'artist', 'concept', 'lyrics', 'prompt', 'engine', 'modelId', 'durationSec', 'audioFilename', 'renders', 'chiptuneScore', 'chiptunePrompt'],
   // Issue: the user-authored content the merge can restore. `stages` carries
   // the bulk of the work (prose, comic pages, render metadata). Server-owned /
   // structural fields are excluded deliberately — `number` is renumber-managed,

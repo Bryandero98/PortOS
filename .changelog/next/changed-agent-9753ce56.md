@@ -1,0 +1,1 @@
+- Music designer drafts now persist immediately and include manual lyrics structure guidance.

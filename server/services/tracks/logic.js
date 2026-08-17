@@ -11,6 +11,7 @@
  *   - albumId       — FK to the owning album (`album-…`), or '' for a single
  *   - artistId      — FK to the performing artist (`artist-…`), or '' for none
  *   - artist        — denormalized artist name (renders before the artist syncs)
+ *   - concept       — short creative brief captured by the stepped music designer
  *   - lyrics        — full lyrics (also the conditioning text for lyric-aware
  *                     generators like Ace-Step)
  *   - prompt        — the text/style prompt used (or to use) for generation
@@ -45,6 +46,7 @@ export const TITLE_MAX = 200;
 export const ALBUM_ID_MAX = 80;
 export const ARTIST_ID_MAX = 80;
 export const ARTIST_NAME_MAX = 120;
+export const CONCEPT_MAX = 8000;
 export const LYRICS_MAX = 20000;
 export const PROMPT_MAX = 8000;
 export const ENGINE_MAX = 60;
@@ -165,6 +167,7 @@ export function sanitizeTrack(raw) {
     albumId: trimTo(raw.albumId, ALBUM_ID_MAX),
     artistId: trimTo(raw.artistId, ARTIST_ID_MAX),
     artist: trimTo(raw.artist, ARTIST_NAME_MAX),
+    concept: trimTo(raw.concept, CONCEPT_MAX),
     lyrics,
     prompt,
     engine,
@@ -205,6 +208,7 @@ export function buildTrackRecord(input, { id, now }) {
     albumId: input.albumId || '',
     artistId: input.artistId || '',
     artist: input.artist || '',
+    concept: input.concept || '',
     lyrics: input.lyrics || '',
     prompt: input.prompt || '',
     engine: input.engine || '',
@@ -273,7 +277,7 @@ export function deleteRenderPatch(current, renderId) {
 // server-managed (generate/upload/select/delete-render routes set it); the
 // generic create/patch route schemas omit it so a client can't inject history.
 const PATCHABLE = [
-  'title', 'albumId', 'artistId', 'artist', 'lyrics', 'prompt', 'engine', 'modelId', 'durationSec', 'audioFilename', 'renders',
+  'title', 'albumId', 'artistId', 'artist', 'concept', 'lyrics', 'prompt', 'engine', 'modelId', 'durationSec', 'audioFilename', 'renders',
   'chiptuneScore', 'chiptunePrompt',
 ];
 
@@ -296,6 +300,7 @@ export function mergeTrackRecord(local, remoteRaw) {
   // covers the accepted sender-behind direction.)
   if (remoteWins && next === remote) {
     const carry = {};
+    if (!('concept' in remoteRaw) && local.concept) carry.concept = local.concept;
     if (!('chiptuneScore' in remoteRaw) && local.chiptuneScore) carry.chiptuneScore = local.chiptuneScore;
     if (!('chiptunePrompt' in remoteRaw) && local.chiptunePrompt) carry.chiptunePrompt = local.chiptunePrompt;
     if (Object.keys(carry).length) next = { ...remote, ...carry };
