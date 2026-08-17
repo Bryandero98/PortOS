@@ -158,6 +158,10 @@ export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
   const result = await cos.addTask(
     {
       description: `Repo study: ${repoLabel(link)} — what can ${app.name} learn from it?`,
+      // Workspace routing must follow the same managed app whose tracker and
+      // repo path are described in the prompt; otherwise agent preparation
+      // defaults to the PortOS workspace.
+      app: app.id,
       context: buildRepoStudyContext(link, {
         appName: app.name,
         repoPath: app.repoPath,

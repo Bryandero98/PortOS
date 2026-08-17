@@ -108,6 +108,7 @@ describe('queueRepoStudy', () => {
     getAppById.mockImplementation(async id => id === target.id ? target : null);
     await queueRepoStudy(LINK, target.id);
     expect(getAppById).toHaveBeenCalledWith(target.id);
+    expect(addTask.mock.calls[0][0].app).toBe(target.id);
     expect(addTask.mock.calls[0][0].context).toContain('Example App');
   });
 
