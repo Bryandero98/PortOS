@@ -141,10 +141,10 @@ End with: the studied repo, its license, how many proposals you filed (with thei
  *
  * @returns {Promise<{ queued: boolean, reason?: string, taskId?: string, linkPatch?: object }>}
  */
-export async function queueRepoStudy(link) {
+export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
   if (!isCloneReadable(link)) return { queued: false, reason: 'not-cloned' };
 
-  const app = await getAppById(PORTOS_APP_ID);
+  const app = await getAppById(targetAppId || PORTOS_APP_ID);
   if (!app?.repoPath) return { queued: false, reason: 'app-not-found' };
 
   // Same four-part resolution every tracker-filing dispatch runs: the block
@@ -210,7 +210,9 @@ export async function runRepoIntake(link, intake) {
   let patch = {};
   for (const [key, queue] of Object.entries(INTAKE_QUEUERS)) {
     if (!requested[key]) continue;
-    const result = await queue(link).catch(err => ({ queued: false, reason: err.message }));
+    const result = key === 'learn'
+      ? await queue(link, requested.targetAppId).catch(err => ({ queued: false, reason: err.message }))
+      : await queue(link).catch(err => ({ queued: false, reason: err.message }));
     if (result.queued) patch = { ...patch, ...result.linkPatch };
     else console.error(`❌ Capture-time ${key} not queued for link ${link.id}: ${result.reason}`);
   }

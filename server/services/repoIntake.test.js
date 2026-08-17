@@ -103,6 +103,14 @@ describe('queueRepoStudy', () => {
     expect(taskData.context).toContain('--label area:<area> --label model:<tier> --label effort:<level>');
   });
 
+  it('files against the selected managed app', async () => {
+    const target = { id: 'app-2', name: 'Example App', repoPath: '/srv/example-app', workTracker: 'github' };
+    getAppById.mockImplementation(async id => id === target.id ? target : null);
+    await queueRepoStudy(LINK, target.id);
+    expect(getAppById).toHaveBeenCalledWith(target.id);
+    expect(addTask.mock.calls[0][0].context).toContain('Example App');
+  });
+
   // `analysisType` enrolls a task in taskSchedule's per-type consecutive-failure
   // ledger (agentFinalization.js), which auto-parks and notifies. A hand-queued
   // repo study has no schedule to park, so it must reach the no-commit gate via

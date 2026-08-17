@@ -19,7 +19,7 @@ export const REPO_INTAKE_OPTIONS = [
   },
   {
     key: 'learn',
-    label: 'Study for PortOS ideas',
+    label: 'Study for app ideas',
     Icon: Lightbulb,
     hint: 'An agent reads the clone for implementation ideas worth adopting and files the good ones as issues. Clean-room — it never copies code.',
   },
@@ -34,7 +34,7 @@ export const REPO_INTAKE_OPTIONS = [
  * @param {{malwareScan: boolean, learn: boolean}} props.options
  * @param {(key: string) => void} props.onToggle
  */
-export default function RepoIntakeOptions({ idPrefix, repo, options, onToggle }) {
+export default function RepoIntakeOptions({ idPrefix, repo, options, managedApps = [], targetAppId, onTargetAppChange, onToggle }) {
   if (!repo) return null;
 
   return (
@@ -58,6 +58,19 @@ export default function RepoIntakeOptions({ idPrefix, repo, options, onToggle })
           />
         ))}
       </div>
+      {options.learn && managedApps.length > 0 && (
+        <label htmlFor={`${idPrefix}-target-app`} className="block text-xs text-gray-400">
+          File study issues against
+          <select
+            id={`${idPrefix}-target-app`}
+            value={targetAppId}
+            onChange={e => onTargetAppChange?.(e.target.value)}
+            className="ml-2 px-2 py-1 bg-port-bg border border-port-border rounded text-gray-200 text-xs"
+          >
+            {managedApps.map(app => <option key={app.id} value={app.id}>{app.name}</option>)}
+          </select>
+        </label>
+      )}
       {REPO_INTAKE_OPTIONS.some(({ key }) => options[key]) && (
         <p className="text-xs text-gray-500">
           A CoS agent starts once the clone finishes — track it in Chief of Staff.

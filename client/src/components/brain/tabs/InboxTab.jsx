@@ -366,6 +366,9 @@ export default function InboxTab({ onRefresh, settings }) {
           idPrefix="inbox-capture-repo"
           repo={repoIntake.repo}
           options={repoIntake.options}
+          managedApps={repoIntake.managedApps}
+          targetAppId={repoIntake.targetAppId}
+          onTargetAppChange={repoIntake.setTargetAppId}
           onToggle={repoIntake.toggle}
         />
       </form>
