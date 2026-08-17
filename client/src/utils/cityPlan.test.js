@@ -199,3 +199,4 @@ describe('computeStreetProps', () => {
     }
   });
 });
+// @vitest-environment node

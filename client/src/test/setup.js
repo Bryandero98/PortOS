@@ -20,7 +20,7 @@ installTestStorage();
 // and the resulting unhandled error fails the whole run despite passing assertions
 // (#2958). Stub it once, guarded so it never clobbers a real implementation — on real
 // DOM elements scrollIntoView is always present, so production is unaffected.
-if (!Element.prototype.scrollIntoView) {
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 

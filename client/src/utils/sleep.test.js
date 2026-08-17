@@ -23,3 +23,4 @@ describe('sleep', () => {
     await expect(sleep(0)).resolves.toBeUndefined();
   });
 });
+// @vitest-environment node

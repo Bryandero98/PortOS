@@ -41,6 +41,8 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       smoke: ${{ steps.plan.outputs.smoke }}
       windows: ${{ steps.plan.outputs.windows }}
+      windows_mode: ${{ steps.plan.outputs.windows_mode }}
+      windows_files: ${{ steps.plan.outputs.windows_files }}
       server_native: ${{ steps.plan.outputs.server_native }}
     steps:
       - uses: actions/checkout@v7
@@ -65,6 +67,7 @@ jobs:
           BUILD_MODE: ${{ steps.plan.outputs.build }}
           SMOKE_MODE: ${{ steps.plan.outputs.smoke }}
           WINDOWS_MODE: ${{ steps.plan.outputs.windows }}
+          WINDOWS_TEST_MODE: ${{ steps.plan.outputs.windows_mode }}
           SERVER_NATIVE: ${{ steps.plan.outputs.server_native }}
         run: |
           {
@@ -77,7 +80,7 @@ jobs:
             echo "- Client lint: \`${LINT_MODE}\`"
             echo "- Client build: \`${BUILD_MODE}\`"
             echo "- Server smoke: \`${SMOKE_MODE}\`"
-            echo "- Windows server tests: \`${WINDOWS_MODE}\`"
+            echo "- Windows server tests: \`${WINDOWS_MODE}\` (\`${WINDOWS_TEST_MODE}\`)"
             echo "- Server native rebuild: \`${SERVER_NATIVE}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -323,8 +326,8 @@ jobs:
 
       - name: Run server tests on Windows
         env:
-          CI_TEST_MODE: ${{ needs.impact.outputs.server_mode }}
-          CI_TEST_FILES: ${{ needs.impact.outputs.server_files }}
+          CI_TEST_MODE: ${{ needs.impact.outputs.windows_mode }}
+          CI_TEST_FILES: ${{ needs.impact.outputs.windows_files }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js server
 
@@ -360,4 +363,3 @@ jobs:
             }
             console.log("CI gate passed:", results);
           '
-

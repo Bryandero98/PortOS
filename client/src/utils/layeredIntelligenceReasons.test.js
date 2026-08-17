@@ -46,3 +46,4 @@ describe('liReasonTone', () => {
     expect(liReasonTone(null)).toBe('warn');
   });
 });
+// @vitest-environment node

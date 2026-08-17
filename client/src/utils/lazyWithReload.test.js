@@ -38,3 +38,4 @@ describe('importWithRetry', () => {
     vi.useRealTimers();
   });
 });
+// @vitest-environment node

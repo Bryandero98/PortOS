@@ -132,3 +132,4 @@ describe('computeEasterEggs', () => {
     }
   });
 });
+// @vitest-environment node

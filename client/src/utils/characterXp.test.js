@@ -189,3 +189,4 @@ describe('diffXp', () => {
     expect(d.leveledUp).toBe(false);
   });
 });
+// @vitest-environment node
