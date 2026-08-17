@@ -1,0 +1,1 @@
+- Keep repaired episode plans concise, block outline-only canon readiness, stale completeness findings after manuscript or narrative-reference edits, and refresh series thumbnails when issue covers change

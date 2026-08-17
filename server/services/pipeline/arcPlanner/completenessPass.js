@@ -3,6 +3,7 @@
  * (findings + optional edit generation). Built on ./context.js.
  */
 
+import { createHash } from 'crypto';
 import { resolveStageContext, runStagedLLM } from '../../../lib/stageRunner.js';
 import {
   estimateTokens, planManuscriptPass, fitContextToManuscriptFloor,
@@ -11,6 +12,7 @@ import {
 import { getSeries } from '../series.js';
 import { STAGE_OUTPUT_MAX } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
+import { canonicalStringify } from '../../../lib/objects.js';
 import { ERR_VALIDATION, MANUSCRIPT_STAGES, VERIFY_SEVERITIES, buildArcBaseContext, collectManuscriptSections, makeErr, manuscriptSectionHeader, sectionsCorpus } from './context.js';
 
 // ── Manuscript completeness ("finish the draft") ──────────────────────────
@@ -43,7 +45,7 @@ export const replacementStrategyForCategory = (category) =>
 // the fix path's per-edit replace ceiling so a long page rewrite isn't clipped.
 export const COMPLETENESS_REPLACE_MAX = STAGE_OUTPUT_MAX;
 
-export function shapeCompletenessFindings(rawIssues, { withEdits = false } = {}) {
+export function shapeCompletenessFindings(rawIssues, { withEdits = false, sourceContentHash = null } = {}) {
   if (!Array.isArray(rawIssues)) return [];
   const out = [];
   for (const raw of rawIssues) {
@@ -68,6 +70,7 @@ export function shapeCompletenessFindings(rawIssues, { withEdits = false } = {})
       // un-anchorable findings still render (just without click-to-jump).
       issueNumber: Number.isInteger(raw?.issueNumber) ? raw.issueNumber : null,
       anchorQuote: typeof raw?.anchorQuote === 'string' ? raw.anchorQuote.trim().slice(0, 400) : '',
+      ...(sourceContentHash ? { sourceContentHash } : {}),
     };
     // With-edits pass: carry the concrete in-place rewrite so the editor can seed
     // each comment's `fix` from { find: anchorQuote, replace } without a separate
@@ -95,6 +98,15 @@ export async function buildCompletenessContext(series, manuscript, preloadedWorl
     existingObjectsJson: JSON.stringify(canon.objects, null, 2),
   };
 }
+
+// Completeness advice depends on every reference projection the model sees,
+// not just the manuscript. Hash the complete, untrimmed context deterministically
+// so an arc, premise, world, or canon edit makes prior advice stale even when the
+// drafted pages themselves have not changed. The read path rebuilds this same
+// context and calls this one helper, preventing seed/read fingerprint drift.
+export const completenessSourceHash = (context) => createHash('sha256')
+  .update(canonicalStringify(context ?? {}) || '')
+  .digest('hex');
 
 export const COMPLETENESS_STAGE = 'pipeline-manuscript-completeness';
 
@@ -208,7 +220,6 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
       ERR_VALIDATION,
     );
   }
-
   const withEdits = !!options.withEdits;
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
   const signal = options.signal || null;
@@ -220,6 +231,10 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
   //   1. hard-cap the canon reference (window-independent), then
   //   2. window-aware-trim it so the manuscript always keeps a budget floor.
   const baseCtx = await buildCompletenessContext(series, '', options.preloadedWorld);
+  const sourceContentHash = completenessSourceHash({
+    ...baseCtx,
+    manuscript: sectionsCorpus(sections),
+  });
   const { contextWindow } = await resolveStageContext(COMPLETENESS_STAGE, {
     providerOverride: options.providerOverride,
     providerDefault: options.providerDefault,
@@ -277,7 +292,7 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
     onProgress({ type: 'chunk:start', done: 0, total: 1 });
     const { content, runId, providerId, model } = await runOne(sectionsCorpus(sections).slice(0, plan.usableChars));
     onProgress({ type: 'chunk:complete', done: 1, total: 1 });
-    return { issues: shapeCompletenessFindings(content?.issues, { withEdits }), raw: content, runId, providerId, model, chunked: false, chunkCount: 1 };
+    return { issues: shapeCompletenessFindings(content?.issues, { withEdits, sourceContentHash }), raw: content, runId, providerId, model, chunked: false, chunkCount: 1 };
   }
 
   console.log(`📚 completeness: chunked review series=${String(seriesId).slice(0, 12)} chunks=${plan.chunks.length} window=${contextWindow ?? 'floor'}`);
@@ -295,7 +310,7 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
     const corpus = sectionsCorpus(chunk.sections).slice(0, plan.usableChars);
     const result = await runOne(`${digest}${corpus}`);
     if (!first) first = result;
-    for (const f of shapeCompletenessFindings(result.content?.issues, { withEdits })) {
+    for (const f of shapeCompletenessFindings(result.content?.issues, { withEdits, sourceContentHash })) {
       const k = findingKey(f);
       if (!merged.has(k)) merged.set(k, f);
     }

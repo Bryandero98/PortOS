@@ -10,6 +10,7 @@
 
 import { isPlainObject } from '../../lib/objects.js';
 import { isStr } from '../../lib/storyBible.js';
+import { pickRenderedFilename } from '../../lib/renderSlot.js';
 import { emitRecordUpdated } from '../sharing/recordEvents.js';
 import { getIssue } from './issueCrud.js';
 import {
@@ -66,6 +67,7 @@ export function updateStagesWithLatest(seriesId, updates = [], { snapshotPrior =
     const state = await readState();
     const results = [];
     let changed = false;
+    let frontCoverChanged = false;
     // Index once: `state.issues` is the INSTALL-wide list, and a bulk caller can
     // pass one update per (issue, stage) — a per-update findIndex would make the
     // write O(updates × issues in the install). Rebuilt in step with the
@@ -83,6 +85,10 @@ export function updateStagesWithLatest(seriesId, updates = [], { snapshotPrior =
         continue;
       }
       const nextStage = mergeStagePatch(currentStage, update.stageId, patch, { snapshotPrior });
+      if (update.stageId === 'comicPages'
+        && pickRenderedFilename(currentStage?.cover) !== pickRenderedFilename(nextStage?.cover)) {
+        frontCoverChanged = true;
+      }
       const mergedIssue = sanitizeIssue({
         ...cur,
         stages: { ...cur.stages, [update.stageId]: nextStage },
@@ -96,6 +102,15 @@ export function updateStagesWithLatest(seriesId, updates = [], { snapshotPrior =
     if (changed) {
       await saveIssuesNow(state.issues.filter((i) => i.seriesId === seriesId));
       emitRecordUpdated('series', seriesId);
+    }
+    return { results, frontCoverChanged };
+  }).then(async ({ results, frontCoverChanged }) => {
+    if (frontCoverChanged) {
+      // A manual clear/replacement does not pass through the media filename
+      // hook, so it previously left series.coverImage pointing at stale art.
+      // Recompute after the serialized issue write and outside its queue.
+      const { refreshSeriesCoverImage } = await import('./seriesCoverImage.js');
+      await refreshSeriesCoverImage(seriesId).catch(() => {});
     }
     return results;
   });
@@ -168,12 +183,17 @@ export function updateStageWithLatest(issueId, stageId, computeFn, { snapshotPri
     // page). Skip the disk write + emitRecordUpdated so it doesn't trigger
     // a re-export storm in share subscriptions for late no-op events.
     if (isPlainObject(patch) && Object.keys(patch).length === 0) {
-      return { issue: cur, stage: currentStage };
+      return {
+        result: { issue: cur, stage: currentStage },
+        frontCoverChanged: false,
+      };
     }
     // Snapshot the prior `{ runId, input, output }` into runHistory when this
     // patch carries a fresh lastRunId (i.e. a generate just replaced prior
     // content). Computed BEFORE the spread so it reads pre-merge state.
     const next = mergeStagePatch(currentStage, stageId, patch, { snapshotPrior });
+    const frontCoverChanged = stageId === 'comicPages'
+      && pickRenderedFilename(currentStage?.cover) !== pickRenderedFilename(next?.cover);
     const mergedIssue = sanitizeIssue({
       ...cur,
       stages: { ...cur.stages, [stageId]: next },
@@ -181,9 +201,18 @@ export function updateStageWithLatest(issueId, stageId, computeFn, { snapshotPri
     });
     await saveIssueNow(mergedIssue);
     emitRecordUpdated('series', mergedIssue.seriesId);
-    return { issue: mergedIssue, stage: mergedIssue.stages[stageId] };
+    return {
+      result: { issue: mergedIssue, stage: mergedIssue.stages[stageId] },
+      frontCoverChanged,
+    };
   };
   return getIssue(issueId, { includeDeleted: true }).then((existing) =>
-    queueSeriesIssuesWrite(existing.seriesId, work),
+    queueSeriesIssuesWrite(existing.seriesId, work).then(async ({ result, frontCoverChanged }) => {
+      if (frontCoverChanged) {
+        const { refreshSeriesCoverImage } = await import('./seriesCoverImage.js');
+        await refreshSeriesCoverImage(result.issue.seriesId).catch(() => {});
+      }
+      return result;
+    }),
   );
 }

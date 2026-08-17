@@ -393,6 +393,34 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
     expect(out.episodes[1].primaryCharacters).toEqual(['LINA']); // non-string + blank entries filtered
   });
 
+  it('keeps generated episode synopses within the shared planning budget at a clause boundary', async () => {
+    const { series, seasons } = await setupSeriesWithSeasons();
+    const overlong = `${'A consequential setup. '.repeat(220)}This tail must be removed`;
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { episodes: [{ number: 1, title: 'Budgeted', synopsis: overlong, arcRole: 'pilot' }] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.generateSeasonEpisodes(series.id, seasons[0].id);
+    expect(out.episodes[0].synopsis.length).toBeLessThanOrEqual(4_000);
+    expect(out.episodes[0].synopsis).toMatch(/[.!?]$/);
+    expect(out.episodes[0].synopsis).not.toContain('This tail must be removed');
+  });
+
+  it('keeps generated episode loglines within their budget at a word boundary', async () => {
+    const { series, seasons } = await setupSeriesWithSeasons();
+    const overlong = `${'A consequential choice changes the pursuit without ending it. '.repeat(12)}consequence`;
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { episodes: [{ number: 1, title: 'Budgeted', logline: overlong, arcRole: 'pilot' }] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.generateSeasonEpisodes(series.id, seasons[0].id);
+    expect(out.episodes[0].logline.length).toBeLessThanOrEqual(500);
+    expect(overlong.split(' ')).toContain(out.episodes[0].logline.split(' ').pop());
+    expect(out.episodes[0].logline).not.toMatch(/conseque$/);
+  });
+
   it('rejects the `custom` length sentinel and derives a finale-role fallback to `finale`', async () => {
     const { series, seasons } = await setupSeriesWithSeasons();
     stageRunnerSpy = vi.fn(async () => ({
@@ -2248,6 +2276,16 @@ describe('arcPlanner — shapeEpisodeResolutions', () => {
     const many = Array.from({ length: 60 }, (_, i) => ({ episodeNumber: i + 1, synopsis: `s${i}` }));
     expect(planner.shapeEpisodeResolutions(many)).toHaveLength(50);
   });
+
+  it('cannot inflate a repaired episode beyond the generation synopsis budget', () => {
+    const overlong = `${'One complete dramatic sentence. '.repeat(180)}unfinished tail`;
+    const [episode] = planner.shapeEpisodeResolutions([
+      { seasonNumber: 1, episodeNumber: 4, synopsis: overlong },
+    ]);
+    expect(episode.synopsis.length).toBeLessThanOrEqual(4_000);
+    expect(episode.synopsis).toMatch(/[.!?]$/);
+    expect(episode.synopsis).not.toContain('unfinished tail');
+  });
 });
 
 describe('arcPlanner — resolvedEpisodeEdits (rollback mutation manifest)', () => {
@@ -3312,6 +3350,27 @@ describe('arcPlanner — refineArc', () => {
 });
 
 describe('arcPlanner — manuscript completeness + derive-from-manuscript', () => {
+  it('fingerprints manuscript completeness context canonically and includes narrative references', () => {
+    const initial = {
+      manuscript: 'A short draft.',
+      series: { premise: 'An alliance must hold.', name: 'Example' },
+      arc: { summary: 'The alliance survives.' },
+      existingCharactersJson: '[{"name":"Ari"}]',
+    };
+    const reordered = {
+      existingCharactersJson: '[{"name":"Ari"}]',
+      arc: { summary: 'The alliance survives.' },
+      series: { name: 'Example', premise: 'An alliance must hold.' },
+      manuscript: 'A short draft.',
+    };
+
+    expect(planner.completenessSourceHash(reordered)).toBe(planner.completenessSourceHash(initial));
+    expect(planner.completenessSourceHash({
+      ...initial,
+      arc: { summary: 'The alliance shatters.' },
+    })).not.toBe(planner.completenessSourceHash(initial));
+  });
+
   beforeEach(() => {
     fileStore.clear();
     uuidCounter = 0;
@@ -3384,6 +3443,7 @@ describe('arcPlanner — manuscript completeness + derive-from-manuscript', () =
     });
     const out = await planner.analyzeManuscriptCompleteness(s.id, { withEdits: true });
     expect(out.issues[0].replace).toBe('She left, but paused.');
+    expect(out.issues[0].sourceContentHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('analyzeManuscriptCompleteness defaults withEdits false (ctx.withEdits=false, no replace shaped)', async () => {
