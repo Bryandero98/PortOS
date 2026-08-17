@@ -110,6 +110,8 @@ describe('queueRepoStudy', () => {
     expect(getAppById).toHaveBeenCalledWith(target.id);
     expect(addTask.mock.calls[0][0].app).toBe(target.id);
     expect(addTask.mock.calls[0][0].context).toContain('Example App');
+    expect(addTask.mock.calls[0][0].context).toContain('inspected target-app files');
+    expect(addTask.mock.calls[0][0].context).not.toContain('current PortOS area vocabulary');
   });
 
   // `analysisType` enrolls a task in taskSchedule's per-type consecutive-failure

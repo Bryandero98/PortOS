@@ -323,13 +323,16 @@ ${jiraLabelContract}
  * (cosTaskGenerator.js), the on-commit reference-watch trigger
  * (referenceRepos.js), and the one-off `repo-study` (repoIntake.js).
  */
-export async function resolveTrackerFilingBlock(app, taskType) {
+export async function resolveTrackerFilingBlock(app, taskType, options = {}) {
   if (!TRACKER_FILING_TASK_TYPES.has(taskType)) return { trackerInstructions: '', workTracker: null };
   // Never throws — degrades to the PLAN.md block, which `isFileTracker` then
   // agrees with, so the flag and the instructions stay consistent.
   const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
   return {
-    trackerInstructions: formatTrackerInstructions(workTracker.resolved, TRACKER_FILING_PRESETS[taskType]),
+    trackerInstructions: formatTrackerInstructions(workTracker.resolved, {
+      ...TRACKER_FILING_PRESETS[taskType],
+      ...options,
+    }),
     workTracker: workTracker.resolved,
     worktreeChangesExpected: isFileTracker(workTracker.resolved),
   };

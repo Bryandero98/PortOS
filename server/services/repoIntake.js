@@ -22,6 +22,7 @@ import * as cos from './cos.js';
 import { getAppById, PORTOS_APP_ID } from './apps.js';
 import { prepareScanReportDirectory, reportPathForId } from './malwareScanReports.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import { GENERIC_REPO_STUDY_LABEL_CONTRACT } from '../lib/dispatchLabels.js';
 import { normalizeRepoIntake } from '../lib/repoIntakeActions.js';
 
 /** `owner/repo` when the link carries GitHub metadata, else its display title. */
@@ -153,7 +154,9 @@ export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
   // never disagree (a github/gitlab/jira run files out of band and leaves the
   // tree clean; without the flag it is mistaken for missing code work, #3102).
   const { trackerInstructions, workTracker, worktreeChangesExpected } =
-    await resolveTrackerFilingBlock(app, 'repo-study');
+    await resolveTrackerFilingBlock(app, 'repo-study', app.id === PORTOS_APP_ID
+      ? {}
+      : { issueLabelContract: GENERIC_REPO_STUDY_LABEL_CONTRACT });
 
   const result = await cos.addTask(
     {
