@@ -111,6 +111,52 @@ function snippetAround(text, index) {
  * test whose tail prints "rate limit" is NOT misread as an infra outage.
  */
 export const ERROR_PATTERNS = [
+  // ===== CLI Config Errors =====
+  // A provider CLI that refuses to START because its own config file is
+  // invalid. Codex reads `~/.codex/config.toml` (plus any `-c key=value`
+  // override) BEFORE it reads the prompt, so an unaccepted value kills every
+  // attempt identically — the run burns all three retries and the agent never
+  // gets a single token in. Listed first: the message is unmistakable, and
+  // untriaged it landed in the `unknown` bucket (Tier 4 escalate), which spawns
+  // an investigation task for what is a one-line config edit (real incident
+  // 2026-08-17: `model_reasoning_effort = "max"`, a variant codex does not
+  // accept, sitting in the global config). Deliberately does NOT echo the
+  // matched path — it embeds the OS username (see Sensitive Data & Privacy in
+  // CLAUDE.md).
+  {
+    pattern: /(?:error loading )?config\.toml(?::\d+:\d+)?:\s*unknown (variant|field) `([^`]+)`(?:[\s\S]{0,200}?in `([^`]+)`)?/i,
+    category: 'cli-config-invalid',
+    actionable: true,
+    origin: 'runner', // fully structured — the CLI's own config-load rejection
+    escalation: 'Edit the CLI config (or the PortOS override that produced it) so the rejected key holds a value the CLI accepts, then approve the retry.',
+    extract: (match) => {
+      const kind = match[1].toLowerCase();
+      const value = match[2];
+      const key = match[3] || null;
+      const keyRef = key ? `\`${key}\`` : 'the rejected key';
+      return {
+        message: `Provider CLI rejected its config: unknown ${kind} "${value}"${key ? ` for ${key}` : ''}`,
+        suggestedFix: `The CLI failed while LOADING its config, before the prompt was read, so every retry dies identically. Set ${keyRef} to a value this CLI version accepts (its own error message lists them) in the CLI's config file — for codex that is \`~/.codex/config.toml\`. If PortOS supplied the value as a \`-c <key>=<value>\` override instead, it is out of the provider's ladder in server/lib/providerModels.js.`,
+        rejectedConfigKey: key,
+        rejectedConfigValue: value
+      };
+    }
+  },
+  {
+    // Anything else that stops the CLI at config load — a TOML syntax error, an
+    // unreadable file — same blast radius and same Tier 1 fix, without the
+    // key/value detail the pattern above extracts.
+    pattern: /error loading config\.toml/i,
+    category: 'cli-config-invalid',
+    actionable: true,
+    origin: 'runner',
+    escalation: 'Fix the provider CLI config file it failed to load, then approve the retry.',
+    extract: () => ({
+      message: 'Provider CLI could not load its config file',
+      suggestedFix: 'The CLI failed while loading its own config (for codex, `~/.codex/config.toml`), before the prompt was read — every retry fails the same way until the file parses. Check it for a syntax error or a key this CLI version no longer accepts.'
+    })
+  },
+
   // ===== API & Authentication Errors =====
   {
     pattern: /API Error: 404.*model:\s*(\S+)/i,

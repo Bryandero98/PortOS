@@ -499,6 +499,8 @@ describe('ENVIRONMENTAL_ERROR_CATEGORIES (issue #2618)', () => {
       'auth-error',
       'billing-error',
       'claude-error',
+      // The provider CLI never started — its own config file was invalid.
+      'cli-config-invalid',
       'connection',
       'forbidden',
       // #3358: a PR-shaped run we could not verify because `gh` couldn't reach

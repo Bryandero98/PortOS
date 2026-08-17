@@ -175,9 +175,14 @@ export const filterSelectableModels = (models) =>
  * `effortLevelsForProvider` in server/lib/providerModels.js; keep in lockstep.
  * Claude Code and agy take `--effort <level>`, Codex takes
  * `-c model_reasoning_effort=<level>`.
+ *
+ * Codex's ladder stops at `xhigh`: its config enum is
+ * `none|minimal|low|medium|high|xhigh`, and `-c model_reasoning_effort=max`
+ * makes codex fail while LOADING ITS CONFIG, killing the agent at startup.
+ * `resolveCliEffort` clamps `max`/`ultra` down to `xhigh` for codex.
  */
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 
 /**

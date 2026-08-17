@@ -343,12 +343,23 @@ describe('providerModels', () => {
   describe('buildEffortArgs', () => {
     it('emits --effort for claude and a -c config pair for codex', () => {
       expect(buildEffortArgs('high', { id: 'claude-code', command: 'claude' })).toEqual(['--effort', 'high']);
-      expect(buildEffortArgs('ultra', { id: 'codex', command: 'codex' })).toEqual(['-c', 'model_reasoning_effort=ultra']);
+      expect(buildEffortArgs('xhigh', { id: 'codex', command: 'codex' })).toEqual(['-c', 'model_reasoning_effort=xhigh']);
     });
 
     it('emits the codex shape for a RENAMED codex provider (detection and emission agree)', () => {
-      expect(buildEffortArgs('ultra', { id: 'my-codex', command: '/opt/homebrew/bin/codex' }))
-        .toEqual(['-c', 'model_reasoning_effort=ultra']);
+      expect(buildEffortArgs('xhigh', { id: 'my-codex', command: '/opt/homebrew/bin/codex' }))
+        .toEqual(['-c', 'model_reasoning_effort=xhigh']);
+    });
+
+    // Regression: codex's config enum stops at `xhigh`, and it rejects an
+    // unknown variant while LOADING ITS CONFIG — the agent dies at startup
+    // ("unknown variant `max`, expected one of …") before the prompt is read,
+    // then burns all three retries. A dispatch label of `effort:max` must clamp,
+    // never pass through.
+    it('never emits a level codex rejects (max/ultra clamp to xhigh)', () => {
+      const codex = { id: 'codex', command: 'codex' };
+      expect(buildEffortArgs('max', codex)).toEqual(['-c', 'model_reasoning_effort=xhigh']);
+      expect(buildEffortArgs('ultra', codex)).toEqual(['-c', 'model_reasoning_effort=xhigh']);
     });
 
     it('returns [] when unset, unsupported, or already baked into existing args', () => {
@@ -365,10 +376,29 @@ describe('providerModels', () => {
     });
   });
 
+  describe('EFFORT_LEVELS', () => {
+    // The union is the STORED/API vocabulary, not a CLI ladder. It stays a
+    // superset of every ladder so an effort persisted by an older install (or an
+    // older ladder on this one) still validates after an update — the clamp in
+    // resolveCliEffort, not a 400, is what keeps it off the command line.
+    it('still accepts levels no CLI ladder offers any more', () => {
+      expect(EFFORT_LEVELS).toContain('ultra');
+      expect(CODEX_EFFORT_LEVELS).not.toContain('ultra');
+      expect(EFFORT_LEVELS).toContain('max');
+    });
+
+    it('covers every per-CLI ladder', () => {
+      for (const level of [...CLAUDE_EFFORT_LEVELS, ...CODEX_EFFORT_LEVELS, ...ANTIGRAVITY_EFFORT_LEVELS]) {
+        expect(EFFORT_LEVELS).toContain(level);
+      }
+    });
+  });
+
   describe('resolveCliEffort', () => {
     it('passes a supported level through for claude and codex', () => {
       expect(resolveCliEffort('high', { id: 'claude-code', command: 'claude' })).toBe('high');
-      expect(resolveCliEffort('ultra', { id: 'codex', command: 'codex' })).toBe('ultra');
+      expect(resolveCliEffort('minimal', { id: 'codex', command: 'codex' })).toBe('minimal');
+      expect(resolveCliEffort('xhigh', { id: 'codex', command: 'codex' })).toBe('xhigh');
     });
 
     it('clamps codex-only values to the claude equivalents on a claude provider', () => {
