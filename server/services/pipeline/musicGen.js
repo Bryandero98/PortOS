@@ -549,7 +549,7 @@ export function buildMusicGenArgs({ pythonPath, scriptPath = SIDECAR_SCRIPT, run
  * flat timeout. Callers outside the queue (the Pipeline Audio routes) omit it
  * and behave exactly as before.
  */
-export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT_ENGINE_ID, durationSec, durationMode, modelId, repo, signal, onActivity } = {}) {
+export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT_ENGINE_ID, durationSec, durationMode, modelId, repo, provenance, signal, onActivity } = {}) {
   const text = (prompt || '').trim();
   if (!text) {
     throw new ServerError('prompt is required', { status: 400, code: 'PIPELINE_MUSIC_EMPTY_PROMPT' });
@@ -641,5 +641,6 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
     modelId: model.id,
     model: model.name,
     engine: engine.id,
+    ...(provenance ? { provenance } : {}),
   };
 }

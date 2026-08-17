@@ -218,6 +218,7 @@ async function fireCommission(commission, trigger) {
   // a retry mints a duplicate.
   let startedProjectId = null;
   let startedTasteRecipe = null;
+  let startedMusicGeneration = null;
   const skip = async (reason) => {
     const run = await recordCommissionRun(commissionId, { status: 'skipped', reason, trigger }).catch(() => null);
     return { status: 'skipped', reason, run };
@@ -250,6 +251,18 @@ async function fireCommission(commission, trigger) {
     const tasteResult = await resolveMusicTasteRecipe(commission);
     if (tasteResult?.status === 'unavailable') return skip(tasteResult.reason);
     startedTasteRecipe = tasteResult?.recipe || null;
+    if (startedTasteRecipe) {
+      const { resolveMusicEngineSelection } = await import('../musicEngineCatalog.js');
+      const engineResult = await resolveMusicEngineSelection({
+        engineId: commission.brief.musicTaste.musicEngineId,
+        modelId: commission.brief.musicTaste.musicModelId,
+      }).catch(() => ({ status: 'unavailable', reason: 'music-engine-unavailable' }));
+      if (engineResult.status !== 'ready') return skip(engineResult.reason);
+      startedMusicGeneration = {
+        ...engineResult.selection,
+        durationSec: commission.generation.lengthSeconds,
+      };
+    }
 
     // NOTE: we deliberately do NOT pre-charge the cos budget here. The planner
     // spawns as a normal CoS agent (a `cd-` task) and is accounted by
@@ -332,7 +345,12 @@ async function fireCommission(commission, trigger) {
       projectId: project.id,
       promptUsed: directive.goal,
       ...(startedTasteRecipe ? { tasteRecipe: startedTasteRecipe } : {}),
+      ...(startedMusicGeneration ? { musicGeneration: startedMusicGeneration } : {}),
     }).catch(() => null);
+    // A taste-aware audio enqueue resolves its authoritative prompt/renderer
+    // from this local run. If the write failed, advancing would make that lookup
+    // look legitimately absent and silently release planner defaults instead.
+    if (startedTasteRecipe && !run) throw new Error('taste-run-persistence-unavailable');
 
     // Surface the fire (notification + brain inbox) so the user can rate the
     // result once it lands — the reaction feeds the next run via
@@ -351,6 +369,7 @@ async function fireCommission(commission, trigger) {
     const run = await recordCommissionRun(commissionId, {
       status: 'failed', error, trigger, projectId: startedProjectId,
       ...(startedTasteRecipe ? { tasteRecipe: startedTasteRecipe } : {}),
+      ...(startedMusicGeneration ? { musicGeneration: startedMusicGeneration } : {}),
     }).catch(() => null);
     return { status: 'failed', error, projectId: startedProjectId, run };
   }
