@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   sanitizeTrack, buildTrackRecord, applyTrackPatch, mergeTrackRecord, trackAudioFilename,
   sanitizeRender, makeRender, selectRenderPatch, deleteRenderPatch,
-  TITLE_MAX, LYRICS_MAX, DURATION_MIN_SEC, DURATION_MAX_SEC, RENDERS_MAX,
+  TITLE_MAX, CONCEPT_MAX, LYRICS_MAX, DURATION_MIN_SEC, DURATION_MAX_SEC, RENDERS_MAX,
 } from './logic.js';
 
 describe('tracks logic', () => {
@@ -21,6 +21,7 @@ describe('tracks logic', () => {
         albumId: '  album-9  ',
         artistId: '  artist-9  ',
         artist: '  Nova  ',
+        concept: `  ${'c'.repeat(CONCEPT_MAX + 10)}  `,
         lyrics: `  ${'l'.repeat(LYRICS_MAX + 10)}  `,
         prompt: '  warm folk  ',
         engine: '  acestep  ',
@@ -32,6 +33,7 @@ describe('tracks logic', () => {
       expect(t.albumId).toBe('album-9');
       expect(t.artistId).toBe('artist-9');
       expect(t.artist).toBe('Nova');
+      expect(t.concept.length).toBe(CONCEPT_MAX);
       expect(t.lyrics.length).toBe(LYRICS_MAX);
       expect(t.engine).toBe('acestep');
       expect(t.modelId).toBe('ace-v1');
@@ -53,6 +55,12 @@ describe('tracks logic', () => {
       const next = applyTrackPatch(base, { title: 'Intro (Reprise)', lyrics: '' });
       expect(next.title).toBe('Intro (Reprise)');
       expect(next.lyrics).toBe('');
+    });
+
+    it('preserves a saved concept until it is explicitly replaced or cleared', () => {
+      const next = applyTrackPatch(base, { concept: 'A dusk-time pulse' });
+      expect(next.concept).toBe('A dusk-time pulse');
+      expect(applyTrackPatch(next, { concept: '' }).concept).toBe('');
     });
   });
 

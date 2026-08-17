@@ -112,6 +112,7 @@ export const publishTrackChiptune = (id, body, requestOptions = {}) => request(`
 
 // Mirror server caps in server/services/tracks/logic.js — bump both sides.
 export const TRACK_TITLE_MAX = 200;
+export const TRACK_CONCEPT_MAX = 8000;
 export const TRACK_LYRICS_MAX = 20000;
 export const TRACK_PROMPT_MAX = 8000;
 export const TRACK_DURATION_MIN_SEC = 1;

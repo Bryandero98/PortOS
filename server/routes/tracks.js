@@ -49,6 +49,7 @@ const titleField = z.string().trim().min(1).max(tracks.TITLE_MAX);
 const albumIdField = z.string().trim().max(tracks.ALBUM_ID_MAX);
 const artistIdField = z.string().trim().max(tracks.ARTIST_ID_MAX);
 const artistNameField = z.string().trim().max(tracks.ARTIST_NAME_MAX);
+const conceptField = z.string().trim().max(tracks.CONCEPT_MAX);
 const lyricsField = z.string().trim().max(tracks.LYRICS_MAX);
 const promptField = z.string().trim().max(tracks.PROMPT_MAX);
 const engineField = z.string().trim().max(tracks.ENGINE_MAX);
@@ -73,6 +74,7 @@ const createSchema = z.object({
   albumId: albumIdField.optional().default(''),
   artistId: artistIdField.optional().default(''),
   artist: artistNameField.optional().default(''),
+  concept: conceptField.optional().default(''),
   lyrics: lyricsField.optional().default(''),
   prompt: promptField.optional().default(''),
   engine: engineField.optional().default(''),
@@ -86,6 +88,7 @@ const patchSchema = z.object({
   albumId: albumIdField.optional(),
   artistId: artistIdField.optional(),
   artist: artistNameField.optional(),
+  concept: conceptField.optional(),
   lyrics: lyricsField.optional(),
   prompt: promptField.optional(),
   engine: engineField.optional(),

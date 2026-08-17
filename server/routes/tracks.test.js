@@ -7,6 +7,7 @@ vi.mock('../services/tracks/index.js', () => ({
   ALBUM_ID_MAX: 80,
   ARTIST_ID_MAX: 80,
   ARTIST_NAME_MAX: 120,
+  CONCEPT_MAX: 8000,
   LYRICS_MAX: 20000,
   PROMPT_MAX: 8000,
   ENGINE_MAX: 60,

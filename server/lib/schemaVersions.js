@@ -242,7 +242,10 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // field was chosen to match this one for a human reading both files; the
   // two mechanisms are otherwise independent — HASH_FIELDS gates a purely
   // local hash-store concern, not cross-peer wire compatibility.)
-  tracks: 3,
+  // tracks v4 = `track.concept` for resumable stepped music-designer drafts.
+  // Older peers must reject the record rather than round-trip it through a
+  // concept-unaware sanitizer and silently erase the saved creative brief.
+  tracks: 4,
   // v1 = creative ingredients catalog (Postgres tables: catalog_scraps,
   // catalog_ingredients, catalog_ingredient_sources, catalog_ingredient_refs).
   // v2 = `catalog_ingredients.search_tsv` expanded to also index the
