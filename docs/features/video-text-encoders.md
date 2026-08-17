@@ -275,10 +275,23 @@ same separation rather than duplicating them inside the substitute.
 The candidate is pinned as `ltx25-ltx-heretic-mxfp8` with all three weight
 shards and support files (12,375,013,657 published bytes). Its index contains
 all 48 language layers, the embedding and final norm at the required 3840-wide /
-262144-vocabulary geometry, and eleven residual visual-only tensors handled by
-the existing exact-prefix sanitizer; MXFP8 metadata remains untouched. It stays
-`verified: false` until the production matrix confirms the behavioral gate, so
-LTX-2.5 remains stock-only while that evidence is incomplete.
+262144-vocabulary geometry, and ten residual visual-only tensors handled by
+the existing exact-prefix sanitizer; MXFP8 metadata remains untouched.
+
+The production technical preflight passed on 2026-08-17. The shim strict-loaded
+with zero missing and zero extra language tensors after removing exactly those
+ten visual tensors. Each of the four controlled prompts produced 49 finite
+hidden states shaped `[1, 1024, 3840]`; the pack's unchanged connector produced
+finite video inputs shaped `[1, 1024, 4096]` and audio inputs shaped
+`[1, 1024, 2048]`.
+
+That establishes loader and connector compatibility, but not the empirical
+behavior required by #4470. The complete stock/candidate matrix (four prompts,
+two fixed seeds, both conditioners) and its layerwise cosine/RMS comparison did
+not finish in this run, so there is no valid two-seed visual verdict. The entry
+therefore stays `verified: false`; LTX-2.5 remains stock-only until the full
+matrix proves benign object persistence and repeatable improvements on at least
+two of the three target-behavior prompts.
 
 ## Related
 

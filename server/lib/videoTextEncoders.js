@@ -111,11 +111,14 @@
  * pack's connector separately, so the equivalent MLX artifact is the same
  * language tower paired with that stock connector. Its three-shard MXFP8 export
  * preserves all 48 language layers and the checkpoint's quantization metadata,
- * while the existing narrow unified-checkpoint sanitizer removes only the
- * eleven residual `vision_embedder.*` tensors. It remains unreachable until the
- * repeated-seed render matrix passes. LTX-2.5 is stock-only until a substitute
- * passes BOTH benign structural coherence and a repeatable target-behavior
- * improvement.
+ * while the existing narrow unified-checkpoint sanitizer removes only its
+ * residual `vision_embedder.*` tensors. The 2026-08-17 production preflight
+ * removed exactly ten such tensors, strict-loaded with zero missing or extra
+ * language keys, and produced finite connector inputs for all four controlled
+ * prompts. The full repeated-seed visual matrix did not complete, so this is
+ * technical compatibility evidence, not a behavioral pass. It remains
+ * unreachable until that matrix proves BOTH benign structural coherence and a
+ * repeatable target-behavior improvement.
  */
 
 import { ServerError } from './errorHandler.js';
@@ -313,15 +316,16 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
       description:
         'The Heretic language backbone used by an LTX-2.5-specific conditioner conversion, '
         + 'paired with the model pack\'s original LTX connector. Gated pending the repeated-seed render matrix.',
-      // #4470: the static gate passes (48 complete language layers, exact
-      // geometry, immutable MXFP8 metadata). Keep this false until the
-      // production render matrix proves benign coherence and repeatable gains.
+      // #4470: the production technical gate passes (strict language load,
+      // exact geometry, finite connector outputs, immutable MXFP8 metadata).
+      // Keep this false until the full repeated-seed render matrix proves
+      // benign coherence and repeatable behavior gains.
       verified: false,
       repo: 'nightmedia/gemma-4-12B-it-uncensored-heretic-mxfp8-mlx',
       revision: '20c9f4b167e56f3f749ea3e428188a5e7a35318a',
       // Exact MLX quantization of llmfan46's Heretic backbone — the same source
       // named by DeepNeuralNerd's LTX-2.5 conversion. The unified checkpoint
-      // carries eleven visual-only `vision_embedder.*` tensors; the runner's
+      // carries ten visual-only `vision_embedder.*` tensors; the runner's
       // narrow sanitizer drops those while strict-loading every language key.
       configOverrides: Object.freeze({ model_type: 'gemma4' }),
       files: Object.freeze([
