@@ -1231,6 +1231,14 @@ export const settingsEmbeddingsSchema = z.object({
   model: z.string().trim().max(200).optional().nullable(),
 }).strict();
 
+// Local backend availability is machine-local configuration. Disabled means
+// the user intentionally does not run that backend; it does not remove any
+// installed models or prevent an explicit model-management action.
+export const localLlmSettingsSchema = z.object({
+  ollama: z.object({ disabled: z.boolean().optional() }).strict().optional(),
+  lmstudio: z.object({ disabled: z.boolean().optional() }).strict().optional(),
+}).strict();
+
 // =============================================================================
 // LM STUDIO (server/routes/lmstudio.js)
 // =============================================================================
