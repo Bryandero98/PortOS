@@ -9,15 +9,18 @@ import { getDifficultyColor } from './constants';
 // entry points score/feed back identically instead of maintaining two
 // slightly-drifted copies of the same score?.evaluation?.scores?.[0]
 // unwrapping logic (see issue #2097).
-export async function scoreWordplayResponse(type, drill, responseObj, timeLimitMs, providerId, model) {
-  const scored = await scorePostLlmDrill(type, drill, [responseObj], timeLimitMs, providerId, model).catch(() => null);
-  const fb = scored?.evaluation?.scores?.[0] || {};
+export async function scoreWordplayResponse(type, drill, responseObj, timeLimitMs, providerId, model, options = {}) {
+  const scored = await scorePostLlmDrill(type, drill, [responseObj], timeLimitMs, providerId, model, options);
+  const fb = scored.evaluation.scores[0];
   return {
-    score: fb.score ?? scored?.score ?? 0,
-    feedback: fb.feedback || scored?.evaluation?.summary || 'No feedback available',
+    score: fb.score,
+    feedback: fb.feedback || scored.evaluation.summary,
     validCount: fb.validCount,
     invalidItems: fb.invalidItems,
+    duplicateItems: fb.duplicateItems,
     missedExamples: fb.missedExamples,
+    scoreResult: scored,
+    scoredResponse: scored.questions[0],
   };
 }
 

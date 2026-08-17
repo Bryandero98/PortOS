@@ -345,8 +345,12 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
     // for these same four drill types (issue #2097) — one scoring path.
     setFeedback({ scoring: true });
     const result = await scoreWordplayResponse(
-      selectedMode, drill, responseObj, SCORE_TIMEOUT_MS, activeProviderId, activeModel
-    );
+      selectedMode, drill, responseObj, SCORE_TIMEOUT_MS, activeProviderId, activeModel, { silent: true }
+    ).catch((err) => {
+      setFeedback({ scoring: false, error: err.message });
+      return null;
+    });
+    if (!result) return;
     setFeedback({ scoring: false, ...result });
     setResults(prev => [...prev, {
       ...responseObj,
@@ -528,6 +532,25 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
             label="Evaluating your response..."
             color={modeInfo?.color || 'text-purple-400'}
           />
+        </div>
+      );
+    }
+
+    if (feedback.error) {
+      return (
+        <div className="max-w-lg mx-auto space-y-6">
+          <ModeHeader modeInfo={modeInfo} onBack={handleBackToModes} />
+          <div className="bg-port-card border border-port-error/50 rounded-lg p-5 space-y-3 text-center">
+            <XCircle size={40} className="mx-auto text-port-error" />
+            <p className="text-sm text-gray-200">Scoring failed: {feedback.error}</p>
+            <p className="text-xs text-gray-500">Your response is still here. Retry when the provider is available.</p>
+          </div>
+          <button
+            onClick={handleSubmit}
+            className="w-full px-6 py-3 bg-port-accent hover:bg-port-accent/80 text-white font-medium rounded-lg transition-colors"
+          >
+            Retry scoring
+          </button>
         </div>
       );
     }

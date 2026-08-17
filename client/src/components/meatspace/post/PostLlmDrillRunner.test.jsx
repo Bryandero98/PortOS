@@ -5,11 +5,27 @@ vi.mock('../../../services/api', () => ({
   scorePostLlmDrill: vi.fn(),
 }));
 
-import PostLlmDrillRunner, { getPrompts, buildLlmResponseObj } from './PostLlmDrillRunner';
+import PostLlmDrillRunner, { getPrompts, buildLlmResponseObj, combineTrainingScoreResults } from './PostLlmDrillRunner';
 import { scorePostLlmDrill } from '../../../services/api';
 import { LLM_DRILL_TYPES } from './constants';
 
 const noop = () => {};
+
+function scoredResult(score, feedback, response = {}) {
+  return {
+    score,
+    evaluation: {
+      overallScore: score,
+      scores: [{ score, feedback }],
+      summary: feedback,
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    },
+    questions: [{ questionIndex: 0, responseMs: 1000, llmScore: score, llmFeedback: feedback, ...response }],
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -109,9 +125,7 @@ describe('PostLlmDrillRunner — per-question prompt for training-log persistenc
 
 describe('PostLlmDrillRunner — training-mode scoring path', () => {
   it('scores a wordplay type through the shared scoreWordplayResponse core', async () => {
-    scorePostLlmDrill.mockResolvedValue({
-      evaluation: { scores: [{ score: 88, feedback: 'Great chain!' }] },
-    });
+    scorePostLlmDrill.mockResolvedValue(scoredResult(88, 'Great chain!', { items: ['firehouse'] }));
 
     render(
       <PostLlmDrillRunner
@@ -133,14 +147,12 @@ describe('PostLlmDrillRunner — training-mode scoring path', () => {
 
     await waitFor(() => expect(screen.getByText('88')).toBeInTheDocument());
     expect(scorePostLlmDrill).toHaveBeenCalledWith(
-      'compound-chain', expect.any(Object), expect.any(Array), 60000, null, null
+      'compound-chain', expect.any(Object), expect.any(Array), 60000, null, null, { silent: true }
     );
   });
 
   it('still scores a non-wordplay LLM type (word-association) through its original inline path (unaffected by the wordplay extraction)', async () => {
-    scorePostLlmDrill.mockResolvedValue({
-      evaluation: { scores: [{ score: 65, feedback: 'Solid associations' }] },
-    });
+    scorePostLlmDrill.mockResolvedValue(scoredResult(65, 'Solid associations', { response: 'wave, blue, salt' }));
 
     render(
       <PostLlmDrillRunner
@@ -160,6 +172,88 @@ describe('PostLlmDrillRunner — training-mode scoring path', () => {
     fireEvent.click(screen.getByText('Next'));
 
     await waitFor(() => expect(screen.getByText('65')).toBeInTheDocument());
+  });
+
+  it('carries the immediate training score into completion without a second request', async () => {
+    const onComplete = vi.fn().mockResolvedValue({});
+    scorePostLlmDrill.mockResolvedValue(scoredResult(88, 'Great chain!', { items: ['firehouse'] }));
+
+    render(
+      <PostLlmDrillRunner
+        drill={{ type: 'compound-chain', challenges: [{ rootWord: 'fire', position: 'prefix', minExpected: 1 }] }}
+        timeLimitSec={60}
+        drillIndex={0}
+        drillCount={1}
+        onComplete={onComplete}
+        isTraining
+      />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/other half/i), { target: { value: 'firehouse' } });
+    fireEvent.click(screen.getByText('Add'));
+    fireEvent.click(screen.getByText(/Done — Submit 1 compounds/));
+    await screen.findByText('88');
+    fireEvent.click(screen.getByText('Next'));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    expect(scorePostLlmDrill).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toMatchObject({
+      score: 88,
+      responses: [{ items: ['firehouse'], llmScore: 88 }],
+      evaluation: { overallScore: 88, scores: [{ score: 88, feedback: 'Great chain!' }] },
+    });
+  });
+
+  it('keeps a failed training score retryable without adding a fallback response', async () => {
+    scorePostLlmDrill
+      .mockRejectedValueOnce(new Error('provider unavailable'))
+      .mockResolvedValueOnce(scoredResult(75, 'Validated', { response: 'wave' }));
+
+    render(
+      <PostLlmDrillRunner
+        drill={{ type: 'word-association', questions: [{ prompt: 'ocean' }] }}
+        timeLimitSec={60}
+        drillIndex={0}
+        drillCount={1}
+        onComplete={noop}
+        isTraining
+      />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/type your associations/i), { target: { value: 'wave' } });
+    fireEvent.click(screen.getByText('Next'));
+    expect(await screen.findByText(/Scoring failed: provider unavailable/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Retry scoring'));
+
+    expect(await screen.findByText('75')).toBeInTheDocument();
+    expect(scorePostLlmDrill).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('combineTrainingScoreResults', () => {
+  it('combines already-scored responses without changing their provenance', () => {
+    const combined = combineTrainingScoreResults([
+      scoredResult(80, 'First'), scoredResult(60, 'Second'),
+    ]);
+
+    expect(combined).toMatchObject({
+      score: 70,
+      evaluation: { overallScore: 70, scores: [{ score: 80 }, { score: 60 }] },
+    });
+    expect(combined.evaluation.provenance).toEqual(scoredResult(80, 'First').evaluation.provenance);
+  });
+
+  it('retains provider provenance when a hybrid response follows a local response', () => {
+    const local = scoredResult(100, 'Known answer');
+    local.evaluation.provenance.scorer = {
+      kind: 'local', rubricVersion: '1', providerId: 'local', model: 'local',
+    };
+    const hybrid = scoredResult(60, 'Semantically validated');
+    hybrid.evaluation.provenance.scorer.kind = 'hybrid';
+
+    const combined = combineTrainingScoreResults([local, hybrid]);
+
+    expect(combined.evaluation.provenance).toEqual(hybrid.evaluation.provenance);
   });
 });
 

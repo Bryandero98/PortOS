@@ -396,6 +396,100 @@ describe('postLlmScoreRequestSchema', () => {
       timeLimitMs: 60000
     })).toThrow();
   });
+
+  it('rejects semantic drill requests above the one-batch item limit', () => {
+    const hundredItems = Array.from({ length: 100 }, (_, index) => `item-${index}`);
+    const request = {
+      type: 'verbal-fluency',
+      drillData: {},
+      responses: [
+        { items: hundredItems, responseMs: 1000 },
+        { items: hundredItems, responseMs: 1000 },
+      ],
+      timeLimitMs: 60000,
+    };
+
+    expect(postLlmScoreRequestSchema.parse(request).responses).toHaveLength(2);
+    expect(() => postLlmScoreRequestSchema.parse({
+      ...request,
+      responses: [...request.responses, { items: ['overflow'], responseMs: 1000 }],
+    })).toThrow(/at most 200 items/i);
+  });
+});
+
+describe('postSessionSubmitSchema LLM evaluation contract', () => {
+  const provenance = {
+    generator: {
+      schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a', apiKey: 'strip-me',
+    },
+    scorer: {
+      kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a', authHeader: 'strip-me',
+    },
+  };
+
+  const task = (evaluation) => ({
+    module: 'llm-drills',
+    type: 'word-association',
+    score: 80,
+    responses: [{ response: 'ocean blue', responseMs: 1000, llmScore: 80, llmFeedback: 'Relevant' }],
+    evaluation,
+    totalMs: 1000,
+  });
+
+  it('preserves the producer shape and strips undeclared provenance secrets', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({
+        overallScore: 80,
+        scores: [{ score: 80, feedback: 'Relevant' }],
+        summary: 'Good response',
+        provenance,
+      })],
+    });
+
+    expect(parsed.tasks[0].evaluation).toEqual({
+      overallScore: 80,
+      scores: [{ score: 80, feedback: 'Relevant' }],
+      summary: 'Good response',
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    });
+    expect(JSON.stringify(parsed.tasks[0].evaluation)).not.toContain('strip-me');
+  });
+
+  it('normalizes historical evaluation fields with an explicit legacy sentinel', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({ score: 70, breakdown: [{ score: 70, feedback: 'Historical feedback' }] })],
+    });
+
+    expect(parsed.tasks[0].evaluation).toMatchObject({
+      overallScore: 70,
+      scores: [{ score: 70, feedback: 'Historical feedback' }],
+      provenance: {
+        generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+        scorer: { kind: 'legacy', rubricVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+      },
+    });
+  });
+
+  it('rejects missing, malformed, and wrong-count evaluations', () => {
+    expect(() => postSessionSubmitSchema.parse({
+      modules: ['llm-drills'], tasks: [task(undefined)],
+    })).toThrow(/evaluation/i);
+
+    expect(() => postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({ overallScore: '80', scores: [], summary: 'Wrong type', provenance })],
+    })).toThrow();
+
+    expect(() => postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({ overallScore: 80, scores: [], summary: 'Truncated', provenance })],
+    })).toThrow(/score count/i);
+  });
 });
 
 // =============================================================================

@@ -418,10 +418,14 @@ export function usePostSession() {
 
   const completeLlmDrill = useCallback(async (drillResult) => {
     const isLlm = LLM_DRILL_TYPES.includes(drillResult.type);
+    const hasReusableTrainingScore = isTraining
+      && Number.isFinite(drillResult.score)
+      && drillResult.evaluation?.scores?.length === drillResult.responses?.length
+      && drillResult.evaluation?.provenance != null
+      && drillResult.responses?.every((response) => Number.isFinite(response.llmScore));
     let scoredResult = drillResult;
 
-    if (isLlm && drillResult.responses?.length > 0) {
-      setState(STATES.LOADING);
+    if (isLlm && drillResult.responses?.length > 0 && !hasReusableTrainingScore) {
       const drillConfig = drills[currentDrillIndex];
       const timeLimitMs = (drillConfig?.timeLimitSec || 120) * 1000;
       const scoreResult = await scorePostLlmDrill(
@@ -429,19 +433,15 @@ export function usePostSession() {
         timeLimitMs, drillConfig?.providerId, drillConfig?.model, { silent: true }
       ).catch(err => {
         toast.error(`LLM scoring failed: ${err.message}`);
-        return null;
+        throw err;
       });
 
-      if (scoreResult) {
-        scoredResult = {
-          ...drillResult,
-          score: scoreResult.score,
-          responses: scoreResult.questions || drillResult.responses,
-          evaluation: scoreResult.evaluation
-        };
-      } else {
-        scoredResult = { ...drillResult, score: 0 };
-      }
+      scoredResult = {
+        ...drillResult,
+        score: scoreResult.score,
+        responses: scoreResult.questions,
+        evaluation: scoreResult.evaluation
+      };
     }
 
     scoredResult = { ...scoredResult, id: scoredResult.id || newRunId() };
@@ -455,7 +455,8 @@ export function usePostSession() {
       setSessionScore(computeSessionScoreFromResults(newResults));
       setState(STATES.COMPLETE);
     }
-  }, [drillResults, currentDrillIndex, drills]);
+    return scoredResult;
+  }, [drillResults, currentDrillIndex, drills, isTraining]);
 
   // Interactive cognitive drills (n-back / digit-span / stroop) build their own
   // fully-formed result (questions + local score) and hand it back here. Unlike
