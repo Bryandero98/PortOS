@@ -11,6 +11,7 @@ import {
 } from '../services/mediaJobQueue/index.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
+import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
 import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
@@ -208,6 +209,11 @@ router.put('/', asyncHandler(async (req, res) => {
   // disk (the registry would then silently treat it as its default).
   if (req.body?.apiAccess !== undefined) {
     validateRequest(apiAccessSettingsSchema.partial(), req.body.apiAccess);
+  }
+  // Local MCP agent-context opt-in. Validate the whole strict slice so an
+  // unknown scope/profile cannot silently broaden what the server exposes.
+  if (req.body?.agentContext !== undefined) {
+    validateRequest(agentContextSettingsSchema, req.body.agentContext);
   }
   // Editorial-check enable/config slice (#1284) — validate when present so a
   // malformed save can't write a non-boolean enabled / non-object config the

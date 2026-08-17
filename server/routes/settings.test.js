@@ -83,10 +83,35 @@ describe('Settings routes — apiAccess slice', () => {
   });
 });
 
-describe('Settings routes — federated media provider slice (#4348)', () => {
+describe('Settings routes — agent context and federated media provider slices', () => {
   beforeEach(() => {
     store = {};
     vi.clearAllMocks();
+  });
+
+  it('accepts and returns a strict disabled-by-default context configuration', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ agentContext: { enabled: true, profile: 'metadata', scopes: ['navigation', 'workspaces'] } });
+    expect(res.status).toBe(200);
+    expect(res.body.agentContext).toEqual({
+      enabled: true,
+      profile: 'metadata',
+      scopes: ['navigation', 'workspaces'],
+    });
+  });
+
+  it('rejects unknown, empty, duplicate, and misspelled scopes', async () => {
+    for (const agentContext of [
+      { enabled: true, scopes: [] },
+      { enabled: true, scopes: ['brain', 'brain'] },
+      { enabled: true, scopes: ['privacy-vault'] },
+      { enabled: true, scopes: ['navigation'], extra: true },
+    ]) {
+      const res = await request(buildApp()).put('/api/settings').send({ agentContext });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    }
   });
 
   it('accepts a disabled-by-default provider config and preserves future federation keys', async () => {

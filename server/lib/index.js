@@ -17,6 +17,7 @@
 // `digitalTwinValidation.X`. The catch-all `validation.js` stays flat — its
 // names are the canonical PortOS-wide schemas.
 export * as agentValidation from './agentValidation.js';
+export * as agentContextValidation from './agentContextValidation.js';
 export * as appleHealthValidation from './appleHealthValidation.js';
 export * as brainValidation from './brainValidation.js';
 export * as catalogValidation from './catalogValidation.js';

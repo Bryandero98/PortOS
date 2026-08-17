@@ -85,6 +85,15 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | GET | `/agents/:pid` | Get agent process details |
 | DELETE | `/agents/:pid` | Kill agent process |
 
+### Agent Context (MCP)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/agent-context/manifest` | Inspect the local context profile, scopes, schemas, exclusions, and limits; available while MCP is disabled |
+| POST | `/agent-context/mcp` | Loopback-only, opt-in MCP Streamable HTTP endpoint for bounded read-only context tools |
+
+See [Agent Context (MCP)](./features/agent-context.md) for setup, transport headers, privacy profiles, and tool schemas.
+
 ### Command Execution
 
 | Method | Endpoint | Description |
@@ -479,6 +488,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/avatar` | Avatar rendering/config |
 | `/api/system` | System health metrics |
 | `/api/capabilities` | Feature capability flags |
+| `/api/agent-context` | Opt-in, loopback-only read-only MCP context and runtime manifest |
 | `/api/workspace-contexts` | Workspace context management |
 | `/api/apps/:appId/reference-repos` | Per-app reference repos |
 | `/api/network-exposure` | Network exposure checks |

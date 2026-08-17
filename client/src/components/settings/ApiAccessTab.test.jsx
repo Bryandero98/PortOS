@@ -109,4 +109,44 @@ describe('ApiAccessTab', () => {
     // Both cards show "not exposed".
     expect(screen.getAllByText('not exposed').length).toBe(2);
   });
+
+  it('defaults agent context to disabled metadata with minimal scopes', async () => {
+    getSettings.mockResolvedValue({});
+    await renderTab();
+    expect(screen.getByLabelText('Enable local MCP context').checked).toBe(false);
+    expect(screen.getByLabelText('Navigation').checked).toBe(true);
+    expect(screen.getByLabelText('Workspaces').checked).toBe(true);
+    expect(screen.getByLabelText('Brain').checked).toBe(false);
+    expect(screen.getByLabelText('Disclosure profile').value).toBe('metadata');
+  });
+
+  it('persists the complete agent-context opt-in configuration', async () => {
+    getSettings.mockResolvedValue({});
+    await renderTab();
+    fireEvent.click(screen.getByLabelText('Enable local MCP context'));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({
+      agentContext: {
+        enabled: true,
+        profile: 'metadata',
+        scopes: ['navigation', 'workspaces'],
+      },
+    }, { silent: true }));
+  });
+
+  it('serializes agent-context scope saves with all API toggles', async () => {
+    getSettings.mockResolvedValue({
+      agentContext: { enabled: true, profile: 'metadata', scopes: ['navigation', 'workspaces'] },
+    });
+    let resolveSave;
+    updateSettings.mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    await renderTab();
+    fireEvent.click(screen.getByLabelText('Brain'));
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText(/Expose on the network/i)[0].disabled).toBe(true);
+      expect(screen.getByLabelText('Disclosure profile').disabled).toBe(true);
+    });
+    expect(updateSettings.mock.calls[0][0].agentContext.scopes).toEqual(['navigation', 'workspaces', 'brain']);
+    await act(async () => { resolveSave({}); });
+  });
 });
