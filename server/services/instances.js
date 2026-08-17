@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import { dataPath, readJSONFile, ensureDir, PATHS, atomicWrite } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { createKeyCachedQueue } from '../lib/createKeyCachedQueue.js';
+import { canonicalStringify } from '../lib/objects.js';
 import { instanceEvents } from './instanceEvents.js';
 import { connectToPeer, disconnectFromPeer } from './peerSocketRelay.js';
 import { DEFAULT_PEER_PORT } from '../lib/ports.js';
@@ -20,6 +21,11 @@ import { withAbortTimeout } from '../lib/abortTimeout.js';
 import { getSelfHost } from '../lib/peerSelfHost.js';
 import { getTailscaleStatus } from '../lib/tailscale.js';
 import { autoSubscribePeerToAllRecords } from './sharing/recordEvents.js';
+import {
+  mergePeerMediaProviderConfig,
+  normalizePeerMediaProviderConfig,
+  probeFederatedMediaProvider,
+} from './federatedMediaConsumer.js';
 
 const INSTANCES_FILE = dataPath('instances.json');
 const PROBE_TIMEOUT_MS = 5000;
@@ -112,10 +118,17 @@ function sameAuth(a, b) {
 // Strip the locally-stored proxy credential before a peer record crosses the
 // wire (e.g. the announce response echoes the matched local peer back to the
 // announcing instance). The password is OUR secret for reaching THEM and must
-// never leak to the peer itself.
+// never leak to the peer itself. Consumer routing policy and cached capacity
+// are local-only too, so peers cannot discover or influence our assignments.
 export function redactPeerForWire(peer) {
-  if (!peer || typeof peer !== 'object' || !('auth' in peer)) return peer;
-  const { auth: _auth, ...rest } = peer;
+  if (!peer || typeof peer !== 'object') return peer;
+  if (!('auth' in peer) && !('mediaProvider' in peer) && !('mediaProviderStatus' in peer)) return peer;
+  const {
+    auth: _auth,
+    mediaProvider: _mediaProvider,
+    mediaProviderStatus: _mediaProviderStatus,
+    ...rest
+  } = peer;
   return rest;
 }
 
@@ -362,6 +375,9 @@ export async function addPeer({ address, port = DEFAULT_PEER_PORT, name, host, a
       fullSync: data.self?.defaultPeerFullSync === true,
       syncEnabled: data.self?.defaultPeerFullSync === true,
       syncCategories: { ...DEFAULT_SYNC_CATEGORIES },
+      // Consumer-side routing is explicit and machine-local. Enabling a peer
+      // here never changes that peer's provider settings.
+      mediaProvider: { enabled: false, audioModels: [] },
       consecutiveFailures: 0,
       nextProbeAt: null,
       directions: ['outbound']
@@ -468,6 +484,17 @@ export async function updatePeer(id, updates) {
           peer.authRequired = false;
           authChanged = true; // ensure probe fires
         }
+      }
+    }
+    if (updates.mediaProvider !== undefined
+      && updates.mediaProvider && typeof updates.mediaProvider === 'object'
+      && !Array.isArray(updates.mediaProvider)) {
+      const previous = peer.mediaProvider;
+      const next = mergePeerMediaProviderConfig(previous, updates.mediaProvider);
+      if (canonicalStringify(previous ?? null) !== canonicalStringify(next)) {
+        peer.mediaProvider = next;
+        if (!next.enabled) delete peer.mediaProviderStatus;
+        console.log(`🌐 Remote media provider ${next.enabled ? 'enabled' : 'disabled'}: ${peer.name}`);
       }
     }
     if (updates.host !== undefined) {
@@ -580,6 +607,7 @@ export async function probePeer(peer) {
 
   const previousStatus = peer.status;
   let status, lastHealth, lastSeen, remoteInstanceId, remoteVersion, remoteApps, remoteSyncSeqs;
+  let remoteMediaProviderStatus = null;
   // Latches when the peer answers 401/403 — a reachable-but-auth-gated peer, as
   // opposed to an unreachable one. The Instances UI reads this to prompt for a
   // credential instead of showing a generic offline state.
@@ -596,12 +624,18 @@ export async function probePeer(peer) {
     const forPeerQs = typeof ourInstanceId === 'string' && ourInstanceId && ourInstanceId !== UNKNOWN_INSTANCE_ID
       ? `?forPeer=${encodeURIComponent(ourInstanceId)}`
       : '';
-    // Fetch health details, apps, and sync status in parallel
-    const [healthRes, appsRes, syncRes] = await Promise.all([
+    // Fetch health details, apps, sync status, and opted-in media capacity in
+    // parallel under the same bounded probe budget. Older/unconfigured peers
+    // incur no fourth request.
+    const [healthRes, appsRes, syncRes, mediaProviderStatus] = await Promise.all([
       peerFetch(`${baseUrl}/api/system/health/details`, { signal }, peer),
       peerFetch(`${baseUrl}/api/apps`, { signal }, peer).catch(() => null),
-      peerFetch(`${baseUrl}/api/instances/sync-status${forPeerQs}`, { signal }, peer).catch(() => null)
+      peerFetch(`${baseUrl}/api/instances/sync-status${forPeerQs}`, { signal }, peer).catch(() => null),
+      normalizePeerMediaProviderConfig(peer).enabled
+        ? probeFederatedMediaProvider(peer, { signal })
+        : Promise.resolve(null),
     ]);
+    remoteMediaProviderStatus = mediaProviderStatus;
     if (!healthRes.ok) {
       const err = new Error(`HTTP ${healthRes.status}`);
       err.httpStatus = healthRes.status;
@@ -631,6 +665,15 @@ export async function probePeer(peer) {
     authRequired = err?.httpStatus === 401 || err?.httpStatus === 403;
     lastHealth = peer.lastHealth; // preserve last known
     lastSeen = peer.lastSeen;
+    if (normalizePeerMediaProviderConfig(peer).enabled && !remoteMediaProviderStatus) {
+      remoteMediaProviderStatus = {
+        checkedAt: new Date().toISOString(),
+        state: 'unreachable',
+        reason: 'peer-offline',
+        freshUntil: null,
+        snapshot: null,
+      };
+    }
   });
 
   const stored = await withData(async (data) => {
@@ -644,6 +687,11 @@ export async function probePeer(peer) {
     entry.authRequired = authRequired;
     entry.lastApps = remoteApps ?? entry.lastApps ?? null;
     entry.remoteSyncSeqs = remoteSyncSeqs ?? entry.remoteSyncSeqs ?? null;
+    if (normalizePeerMediaProviderConfig(entry).enabled) {
+      if (remoteMediaProviderStatus) entry.mediaProviderStatus = remoteMediaProviderStatus;
+    } else {
+      delete entry.mediaProviderStatus;
+    }
     if (remoteInstanceId) entry.instanceId = remoteInstanceId;
     if (status === 'online') entry.version = remoteVersion;
     // Auto-update name from hostname if current name is just an IP address

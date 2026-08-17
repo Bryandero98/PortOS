@@ -1,1 +1,2 @@
 - Add an authenticated federated audio provider API with conservative capacity admission and integrity-checked results (#4348).
+- Instances can now opt into a peer's remote audio capacity and allowlist exact models, with stale or busy providers blocked before assignment (#4348).

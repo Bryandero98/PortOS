@@ -704,13 +704,23 @@ export const federatedMediaModelSchema = z.object({
   modelId: z.string().trim().min(1).max(256),
 }).passthrough();
 
+const federatedMediaModelListSchema = z.array(federatedMediaModelSchema).max(100).refine(
+  (models) => new Set(models.map((model) => `${model.engine}\u0000${model.modelId}`)).size === models.length,
+  { message: 'audioModels must not contain duplicate engine/model pairs' },
+);
+
 export const federatedMediaProviderSettingsSchema = z.object({
   enabled: z.boolean().optional(),
   maxQueuedJobs: z.number().int().min(1).max(20).optional(),
-  audioModels: z.array(federatedMediaModelSchema).max(100).refine(
-    (models) => new Set(models.map((model) => `${model.engine}\u0000${model.modelId}`)).size === models.length,
-    { message: 'audioModels must not contain duplicate engine/model pairs' },
-  ).optional(),
+  audioModels: federatedMediaModelListSchema.optional(),
+}).passthrough();
+
+// Consumer-side peer selection is independent from the provider's local queue
+// limit. Unknown fields stay round-trip-safe across mixed-version Instances
+// clients while known model pairs remain unique and bounded.
+export const federatedMediaPeerSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  audioModels: federatedMediaModelListSchema.optional(),
 }).passthrough();
 
 export const federationSettingsSchema = z.object({
