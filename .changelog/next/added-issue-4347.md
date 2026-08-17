@@ -1,1 +1,2 @@
 - [issue-4347] Add bounded Digital Twin taste recipes to music Creative Commissions
+- Taste-aware music Creative Commissions can now choose Digital Twin exploration controls and installed renderers, preserve local run provenance, and accept structured steering feedback.

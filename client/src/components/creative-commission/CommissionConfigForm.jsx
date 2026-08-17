@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import ProviderModelSelector from '../ProviderModelSelector';
 import { isProcessProvider } from '../../utils/providers';
-import { getProviders, getSettings, listImageModels, listVideoModels } from '../../services/api';
+import { getProviders, getSettings, listImageModels, listVideoModels, listMusicEngines } from '../../services/api';
 import { deriveAvailableBackends } from '../../lib/imageGenBackends';
 import {
   WEEKDAYS, inputCls, labelCls, describeSchedule,
@@ -185,6 +185,10 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
       {/* Generation — fields adapt to the selected output type (#2769) */}
       <GenerationSection ability={form.targetAbility} generation={form.generation} patchForm={patchForm} />
 
+      {form.targetAbility === 'music' && (
+        <MusicTasteSection musicTaste={form.musicTaste} patchForm={patchForm} />
+      )}
+
       {/* Render backend — which image/video backend actually renders (#3135) */}
       <RenderBackendSection ability={form.targetAbility} generation={form.generation} patchForm={patchForm} />
 
@@ -282,6 +286,121 @@ function GenerationSection({ ability, generation, patchForm }) {
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function MusicTasteSection({ musicTaste, patchForm }) {
+  const [catalog, setCatalog] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listMusicEngines({ silent: true })
+      .then((value) => { if (!cancelled) setCatalog(value); })
+      .catch(() => { if (!cancelled) setCatalog({ engines: [], defaultEngine: null, error: true }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const selectedEngineId = musicTaste.musicEngineId || catalog?.defaultEngine || '';
+  const selectedEngine = catalog?.engines?.find((engine) => engine.id === selectedEngineId) || null;
+  let readiness = null;
+  if (catalog?.error) readiness = 'Music engine readiness could not be checked. Open Music → Generate before enabling this commission.';
+  else if (catalog && !selectedEngine) readiness = 'The configured music engine is no longer available. Choose an installed engine before enabling this commission.';
+  else if (selectedEngine && !selectedEngine.platformSupported) readiness = `${selectedEngine.name} requires ${selectedEngine.platformLabel} on this machine.`;
+  else if (selectedEngine?.cudaRequired && selectedEngine.cudaState !== 'available') readiness = `${selectedEngine.name} requires an available NVIDIA CUDA GPU.`;
+  else if (selectedEngine && !selectedEngine.runtimeReady) readiness = `${selectedEngine.name} is not installed. Install its runtime from Music → Generate.`;
+  else if (selectedEngine && !selectedEngine.modelReady) readiness = `${selectedEngine.name} model weights are not installed. Install them from Music → Generate.`;
+  else if (musicTaste.musicModelId && !selectedEngine?.models?.some((model) => model.id === musicTaste.musicModelId)) readiness = 'The configured music model is no longer available. Choose an installed model before enabling this commission.';
+
+  return (
+    <section className="space-y-3 border-t border-port-border pt-4">
+      <h3 className="text-sm font-semibold text-gray-200">Digital Twin taste exploration</h3>
+      <label className="flex items-center gap-2 text-sm text-gray-300" htmlFor="commission-music-taste-enabled">
+        <input
+          id="commission-music-taste-enabled"
+          type="checkbox"
+          checked={musicTaste.enabled}
+          onChange={(e) => patchForm(['musicTaste', 'enabled'], e.target.checked)}
+        />
+        Use my Digital Twin music taste for each scheduled original track
+      </label>
+      <p className="text-xs text-gray-500">
+        Each run combines bounded listening anchors with a controlled amount of exploration. Raw listening history stays on this machine.
+      </p>
+      {musicTaste.enabled && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className={labelCls} htmlFor="commission-music-taste-source">Taste source</label>
+            <select id="commission-music-taste-source" className={inputCls} value="digital-twin" disabled>
+              <option value="digital-twin">Digital Twin profile</option>
+            </select>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="commission-music-taste-window">Listening window</label>
+            <select
+              id="commission-music-taste-window"
+              className={inputCls}
+              value={musicTaste.window}
+              onChange={(e) => patchForm(['musicTaste', 'window'], e.target.value)}
+            >
+              <option value="week">Past week</option>
+              <option value="month">Past month</option>
+            </select>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="commission-music-taste-anchors">Anchors per run</label>
+            <input
+              id="commission-music-taste-anchors"
+              type="number"
+              min={1}
+              max={5}
+              className={inputCls}
+              value={musicTaste.anchorCount}
+              onChange={(e) => patchForm(['musicTaste', 'anchorCount'], e.target.value)}
+            />
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="commission-music-taste-exploration">Exploration (%)</label>
+            <input
+              id="commission-music-taste-exploration"
+              type="number"
+              min={0}
+              max={100}
+              className={inputCls}
+              value={musicTaste.explorationPercent}
+              onChange={(e) => patchForm(['musicTaste', 'explorationPercent'], e.target.value)}
+            />
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="commission-music-taste-engine">Music engine</label>
+            <select
+              id="commission-music-taste-engine"
+              className={inputCls}
+              value={musicTaste.musicEngineId}
+              onChange={(e) => {
+                patchForm(['musicTaste', 'musicEngineId'], e.target.value);
+                patchForm(['musicTaste', 'musicModelId'], '');
+              }}
+            >
+              <option value="">Default music engine</option>
+              {(catalog?.engines || []).map((engine) => <option key={engine.id} value={engine.id}>{engine.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="commission-music-taste-model">Music model</label>
+            <select
+              id="commission-music-taste-model"
+              className={inputCls}
+              value={musicTaste.musicModelId}
+              onChange={(e) => patchForm(['musicTaste', 'musicModelId'], e.target.value)}
+            >
+              <option value="">Default model{selectedEngine?.defaultModelId ? ` (${selectedEngine.defaultModelId})` : ''}</option>
+              {(selectedEngine?.models || []).map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+            </select>
+          </div>
+        </div>
+      )}
+      {musicTaste.enabled && readiness && <p className="text-xs text-port-warning">{readiness}</p>}
     </section>
   );
 }

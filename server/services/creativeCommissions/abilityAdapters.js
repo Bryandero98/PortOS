@@ -196,7 +196,11 @@ const musicAdapter = {
     const lead = `Compose an original ~${secs}s music / audio piece. Use the music generation tools; do NOT plan a video or image render.`;
     const { lines, digest, constraints } = briefContext(commission, lead);
     const tastePrompt = renderMusicTasteRecipePrompt(tasteRecipe);
-    if (tastePrompt) lines.push(tastePrompt);
+    // Keep the bounded recipe + original-work constraint ahead of user-authored
+    // brief fields. composeDirectiveGoal truncates only the tail when the brief
+    // reaches its cap, so appending this would silently drop the authoritative
+    // taste prompt on long intents/styles before the audio job ever sees it.
+    if (tastePrompt) lines.splice(1, 0, tastePrompt);
     return { goal: composeDirectiveGoal(lines, digest), deliverables: [`One ~${secs}s music track matching the brief`], constraints };
   },
 };

@@ -78,10 +78,42 @@ async function enforceVideoRenderPreset(params, project) {
  * `creativeDirectorMusicBed` already on the params (a caller that set its own
  * destination) wins and is left as-is.
  */
-function attachMusicBedTag(params, ctx) {
+async function configureMusicJob(params, ctx) {
   if (!ctx?.projectId) return params;
-  if (params?.creativeDirectorMusicBed) return params;
-  return { ...params, creativeDirectorMusicBed: { projectId: ctx.projectId } };
+  const { getCommissionMusicContextForProject } = await import('../../creativeCommissions/store.js');
+  // Do not collapse a failed local provenance lookup into "not a taste run".
+  // That would let planner-authored renderer/prompt guesses escape onto an
+  // opted-in commission precisely when the local store is unavailable.
+  const context = await getCommissionMusicContextForProject(ctx.projectId);
+  if (!context) {
+    if (params?.creativeDirectorMusicBed) return params;
+    return { ...params, creativeDirectorMusicBed: { projectId: ctx.projectId } };
+  }
+  if (typeof context.prompt !== 'string' || !context.prompt.trim()) {
+    throw new Error('taste-commission-prompt-unavailable');
+  }
+  const {
+    engine: _plannerEngine,
+    modelId: _plannerModel,
+    repo: _plannerRepo,
+    durationSec: _plannerDuration,
+    durationMode: _plannerDurationMode,
+    provenance: _plannerProvenance,
+    ...rest
+  } = params || {};
+  return {
+    ...rest,
+    prompt: context.prompt,
+    ...context.musicGeneration,
+    creativeDirectorMusicBed: { projectId: ctx.projectId },
+    provenance: {
+      kind: 'creative-commission-music-taste',
+      commissionId: context.commissionId,
+      runId: context.runId,
+      recipeVersion: context.tasteRecipe.version,
+      sourceHash: context.tasteRecipe.sourceHash,
+    },
+  };
 }
 
 /**
@@ -224,7 +256,7 @@ const mediaTool = (kind, label) => ({
   execute: async (args, ctx) => {
     let params = args.params || {};
     if (kind === 'audio') {
-      params = attachMusicBedTag(params, ctx);
+      params = await configureMusicJob(params, ctx);
     } else {
       // Image + video both consult the owning project: video for its locked
       // geometry preset, both for a pinned render backend (#3135).
