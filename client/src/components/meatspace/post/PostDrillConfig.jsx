@@ -204,11 +204,12 @@ const COGNITIVE_DRILL_META = {
     label: 'Stroop',
     desc: 'Name the ink color of a color-word — attention & inhibition',
     progressive: true,
-    ladderFields: ['count'],
+    ladderFields: ['count', 'incongruentPct'],
     fields: [
       { key: 'count', label: 'Trials', type: 'number', min: 5, max: 40 },
+      { key: 'incongruentPct', label: 'Conflicting Trials (%)', type: 'number', min: 0, max: 100 },
     ],
-    defaults: { enabled: true, progressive: true, count: 15 },
+    defaults: { enabled: true, progressive: true, count: 15, incongruentPct: 75 },
   },
   'schulte-table': {
     label: 'Schulte Table',
@@ -224,11 +225,17 @@ const COGNITIVE_DRILL_META = {
     label: 'Mental Rotation',
     desc: 'Pick the shape that’s the same, just rotated — spatial reasoning',
     progressive: true,
-    ladderFields: ['count'],
+    ladderFields: ['count', 'rotationComplexity', 'optionCount'],
     fields: [
       { key: 'count', label: 'Trials', type: 'number', min: 4, max: 20 },
+      { key: 'rotationComplexity', label: 'Rotation Range', type: 'select', options: [
+        { value: 1, label: '90° only' },
+        { value: 2, label: '90–180°' },
+        { value: 3, label: 'Any rotation' },
+      ] },
+      { key: 'optionCount', label: 'Answer Options', type: 'number', min: 2, max: 4 },
     ],
-    defaults: { enabled: true, progressive: true, count: 8 },
+    defaults: { enabled: true, progressive: true, count: 8, rotationComplexity: 3, optionCount: 4 },
   },
   'reaction-time': {
     label: 'Reaction Time',
@@ -355,6 +362,20 @@ function AdaptiveBadge({ info }) {
 function ProgressiveBadge({ info, speedGated = false, managedLabel = 'Manual knobs' }) {
   if (!info || !Array.isArray(info.levels)) return null;
   const pct = Math.round((info.thresholds?.targetAccuracy ?? 0.9) * 100);
+  const current = info.levels.find(level => level.level === info.level) || {};
+  const minSamples = info.thresholds?.minSamples ?? 0;
+  const gateParts = [
+    `${current.samples || 0}/${minSamples} qualifying runs`,
+    `${Math.round((current.accuracy || 0) * 100)}%/${pct}% accuracy`,
+  ];
+  if (info.thresholds?.minCompletion != null) {
+    gateParts.push(`${Math.round((current.completion || 0) * 100)}% avg completion`);
+    if (current.incompleteSamples > 0) gateParts.push(`${current.incompleteSamples} incomplete excluded`);
+  }
+  if (current.targetMs != null) {
+    gateParts.push(`${current.avgResponseMs > 0 ? (current.avgResponseMs / 1000).toFixed(1) + 's' : '—'}/${(current.targetMs / 1000).toFixed(1)}s speed`);
+  }
+  const hasSpeedGate = speedGated || current.targetMs != null;
   return (
     <div className="mt-3 space-y-1.5">
       <div className="flex items-center gap-1.5 text-xs text-port-accent">
@@ -376,7 +397,7 @@ function ProgressiveBadge({ info, speedGated = false, managedLabel = 'Manual kno
         ))}
       </div>
       <p className="text-xs text-gray-500">
-        Advances to the next rung after {speedGated ? `≥${pct}% accuracy and fast responses` : `sustained ≥${pct}% accuracy`} at this one. {managedLabel} {managedLabel.endsWith('s') ? 'are' : 'is'} ignored while progressive is on.
+        {gateParts.join(' · ')}. Advances after {hasSpeedGate ? `≥${pct}% accuracy and the speed target` : `sustained ≥${pct}% accuracy`} at this exact rung. {managedLabel} {managedLabel.endsWith('s') ? 'are' : 'is'} ignored while progressive is on.
       </p>
     </div>
   );
@@ -446,7 +467,7 @@ function DrillCard({ meta, drillConfig, enabled, accent, onToggle, onUpdateField
         <div className="flex items-center justify-between mb-3 py-2 px-3 bg-port-bg/50 rounded">
           <div>
             <span className="text-sm text-white">Progressive difficulty</span>
-            <p className="text-xs text-gray-500">Ramp up from 1×1-digit as you master speed.</p>
+            <p className="text-xs text-gray-500">Difficulty rises only after exact-rung mastery.</p>
           </div>
           <button
             type="button"

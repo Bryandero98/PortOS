@@ -322,10 +322,12 @@ function StroopReview({ questions, missed, drillData }) {
 // trials — false starts and skips are excluded from the baseline so one
 // anomalous trial can't skew the threshold for the rest).
 // =============================================================================
-function computeOutlierIndices(questions) {
+function computeOutlierIndices(questions, type) {
   const timed = questions
     .map((q, i) => ({ i, ms: q.responseMs || 0 }))
-    .filter(({ i }) => !questions[i].falseStart && questions[i].answered != null);
+    .filter(({ i }) => !questions[i].falseStart
+      && questions[i].answered != null
+      && (type === 'reaction-time' || questions[i].correct));
   const outliers = new Set();
   if (timed.length < 3) return outliers;
   const mean = timed.reduce((s, t) => s + t.ms, 0) / timed.length;
@@ -339,7 +341,7 @@ function computeOutlierIndices(questions) {
 
 function TimingReview({ questions, missed, type }) {
   const isReaction = type === 'reaction-time';
-  const outlierIdx = computeOutlierIndices(questions);
+  const outlierIdx = computeOutlierIndices(questions, type);
 
   return (
     <div>
@@ -347,7 +349,9 @@ function TimingReview({ questions, missed, type }) {
       <TableShell>
         <thead>
           <tr className="text-gray-500 text-left border-b border-port-border">
-            <th className="py-1 pr-2 font-medium">#</th>
+            <th className="py-1 pr-2 font-medium">{isReaction ? '#' : 'Attempt'}</th>
+            {!isReaction && <th className="py-1 pr-2 font-medium">Target</th>}
+            {!isReaction && <th className="py-1 pr-2 font-medium">Selected</th>}
             <th className="py-1 pr-2 font-medium">Status</th>
             <th className="py-1 pl-2 font-medium text-right">Time</th>
           </tr>
@@ -372,6 +376,8 @@ function TimingReview({ questions, missed, type }) {
             return (
               <tr key={i} className={`border-b border-port-border/30 ${q.correct === false && !q.falseStart ? 'bg-port-error/10' : ''}`}>
                 <td className="py-1 pr-2 text-gray-400 font-mono">{i + 1}</td>
+                {!isReaction && <td className="py-1 pr-2 text-gray-400 font-mono">{q.expected ?? q.prompt}</td>}
+                {!isReaction && <td className="py-1 pr-2 text-gray-400 font-mono">{q.answered ?? '—'}</td>}
                 <td className="py-1 pr-2">
                   <span className={`inline-flex items-center gap-1 ${statusCls}`}>
                     <StatusIcon size={12} />

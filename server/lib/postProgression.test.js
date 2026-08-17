@@ -123,6 +123,14 @@ describe('cognitive ladders', () => {
     expect(l[l.length - 1]).toMatchObject({ direction: 'backward', maxLength: 9 });
   });
 
+  it('stroop and mental-rotation rungs change real task difficulty, not only run length', () => {
+    const stroop = COGNITIVE_LADDERS.stroop.levels;
+    expect(stroop.map(r => r.incongruentPct)).toEqual([50, 65, 80, 90]);
+    const rotation = COGNITIVE_LADDERS['mental-rotation'].levels;
+    expect(rotation.map(r => r.rotationComplexity)).toEqual([1, 2, 3, 3]);
+    expect(rotation.map(r => r.optionCount)).toEqual([2, 3, 3, 4]);
+  });
+
   it('cognitiveLevelConfig returns the clamped rung knobs (a fresh copy)', () => {
     expect(cognitiveLevelConfig('n-back', 0)).toEqual({ n: 1, stimulusMs: 2500 });
     expect(cognitiveLevelConfig('n-back', 99)).toEqual({ n: 3, stimulusMs: 1600 });
@@ -140,7 +148,11 @@ describe('cognitive ladders', () => {
     expect(r.level).toBe(0);
     expect(r.config).toEqual({ n: 1, stimulusMs: 2500 });
     expect(r.label).toBe('1-back @ 2500ms');
-    expect(r.thresholds).toEqual({ minSamples: COGNITIVE_MASTERY_DEFAULTS.minSamples, targetAccuracy: COGNITIVE_MASTERY_DEFAULTS.targetAccuracy });
+    expect(r.thresholds).toEqual({
+      minSamples: COGNITIVE_MASTERY_DEFAULTS.minSamples,
+      targetAccuracy: COGNITIVE_MASTERY_DEFAULTS.targetAccuracy,
+      minCompletion: COGNITIVE_MASTERY_DEFAULTS.minCompletion,
+    });
     expect(r.levels).toHaveLength(5);
   });
 
@@ -149,6 +161,21 @@ describe('cognitive ladders', () => {
     const r = resolveCognitiveProgression('n-back', { 0: m, 1: m }, 0);
     expect(r.level).toBe(2); // 1-back and 2-back mastered → sits on 3-back
     expect(r.config).toEqual({ n: 3, stimulusMs: 2500 });
+  });
+
+  it('speed-gated cognitive skills require enough exact-rung timed samples under the target', () => {
+    const slow = resolveCognitiveProgression('schulte-table', {
+      0: { samples: 3, timedSamples: 3, accuracy: 1, avgResponseMs: 3000 },
+    }, 0);
+    expect(slow.level).toBe(0);
+    expect(slow.levels[0].criteria.speed.met).toBe(false);
+    expect(slow.decision).toMatchObject({ action: 'hold', reasons: ['speed'] });
+
+    const fast = resolveCognitiveProgression('schulte-table', {
+      0: { samples: 3, timedSamples: 3, accuracy: 1, avgResponseMs: 2000 },
+    }, 0);
+    expect(fast.level).toBe(1);
+    expect(fast.decision.action).toBe('promote');
   });
 
   it('resolveCognitiveProgression is null for a non-laddered type', () => {

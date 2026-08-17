@@ -79,12 +79,18 @@ describe('cognitiveSummary', () => {
     expect(cognitiveSummary('reaction-time', { count: 20, mode: 'choice' })).toBe('20 trials (choice)');
   });
 
-  it('falls back to "<count> trials" for an unrecognized type with a count', () => {
-    expect(cognitiveSummary('stroop', { count: 10 })).toBe('10 trials');
+  it('summarizes the Stroop interference mix', () => {
+    expect(cognitiveSummary('stroop', {})).toBe('75% conflict');
+    expect(cognitiveSummary('stroop', { incongruentPct: 90 })).toBe('90% conflict');
   });
 
-  it('falls back to an empty string for an unrecognized type with no count', () => {
-    expect(cognitiveSummary('mental-rotation', {})).toBe('');
+  it('summarizes mental-rotation option complexity', () => {
+    expect(cognitiveSummary('mental-rotation', {})).toBe('4 options');
+    expect(cognitiveSummary('mental-rotation', { optionCount: 3 })).toBe('3 options');
+  });
+
+  it('falls back to "<count> trials" for an unrecognized type with a count', () => {
+    expect(cognitiveSummary('future-cognitive-drill', { count: 10 })).toBe('10 trials');
   });
 });
 

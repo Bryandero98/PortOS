@@ -1,0 +1,1 @@
+- Cognitive progression now records Schulte mistakes, rejects incomplete mastery runs, applies task-appropriate speed gates, and advances Stroop and mental rotation through meaningful difficulty levels.

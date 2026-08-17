@@ -141,6 +141,9 @@ const drillTypeConfigSchema = z.object({
   maxLength: z.number().int().min(3).max(12).optional(),
   // --- Cognitive drill knobs (schulte-table / mental-rotation / reaction-time) ---
   size: z.number().int().min(3).max(7).optional(),
+  incongruentPct: z.number().int().min(0).max(100).optional(),
+  rotationComplexity: z.number().int().min(1).max(3).optional(),
+  optionCount: z.number().int().min(2).max(4).optional(),
   mode: z.enum(['simple', 'choice']).optional(),
   minDelayMs: z.number().int().min(300).max(5000).optional(),
   maxDelayMs: z.number().int().min(300).max(8000).optional(),
@@ -174,6 +177,8 @@ const taskResultSchema = z.object({
   avgResponseMs: z.number().min(0).nullable().optional(),
   answeredCount: z.number().int().min(0).optional(),
   totalCount: z.number().int().min(0).optional(),
+  attemptCount: z.number().int().min(0).optional(),
+  errorCount: z.number().int().min(0).optional(),
   medianMs: z.number().min(0).nullable().optional(),
   bestMs: z.number().min(0).nullable().optional(),
   span: z.number().int().min(0).optional(),

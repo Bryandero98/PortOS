@@ -54,6 +54,8 @@ export function cognitiveSummary(type, cfg) {
   if (type === 'n-back') return `${cfg.n ?? 2}-back`;
   if (type === 'digit-span') return `${cfg.startLength ?? 3}–${cfg.maxLength ?? 8}`;
   if (type === 'schulte-table') return `${cfg.size ?? 5}×${cfg.size ?? 5}`;
+  if (type === 'stroop') return `${cfg.incongruentPct ?? 75}% conflict`;
+  if (type === 'mental-rotation') return `${cfg.optionCount ?? 4} options`;
   if (type === 'reaction-time') return `${cfg.count ?? 15} trials (${cfg.mode ?? 'simple'})`;
   return cfg.count ? `${cfg.count} trials` : '';
 }
@@ -254,7 +256,10 @@ export default function PostSessionLauncher({
     maxLength: cfg.maxLength,
     showMs: cfg.showMs,
     count: cfg.count,
+    incongruentPct: cfg.incongruentPct,
     size: cfg.size,
+    rotationComplexity: cfg.rotationComplexity,
+    optionCount: cfg.optionCount,
     mode: cfg.mode,
     minDelayMs: cfg.minDelayMs,
     maxDelayMs: cfg.maxDelayMs,

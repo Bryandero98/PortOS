@@ -185,6 +185,20 @@ describe('DrillQuestionReview — stroop', () => {
 });
 
 describe('DrillQuestionReview — schulte-table / reaction-time timing review', () => {
+  it('shows every Schulte attempt with its target and selected value', () => {
+    const questions = [
+      { prompt: '1', index: 0, expected: 1, answered: 4, correct: false, responseMs: 300 },
+      { prompt: '1', index: 0, expected: 1, answered: 1, correct: true, responseMs: 700 },
+    ];
+    const { container } = render(<DrillQuestionReview type="schulte-table" questions={questions} />);
+    const table = within(container.querySelector('table'));
+    expect(table.getByText('Target')).toBeInTheDocument();
+    expect(table.getByText('Selected')).toBeInTheDocument();
+    expect(table.getByText('Wrong')).toBeInTheDocument();
+    expect(table.getAllByText('1').length).toBeGreaterThan(1);
+    expect(table.getByText('4')).toBeInTheDocument();
+  });
+
   it('flags a response time far above the others as an outlier', () => {
     const questions = [
       { prompt: '1', index: 0, expected: 1, answered: 1, correct: true, responseMs: 500 },

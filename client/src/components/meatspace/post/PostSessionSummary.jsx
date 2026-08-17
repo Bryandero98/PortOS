@@ -101,6 +101,10 @@ export default function PostSessionSummary({ drillResults = [], sessionScore = 0
                 : (timed.length > 0 ? Math.round(timed.reduce((s, q) => s + q.responseMs, 0) / timed.length) : null);
               const parts = [];
               if (accPct != null) parts.push(`${accPct}% acc`);
+              if (result.type === 'schulte-table') {
+                const errorCount = result.errorCount ?? questions.filter(q => q.correct === false).length;
+                parts.push(`${errorCount} ${errorCount === 1 ? 'error' : 'errors'}`);
+              }
               if (avgMs != null) parts.push(`${(avgMs / 1000).toFixed(1)}s`);
               if (compPct != null && compPct < 100) parts.push(`${compPct}% done`);
               subtitle = parts.join(' · ') || `${questions.length} questions`;
