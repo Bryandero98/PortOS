@@ -7,6 +7,7 @@ import {
   autoRetryMetadata,
   buildInvestigationFingerprint,
   investigationFingerprint,
+  isAutoApprovableInvestigation,
   isInvestigationTask,
   resolveInvestigationRetryTargets,
 } from './investigationTasks.js';
@@ -38,6 +39,25 @@ describe('isInvestigationTask', () => {
     expect(isInvestigationTask({ description: 'Fix the thing' })).toBe(false);
     expect(isInvestigationTask({ metadata: { isInvestigation: 'false' } })).toBe(false);
     expect(isInvestigationTask(null)).toBe(false);
+  });
+});
+
+describe('isAutoApprovableInvestigation', () => {
+  const task = {
+    status: 'pending',
+    approvalRequired: true,
+    metadata: { isInvestigation: true },
+  };
+
+  it('admits a held investigation only when explicitly configured', () => {
+    expect(isAutoApprovableInvestigation(task, { autoApproveInvestigations: true })).toBe(true);
+    expect(isAutoApprovableInvestigation(task, { autoApproveInvestigations: false })).toBe(false);
+  });
+
+  it('does not override ordinary, completed, or already-approved tasks', () => {
+    expect(isAutoApprovableInvestigation({ ...task, description: 'ordinary', metadata: {} }, { autoApproveInvestigations: true })).toBe(false);
+    expect(isAutoApprovableInvestigation({ ...task, status: 'completed' }, { autoApproveInvestigations: true })).toBe(false);
+    expect(isAutoApprovableInvestigation({ ...task, approvalRequired: false }, { autoApproveInvestigations: true })).toBe(false);
   });
 });
 
