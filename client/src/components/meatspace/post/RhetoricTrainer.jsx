@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CheckCircle, ChevronRight, Feather, Lightbulb, RotateCcw, Timer } from 'lucide-react';
+import { ArrowLeft, CheckCircle, ChevronRight, Feather, Lightbulb, Repeat2, RotateCcw, Timer } from 'lucide-react';
 import { submitTrainingEntry } from '../../../services/api';
 
 const TRAINING_MODULE = 'rhetoric';
@@ -7,6 +7,7 @@ const ROUND_SIZE = 5;
 const TRAINING_TYPES = {
   meter: 'rhetoric-meter',
   diacope: 'rhetoric-diacope',
+  chiasmus: 'rhetoric-chiasmus',
   progressia: 'rhetoric-progressia',
   brainstorm: 'rhetoric-brainstorm',
 };
@@ -37,6 +38,19 @@ export const RHETORIC_MODES = [
       'Write a sentence where the repeated word changes meaning.',
     ],
     checklist: ['the repeated word is exact or intentionally varied', 'a meaningful gap separates the repetitions', 'the repetition adds urgency or emphasis'],
+  },
+  {
+    id: 'chiasmus', label: 'Chiasmus', icon: Repeat2, color: 'text-rose-400', bgColor: 'bg-rose-500/20',
+    description: 'Cross a phrase’s terms or structure so the second half mirrors the first in reverse.',
+    example: 'We shape our tools, and thereafter our tools shape us.',
+    prompts: [
+      'Write a line about learning that reverses its key terms.',
+      'Turn a choice between freedom and safety into a crossed sentence.',
+      'Write a compact chiasmus about listening and speaking.',
+      'Use a reversal to show a friendship changing over time.',
+      'Write a comic chiasmus about making plans and plans making trouble.',
+    ],
+    checklist: ['two paired terms or structures appear in reverse order', 'the reversal changes or sharpens the thought', 'the syntax stays clear when read aloud'],
   },
   {
     id: 'progressia', label: 'Progressia', icon: ChevronRight, color: 'text-purple-400', bgColor: 'bg-purple-500/20',

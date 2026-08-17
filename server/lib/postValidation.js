@@ -106,7 +106,7 @@ const MORSE_DRILL_TYPES = ['morse-copy', 'morse-head-copy', 'morse-send'];
 // Rhetoric is a standalone, self-assessed training surface. It never enters a
 // scored POST session or calls an LLM, but its rounds still use the shared
 // training log endpoint for streaks and progress reporting.
-const RHETORIC_DRILL_TYPES = ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-progressia', 'rhetoric-brainstorm'];
+const RHETORIC_DRILL_TYPES = ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-chiasmus', 'rhetoric-progressia', 'rhetoric-brainstorm'];
 
 const drillTypeConfigSchema = z.object({
   enabled: z.boolean().optional(),

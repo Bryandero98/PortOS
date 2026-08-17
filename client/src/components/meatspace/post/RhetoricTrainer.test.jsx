@@ -13,6 +13,7 @@ describe('RhetoricTrainer', () => {
     render(<RhetoricTrainer {...props} />);
     expect(screen.getByText('Iambic Pentameter')).toBeInTheDocument();
     expect(screen.getByText('Diacope')).toBeInTheDocument();
+    expect(screen.getByText('Chiasmus')).toBeInTheDocument();
     expect(screen.getByText('Progressia')).toBeInTheDocument();
     expect(screen.getByText('Rhetorical Brainstorm')).toBeInTheDocument();
   });
@@ -26,5 +27,12 @@ describe('RhetoricTrainer', () => {
     expect(save).not.toBeDisabled();
     fireEvent.click(save);
     expect(screen.getByText('Prompt 2')).toBeInTheDocument();
+  });
+
+  it('offers a chiasmus prompt and craft checklist', () => {
+    render(<RhetoricTrainer {...props} mode="chiasmus" />);
+    expect(screen.getByText('Chiasmus')).toBeInTheDocument();
+    expect(screen.getByText(/reverses its key terms/i)).toBeInTheDocument();
+    expect(screen.getByText(/reverse order/i)).toBeInTheDocument();
   });
 });
