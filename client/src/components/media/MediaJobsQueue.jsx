@@ -754,7 +754,10 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     setNumericOverride('imageStrength', imageStrength, p.imageStrength, true);
     if (tiling !== (p.tiling || 'auto')) overrides.tiling = tiling;
     if (disableAudio !== (p.disableAudio === true)) overrides.disableAudio = disableAudio;
-    if (textEncoderId !== originalEncoder) overrides.textEncoderId = textEncoderId;
+    // A model switch can normalize an inherited encoder to stock locally;
+    // submit that reset explicitly so the retry does not retain the old,
+    // incompatible encoder from the failed job.
+    if (modelId !== p.modelId || textEncoderId !== originalEncoder) overrides.textEncoderId = textEncoderId;
     if (JSON.stringify(selectedLoras) !== JSON.stringify(p.loras || [])) overrides.loras = selectedLoras;
     onSubmit(Object.keys(overrides).length ? overrides : null);
   };
