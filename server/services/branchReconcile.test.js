@@ -361,10 +361,13 @@ describe('isAbandonedAgentWorktree', () => {
 describe('resolveLiveOwnerReason', () => {
   const live = new Set(['agent-aaaaaaaa']);
 
-  it('reports the same reasons the teardown gate refuses on', () => {
+  it('reports dispatch-side ownership while cleanup keeps claim worktrees protected', () => {
     expect(resolveLiveOwnerReason({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe('worktree-active-agent');
     expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe('worktree-locked');
-    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBe('worktree-human-claim');
+    // A claim directory identifies the claim, but not a live process. The
+    // cleanup-side protection remains covered by worktreeProtectionReason.
+    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBeNull();
+    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', locked: true, activeAgentIds: live })).toBe('worktree-locked');
   });
 
   it('is null for a free worktree, a dead agent, and no worktree at all', () => {
@@ -708,6 +711,28 @@ describe('reconcile', () => {
     const res = await reconcile('/repo', { activeAgentIds: new Set(['agent-live5678']) });
     expect(res.inFlight).toEqual([]);
     expect(res.wip.map((b) => b.liveOwnerReason)).toEqual(['branch-active-agent']);
+  });
+
+  it('surfaces a clean claim worktree with an open PR after its claim agent exits', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'claim/issue-42', isDefault: false, current: false, tracking: 'origin/claim/issue-42', merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/claim-issue-42', branch: 'refs/heads/claim/issue-42' }
+    ]);
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGh.mockResolvedValue(JSON.stringify([
+      { number: 4200, headRefName: 'claim/issue-42', mergeable: 'MERGEABLE', isDraft: false, url: 'u' }
+    ]));
+    // The claim has committed its work and is no longer running. A clean claim
+    // tree must be eligible for the same PR reconciliation as any other branch;
+    // the cleanup-side claim guard is tested separately above.
+    execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight.map((b) => [b.branch, b.state])).toEqual([['claim/issue-42', 'IN_REVIEW']]);
+    expect(res.inFlight[0].liveOwnerReason).toBeNull();
+    expect(res.wip).toEqual([]);
   });
 
   // Regression for the "3 orphan cos branches, no active agents, reconcile says

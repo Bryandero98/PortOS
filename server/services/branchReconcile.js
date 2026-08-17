@@ -116,8 +116,9 @@ const PR_LIST_LIMIT = 200;
  *   `prStateUnavailable` means the forge could not be READ this cycle — distinct
  *   from `openPr: null` ("the forge answered: no open PR").
  *   `liveOwnerReason` is `resolveLiveOwnerReason`'s verdict for the branch — non-null
- *   means somebody (an active CoS agent, a live human `/claim`, a deliberate lock) is
- *   working on it right now, whether or not its worktree still exists.
+ *   means an active CoS agent or deliberate lock owns it right now, whether or not
+ *   its worktree still exists. A clean `claim-*` directory is only a claim marker;
+ *   dirty claim trees still remain WIP through the ordinary dirty-tree guard.
  * @returns {'ABANDONED_WIP'|'MERGED'|'CONFLICTED'|'IN_REVIEW'|'NEEDS_PR'|'WIP'}
  */
 export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandonedAgentWorktree, liveOwnerReason = null, openPr, prStateUnavailable = false }) {
@@ -132,16 +133,14 @@ export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandoned
   // indefinitely while every run logged "nothing in-flight".
   if (worktreeDirty && abandonedAgentWorktree) return 'ABANDONED_WIP';
   if (isMerged) return 'MERGED';
-  // A branch with a LIVE owner belongs to whoever is working on it — an active CoS
-  // agent, a live human `/claim`, or a worktree the user locked. It will keep moving
-  // (commits, a PR opened, a rebase) for as long as that session runs, so handing it
-  // to the coordinator is wrong twice over: the agent races the live session's git
-  // operations, and every push the live session makes re-advances the drain's
-  // progress signature, which is exactly how the perpetual drain came to re-dispatch
-  // itself dozens of times in one night. Clean or dirty, PR or no PR: report it and
-  // never touch it. Checked AFTER `isMerged` on purpose — a merged branch with a live
-  // owner still belongs in the MERGED bucket, where `cleanupMerged` applies the same
-  // protection and reports it as held back.
+  // A branch with a LIVE owner belongs to an active CoS agent or an explicitly
+  // locked worktree. It may keep moving (commits, a PR opened, a rebase) for as
+  // long as that session runs, so handing it to the coordinator races the live
+  // session's git operations and can re-advance the drain's progress signature.
+  // Checked AFTER `isMerged` on purpose — a merged branch with a live owner still
+  // belongs in the MERGED bucket, where `cleanupMerged` applies the same protection
+  // and reports it as held back. A clean `claim-*` tree is not a live-owner signal;
+  // a dirty one is caught by the ordinary WIP guard below.
   if (liveOwnerReason) return 'WIP';
   // A worktree with real uncommitted changes is NEVER handed to the coordinator
   // agent — even for a branch with an open PR. The agent's per-state actions
@@ -280,7 +279,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
 
 /**
  * Why this branch must be left ALONE this cycle — the dispatch-side counterpart to
- * `worktreeProtectionReason`'s teardown gate. Three cases that gate doesn't cover:
+ * `worktreeProtectionReason`'s teardown gate. Two cases that gate doesn't cover:
  *
  * 1. **Liveness we could not determine.** `worktreeProtectionReason` is only ever
  *    called with an authoritative `activeAgentIds` Set (cleanupMerged defaults it to
@@ -296,7 +295,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
  *    otherwise classifies IN_REVIEW and gets handed to the coordinator while its own
  *    agent is still working. That is the bug this whole guard exists to prevent,
  *    surviving in a narrower window. So the branch name is checked too.
- * 3. A branch with no worktree at all and no live owner is simply free (null).
+ * A branch with no worktree at all and no live owner is simply free (null).
  *
  * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null }} input
  * @returns {string|null} a stable reason slug, or null when nobody owns it
@@ -309,7 +308,7 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
     return 'branch-active-agent';
   }
   if (!path) return null;
-  return worktreeOwnershipReason({
+  const reason = worktreeOwnershipReason({
     path,
     locked,
     activeAgentIds,
@@ -318,6 +317,17 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
     staleClaimIdleMs: STALE_CLAIM_IDLE_MS,
     requireKnownLiveness: true,
   });
+
+  // A `claim-*` directory is a claim marker, not a live-process marker. The
+  // claim flow has no durable local agent id for this branch, so treating the
+  // directory's existence as liveness hides clean, open-PR claims after the
+  // claim agent has exited — exactly the branches branch-reconcile exists to
+  // finish. Cleanup still uses worktreeProtectionReason and keeps every claim
+  // worktree protected; this dispatch-side exception only applies after the
+  // classifier has established that the tree is clean. A lock remains an
+  // explicit hold even for a claim worktree.
+  if (reason === 'worktree-human-claim') return locked ? 'worktree-locked' : null;
+  return reason;
 }
 
 /**
