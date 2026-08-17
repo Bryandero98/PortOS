@@ -11,6 +11,7 @@ import { EventEmitter } from 'events';
 import { atomicWrite, PATHS, ensureDir, readJSONFile } from '../lib/fileUtils.js';
 import { deepMerge } from '../lib/objects.js';
 import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from '../lib/postValidation.js';
+import { normalizePostLlmEvaluation } from '../lib/postLlmContracts.js';
 import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
 import { resolveMultiplicationLevel, MASTERY_DEFAULTS } from '../lib/postMultiplicationLadder.js';
@@ -241,6 +242,17 @@ async function loadSessions({ strict = false } = {}) {
   return { sessions: await listPostSessions({ strict }) };
 }
 
+function normalizeHistoricalLlmEvaluations(session) {
+  return {
+    ...session,
+    tasks: (session?.tasks || []).map((task) => (
+      LLM_DRILL_TYPES.includes(task?.type) && task.evaluation
+        ? { ...task, evaluation: normalizePostLlmEvaluation(task.evaluation) }
+        : task
+    )),
+  };
+}
+
 /**
  * All scored sessions, with each record's `date` RE-DERIVED from its `startedAt`
  * instant in the user's CURRENT timezone (issue #4168). This is the single read
@@ -253,7 +265,7 @@ async function loadSessions({ strict = false } = {}) {
 export async function getPostSessions(from, to, options) {
   const data = await loadSessions(options);
   const timezone = await getUserTimezone();
-  let sessions = withDerivedDayKeys(data.sessions, timezone);
+  let sessions = withDerivedDayKeys(data.sessions, timezone).map(normalizeHistoricalLlmEvaluations);
   // Re-derivation can move a record across a day boundary, so re-sort rather
   // than trusting the stored-date order `submitPostSession` wrote.
   sessions.sort((a, b) => (a?.date || '').localeCompare(b?.date || ''));
@@ -274,7 +286,7 @@ export async function getPostSessions(from, to, options) {
 export async function getPostSession(id) {
   const session = await getStoredPostSession(id);
   if (!session) return null;
-  return { ...session, date: recordDayKey(session, await getUserTimezone()) };
+  return normalizeHistoricalLlmEvaluations({ ...session, date: recordDayKey(session, await getUserTimezone()) });
 }
 
 export async function submitPostSession(sessionData) {
@@ -310,7 +322,14 @@ export async function submitPostSession(sessionData) {
     // This is a single-user internal tool so client score trust is acceptable.
     // The evaluation field and per-response llmScore/llmFeedback contain the server-generated breakdown.
     if (LLM_DRILL_TYPES.includes(rest.type)) {
-      return { ...rest, score: t.score || 0 };
+      if (!Number.isFinite(t.score)) {
+        throw new Error(`Cannot store ${rest.type} result without a validated score`);
+      }
+      return {
+        ...rest,
+        evaluation: normalizePostLlmEvaluation(rest.evaluation),
+        score: t.score,
+      };
     }
 
     // Memory drills: trust client-side scoring only for supported types

@@ -65,6 +65,27 @@ describe('Quick POST config', () => {
   });
 });
 
+function llmTaskResult(score, overrides = {}) {
+  const responses = overrides.responses || [{ response: 'example', responseMs: 1000, llmScore: score }];
+  return {
+    module: 'llm-drills',
+    type: 'word-association',
+    responses,
+    score,
+    evaluation: {
+      overallScore: score,
+      scores: responses.map(() => ({ score, feedback: 'Validated response' })),
+      summary: 'Validated response',
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    },
+    totalMs: 1000,
+    ...overrides,
+  };
+}
+
 // =============================================================================
 // DOUBLING CHAIN TESTS
 // =============================================================================
@@ -823,9 +844,7 @@ describe('submitPostSession — weighted scoring (issue #2099)', () => {
     vi.clearAllMocks();
   });
 
-  const llmTask = (score) => ({
-    module: 'llm-drills', type: 'word-association', responses: [], score, totalMs: 1000,
-  });
+  const llmTask = (score) => llmTaskResult(score);
   const memoryTask = (score) => ({
     module: 'memory', type: 'memory-sequence', questions: [], score, totalMs: 500,
   });
@@ -1623,6 +1642,30 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
     expect(laHistory.map(s => s.date)).toEqual(['2026-07-16', '2026-07-17']);
   });
 
+  it('normalizes historical LLM evaluations with explicit legacy provenance on read', async () => {
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory([{
+      date: '2026-07-17',
+      startedAt: '2026-07-17T12:00:00.000Z',
+      score: 70,
+      tasks: [{
+        module: 'llm-drills', type: 'word-association', score: 70,
+        evaluation: { score: 70, breakdown: [{ score: 70, feedback: 'Historical feedback' }] },
+      }],
+    }]);
+
+    const [session] = await getPostSessions();
+
+    expect(session.tasks[0].evaluation).toMatchObject({
+      overallScore: 70,
+      scores: [{ score: 70, feedback: 'Historical feedback' }],
+      provenance: {
+        generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+        scorer: { kind: 'legacy', rubricVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+      },
+    });
+  });
+
   it('getPostStats counts the streak and today against the new zone', async () => {
     // Under UTC the second session lands on 2026-07-18, which IS today there.
     freezeAt('2026-07-18T12:00:00Z', 'UTC');
@@ -1884,13 +1927,10 @@ describe('submitPostSession — non-memory task types', () => {
     const session = await submitPostSession({
       cadence: 'daily',
       modules: ['llm-drills'],
-      tasks: [{
-        module: 'llm-drills',
-        type: 'word-association',
+      tasks: [llmTaskResult(87, {
         responses: [{ questionIndex: 0, response: 'church', responseMs: 3000, llmScore: 90 }],
-        score: 87,
         totalMs: 3000,
-      }],
+      })],
       tags: {},
     });
     expect(session.tasks[0].score).toBe(87);
@@ -1907,7 +1947,7 @@ describe('submitPostSession — non-memory task types', () => {
           questions: [{ prompt: '4 x 2', answered: 8, responseMs: 500 }],
           totalMs: 500,
         },
-        { module: 'llm-drills', type: 'word-association', responses: [], score: 50, totalMs: 1000 },
+        llmTaskResult(50),
       ],
       tags: {},
     });

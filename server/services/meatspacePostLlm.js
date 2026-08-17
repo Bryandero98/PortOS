@@ -11,6 +11,15 @@
 
 import { getActiveProvider, getProviderById } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
+import {
+  LEGACY_POST_LLM_PROVENANCE,
+  buildPostLlmGeneratorProvenance,
+  buildPostLlmScorerProvenance,
+  postLlmEvaluationSchema,
+  validatePostLlmGenerationPayload,
+  validatePostLlmScorePayload,
+  validatePostLlmSemanticVerdicts,
+} from '../lib/postLlmContracts.js';
 
 export const LLM_DRILL_TYPES = [
   'word-association',
@@ -28,6 +37,8 @@ export const LLM_DRILL_TYPES = [
   'invention-pitch',
   'reframe',
 ];
+
+const MAX_SEMANTIC_CANDIDATES = 200;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI CALLER (mirrors brain.js pattern)
@@ -53,11 +64,15 @@ async function callAI(prompt, providerId, model) {
     ? { ...provider, args: [...(provider.args || []), ...provider.headlessArgs] }
     : provider;
 
-  const { text } = await runPromptThroughProvider({
+  const result = await runPromptThroughProvider({
     provider: providerForCall, prompt, source: 'meatspace-post-llm', model: selectedModel,
     timeout: provider.timeout || 120000,
   });
-  return text;
+  return {
+    text: result.text,
+    providerId: provider.id || 'unknown',
+    model: result.model || selectedModel || 'unknown',
+  };
 }
 
 function parseJsonFromAI(content) {
@@ -76,6 +91,14 @@ function parseJsonFromAI(content) {
   return JSON.parse(jsonStr);
 }
 
+async function generateValidatedPayload(type, count, prompt, providerId, model) {
+  const response = await callAI(prompt, providerId, model);
+  return {
+    data: validatePostLlmGenerationPayload(type, parseJsonFromAI(response.text), count),
+    generation: buildPostLlmGeneratorProvenance(type, response.providerId, response.model),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DRILL GENERATORS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,14 +115,14 @@ Return ONLY valid JSON (no markdown, no explanation):
 
 Example: {"questions":[{"prompt":"cathedral","hints":"architecture/spirituality"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('word-association', count, prompt, providerId, model);
   return {
     type: 'word-association',
     config: { count },
-    questions: (data.questions || []).slice(0, count).map(q => ({
+    generation,
+    questions: data.questions.map(q => ({
       prompt: q.prompt,
-      hints: q.hints || ''
+      hints: q.hints,
     }))
   };
 }
@@ -111,16 +134,17 @@ Each exercise has a short paragraph (2-4 sentences) containing specific details:
 Then provide 3-4 recall questions about those details, each with a correct answer.
 
 Return ONLY valid JSON:
-{"exercises":[{"paragraph":"The story text...","questions":[{"question":"What was the name...?","answer":"correct answer"}]}]}
+{"exercises":[{"paragraph":"The story text...","questions":[{"question":"Who visited?","answer":"Jane","aliases":[]},{"question":"Where did she go?","answer":"New York City","aliases":["NYC"]},{"question":"When did she go?","answer":"Monday","aliases":[]}]}]}
 
-Make paragraphs vivid and varied. Include specific numbers, proper nouns, and concrete details.`;
+Make paragraphs vivid and varied. Include specific numbers, proper nouns, and concrete details.
+Only declare aliases that are complete interchangeable answers (for example "NYC" for "New York City"); do not list fragments or substrings.`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('story-recall', count, prompt, providerId, model);
   return {
     type: 'story-recall',
     config: { count },
-    exercises: (data.exercises || []).slice(0, count)
+    generation,
+    exercises: data.exercises,
   };
 }
 
@@ -137,12 +161,12 @@ Return ONLY valid JSON:
 The examples field should contain 3-5 sample answers for validation reference.
 minExpected is the minimum number a healthy adult should name in 60 seconds.`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('verbal-fluency', count, prompt, providerId, model);
   return {
     type: 'verbal-fluency',
     config: { count },
-    categories: (data.categories || []).slice(0, count)
+    generation,
+    categories: data.categories,
   };
 }
 
@@ -157,12 +181,12 @@ Return ONLY valid JSON:
 
 Make setups varied and fun. Range from easy (obvious joke setup) to hard (requires clever lateral thinking).`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('wit-comeback', count, prompt, providerId, model);
   return {
     type: 'wit-comeback',
     config: { count },
-    scenarios: (data.scenarios || []).slice(0, count)
+    generation,
+    scenarios: data.scenarios,
   };
 }
 
@@ -177,12 +201,12 @@ Return ONLY valid JSON:
 
 Make challenges diverse and fun. The example should be witty but not the only valid answer.`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('pun-wordplay', count, prompt, providerId, model);
   return {
     type: 'pun-wordplay',
     config: { count },
-    challenges: (data.challenges || []).slice(0, count)
+    generation,
+    challenges: data.challenges,
   };
 }
 
@@ -195,12 +219,12 @@ Mix science, society, nature, and everyday life. Be creative and specific.
 Return ONLY valid JSON:
 {"scenarios":[{"prompt":"What if gravity reversed for 10 minutes every Tuesday?","category":"physics"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('what-if', count, prompt, providerId, model);
   return {
     type: 'what-if',
     config: { count },
-    scenarios: (data.scenarios || []).slice(0, count)
+    generation,
+    scenarios: data.scenarios,
   };
 }
 
@@ -213,12 +237,12 @@ Pick objects that have many possible creative uses.
 Return ONLY valid JSON:
 {"objects":[{"object":"brick","commonUse":"building material","minExpected":8}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('alternative-uses', count, prompt, providerId, model);
   return {
     type: 'alternative-uses',
     config: { count },
-    objects: (data.objects || []).slice(0, count)
+    generation,
+    objects: data.objects,
   };
 }
 
@@ -231,12 +255,12 @@ Choose words that are surprising when combined.
 Return ONLY valid JSON:
 {"prompts":[{"words":["lighthouse","saxophone","marmalade"]}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('story-prompt', count, prompt, providerId, model);
   return {
     type: 'story-prompt',
     config: { count },
-    prompts: (data.prompts || []).slice(0, count)
+    generation,
+    prompts: data.prompts,
   };
 }
 
@@ -249,12 +273,12 @@ Mix everyday annoyances, workplace challenges, and social problems.
 Return ONLY valid JSON:
 {"problems":[{"problem":"You always forget where you put your keys","category":"everyday","difficulty":"easy"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('invention-pitch', count, prompt, providerId, model);
   return {
     type: 'invention-pitch',
     config: { count },
-    problems: (data.problems || []).slice(0, count)
+    generation,
+    problems: data.problems,
   };
 }
 
@@ -267,12 +291,12 @@ Mix minor annoyances with bigger setbacks. Keep them relatable.
 Return ONLY valid JSON:
 {"situations":[{"situation":"Your flight was delayed by 4 hours","severity":"medium"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('reframe', count, prompt, providerId, model);
   return {
     type: 'reframe',
     config: { count },
-    situations: (data.situations || []).slice(0, count)
+    generation,
+    situations: data.situations,
   };
 }
 
@@ -284,21 +308,21 @@ Choose words with at least 10+ valid compound combinations (as prefix or suffix)
 Mix common roots (fire, back, hand) with less obvious ones (cross, break, light).
 
 Return ONLY valid JSON (no markdown, no explanation):
-{"challenges":[{"rootWord":"paper","position":"prefix","examples":["paperback","paper trail","paperweight","paper clip","paper thin"],"minExpected":8}]}
+{"challenges":[{"rootWord":"paper","position":"prefix","examples":["paperback","paper trail","paperweight","paper clip","paper thin","paper plane","paper cut","paper mill","paper bag","paper tiger"],"minExpected":8}]}
 
 position is "prefix" if the root starts the compound (firehouse), "suffix" if it ends it (campfire), or "both" if common either way (light→lighthouse, flashlight).
 The examples field should contain 10-15 sample answers for reference. minExpected is the target count.`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('compound-chain', count, prompt, providerId, model);
   return {
     type: 'compound-chain',
     config: { count },
-    challenges: (data.challenges || []).slice(0, count).map(c => ({
+    generation,
+    challenges: data.challenges.map(c => ({
       rootWord: c.rootWord,
-      position: c.position || 'both',
-      examples: c.examples || [],
-      minExpected: c.minExpected || 8,
+      position: c.position,
+      examples: c.examples,
+      minExpected: c.minExpected,
     }))
   };
 }
@@ -315,16 +339,16 @@ Choose bridge words that have many natural compound forms. Vary difficulty.
 Return ONLY valid JSON (no markdown, no explanation):
 {"puzzles":[{"clues":["news___","___back","___weight","___clip"],"answer":"paper","difficulty":"easy","hint":"Something you write on"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('bridge-word', count, prompt, providerId, model);
   return {
     type: 'bridge-word',
     config: { count },
-    puzzles: (data.puzzles || []).slice(0, count).map(p => ({
-      clues: p.clues || [],
+    generation,
+    puzzles: data.puzzles.map(p => ({
+      clues: p.clues,
       answer: p.answer,
-      difficulty: p.difficulty || 'medium',
-      hint: p.hint || '',
+      difficulty: p.difficulty,
+      hint: p.hint,
     }))
   };
 }
@@ -343,16 +367,16 @@ Choose words with clearly distinct meanings that are fun to combine.
 Return ONLY valid JSON (no markdown, no explanation):
 {"challenges":[{"word":"bark","meanings":["outer covering of a tree","sound a dog makes"],"example":"The dog's bark echoed off the bark of the old oak.","difficulty":"easy"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('double-meaning', count, prompt, providerId, model);
   return {
     type: 'double-meaning',
     config: { count },
-    challenges: (data.challenges || []).slice(0, count).map(c => ({
+    generation,
+    challenges: data.challenges.map(c => ({
       word: c.word,
-      meanings: c.meanings || [],
-      example: c.example || '',
-      difficulty: c.difficulty || 'medium',
+      meanings: c.meanings,
+      example: c.example,
+      difficulty: c.difficulty,
     }))
   };
 }
@@ -374,16 +398,16 @@ Choose well-known idioms and fun, diverse domains. Mix easy and hard combination
 Return ONLY valid JSON (no markdown, no explanation):
 {"challenges":[{"idiom":"Don't put all your eggs in one basket","domain":"programming","example":"Don't push all your commits to one branch","difficulty":"easy"}]}`;
 
-  const response = await callAI(prompt, providerId, model);
-  const data = parseJsonFromAI(response);
+  const { data, generation } = await generateValidatedPayload('idiom-twist', count, prompt, providerId, model);
   return {
     type: 'idiom-twist',
     config: { count },
-    challenges: (data.challenges || []).slice(0, count).map(c => ({
+    generation,
+    challenges: data.challenges.map(c => ({
       idiom: c.idiom,
       domain: c.domain,
-      example: c.example || '',
-      difficulty: c.difficulty || 'medium',
+      example: c.example,
+      difficulty: c.difficulty,
     }))
   };
 }
@@ -438,16 +462,53 @@ function averageScore(scores) {
 }
 
 function buildScoringResult(evaluation, userResponses, speedBonus) {
-  const qualityScore = Math.min(100, Math.max(0, evaluation.overallScore || 0));
+  const qualityScore = evaluation.overallScore;
   const finalScore = Math.min(100, Math.max(0, Math.round(qualityScore * 0.8 + speedBonus * 0.2 * 100)));
   return {
     score: finalScore,
     evaluation,
     questions: userResponses.map((r, i) => ({
       ...r,
-      llmScore: evaluation.scores?.[i]?.score ?? null,
-      llmFeedback: evaluation.scores?.[i]?.feedback ?? ''
+      llmScore: evaluation.scores[i].score,
+      llmFeedback: evaluation.scores[i].feedback,
     }))
+  };
+}
+
+function normalizeAnswer(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeCompound(value) {
+  return normalizeAnswer(value).replace(/\s/g, '');
+}
+
+function evaluationWithProvenance(type, drillData, evaluation, kind, providerId = 'local', model = 'local') {
+  return postLlmEvaluationSchema.parse({
+    ...evaluation,
+    provenance: {
+      generator: drillData?.generation || LEGACY_POST_LLM_PROVENANCE.generator,
+      scorer: buildPostLlmScorerProvenance(type, kind, providerId, model),
+    },
+  });
+}
+
+async function semanticVerdicts(candidates, prompt, providerId, model, label) {
+  if (candidates.length === 0) return { verdicts: new Map(), providerId: 'local', model: 'local' };
+  if (candidates.length > MAX_SEMANTIC_CANDIDATES) {
+    throw new Error(`Cannot score ${candidates.length} open-ended items in one bounded batch (max ${MAX_SEMANTIC_CANDIDATES})`);
+  }
+  const response = await callAI(prompt, providerId, model);
+  const parsed = validatePostLlmSemanticVerdicts(parseJsonFromAI(response.text), candidates, label);
+  return {
+    verdicts: new Map(parsed.verdicts.map((verdict) => [`${verdict.responseIndex}:${verdict.itemIndex}`, verdict.valid])),
+    providerId: response.providerId,
+    model: response.model,
   };
 }
 
@@ -458,9 +519,9 @@ function buildScoringResult(evaluation, userResponses, speedBonus) {
 function scoreLocalBridgeWord(drillData, userResponses) {
   const scores = userResponses.map((r, i) => {
     const puzzle = drillData.puzzles?.[r.questionIndex ?? i];
-    if (!puzzle?.answer) return { score: 0, feedback: 'No answer available' };
-    const userAnswer = (r.response || '').trim().toLowerCase();
-    const correct = puzzle.answer.trim().toLowerCase();
+    if (!puzzle?.answer) throw new Error(`Cannot score bridge-word response ${i}: missing answer key`);
+    const userAnswer = normalizeAnswer(r.response);
+    const correct = normalizeAnswer(puzzle.answer);
     const isCorrect = userAnswer === correct;
     return {
       score: isCorrect ? 100 : 0,
@@ -471,88 +532,178 @@ function scoreLocalBridgeWord(drillData, userResponses) {
   return { overallScore, scores, summary: `${scores.filter(s => s.score === 100).length} of ${scores.length} correct` };
 }
 
-function scoreLocalCompoundChain(drillData, userResponses) {
-  const scores = userResponses.map((r, i) => {
-    const challenge = drillData.challenges?.[r.questionIndex ?? i];
-    if (!challenge?.rootWord) return { score: 0, feedback: 'No root word', validCount: 0, invalidItems: [], missedExamples: [] };
-    const root = challenge.rootWord.toLowerCase();
-    const norm = s => s.toLowerCase().replace(/[\s-]/g, '');
-    const seen = new Set();
-    const valid = [];
-    const invalid = [];
-    // The "covered" set is the canonical full-compound form for each accepted
-    // item: typing "firehouse" or just "house" both contribute "firehouse" so
-    // missedExamples can suppress duplicates regardless of how the user typed it.
-    const coveredFull = new Set();
-    for (const item of (r.items || [])) {
-      const lower = norm(item);
-      if (!lower || seen.has(lower)) continue;
-      seen.add(lower);
-      if (lower === root) {
-        // Bare root word is not itself a compound — reject.
-        invalid.push(item);
-        continue;
-      }
-      if (lower.includes(root)) {
-        // Full compound already containing the root (e.g., "firehouse", "campfire").
-        valid.push(item);
-        coveredFull.add(lower);
-      } else {
-        // Half-compound shorthand: assume the user means root+item or item+root
-        // (e.g., "hose" → firehose). We can't validate against a dictionary
-        // without an LLM call, so accept it and let the user keep momentum.
-        valid.push(item);
-        coveredFull.add(root + lower);
-        coveredFull.add(lower + root);
-      }
+function matchedCompoundExample(challenge, item) {
+  const root = normalizeCompound(challenge.rootWord);
+  const normalized = normalizeCompound(item);
+  return (challenge.examples || []).find((example) => {
+    const full = normalizeCompound(example);
+    if (normalized === full) return true;
+    if ((challenge.position === 'prefix' || challenge.position === 'both') && full.startsWith(root)) {
+      if (normalized === full.slice(root.length)) return true;
     }
-    const target = challenge.minExpected || 8;
-    const score = Math.round(Math.min(1, valid.length / target) * 100);
-    const fb = valid.length >= target
-      ? `${valid.length} valid compounds — great job!`
-      : `${valid.length} valid compound${valid.length !== 1 ? 's' : ''} (target: ${target})`;
-    // Show examples the user didn't find. `coveredFull` already contains the
-    // user's valid compounds plus `root+half`/`half+root` pairings, so a single
-    // membership check covers both full-compound and half-word inputs.
-    const missedExamples = (challenge.examples || []).filter(ex => !coveredFull.has(norm(ex)));
-    return { score, feedback: fb, validCount: valid.length, invalidItems: invalid, missedExamples };
+    if ((challenge.position === 'suffix' || challenge.position === 'both') && full.endsWith(root)) {
+      if (normalized === full.slice(0, -root.length)) return true;
+    }
+    return false;
   });
-  const overallScore = averageScore(scores);
-  return { overallScore, scores, summary: `Average ${overallScore}% across ${scores.length} challenges` };
 }
 
-function scoreLocalVerbalFluency(drillData, userResponses) {
-  const scores = userResponses.map((r, i) => {
-    const cat = drillData.categories?.[r.questionIndex ?? i];
+function coverCompound(covered, challenge, item) {
+  const root = normalizeCompound(challenge.rootWord);
+  const normalized = normalizeCompound(item);
+  covered.add(normalized);
+  if (challenge.position === 'prefix' || challenge.position === 'both') covered.add(root + normalized);
+  if (challenge.position === 'suffix' || challenge.position === 'both') covered.add(normalized + root);
+}
+
+async function scoreCompoundChain(drillData, userResponses, providerId, model) {
+  const candidates = [];
+  const states = userResponses.map((r, responseIndex) => {
+    const challenge = drillData.challenges?.[r.questionIndex ?? responseIndex];
+    if (!challenge?.rootWord) throw new Error(`Cannot score compound-chain response ${responseIndex}: missing challenge`);
     const seen = new Set();
-    for (const item of (r.items || [])) seen.add(item.toLowerCase().trim());
-    const uniqueCount = seen.size;
-    const target = cat?.minExpected || 15;
-    const score = Math.round(Math.min(1, uniqueCount / target) * 100);
-    const missedExamples = (cat?.examples || []).filter(ex => !seen.has(ex.toLowerCase().trim()));
+    const state = { challenge, validItems: [], invalidItems: [], duplicateItems: [], covered: new Set() };
+    (r.items || []).forEach((item, itemIndex) => {
+      const normalized = normalizeCompound(item);
+      if (!normalized || normalized === normalizeCompound(challenge.rootWord)) {
+        state.invalidItems.push(item);
+      } else if (seen.has(normalized)) {
+        state.duplicateItems.push(item);
+      } else {
+        seen.add(normalized);
+        const example = matchedCompoundExample(challenge, item);
+        if (example) {
+          state.validItems.push(item);
+          state.covered.add(normalizeCompound(example));
+        } else {
+          candidates.push({ responseIndex, itemIndex, item, rootWord: challenge.rootWord, position: challenge.position });
+        }
+      }
+    });
+    return state;
+  });
+
+  const semantic = await semanticVerdicts(
+    candidates,
+    `Validate these proposed compound words or common fixed phrases. A proposal is valid only if it forms a recognized compound or common phrase with the root in the stated position. Reject invented fragments and the bare root.\n\nCandidates:\n${JSON.stringify(candidates)}\n\nReturn ONLY valid JSON with exactly one verdict per candidate:\n{"verdicts":[{"responseIndex":0,"itemIndex":0,"valid":true,"reason":"common compound"}]}`,
+    providerId,
+    model,
+    'compound-chain semantic validation response',
+  );
+
+  candidates.forEach((candidate) => {
+    const state = states[candidate.responseIndex];
+    if (semantic.verdicts.get(`${candidate.responseIndex}:${candidate.itemIndex}`)) {
+      state.validItems.push(candidate.item);
+      coverCompound(state.covered, state.challenge, candidate.item);
+    } else {
+      state.invalidItems.push(candidate.item);
+    }
+  });
+
+  const scores = states.map((state) => {
+    const target = state.challenge.minExpected;
+    const validCount = state.validItems.length;
+    const score = Math.round(Math.min(1, validCount / target) * 100);
+    const feedback = validCount >= target
+      ? `${validCount} valid compounds — great job!`
+      : `${validCount} valid compound${validCount !== 1 ? 's' : ''} (target: ${target})`;
+    const missedExamples = (state.challenge.examples || [])
+      .filter((example) => !state.covered.has(normalizeCompound(example)));
     return {
-      score,
-      feedback: `${uniqueCount} unique item${uniqueCount !== 1 ? 's' : ''} (target: ${target})`,
-      validCount: uniqueCount,
-      invalidItems: [],
-      missedExamples,
+      score, feedback, validCount, validItems: state.validItems,
+      invalidItems: state.invalidItems, duplicateItems: state.duplicateItems, missedExamples,
     };
   });
   const overallScore = averageScore(scores);
-  return { overallScore, scores, summary: `Average ${overallScore}%` };
+  return {
+    evaluation: { overallScore, scores, summary: `Average ${overallScore}% across ${scores.length} challenges` },
+    kind: candidates.length ? 'hybrid' : 'local',
+    providerId: semantic.providerId,
+    model: semantic.model,
+  };
+}
+
+function isLexicalCandidate(value) {
+  const item = String(value || '').trim();
+  return item.length > 0
+    && item.length <= 80
+    && /\p{L}/u.test(item)
+    && !/[\u0000-\u001f\u007f]/u.test(item);
+}
+
+async function scoreVerbalFluency(drillData, userResponses, providerId, model) {
+  const candidates = [];
+  const states = userResponses.map((r, responseIndex) => {
+    const category = drillData.categories?.[r.questionIndex ?? responseIndex];
+    if (!category?.category) throw new Error(`Cannot score verbal-fluency response ${responseIndex}: missing category`);
+    const examples = new Set((category.examples || []).map(normalizeAnswer));
+    const seen = new Set();
+    const state = { category, validItems: [], invalidItems: [], duplicateItems: [] };
+    (r.items || []).forEach((item, itemIndex) => {
+      const normalized = normalizeAnswer(item);
+      if (!isLexicalCandidate(item)) {
+        state.invalidItems.push(item);
+      } else if (seen.has(normalized)) {
+        state.duplicateItems.push(item);
+      } else if (examples.has(normalized)) {
+        seen.add(normalized);
+        state.validItems.push(item);
+      } else {
+        seen.add(normalized);
+        candidates.push({ responseIndex, itemIndex, item, category: category.category });
+      }
+    });
+    return state;
+  });
+
+  const semantic = await semanticVerdicts(
+    candidates,
+    `Validate each unique verbal-fluency item against its category. Accept real lexical items that genuinely belong to the category; reject invented strings, category labels, commentary, and unrelated words.\n\nCandidates:\n${JSON.stringify(candidates)}\n\nReturn ONLY valid JSON with exactly one verdict per candidate:\n{"verdicts":[{"responseIndex":0,"itemIndex":0,"valid":true,"reason":"belongs to category"}]}`,
+    providerId,
+    model,
+    'verbal-fluency semantic validation response',
+  );
+
+  candidates.forEach((candidate) => {
+    const state = states[candidate.responseIndex];
+    if (semantic.verdicts.get(`${candidate.responseIndex}:${candidate.itemIndex}`)) state.validItems.push(candidate.item);
+    else state.invalidItems.push(candidate.item);
+  });
+
+  const scores = states.map((state) => {
+    const validCount = state.validItems.length;
+    const target = state.category.minExpected;
+    const score = Math.round(Math.min(1, validCount / target) * 100);
+    const found = new Set(state.validItems.map(normalizeAnswer));
+    return {
+      score,
+      feedback: `${validCount} valid unique item${validCount !== 1 ? 's' : ''} (target: ${target})`,
+      validCount,
+      validItems: state.validItems,
+      invalidItems: state.invalidItems,
+      duplicateItems: state.duplicateItems,
+      missedExamples: (state.category.examples || []).filter((example) => !found.has(normalizeAnswer(example))),
+    };
+  });
+  const overallScore = averageScore(scores);
+  return {
+    evaluation: { overallScore, scores, summary: `Average ${overallScore}%` },
+    kind: candidates.length ? 'hybrid' : 'local',
+    providerId: semantic.providerId,
+    model: semantic.model,
+  };
 }
 
 function scoreLocalStoryRecall(drillData, userResponses) {
   const scores = userResponses.map((r, i) => {
     const questions = drillData.exercises?.[r.questionIndex ?? i]?.questions || [];
-    if (questions.length === 0) return { score: 0, feedback: 'No questions' };
+    if (questions.length === 0) throw new Error(`Cannot score story-recall response ${i}: missing questions`);
     let correct = 0;
     for (let qi = 0; qi < questions.length; qi++) {
-      const expected = (questions[qi].answer || '').toLowerCase().trim();
-      const given = (r.answers?.[qi] || '').toLowerCase().trim();
-      if (given && (given === expected || expected.includes(given) || given.includes(expected))) {
-        correct++;
-      }
+      const accepted = [questions[qi].answer, ...(questions[qi].aliases || [])].map(normalizeAnswer);
+      const given = normalizeAnswer(r.answers?.[qi]);
+      if (given && accepted.includes(given)) correct++;
     }
     const score = Math.round((correct / questions.length) * 100);
     return { score, feedback: `${correct} of ${questions.length} correct` };
@@ -563,10 +714,19 @@ function scoreLocalStoryRecall(drillData, userResponses) {
 
 const LOCAL_SCORERS = {
   'bridge-word': scoreLocalBridgeWord,
-  'compound-chain': scoreLocalCompoundChain,
-  'verbal-fluency': scoreLocalVerbalFluency,
   'story-recall': scoreLocalStoryRecall,
 };
+
+const HYBRID_SCORERS = {
+  'compound-chain': scoreCompoundChain,
+  'verbal-fluency': scoreVerbalFluency,
+};
+
+/*
+ * The two open-ended validators above deliberately make one semantic request
+ * for the complete response set. Known answer-key entries stay deterministic;
+ * every unknown item is classified in that one bounded payload.
+ */
 
 const LLM_SCORE_BUILDERS = {
   'word-association': buildWordAssociationScorePrompt,
@@ -591,16 +751,31 @@ export async function scoreLlmDrill(type, drillData, userResponses, timeLimitMs,
   const localScorer = LOCAL_SCORERS[type];
   if (localScorer) {
     console.log(`⚡ POST local scoring: ${type}`);
-    return buildScoringResult(localScorer(drillData, userResponses), userResponses, speedBonus);
+    const evaluation = evaluationWithProvenance(type, drillData, localScorer(drillData, userResponses), 'local');
+    return buildScoringResult(evaluation, userResponses, speedBonus);
+  }
+
+  const hybridScorer = HYBRID_SCORERS[type];
+  if (hybridScorer) {
+    console.log(`🧪 POST evidence-based scoring: ${type}`);
+    const scored = await hybridScorer(drillData, userResponses, providerId, model);
+    const evaluation = evaluationWithProvenance(
+      type, drillData, scored.evaluation, scored.kind, scored.providerId, scored.model,
+    );
+    return buildScoringResult(evaluation, userResponses, speedBonus);
   }
 
   // Slow path: LLM scoring for creative/subjective drills
   const builder = LLM_SCORE_BUILDERS[type];
-  if (!builder) return { score: 0, evaluation: null, questions: userResponses };
+  if (!builder) throw new Error(`Unsupported POST LLM scorer type: ${type}`);
 
   console.log(`🧪 POST LLM scoring: ${type}`);
   const response = await callAI(builder(drillData, userResponses), providerId, model);
-  return buildScoringResult(parseJsonFromAI(response), userResponses, speedBonus);
+  const payload = validatePostLlmScorePayload(parseJsonFromAI(response.text), userResponses.length);
+  const evaluation = evaluationWithProvenance(
+    type, drillData, payload, 'llm', response.providerId, response.model,
+  );
+  return buildScoringResult(evaluation, userResponses, speedBonus);
 }
 
 function buildWordAssociationScorePrompt(drillData, responses) {

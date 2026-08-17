@@ -503,6 +503,73 @@ describe('usePostSession — LLM training-log correctCount (issue #2097)', () =>
     }));
   });
 
+  it('reuses immediate training scores instead of calling the scorer again at completion', async () => {
+    generatePostDrill.mockResolvedValue({
+      type: 'compound-chain', config: {}, challenges: [{ rootWord: 'fire' }],
+    });
+    const evaluation = {
+      overallScore: 90,
+      scores: [{ score: 90, feedback: 'Validated' }],
+      summary: 'Validated',
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'hybrid', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    };
+
+    const { result } = renderHook(() => usePostSession());
+    await act(async () => {
+      await result.current.startSession([{ type: 'compound-chain', config: {}, timeLimitSec: 120 }], true);
+    });
+    await act(async () => {
+      await result.current.completeLlmDrill({
+        module: 'llm-drills',
+        type: 'compound-chain',
+        config: {},
+        drillData: {},
+        score: 90,
+        evaluation,
+        responses: [{ questionIndex: 0, items: ['firehouse'], responseMs: 500, llmScore: 90, llmFeedback: 'Validated' }],
+        totalMs: 5000,
+      });
+    });
+
+    expect(scorePostLlmDrill).not.toHaveBeenCalled();
+    expect(result.current.drillResults[0]).toMatchObject({ score: 90, evaluation });
+  });
+
+  it('scores a non-training response set in one completion batch', async () => {
+    generatePostDrill.mockResolvedValue({
+      type: 'word-association', config: {}, questions: [{ prompt: 'ocean' }, { prompt: 'forest' }],
+    });
+    scorePostLlmDrill.mockResolvedValue({
+      score: 75,
+      questions: [
+        { questionIndex: 0, response: 'wave', llmScore: 80 },
+        { questionIndex: 1, response: 'trees', llmScore: 70 },
+      ],
+      evaluation: { overallScore: 75, scores: [{ score: 80 }, { score: 70 }] },
+    });
+
+    const { result } = renderHook(() => usePostSession());
+    await act(async () => {
+      await result.current.startSession([{ type: 'word-association', config: {}, timeLimitSec: 120 }], false);
+    });
+    await act(async () => {
+      await result.current.completeLlmDrill({
+        module: 'llm-drills', type: 'word-association', drillData: result.current.currentDrill,
+        responses: [
+          { questionIndex: 0, response: 'wave', responseMs: 500 },
+          { questionIndex: 1, response: 'trees', responseMs: 500 },
+        ],
+        totalMs: 1000,
+      });
+    });
+
+    expect(scorePostLlmDrill).toHaveBeenCalledTimes(1);
+    expect(scorePostLlmDrill.mock.calls[0][2]).toHaveLength(2);
+  });
+
   it('logs correctCount=0 when the llmScore is below the correct threshold', async () => {
     generatePostDrill.mockResolvedValue({
       type: 'bridge-word', config: {}, puzzles: [{ clues: ['a', 'b'] }],
