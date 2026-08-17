@@ -224,10 +224,10 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
   it('normalizes a token-keyed map: aliases, case, and out-of-ladder levels', () => {
     expect(normalizeReviewerEfforts({
       gemini: 'HIGH',        // alias + case-folded
-      codex: 'ultra',        // in codex's ladder only
+      codex: 'xhigh',        // in codex's ladder only
       claude: 'medium',
       ollama: ' low ',       // trimmed
-    })).toEqual({ antigravity: 'high', codex: 'ultra', claude: 'medium', ollama: 'low' });
+    })).toEqual({ antigravity: 'high', codex: 'xhigh', claude: 'medium', ollama: 'low' });
   });
 
   it('DROPS rather than clamps a level the reviewer rejects — a displayed effort must be the one it runs', () => {

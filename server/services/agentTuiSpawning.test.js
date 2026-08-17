@@ -398,9 +398,11 @@ describe('agent TUI spawning', () => {
     const codex = buildTuiSpawnConfig(
       { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
       null,
-      { effort: 'ultra' },
+      // codex's config enum stops at `xhigh`; `max`/`ultra` clamp down rather
+      // than reaching the CLI, where they would fail its config load outright.
+      { effort: 'max' },
     );
-    expect(codex.args).toContain('model_reasoning_effort=ultra');
+    expect(codex.args).toContain('model_reasoning_effort=xhigh');
     expect(codex.args).not.toContain('--effort');
   });
 

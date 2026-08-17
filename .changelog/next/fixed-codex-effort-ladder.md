@@ -1,0 +1,1 @@
+- Codex agents no longer die at startup with "unknown variant `max`" — codex's reasoning-effort ladder stops at `xhigh`, so `max`/`ultra` now clamp instead of being emitted as a config override codex rejects while loading its config

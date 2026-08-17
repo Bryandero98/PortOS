@@ -1120,7 +1120,7 @@ export default function AutopilotPanel({ series, onSeriesUpdate, onIssuesUpdate 
                   emptyModelOption={effModel ? `Run default (${effModel})` : 'Run default model'}
                 />
                 <p className="mt-1 text-[11px] text-gray-500">
-                  Useful for experiments such as Luna/max writing with an independent Sol/xhigh critic. Exact stage pins in Prompts still take precedence.
+                  Useful for experiments such as Luna/xhigh writing with an independent Sol/medium critic. Exact stage pins in Prompts still take precedence.
                 </p>
               </div>
             ) : null}
