@@ -12,10 +12,10 @@
     "mobile-responsive": "16d8e7f63a673a2de48994c0ac08ef3d",
     "ux": "e03d03fc7c16faa5b5db93be2896b9ad",
     "feature-ideas": "d3282f16da29efe2d53595b3b34778bc",
-    "plan-task": "4df36bed4974ff41f369c86828e7f94f",
-    "claim-issue": "37949d1b1fa8d461a15658f8f4192d97",
-    "claim-issue-gitlab": "fae92c45c89c65455930b4b06a1b88c4",
-    "claim-issue-jira": "496638ec099de9d57686a61a015a3c03",
+    "plan-task": "aa5d121b3cb25aa134e3a20e5f0186c6",
+    "claim-issue": "dc47a602c96b0618e7bca87e6b21c397",
+    "claim-issue-gitlab": "d8fe2bf614b465ca46108ea3295d2ec5",
+    "claim-issue-jira": "52fd3506aad0b283be7234b608cf31ca",
     "code-reviewer-review": "1cd13ee5142d130f95cc390098d0f278",
     "code-reviewer-implement": "ab2c3e16d54e195bdf856574b7702042",
     "error-handling": "9afba2e99b90a8d5771c75e7f0615d96",
@@ -37,10 +37,10 @@
   "PROMPT_VERSIONS": {
     "do-replan": 2,
     "feature-ideas": 10,
-    "plan-task": 14,
-    "claim-issue": 13,
-    "claim-issue-gitlab": 12,
-    "claim-issue-jira": 10,
+    "plan-task": 15,
+    "claim-issue": 14,
+    "claim-issue-gitlab": 13,
+    "claim-issue-jira": 11,
     "pr-reviewer": 3,
     "code-reviewer-a": 1,
     "code-reviewer-b": 1,
@@ -77,6 +77,7 @@
       "0741418bd275b8953131155f8bc89460"
     ],
     "plan-task": [
+      "4df36bed4974ff41f369c86828e7f94f",
       "e7ff71a98468960cb4465741bd54e6aa",
       "602b259b4d1a565a84219b3e244f0a7f",
       "6bf6de4ca34035fcfbc09e8d98c66001",
@@ -99,6 +100,7 @@
     ],
     "pr-watcher": [],
     "claim-issue-jira": [
+      "496638ec099de9d57686a61a015a3c03",
       "157cfc80c3d00bcbf3e97aae3998c372",
       "4094d2a07cdc33179eedfaaecc2a6104",
       "18de42dd948a14866df8acbc9668e368",
@@ -110,6 +112,7 @@
       "364ecf5feb38ec1f7ada50a7bcbf3199"
     ],
     "claim-issue-gitlab": [
+      "fae92c45c89c65455930b4b06a1b88c4",
       "271ad9c6efa9dce424103711292fd055",
       "880dd7820ac90c689065e28cdca032fb",
       "f85cef7bd97bd675c504655b673589d1",
@@ -123,6 +126,7 @@
       "da0a8fbb33ac274a3b2efd968e302a1a"
     ],
     "claim-issue": [
+      "37949d1b1fa8d461a15658f8f4192d97",
       "89308f712f99ad8134224639cd99f135",
       "06190b8089adf1cb2c84bddeb6596af7",
       "28f09436566c281a6915d6ad4c1b80f8",
