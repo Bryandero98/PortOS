@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from '../components/ui/Toast';
 import { extractLastFrame } from '../services/api';
+import { trackAudioUrl } from '../services/apiTracks.js';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import { videoLoraFamily, isVideoLoraFamily, loraFamilyOf, VIDEO_LORA_FAMILIES, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
 import { randomSeed } from '../lib/genUtils';
@@ -59,6 +60,7 @@ const editableRemixModel = (models, defaultModelId) => {
 export function useVideoGenForm({ models, status, availableLoras, grokEnabled }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const incomingSourceImage = searchParams.get('sourceImageFile');
+  const incomingAudioFilename = searchParams.get('audioFilename');
   const incomingPrompt = searchParams.get('prompt');
   const incomingNegativePrompt = searchParams.get('negativePrompt');
   const incomingWidth = searchParams.get('w');
@@ -70,7 +72,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   const [backend, setBackend] = useState('local');
   const [grokDuration, setGrokDuration] = useState(GROK_VIDEO_DEFAULT_DURATION);
 
-  const [mode, setMode] = useState(incomingSourceImage ? 'image' : 'text');
+  const [mode, setMode] = useState(incomingAudioFilename ? 'a2v' : (incomingSourceImage ? 'image' : 'text'));
   const [prompt, setPrompt] = useState(incomingPrompt || '');
   const [negativePrompt, setNegativePrompt] = useState(incomingNegativePrompt || '');
   const [stylePreset, setStylePreset] = useState(null);
@@ -146,6 +148,38 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // is sent as multipart field name 'audioFile'; the server stages it under
   // data/uploads, then the python helper passes it to AudioToVideoPipeline.
   const [audioFile, setAudioFile] = useState(null);
+  const audioHandoffRef = useRef(null);
+
+  // Music renders live in the shared library rather than in the browser's
+  // local file picker. Turn a render's deep-link filename into the same File
+  // object the upload panel produces, so the existing multipart submit path,
+  // size checks, and server staging remain the single source of truth.
+  useEffect(() => {
+    if (!incomingAudioFilename || audioHandoffRef.current === incomingAudioFilename) return;
+    audioHandoffRef.current = incomingAudioFilename;
+    let cancelled = false;
+    setMode('a2v');
+    setAudioFile(null);
+    fetch(trackAudioUrl(incomingAudioFilename))
+      .then((response) => {
+        if (!response.ok) throw new Error('The selected music render could not be loaded.');
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        const type = blob.type || 'audio/wav';
+        setAudioFile(new File([blob], incomingAudioFilename, { type }));
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete('audioFilename');
+          return next;
+        }, { replace: true });
+      })
+      .catch((error) => {
+        if (!cancelled) toast.error(error.message || 'Failed to load the music render');
+      });
+    return () => { cancelled = true; };
+  }, [incomingAudioFilename, setSearchParams]);
   // IC-LoRA remix modes (issue #3100) — the reference clip is either a fresh
   // upload (multipart field 'icReference') or a prior render picked by history
   // id. The two are mutually exclusive server-side, so the panel's Clear drops

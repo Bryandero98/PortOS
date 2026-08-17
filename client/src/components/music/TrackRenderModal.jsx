@@ -8,7 +8,7 @@
  * take" makes it the active render. Mirrors the image/video MediaLightbox role.
  */
 
-import { Sparkles, CheckCircle2, Download, Trash2, X } from 'lucide-react';
+import { Sparkles, CheckCircle2, Download, Trash2, X, Film } from 'lucide-react';
 import Modal from '../ui/Modal';
 import { formatTimecode, timeAgo } from '../../utils/formatters';
 import { trackAudioUrl } from '../../services/api';
@@ -22,7 +22,7 @@ function MetaRow({ label, children }) {
   );
 }
 
-export default function TrackRenderModal({ render, active = false, onClose, onSelect, onRemix, onDelete }) {
+export default function TrackRenderModal({ render, active = false, onClose, onSelect, onRemix, onDelete, onSendToVideo }) {
   if (!render) return null;
   const { prompt, lyrics, engine, modelId, durationSec, audioFilename, createdAt } = render;
   const isUpload = !engine;
@@ -111,6 +111,15 @@ export default function TrackRenderModal({ render, active = false, onClose, onSe
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-xs font-medium"
           >
             <Sparkles size={13} /> Remix
+          </button>
+        ) : null}
+        {onSendToVideo ? (
+          <button
+            type="button"
+            onClick={() => onSendToVideo(render)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent/20 hover:bg-port-accent/40 text-port-accent text-xs font-medium"
+          >
+            <Film size={13} /> Audio → Video
           </button>
         ) : null}
       </div>
