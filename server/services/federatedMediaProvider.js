@@ -12,14 +12,17 @@ import { ServerError } from '../lib/errorHandler.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { canonicalStringify } from '../lib/objects.js';
 import { PATHS, makePathResolver, sha256File, sha256Text } from '../lib/fileUtils.js';
+import {
+  FEDERATED_MEDIA_STALE_AFTER_MS,
+  FEDERATED_MEDIA_WIRE_VERSION,
+} from '../lib/federatedMediaWire.js';
 import { getSettings } from './settings.js';
 import { enqueueJob, getJob, listJobs, cancelJob } from './mediaJobQueue/index.js';
 import { listMusicEngineCapabilities } from './musicEngineCapabilities.js';
 import { readCallerInstanceId } from './sharing/peerPullAuthorization.js';
 import { findPeerById } from './sharing/peerSyncShared.js';
 
-export const FEDERATED_MEDIA_WIRE_VERSION = 1;
-export const FEDERATED_MEDIA_STALE_AFTER_MS = 60_000;
+export { FEDERATED_MEDIA_STALE_AFTER_MS, FEDERATED_MEDIA_WIRE_VERSION };
 export const DEFAULT_FEDERATED_MEDIA_PROVIDER = Object.freeze({
   enabled: false,
   maxQueuedJobs: 2,

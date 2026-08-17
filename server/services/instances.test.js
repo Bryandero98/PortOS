@@ -20,8 +20,9 @@ vi.mock('fs/promises', () => ({
   rename: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock('../lib/fileUtils.js', () => ({
-tryReadFile: vi.fn().mockResolvedValue(null),
+vi.mock('../lib/fileUtils.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  tryReadFile: vi.fn().mockResolvedValue(null),
   dataPath: (name) => `/mock/data/${name}`,
   readJSONFile: vi.fn(),
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -240,6 +241,7 @@ describe('instances.js', () => {
         instanceId: null,
         status: 'unknown',
         enabled: true,
+        mediaProvider: { enabled: false, audioModels: [] },
         directions: ['outbound']
       });
       expect(peer.addedAt).toBeDefined();
@@ -368,11 +370,20 @@ describe('instances.js', () => {
   });
 
   describe('redactPeerForWire', () => {
-    it('strips the auth credential before a peer crosses the wire', () => {
-      const peer = { id: 'peer-1', name: 'host', auth: { username: 'a', password: 'b' }, status: 'online' };
+    it('strips credentials and local media-routing state before a peer crosses the wire', () => {
+      const peer = {
+        id: 'peer-1',
+        name: 'host',
+        auth: { username: 'a', password: 'b' },
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'example', modelId: 'example' }] },
+        mediaProviderStatus: { state: 'ready' },
+        status: 'online',
+      };
       const redacted = redactPeerForWire(peer);
 
       expect(redacted).not.toHaveProperty('auth');
+      expect(redacted).not.toHaveProperty('mediaProvider');
+      expect(redacted).not.toHaveProperty('mediaProviderStatus');
       expect(redacted).toMatchObject({ id: 'peer-1', name: 'host', status: 'online' });
       // Does not mutate the original
       expect(peer.auth).toEqual({ username: 'a', password: 'b' });
@@ -515,6 +526,26 @@ describe('instances.js', () => {
       await updatePeer('peer-1', { enabled: true });
 
       expect(disconnectFromPeer).not.toHaveBeenCalled();
+    });
+
+    it('stores a disabled remote-media allowlist while preserving future config fields', async () => {
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      const result = await updatePeer('peer-1', {
+        mediaProvider: {
+          enabled: false,
+          futureField: 'keep',
+          audioModels: [{ engine: ' minimax-music3 ', modelId: 'minimax-music3', futureModel: 'keep-too' }],
+        },
+      });
+
+      expect(result.mediaProvider).toEqual({
+        enabled: false,
+        futureField: 'keep',
+        audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3', futureModel: 'keep-too' }],
+      });
+      expect(fetch).not.toHaveBeenCalled();
     });
 
     it('should set a valid DNS host and disconnect the relay so it reconnects via HTTPS', async () => {
@@ -1043,6 +1074,51 @@ describe('instances.js', () => {
       expect(result.version).toBe('1.0.0');
       expect(result.lastSeen).toBeDefined();
       expect(connectToPeer).toHaveBeenCalledWith(peer);
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('discovers and persists capacity only for an opted-in media provider peer', async () => {
+      const target = makePeer({
+        mediaProvider: {
+          enabled: true,
+          audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }],
+        },
+      });
+      readJSONFile.mockResolvedValue({ self: null, peers: [target] });
+      const providerStatus = {
+        wireVersion: 1,
+        generatedAt: new Date().toISOString(),
+        staleAfterMs: 60_000,
+        status: 'ready',
+        kinds: ['audio'],
+        queue: { totalActive: 0, providerActive: 0, queued: 0, running: 0, maxQueuedJobs: 2, accepting: true },
+        capabilities: [{
+          kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3',
+          modelId: 'minimax-music3', modelName: 'MiniMax Music 3', ready: true,
+          unavailableReason: null, runtimeReady: true, platformSupported: true,
+          cudaRequired: true, cudaState: 'available', minDurationSec: 10,
+          maxDurationSec: 300, defaultDurationSec: 60, lyrics: true, autoDuration: false,
+        }],
+      };
+      fetch.mockImplementation(async (url) => {
+        if (String(url).endsWith('/api/system/health/details')) {
+          return { ok: true, json: async () => ({ instanceId: 'remote-id', version: '1.0.0' }) };
+        }
+        if (String(url).endsWith('/api/apps')) return { ok: true, json: async () => [] };
+        if (String(url).includes('/api/instances/sync-status')) return { ok: true, json: async () => ({}) };
+        if (String(url).endsWith('/api/federation/media/v1/status')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify(providerStatus) };
+        }
+        return { ok: false, status: 404, text: async () => '' };
+      });
+
+      const result = await probePeer(target);
+
+      expect(result.mediaProviderStatus).toMatchObject({ state: 'ready', reason: null });
+      expect(fetch).toHaveBeenCalledWith(
+        'http://10.0.0.1:5555/api/federation/media/v1/status',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
 
     it('should mark peer offline on fetch failure', async () => {

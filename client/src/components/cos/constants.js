@@ -308,6 +308,17 @@ export const SWARM_COUNT_OPTIONS = [
   { value: 6, label: '6 in parallel', description: 'Claim and ship up to 6 independent issues per run, merges serialized' }
 ];
 
+// branch-reconcile coordinator batch size (taskMetadata.branchesPerAgent).
+// Keep this separate from claim-issue's swarm controls: one coordinator gets a
+// prioritized branch batch, while issue claiming fans out one agent per issue.
+export const BRANCHES_PER_AGENT_DEFAULT = 3;
+export const BRANCHES_PER_AGENT_TASK_TYPES = new Set(['branch-reconcile']);
+export const BRANCHES_PER_AGENT_OPTIONS = [1, 2, 3, 4, 5, 6].map((value) => ({
+  value,
+  label: `${value} branch${value === 1 ? '' : 'es'} per agent`,
+  description: `Give each branch-reconcile coordinator up to ${value} prioritized branch${value === 1 ? '' : 'es'} per run`
+}));
+
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 

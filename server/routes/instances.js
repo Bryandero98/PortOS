@@ -16,6 +16,7 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { DEFAULT_PEER_PORT } from '../lib/ports.js';
 import { findTailscale } from '../lib/tailscale.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
+import { federatedMediaPeerSettingsSchema, validateRequest } from '../lib/validation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -86,7 +87,10 @@ const updatePeerSchema = z.object({
   syncCategories: syncCategoriesSchema,
   // Accept empty string to clear; any other string is validated/normalized in the service
   host: z.string().optional().nullable(),
-  auth: peerAuthSchema
+  auth: peerAuthSchema,
+  // Explicit consumer opt-in + model allowlist for using this peer as a media
+  // provider. Provider-side sharing remains independently configured there.
+  mediaProvider: federatedMediaPeerSettingsSchema.optional(),
 });
 
 const announceSchema = z.object({
@@ -263,7 +267,7 @@ router.post('/peers', asyncHandler(async (req, res) => {
 
 // PUT /api/instances/peers/:id — update peer
 router.put('/peers/:id', asyncHandler(async (req, res) => {
-  const data = updatePeerSchema.parse(req.body);
+  const data = validateRequest(updatePeerSchema, req.body);
   // Reject invalid DNS names up front so the UI gets a clear error instead of a silent no-op.
   if (data.host !== undefined && data.host !== null && data.host !== '') {
     if (instances.validHost(data.host) === undefined) {

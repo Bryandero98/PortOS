@@ -32,10 +32,10 @@ const BASE_CONFIG = {
   status: {},
 };
 
-function renderControls({ taskMetadata, onUpdate = vi.fn() } = {}) {
+function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas' } = {}) {
   render(
     <GlobalConfigControls
-      taskType="feature-ideas"
+      taskType={taskType}
       config={{ ...BASE_CONFIG, taskMetadata }}
       onUpdate={onUpdate}
       onTrigger={() => {}}
@@ -106,5 +106,17 @@ describe('GlobalConfigControls — After opening PR', () => {
   it('keeps the reviewer picker for a legacy reviewLoop task that opens no PR', () => {
     renderControls({ taskMetadata: { useWorktree: true, openPR: false, reviewLoop: true } });
     expect(screen.getByTestId('reviewer-picker')).toBeInTheDocument();
+  });
+});
+
+describe('GlobalConfigControls — branch-reconcile batch size', () => {
+  it('shows the safe default and persists a selected branch batch', () => {
+    const onUpdate = renderControls({ taskType: 'branch-reconcile', taskMetadata: { cleanupMerged: true } });
+    const select = screen.getByLabelText('Branches per agent');
+    expect(select).toHaveValue('3');
+    fireEvent.change(select, { target: { value: '5' } });
+    expect(onUpdate).toHaveBeenCalledWith('branch-reconcile', {
+      taskMetadata: { cleanupMerged: true, branchesPerAgent: 5 }
+    });
   });
 });

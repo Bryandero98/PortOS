@@ -22,6 +22,7 @@ import {
 import PeerAppsList from '../components/instances/PeerAppsList';
 import PeerAgentsSection from '../components/instances/PeerAgentsSection';
 import { SchemaGapBadge } from '../components/instances/SchemaGapBadge';
+import PeerMediaProviderPanel from '../components/instances/PeerMediaProviderPanel';
 import { timeAgo, timeUntil } from '../utils/formatters';
 import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { directionalCounts, describeDirectional } from '../lib/syncCounts';
@@ -1357,6 +1358,8 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
       )}
 
       <SchemaGapBadge peer={peer} peerSubs={peerSubs} />
+
+      <PeerMediaProviderPanel peer={peer} onRefresh={onRefresh} />
 
       <SyncCategoriesPanel peer={peer} onRefresh={onRefresh} />
 
