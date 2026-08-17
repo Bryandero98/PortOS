@@ -13,6 +13,18 @@ import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import useMounted from '../../hooks/useMounted';
 import { formatTimeOfDaySeconds } from '../../utils/formatters';
+import { getVideoGenStatus } from '../../services/apiImageVideo.js';
+import { listLorasFull } from '../../services/api';
+import ModelSelect from '../ModelSelect';
+import ResolutionField from './ResolutionField';
+import AdvancedParamsPanel from '../videoGen/AdvancedParamsPanel';
+import { resolutionOptionsForModel } from '../../lib/videoGenResolutions';
+import {
+  videoEdgeBoundsForModel, textEncoderOptionsForModel, STOCK_TEXT_ENCODER_ID,
+  normalizeTextEncoderForModel,
+} from '../../lib/videoGenParams';
+import { loraFamilyOf, videoLoraFamily } from '../../lib/runnerFamilies';
+import LoraPicker from '../imageGen/LoraPicker';
 
 const STATUS_BADGE = {
   queued: 'bg-port-border text-port-text-muted',
@@ -472,16 +484,25 @@ function JobRow({ job, onCancel, onRetry, onRunNow, onDelete }) {
         {job.startedAt && ` · started ${formatTimeOfDaySeconds(job.startedAt)}`}
         {job.completedAt && ` · finished ${formatTimeOfDaySeconds(job.completedAt)}`}
       </div>
-      {editing && (
-        <EditRetryForm
-          job={job}
-          onSubmit={(overrides) => {
-            setEditing(false);
-            onRetry(job.id, overrides);
-          }}
-          onCancel={() => setEditing(false)}
-        />
-      )}
+      {editing && (job.kind === 'video' ? (
+          <VideoRetryForm
+            job={job}
+            onSubmit={(overrides) => {
+              setEditing(false);
+              onRetry(job.id, overrides);
+            }}
+            onCancel={() => setEditing(false)}
+          />
+        ) : (
+          <EditRetryForm
+            job={job}
+            onSubmit={(overrides) => {
+              setEditing(false);
+              onRetry(job.id, overrides);
+            }}
+            onCancel={() => setEditing(false)}
+          />
+        ))}
     </div>
   );
 }
@@ -634,6 +655,164 @@ function EditRetryForm({ job, onSubmit, onCancel }) {
           <RotateCw className="w-3 h-3" />
           Retry with changes
         </button>
+      </div>
+    </form>
+  );
+}
+
+// The retry editor deliberately reuses the same resolution and advanced
+// controls rendered by VideoGen. Keeping the capability predicates in those
+// components means a newly-supported video knob is not silently absent here.
+function VideoRetryForm({ job, onSubmit, onCancel }) {
+  const p = job.params || {};
+  const [models, setModels] = useState([]);
+  const [modelId, setModelId] = useState(p.modelId || '');
+  const [prompt, setPrompt] = useState(p.prompt || '');
+  const [negativePrompt, setNegativePrompt] = useState(p.negativePrompt || '');
+  const [width, setWidth] = useState(p.width ?? '');
+  const [height, setHeight] = useState(p.height ?? '');
+  const [numFrames, setNumFrames] = useState(p.numFrames ?? '');
+  const [fps, setFps] = useState(p.fps ?? '');
+  const [chunks, setChunks] = useState(p.chunks ?? 1);
+  const [chunkPrompts, setChunkPrompts] = useState(p.chunkPrompts || []);
+  const [contextFrames, setContextFrames] = useState(p.contextFrames ?? 0);
+  const [seed, setSeed] = useState(p.seed ?? '');
+  const [steps, setSteps] = useState(p.steps ?? '');
+  const [guidanceScale, setGuidanceScale] = useState(p.guidanceScale ?? '');
+  const [imageStrength, setImageStrength] = useState(p.imageStrength ?? '');
+  const [tiling, setTiling] = useState(p.tiling || 'auto');
+  const [disableAudio, setDisableAudio] = useState(p.disableAudio === true);
+  const [textEncoderId, setTextEncoderId] = useState(p.textEncoderId || STOCK_TEXT_ENCODER_ID);
+  const [availableLoras, setAvailableLoras] = useState([]);
+  const [selectedLoras, setSelectedLoras] = useState(Array.isArray(p.loras) ? p.loras : []);
+
+  useEffect(() => {
+    getVideoGenStatus({ silent: true })
+      .then((status) => setModels(Array.isArray(status?.models) ? status.models : []))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    listLorasFull({ silent: true })
+      .then((loras) => setAvailableLoras(Array.isArray(loras) ? loras : []))
+      .catch(() => {});
+  }, []);
+
+  const currentModel = models.find((model) => model.id === modelId) || null;
+  const isGrok = p.mode === 'grok';
+  const loraFamily = videoLoraFamily(currentModel);
+  const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];
+  const encoderOptions = textEncoderOptionsForModel(currentModel);
+  const originalEncoder = normalizeTextEncoderForModel(p.textEncoderId || STOCK_TEXT_ENCODER_ID, currentModel);
+  // Multi-keyframe inputs are not exposed in the sanitized queue projection,
+  // but FFLF is their persisted semantic mode. IC/a2v conditioning also pins
+  // a single render, so keep the shared chaining controls consistent with the
+  // normal VideoGen form for those retry records.
+  const chainingLocked = p.mode === 'fflf' || p.mode === 'a2v' || p.mode?.startsWith('ic-');
+  const handleModelChange = (event) => {
+    const nextModelId = event.target.value;
+    const nextModel = models.find((model) => model.id === nextModelId) || null;
+    setModelId(nextModelId);
+    setTextEncoderId(normalizeTextEncoderForModel(textEncoderId, nextModel));
+    if (videoLoraFamily(nextModel) !== loraFamily) setSelectedLoras([]);
+  };
+  const setChunkPromptAt = (index, value) => setChunkPrompts((prev) => {
+    const next = [...prev];
+    while (next.length <= index) next.push('');
+    next[index] = value;
+    return next;
+  });
+  const displayedNumFrames = numFrames === '' ? (currentModel?.defaultFrames ?? 121) : numFrames;
+  const displayedFps = fps === '' ? 24 : fps;
+
+  const submit = (e) => {
+    e.preventDefault();
+    const overrides = {};
+    const textChanged = (value, original) => (value || '').trim() !== (original || '').trim();
+    const numberChanged = (value, original) => (value === '' ? null : Number(value)) !== (original ?? null);
+    if (!prompt.trim()) return;
+    if (textChanged(prompt, p.prompt)) overrides.prompt = prompt.trim();
+    if (textChanged(negativePrompt, p.negativePrompt)) overrides.negativePrompt = negativePrompt.trim();
+    if (textChanged(modelId, p.modelId)) overrides.modelId = modelId.trim();
+    if (numberChanged(width, p.width) && width !== '') overrides.width = Number(width);
+    if (numberChanged(height, p.height) && height !== '') overrides.height = Number(height);
+    if (numFrames !== '' && numberChanged(numFrames, p.numFrames)) overrides.numFrames = Number(numFrames);
+    if (fps !== '' && numberChanged(fps, p.fps)) overrides.fps = Number(fps);
+    if (numberChanged(chunks, p.chunks ?? 1)) overrides.chunks = Number(chunks);
+    if (Number(chunks) <= 1 && Number(p.chunks ?? 1) > 1) overrides.chunkPrompts = [];
+    else if (JSON.stringify(chunkPrompts) !== JSON.stringify(p.chunkPrompts || [])) overrides.chunkPrompts = chunkPrompts;
+    if (numberChanged(contextFrames, p.contextFrames ?? 0)) overrides.contextFrames = Number(contextFrames);
+    const setNumericOverride = (key, value, original, clearable = false) => {
+      if (value === '') {
+        if (clearable && original != null) overrides[key] = null;
+        return;
+      }
+      if (numberChanged(value, original)) overrides[key] = Number(value);
+    };
+    setNumericOverride('seed', seed, p.seed, true);
+    setNumericOverride('steps', steps, p.steps, true);
+    setNumericOverride('guidanceScale', guidanceScale, p.guidanceScale, true);
+    setNumericOverride('imageStrength', imageStrength, p.imageStrength, true);
+    if (tiling !== (p.tiling || 'auto')) overrides.tiling = tiling;
+    if (disableAudio !== (p.disableAudio === true)) overrides.disableAudio = disableAudio;
+    // A model switch can normalize an inherited encoder to stock locally;
+    // submit that reset explicitly so the retry does not retain the old,
+    // incompatible encoder from the failed job.
+    if (modelId !== p.modelId || textEncoderId !== originalEncoder) overrides.textEncoderId = textEncoderId;
+    if (JSON.stringify(selectedLoras) !== JSON.stringify(p.loras || [])) overrides.loras = selectedLoras;
+    onSubmit(Object.keys(overrides).length ? overrides : null);
+  };
+
+  return (
+    <form onSubmit={submit} className="mt-3 pt-3 border-t border-port-border space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <FormField label="Prompt" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} maxLength={8000} className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white" />
+        </FormField>
+        <FormField label="Negative Prompt" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+          <textarea value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} rows={3} maxLength={8000} className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white" />
+        </FormField>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {!isGrok && (
+          <FormField className="col-span-2 sm:col-span-3" label="Model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+            {models.length > 0 ? <ModelSelect models={models} value={modelId} onChange={handleModelChange} /> : (
+              <input value={modelId} onChange={(e) => setModelId(e.target.value)} className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white" />
+            )}
+          </FormField>
+        )}
+        <ResolutionField presets={resolutionOptionsForModel(currentModel)} width={width} height={height} onChange={(w, h) => { setWidth(w); setHeight(h); }} {...videoEdgeBoundsForModel(currentModel)} snapOnBlur />
+      </div>
+      {!isGrok && encoderOptions.length > 1 && (
+        <FormField label="Text encoder" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+          <ModelSelect models={encoderOptions} value={textEncoderId} onChange={(e) => setTextEncoderId(e.target.value)} getLabel={(option) => option.label} />
+        </FormField>
+      )}
+      {!isGrok && loraFamily && videoLoras.length > 0 && (
+        <LoraPicker
+          availableLoras={videoLoras}
+          selected={selectedLoras}
+          onChange={setSelectedLoras}
+          currentRunnerFamily={loraFamily}
+          currentCompatKey={loraFamily}
+        />
+      )}
+      {!isGrok && (
+        <AdvancedParamsPanel
+          mode={p.mode || 'text'} currentModel={currentModel}
+          numFrames={displayedNumFrames} onNumFramesChange={setNumFrames}
+          chunks={chunks} onChunksChange={setChunks} keyframesActive={chainingLocked}
+          chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chunks > 1 && !chainingLocked}
+          contextFrames={contextFrames} onContextFramesChange={setContextFrames}
+          fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
+          steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+          imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
+          disableAudio={disableAudio} onDisableAudioChange={setDisableAudio}
+          idPrefix={`retry-video-${job.id}`}
+        />
+      )}
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button type="button" onClick={onCancel} className="px-3 py-1 text-xs text-port-text-muted hover:text-white">Cancel</button>
+        <button type="submit" className="inline-flex items-center gap-1 px-3 py-1 bg-port-accent text-white text-xs rounded hover:bg-port-accent/90"><RotateCw className="w-3 h-3" />Retry with changes</button>
       </div>
     </form>
   );

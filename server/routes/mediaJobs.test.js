@@ -25,6 +25,9 @@ vi.mock('../services/mediaJobQueue/index.js', () => ({
   runJobNow: (...args) => stubs.runJobNow(...args),
   removeArchivedJob: (...args) => stubs.removeArchivedJob(...args),
 }));
+vi.mock('../services/videoGen/prepareParams.js', () => ({
+  validateVideoRetryParams: vi.fn(),
+}));
 
 const mediaJobsRouter = (await import('./mediaJobs.js')).default;
 
@@ -161,6 +164,45 @@ describe('mediaJobs routes', () => {
     // modelId stays at the original — empty/whitespace override drops out.
     expect(call.params.modelId).toBe('sdxl-base');
     expect(call.params.steps).toBe(40);
+  });
+
+  it('POST /:id/retry accepts the editable video generation controls', async () => {
+    jobStore.set('j-video-edit', {
+      id: 'j-video-edit', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'old', modelId: 'video-model', width: 768, height: 512 },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-video-edit/retry')
+      .send({ params: {
+        prompt: 'new', negativePrompt: 'blur', modelId: 'other-model',
+        width: 1024, height: 576, numFrames: 121, fps: 24, steps: 25,
+        guidanceScale: 3, seed: 42, imageStrength: 0.5, tiling: 'spatial',
+        disableAudio: true, textEncoderId: 'stock', chunks: 2,
+        chunkPrompts: ['opening', 'climax'], contextFrames: 12,
+      } });
+    expect(r.status).toBe(200);
+    expect(stubs.enqueueJob).toHaveBeenCalledWith({
+      kind: 'video', owner: null,
+      params: {
+        prompt: 'new', negativePrompt: 'blur', modelId: 'other-model',
+        width: 1024, height: 576, numFrames: 121, fps: 24, steps: 25,
+        guidanceScale: 3, seed: 42, imageStrength: 0.5, tiling: 'spatial',
+        disableAudio: true, textEncoderId: 'stock', chunks: 2,
+        chunkPrompts: ['opening', 'climax'], contextFrames: 12,
+      },
+    });
+  });
+
+  it('POST /:id/retry clears resettable numeric video controls with null', async () => {
+    jobStore.set('j-video-clear', {
+      id: 'j-video-clear', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'old', steps: 25, seed: 42, guidanceScale: 3, imageStrength: 0.5 },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-video-clear/retry')
+      .send({ params: { steps: null, seed: null, guidanceScale: null, imageStrength: null } });
+    expect(r.status).toBe(200);
+    expect(stubs.enqueueJob.mock.calls[0][0].params).toEqual({ prompt: 'old' });
   });
 
   it('GET /:id surfaces the Codex reasoning effort a job used (allowlisted)', async () => {
