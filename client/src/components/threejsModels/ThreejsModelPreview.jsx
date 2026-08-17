@@ -1,17 +1,34 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { Bounds, OrbitControls, useBounds } from '@react-three/drei';
 import * as THREE from 'three';
 import { createSculptBufferGeometry, needsSculptBufferGeometry, sculptMaterialProps } from '../../lib/threejsSculpt';
 import { buildPartSelectionIndex, computeExplodeLayout, isReliefPart } from '../../lib/threejsExplode';
 import { summarizeThreejsArticulation } from '../../lib/threejsRig';
+import {
+  createRenderBudget,
+  getEffectiveTier,
+  recordFrame,
+  resetRenderBudget,
+} from '../../utils/cityRenderBudget';
 
 const radians = (degrees = 0) => THREE.MathUtils.degToRad(degrees);
 const rotation = (degrees = [0, 0, 0]) => degrees.map(radians);
 
 const HIGHLIGHT_COLOR = '#38bdf8';
 const HIGHLIGHT_EMISSIVE_INTENSITY = 0.9;
+
+// These settings change only the renderer's presentation cost. The generated
+// spec remains the source of truth for geometry, materials, lights, and export.
+const PREVIEW_QUALITY = Object.freeze({
+  low: { dpr: [0.75, 1], shadows: 'basic' },
+  medium: { dpr: [1, 1], shadows: 'percentage' },
+  high: { dpr: [1, 1.5], shadows: 'soft' },
+  ultra: { dpr: [1, 2], shadows: 'soft' },
+});
+
+const PREVIEW_QUALITY_TIERS = Object.keys(PREVIEW_QUALITY);
 
 const BACKGROUND_PRESETS = [
   { id: 'black', label: 'Black', value: '#000000' },
@@ -142,6 +159,32 @@ function ExplodeRefit({ growth }) {
   return null;
 }
 
+// The preview owns only the R3F sampling boundary; the quality decisions stay in
+// cityRenderBudget so its warm-up, hysteresis, cooldown, and gap handling remain
+// deterministic and shared with CyberCity.
+function PreviewAdaptiveQuality({ enabled, resetToken, onTierChange }) {
+  const stateRef = useRef(null);
+  if (stateRef.current === null) stateRef.current = createRenderBudget('high', 0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const now = typeof performance === 'undefined' ? 0 : performance.now();
+    stateRef.current = resetRenderBudget(stateRef.current, 'high', now);
+    onTierChange(getEffectiveTier(stateRef.current));
+  }, [enabled, resetToken, onTierChange]);
+
+  useFrame((_, delta) => {
+    if (!enabled) return;
+    const now = typeof performance === 'undefined' ? 0 : performance.now();
+    const previousTier = getEffectiveTier(stateRef.current);
+    stateRef.current = recordFrame(stateRef.current, { now, dt: delta * 1000 });
+    const nextTier = getEffectiveTier(stateRef.current);
+    if (nextTier !== previousTier) onTierChange(nextTier);
+  });
+
+  return null;
+}
+
 function SceneLight({ light }) {
   if (light.type === 'ambient') {
     return <ambientLight color={light.color} intensity={light.intensity} />;
@@ -207,8 +250,12 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
 export default function ThreejsModelPreview({ spec, className = '' }) {
   const [background, setBackground] = useState(() => spec?.background || '#000000');
   const [explode, setExplode] = useState(0);
+  const [qualityMode, setQualityMode] = useState('auto');
+  const [autoTier, setAutoTier] = useState('high');
+  const [fixedTier, setFixedTier] = useState('high');
   const [searchParams, setSearchParams] = useSearchParams();
   const explodeSliderId = useId();
+  const qualitySelectId = useId();
 
   // Keyed on the authored background, not on `spec` — the detail page re-fetches
   // the record every 2s while a generation runs, and a fresh object with the
@@ -229,6 +276,25 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
   useEffect(() => {
     setExplode(0);
   }, [partSignature]);
+
+  // Equivalent polling snapshots should not reset adaptation, but any authored
+  // model change must start a fresh measurement window instead of borrowing the
+  // previous model's pressure history.
+  const modelSignature = useMemo(() => JSON.stringify(spec), [spec]);
+  const effectiveTier = qualityMode === 'auto' ? autoTier : fixedTier;
+  const quality = PREVIEW_QUALITY[effectiveTier];
+  const handleAutoTierChange = useCallback((tier) => {
+    setAutoTier((previous) => previous === tier ? previous : tier);
+  }, []);
+  const handleQualityChange = (event) => {
+    const next = event.target.value;
+    if (next === 'auto') {
+      setQualityMode('auto');
+      return;
+    }
+    setFixedTier(next);
+    setQualityMode('fixed');
+  };
 
   // The URL is the source of truth for what is selected, so a picked part is
   // shareable and reload-safe; an id the current model doesn't have degrades to
@@ -260,11 +326,16 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
     >
       <Canvas
         key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}`}
-        shadows
+        shadows={quality.shadows}
         camera={{ position: spec.camera.position, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
-        dpr={[1, 2]}
+        dpr={quality.dpr}
         gl={{ alpha: transparent }}
       >
+        <PreviewAdaptiveQuality
+          enabled={qualityMode === 'auto'}
+          resetToken={modelSignature}
+          onTierChange={handleAutoTierChange}
+        />
         <ProceduralScene
           spec={spec}
           background={background}
@@ -300,6 +371,22 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
             className="h-4 w-5 rounded border-0 bg-transparent p-0"
           />
         </label>
+        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+        <label htmlFor={qualitySelectId} className="whitespace-nowrap text-port-text-muted">
+          Quality
+        </label>
+        <select
+          id={qualitySelectId}
+          value={qualityMode === 'auto' ? 'auto' : fixedTier}
+          onChange={handleQualityChange}
+          className="port-media-overlay-item rounded px-1.5 py-1 text-[10px]"
+        >
+          <option value="auto">Auto</option>
+          {PREVIEW_QUALITY_TIERS.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+        </select>
+        <span className="whitespace-nowrap text-port-text-muted">
+          {qualityMode === 'auto' ? `Auto · ${effectiveTier}` : `Fixed · ${effectiveTier}`}
+        </span>
         <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
         <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
           Explode

@@ -3,7 +3,17 @@ import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@react-three/fiber', () => ({
-  Canvas: ({ children, ...props }) => <div data-testid="threejs-canvas" data-alpha={String(props.gl?.alpha)}>{children}</div>,
+  Canvas: ({ children, ...props }) => (
+    <div
+      data-testid="threejs-canvas"
+      data-alpha={String(props.gl?.alpha)}
+      data-dpr={Array.isArray(props.dpr) ? props.dpr.join(',') : String(props.dpr)}
+      data-shadows={String(props.shadows)}
+    >
+      {children}
+    </div>
+  ),
+  useFrame: vi.fn(),
 }));
 // A chainable stand-in for drei's Bounds api, so the explode re-fit is
 // observable without a real renderer.
@@ -107,6 +117,23 @@ describe('ThreejsModelPreview', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Transparent' }));
     expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-alpha', 'true');
     expect(screen.getByLabelText('Custom preview background color')).toHaveValue('#000000');
+  });
+
+  it('adapts presentation quality locally without changing the generated spec', () => {
+    const originalSpec = structuredClone(SPEC);
+    renderPreview(<ThreejsModelPreview spec={SPEC} />);
+
+    expect(screen.getByLabelText('Quality')).toHaveValue('auto');
+    expect(screen.getByText('Auto · high')).toBeInTheDocument();
+    expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-dpr', '1,1.5');
+    expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-shadows', 'soft');
+
+    fireEvent.change(screen.getByLabelText('Quality'), { target: { value: 'low' } });
+
+    expect(screen.getByText('Fixed · low')).toBeInTheDocument();
+    expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-dpr', '0.75,1');
+    expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-shadows', 'basic');
+    expect(SPEC).toEqual(originalSpec);
   });
 
   it('renders extrude and tube parts as built buffer geometries', () => {
