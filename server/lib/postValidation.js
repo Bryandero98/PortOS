@@ -219,6 +219,18 @@ const taskResultSchema = z.object({
 });
 
 // Full session submission
+export const POST_QUICK_DURATION_MINUTES = [3, 5, 10, 15];
+const postQuickDurationSchema = z.union(POST_QUICK_DURATION_MINUTES.map(minutes => z.literal(minutes)));
+
+export const postQuickSessionPlanSchema = z.object({
+  targetDurationSec: z.number().int().min(1).max(3600),
+  estimatedDurationSec: z.number().min(0).max(3600),
+  toleranceSec: z.number().int().min(0).max(600),
+  omittedDomains: z.array(z.string().max(100)).max(20),
+  omittedReviews: z.array(z.string().max(200)).max(10).optional(),
+  selectedTypes: z.array(z.string().max(100)).max(50),
+});
+
 export const postSessionSubmitSchema = z.object({
   // Client-generated session id (uuid) — keys the idempotent upsert in
   // submitPostSession so a retry after a dropped response can't double-record.
@@ -228,7 +240,9 @@ export const postSessionSubmitSchema = z.object({
   cadence: z.enum(['daily', 'weekly', 'monthly']).optional().default('daily'),
   modules: z.array(z.enum(POST_MODULES)).min(1),
   tasks: z.array(taskResultSchema).min(1),
-  tags: postTagsSchema.optional().default({})
+  tags: postTagsSchema.optional().default({}),
+  startedAt: z.string().datetime().optional(),
+  plan: postQuickSessionPlanSchema.optional(),
 });
 
 // LLM drill type configuration
@@ -299,6 +313,7 @@ export const postConfigUpdateSchema = z.object({
     enabled: z.boolean().optional()
   })).optional(),
   sessionModules: z.array(z.enum(POST_MODULES)).optional(),
+  quickDurationMin: postQuickDurationSchema.optional(),
   // Optional practice goals (issue #2100) — see postGoalsSchema above.
   goals: postGoalsSchema.optional(),
   scoring: z.object({

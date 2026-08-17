@@ -17,6 +17,8 @@ is the contract.
 grep -i "what you want to do" client/src/lib/README.md
 ```
 
+| `postQuickSession.js` | Pure Quick POST duration presets, local-observation estimator, deterministic budget composer, and preview metadata. |
+
 ---
 
 ## Prompt & rendering (server mirrors)
