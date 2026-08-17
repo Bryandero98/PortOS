@@ -233,6 +233,7 @@ export async function runSceneRender(project, scene) {
       // wall-clock per scene roughly in half. Project-level so every scene
       // in the project inherits the same setting.
       disableAudio: project.disableAudio === true,
+      creativeDirector: { projectId: project.id, sceneId: scene.sceneId },
     };
 
   if (useGrok) {
