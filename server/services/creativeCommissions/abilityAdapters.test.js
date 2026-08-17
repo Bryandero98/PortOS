@@ -138,7 +138,7 @@ describe('sanitizeGeneration — fills defaults and preserves only the type keys
     const g = getAbilityAdapter('video').sanitizeGeneration({ quality: 'high', aspectRatio: '9:16', targetDurationSeconds: 20, imageCount: 5, model: ' ltx ' });
     expect(g).toEqual({
       model: 'ltx', quality: 'high', aspectRatio: '9:16', targetDurationSeconds: 20,
-      videoMode: 'auto', videoModelId: null,
+      durationMode: 'manual', videoMode: 'auto', videoModelId: null,
     });
   });
 
@@ -173,6 +173,13 @@ describe('buildProjectParams — every type yields well-formed render settings',
   it('video maps its generation onto the render geometry', () => {
     const p = getAbilityAdapter('video').buildProjectParams({ generation: { aspectRatio: '1:1', quality: 'draft', targetDurationSeconds: 15 } }, ctx);
     expect(p).toEqual({ aspectRatio: '1:1', quality: 'draft', modelId: 'ltx-default', targetDurationSeconds: 15 });
+  });
+
+  it('lets the Creative Director choose the video length in auto mode', () => {
+    const commission = { targetAbility: 'video', generation: { durationMode: 'auto' }, brief: { intent: 'a drifting city' } };
+    const p = getAbilityAdapter('video').buildProjectParams(commission, ctx);
+    expect(p.targetDurationSeconds).toBe(10);
+    expect(buildCommissionDirective(commission).goal).toMatch(/choose an appropriate duration between 5 and 600 seconds/i);
   });
 
   it('the pinned local video model becomes the project model', () => {
