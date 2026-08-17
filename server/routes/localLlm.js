@@ -36,7 +36,15 @@ import { listUserModels } from '../services/audioModels.js'
 import { ENGINES } from '../services/pipeline/musicGen.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
 import { awaitWritableDrain } from '../lib/streamBackpressure.js'
-import { getLoadedModels as getLoadedOllamaModels, unloadModel as unloadOllamaModel } from '../services/ollamaManager.js'
+import {
+  getLastLoadedModelsError as getOllamaResidencyError,
+  getLoadedModels as getLoadedOllamaModels,
+  unloadModel as unloadOllamaModel,
+} from '../services/ollamaManager.js'
+import {
+  getLastLoadedModelsError as getLmStudioResidencyError,
+  getLoadedModels as getLoadedLmStudioModels,
+} from '../services/lmStudioManager.js'
 
 const router = Router()
 
@@ -272,13 +280,23 @@ router.post('/migrate', asyncHandler(async (req, res) => {
   res.json(result)
 }))
 
-// GET /api/local-llm/loaded — models currently resident in memory.
+// GET /api/local-llm/loaded — models currently resident in memory across both
+// local backends. The endpoint stays 200 for a partial outage, but names the
+// affected source explicitly so an unknown residency state is never mistaken
+// for a trustworthy empty list by cleanup controls.
 // Distinct from /catalog (disk-installed) — only flags what's eating VRAM
 // right now so the Memory Management panel can show what to unload before
 // kicking off a big diffusion render.
-router.get('/loaded', asyncHandler(async (req, res) => {
-  const loaded = await getLoadedOllamaModels()
-  res.json({ ollama: loaded })
+router.get('/loaded', asyncHandler(async (_req, res) => {
+  const [ollama, lmstudio] = await Promise.all([
+    getLoadedOllamaModels(),
+    getLoadedLmStudioModels(true),
+  ])
+  const sourceErrors = [
+    ...(getOllamaResidencyError() ? ['ollama'] : []),
+    ...(getLmStudioResidencyError() ? ['lmstudio'] : []),
+  ]
+  res.json({ ollama, lmstudio, sourceErrors })
 }))
 
 // POST /api/local-llm/unload — body: { backend: 'ollama', modelId }.
