@@ -4,8 +4,9 @@ import { join } from 'path';
 import { rm, readdir } from 'fs/promises';
 import { writeFileSync, mkdtempSync } from 'fs';
 
+const cuda = vi.hoisted(() => ({ status: 'available', maxVramGb: 40 }));
 vi.mock('../../lib/cudaCapability.js', () => ({
-  getCudaCapability: vi.fn(async () => ({ status: 'available', gpus: [], maxVramGb: null, error: null })),
+  getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: cuda.maxVramGb, error: null })),
 }));
 
 vi.mock('../../lib/hfCache.js', () => ({
@@ -32,6 +33,9 @@ import {
   MIN_DURATION_SEC,
   MAX_DURATION_SEC,
   DEFAULT_DURATION_SEC,
+  MUSIC_VRAM_READINESS,
+  resolveVramReadiness,
+  resolveEngineVramReadiness,
 } from './musicGen.js';
 
 describe('MUSICGEN_MODELS registry', () => {
@@ -131,6 +135,40 @@ describe('ENGINES backend registry', () => {
     expect(ENGINES.musicgen.minDurationSec).toBe(MIN_DURATION_SEC);
     expect(ENGINES.musicgen.maxDurationSec).toBe(MAX_DURATION_SEC);
     expect(ENGINES.musicgen.defaultDurationSec).toBe(DEFAULT_DURATION_SEC);
+  });
+
+  it('declares MiniMax VRAM requirements per execution profile', () => {
+    const engine = ENGINES['minimax-music3'];
+    expect(engine.executionProfile).toBe('cuda-bf16-single-gpu');
+    expect(engine.vramProfiles[engine.executionProfile]).toMatchObject({
+      label: 'CUDA BF16 (single GPU)',
+      minVramGb: null,
+      recommendedVramGb: null,
+    });
+  });
+});
+
+describe('VRAM readiness', () => {
+  it('distinguishes sufficient, insufficient, and unknown measurements', () => {
+    expect(resolveVramReadiness({ cudaStatus: 'available', maxVramGb: 32, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.SUFFICIENT);
+    expect(resolveVramReadiness({ cudaStatus: 'available', maxVramGb: 12, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.INSUFFICIENT);
+    expect(resolveVramReadiness({ cudaStatus: 'available', maxVramGb: null, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.UNKNOWN_SIZE);
+    expect(resolveVramReadiness({ cudaStatus: 'unknown', maxVramGb: 32, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.UNKNOWN_SIZE);
+  });
+
+  it('keeps an unmeasured CUDA execution profile unknown-size', () => {
+    expect(resolveEngineVramReadiness('minimax-music3', {
+      status: 'available', maxVramGb: 80,
+    })).toMatchObject({
+      state: MUSIC_VRAM_READINESS.UNKNOWN_SIZE,
+      minVramGb: null,
+      recommendedVramGb: null,
+      maxVramGb: 80,
+    });
   });
 });
 
@@ -443,6 +481,8 @@ beforeEach(() => {
   h.probeOk = true;
   h.osPlatform = 'darwin';
   h.osArch = 'arm64';
+  cuda.status = 'available';
+  cuda.maxVramGb = 40;
   invalidateEngineHealth();
 });
 
@@ -463,16 +503,17 @@ describe('generateMusic backend selection', () => {
     expect(res.filename).toMatch(/^music-gen-.*\.wav$/);
   });
 
-  it('sizes MiniMax auto mode from lyric length instead of using the 60-second default', async () => {
-    await generateMusic({
+  it('blocks MiniMax when its CUDA profile has no measured VRAM floor', async () => {
+    await expect(generateMusic({
       prompt: 'warm cinematic pop',
       lyrics: `[verse]\n${'word '.repeat(150)}\n[outro]`,
       engine: 'minimax-music3',
       durationMode: 'auto',
+    })).rejects.toMatchObject({
+      status: 503,
+      code: 'PIPELINE_MUSIC_VRAM_UNKNOWN',
     });
-
-    const duration = spawnCalls[0].args[spawnCalls[0].args.indexOf('--duration') + 1];
-    expect(duration).toBe('120');
+    expect(spawnCalls).toHaveLength(0);
   });
 
   it('routes MiniMax Music 3 MLX to its sibling venv and pins the selected checkpoint', async () => {
