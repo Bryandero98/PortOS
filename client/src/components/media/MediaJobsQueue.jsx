@@ -671,8 +671,8 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   const [negativePrompt, setNegativePrompt] = useState(p.negativePrompt || '');
   const [width, setWidth] = useState(p.width ?? '');
   const [height, setHeight] = useState(p.height ?? '');
-  const [numFrames, setNumFrames] = useState(p.numFrames ?? 121);
-  const [fps, setFps] = useState(p.fps ?? 24);
+  const [numFrames, setNumFrames] = useState(p.numFrames ?? '');
+  const [fps, setFps] = useState(p.fps ?? '');
   const [chunks, setChunks] = useState(p.chunks ?? 1);
   const [chunkPrompts, setChunkPrompts] = useState(p.chunkPrompts || []);
   const [contextFrames, setContextFrames] = useState(p.contextFrames ?? 0);
@@ -719,6 +719,8 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     next[index] = value;
     return next;
   });
+  const displayedNumFrames = numFrames === '' ? (currentModel?.defaultFrames ?? 121) : numFrames;
+  const displayedFps = fps === '' ? 24 : fps;
 
   const submit = (e) => {
     e.preventDefault();
@@ -731,8 +733,8 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     if (textChanged(modelId, p.modelId)) overrides.modelId = modelId.trim();
     if (numberChanged(width, p.width) && width !== '') overrides.width = Number(width);
     if (numberChanged(height, p.height) && height !== '') overrides.height = Number(height);
-    if (numberChanged(numFrames, p.numFrames)) overrides.numFrames = Number(numFrames);
-    if (numberChanged(fps, p.fps)) overrides.fps = Number(fps);
+    if (numFrames !== '' && numberChanged(numFrames, p.numFrames)) overrides.numFrames = Number(numFrames);
+    if (fps !== '' && numberChanged(fps, p.fps)) overrides.fps = Number(fps);
     if (numberChanged(chunks, p.chunks ?? 1)) overrides.chunks = Number(chunks);
     if (JSON.stringify(chunkPrompts) !== JSON.stringify(p.chunkPrompts || [])) overrides.chunkPrompts = chunkPrompts;
     if (numberChanged(contextFrames, p.contextFrames ?? 0)) overrides.contextFrames = Number(contextFrames);
@@ -788,11 +790,11 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
       )}
       <AdvancedParamsPanel
         mode={p.mode || 'text'} currentModel={currentModel}
-        numFrames={numFrames} onNumFramesChange={setNumFrames}
+        numFrames={displayedNumFrames} onNumFramesChange={setNumFrames}
         chunks={chunks} onChunksChange={setChunks} keyframesActive={chainingLocked}
         chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chunks > 1 && !chainingLocked}
         contextFrames={contextFrames} onContextFramesChange={setContextFrames}
-        fps={fps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
+        fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
         steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
         imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
         disableAudio={disableAudio} onDisableAudioChange={setDisableAudio} noMusic={false} onNoMusicChange={() => {}}

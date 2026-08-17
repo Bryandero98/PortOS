@@ -104,7 +104,10 @@ export function validateVideoRetryParams(params = {}) {
     );
   }
   if (Array.isArray(params.loras) && params.loras.length > 0 && !videoLoraFamily(model)) {
-    throw videoLoraUnsupportedError(model, modelId);
+    const runtimeLoraCapable = await resolveByovRuntimeLoraCapable(model.runtime);
+    if (!videoLoraFamily({ ...model, runtimeLoraCapable })) {
+      throw videoLoraUnsupportedError(model, modelId);
+    }
   }
   const numFrames = params.numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   const fps = params.fps ?? 24;
