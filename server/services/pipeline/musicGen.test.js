@@ -36,6 +36,7 @@ import {
   MUSIC_VRAM_READINESS,
   resolveVramReadiness,
   resolveEngineVramReadiness,
+  MUSIC_RENDERER_BENCHMARK_GUIDE,
 } from './musicGen.js';
 
 describe('MUSICGEN_MODELS registry', () => {
@@ -145,6 +146,14 @@ describe('ENGINES backend registry', () => {
       minVramGb: null,
       recommendedVramGb: null,
     });
+  });
+
+  it('keeps MiniMax profile support gated on technical checks plus full-length listening', () => {
+    expect(ENGINES['minimax-music3']).toMatchObject({
+      benchmarkGuide: MUSIC_RENDERER_BENCHMARK_GUIDE,
+      requiresFullLengthListening: true,
+    });
+    expect(MUSIC_RENDERER_BENCHMARK_GUIDE).toBe('docs/features/music-renderer-benchmarks.md');
   });
 });
 
