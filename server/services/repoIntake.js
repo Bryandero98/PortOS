@@ -146,7 +146,7 @@ export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
   if (!isCloneReadable(link)) return { queued: false, reason: 'not-cloned' };
 
   const app = await getAppById(targetAppId || PORTOS_APP_ID);
-  if (!app?.repoPath) return { queued: false, reason: 'app-not-found' };
+  if (!app?.repoPath || app.archived) return { queued: false, reason: 'app-not-found' };
 
   // Same four-part resolution every tracker-filing dispatch runs: the block
   // telling the agent where to file, the tracker it names, and the

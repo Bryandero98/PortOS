@@ -132,6 +132,12 @@ describe('queueRepoStudy', () => {
     expect(taskData.context).toContain('PLAN.md');
   });
 
+  it('does not queue against an app archived after capture', async () => {
+    getAppById.mockResolvedValue({ ...APP, archived: true });
+    expect(await queueRepoStudy(LINK)).toEqual({ queued: false, reason: 'app-not-found' });
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
   it('degrades to the PLAN.md block when the origin lookup fails', async () => {
     getAppById.mockResolvedValue({ ...APP, workTracker: 'auto' });
     readOriginRemoteUrl.mockRejectedValue(new Error('not a git repository'));
