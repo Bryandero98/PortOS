@@ -279,7 +279,7 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   );
   const params = { ...job.params, ...overrides };
   if (job.kind === 'video') {
-    const bounds = VIDEO_RETRY_BOUNDS_SCHEMA.safeParse(params);
+    const bounds = VIDEO_RETRY_BOUNDS_SCHEMA.safeParse(rawOverrides);
     if (!bounds.success) throw new ServerError('Video retry settings are outside the supported range', { status: 400, code: 'VALIDATION_ERROR' });
   }
   for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
