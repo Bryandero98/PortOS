@@ -33,13 +33,13 @@ export default function RecordRenderPinRow({
     onChange({ imageMode: pinnedMode || null, imageModelId: v.trim() || null });
   });
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-[auto_auto_1fr] gap-2 sm:items-center">
+    <div className="grid min-w-0 w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-[auto_auto_1fr] sm:items-center">
       <label htmlFor={`${idPrefix}-mode`} className="text-xs font-medium text-gray-400">{label}</label>
       <select
         id={`${idPrefix}-mode`}
         value={pinnedMode}
         onChange={(e) => onChange({ imageMode: e.target.value || null, imageModelId: null })}
-        className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+        className="w-full max-w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
       >
         {showAuto ? <option value="">{autoLabel}</option> : (!pinnedMode && <option value="" disabled>Pick a backend</option>)}
         {optionList.map((o) => <option key={o.id} value={o.id}>{o.label || o.id}</option>)}
@@ -53,7 +53,7 @@ export default function RecordRenderPinRow({
           onBlur={modelDraft.onBlur}
           placeholder="Model (optional)"
           aria-label={`${label} model`}
-          className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-52"
+          className="w-full max-w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-52"
         />
       ) : <span className="hidden sm:block" />}
     </div>
