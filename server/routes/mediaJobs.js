@@ -219,7 +219,11 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
   chunks: z.number().int().min(1).max(8).optional(),
   chunkPrompts: z.array(z.string().max(8000)).max(8).optional(),
   contextFrames: z.number().int().min(0).max(64).optional(),
-  loras: z.array(z.object({ filename: z.string().max(512), name: z.string().max(200).optional(), scale: z.number().min(0).max(2).optional() })).max(8).optional(),
+  loras: z.array(z.object({
+    filename: z.string().min(1).max(255).regex(/^[^/\\]+\.safetensors$/i, 'filename must be a bare .safetensors basename'),
+    name: z.string().max(200).optional(),
+    scale: z.number().min(0).max(2).optional(),
+  })).max(8).optional(),
 }).partial();
 
 const retryBodySchema = z.object({

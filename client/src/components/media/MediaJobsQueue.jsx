@@ -698,6 +698,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   }, []);
 
   const currentModel = models.find((model) => model.id === modelId) || null;
+  const isGrok = p.mode === 'grok';
   const loraFamily = videoLoraFamily(currentModel);
   const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];
   const encoderOptions = textEncoderOptionsForModel(currentModel);
@@ -789,18 +790,20 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
           currentCompatKey={loraFamily}
         />
       )}
-      <AdvancedParamsPanel
-        mode={p.mode || 'text'} currentModel={currentModel}
-        numFrames={displayedNumFrames} onNumFramesChange={setNumFrames}
-        chunks={chunks} onChunksChange={setChunks} keyframesActive={chainingLocked}
-        chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chunks > 1 && !chainingLocked}
-        contextFrames={contextFrames} onContextFramesChange={setContextFrames}
-        fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
-        steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
-        imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
-        disableAudio={disableAudio} onDisableAudioChange={setDisableAudio} noMusic={false} onNoMusicChange={() => {}}
-        idPrefix={`retry-video-${job.id}`}
-      />
+      {!isGrok && (
+        <AdvancedParamsPanel
+          mode={p.mode || 'text'} currentModel={currentModel}
+          numFrames={displayedNumFrames} onNumFramesChange={setNumFrames}
+          chunks={chunks} onChunksChange={setChunks} keyframesActive={chainingLocked}
+          chunkPrompts={chunkPrompts} onChunkPromptChange={setChunkPromptAt} chainingActive={chunks > 1 && !chainingLocked}
+          contextFrames={contextFrames} onContextFramesChange={setContextFrames}
+          fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
+          steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+          imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
+          disableAudio={disableAudio} onDisableAudioChange={setDisableAudio} noMusic={false} onNoMusicChange={() => {}}
+          idPrefix={`retry-video-${job.id}`}
+        />
+      )}
       <div className="flex items-center justify-end gap-2 pt-1">
         <button type="button" onClick={onCancel} className="px-3 py-1 text-xs text-port-text-muted hover:text-white">Cancel</button>
         <button type="submit" className="inline-flex items-center gap-1 px-3 py-1 bg-port-accent text-white text-xs rounded hover:bg-port-accent/90"><RotateCw className="w-3 h-3" />Retry with changes</button>
