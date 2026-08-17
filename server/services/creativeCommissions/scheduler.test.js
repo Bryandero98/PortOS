@@ -55,6 +55,12 @@ const tasteEvidenceMock = vi.fn(async () => ({
 }));
 vi.mock('../taste-questionnaire.js', () => ({ getTasteProfile: (...a) => tasteProfileMock(...a) }));
 vi.mock('../twinEnrichment.js', () => ({ getTasteEvidence: (...a) => tasteEvidenceMock(...a) }));
+const resolveMusicEngineSelectionMock = vi.fn(async () => ({
+  status: 'ready', selection: { engine: 'musicgen', modelId: 'musicgen-medium', repo: 'example/musicgen-medium' },
+}));
+vi.mock('../musicEngineCatalog.js', () => ({
+  resolveMusicEngineSelection: (...a) => resolveMusicEngineSelectionMock(...a),
+}));
 
 const loadStateMock = vi.fn(async () => ({ config: {} }));
 vi.mock('../cosState.js', () => ({ loadState: (...a) => loadStateMock(...a) }));
@@ -102,6 +108,9 @@ beforeEach(() => {
       topArtists: [{ name: 'Example Artist', count: 3 }],
       topTracks: [{ name: 'Example Track', artist: 'Example Artist', count: 2 }],
     } } },
+  });
+  resolveMusicEngineSelectionMock.mockResolvedValue({
+    status: 'ready', selection: { engine: 'musicgen', modelId: 'musicgen-medium', repo: 'example/musicgen-medium' },
   });
 });
 
@@ -314,7 +323,37 @@ describe('runScheduledCommission gates', () => {
     expect(createProjectMock.mock.calls[0][0].directive.goal).toContain('Create an original work');
     expect(recordRunMock).toHaveBeenCalledWith('commission-1', expect.objectContaining({
       status: 'started', tasteRecipe: expect.objectContaining({ source: 'digital-twin', anchors: expect.any(Array) }),
+      musicGeneration: {
+        engine: 'musicgen', modelId: 'musicgen-medium', repo: 'example/musicgen-medium', durationSec: 45,
+      },
     }));
+  });
+
+  it('records an explicit skip when the configured music renderer is unavailable', async () => {
+    resolveMusicEngineSelectionMock.mockResolvedValueOnce({ status: 'unavailable', reason: 'music-model-unavailable' });
+    getCommissionMock.mockResolvedValue(videoCommission({
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin', musicEngineId: 'acestep', musicModelId: 'removed-model' } },
+      generation: { lengthSeconds: 45 },
+    }));
+    await runScheduledCommission('commission-1');
+    expect(recordRunMock).toHaveBeenCalledWith('commission-1', expect.objectContaining({
+      status: 'skipped', reason: 'music-model-unavailable',
+    }));
+    expect(createProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('does not advance a taste project when its authoritative local run failed to persist', async () => {
+    recordRunMock.mockResolvedValueOnce(null);
+    getCommissionMock.mockResolvedValue(videoCommission({
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      generation: { lengthSeconds: 45 },
+    }));
+    const outcome = await runCommissionNow('commission-1');
+    expect(outcome).toMatchObject({ status: 'failed', error: 'taste-run-persistence-unavailable' });
+    expect(createProjectMock).toHaveBeenCalledTimes(1);
+    expect(advanceMock).not.toHaveBeenCalled();
   });
 
   it('records an explicit skip when taste mode has no usable observed anchors', async () => {

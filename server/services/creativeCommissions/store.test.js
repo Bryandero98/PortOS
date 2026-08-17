@@ -47,6 +47,8 @@ const {
   getCommission,
   listCommissions,
   recordCommissionRun,
+  getCommissionMusicContextForProject,
+  recordCommissionMusicOutput,
   submitCommissionFeedback,
   backfillAllCommissionFeedback,
   sanitizeCommissionForSync,
@@ -315,7 +317,12 @@ describe('recordCommissionRun', () => {
   });
 
   it('persists bounded taste recipe provenance only on the local run history', async () => {
-    const created = await createCommission(validInput());
+    const created = await createCommission({
+      ...validInput(),
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      generation: { lengthSeconds: 45 },
+    });
     const recipe = {
       version: 1,
       source: 'digital-twin',
@@ -329,10 +336,27 @@ describe('recordCommissionRun', () => {
       sourceVersion: 'music-taste-v1:example',
       sourceHash: 'example-hash',
     };
-    await recordCommissionRun(created.id, { status: 'started', tasteRecipe: recipe });
+    const run = await recordCommissionRun(created.id, {
+      status: 'started', projectId: 'cd-taste', promptUsed: 'Original bounded directive', tasteRecipe: recipe,
+      musicGeneration: { engine: 'musicgen', modelId: 'example-model', repo: 'example/model', durationSec: 45 },
+    });
     const after = await getCommission(created.id);
     expect(after.runs[0].tasteRecipe).toEqual(recipe);
+    expect(after.runs[0].musicGeneration).toEqual({
+      engine: 'musicgen', modelId: 'example-model', repo: 'example/model', durationSec: 45,
+    });
     expect(sanitizeCommission({ ...after, runs: after.runs }).runs[0].tasteRecipe).toEqual(recipe);
+    expect(await getCommissionMusicContextForProject('cd-taste')).toMatchObject({
+      commissionId: created.id, runId: run.id, prompt: 'Original bounded directive',
+    });
+    await recordCommissionMusicOutput(created.id, run.id, {
+      filename: 'music-gen-example.wav', durationSec: 45, engine: 'musicgen', modelId: 'example-model',
+      recipeVersion: 1, sourceHash: 'example-hash', completedAt: '2026-08-16T00:00:00.000Z',
+    });
+    const completed = await getCommission(created.id);
+    expect(completed.runs[0].musicOutput).toMatchObject({
+      filename: 'music-gen-example.wav', engine: 'musicgen', modelId: 'example-model', sourceHash: 'example-hash',
+    });
   });
 });
 

@@ -94,6 +94,16 @@ export const GENERATION_DEFAULTS_BY_ABILITY = {
   series: { episodeCount: 1 },
 };
 
+export const MUSIC_TASTE_DEFAULTS = Object.freeze({
+  enabled: false,
+  source: 'digital-twin',
+  window: 'month',
+  anchorCount: 3,
+  explorationPercent: 20,
+  musicEngineId: '',
+  musicModelId: '',
+});
+
 // The render-backend descriptors for an ability, in field order. Drives the
 // dedicated backend section; the generic field grid skips `type: 'backend'`.
 export function backendFieldsForAbility(ability) {
@@ -181,6 +191,15 @@ export function toForm(c) {
       genre: c.brief?.genre || '',
       styleSpec: c.brief?.styleSpec || '',
     },
+    musicTaste: c.brief?.musicTaste ? {
+      enabled: true,
+      source: 'digital-twin',
+      window: c.brief.musicTaste.window || MUSIC_TASTE_DEFAULTS.window,
+      anchorCount: c.brief.musicTaste.anchorCount ?? MUSIC_TASTE_DEFAULTS.anchorCount,
+      explorationPercent: c.brief.musicTaste.explorationPercent ?? MUSIC_TASTE_DEFAULTS.explorationPercent,
+      musicEngineId: c.brief.musicTaste.musicEngineId || '',
+      musicModelId: c.brief.musicTaste.musicModelId || '',
+    } : { ...MUSIC_TASTE_DEFAULTS },
     schedule: {
       kind: c.schedule?.kind || 'DAILY',
       atLocalTime: c.schedule?.atLocalTime || '02:00',
@@ -223,6 +242,14 @@ export function toPayload(form) {
       intent: form.brief.intent.trim(),
       genre: form.brief.genre.trim() || null,
       styleSpec: form.brief.styleSpec,
+      musicTaste: form.targetAbility === 'music' && form.musicTaste.enabled ? {
+        source: 'digital-twin',
+        window: form.musicTaste.window,
+        anchorCount: Number(form.musicTaste.anchorCount),
+        explorationPercent: Number(form.musicTaste.explorationPercent),
+        musicEngineId: form.musicTaste.musicEngineId || null,
+        musicModelId: form.musicTaste.musicModelId || null,
+      } : null,
     },
     schedule: s,
     // Emit only the selected type's generation keys (#2769), coercing numbers.
@@ -267,6 +294,16 @@ export function validateForm(form) {
     const n = Number(raw);
     if (raw === '' || raw === null || raw === undefined || !Number.isInteger(n) || n < field.min || n > field.max) {
       return `${field.label} must be a whole number from ${field.min} to ${field.max}`;
+    }
+  }
+  if (form.targetAbility === 'music' && form.musicTaste?.enabled) {
+    const anchorCount = Number(form.musicTaste.anchorCount);
+    if (form.musicTaste.anchorCount === '' || !Number.isInteger(anchorCount) || anchorCount < 1 || anchorCount > 5) {
+      return 'Taste anchor count must be a whole number from 1 to 5';
+    }
+    const exploration = Number(form.musicTaste.explorationPercent);
+    if (form.musicTaste.explorationPercent === '' || !Number.isInteger(exploration) || exploration < 0 || exploration > 100) {
+      return 'Taste exploration must be a whole percentage from 0 to 100';
     }
   }
   return null;

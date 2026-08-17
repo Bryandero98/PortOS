@@ -28,6 +28,20 @@ const STATUS_CLASS = {
   failed: 'text-port-error',
 };
 
+const TASTE_FEEDBACK_OPTIONS = [
+  ['more-familiar', 'More familiar'],
+  ['more-experimental', 'More experimental'],
+  ['keep-anchors', 'Keep anchors'],
+  ['change-anchors', 'Change anchors'],
+];
+
+const TASTE_FEEDBACK_OPPOSITES = {
+  'more-familiar': 'more-experimental',
+  'more-experimental': 'more-familiar',
+  'keep-anchors': 'change-anchors',
+  'change-anchors': 'keep-anchors',
+};
+
 export default function RenderHistory({ runs, feedback, projectsById, projectsLoading, focusRunId, onRate }) {
   // Newest-first, memoized so the copy+reverse doesn't run on every render.
   const orderedRuns = useMemo(() => [...(runs || [])].reverse(), [runs]);
@@ -118,6 +132,10 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
                 </Link>
               )}
 
+              {r.tasteRecipe && (
+                <TasteRecipeSummary recipe={r.tasteRecipe} output={r.musicOutput || project?.musicBed} />
+              )}
+
               {/* Rate/annotate — pushed to the bottom of the card so cards align.
                   Keyed on the persisted reaction's timestamp so an externally-changed
                   note (a federated rating from another machine, arriving via a refetch)
@@ -130,6 +148,7 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
                     runId={r.id}
                     current={feedbackByRun[r.id]}
                     onRate={onRate}
+                    tasteAware={!!r.tasteRecipe}
                   />
                 </div>
               )}
@@ -137,6 +156,31 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function TasteRecipeSummary({ recipe, output }) {
+  return (
+    <div className="rounded border border-port-border bg-port-bg/60 p-2 space-y-1.5 text-xs">
+      <div className="flex flex-wrap gap-1">
+        {(recipe.anchors || []).map((anchor, index) => (
+          <span key={`${anchor.kind}-${anchor.name}-${index}`} className="rounded bg-port-accent/15 px-1.5 py-0.5 text-blue-300">
+            {anchor.name}{anchor.artist ? ` · ${anchor.artist}` : ''}
+          </span>
+        ))}
+      </div>
+      <p className="text-gray-400">
+        {recipe.explorationPercent}% exploration · {recipe.window} window · recipe v{recipe.version}
+      </p>
+      <p className="text-gray-500 truncate" title={recipe.sourceVersion}>
+        Source {recipe.sourceHash || 'unknown'}
+      </p>
+      {output && (
+        <p className="text-gray-400">
+          Rendered with {output.engine || 'default engine'}{output.modelId ? ` · ${output.modelId}` : ''}
+        </p>
+      )}
     </div>
   );
 }
@@ -152,8 +196,9 @@ export default function RenderHistory({ runs, feedback, projectsById, projectsLo
 // dirty) makes the unsaved state obvious and unambiguous, and Enter is a
 // shortcut for the same action. A note can't be saved before a rating exists (a
 // rating is required), so the affordance only appears once the run is thumbed.
-export function RunFeedback({ runId, current, onRate }) {
+export function RunFeedback({ runId, current, onRate, tasteAware = false }) {
   const [note, setNote] = useState(current?.note || '');
+  const [tags, setTags] = useState(current?.tags || []);
   const [busy, setBusy] = useState(false);
   const rating = current?.rating;
   const isUp = rating === 'up' || (typeof rating === 'number' && rating > 0);
@@ -161,17 +206,45 @@ export function RunFeedback({ runId, current, onRate }) {
 
   const submit = async (value) => {
     setBusy(true);
-    try { await onRate(runId, value, note.trim()); }
+    try { await onRate(runId, value, note.trim(), tags); }
     finally { setBusy(false); }
   };
 
   // A note edited after the run was rated is "dirty" until re-saved under the
   // existing rating. The Save button/Enter shortcut is gated on this.
   const noteDirty = !!rating && note.trim() !== (current?.note || '');
-  const saveNote = () => { if (noteDirty && !busy) submit(rating); };
+  const currentTags = current?.tags || [];
+  const tagsDirty = !!rating && JSON.stringify([...tags].sort()) !== JSON.stringify([...currentTags].sort());
+  const feedbackDirty = noteDirty || tagsDirty;
+  const saveNote = () => { if (feedbackDirty && !busy) submit(rating); };
+
+  const toggleTag = (tag) => {
+    setTags((value) => {
+      if (value.includes(tag)) return value.filter((entry) => entry !== tag);
+      const opposite = TASTE_FEEDBACK_OPPOSITES[tag];
+      return [...value.filter((entry) => entry !== opposite), tag];
+    });
+  };
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="space-y-2">
+      {tasteAware && (
+        <div className="flex flex-wrap gap-1" aria-label={`Taste steering for run ${runId}`}>
+          {TASTE_FEEDBACK_OPTIONS.map(([tag, label]) => (
+            <button
+              key={tag}
+              type="button"
+              disabled={busy}
+              aria-pressed={tags.includes(tag)}
+              onClick={() => toggleTag(tag)}
+              className={`rounded border px-1.5 py-0.5 text-[10px] disabled:opacity-50 ${tags.includes(tag) ? 'border-port-accent text-blue-300 bg-port-accent/15' : 'border-port-border text-gray-500'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5">
       <button
         type="button"
         disabled={busy}
@@ -203,17 +276,18 @@ export function RunFeedback({ runId, current, onRate }) {
         onChange={(e) => setNote(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveNote(); } }}
       />
-      {noteDirty && (
+      {feedbackDirty && (
         <button
           type="button"
           disabled={busy}
           onClick={saveNote}
-          aria-label={`Save note for run ${runId}`}
+          aria-label={`Save feedback for run ${runId}`}
           className="text-xs text-port-accent hover:text-blue-400 disabled:opacity-50 px-1.5 py-1 whitespace-nowrap"
         >
           Save
         </button>
       )}
+      </div>
     </div>
   );
 }

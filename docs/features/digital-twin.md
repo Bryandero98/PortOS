@@ -70,8 +70,12 @@ Routes: `GET /import/sources`, `POST /import/analyze`, `POST /import/save`,
 Music Creative Commissions can opt into a bounded Digital Twin recipe. The
 scheduled fire reads the stated music summary and the selected observed rollup
 window, then deterministically chooses a small set of artist/track anchors and
-an exploration level. Ratings and the existing feedback tags adjust the next
-recipe; no provider call is made to build the recipe.
+an exploration level. The commission editor exposes the source, week/month
+window, anchor count, exploration percentage, and installed music engine/model.
+It also reports an unavailable runtime, platform, GPU, or model before a user
+depends on the schedule. Creating and enabling the commission is the explicit
+consent step for this scheduled automation; merely starting PortOS makes no AI
+or music-generation calls.
 
 The commission brief carries only the non-sensitive opt-in configuration. Raw
 Spotify caches, activity events, full Digital Twin responses, and the selected
@@ -79,10 +83,17 @@ recipe remain machine-local. Recipes are recorded as bounded run provenance and
 are removed by the Creative Commission wire projection along with all local run
 history. If taste mode has no usable observed anchors, the run records
 `taste-source-unavailable` instead of silently generating a generic track.
+At fire time, PortOS revalidates the configured renderer and records an explicit
+engine/model-unavailable skip if it changed. The bounded directive, renderer,
+and duration then override planner guesses on the actual audio job. Completion
+records the rendered engine/model and recipe version/hash on the local run while
+the federated Creative Director project receives only ordinary audio metadata.
 
-This slice does not yet expose taste controls in the Creative Commission UI or
-propagate engine/model pins through the audio job and completion-hook path; those
-are follow-up work for issue #4347.
+Run history shows the bounded anchors, exploration level, source hash, and
+actual renderer. In addition to thumbs and notes, taste-aware runs offer
+`more familiar`, `more experimental`, `keep anchors`, and `change anchors`
+feedback. These structured reactions federate with the existing feedback record
+and deterministically steer later recipes without exposing raw listening data.
 
 ## Transcript & Image Analysis
 

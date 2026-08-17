@@ -95,6 +95,25 @@ describe('per-ability directives steer the planner to the right tools', () => {
     expect(d.deliverables).toEqual(['One ~45s music track matching the brief']);
   });
 
+  it('music: preserves taste anchors and original-work constraints under the goal cap', () => {
+    const d = buildCommissionDirective({
+      targetAbility: 'music',
+      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(5000) },
+      generation: { lengthSeconds: 45 },
+    }, {
+      tasteRecipe: {
+        version: 1, source: 'digital-twin', window: 'month', anchorCount: 1,
+        explorationPercent: 20, explorationCount: 0, explorationDirection: 'balanced',
+        anchors: [{ kind: 'artist', name: 'Example Artist', count: 3, source: 'observed' }],
+        sourceVersion: 'music-taste-v1:example', sourceHash: 'example-hash',
+      },
+    });
+    expect(d.goal.length).toBeLessThanOrEqual(4500);
+    expect(d.goal).toContain('Example Artist');
+    expect(d.goal).toContain('Create an original work');
+    expect(d.goal).toContain('do not reproduce source tracks');
+  });
+
   it('music-video: asks for both a music bed and a video scored to it', () => {
     const d = buildCommissionDirective({ targetAbility: 'music-video', brief: { intent: 'neon drift' } });
     expect(d.goal).toMatch(/music bed AND a matching video/i);
