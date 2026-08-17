@@ -31,10 +31,11 @@ import { validateRequest } from '../lib/validation.js';
 import { createLineReader } from '../lib/streamLines.js';
 import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
-  ENGINES, DEFAULT_ENGINE_ID, getEngine, getEngineModel, isEngineHealthy, isEnginePlatformSupported,
+  ENGINES, getEngine, isEngineHealthy, isEnginePlatformSupported,
   enginePlatformLabel, generateMusic,
 } from '../services/pipeline/musicGen.js';
 import { listEngineModels, addAudioModel, removeAudioModel, isValidRepoId } from '../services/audioModels.js';
+import { listMusicEngineCapabilities } from '../services/musicEngineCapabilities.js';
 import { describeMusic, writeLyrics } from '../services/musicDesigner.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
@@ -50,65 +51,7 @@ const router = Router();
 // support, and a `ready` flag (the opt-in venv is provisioned). The UI gates its
 // Generate affordance + shows the install hint from this.
 router.get('/engines', asyncHandler(async (_req, res) => {
-  const cuda = await getCudaCapability();
-  const engines = await Promise.all(Object.values(ENGINES).map(async (engine) => {
-    const fixedModels = engine.fixedModelInstall ? engine.models : [];
-    const modelReadyById = engine.fixedModelInstall
-      ? Object.fromEntries(await Promise.all(fixedModels.map(async (model) => [
-        model.id,
-        (await inspectModelCache(model.repo, { revision: model.revision }).catch(() => ({ cached: false }))).cached === true,
-      ])))
-      : null;
-    // `modelReady` remains an aggregate for older clients. Newer clients gate
-    // generation against the selected model in `modelReadyById`, so having the
-    // smaller MLX checkpoint cached does not falsely green-light its BF16 peer.
-    const modelReady = modelReadyById ? Object.values(modelReadyById).some(Boolean) : true;
-    // The one checkpoint a fixed-model engine installs. Resolved by
-    // defaultModelId, not position, so readiness + size stay attached to the
-    // model the client actually downloads and renders with.
-    const fixedModel = engine.fixedModelInstall ? getEngineModel(engine.id, engine.defaultModelId) : null;
-    const modelSizeGbById = engine.fixedModelInstall
-      ? Object.fromEntries(fixedModels.map((model) => [model.id, model.downloadSizeGb ?? null]))
-      : null;
-    // isEngineHealthy, not isEngineReady: a half-built venv (install died
-    // mid-pip) still has its interpreter, and reporting that as runtimeReady
-    // hides the install affordance on a backend that cannot generate.
-    const runtimeReady = await isEngineHealthy(engine.id);
-    return ({
-      id: engine.id,
-      name: engine.name,
-      models: await listEngineModels(engine.id),
-      defaultModelId: engine.defaultModelId,
-      minDurationSec: engine.minDurationSec,
-      maxDurationSec: engine.maxDurationSec,
-      defaultDurationSec: engine.defaultDurationSec,
-      lyrics: engine.lyrics === true,
-      autoDuration: engine.autoDuration === true,
-      // Whether this engine can render an arbitrary HuggingFace checkpoint (gates
-      // the "install/select model" UI). ACE-Step resolves a single foundation
-      // checkpoint via checkpoint_dir, so custom repos don't apply to it.
-      customModels: engine.customModels === true,
-      fixedModelInstall: engine.fixedModelInstall === true,
-      modelReady,
-      ...(modelReadyById ? { modelReadyById } : {}),
-      // Rough download footprint for the fixed weights, so the install button can
-      // say how big the pull is before the user commits to it.
-      modelSizeGb: fixedModel?.downloadSizeGb ?? null,
-      ...(modelSizeGbById ? { modelSizeGbById } : {}),
-      runtimeReady,
-      cudaRequired: engine.cudaRequired === true,
-      // false when this host can never run the backend (e.g. MLX MusicGen off
-      // Apple Silicon) — the UI shows "unavailable" instead of an Install button
-      // whose installer would skip and exit 0.
-      platformSupported: isEnginePlatformSupported(engine.id),
-      platformLabel: enginePlatformLabel(engine.id),
-      cudaState: engine.cudaRequired ? cuda.status : 'available',
-      ready: runtimeReady && (!engine.cudaRequired || cuda.status === 'available') && modelReady,
-      installEnv: engine.installEnv,
-      venvDefault: engine.venvDefault,
-    });
-  }));
-  res.json({ engines, defaultEngine: DEFAULT_ENGINE_ID });
+  res.json(await listMusicEngineCapabilities());
 }));
 
 // --- Install music runtime venvs -------------------------------------------

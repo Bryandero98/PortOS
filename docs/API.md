@@ -513,6 +513,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/health` | Health check |
 | `/api/insights` | Cross-domain insights |
 | `/api/instances`, `/api/sync`, `/api/peer-sync`, `/api/sharing` | Federation / peer sync (see [COMPANION_APP_API.md](./COMPANION_APP_API.md)) |
+| `/api/federation/media/v1` | Authenticated queued peer audio provider (see [FEDERATED_MEDIA_PROVIDERS.md](./FEDERATED_MEDIA_PROVIDERS.md)) |
 | `/api/mortalloom` | MortalLoom (iCloud-JSON sync precedent) |
 | `/api/review` | Review queue |
 | `/api/settings` | App settings |
