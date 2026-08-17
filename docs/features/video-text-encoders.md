@@ -5,8 +5,9 @@ the prompt. The picker sits under the Model field and defaults to the conditione
 that ships with the model, so nothing changes unless you pick something else.
 
 Two runtimes have a conditioner table: **MiniMax H3** (the substitutes below) and
-**LTX-2.5**, whose mechanism ships but whose substitutes are still gated — see
-[LTX-2.5](#ltx-25) at the end. Every other runtime has no picker at all.
+**LTX-2.5**, whose mechanism ships stock-only after both initial substitutes
+failed the empirical gate — see [LTX-2.5](#ltx-25) at the end. Every other
+runtime has no picker at all.
 
 ## Why H3's conditioner is swappable at all
 
@@ -209,9 +210,12 @@ self-describing and the pack contributes only its connector, loaded separately.
 `configOverrides` are merged over the rest. That field exists for exactly one
 correction — a *unified* Gemma 4 checkpoint publishes
 `model_type: "gemma4_unified"`, which `Gemma4LanguageModel.load()` hard-rejects,
-and it is the only thing such a checkpoint gets wrong, since mlx-lm's
-`gemma4.Model.sanitize()` already discards the `vision_tower.*` / `audio_tower.*`
-/ `multi_modal_projector.*` towers at load. The `quantization` block is never
+while mlx-lm's `gemma4.Model.sanitize()` already discards the
+`vision_tower.*` / `audio_tower.*` / `multi_modal_projector.*` towers at load.
+The real strict-load gate found eleven additional `vision_embedder.*` tensors in
+that checkpoint. `install_ltx25_unified_weight_filter()` removes only that exact
+visual prefix before delegating to mlx-lm's sanitizer; strict loading remains on,
+so a missing language tensor still fails. The `quantization` block is never
 overridden: per-layer group-size overrides are part of how the weights were
 packed, and a mismatch dequantizes to noise.
 
@@ -236,24 +240,30 @@ abliterated Gemma 4 12B a plausible drop-in. A different Gemma generation is not
 Gemma 3's tokenizer, vocabulary and layer count have no mapping onto the module
 tree mlx-lm's `gemma4` builds.
 
-### Status: substitutes gated pending a coherence check
+### Status: initial substitutes failed; stock only
 
 Two substitutes are declared in the registry (`ltx25-abliterated-4bit`,
 `ltx25-heretic-8bit`) and both carry `verified: false`, which keeps them out of
 the picker **and** out of the download lane — an unverified id is rejected by
 route validation and its weights cannot be pulled. The LTX-2.5 picker therefore
 hides itself today, exactly as it does for a runtime with no substitutes at all.
+The entries remain declared only as pinned failure records.
 
-What is unsettled is empirical, not structural: Lightricks'
-`gemma4-12b-with-proj-ltx-2.5` tower may be LTX-fine-tuned rather than stock
-`google/gemma-4-12B-it`, in which case a stock-derived abliterated tower would
-feed the pack's connector out-of-distribution features and render incoherently.
-To settle it, flip an entry to `verified: true` locally, download it from Media
-Models, then render the same prompt/seed/steps/resolution against the stock
-conditioner and against the substitute — once on a benign prompt (does it stay
-structurally coherent?) and once on a prompt the stock conditioner waters down
-(does it read differently?). Ship the flag flip only for a substitute that passes
-both, and record a failure in the module docblock rather than deleting the entry.
+The gate ran on the pinned production runtime with the same seed within each A/B,
+at 512x320, 33 frames, 24 fps, 8 guided steps plus 3 stage-two steps, and CFG 3.
+It used one benign motion prompt and three target-behavior challenges:
+
+| Candidate | Benign coherence | Target-behavior result | Verdict |
+|-----------|------------------|------------------------|---------|
+| 4-bit abliterated | Broadly coherent | Stock rendered the staged bite and prop cigarette more literally; both rendered an index finger for the requested middle-finger gesture | Failed |
+| 8-bit Heretic | Coherent scene, but one kite fragmented into several red objects | Staged-bite and prop-cigarette behavior remained stock-like; the explicit gesture was still an index finger | Failed |
+
+Both candidates did change the generated pixels, but neither produced a
+repeatable improvement on the behavior the feature exists to unlock. Pixel
+difference alone is not the pass criterion. A future candidate must preserve
+benign structure **and** visibly improve at least one controlled challenge before
+its `verified` flag can be enabled. The repeated-seed candidate search is tracked
+in #4470.
 
 ## Related
 
