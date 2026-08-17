@@ -141,12 +141,26 @@ describe('WorkEditor header layout (#3568)', () => {
   });
 
   it('exposes the storyboard resizer as a bounded separator', async () => {
-    await renderEditor();
-    const separator = screen.getByRole('separator', { name: 'Resize storyboard sidebar' });
+    class ResizeObserverStub {
+      constructor(callback) { this.callback = callback; }
+      observe() { this.callback(); }
+      disconnect() {}
+    }
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 1000 });
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
-    expect(separator).toHaveAttribute('aria-orientation', 'vertical');
-    expect(Number(separator.getAttribute('aria-valuemin'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuenow')));
-    expect(Number(separator.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuemax')));
+    try {
+      await renderEditor();
+      const separator = screen.getByRole('separator', { name: 'Resize storyboard sidebar' });
+
+      expect(separator).toHaveAttribute('aria-orientation', 'vertical');
+      expect(separator).toHaveAttribute('aria-valuemax', '600');
+      expect(Number(separator.getAttribute('aria-valuemin'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuenow')));
+      expect(Number(separator.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuemax')));
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('gives the header controls a 44px touch target on mobile', async () => {
