@@ -56,6 +56,8 @@ describe('localLlmCatalog', () => {
         format: 'mlx',
         id: 'mlx-community/Qwen3.8-27B-4bit'
       });
+      expect(getCatalog('lmstudio', ['lmstudio-community/Qwen3.8-27B-MLX-4bit'])
+        .find((m) => m.key === mlxKey)?.installed).toBe(true);
       expect(getCatalog('lmstudio', [], { appleSilicon: true }).some((m) => m.key === mlxKey)).toBe(true);
       expect(getCatalog('lmstudio', [], { appleSilicon: false }).some((m) => m.key === mlxKey)).toBe(false);
       expect(getCatalog('ollama', [], { appleSilicon: true }).some((m) => m.key === mlxKey)).toBe(false);
@@ -152,6 +154,8 @@ describe('localLlmCatalog', () => {
 
     it('does not invent an Ollama target for a known LM Studio-only MLX build', () => {
       expect(mapModelToBackend('lmstudio', 'mlx-community/Qwen3.8-27B-4bit', 'ollama'))
+        .toEqual({ targetId: null, exact: false });
+      expect(mapModelToBackend('lmstudio', 'lmstudio-community/Qwen3.8-27B-MLX-4bit', 'ollama'))
         .toEqual({ targetId: null, exact: false });
     });
 
