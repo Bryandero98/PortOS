@@ -26,6 +26,7 @@ export default function useSidebarResize({
     const n = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(n) && n >= minWidth ? n : defaultWidth;
   });
+  const [maxWidth, setMaxWidth] = useState(() => Math.max(minWidth + 1, width));
 
   const containerRef = useRef(null);
   const widthRef = useRef(width);
@@ -40,10 +41,34 @@ export default function useSidebarResize({
     safeWriteStorage(configRef.current.storageKey, String(Math.round(next)));
   }, []);
 
+  const updateBounds = useCallback(() => {
+    const containerWidth = containerRef.current?.getBoundingClientRect().width ?? 0;
+    if (!containerWidth) return;
+    const max = Math.max(minWidth + 1, containerWidth * maxFraction);
+    setMaxWidth(max);
+    setWidth((prev) => Math.min(max, Math.max(minWidth, prev)));
+  }, [maxFraction, minWidth]);
+
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined' || !containerRef.current) return undefined;
+    const observer = new ResizeObserver(updateBounds);
+    observer.observe(containerRef.current);
+    updateBounds();
+    return () => observer.disconnect();
+  }, [updateBounds]);
+
   const onMouseDown = useCallback((e) => {
     e.preventDefault();
     const containerWidth = containerRef.current?.getBoundingClientRect().width ?? 0;
-    dragStartRef.current = { startX: e.clientX, startWidth: widthRef.current, containerWidth };
+    const { minWidth: min, maxFraction: frac } = configRef.current;
+    const max = Math.max(min + 1, containerWidth * frac);
+    const startWidth = Math.min(max, Math.max(min, widthRef.current));
+    setMaxWidth(max);
+    if (startWidth !== widthRef.current) {
+      widthRef.current = startWidth;
+      setWidth(startWidth);
+    }
+    dragStartRef.current = { startX: e.clientX, startWidth, containerWidth };
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
@@ -83,5 +108,5 @@ export default function useSidebarResize({
     persist(defaultWidth);
   }, [defaultWidth, persist]);
 
-  return { containerRef, width, onMouseDown, reset };
+  return { containerRef, width, maxWidth, onMouseDown, reset };
 }

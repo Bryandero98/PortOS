@@ -284,6 +284,27 @@ export function localReactionTimeScore(drill, questions) {
   return Math.round(latencyScore * (valid.length / questions.length));
 }
 
+// Pre-save mirror of the Schulte server scorer. Every click is an attempt;
+// completion advances only on the ordered correct target, while successful
+// target latency (including time spent making wrong taps) drives the speed term.
+export function localSchulteMetrics(drill, questions) {
+  const list = Array.isArray(questions) ? questions : [];
+  const totalCount = Array.isArray(drill?.cells) ? drill.cells.length : 0;
+  const correct = list.filter(question => question.correct);
+  const attemptCount = list.length;
+  const answeredCount = correct.length;
+  const errorCount = attemptCount - answeredCount;
+  const accuracy = attemptCount ? answeredCount / attemptCount : null;
+  const completion = totalCount ? answeredCount / totalCount : null;
+  const refMs = 1000 + Math.round(Math.sqrt(totalCount)) * 500;
+  const avgResponseMs = answeredCount
+    ? Math.round(correct.reduce((sum, question) => sum + Math.min(Math.max(question.responseMs || 0, 0), refMs), 0) / answeredCount)
+    : null;
+  const speedBonus = avgResponseMs == null || refMs <= 0 ? 0 : Math.max(0, 1 - avgResponseMs / refMs);
+  const score = Math.round(((accuracy || 0) * 0.8 + speedBonus * 0.2) * (completion || 0) * 100);
+  return { score, accuracy, completion, avgResponseMs, answeredCount, totalCount, attemptCount, errorCount };
+}
+
 // Renders a `[x, y]` cell list (mental-rotation shapes) as a small filled-cell
 // grid within a `size x size` box — no images/canvas, just CSS grid squares.
 function ShapeGrid({ cells, size = 4, cellPx = 14 }) {
@@ -314,11 +335,12 @@ export function buildCognitiveResult({ type, drill, questions, totalMs }) {
   // balanced accuracy / valid-median latency, issue #2094) so the pre-save
   // results screen doesn't show a number that jumps on save. Other types keep
   // the raw-accuracy approximation (server adds only a small speed bonus).
+  const schulteMetrics = type === 'schulte-table' ? localSchulteMetrics(drill, questions) : null;
   const score = type === 'n-back'
     ? localNBackScore(drill, questions)
     : type === 'reaction-time'
       ? localReactionTimeScore(drill, questions)
-      : localAccuracyScore(questions);
+      : schulteMetrics?.score ?? localAccuracyScore(questions);
   return {
     module: 'cognitive',
     type,
@@ -326,6 +348,7 @@ export function buildCognitiveResult({ type, drill, questions, totalMs }) {
     drillData: drill,
     questions,
     score,
+    ...(schulteMetrics || {}),
     totalMs,
   };
 }
@@ -414,6 +437,21 @@ export function scoreMentalRotationTrial({ trial, index, optionIndex, responseMs
     expected: trial.correctIndex,
     answered: optionIndex,
     correct: optionIndex === trial.correctIndex,
+    responseMs,
+  };
+}
+
+// SCHULTE — one ordered click event. `expected` is the current target when the
+// click happened; wrong selections stay in the stream and do not advance it.
+// The server recomputes these fields from event order, so this is feedback data,
+// never an authority boundary.
+export function scoreSchulteClick({ target, value, responseMs }) {
+  return {
+    prompt: `${target}`,
+    index: target - 1,
+    expected: target,
+    answered: value,
+    correct: value === target,
     responseMs,
   };
 }
@@ -852,7 +890,13 @@ function SchulteTableRunner({ drill, drillIndex, drillCount, onComplete, isTrain
 
   const handleClick = useCallback((value) => {
     const current = targetRef.current;
-    if (value !== current) {
+    const question = scoreSchulteClick({
+      target: current,
+      value,
+      responseMs: Date.now() - stepStartRef.current,
+    });
+    questionsRef.current.push(question);
+    if (!question.correct) {
       setFlash(value);
       clearTimeout(flashTimeoutRef.current);
       flashTimeoutRef.current = setTimeout(() => setFlash(null), 200);
@@ -861,13 +905,6 @@ function SchulteTableRunner({ drill, drillIndex, drillCount, onComplete, isTrain
     // Advance the ref immediately (synchronously) so a second handleClick call
     // racing in before this render commits sees the bumped value, not `current`.
     targetRef.current = current + 1;
-    questionsRef.current.push({
-      prompt: `${current}`,
-      index: current - 1,
-      answered: current,
-      correct: true,
-      responseMs: Date.now() - stepStartRef.current,
-    });
     stepStartRef.current = Date.now();
     if (current >= total) finishRef.current();
     else setTarget(current + 1);

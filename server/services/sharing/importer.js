@@ -494,6 +494,7 @@ function relevantSchemaCategoriesForManifest(manifest) {
 async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = null } = {}) {
   let applied = 0;
   const overridden = [];
+  const senderCannotRepresentClimax = (Number(manifest?.portosSchemaVersions?.pipelineIssues) || 0) < 3;
   // Records whose insert threw an UNEXPECTED (non-duplicate) error — they did
   // NOT land. Surfaced as a pending condition (like legacyCanonPendingFailures)
   // so processManifest leaves the cursor un-advanced and the watcher retries,
@@ -556,6 +557,10 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
       // for every series — not just ones carrying legacy canon arrays.
       if (kind === 'series' && !record.universeId && existing.universeId) {
         record = { ...record, universeId: existing.universeId };
+      }
+      if (kind === 'issue' && senderCannotRepresentClimax
+        && existing.arcRole === 'climax' && record.arcRole !== 'climax') {
+        record = { ...record, arcRole: 'climax' };
       }
       // Non-blocking conflict journal for every synced record kind — a
       // share-bucket import that LWW-overwrites a locally-diverged record

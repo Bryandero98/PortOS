@@ -67,7 +67,8 @@ Write beats appropriate to the arc role above:
 - `midpoint` — flips a major premise or reveals new information
 - `b-plot` — advances a secondary thread while the A-plot rests
 - `all-is-lost` — strips the protagonist of their advantage at the lowest point
-- `finale` — pays off the volume's ending hook and lands the emotional arc
+- `climax` — forces the protagonist's decisive active choice and confrontation
+- `finale` — follows the climax with consequences, pays off the volume's ending hook, and lands the emotional arc
 {{/arcRole}}
 
 {{#priorVolume}}

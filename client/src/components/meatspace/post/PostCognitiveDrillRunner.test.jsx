@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import PostCognitiveDrillRunner, {
   localAccuracyScore,
+  localSchulteMetrics,
   buildCognitiveResult,
   buildNBackQuestions,
   scoreDigitSpanRecall,
   scoreStroopTrial,
   scoreMentalRotationTrial,
+  scoreSchulteClick,
   getDrillTutorial,
   hasSeenDrillTutorial,
   markDrillTutorialSeen,
@@ -88,6 +90,26 @@ describe('buildCognitiveResult', () => {
     // A clean-but-very-slow run no longer shows a pre-save 100.
     const slow = [{ correct: true, falseStart: false, responseMs: 580 }];
     expect(buildCognitiveResult({ type: 'reaction-time', drill, questions: slow, totalMs: 1 }).score).toBe(5);
+  });
+
+  it('schulte pre-save metrics include wrong clicks and completion', () => {
+    const drill = { type: 'schulte-table', config: { size: 2 }, cells: [2, 1] };
+    const questions = [
+      scoreSchulteClick({ target: 1, value: 2, responseMs: 100 }),
+      scoreSchulteClick({ target: 1, value: 1, responseMs: 400 }),
+      scoreSchulteClick({ target: 2, value: 2, responseMs: 500 }),
+    ];
+    const result = buildCognitiveResult({ type: 'schulte-table', drill, questions, totalMs: 1000 });
+    expect(result).toMatchObject({
+      accuracy: 2 / 3,
+      completion: 1,
+      answeredCount: 2,
+      totalCount: 2,
+      attemptCount: 3,
+      errorCount: 1,
+    });
+    expect(result.score).toBeLessThan(100);
+    expect(localSchulteMetrics(drill, questions).score).toBe(result.score);
   });
 });
 
@@ -267,6 +289,98 @@ describe('scoreMentalRotationTrial', () => {
     const trial = { shape: 'L', correctIndex: 1 };
     const question = scoreMentalRotationTrial({ trial, index: 0, optionIndex: 0, responseMs: 650 });
     expect(question.correct).toBe(false);
+  });
+});
+
+describe('scoreSchulteClick', () => {
+  it('records the selected value against the current target without hiding an error', () => {
+    expect(scoreSchulteClick({ target: 3, value: 7, responseMs: 850 })).toEqual({
+      prompt: '3',
+      index: 2,
+      expected: 3,
+      answered: 7,
+      correct: false,
+      responseMs: 850,
+    });
+  });
+});
+
+describe('SchulteTableRunner error recording', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    markDrillTutorialSeen('schulte-table');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('persists a wrong tap before the successful sequence and does not advance its target', () => {
+    const onComplete = vi.fn();
+    const drill = { type: 'schulte-table', config: { size: 2 }, cells: [2, 1] };
+    render(
+      <PostCognitiveDrillRunner
+        drill={drill}
+        drillIndex={0}
+        drillCount={1}
+        onComplete={onComplete}
+        isTraining={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '2' }));
+    expect(screen.getByText('Find:').parentElement).toHaveTextContent('1');
+    fireEvent.click(screen.getByRole('button', { name: '1' }));
+    expect(screen.getByText('Find:').parentElement).toHaveTextContent('2');
+    fireEvent.click(screen.getByRole('button', { name: '2' }));
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    const result = onComplete.mock.calls[0][0];
+    expect(result.questions.map(q => [q.expected, q.answered, q.correct])).toEqual([
+      [1, 2, false],
+      [1, 1, true],
+      [2, 2, true],
+    ]);
+    expect(result.errorCount).toBe(1);
+  });
+});
+
+describe('NBackRunner stimulus timeouts', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    markDrillTutorialSeen('n-back');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('persists a missed target when its stimulus window expires without a press', () => {
+    const onComplete = vi.fn();
+    const drill = {
+      type: 'n-back',
+      config: { n: 1, stimulusMs: 1000 },
+      sequence: ['A', 'A', 'B'],
+    };
+    render(
+      <PostCognitiveDrillRunner
+        drill={drill}
+        drillIndex={0}
+        drillCount={1}
+        onComplete={onComplete}
+        isTraining={false}
+      />,
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(3800); // 800ms pre-roll + all three stimulus windows
+    });
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0].questions).toEqual([
+      expect.objectContaining({ index: 1, expected: 'match', answered: null, correct: false }),
+      expect.objectContaining({ index: 2, expected: 'no-match', answered: null, correct: true }),
+    ]);
   });
 });
 

@@ -171,13 +171,34 @@ describe('getPostProgress bucketing', () => {
     });
   });
 
-  it('includes a mastery block with the multiplication ladder and memory items', async () => {
+  it('includes multiplication, cognitive evidence, and memory items in the mastery block', async () => {
     state.memoryItems = [
       { id: 'm1', title: 'Elements', mastery: { overallPct: 42 }, schedule: { nextReview: '2000-01-01T00:00:00.000Z' } },
     ];
+    const schulteTask = () => ({
+      module: 'cognitive',
+      type: 'schulte-table',
+      config: { level: 0 },
+      score: 90,
+      accuracy: 0.95,
+      completion: 1,
+      avgResponseMs: 2000,
+      totalCount: 16,
+      questions: [{ prompt: '1', answered: 1, correct: true, responseMs: 2000 }],
+    });
+    state.sessions = [{ date: todayStr(), durationMs: 60000, score: 90, tasks: [schulteTask(), schulteTask(), schulteTask()] }];
     const p = await getPostProgress({ days: 90 });
     expect(p.mastery.multiplication).toHaveProperty('level');
     expect(p.mastery.multiplication).toHaveProperty('floorLevel');
+    expect(p.mastery.cognitive['schulte-table'].level).toBe(1);
+    expect(p.mastery.cognitive['schulte-table'].levels[0]).toMatchObject({
+      samples: 3,
+      timedSamples: 3,
+      completion: 1,
+      targetMs: 2500,
+      mastered: true,
+    });
+    expect(p.mastery.cognitive['schulte-table'].levels[0].accuracy).toBeCloseTo(0.95);
     // The memory service prepends a built-in item, so find ours by id.
     const mine = p.mastery.memoryItems.find(i => i.id === 'm1');
     expect(mine).toMatchObject({ id: 'm1', title: 'Elements', overallPct: 42 });

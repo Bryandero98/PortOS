@@ -2093,6 +2093,21 @@ describe('pipeline routes', () => {
     expect(r.body.arcPosition).toBe(3);
   });
 
+  it('exposes climax vocabulary and persists it through PATCH readback', async () => {
+    const app = makeApp();
+    const config = await request(app).get('/api/pipeline/config');
+    expect(config.status).toBe(200);
+    expect(config.body.arcRoles).toContain('climax');
+
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S', universeId: 'u-test' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'Choice' });
+    const patched = await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({ arcRole: 'climax' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.arcRole).toBe('climax');
+    const readback = await request(app).get(`/api/pipeline/issues/${iss.body.id}`);
+    expect(readback.body.arcRole).toBe('climax');
+  });
+
   it('PATCH /issues/:id preserves per-stage locked flags through validation', async () => {
     const app = makeApp();
     const ser = await request(app).post('/api/pipeline/series').send({ name: 'S', universeId: 'u-test' });

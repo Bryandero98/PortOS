@@ -108,9 +108,9 @@ const DEFAULT_CONFIG = {
     drillTypes: {
       'n-back': { enabled: true, progressive: true, n: 2, length: 20, stimulusMs: 2500 },
       'digit-span': { enabled: true, progressive: true, direction: 'forward', startLength: 3, maxLength: 8, showMs: 1000 },
-      'stroop': { enabled: true, progressive: true, count: 15 },
+      'stroop': { enabled: true, progressive: true, count: 15, incongruentPct: 75 },
       'schulte-table': { enabled: true, progressive: true, size: 5 },
-      'mental-rotation': { enabled: true, progressive: true, count: 8 },
+      'mental-rotation': { enabled: true, progressive: true, count: 8, rotationComplexity: 3, optionCount: 4 },
       'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 }
     }
   },
@@ -288,7 +288,8 @@ export async function submitPostSession(sessionData) {
     const {
       score: _score, correct: _correct,
       accuracy: _acc, completion: _comp, avgResponseMs: _avg,
-      answeredCount: _ac, totalCount: _tc, medianMs: _med, bestMs: _best, span: _span,
+      answeredCount: _ac, totalCount: _tc, attemptCount: _attempts, errorCount: _errors,
+      medianMs: _med, bestMs: _best, span: _span,
       hits: _h, misses: _m, falseAlarms: _fa, correctRejections: _cr,
       ...rest
     } = t || {};
@@ -855,7 +856,7 @@ function finalizeMetricSeries(map) {
  *   practice-entry count over the window.
  * - `streak`           ONE unified streak (sessions OR training-log activity),
  *   computed over ALL history like `getPostStats`.
- * - `mastery`          multiplication ladder rung + memory items (mastery/due).
+ * - `mastery`          multiplication/cognitive ladder evidence + memory items.
  *
  * Accuracy/speed are reported separately (issue #2094): the persisted per-task
  * `accuracy`/`avgResponseMs` are preferred, with a per-question derivation
@@ -959,16 +960,20 @@ export async function getPostProgress({ days = 90 } = {}) {
   const sessionMs = sessions.reduce((sum, s) => sum + (s.durationMs || 0), 0);
   const trainingMs = training.reduce((sum, e) => sum + (e.totalMs || 0), 0);
 
-  // Mastery block: multiplication ladder rung + per-item memory mastery/due.
-  const mulProgress = await getMultiplicationProgress();
-  const memoryItems = await getMemoryItems();
-  const dueItems = await getDueMemoryItems();
+  // Mastery block: multiplication + cognitive ladder evidence and per-item
+  // memory mastery/due. Cognitive entries retain every exact-rung measure used
+  // to promote or hold so the Progress UI can explain the decision.
+  const [mulProgress, cognitiveProgress, memoryItems, dueItems, reviews] = await Promise.all([
+    getMultiplicationProgress(),
+    getCognitiveProgress(),
+    getMemoryItems(),
+    getDueMemoryItems(),
+    getRetentionReport(new Date()),
+  ]);
   const dueIds = new Set(dueItems.map(i => i.id));
   // Skill re-verification retention state (issue #2096): per-skill fresh / due /
   // needs-refresh + a 90-day retention %. Empty on fresh installs (nothing
   // tracked until the first skill is mastered).
-  const reviews = await getRetentionReport(new Date());
-
   return {
     days: window,
     series: {
@@ -988,6 +993,7 @@ export async function getPostProgress({ days = 90 } = {}) {
         description: mulProgress.label,
         floorLevel: mulProgress.floorLevel,
       },
+      cognitive: cognitiveProgress,
       memoryItems: memoryItems.map(it => ({
         id: it.id,
         title: it.title,
@@ -1771,17 +1777,16 @@ export async function getPowersProgress() {
 
 /**
  * Aggregate a laddered cognitive drill's performance per level from scored
- * history so its ladder can decide whether each rung is mastered. Cognitive
- * mastery is accuracy-only, and a "sample" is one completed drill (not one
- * answered question) — so each task contributes its stamped level and its
- * task-level `accuracy` (the balanced/SDT accuracy for n-back, #2094; the
- * answered accuracy elsewhere), which is what a raw per-question ratio can't
- * express (it would reward n-back's do-nothing exploit).
+ * history so its ladder can decide whether each rung is mastered. A "sample"
+ * is one completion-qualified drill (not one answered question), bucketed by
+ * its exact stamped level. Each task contributes task-level accuracy (balanced
+ * SDT accuracy for n-back, #2094) and response latency for the two speed-gated
+ * skills. Incomplete attempts remain visible but do not bank mastery samples.
  *
  * Returns the windowed per-level stats plus the all-time `floorLevel` (the
  * highest rung ever reached), the anti-demotion signal for resolveLevel.
  *
- * @returns {Promise<{stats: Record<number, {samples,accuracy,avgResponseMs}>, floorLevel: number}>}
+ * @returns {Promise<{stats: Record<number, {samples,attempts,accuracy,completion,incompleteSamples,avgResponseMs}>, floorLevel: number}>}
  */
 async function getCognitiveLevelStats(type, windowDays = COGNITIVE_MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
@@ -1807,24 +1812,49 @@ async function getCognitiveLevelStats(type, windowDays = COGNITIVE_MASTERY_DEFAU
       // Mastery stats are windowed.
       const date = recordDayKey(session, timezone);
       if (cutoffStr && (!date || date < cutoffStr)) continue;
-      const acc = Number.isFinite(task.accuracy) ? task.accuracy : null;
-      if (acc == null) continue;
+      const acc = deriveTaskAccuracy(task);
+      const derivedComp = deriveTaskCompletion(task);
+      const comp = derivedComp == null ? 1 : derivedComp;
+      const bucket = byLevel[level] || (byLevel[level] = {
+        attempts: 0,
+        samples: 0,
+        incompleteSamples: 0,
+        accSum: 0,
+        completionSum: 0,
+        responseSamples: 0,
+        totalResponseMs: 0,
+      });
+      bucket.attempts += 1;
+      bucket.completionSum += comp;
       // Skip low-completion runs: accuracy is answered-only, so a run that
       // leaves the harder trials blank must not bank a high-accuracy sample and
       // promote the rung (issue #2095 review). A null completion (legacy tasks)
       // is treated as complete so old history still counts.
-      const comp = Number.isFinite(task.completion) ? task.completion : null;
-      if (comp != null && comp < COGNITIVE_MASTERY_DEFAULTS.minCompletion) continue;
-      const bucket = byLevel[level] || (byLevel[level] = { samples: 0, accSum: 0 });
+      if (acc == null || comp < COGNITIVE_MASTERY_DEFAULTS.minCompletion) {
+        bucket.incompleteSamples += 1;
+        continue;
+      }
       bucket.samples += 1;
       bucket.accSum += acc;
+      const responseMs = deriveTaskAvgResponseMs(task);
+      if (responseMs != null && responseMs > 0) {
+        bucket.responseSamples += 1;
+        bucket.totalResponseMs += Math.min(responseMs, COGNITIVE_MASTERY_DEFAULTS.responseMsCap);
+      }
     }
   }
 
   const stats = {};
   for (const [level, b] of Object.entries(byLevel)) {
-    // avgResponseMs is 0 (unused) — cognitive mastery is accuracy-only.
-    stats[level] = { samples: b.samples, accuracy: b.samples ? b.accSum / b.samples : 0, avgResponseMs: 0 };
+    stats[level] = {
+      samples: b.samples,
+      attempts: b.attempts,
+      accuracy: b.samples ? b.accSum / b.samples : 0,
+      completion: b.attempts ? b.completionSum / b.attempts : 0,
+      incompleteSamples: b.incompleteSamples,
+      timedSamples: b.responseSamples,
+      avgResponseMs: b.responseSamples ? b.totalResponseMs / b.responseSamples : 0,
+    };
   }
   return { stats, floorLevel };
 }
@@ -1908,8 +1938,9 @@ export async function resolveDrillConfig(type, requestedConfig = {}) {
 
   // Progressive cognitive ladders (default ON) — per-skill difficulty rungs
   // (n-back n/stimulusMs, digit-span span/direction, schulte grid, mental-
-  // rotation/stroop trial count). Selects the rung by sustained-accuracy
-  // mastery so the drill ramps up; when off, the caller's manual knobs
+  // rotation transformation/options, Stroop interference mix). Selects the
+  // rung by exact-level completion + accuracy, with speed gates where latency
+  // is part of the skill; when off, the caller's manual knobs
   // (incl. stimulusMs/showMs) pass through unchanged. reaction-time has no
   // ladder and always passes through (issue #2095).
   if (cognitiveLadder(type)) {

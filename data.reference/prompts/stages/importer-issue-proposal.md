@@ -50,14 +50,15 @@ Comic scripts mark issues with `ISSUE N` or `#N` or similar headers — honor th
 For each issue:
 - **`title`** — short, evocative (3–8 words). Use the source's chapter / issue / act title verbatim if present, else distill from the issue's content. Do NOT use generic titles like "Issue 1" or "Chapter 3".
 - **`arcPosition`** — 1-indexed integer. Contiguous (1, 2, 3, …) — do not skip numbers.
-- **`arcRole`** — one of `pilot`, `complication`, `midpoint`, `b-plot`, `all-is-lost`, `finale`. Use:
+- **`arcRole`** — one of `pilot`, `complication`, `midpoint`, `b-plot`, `all-is-lost`, `climax`, `finale`. Use:
   - `pilot` — the opening issue that establishes the world + protagonist.
   - `complication` — issues that escalate the conflict.
   - `midpoint` — the mid-arc tonal pivot (often a false victory or false defeat).
   - `b-plot` — issues that develop secondary characters or subplots.
-  - `all-is-lost` — the lowest point before the finale.
-  - `finale` — the closing issue.
-  Use roles sparingly — a 12-issue series might have one `pilot`, one `midpoint`, one `all-is-lost`, one `finale`, and the rest `complication` / `b-plot`. Omit `arcRole` (don't return the field) if no role fits cleanly.
+  - `all-is-lost` — the lowest point before the decisive confrontation.
+  - `climax` — the decisive confrontation and protagonist choice.
+  - `finale` — the later closing issue: consequences, denouement, and the new state.
+  Use roles sparingly — a 12-issue series might have one `pilot`, one `midpoint`, one `all-is-lost`, one `climax`, one later `finale`, and the rest `complication` / `b-plot`. Omit `arcRole` (don't return the field) if no role fits cleanly.
 - **`logline`** — one sentence. What changes in this issue.
 - **`synopsis`** — 1 paragraph. The major beats of this issue.
 - **`proseExcerpt`** — the **verbatim** contiguous span of the source text that belongs to this issue. This becomes the issue's `stages.prose.output` and feeds the downstream comicScript / teleplay / storyboards renderers. **Copy exact characters from the source — no paraphrasing, no summarization, no insertion of headers I didn't write.** The excerpt may be long (up to 500K characters per issue); err on the side of including more rather than less, since downstream stages can re-process.

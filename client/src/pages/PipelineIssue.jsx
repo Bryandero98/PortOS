@@ -16,7 +16,7 @@ import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
 import TabPills from '../components/ui/TabPills';
 import {
-  getPipelineIssue, getPipelineSeries, updatePipelineIssue,
+  getPipelineConfig, getPipelineIssue, getPipelineSeries, updatePipelineIssue,
   startPipelineAutoRunText, cancelPipelineAutoRunText, pipelineAutoRunSseUrl,
   PIPELINE_STAGES, PIPELINE_TAB_STAGES, PIPELINE_STAGE_LABELS,
 } from '../services/api';
@@ -34,6 +34,7 @@ import AudioStage from '../components/pipeline/stages/AudioStage';
 import IssueJudgePanel from '../components/pipeline/IssueJudgePanel';
 import SeriesLlmPicker from '../components/pipeline/SeriesLlmPicker';
 import LengthProfilePicker from '../components/pipeline/LengthProfilePicker';
+import ArcRolePicker from '../components/pipeline/ArcRolePicker';
 import CatalogCastPanel from '../components/CatalogCastPanel';
 import { VisualGenSettingsPanel } from '../components/pipeline/stages/VisualGenSettings';
 
@@ -93,11 +94,13 @@ export default function PipelineIssue() {
 
   const [issue, setIssue] = useState(null);
   const [series, setSeries] = useState(null);
+  const [arcRoles, setArcRoles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [autoRunStarting, setAutoRunStarting] = useState(false);
   const [autoRunActive, setAutoRunActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [lengthProfileSaving, setLengthProfileSaving] = useState(false);
+  const [arcRoleSaving, setArcRoleSaving] = useState(false);
   const [genConfigSaving, setGenConfigSaving] = useState(false);
   // Close the settings modal whenever the active stage changes so it doesn't
   // reopen unexpectedly when the user returns to a previously-visited stage.
@@ -106,6 +109,9 @@ export default function PipelineIssue() {
 
   useEffect(() => {
     let canceled = false;
+    getPipelineConfig({ silent: true })
+      .then((config) => { if (!canceled) setArcRoles(config.arcRoles || []); })
+      .catch(() => null);
     getPipelineIssue(issueId, { silent: true })
       .then((iss) => {
         if (canceled) return iss;
@@ -168,6 +174,14 @@ export default function PipelineIssue() {
       .then((updated) => { if (updated) setIssue(updated); })
       .catch((err) => { toast.error(err.message || 'Save failed'); })
       .finally(() => setLengthProfileSaving(false));
+  };
+
+  const handleArcRoleChange = async (arcRole) => {
+    setArcRoleSaving(true);
+    updatePipelineIssue(issueId, { arcRole }, { silent: true })
+      .then((updated) => { if (updated) setIssue(updated); })
+      .catch((err) => { toast.error(err.message || 'Save failed'); })
+      .finally(() => setArcRoleSaving(false));
   };
 
   // Persist genConfig changes from the header settings modal. The active
@@ -302,6 +316,12 @@ export default function PipelineIssue() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h1 className="text-xl font-bold text-white truncate">#{issue.number} — {issue.title}</h1>
           <div className="flex items-center gap-2 flex-wrap">
+            <ArcRolePicker
+              issue={issue}
+              arcRoles={arcRoles}
+              onChange={handleArcRoleChange}
+              disabled={autoRunStarting || autoRunActive || arcRoleSaving}
+            />
             <LengthProfilePicker
               issue={issue}
               onChange={handleLengthChange}
@@ -326,7 +346,7 @@ export default function PipelineIssue() {
             <button
               type="button"
               onClick={() => handleAutoRun({})}
-              disabled={autoRunStarting || autoRunActive || lengthProfileSaving || genConfigSaving}
+              disabled={autoRunStarting || autoRunActive || arcRoleSaving || lengthProfileSaving || genConfigSaving}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
               title={lengthProfileSaving ? 'Saving length profile…' : genConfigSaving ? 'Saving visual settings…' : 'Run idea → prose → (comic script + teleplay) end to end'}
             >
@@ -336,7 +356,7 @@ export default function PipelineIssue() {
             <button
               type="button"
               onClick={() => handleAutoRun({ includeVideo: true })}
-              disabled={autoRunStarting || autoRunActive || lengthProfileSaving || genConfigSaving}
+              disabled={autoRunStarting || autoRunActive || arcRoleSaving || lengthProfileSaving || genConfigSaving}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-card border border-port-accent/40 text-white text-sm font-medium disabled:opacity-50 hover:bg-port-accent/10"
               title={lengthProfileSaving ? 'Saving length profile…' : genConfigSaving ? 'Saving visual settings…' : 'Run text stages and then kick off episode video via Creative Director (burns GPU)'}
             >
@@ -417,7 +437,7 @@ export default function PipelineIssue() {
             series={series}
             onStageUpdate={handleStageUpdate}
             onSeriesUpdate={setSeries}
-            actionsGated={lengthProfileSaving || genConfigSaving}
+            actionsGated={arcRoleSaving || lengthProfileSaving || genConfigSaving}
           />
         ) : (
           <div className="text-gray-500 text-sm">Unknown stage.</div>

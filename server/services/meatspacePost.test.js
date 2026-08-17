@@ -1941,6 +1941,53 @@ describe('progressive cognitive drills', () => {
     mockSessions([lowCompletion(0), lowCompletion(0), lowCompletion(0)]);
     const { progression } = await resolveDrillConfig('digit-span', {});
     expect(progression.level).toBe(0);
+    expect(progression.levels[0]).toMatchObject({ attempts: 3, samples: 0, incompleteSamples: 3, completion: 0.25 });
+  });
+
+  it('keeps fully unanswered timed-out runs visible as excluded attempts', async () => {
+    const timedOut = {
+      date: today,
+      tasks: [{
+        module: 'cognitive',
+        type: 'stroop',
+        config: { level: 0 },
+        accuracy: null,
+        completion: 0,
+        totalCount: 10,
+        questions: Array.from({ length: 10 }, (_, index) => ({ index, answered: null, responseMs: 0 })),
+      }],
+    };
+    mockSessions([timedOut, timedOut, timedOut]);
+
+    const { progression } = await resolveDrillConfig('stroop', {});
+    expect(progression.level).toBe(0);
+    expect(progression.levels[0]).toMatchObject({ attempts: 3, samples: 0, incompleteSamples: 3, completion: 0 });
+  });
+
+  it('speed-gated cognitive rungs require enough fast exact-rung runs', async () => {
+    const timedSession = (avgResponseMs) => ({
+      date: today,
+      tasks: [{
+        module: 'cognitive',
+        type: 'stroop',
+        config: { level: 0 },
+        accuracy: 0.95,
+        completion: 1,
+        avgResponseMs,
+        totalCount: 10,
+        questions: Array.from({ length: 10 }, (_, index) => ({ index, answered: 'blue', responseMs: avgResponseMs })),
+      }],
+    });
+
+    mockSessions([timedSession(1700), timedSession(1700), timedSession(1700)]);
+    const slow = await resolveDrillConfig('stroop', {});
+    expect(slow.progression.level).toBe(0);
+    expect(slow.progression.decision).toMatchObject({ action: 'hold', reasons: ['speed'] });
+
+    mockSessions([timedSession(1000), timedSession(1100), timedSession(1200)]);
+    const fast = await resolveDrillConfig('stroop', {});
+    expect(fast.progression.level).toBe(1);
+    expect(fast.config).toMatchObject({ incongruentPct: 65, count: 12 });
   });
 
   it('does not advance when accuracy is below the mastery bar', async () => {
@@ -1977,6 +2024,13 @@ describe('progressive cognitive drills', () => {
     const { config, progression } = await resolveDrillConfig('reaction-time', { mode: 'choice' });
     expect(progression == null).toBe(true);
     expect(config).toEqual({ mode: 'choice' });
+  });
+
+  it('mental-rotation progression stamps transformation and visual-complexity knobs', async () => {
+    mockSessions([]);
+    const { config, progression } = await resolveDrillConfig('mental-rotation', {});
+    expect(progression.label).toContain('90°');
+    expect(config).toMatchObject({ level: 0, rotationComplexity: 1, optionCount: 2 });
   });
 
   it('generateDrill stamps the resolved level into the generated cognitive config', async () => {

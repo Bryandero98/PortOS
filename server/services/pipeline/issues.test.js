@@ -971,6 +971,41 @@ describe('pipeline issues service', () => {
         expect(live).toMatchObject({ title: 'Edited After Delete', deleted: false });
       });
 
+      it.each([
+        ['strips the unknown role', undefined],
+        ['overwrites it with a legacy role', 'finale'],
+      ])('preserves a local climax role when a pre-v3 sender %s', async (_case, remoteArcRole) => {
+        const local = await svc.createIssue({ seriesId: 'ser-1', title: 'Decisive Choice' });
+        const withClimax = await svc.updateIssue(local.id, { arcRole: 'climax' });
+        const updatedAt = new Date(Date.now() + 60_000).toISOString();
+
+        await svc.mergeIssuesFromSync([{
+          ...withClimax,
+          title: 'Older Peer Edit',
+          arcRole: remoteArcRole,
+          updatedAt,
+        }], { senderSchemaVersions: { pipelineIssues: 2 } });
+
+        expect(await svc.getIssue(local.id)).toMatchObject({
+          title: 'Older Peer Edit',
+          arcRole: 'climax',
+        });
+      });
+
+      it('allows a v3 sender to intentionally replace climax', async () => {
+        const local = await svc.createIssue({ seriesId: 'ser-1', title: 'Decisive Choice' });
+        const withClimax = await svc.updateIssue(local.id, { arcRole: 'climax' });
+        const updatedAt = new Date(Date.now() + 60_000).toISOString();
+
+        await svc.mergeIssuesFromSync([{
+          ...withClimax,
+          arcRole: 'finale',
+          updatedAt,
+        }], { senderSchemaVersions: { pipelineIssues: 3 } });
+
+        expect((await svc.getIssue(local.id)).arcRole).toBe('finale');
+      });
+
       it('synced RESURRECTION compacts collisions — issue restored mid-series gets a unique number', async () => {
         // Regression: local delete already compacts numbering (A=1, C=2 after
         // deleting B). When B's tombstone is overridden by a later remote edit
