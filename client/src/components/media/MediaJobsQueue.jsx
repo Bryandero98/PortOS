@@ -799,6 +799,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
         steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
         imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
         disableAudio={disableAudio} onDisableAudioChange={setDisableAudio} noMusic={false} onNoMusicChange={() => {}}
+        idPrefix={`retry-video-${job.id}`}
       />
       <div className="flex items-center justify-end gap-2 pt-1">
         <button type="button" onClick={onCancel} className="px-3 py-1 text-xs text-port-text-muted hover:text-white">Cancel</button>

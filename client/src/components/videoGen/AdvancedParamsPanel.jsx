@@ -33,7 +33,9 @@ export default function AdvancedParamsPanel({
   tiling, onTilingChange,
   disableAudio, onDisableAudioChange,
   noMusic, onNoMusicChange,
+  idPrefix = '',
 }) {
+  const fieldId = (id) => idPrefix ? `${idPrefix}-${id}` : id;
   // a2v derives its length + audio track from the uploaded audio, so chunking
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
@@ -75,11 +77,11 @@ export default function AdvancedParamsPanel({
 
           {showChunks && (
             <div>
-              <label htmlFor="chunks-select" className="block text-xs font-medium text-gray-400 mb-1" title="Chain N renders end-to-end. Each chunk's last frame seeds the next, then they're stitched into one clip. Wall time scales linearly with chunks.">
+              <label htmlFor={fieldId('chunks-select')} className="block text-xs font-medium text-gray-400 mb-1" title="Chain N renders end-to-end. Each chunk's last frame seeds the next, then they're stitched into one clip. Wall time scales linearly with chunks.">
                 Chunks
               </label>
               <select
-                id="chunks-select"
+                id={fieldId('chunks-select')}
                 value={keyframesActive ? 1 : chunks}
                 onChange={(e) => onChunksChange(Number(e.target.value))}
                 disabled={keyframesActive}
@@ -102,11 +104,11 @@ export default function AdvancedParamsPanel({
               offering a knob that does nothing. */}
           {chainingActive && supportsContextWindow(currentModel) && (
             <div>
-              <label htmlFor="context-frames-select" className="block text-xs font-medium text-gray-400 mb-1" title="How much of the previous chunk each new chunk sees. A window carries the scene's motion across the seam; a single last frame gives the model a pose with no velocity, so movement stalls and restarts at every join.">
+              <label htmlFor={fieldId('context-frames-select')} className="block text-xs font-medium text-gray-400 mb-1" title="How much of the previous chunk each new chunk sees. A window carries the scene's motion across the seam; a single last frame gives the model a pose with no velocity, so movement stalls and restarts at every join.">
                 Continuity
               </label>
               <select
-                id="context-frames-select"
+                id={fieldId('context-frames-select')}
                 value={contextFrames}
                 onChange={(e) => onContextFramesChange(Number(e.target.value))}
                 className={inputCls}
@@ -138,11 +140,11 @@ export default function AdvancedParamsPanel({
               <div className="space-y-1.5">
                 {Array.from({ length: chunks }, (_, i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <label htmlFor={`chunk-prompt-${i}`} className="text-[11px] text-gray-500 w-12 shrink-0">
+                    <label htmlFor={fieldId(`chunk-prompt-${i}`)} className="text-[11px] text-gray-500 w-12 shrink-0">
                       Chunk {i + 1}
                     </label>
                     <input
-                      id={`chunk-prompt-${i}`}
+                      id={fieldId(`chunk-prompt-${i}`)}
                       type="text"
                       value={chunkPrompts[i] || ''}
                       onChange={(e) => onChunkPromptChange(i, e.target.value)}
@@ -169,10 +171,10 @@ export default function AdvancedParamsPanel({
           </FormField>
 
           <div>
-            <label htmlFor="video-seed" className="block text-xs font-medium text-gray-400 mb-1">Seed</label>
+            <label htmlFor={fieldId('video-seed')} className="block text-xs font-medium text-gray-400 mb-1">Seed</label>
             <div className="flex items-center gap-1">
               <input
-                id="video-seed"
+                id={fieldId('video-seed')}
                 type="number"
                 value={seed}
                 onChange={(e) => onSeedChange(e.target.value)}
@@ -230,11 +232,11 @@ export default function AdvancedParamsPanel({
           {showImageStrength && (
             <div className="col-span-2 sm:col-span-3">
               <div className="flex items-center justify-between gap-3 mb-1">
-                <label htmlFor="video-image-strength" className="block text-xs font-medium text-gray-400">Image Strength</label>
+                <label htmlFor={fieldId('video-image-strength')} className="block text-xs font-medium text-gray-400">Image Strength</label>
                 <span className="text-[11px] text-gray-500">{imageStrength || '1.0'}</span>
               </div>
               <input
-                id="video-image-strength"
+                id={fieldId('video-image-strength')}
                 type="range" min={0} max={1} step={0.05}
                 value={imageStrength || 1}
                 onChange={(e) => onImageStrengthChange(e.target.value)}
