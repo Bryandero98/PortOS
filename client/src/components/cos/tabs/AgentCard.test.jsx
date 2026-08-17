@@ -6,6 +6,7 @@ import { typeSettled } from '../../../test/settledInput';
 
 vi.mock('../../../services/api', () => ({
   submitCosAgentFeedback: vi.fn(),
+  sendCosAgentBtw: vi.fn(),
   getCosAgent: vi.fn(),
   getCosAgentPrompt: vi.fn(),
 }));
@@ -165,6 +166,43 @@ describe('AgentCard feedback', () => {
       { rating: 'positive', comment: detailedAgent.feedback.comment },
       { silent: true }
     );
+  });
+});
+
+describe('AgentCard finish action', () => {
+  it('sends the finish-and-sentinel message from an active Claude TUI card', async () => {
+    const user = userEvent.setup();
+    const runningAgent = {
+      ...agent,
+      status: 'running',
+      completedAt: null,
+      metadata: { ...agent.metadata, executionMode: 'tui', tuiKind: 'claude' },
+    };
+    api.sendCosAgentBtw.mockResolvedValue({ success: true });
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={runningAgent} />
+      </MemoryRouter>
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Finish work and write sentinel' }));
+
+    expect(api.sendCosAgentBtw).toHaveBeenCalledWith(
+      runningAgent.id,
+      'Finish work and write sentinel.',
+      { silent: true }
+    );
+  });
+
+  it('does not show the finish action for inactive cards', () => {
+    render(
+      <MemoryRouter>
+        <AgentCard agent={agent} completed />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole('button', { name: 'Finish work and write sentinel' })).not.toBeInTheDocument();
   });
 });
 
