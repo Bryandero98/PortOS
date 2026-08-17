@@ -190,6 +190,18 @@ describe('mediaJobs routes', () => {
     });
   });
 
+  it('POST /:id/retry clears resettable numeric video controls with null', async () => {
+    jobStore.set('j-video-clear', {
+      id: 'j-video-clear', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'old', steps: 25, seed: 42, guidanceScale: 3, imageStrength: 0.5 },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-video-clear/retry')
+      .send({ params: { steps: null, seed: null, guidanceScale: null, imageStrength: null } });
+    expect(r.status).toBe(200);
+    expect(stubs.enqueueJob.mock.calls[0][0].params).toEqual({ prompt: 'old' });
+  });
+
   it('GET /:id surfaces the Codex reasoning effort a job used (allowlisted)', async () => {
     jobStore.set('j-eff', {
       id: 'j-eff', kind: 'image', owner: null, status: 'failed',

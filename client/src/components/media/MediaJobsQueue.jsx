@@ -724,10 +724,17 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     if (numberChanged(chunks, p.chunks ?? 1)) overrides.chunks = Number(chunks);
     if (JSON.stringify(chunkPrompts) !== JSON.stringify(p.chunkPrompts || [])) overrides.chunkPrompts = chunkPrompts;
     if (numberChanged(contextFrames, p.contextFrames ?? 0)) overrides.contextFrames = Number(contextFrames);
-    if (numberChanged(seed, p.seed)) overrides.seed = Number(seed);
-    if (numberChanged(steps, p.steps)) overrides.steps = Number(steps);
-    if (numberChanged(guidanceScale, p.guidanceScale)) overrides.guidanceScale = Number(guidanceScale);
-    if (numberChanged(imageStrength, p.imageStrength)) overrides.imageStrength = Number(imageStrength);
+    const setNumericOverride = (key, value, original, clearable = false) => {
+      if (value === '') {
+        if (clearable && original != null) overrides[key] = null;
+        return;
+      }
+      if (numberChanged(value, original)) overrides[key] = Number(value);
+    };
+    setNumericOverride('seed', seed, p.seed, true);
+    setNumericOverride('steps', steps, p.steps, true);
+    setNumericOverride('guidanceScale', guidanceScale, p.guidanceScale, true);
+    setNumericOverride('imageStrength', imageStrength, p.imageStrength, true);
     if (tiling !== (p.tiling || 'auto')) overrides.tiling = tiling;
     if (disableAudio !== (p.disableAudio === true)) overrides.disableAudio = disableAudio;
     if (textEncoderId !== originalEncoder) overrides.textEncoderId = textEncoderId;

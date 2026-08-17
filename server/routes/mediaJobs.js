@@ -204,16 +204,16 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
   ),
   width: z.number().int().min(64).max(4096).optional(),
   height: z.number().int().min(64).max(4096).optional(),
-  steps: z.number().int().min(1).max(200).optional(),
+  steps: z.number().int().min(1).max(200).nullable().optional(),
   guidance: z.number().min(0).max(30).optional(),
-  guidanceScale: z.number().min(0).max(30).optional(),
+  guidanceScale: z.number().min(0).max(30).nullable().optional(),
   cfgScale: z.number().min(0).max(30).optional(),
-  seed: z.number().int().optional(),
+  seed: z.number().int().nullable().optional(),
   numFrames: z.number().int().min(1).max(2000).optional(),
   fps: z.number().int().min(1).max(120).optional(),
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   disableAudio: z.boolean().optional(),
-  imageStrength: z.number().min(0).max(1).optional(),
+  imageStrength: z.number().min(0).max(1).nullable().optional(),
   textEncoderId: z.string().max(64).optional().transform(emptyToUndef),
   chunks: z.number().int().min(1).max(8).optional(),
   chunkPrompts: z.array(z.string().max(8000)).max(8).optional(),
@@ -265,6 +265,9 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
     ),
   );
   const params = { ...job.params, ...overrides };
+  for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
+    if (rawOverrides[key] === null) delete params[key];
+  }
   // Reset Codex effort to the shipped default: dropping the key lets codex.js's
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).
