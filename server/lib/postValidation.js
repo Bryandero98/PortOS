@@ -127,7 +127,9 @@ const drillTypeConfigSchema = z.object({
   startValue: z.number().int().min(1).optional(),
   startRange: z.array(z.number()).length(2).optional(),
   timeLimitSec: z.number().int().min(10).max(600).optional(),
-  count: z.number().int().min(1).max(50).optional(),
+  // Executive-control generators support up to 60 trials. This shared config
+  // schema must accept every generated config on the scored-session round-trip.
+  count: z.number().int().min(1).max(60).optional(),
   maxDigits: z.number().int().min(1).max(4).optional(),
   // Progressive multiplication ladder (server/lib/postMultiplicationLadder.js).
   // `progressive` is the config toggle; `level`/`factors` are server-computed
@@ -155,13 +157,15 @@ const drillTypeConfigSchema = z.object({
   // keeps a conservative fixed floor of 6 and lets the generator clamp up.
   // (timeLimitSec above is validated but NOT enforced for these drill types —
   // they're self-paced/stimulus-driven; see PostCognitiveDrillRunner.jsx.)
-  // stimulusMs (n-back) / showMs (digit-span) are the presentation-speed knobs.
+  // stimulusMs (n-back / Go-No-Go) and showMs (digit-span) are the
+  // presentation-speed knobs. The lower bound covers Go/No-Go's brief signals;
+  // each generator still applies its drill-specific clamp.
   // The progressive ladder (default ON) drives them per rung; manual mode
   // (progressive off) exposes them in the config UI (issue #2095), so they must
-  // survive validation. Bounds mirror the generator clamps in
-  // meatspacePostCognitive.js (generateNBack / generateDigitSpan).
+  // survive validation. Bounds span the generator clamps in
+  // meatspacePostCognitive.js (generateNBack / generateGoNoGo).
   n: z.number().int().min(1).max(3).optional(),
-  stimulusMs: z.number().int().min(1000).max(5000).optional(),
+  stimulusMs: z.number().int().min(100).max(5000).optional(),
   showMs: z.number().int().min(400).max(4000).optional(),
   length: z.number().int().min(6).max(60).optional(),
   direction: z.enum(['forward', 'backward']).optional(),

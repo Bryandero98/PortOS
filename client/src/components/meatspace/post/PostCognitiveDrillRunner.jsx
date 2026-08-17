@@ -1572,7 +1572,7 @@ function BinaryChoiceRunner({ type, drill, drillIndex, drillCount, onComplete, i
         {phase === 'cue' && <div className="text-gray-500">Get ready…</div>}
         {phase === 'stimulus' && type === 'task-switching' && trial && (
           <div
-            aria-label={`${trial.stimulus.color} ${trial.stimulus.fill} ${trial.stimulus.shape}`}
+            aria-label={[trial.stimulus.color, trial.stimulus.fill, trial.stimulus.shape].filter(Boolean).join(' ')}
             className="text-8xl leading-none motion-reduce:transition-none"
             style={{ color: trial.stimulus.color === 'blue' ? '#3b82f6' : '#f97316' }}
           >

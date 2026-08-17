@@ -685,7 +685,7 @@ describe('executive-control runners', () => {
         type: 'task-switching',
         config: { cueStimulusIntervalMs: 100, responseDeadlineMs: 1000 },
         rules: [{ id: 'color', values: ['blue', 'orange'] }, { id: 'shape', values: ['circle', 'triangle'] }],
-        trials: [{ rule: 'color', stimulus: { color: 'blue', shape: 'triangle', fill: 'solid' }, switched: false, incongruent: true }],
+        trials: [{ rule: 'color', stimulus: { color: 'blue', shape: 'triangle' }, switched: false, incongruent: true }],
       }}
       drillIndex={0}
       drillCount={1}
@@ -695,6 +695,7 @@ describe('executive-control runners', () => {
     expect(screen.getByText(/cued rule/i)).toBeInTheDocument();
     expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
     act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByLabelText('blue triangle')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
     act(() => vi.advanceTimersByTime(250));
     expect(onComplete).toHaveBeenCalledTimes(1);

@@ -571,6 +571,19 @@ describe('drillTypeConfigSchema numeric bounds', () => {
     expect(parsed.config).toMatchObject({ seed: 'example-seed', ruleCount: 3, switchRatePct: 65, lureSimilarity: 'high', flankerStrength: 3 });
   });
 
+  it('accepts the full Go/No-Go and Flanker generator ranges', () => {
+    const goNoGo = postDrillRequestSchema.parse({
+      type: 'go-no-go',
+      config: { count: 60, stimulusMs: 100, responseDeadlineMs: 500 },
+    });
+    const flanker = postDrillRequestSchema.parse({
+      type: 'flanker',
+      config: { count: 60, responseDeadlineMs: 500 },
+    });
+    expect(goNoGo.config).toMatchObject({ count: 60, stimulusMs: 100 });
+    expect(flanker.config.count).toBe(60);
+  });
+
   it('rejects out-of-range executive-control knobs', () => {
     expect(() => postDrillRequestSchema.parse({ type: 'task-switching', config: { ruleCount: 4 } })).toThrow();
     expect(() => postDrillRequestSchema.parse({ type: 'go-no-go', config: { noGoPct: 0 } })).toThrow();
