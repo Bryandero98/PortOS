@@ -264,6 +264,11 @@ describe('MemoryPractice daily routine actions', () => {
     fireEvent.click(screen.getByText("Continue Today's Routine"));
 
     await waitFor(() => expect(submitMemoryPractice).toHaveBeenCalledTimes(1));
+    expect(submitMemoryPractice.mock.calls[0][1]).toMatchObject({
+      mode: 'learn',
+      chunkId: null,
+      results: [],
+    });
     expect(onContinue).not.toHaveBeenCalled();
 
     await act(async () => resolveSave({ mastery: {} }));

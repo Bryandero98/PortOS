@@ -28,7 +28,14 @@ import {
   COGNITIVE_MASTERY_DEFAULTS,
 } from '../lib/postProgression.js';
 import { COGNITIVE_DRILL_TYPES, generateCognitiveDrill, scoreCognitiveDrill } from './meatspacePostCognitive.js';
-import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
+import {
+  applySessionToMemoryItems,
+  getMemoryItems,
+  getDueMemoryItems,
+  expandMemoryQuestionResults,
+  normalizeMemoryQuestionResults,
+  MASTERY_TARGET_ACCURACY,
+} from './meatspacePostMemory.js';
 import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from './meatspacePostReview.js';
 // From postTrainingLogStore.js (NOT meatspacePostTraining.js) — that module
 // imports getUnifiedActivityStreak from postActivityStreak.js, which in turn
@@ -304,9 +311,17 @@ export async function submitPostSession(sessionData) {
 
     // Memory drills: trust client-side scoring only for supported types
     if (POST_SUPPORTED_MEMORY_TYPES.includes(rest.type)) {
-      return { ...rest, score: t.score || 0 };
+      return {
+        ...rest,
+        // Multi-blank fill-in-the-blank results carry one indexed response per
+        // generated blank. Recompute the question-level flag before storing so
+        // history and later readers cannot turn one correct blank into a full
+        // prompt pass.
+        questions: normalizeMemoryQuestionResults(rest.questions || []),
+        score: t.score || 0,
+      };
     }
-    // Unsupported memory drills (e.g. memory-fill-blank): preserve data, zero score
+    // Unsupported memory drills: preserve data, zero score.
     if (MEMORY_DRILL_TYPES.includes(rest.type)) {
       return { ...rest, score: 0 };
     }
@@ -381,8 +396,8 @@ export async function submitPostSession(sessionData) {
   //     try/catch: the session is already saved; there is nothing to roll back.)
   if (isNewSession) {
     // Pre-filter to POST-supported memory tasks with a memoryItemId — the exact
-    // gate the prior per-task loop used, so an unsupported memory drill (e.g.
-    // memory-fill-blank) is never scheduled even if it somehow carried an id.
+    // gate the prior per-task loop used, so a future generation-only memory
+    // drill is never scheduled even if it somehow carries an id.
     const memoryTasks = rescoredTasks.filter(t => POST_SUPPORTED_MEMORY_TYPES.includes(t.type) && t.memoryItemId);
     try {
       await applySessionToMemoryItems(memoryTasks, new Date(now));
@@ -620,6 +635,10 @@ export function deriveTaskAccuracy(task) {
   // (otherwise a legacy never-press run still reads ~70%). Mirrors the client
   // fallbacks in PostHistory/PostSessionResults.
   if (task?.type === 'n-back') return nBackBalancedAccuracy(qs);
+  if (task?.type === 'memory-fill-blank') {
+    const attempts = expandMemoryQuestionResults(qs);
+    return attempts.length ? attempts.filter(q => q?.correct).length / attempts.length : null;
+  }
   const answered = qs.filter(q => q?.answered != null);
   if (!answered.length) return null;
   return answered.filter(q => q?.correct).length / answered.length;
@@ -635,6 +654,11 @@ export function deriveTaskCompletion(task) {
   const qs = Array.isArray(task?.questions) ? task.questions : [];
   if (!qs.length) return null;
   if (task?.type === 'n-back') return 1;
+  if (task?.type === 'memory-fill-blank') {
+    const attempts = expandMemoryQuestionResults(qs);
+    if (!attempts.length) return null;
+    return attempts.filter(q => q?.answered != null).length / attempts.length;
+  }
   return qs.filter(q => q?.answered != null).length / qs.length;
 }
 

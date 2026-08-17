@@ -78,6 +78,72 @@ function memoryAttribution(q) {
   return attrs;
 }
 
+function normalizeFillBlankValue(value) {
+  return String(value ?? '').toLowerCase().trim();
+}
+
+function fillBlankAnswerKeys(question) {
+  return (question?.answers || []).map((answer, fallbackIndex) => ({
+    index: Number.isInteger(answer?.index) ? answer.index : fallbackIndex,
+    expected: String(answer?.word ?? answer),
+    ...(answer?.element != null ? { element: answer.element } : {}),
+  }));
+}
+
+/**
+ * Build one response for every generated blank. A scalar value is the legacy
+ * client contract: match it to one indexed blank and never let it satisfy the
+ * whole prompt. Structured values are keyed by answer index and missing values
+ * remain explicit misses so the server can derive partial credit consistently.
+ */
+export function buildFillBlankAnswerEntries(question, value) {
+  const keys = fillBlankAnswerKeys(question);
+  if (!keys.length) return [];
+
+  if (Array.isArray(value) || value === null) {
+    const submitted = new Map((Array.isArray(value) ? value : keys.map(key => ({ index: key.index, value: null })))
+      .map(entry => [entry?.index, entry?.value]));
+    return keys.map(key => {
+      const raw = submitted.get(key.index);
+      const answered = raw == null || String(raw).trim() === '' ? null : String(raw).trim();
+      return {
+        index: key.index,
+        value: answered,
+        expected: key.expected,
+        correct: answered !== null && normalizeFillBlankValue(answered) === normalizeFillBlankValue(key.expected),
+        ...(key.element == null ? {} : { element: key.element }),
+      };
+    });
+  }
+
+  const answered = value == null || String(value).trim() === '' ? null : String(value).trim();
+  const matched = answered === null
+    ? null
+    : keys.find(key => normalizeFillBlankValue(key.expected) === normalizeFillBlankValue(answered));
+  const target = matched || keys[0];
+  return [{
+    index: target.index,
+    value: answered,
+    expected: target.expected,
+    correct: matched != null,
+    ...(matched?.element == null ? {} : { element: matched.element }),
+  }];
+}
+
+function hasAnsweredValue(value) {
+  if (Array.isArray(value)) return value.some(entry => entry?.value != null && String(entry.value).trim() !== '');
+  return value !== null && value !== undefined;
+}
+
+/** Count fill-blank credit by generated blank, with scalar legacy fallback. */
+export function countFillBlankAnswers(answers = []) {
+  const entries = answers.flatMap(answer => Array.isArray(answer?.answered) ? answer.answered : [answer]);
+  return {
+    correct: entries.filter(entry => entry?.correct).length,
+    total: entries.length,
+  };
+}
+
 // States: idle → loading → drilling → between-drills → complete → saving → saved
 const STATES = {
   IDLE: 'idle',
@@ -187,11 +253,16 @@ export function usePostSession() {
     const totalMs = Date.now() - drillStartRef.current;
     const timeLimitMs = (currentDrill?.timeLimitSec || 120) * 1000;
 
-    // Compute score
-    const correct = finalAnswers.filter(a => a.correct).length;
-    const total = finalAnswers.length;
+    // Compute score. Multi-blank recall earns one unit per generated blank;
+    // question-level correctness remains an all-blanks pass/fail flag for
+    // review display and legacy readers.
+    const isFillBlank = currentDrill.type === 'memory-fill-blank';
+    const scored = isFillBlank
+      ? countFillBlankAnswers(finalAnswers)
+      : { correct: finalAnswers.filter(a => a.correct).length, total: finalAnswers.length };
+    const { correct, total } = scored;
     const correctRatio = total > 0 ? correct / total : 0;
-    const answered = finalAnswers.filter(a => a.answered !== null);
+    const answered = finalAnswers.filter(a => hasAnsweredValue(a.answered));
     const totalResponseMs = answered.reduce((sum, a) => sum + a.responseMs, 0);
     const avgResponseMs = answered.length > 0 ? totalResponseMs / answered.length : timeLimitMs;
     const speedBonus = Math.max(0, 1 - avgResponseMs / timeLimitMs);
@@ -240,23 +311,10 @@ export function usePostSession() {
     // For estimation drills, check within tolerance
     let correct;
     let answered;
-    // Fill-blank element attribution: which specific answers[] entry the
-    // user's guess matched (if any) — set only on an unambiguous correct
-    // match, since a wrong guess against a multi-blank prompt can't be
-    // attributed to any one blank/element (issue #2099 codex review).
-    let matchedElement;
     if (hasFillBlankAnswers) {
-      answered = value;
-      const normalized = value !== null ? String(value).toLowerCase().trim() : '';
-      // q.answers holds ACCEPTABLE-WORD OBJECTS ({ index, word, element }), not
-      // scalars — comparing via String(a) on an object always produced
-      // "[object Object]" so this could never match, silently scoring every
-      // fill-blank answer wrong (issue #2116). Compare against the object's
-      // `.word` (falling back to the raw value for a plain-string entry, for
-      // forward/backward compatibility with any other producer).
-      const matched = q.answers.find(a => String(a?.word ?? a).toLowerCase().trim() === normalized);
-      correct = !!matched;
-      matchedElement = matched?.element ?? null;
+      const entries = buildFillBlankAnswerEntries(q, value);
+      answered = entries;
+      correct = entries.length > 0 && entries.every(entry => entry.correct);
     } else if (isTextAnswer) {
       answered = value;
       correct = value !== null && String(value).toLowerCase().trim() === String(q.expected).toLowerCase().trim();
@@ -278,11 +336,6 @@ export function usePostSession() {
       correct,
       responseMs,
       ...memoryAttribution(q),
-      // Fill-blank's per-answer element (see matchedElement above) takes
-      // priority over memoryAttribution(q)'s question-level element field
-      // (which fill-blank questions never carry — only memory-element-flash
-      // does), so mergeMasteryFromSession can credit the matched element.
-      ...(matchedElement != null ? { element: matchedElement } : {})
     };
 
     const newAnswers = [...answers, answer];
@@ -343,14 +396,18 @@ export function usePostSession() {
     if (state !== STATES.DRILLING || !currentDrill) return;
 
     // Mark remaining questions as unanswered
-    const remaining = (currentDrill.questions || []).slice(currentQuestionIndex).map(q => ({
-      prompt: q.prompt,
-      expected: q.expected,
-      answered: null,
-      correct: false,
-      responseMs: 0,
-      ...memoryAttribution(q)
-    }));
+    const remaining = (currentDrill.questions || []).slice(currentQuestionIndex).map(q => {
+      const hasFillBlankAnswers = Array.isArray(q.answers) && q.answers.length > 0;
+      const answered = hasFillBlankAnswers ? buildFillBlankAnswerEntries(q, null) : null;
+      return {
+        prompt: q.prompt,
+        expected: q.expected,
+        answered,
+        correct: false,
+        responseMs: 0,
+        ...memoryAttribution(q)
+      };
+    });
 
     const finalAnswers = [...answers, ...remaining];
     setAnswers(finalAnswers);

@@ -276,6 +276,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
   }
 
   if (done) {
+    const exposureOnly = mode === 'learn';
     const correct = results.filter(r => r.correct).length;
     const pct = results.length > 0 ? Math.round((correct / results.length) * 100) : 0;
     const scoreColor = pct >= 80 ? 'text-port-success' : pct >= 50 ? 'text-port-warning' : 'text-port-error';
@@ -290,15 +291,24 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
         </div>
 
         <div className="bg-port-card border border-port-border rounded-lg p-6 text-center">
-          <div className={`text-5xl font-bold font-mono ${scoreColor} mb-2`}>{pct}%</div>
-          <div className="text-gray-400 text-sm">{correct} of {results.length} correct</div>
+          {exposureOnly ? (
+            <>
+              <div className="text-2xl font-semibold text-port-accent mb-2">Study complete</div>
+              <div className="text-gray-400 text-sm">Exposure recorded; no retrieval score or mastery update.</div>
+            </>
+          ) : (
+            <>
+              <div className={`text-5xl font-bold font-mono ${scoreColor} mb-2`}>{pct}%</div>
+              <div className="text-gray-400 text-sm">{correct} of {results.length} correct</div>
+            </>
+          )}
           <div className="text-gray-500 text-xs mt-1">
             {Math.round((Date.now() - startTime) / 1000)}s elapsed
           </div>
         </div>
 
         {/* Show wrong answers */}
-        {results.filter(r => !r.correct).length > 0 && (
+        {!exposureOnly && results.filter(r => !r.correct).length > 0 && (
           <div className="bg-port-card border border-port-border rounded-lg p-4">
             <h3 className="text-sm font-medium text-gray-400 mb-3">Review mistakes</h3>
             <div className="space-y-2">
@@ -516,7 +526,7 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
             </button>
           ) : (
             <button
-              onClick={() => { setDone(true); setResults([{ correct: true, expected: 'learn mode', answered: 'learn mode' }]); }}
+              onClick={() => { setDone(true); setResults([]); }}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-port-success hover:bg-port-success/80 text-white rounded-lg transition-colors"
             >
               <Check size={16} />
@@ -810,6 +820,15 @@ function MemoryPracticeRunner({ item, mode, onSelectMode, onExitMode, onBack, on
   }
 
   async function savePractice(practiceMode, practiceResults) {
+    if (practiceMode === 'learn') {
+      await submitMemoryPractice(item.id, {
+        mode: practiceMode,
+        chunkId: null,
+        results: [],
+        totalMs: Date.now() - startTime,
+      });
+      return;
+    }
     const chunkId = findChunkForLine(item, currentIdx);
     await submitMemoryPractice(item.id, {
       mode: practiceMode,
