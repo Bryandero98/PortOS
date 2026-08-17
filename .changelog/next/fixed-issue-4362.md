@@ -1,1 +1,0 @@
-- Linux CUDA video renders now use the compatible LTX runtime by default.

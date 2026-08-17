@@ -1,1 +1,0 @@
-- Keep the last successful reference-repository check visible when a refresh temporarily fails.

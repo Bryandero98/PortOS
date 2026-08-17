@@ -1,1 +1,0 @@
-- Music Studio renders now persist through the media queue and remain visible in dashboard processing status.

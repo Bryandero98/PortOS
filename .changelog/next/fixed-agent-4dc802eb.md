@@ -1,1 +1,0 @@
-- Preserve self-managed claim workflow completion handling

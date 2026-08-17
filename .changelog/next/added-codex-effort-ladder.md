@@ -1,1 +1,0 @@
-- Agent failures caused by a provider CLI refusing to load its own config file are now classified as `cli-config-invalid` with a config-fix suggestion, instead of escalating to an investigation task

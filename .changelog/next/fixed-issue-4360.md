@@ -1,1 +1,0 @@
-- Local CUDA music engines now report VRAM readiness and refuse installs or renders when the required profile is unknown or insufficient.

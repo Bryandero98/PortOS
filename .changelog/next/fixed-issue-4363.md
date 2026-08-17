@@ -1,1 +1,0 @@
-- Manual completion prompts now keep GitLab merge request details through review and merge.

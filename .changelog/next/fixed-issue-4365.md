@@ -1,1 +1,0 @@
-- Hugging Face catalog metadata retries after repository access or credentials change.

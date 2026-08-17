@@ -1,1 +1,0 @@
-- LTX-2.5 unified Gemma 4 text-encoder substitutes now strict-load through a narrow visual-weight filter; both initial candidates remain gated after controlled GPU renders showed no repeatable prompt-following gain (#4320).

@@ -1,1 +1,0 @@
-- MiniMax Music 3 setup now offers one action that installs the runtime and then downloads its required weights after readiness is confirmed.

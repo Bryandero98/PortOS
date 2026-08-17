@@ -1,1 +1,0 @@
-- Manual managed-app forge claims now pass the selected issue title and body directly into the agent prompt.

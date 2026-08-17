@@ -1,1 +1,0 @@
-- CI caps Vitest at two workers on GitHub Actions and reuses the Vite transform cache between runs.

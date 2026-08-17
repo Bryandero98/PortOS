@@ -1,2 +1,0 @@
-- The login screen no longer reports its expected authentication challenge as a theme failure in the browser console.
-- Windows development startup no longer emits a Vite configuration compatibility warning.

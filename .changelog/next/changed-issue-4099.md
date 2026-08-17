@@ -1,1 +1,0 @@
-- Scheduled issue planners now reject speculative future-only refactors while retaining worthwhile current refactors.

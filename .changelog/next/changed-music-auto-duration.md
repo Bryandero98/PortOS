@@ -1,1 +1,0 @@
-- MiniMax Music 3 now offers a lyric-aware Auto duration mode that leaves room for intro/outro sections, warns when a manual ceiling is too short, and recomputes the recommendation server-side.

@@ -1,1 +1,0 @@
-- Inbox message detail selections persist in shareable URLs.

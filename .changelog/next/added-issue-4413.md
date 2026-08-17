@@ -1,1 +1,0 @@
-- Agent context now includes a fixture-backed contract evaluator with machine-readable privacy, scope, freshness, and budget results.

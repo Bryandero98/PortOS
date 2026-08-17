@@ -1,2 +1,0 @@
-- OpenCode installation no longer replays or rapidly redraws the Providers page.
-- Unavailable or broken CoS TUI provider CLIs now show actionable startup errors instead of a blank failure.

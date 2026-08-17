@@ -1,2 +1,0 @@
-- Client lint now checks image alternative text and valid ARIA usage.
-- Forms now keep their labels connected to controls as accessibility checks become stricter.

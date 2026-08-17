@@ -1,1 +1,0 @@
-- Branch reconciliation now follows existing review feedback and live CI and mergeability state.

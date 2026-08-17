@@ -1,1 +1,0 @@
-- Server unit tests skip the heavy git and sprite integration suites under VITEST_FAST, and those suites share cached git/PNG fixtures so the full run is faster.

@@ -1,1 +1,0 @@
-- Validate POST LLM drill contracts and score responses exactly once.

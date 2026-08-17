@@ -1,1 +1,0 @@
-- Add a self-service OpenCode CLI installer in AI Providers

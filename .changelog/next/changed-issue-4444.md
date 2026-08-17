@@ -1,1 +1,0 @@
-- Quick POST sessions now offer saved 3, 5, 10, or 15 minute budgets with previews and persisted timing.
