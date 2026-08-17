@@ -126,6 +126,14 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     );
     expect(directive.goal).not.toContain('MiniMax H3 prompt template');
   });
+
+  it('uses the resolved creative-agent target model before the install default', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' } },
+      { defaultVideoModelId: () => 'ltx-2.5', effectiveVideoModelId: 'minimax_h3_8bit' },
+    );
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
+  });
 });
 
 describe('per-ability directives steer the planner to the right tools', () => {
