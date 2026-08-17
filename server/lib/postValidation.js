@@ -18,6 +18,17 @@ export const postTagsSchema = z.record(z.string().max(200));
 // Individual question result (math + memory drills)
 // Math: server recomputes expected/correct via scoreDrill (numeric values)
 // Memory: client scores with string comparison (text values)
+const fillBlankAnswerSchema = z.object({
+  // `index` is the source question's answer index, not the position in the
+  // submitted array. Keeping it stable makes partial answers attributable even
+  // when a client submits them out of order.
+  index: z.number().int().min(0),
+  value: z.string().nullable(),
+  expected: z.string().optional(),
+  correct: z.boolean().optional(),
+  element: z.string().nullable().optional(),
+});
+
 const questionResultSchema = z.object({
   prompt: z.string(),
   // Cognitive drills key each trial back to its position in the generated
@@ -25,7 +36,10 @@ const questionResultSchema = z.object({
   // server can recompute the answer key. Absent for math/memory drills.
   index: z.number().int().min(0).optional(),
   expected: z.union([z.number(), z.string()]).optional(),
-  answered: z.union([z.number(), z.string()]).nullable(),
+  // Fill-blank now submits one indexed entry per generated blank. The scalar
+  // forms remain valid for old clients and are intentionally treated as one
+  // attributable attempt by the memory service, never as a full prompt pass.
+  answered: z.union([z.number(), z.string(), z.array(fillBlankAnswerSchema)]).nullable(),
   correct: z.boolean().optional(),
   responseMs: z.number().min(0),
   // Reaction-time drill only: player pressed before the stimulus appeared.
@@ -414,12 +428,25 @@ const practiceResultSchema = z.object({
 
 export const memoryPracticeSchema = z.object({
   // `element-study` is the standalone flash-card study mode (ElementsSong.jsx) —
-  // logged like `learn`; it advances element mastery via results[].element but
-  // is NOT a POST-session drill type (no server generator, see generateMemoryDrill).
+  // logged like `learn` and intentionally does not advance mastery. It is NOT a
+  // POST-session drill type (no server generator, see generateMemoryDrill).
   mode: z.enum(['fill-blank', 'sequence', 'element-flash', 'element-study', 'learn', 'speed-run']),
   chunkId: z.string().nullable().optional(),
-  results: z.array(practiceResultSchema).min(1),
+  // Learn mode is an exposure event and legitimately has no scored results.
+  // Every retrieval mode still needs at least one result.
+  results: z.array(practiceResultSchema),
   totalMs: z.number().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!['learn', 'element-study'].includes(value.mode) && value.results.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_small,
+      minimum: 1,
+      inclusive: true,
+      origin: 'array',
+      path: ['results'],
+      message: 'Retrieval practice requires at least one result',
+    });
+  }
 });
 
 export const memoryMasteryAttestationSchema = z.object({

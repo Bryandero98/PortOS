@@ -3,6 +3,16 @@ import { CheckCircle, ChevronDown, ChevronUp, Dumbbell } from 'lucide-react';
 import { LLM_DRILL_TYPES, DRILL_TO_DOMAIN, DOMAINS, DRILL_LABELS, nBackBalancedAccuracy } from './constants';
 import DrillQuestionReview from './DrillQuestionReview';
 
+function fillBlankAttempts(questions) {
+  return questions.flatMap(question => Array.isArray(question?.answered)
+    ? question.answered.map(answer => ({
+      answered: answer?.value ?? null,
+      correct: answer?.correct,
+      responseMs: question.responseMs,
+    }))
+    : [question]);
+}
+
 // Presentational session breakdown shared by the live post-save results screen
 // (PostSessionResults) and the deep-linkable saved-session view
 // (PostSessionDetail) — so a just-finished session and a revisited one from
@@ -85,16 +95,22 @@ export default function PostSessionSummary({ drillResults = [], sessionScore = 0
               // (raw `correct` averaging would pay ~70% for never pressing).
               const questions = result.questions || [];
               const noGo = result.type === 'n-back';
-              const reached = noGo ? questions : questions.filter(q => q.answered !== null);
+              const fillBlank = result.type === 'memory-fill-blank';
+              const attempts = fillBlank ? fillBlankAttempts(questions) : questions;
+              const reached = noGo || fillBlank ? attempts : questions.filter(q => q.answered !== null);
               const derivedAcc = noGo
                 ? nBackBalancedAccuracy(questions)
-                : (reached.length > 0 ? reached.filter(q => q.correct).length / reached.length : null);
+                : (fillBlank
+                  ? (attempts.length > 0 ? attempts.filter(q => q.correct).length / attempts.length : null)
+                  : (reached.length > 0 ? reached.filter(q => q.correct).length / reached.length : null));
               const accPct = result.accuracy != null
                 ? Math.round(result.accuracy * 100)
                 : (derivedAcc != null ? Math.round(derivedAcc * 100) : null);
               const compPct = result.completion != null
                 ? Math.round(result.completion * 100)
-                : (questions.length > 0 ? Math.round((reached.length / questions.length) * 100) : null);
+                : (fillBlank
+                  ? (attempts.length > 0 ? Math.round((reached.filter(q => q.answered != null).length / attempts.length) * 100) : null)
+                  : (questions.length > 0 ? Math.round((reached.length / questions.length) * 100) : null));
               const timed = reached.filter(q => q.responseMs > 0);
               const avgMs = result.avgResponseMs != null
                 ? result.avgResponseMs

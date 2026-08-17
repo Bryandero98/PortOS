@@ -218,6 +218,29 @@ describe('questionResultSchema chunkId/element (issue #2016)', () => {
     });
     expect(parsed.tasks[0].questions[0].chunkId).toBeNull();
   });
+
+  it('accepts and preserves indexed multi-blank responses', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['memory'],
+      tasks: [{
+        module: 'memory',
+        type: 'memory-fill-blank',
+        questions: [{
+          prompt: 'The ____ ____',
+          expected: 'quick',
+          answered: [
+            { index: 1, value: 'quick', expected: 'quick', correct: true },
+            { index: 2, value: 'slow', expected: 'fox', correct: false },
+          ],
+          correct: false,
+          responseMs: 800,
+        }],
+        totalMs: 800,
+      }],
+    });
+    expect(parsed.tasks[0].questions[0].answered).toHaveLength(2);
+    expect(parsed.tasks[0].questions[0].answered[1].index).toBe(2);
+  });
 });
 
 describe('postSessionSubmitSchema Schulte evidence metrics', () => {
@@ -495,6 +518,11 @@ describe('memoryPracticeSchema mode enums', () => {
     });
     expect(parsed.chunkId).toBeNull();
     expect(parsed.totalMs).toBe(4000);
+  });
+
+  it('accepts an empty result list for passive learn exposure', () => {
+    expect(memoryPracticeSchema.parse({ mode: 'learn', results: [] }).results).toEqual([]);
+    expect(memoryPracticeSchema.parse({ mode: 'element-study', results: [] }).results).toEqual([]);
   });
 });
 

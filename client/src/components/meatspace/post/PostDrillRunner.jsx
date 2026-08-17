@@ -33,6 +33,7 @@ export default function PostDrillRunner({ session }) {
   } = session;
 
   const [inputValue, setInputValue] = useState('');
+  const [blankValues, setBlankValues] = useState({});
   const [timeLeft, setTimeLeft] = useState(0);
   const inputRef = useRef(null);
   const timerRef = useRef(null);
@@ -40,6 +41,10 @@ export default function PostDrillRunner({ session }) {
 
   const timeLimitMs = (currentDrill?.timeLimitSec || 120) * 1000;
   const totalQuestions = currentDrill?.questions?.length || 0;
+  const question = currentDrill?.questions?.[currentQuestionIndex];
+  const isFillBlankQuestion = currentDrill?.type === 'memory-fill-blank'
+    && Array.isArray(question?.answers)
+    && question.answers.length > 0;
 
   // Keep ref current to avoid stale closure in timer
   useEffect(() => {
@@ -75,14 +80,24 @@ export default function PostDrillRunner({ session }) {
   // Auto-focus input on question change
   useEffect(() => {
     setInputValue('');
+    setBlankValues({});
     inputRef.current?.focus();
   }, [currentQuestionIndex, currentDrillIndex]);
 
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
+    if (isFillBlankQuestion) {
+      const values = question.answers.map(answer => ({
+        index: answer.index,
+        value: blankValues[answer.index] || null,
+      }));
+      if (!values.some(entry => entry.value != null)) return;
+      submitAnswer(values);
+      return;
+    }
     if (inputValue.trim() === '') return;
     submitAnswer(inputValue.trim());
-  }, [inputValue, submitAnswer]);
+  }, [blankValues, inputValue, isFillBlankQuestion, question, submitAnswer]);
 
   if (state === 'loading') {
     return (
@@ -94,7 +109,6 @@ export default function PostDrillRunner({ session }) {
 
   if (state !== 'drilling' || !currentDrill) return null;
 
-  const question = currentDrill.questions?.[currentQuestionIndex];
   // MEMORY_DRILL_TYPES now includes 'memory-fill-blank' (issue #2099/#2116),
   // so the explicit extra check this used to need is gone.
   const isTextDrill = MEMORY_DRILL_TYPES.includes(currentDrill.type);
@@ -108,6 +122,8 @@ export default function PostDrillRunner({ session }) {
 
   // Training mode: show feedback overlay
   if (isTraining && lastAnswer) {
+    const structuredAnswers = Array.isArray(lastAnswer.answered) ? lastAnswer.answered : null;
+    const structuredCorrect = structuredAnswers?.filter(answer => answer.correct).length;
     return (
       <div className="max-w-lg mx-auto space-y-6">
         <div className="flex items-center justify-between text-sm text-gray-400">
@@ -120,19 +136,40 @@ export default function PostDrillRunner({ session }) {
           {lastAnswer.correct ? (
             <div className="flex flex-col items-center gap-2">
               <CheckCircle size={48} className="text-port-success" />
-              <div className="text-3xl font-mono font-bold text-port-success">{lastAnswer.answered}</div>
-              <div className="text-sm text-gray-400">Correct</div>
+              {structuredAnswers ? (
+                <div className="space-y-1 text-left font-mono text-port-success">
+                  {structuredAnswers.map(answer => <div key={answer.index}>{answer.value}</div>)}
+                </div>
+              ) : <div className="text-3xl font-mono font-bold text-port-success">{lastAnswer.answered}</div>}
+              <div className="text-sm text-gray-400">
+                {structuredAnswers ? `${structuredCorrect} of ${structuredAnswers.length} blanks correct` : 'Correct'}
+              </div>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
               <XCircle size={48} className="text-port-error" />
-              {lastAnswer.answered != null ? (
+              {structuredAnswers ? (
+                <div className="space-y-1 text-left font-mono text-port-error">
+                  {structuredAnswers.map(answer => (
+                    <div key={answer.index}>
+                      <span className={answer.correct ? 'text-port-success' : 'line-through'}>{answer.value || '—'}</span>
+                      {!answer.correct && <span className="text-port-success ml-2">→ {answer.expected}</span>}
+                    </div>
+                  ))}
+                </div>
+              ) : lastAnswer.answered != null ? (
                 <div className="text-2xl font-mono text-port-error line-through">{lastAnswer.answered}</div>
               ) : (
                 <div className="text-sm text-gray-500">Skipped</div>
               )}
-              <div className="text-sm text-gray-400">Expected</div>
-              <div className="text-3xl font-mono font-bold text-port-success">{lastAnswer.expected}</div>
+              {structuredAnswers ? (
+                <div className="text-sm text-gray-400">{structuredCorrect} of {structuredAnswers.length} blanks correct</div>
+              ) : (
+                <>
+                  <div className="text-sm text-gray-400">Expected</div>
+                  <div className="text-3xl font-mono font-bold text-port-success">{lastAnswer.expected}</div>
+                </>
+              )}
               <PowersLesson prompt={lastAnswer.prompt} />
               {/* Hint: break down the calculation */}
               {lastAnswer.prompt && powersBreakdownFromPrompt(lastAnswer.prompt)?.fallback !== false && (
@@ -207,21 +244,47 @@ export default function PostDrillRunner({ session }) {
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="flex gap-3">
-        <input
-          ref={inputRef}
-          type={isTextDrill ? 'text' : 'number'}
-          inputMode={isTextDrill ? 'text' : 'numeric'}
-          value={inputValue}
-          onChange={e => setInputValue(e.target.value)}
-          placeholder="Answer"
-          aria-label="Your answer"
-          autoFocus
-          className="flex-1 bg-port-bg border border-port-border rounded-lg px-4 py-3 text-xl font-mono text-white text-center placeholder-gray-600 focus:border-port-accent focus:outline-none"
-        />
+      <form onSubmit={handleSubmit} className="space-y-3">
+        {isFillBlankQuestion ? (
+          <div className="space-y-3">
+            <div className="text-sm text-gray-400">Fill every blank. Partial recall earns partial credit.</div>
+            {question.answers.map((answer, index) => {
+              const inputId = `post-blank-${currentDrillIndex}-${currentQuestionIndex}-${answer.index}`;
+              return (
+                <div key={answer.index}>
+                  <label htmlFor={inputId} className="block text-xs text-gray-500 mb-1">Blank {index + 1}</label>
+                  <input
+                    id={inputId}
+                    ref={index === 0 ? inputRef : undefined}
+                    type="text"
+                    value={blankValues[answer.index] || ''}
+                    onChange={e => setBlankValues(prev => ({ ...prev, [answer.index]: e.target.value }))}
+                    placeholder={`Answer for blank ${index + 1}`}
+                    autoFocus={index === 0}
+                    className="w-full bg-port-bg border border-port-border rounded-lg px-4 py-3 text-xl font-mono text-white text-center placeholder-gray-600 focus:border-port-accent focus:outline-none"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <input
+            ref={inputRef}
+            type={isTextDrill ? 'text' : 'number'}
+            inputMode={isTextDrill ? 'text' : 'numeric'}
+            value={inputValue}
+            onChange={e => setInputValue(e.target.value)}
+            placeholder="Answer"
+            aria-label="Your answer"
+            autoFocus
+            className="w-full bg-port-bg border border-port-border rounded-lg px-4 py-3 text-xl font-mono text-white text-center placeholder-gray-600 focus:border-port-accent focus:outline-none"
+          />
+        )}
         <button
           type="submit"
-          disabled={inputValue.trim() === ''}
+          disabled={isFillBlankQuestion
+            ? !Object.values(blankValues).some(value => value.trim() !== '')
+            : inputValue.trim() === ''}
           className={`px-6 py-3 ${isTraining ? 'bg-port-accent-2 hover:bg-port-accent-2/80 text-port-on-accent-2' : 'bg-port-accent hover:bg-port-accent/80 text-white'} disabled:opacity-50 font-medium rounded-lg transition-colors`}
         >
           Enter

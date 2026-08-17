@@ -617,7 +617,7 @@ function LearnMode({ item, onBack, onComplete }) {
   function save(continueDaily) {
     return submitMemoryPractice(item.id, {
       mode: 'learn', chunkId: null,
-      results: [{ correct: true }],
+      results: [],
       totalMs: 0,
     }).then(r => onComplete(r?.mastery, continueDaily));
   }
@@ -733,7 +733,9 @@ function ElementStudyMode({ item, mastery, onBack, onComplete }) {
   function save(continueDaily) {
     return submitMemoryPractice(item.id, {
       mode: 'element-study', chunkId: null,
-      results: results.map(r => ({ correct: r.correct, element: r.element })),
+      // Flash-card exposure is not scored retrieval. Keep the local self-rating
+      // for this screen, but never submit it as mastery evidence.
+      results: [],
       totalMs: Date.now() - startTime,
     }).then(r => onComplete(r?.mastery, continueDaily));
   }

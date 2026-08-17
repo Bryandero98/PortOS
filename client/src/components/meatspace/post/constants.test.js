@@ -129,12 +129,10 @@ describe('POST_TOPICS → DOMAINS derivation (issue #3252)', () => {
     }
   });
 
-  it('excludes drill types the session picker cannot run', () => {
-    // memory-fill-blank belongs to the memory TOPIC (it has a config block) but
-    // is not offered by the session picker — DOMAINS must not gain it.
+  it('includes the completed multi-blank recall drill in the session picker', () => {
     expect(POST_TOPICS.find(t => t.id === 'memory').drillTypes).toContain('memory-fill-blank');
-    expect(DOMAINS.memory.drillTypes).toEqual(['memory-sequence', 'memory-element-flash']);
-    expect(DRILL_TO_DOMAIN['memory-fill-blank']).toBeUndefined();
+    expect(DOMAINS.memory.drillTypes).toEqual(['memory-fill-blank', 'memory-sequence', 'memory-element-flash']);
+    expect(DRILL_TO_DOMAIN['memory-fill-blank']).toBe('memory');
   });
 
   it('maps every domain drill type back to its domain', () => {
@@ -203,7 +201,7 @@ describe('composedSessionDrillTypes (issue #3252)', () => {
     expect(composedSessionDrillTypes(memoryConfig, [
       { id: 'elements-song', content: { lines: [{ text: 'Hydrogen' }, { text: 'Helium' }] } },
       { id: 'example-memory', content: { lines: [{ text: 'First' }, { text: 'Second' }] } },
-    ])).toEqual({ memory: ['memory-sequence'] });
+    ])).toEqual({ memory: ['memory-fill-blank', 'memory-sequence'] });
     expect(composedSessionDrillTypes(memoryConfig, [])).toEqual({});
   });
 

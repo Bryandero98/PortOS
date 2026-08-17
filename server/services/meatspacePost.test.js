@@ -758,6 +758,44 @@ describe('submitPostSession — memory drill schedule advance', () => {
     const updatedMastery = masteryWrite[1].items.find(i => i.id === 'song-1');
     expect(updatedMastery.mastery.chunks['verse-1']).toEqual({ correct: 1, attempts: 1, lastPracticed: expect.any(String), recent: [1] });
   });
+
+  it('scores each generated fill-blank independently and never promotes from one partial match', async () => {
+    const session = await submitPostSession({
+      cadence: 'daily',
+      modules: ['memory'],
+      tasks: [{
+        module: 'memory',
+        type: 'memory-fill-blank',
+        memoryItemId: 'song-1',
+        questions: [{
+          prompt: 'The ____ ____',
+          expected: 'quick',
+          answered: [
+            { index: 1, value: 'quick', expected: 'quick', correct: true },
+            { index: 2, value: 'slow', expected: 'fox', correct: false },
+            { index: 3, value: 'late', expected: 'runner', correct: false },
+          ],
+          correct: true,
+          responseMs: 500,
+          chunkId: 'verse-1',
+        }],
+        score: 50,
+        totalMs: 500,
+      }],
+      tags: {},
+    });
+
+    expect(session.tasks[0].questions[0].correct).toBe(false);
+    const memoryWrite = atomicWrite.mock.calls.find(([path]) => String(path).includes('post-memory-items'));
+    const updatedItem = memoryWrite[1].items.find(i => i.id === 'song-1');
+    expect(updatedItem.mastery.chunks['verse-1']).toEqual({
+      correct: 1,
+      attempts: 3,
+      lastPracticed: expect.any(String),
+      recent: [1, 0, 0],
+    });
+    expect(updatedItem.schedule.intervalDays).toBe(0);
+  });
 });
 
 // =============================================================================
@@ -1159,6 +1197,21 @@ describe('deriveTaskAccuracy / deriveTaskCompletion — legacy-session fallback'
     };
     expect(deriveTaskAccuracy(task)).toBe(0.5);
     expect(deriveTaskCompletion(task)).toBeCloseTo(2 / 3, 5);
+  });
+
+  it('derives multi-blank accuracy and completion from indexed blank attempts', () => {
+    const task = {
+      type: 'memory-fill-blank',
+      questions: [{
+        answered: [
+          { index: 1, value: 'quick', expected: 'quick', correct: true },
+          { index: 2, value: null, expected: 'fox', correct: false },
+        ],
+        correct: false,
+      }],
+    };
+    expect(deriveTaskAccuracy(task)).toBe(0.5);
+    expect(deriveTaskCompletion(task)).toBe(0.5);
   });
 
   it('returns null (never NaN) when there is nothing to derive from', () => {
