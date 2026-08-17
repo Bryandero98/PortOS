@@ -1163,7 +1163,9 @@ describe('taskSchedule', () => {
     // posture. That drift is exactly how `branch-cleanup` shipped with no
     // taskMetadata at all, letting an app-level `defaultOpenPR: true` attach a
     // worktree + PR expectation to a task that only runs `git branch -d`.
-    it.each([...NON_COMMITTING_COORDINATOR_TASK_TYPES])(
+    // branch-cleanup remains in the coordinator exemption only for archived
+    // tasks from before migration 274; it is no longer a shipped schedule type.
+    it.each([...NON_COMMITTING_COORDINATOR_TASK_TYPES].filter((type) => DEFAULT_TASK_INTERVALS[type]))(
       '%s declares no worktree/PR, expects a clean tree, and locks both flags',
       (taskType) => {
         const meta = DEFAULT_TASK_INTERVALS[taskType].taskMetadata
@@ -1184,7 +1186,7 @@ describe('taskSchedule', () => {
     // is the only thing that rebuilds the bag — and it rebuilds MANAGED fields only.
     // Before worktreeChangesExpected was managed, it went absent here and a successful
     // clean-tree run was scored `idle-no-changes` all over again.
-    it.each([...NON_COMMITTING_COORDINATOR_TASK_TYPES])(
+    it.each([...NON_COMMITTING_COORDINATOR_TASK_TYPES].filter((type) => DEFAULT_TASK_INTERVALS[type]))(
       '%s keeps the full posture when stored taskMetadata was cleared to null',
       async (taskType) => {
         mockSchedule({
@@ -1197,13 +1199,14 @@ describe('taskSchedule', () => {
         expect(meta.useWorktree).toBe(false)
         expect(meta.openPR).toBe(false)
         expect(meta.worktreeChangesExpected).toBe(false)
+        if (taskType === 'branch-reconcile') expect(meta.branchesPerAgent).toBe(3)
       }
     )
 
-    it('forces branch-cleanup useWorktree/openPR back off when stored true (loadSchedule)', async () => {
+    it('forces branch-reconcile useWorktree/openPR back off when stored true (loadSchedule)', async () => {
       mockSchedule({
         tasks: {
-          'branch-cleanup': {
+          'branch-reconcile': {
             type: 'cron',
             enabled: true,
             providerId: null,
@@ -1215,14 +1218,35 @@ describe('taskSchedule', () => {
       })
 
       const schedule = await loadSchedule()
-      expect(schedule.tasks['branch-cleanup'].taskMetadata.useWorktree).toBe(false)
-      expect(schedule.tasks['branch-cleanup'].taskMetadata.openPR).toBe(false)
+      expect(schedule.tasks['branch-reconcile'].taskMetadata.useWorktree).toBe(false)
+      expect(schedule.tasks['branch-reconcile'].taskMetadata.openPR).toBe(false)
       // Backfilled from the defaults for installs whose stored config predates it.
-      expect(schedule.tasks['branch-cleanup'].taskMetadata.worktreeChangesExpected).toBe(false)
+      expect(schedule.tasks['branch-reconcile'].taskMetadata.worktreeChangesExpected).toBe(false)
+      expect(schedule.tasks['branch-reconcile'].taskMetadata.branchesPerAgent).toBe(3)
     })
 
-    it('strips a per-app branch-cleanup worktree/PR override', () => {
-      expect(stripManagedAgentOptionsFromOverride('branch-cleanup', { useWorktree: true, openPR: true })).toBeNull()
+    it('keeps the legacy branch-cleanup safety posture until migration 274 runs', async () => {
+      mockSchedule({
+        tasks: {
+          'branch-cleanup': {
+            type: 'weekly',
+            enabled: true,
+            providerId: null,
+            model: null,
+            prompt: null,
+            taskMetadata: { useWorktree: true, openPR: true, worktreeChangesExpected: true }
+          }
+        }
+      })
+
+      const meta = (await loadSchedule()).tasks['branch-cleanup'].taskMetadata
+      expect(meta.useWorktree).toBe(false)
+      expect(meta.openPR).toBe(false)
+      expect(meta.worktreeChangesExpected).toBe(false)
+    })
+
+    it('strips a per-app branch-reconcile worktree/PR override', () => {
+      expect(stripManagedAgentOptionsFromOverride('branch-reconcile', { useWorktree: true, openPR: true })).toBeNull()
     })
   })
 
@@ -1242,6 +1266,15 @@ describe('taskSchedule', () => {
       expect(cfg.taskMetadata.useWorktree).toBe(false)
       expect(cfg.taskMetadata.openPR).toBe(false)
       expect(MANAGED_AGENT_OPTIONS['claim-issue']).toEqual(['useWorktree', 'openPR'])
+    })
+  })
+
+  describe('branch-reconcile defaults', () => {
+    it('is the single hygiene task and defaults to a three-branch coordinator batch', () => {
+      expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('branch-reconcile')
+      expect(SELF_IMPROVEMENT_TASK_TYPES).not.toContain('branch-cleanup')
+      expect(DEFAULT_TASK_INTERVALS['branch-reconcile'].taskMetadata.branchesPerAgent).toBe(3)
+      expect(DEFAULT_TASK_INTERVALS['do-replan'].runAfter).toContain('branch-reconcile')
     })
   })
 

@@ -39,10 +39,10 @@ describe('WORKFLOW_STAGES contract', () => {
     expect(buildStage.taskTypes).toContain('feature-ideas');
   });
 
-  it('places branch-cleanup in the hygiene stage and pr-reviewer in review', () => {
+  it('places branch-reconcile in the hygiene stage and pr-reviewer in review', () => {
     const hygiene = WORKFLOW_STAGES.find(s => s.id === 'hygiene');
     const review = WORKFLOW_STAGES.find(s => s.id === 'review');
-    expect(hygiene.taskTypes).toContain('branch-cleanup');
+    expect(hygiene.taskTypes).toContain('branch-reconcile');
     expect(review.taskTypes).toContain('pr-reviewer');
   });
 
