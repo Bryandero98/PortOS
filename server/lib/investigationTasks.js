@@ -188,6 +188,18 @@ function approvalVerdict(loopReason) {
 /** The neutral, unattended verdict — what a failed policy read falls open to. Pure. */
 export const UNATTENDED_APPROVAL_VERDICT = Object.freeze(approvalVerdict(null));
 
+/**
+ * Whether a pending investigation should be admitted by the explicit CoS
+ * auto-approval override. The override is intentionally narrow: it never
+ * changes ordinary task approval or bypasses the CoS autonomy/budget gates.
+ */
+export function isAutoApprovableInvestigation(task, config) {
+  return config?.autoApproveInvestigations === true
+    && isInvestigationTask(task)
+    && task?.status === 'pending'
+    && task?.approvalRequired === true;
+}
+
 // ===== Auto-retry of the tasks an investigation was blocking =====
 
 /**

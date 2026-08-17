@@ -20,6 +20,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { getActiveProvider } from './providers.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
+import { isAutoApprovableInvestigation } from '../lib/investigationTasks.js';
 import { isRetryHeld, isStaleRetryHold } from '../lib/taskRetryHold.js';
 import { isAppOnCooldown, markAppReviewCooldown, bindAppReviewAgent, clearStaleActiveAgents } from './appActivity.js';
 import { getActiveApps } from './apps.js';
@@ -990,7 +991,12 @@ async function spawnDequeuePriority2AutoApproved(ctx) {
   const { state, instanceId, capacity } = ctx;
 
   const cosTaskData = await getCosTasks();
-  const autoApproved = cosTaskData.autoApproved || [];
+  const autoApproved = [
+    ...(cosTaskData.autoApproved || []),
+    ...(state.config.autoApproveInvestigations
+      ? (cosTaskData.grouped?.pending || []).filter((task) => isAutoApprovableInvestigation(task, state.config))
+      : [])
+  ];
   let cosAutonomyMode = getDomainMode(state.config, 'cos');
 
   // Daily CoS budget (#711) — same enforcement as the periodic evaluator
@@ -1504,6 +1510,13 @@ export async function init() {
   });
 
   cosEvents.on('tasks:user:added', () => {
+    if (isDaemonRunning()) setImmediate(() => dequeueNextTask());
+  });
+
+  // Changing the investigation override can make an already-queued held task
+  // eligible. Re-run the normal dequeue so autonomy, budgets, leases, and
+  // capacity remain the same as for every other system task.
+  cosEvents.on('config:changed', () => {
     if (isDaemonRunning()) setImmediate(() => dequeueNextTask());
   });
 

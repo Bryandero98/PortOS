@@ -259,6 +259,7 @@ const getDefaultFormData = (config, avatarStyle) => ({
   proactiveMode: config?.proactiveMode ?? true,
   idleReviewEnabled: config?.idleReviewEnabled ?? true,
   immediateExecution: config?.immediateExecution ?? true,
+  autoApproveInvestigations: config?.autoApproveInvestigations ?? false,
   avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
 });
 
@@ -502,6 +503,15 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
           inputValue={formData.immediateExecution}
           onChange={v => setFormData(f => ({ ...f, immediateExecution: v }))}
           tooltip="Execute new tasks immediately instead of waiting for evaluation interval"
+        />
+        <ConfigRow
+          label="Auto-approve Investigations"
+          value={formData.autoApproveInvestigations ? 'Enabled' : 'Disabled'}
+          editing={editing}
+          type="checkbox"
+          inputValue={formData.autoApproveInvestigations}
+          onChange={v => setFormData(f => ({ ...f, autoApproveInvestigations: v }))}
+          tooltip="Automatically process system failure investigations, including investigations held because a failure is looping or part of a storm"
         />
       </div>
 
