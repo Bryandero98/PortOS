@@ -369,6 +369,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // their existing auto-merge behavior so automation isn't silently gated on a
     // human merging a PR.
     else if (taskData.useWorktree === true && taskType === 'user') metadata.openPR = true;
+    // Claim prompts own their forge lifecycle in a separately-created
+    // claim/<item> worktree. Keep this marker independent from openPR: false is
+    // still required to stop CoS from provisioning a second worktree.
+    if (taskData.claimFlow === true) metadata.claimFlow = true;
     if (PR_COMPLETION_VALUES.includes(taskData.prCompletion)) {
       metadata.prCompletion = taskData.prCompletion;
     } else if (metadata.openPR === true && taskType === 'user') {

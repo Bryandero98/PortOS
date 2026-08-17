@@ -106,6 +106,14 @@ describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () =>
   });
 });
 
+describe('cosValidation task metadata claimFlow marker', () => {
+  it('sanitizes the claim lifecycle marker as a boolean', () => {
+    expect(sanitizeTaskMetadata({ claimFlow: true })).toEqual({ claimFlow: true });
+    expect(sanitizeTaskMetadata({ claimFlow: false })).toEqual({ claimFlow: false });
+    expect(sanitizeTaskMetadata({ claimFlow: 'true' })).toBeNull();
+  });
+});
+
 describe('cosValidation quick-template deliverable posture (#3651)', () => {
   it('taskTemplateSettingsSchema accepts worktreeChangesExpected (the block is .strict())', () => {
     // taskTemplates.js copies the slashdo catalog posture onto each built-in

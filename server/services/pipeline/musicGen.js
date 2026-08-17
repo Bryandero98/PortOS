@@ -25,6 +25,11 @@
  * `generateMusic` throws a 503 with that backend's install hint rather than a
  * bare spawn error — exactly like the FLUX.2 venv gate.
  *
+ * Performance or memory profiles are not supported from metrics alone: the
+ * full-length benchmark protocol in
+ * `docs/features/music-renderer-benchmarks.md` requires an explicit listening
+ * review after the technical checks pass.
+ *
  * Output: a WAV written into the shared music library (PATHS.music) under a
  * `music-gen-<uuid>.wav` basename, so the picker treats a generated track
  * identically to an uploaded one.
@@ -67,6 +72,7 @@ const ACESTEP_SCRIPT = join(__dirname, '../../../scripts/generate_acestep.py');
 const ACESTEP15_SCRIPT = join(__dirname, '../../../scripts/generate_acestep15.py');
 const MINIMAX_MUSIC3_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3.py');
 const MINIMAX_MUSIC3_MLX_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3_mlx.py');
+export const MUSIC_RENDERER_BENCHMARK_GUIDE = 'docs/features/music-renderer-benchmarks.md';
 // Back-compat alias for the pre-multi-engine `buildMusicGenArgs` default.
 const SIDECAR_SCRIPT = MUSICGEN_SCRIPT;
 
@@ -317,6 +323,8 @@ export const ENGINES = Object.freeze({
     cudaRequired: true,
     executionProfile: 'cuda-bf16-single-gpu',
     vramProfiles: MINIMAX_MUSIC3_VRAM_PROFILES,
+    benchmarkGuide: MUSIC_RENDERER_BENCHMARK_GUIDE,
+    requiresFullLengthListening: true,
   },
   'minimax-music3-mlx': {
     id: 'minimax-music3-mlx',

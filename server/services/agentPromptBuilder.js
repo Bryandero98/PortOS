@@ -35,6 +35,18 @@ const ROOT_DIR = PATHS.root;
 const AGENTS_DIR = PATHS.cosAgents;
 const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
 
+// Scheduled claim tasks created before the explicit marker was introduced still
+// carry their task kind in analysisType. Keep those persisted queue records on
+// the claim-owned lifecycle while new/manual tasks use the explicit marker.
+const CLAIM_FLOW_TASK_TYPES = new Set([
+  'plan-task', 'claim-issue', 'claim-issue-gitlab', 'claim-issue-jira', 'claim-work'
+]);
+
+export function isClaimFlowTask(task, isTruthyMetaFn = (value) => value === true || value === 'true') {
+  return isTruthyMetaFn(task?.metadata?.claimFlow)
+    || CLAIM_FLOW_TASK_TYPES.has(task?.metadata?.analysisType);
+}
+
 /**
  * Absolute path of the completion sentinel this run must write. The spawners'
  * pollers resolve the same per-instance filename from the same helper (see
@@ -1257,7 +1269,7 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
 export function buildCompletionGuidelineBullet({
   isReadOnly, isTui, tuiCompletionCommand, slashdoFree = false,
   worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, discardWorktree = false, noCodeOutput = false,
-  leavePrOpen = false, isPrFollowUp = false,
+  leavePrOpen = false, isPrFollowUp = false, claimFlow = false,
 }) {
   // A PR follow-up (review-loop or merge-only) already carries its own PRIMARY
   // OBJECTIVE section with the full procedure, and its cleanup runs with
@@ -1280,6 +1292,9 @@ export function buildCompletionGuidelineBullet({
   }
   if (discardWorktree) {
     return '**This is a reasoning-only task.** The worktree is discarded on exit — do NOT commit, push, merge, or open a PR. Write your result to the completion sentinel (see the Completion section) and stop.';
+  }
+  if (claimFlow) {
+    return '**This is a self-managed claim flow.** Follow the claim prompt above through its phase-specific worktree, PR/MR, review, merge or human-handoff, and cleanup steps. Do NOT stop after committing or hand the lifecycle back to PortOS.';
   }
   if (isReadOnly) {
     return '**This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.';
@@ -1458,6 +1473,27 @@ export function buildActionOutputCompletionSection({ isTui = false, sentinelPath
 }
 
 /**
+ * Completion handoff for claim prompts that create their own worktree and own
+ * the forge lifecycle. `openPR: false` must remain the CoS provisioning posture,
+ * so claimFlow is the explicit signal that keeps these prompts out of the
+ * generic commit-only handoff.
+ */
+function buildClaimFlowCompletionSection({ isTui = false, sentinelPath = null } = {}) {
+  const lines = [
+    '## Claim Workflow Handoff',
+    'This is a self-managed claim flow. The claim prompt above owns its claim worktree, branch, PR/MR, review, merge or human-handoff, and cleanup. Follow its phase-specific exit conditions — do NOT stop after a code commit or hand the lifecycle back to PortOS.',
+    '',
+    'For a successful claim, signal completion only after the prompt\'s prescribed PR/MR and cleanup steps are complete. For a clean no-work, blocked, or review-stuck exit, follow the prompt\'s prescribed leave-open/cleanup path first.'
+  ];
+  if (isTui && sentinelPath) {
+    lines.push('', 'When that path is complete, write the completion sentinel and stop:', '', ...buildSentinelWriteSteps(1, sentinelPath, '   ## PR/MR\n   <PR or MR URL, or explain the clean exit>'));
+  } else {
+    lines.push('', 'After the prompt\'s prescribed final step, exit so PortOS can record the completed claim.');
+  }
+  return lines.join('\n');
+}
+
+/**
  * Build the agent prompt.
  *
  * Two context modes, selected by `options.providerType`:
@@ -1606,6 +1642,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   // Build worktree context section if applicable
   const willOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+  const claimFlow = isClaimFlowTask(task, isTruthyMetaFn);
   const prCompletion = resolvePrCompletion(task.metadata);
   // A discard (reasoning-only) worktree: the agent reasons in it but it's thrown
   // away on exit with no commit/merge/PR (see agentWorktreeCleanup.js). Suppresses
@@ -1627,6 +1664,8 @@ ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (lat
 
 **Important**: ${discardWorktree
     ? DISCARD_WORKTREE_NOTE
+    : claimFlow
+      ? 'The claim workflow in the Completion section owns its claim branch, push, PR/MR, review, merge or human-handoff, and cleanup — do not hand those steps back to PortOS.'
     : isTui
       ? 'Commit your changes to this branch — see the **Completion Workflow** section below for the full push/PR/exit sequence.'
       : isWorktreeOnExistingBranch
@@ -1668,7 +1707,7 @@ Use the findings from the previous stage to inform your work. If the previous st
     ? 'run `/simplify` to review the changed code for reuse, quality, and efficiency'
     : SIMPLIFY_INLINE_REVIEW;
   // Discard tasks don't commit, so the simplify-before-commit step is moot.
-  const simplifySection = simplifyEnabled && !isTui && !discardWorktree ? `
+  const simplifySection = simplifyEnabled && !isTui && !discardWorktree && !claimFlow ? `
 ## Simplify Step
 After completing your work and before committing, ${simplifyInstruction}. Fix any issues found, then ${worktreeInfo && willOpenPR ? 'commit your changes (do NOT push — on a successful run the system will push and open the PR after you exit; if the run fails, no push or PR happens)' : 'commit and push using `/do:push`'}.
 ` : '';
@@ -1719,6 +1758,8 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
     ? buildActionOutputCompletionSection({ isTui, sentinelPath })
     : discardWorktree
       ? buildProgrammaticOutputCompletionSection(sentinelPath)
+      : claimFlow
+        ? buildClaimFlowCompletionSection({ isTui, sentinelPath })
       : isTui
         ? buildTuiCompletionSection({
             willOpenPR, prCompletion, simplifyEnabled,
@@ -1911,6 +1952,8 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
   ? 'Deliver your result the way the task describes (the API call or command it names) — do NOT commit, push, or open a PR; this task changes no code'
   : discardWorktree
   ? 'Write your result to the completion sentinel (see the Completion section above) — do NOT commit, push, or open a PR; this worktree is discarded on exit'
+  : claimFlow
+    ? 'Follow the claim workflow prompt above; it owns its worktree, PR/MR, review, merge or human-handoff, and cleanup. Do not stop after committing.'
   : isReviewLoopFollowUp
     ? 'Follow the follow-up section above — push any fixes you make to the PR branch; a run that needed no fix makes no commit and that is a success, not a miss'
     : isTui
@@ -1933,7 +1976,7 @@ ${(() => {
     isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
     worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput,
     leavePrOpen: leavesPrForHuman(task),
-    isPrFollowUp: isReviewLoopFollowUp,
+    isPrFollowUp: isReviewLoopFollowUp, claimFlow,
   });
   return bullet ? `- ${bullet}` : '';
 })()}
@@ -1946,6 +1989,8 @@ ${noCodeOutput
   ? `- **Do NOT commit, push, or open a PR.** This task changes no code — its result is delivered by the API call or command described above. Without this, a no-worktree task of this shape was told to \`/do:push\` **directly to the branch it is standing on**, which for a task running in the app's live checkout is its default branch.`
   : discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
+  : claimFlow
+    ? `- **Follow the claim workflow prompt above.** It owns the claim worktree and the full PR/MR lifecycle; do not stop after committing or hand push/PR/merge/cleanup back to PortOS.`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
     : isTui && tuiSlashdoFree
@@ -1955,7 +2000,7 @@ ${noCodeOutput
     : worktreeInfo && willOpenPR
       ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations. The system will push your branch and open the PR after you exit, so do NOT run \`git push\` or \`/do:push\` yourself.`
       : `- **Commit and push using \`/do:push\`** — this handles changelog updates, staging specific files, writing a conventional commit message, and pushing safely. If \`/do:push\` is unavailable, follow its conventions manually: stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix, no Co-Authored-By annotations, and push with \`git pull --rebase && git push\`.`}
-${discardWorktree || noCodeOutput ? '' : worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
+${discardWorktree || noCodeOutput || claimFlow ? '' : worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
 
 ## Working Directory
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
@@ -2013,6 +2058,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // directly-exported buildLightContextPrompt/Parts entry points.
   task = reconcileSplitContext(task);
   const willOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+  const claimFlow = isClaimFlowTask(task, isTruthyMetaFn);
   const prCompletion = resolvePrCompletion(task.metadata);
   const simplifyEnabled = isTruthyMetaFn(task.metadata?.simplify);
   const isReadOnly = isTruthyMetaFn(task.metadata?.readOnly);
@@ -2072,7 +2118,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // a JIRA run be told to open a PR whose merge section was suppressed — and
   // PortOS opened that PR too. `inlineSection` also names WHICH section follows,
   // so the completion step's cross-reference can't name the wrong one.
-  const inlineSection = inlinePrLifecycleSection(task, {
+  const inlineSection = claimFlow ? null : inlinePrLifecycleSection(task, {
     providerType: isTui ? PROVIDER_TYPES.TUI : PROVIDER_TYPES.CLI,
     providerId, providerCommand, leanMode, worktreeInfo, isTruthyMetaFn,
   });
@@ -2126,7 +2172,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       `- **Path**: \`${worktreeInfo.worktreePath}\``,
       worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
       '',
-      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree }),
+      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow }),
       'Do NOT manually switch branches or modify the worktree configuration.',
       // Resuming a previous failed agent's branch: establish what's already done
       // before writing code (see buildResumeSection). '' when not a resume.
@@ -2176,6 +2222,11 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     // output hook) is the sole output; the worktree is discarded on exit. Wins
     // over the isTui / CLI push-and-PR completion workflows below.
     sections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
+  } else if (claimFlow) {
+    sections.push(buildClaimFlowCompletionSection({
+      isTui,
+      sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
+    }));
   } else if (isReadOnly) {
     sections.push(buildReadOnlyCompletionSection({
       isTui,
@@ -2244,8 +2295,9 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
  * push workflow (TUI or Claude Code CLI with slashdo), reuse an existing PR
  * branch (review fixes), or hand off to PortOS's post-exit push.
  */
-function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree }) {
+function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow = false }) {
   if (discardWorktree) return DISCARD_WORKTREE_NOTE;
+  if (claimFlow) return 'The claim workflow in the Completion section owns the push, PR/MR, review, merge or human-handoff, and cleanup steps.';
   if (isTui) return 'Commit your changes to this branch — see **Completion Workflow** below.';
   if (isWorktreeOnExistingBranch) {
     return 'Commit and **push** any review-fix commits to this branch (the PR points at it). Use `git pull --rebase` before pushing if needed.';

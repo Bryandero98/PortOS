@@ -686,9 +686,10 @@ describe('cosTaskStore.addTask', () => {
   });
 
   it('persists boolean override flags (true and false) into metadata', async () => {
-    const task = await addTask({ description: 'flagged', useWorktree: false, openPR: true }, 'user');
+    const task = await addTask({ description: 'flagged', useWorktree: false, openPR: true, claimFlow: true }, 'user');
     expect(task.metadata.useWorktree).toBe(false);
     expect(task.metadata.openPR).toBe(true);
+    expect(task.metadata.claimFlow).toBe(true);
     expect(task.metadata.prCompletion).toBe('review-then-merge');
   });
 
