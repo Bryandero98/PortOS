@@ -197,6 +197,11 @@ describe('buildProjectParams — every type yields well-formed render settings',
       expect(typeof p.targetDurationSeconds).toBe('number');
     }
   });
+
+  it('carries the music form length onto the owning project', () => {
+    const p = getAbilityAdapter('music').buildProjectParams({ generation: { lengthSeconds: 75 } }, ctx);
+    expect(p.targetDurationSeconds).toBe(75);
+  });
 });
 
 describe('buildRenderBackendPin — per-commission render backend (#3135)', () => {

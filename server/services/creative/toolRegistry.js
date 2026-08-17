@@ -147,12 +147,46 @@ const ABILITY_TOOL_NAMES = Object.freeze({
 });
 
 export const filterForTargetAbility = (tools, targetAbility) => {
+  return tools.filter((tool) => isToolAllowedForTargetAbility(tool.name, targetAbility));
+};
+
+export function isToolAllowedForTargetAbility(toolName, targetAbility) {
+  if (!targetAbility) return true;
   if (targetAbility === 'series') {
-    return tools.filter((tool) => tool.name.startsWith('pipeline_') || tool.name.startsWith('universe_'));
+    return toolName.startsWith('pipeline_') || toolName.startsWith('universe_');
   }
   const allowed = ABILITY_TOOL_NAMES[targetAbility];
-  return allowed ? tools.filter((tool) => allowed.has(tool.name)) : tools;
-};
+  return allowed ? allowed.has(toolName) : true;
+}
+
+/**
+ * Validate the production shape selected by the commission form. Tool schemas
+ * still validate each step's args at dispatch; this guard locks the output lane
+ * and requested artifact count before any autonomous work starts.
+ */
+export function getCommissionPlanError(plan, directive) {
+  const targetAbility = directive?.constraints?.targetAbility;
+  if (!targetAbility) return null;
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  const disallowed = steps.find((step) => !isToolAllowedForTargetAbility(step.toolName, targetAbility));
+  if (disallowed) {
+    return `Tool "${disallowed.toolName}" is not allowed for commission type ${targetAbility}`;
+  }
+  const count = (name) => steps.filter((step) => step.toolName === name && step.status !== 'skipped').length;
+  const requiredCounts = {
+    video: [['media_enqueueVideoJob', 1]],
+    image: [['media_enqueueImageJob', Number(directive.constraints.generation?.imageCount) || 1]],
+    music: [['media_enqueueAudioJob', 1]],
+    'music-video': [['media_enqueueAudioJob', 1], ['media_enqueueVideoJob', 1]],
+  }[targetAbility] || [];
+  for (const [toolName, expected] of requiredCounts) {
+    const actual = count(toolName);
+    if (actual !== expected) {
+      return `${targetAbility} commission requires exactly ${expected} ${toolName} step${expected === 1 ? '' : 's'}; received ${actual}`;
+    }
+  }
+  return null;
+}
 
 export const getToolSpecs = ({ includeDestructive = false, targetAbility = null } = {}) =>
   filterForTargetAbility(filterDestructive(CREATIVE_TOOLS, includeDestructive), targetAbility).map(toSpec);
@@ -225,6 +259,9 @@ async function recordLedger(ctx, entry) {
 export async function dispatchCreativeTool(name, args = {}, ctx = {}) {
   const tool = byName.get(name);
   if (!tool) throw new Error(`Unknown creative tool: ${name}`);
+  if (!isToolAllowedForTargetAbility(name, ctx.targetAbility)) {
+    throw new Error(`Creative tool "${name}" is not allowed for commission type ${ctx.targetAbility}`);
+  }
 
   // Validate up front — a Zod parse failure throws before any gating/side effect.
   const parsed = tool.schema.parse(args ?? {});

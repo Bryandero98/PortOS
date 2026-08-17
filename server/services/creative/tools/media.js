@@ -31,7 +31,8 @@ const paramsSchema = z.object({ params: z.record(z.any()).default({}), owner: z.
  * them deterministically here rather than trusting the LLM to reproduce them.
  *
  * The planner still owns the CREATIVE params (`prompt`, `negativePrompt`,
- * `style`, `durationSeconds`). Only the render geometry is enforced. An
+ * `style`). Commission duration is form-locked; a general CD project may use
+ * shorter per-step beats. Only render controls are enforced. An
  * unrecognized aspect/quality (hand-edited/legacy project) falls through to the
  * LLM's params untouched — best-effort, never throws.
  */
@@ -43,8 +44,12 @@ function enforceVideoRenderPreset(params, project) {
   }
   // The planner may legitimately ask for a shorter beat than the project target,
   // so a positive per-step durationSeconds wins; otherwise use the project's.
+  const targetAbility = project.directive?.constraints?.targetAbility;
+  const commissionLocked = targetAbility === 'video' || targetAbility === 'music-video';
   const stepDuration = Number(params?.durationSeconds);
-  const durationSeconds = stepDuration > 0 ? stepDuration : (project.targetDurationSeconds || 10);
+  const durationSeconds = commissionLocked
+    ? (project.targetDurationSeconds || 10)
+    : (stepDuration > 0 ? stepDuration : (project.targetDurationSeconds || 10));
   const preset = presetToRenderParams({
     aspectRatio: project.aspectRatio,
     quality: project.quality,
@@ -55,12 +60,32 @@ function enforceVideoRenderPreset(params, project) {
   const { aspectRatio: _ignored, ...rest } = params || {};
   return {
     ...rest,
+    durationSeconds,
     width: preset.width,
     height: preset.height,
     fps: preset.fps,
     numFrames: preset.numFrames,
     steps: preset.steps,
     guidanceScale: preset.guidanceScale,
+  };
+}
+
+function enforceImageRenderPreset(params, project) {
+  const targetAbility = project?.directive?.constraints?.targetAbility;
+  if ((targetAbility !== 'image' && targetAbility !== 'music-video')
+      || !ASPECT_PRESETS[project.aspectRatio] || !QUALITY_PRESETS[project.quality]) {
+    return params;
+  }
+  const aspect = ASPECT_PRESETS[project.aspectRatio];
+  const quality = QUALITY_PRESETS[project.quality];
+  const { aspectRatio: _ignored, ...rest } = params || {};
+  return {
+    ...rest,
+    width: aspect.width,
+    height: aspect.height,
+    steps: quality.steps,
+    guidance: quality.guidance,
+    cfgScale: quality.guidance,
   };
 }
 
@@ -120,14 +145,35 @@ export function reconcileVideoParamsWithModel(params, project, models = getVideo
  */
 async function configureMusicJob(params, ctx) {
   if (!ctx?.projectId) return params;
+  const project = await loadOwningProject(ctx);
+  if ((ctx.targetAbility === 'music' || ctx.targetAbility === 'music-video') && !project) {
+    throw new Error('commission-project-unavailable');
+  }
   const { getCommissionMusicContextForProject } = await import('../../creativeCommissions/store.js');
   // Do not collapse a failed local provenance lookup into "not a taste run".
   // That would let planner-authored renderer/prompt guesses escape onto an
   // opted-in commission precisely when the local store is unavailable.
   const context = await getCommissionMusicContextForProject(ctx.projectId);
   if (!context) {
-    if (params?.creativeDirectorMusicBed) return params;
-    return { ...params, creativeDirectorMusicBed: { projectId: ctx.projectId } };
+    const targetAbility = project?.directive?.constraints?.targetAbility;
+    if (targetAbility !== 'music' && targetAbility !== 'music-video') {
+      if (params?.creativeDirectorMusicBed) return params;
+      return { ...params, creativeDirectorMusicBed: { projectId: ctx.projectId } };
+    }
+    const {
+      engine: _plannerEngine,
+      modelId: _plannerModel,
+      repo: _plannerRepo,
+      durationSec: _plannerDuration,
+      durationMode: _plannerDurationMode,
+      provenance: _plannerProvenance,
+      ...rest
+    } = params || {};
+    return {
+      ...rest,
+      durationSec: project.targetDurationSeconds,
+      creativeDirectorMusicBed: { projectId: ctx.projectId },
+    };
   }
   if (typeof context.prompt !== 'string' || !context.prompt.trim()) {
     throw new Error('taste-commission-prompt-unavailable');
@@ -301,7 +347,9 @@ const mediaTool = (kind, label) => ({
       // Image + video both consult the owning project: video for its locked
       // geometry preset, both for a pinned render backend (#3135).
       const project = await loadOwningProject(ctx);
+      if (ctx.targetAbility && !project) throw new Error('commission-project-unavailable');
       if (kind === 'video') params = enforceVideoRenderPreset(params, project);
+      if (kind === 'image') params = enforceImageRenderPreset(params, project);
       params = await enforceRenderBackendPin(kind, params, project);
       // Resolve the selected local model AFTER the backend ladder has applied
       // project/install pins. The same model-catalog fields that drive Video

@@ -153,7 +153,7 @@ function buildVideoGeometryParams(commission, { defaultVideoModelId } = {}) {
     // (lib/creativeDirectorPrompts.js) and the teaser tool inherits. Neither set
     // ⇒ the install default, exactly as before.
     modelId: gen?.videoModelId || gen?.model || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined),
-    targetDurationSeconds: gen?.targetDurationSeconds || 10,
+    targetDurationSeconds: gen?.targetDurationSeconds || gen?.lengthSeconds || 10,
     // Only passed when the commission actually pinned a backend (#3135), so an
     // unpinned commission's createProject call is byte-identical to a hand-made
     // project's — both omit the arg and buildProjectRecord stores `null`, exactly
