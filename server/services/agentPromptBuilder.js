@@ -2126,10 +2126,6 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
 
   const taskSections = [];
   const contractSections = [];
-  // Alias preserving the original single-list flow below: task-block pushes go
-  // to `taskSections`, then `sections` is repointed at `contractSections` for
-  // the operating-contract blocks.
-  let sections = taskSections;
 
   // --- Task block --------------------------------------------------------
   // cwd is set by the spawner and the agent knows its own id from the
@@ -2138,35 +2134,30 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // suppressed in buildTaskBlock since cwd already reveals it. Shared with the
   // full path via buildTaskBlock.
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: true });
-  sections.push(taskBlock.description);
-  if (taskBlock.targetApp) sections.push(taskBlock.targetApp);
+  taskSections.push(taskBlock.description);
+  if (taskBlock.targetApp) taskSections.push(taskBlock.targetApp);
 
   // The task's prompt payload + human note as one block (#4153), so the split is
   // invisible here and a legacy `metadata.context`-as-prompt still renders.
   const context = taskContextBlock(task);
   if (context) {
-    sections.push(context.includes('\n')
+    taskSections.push(context.includes('\n')
       ? `### Context\n\n${context.trimEnd()}`
       : `### Context\n${context}`);
   }
 
-  if (taskBlock.screenshots) sections.push(taskBlock.screenshots);
-  if (taskBlock.attachments) sections.push(taskBlock.attachments);
-
-  // Everything below is the PortOS operating contract (not task content) —
-  // route it to `contractSections` so the split path can lift it into the
-  // system prompt.
-  sections = contractSections;
+  if (taskBlock.screenshots) taskSections.push(taskBlock.screenshots);
+  if (taskBlock.attachments) taskSections.push(taskBlock.attachments);
 
   // --- Unattended run ----------------------------------------------------
   // First contract section, and unconditional: the light path is the one that
   // actually stalled on an approval gate, and "no human will answer you" is not
   // something the agent can infer from CLAUDE.md or its cwd.
-  sections.push(UNATTENDED_RUN_RULE);
+  contractSections.push(UNATTENDED_RUN_RULE);
 
   // --- Worktree ----------------------------------------------------------
   if (worktreeInfo) {
-    sections.push([
+    contractSections.push([
       '## Git Worktree',
       `- **Branch**: \`${worktreeInfo.branchName}\`${isWorktreeOnExistingBranch ? ' *(pre-existing PR branch)*' : ''}`,
       `- **Path**: \`${worktreeInfo.worktreePath}\``,
@@ -2184,7 +2175,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const pipelineCtx = task.metadata?.pipeline;
   if (pipelineCtx?.previousStageAgentId) {
     const prevOutput = join(AGENTS_DIR, pipelineCtx.previousStageAgentId, 'output.txt');
-    sections.push([
+    contractSections.push([
       '## Pipeline Context',
       `Stage ${pipelineCtx.currentStage + 1} of ${pipelineCtx.stages.length}: "${pipelineCtx.stages[pipelineCtx.currentStage]?.name}"`,
       `Previous stage: "${pipelineCtx.stages[pipelineCtx.currentStage - 1]?.name}"`,
@@ -2196,7 +2187,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
 
   // --- JIRA --------------------------------------------------------------
   if (task.metadata?.jiraTicketId) {
-    sections.push([
+    contractSections.push([
       '## JIRA',
       `- **Ticket**: ${task.metadata.jiraTicketId} (${task.metadata.jiraTicketUrl})`,
       task.metadata.jiraBranch ? `- **Branch**: \`${task.metadata.jiraBranch}\` — commit here; do NOT switch branches.` : null,
@@ -2213,7 +2204,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // path above and never reaches the other two, so a fix applied only there is
   // no fix at all for anything a subscription-quota job can run.
   if (noCodeOutput) {
-    sections.push(buildActionOutputCompletionSection({
+    contractSections.push(buildActionOutputCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
@@ -2221,24 +2212,24 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     // Reasoning-only task: the sentinel payload (shape set by the task-type
     // output hook) is the sole output; the worktree is discarded on exit. Wins
     // over the isTui / CLI push-and-PR completion workflows below.
-    sections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
+    contractSections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
   } else if (claimFlow) {
-    sections.push(buildClaimFlowCompletionSection({
+    contractSections.push(buildClaimFlowCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReadOnly) {
-    sections.push(buildReadOnlyCompletionSection({
+    contractSections.push(buildReadOnlyCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReviewLoopFollowUp) {
-    sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody, forgeCli: resolvedForgeCli }));
     if (isTui) {
       const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
       const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
       const sentinelTail = branchName ? `   ## Branch\n   ${branchName}` : '   ## Branch\n   <branch name>';
-      sections.push([
+      contractSections.push([
         '## Completion Handoff',
         'When finished with the follow-up steps above, write the completion sentinel to signal PortOS that you are done:',
         '',
@@ -2246,7 +2237,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       ].join('\n'));
     }
   } else if (isTui) {
-    sections.push(buildTuiCompletionSection({
+    contractSections.push(buildTuiCompletionSection({
       willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree, ownsPrWorkflow,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
       branchName: worktreeInfo?.branchName || null,
@@ -2256,7 +2247,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       forgeCli: resolvedForgeCli
     }));
   } else {
-    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion
@@ -2264,7 +2255,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // so a dangling "step 4" cross-reference and an orphaned Review Loop section
   // are both unrepresentable.
   if (ownsPrWorkflow) {
-    sections.push(buildInlineReviewLoopSection({
+    contractSections.push(buildInlineReviewLoopSection({
       taskId: task.id,
       branchName: worktreeInfo?.branchName || null,
       runsReviewLoop: inlineSection === 'review-loop',

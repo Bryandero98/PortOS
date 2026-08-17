@@ -167,59 +167,6 @@ function mergeObjectLWW(local, remote, timestampField = 'updatedAt') {
   return { merged: local, changed: false };
 }
 
-/**
- * Deep merge for derived files (longevity, chronotype) where timestamps
- * are unreliable (regenerated on derivation). Merges nested marker objects
- * as unions, keeps non-default scalar values, and uses LWW as final tiebreaker.
- */
-function mergeDeepUnion(local, remote, timestampField = 'derivedAt') {
-  if (!local) return { merged: remote, changed: true };
-  if (!remote) return { merged: local, changed: false };
-
-  const merged = { ...local };
-  let changed = false;
-
-  for (const [key, remoteVal] of Object.entries(remote)) {
-    const localVal = local[key];
-
-    // Skip timestamp fields — set after merge
-    if (key === timestampField) continue;
-
-    // Nested objects (markers): union keys, local wins per-key conflicts
-    if (isPlainObject(remoteVal) && isPlainObject(localVal)) {
-      const mergedObj = { ...localVal };
-      for (const [k, v] of Object.entries(remoteVal)) {
-        if (!(k in mergedObj)) {
-          mergedObj[k] = v;
-          changed = true;
-        }
-      }
-      merged[key] = mergedObj;
-      continue;
-    }
-
-    // Missing locally — take remote
-    if (localVal === undefined || localVal === null) {
-      merged[key] = remoteVal;
-      changed = true;
-      continue;
-    }
-
-    // Remote has non-default value, local has default — take remote
-    if (localVal === 0 && remoteVal !== 0) {
-      merged[key] = remoteVal;
-      changed = true;
-    }
-  }
-
-  // Use the newer timestamp
-  const localTs = local[timestampField] || '';
-  const remoteTs = remote[timestampField] || '';
-  merged[timestampField] = remoteTs > localTs ? remoteTs : localTs;
-
-  return { merged, changed };
-}
-
 // --- Category: Goals ---
 
 async function getGoalsSnapshot() {
