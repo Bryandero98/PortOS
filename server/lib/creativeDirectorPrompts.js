@@ -25,7 +25,6 @@ import {
   presetToRenderParams,
 } from './creativeDirectorPresets.js';
 import { PORTOS_API_URL } from './ports.js';
-import { getVideoModels } from './mediaModels.js';
 import { buildPrompt } from '../services/promptService.js';
 
 // Shared project-block view used by both prompt stages. Defaults out
@@ -86,7 +85,7 @@ export async function buildTreatmentPrompt(project) {
 // module and lib must not import it (nor pull its heavy import-time tool graph
 // into every prompt build). The template iterates `tools` + renders the
 // directive brief + the current plan (present only on a re-plan).
-function buildPlanView(project, toolSpecs) {
+function buildPlanView(project, toolSpecs, videoModels) {
   const directive = project.directive && typeof project.directive === 'object' ? project.directive : {};
   const deliverables = Array.isArray(directive.deliverables) ? directive.deliverables : [];
   const tools = (Array.isArray(toolSpecs) ? toolSpecs : []).map((s) => ({
@@ -100,7 +99,7 @@ function buildPlanView(project, toolSpecs) {
   // server forces these onto every video render (see media.js
   // enforceVideoRenderPreset). `width`/`height` degrade to 0 on an unknown ratio.
   const aspect = resolveAspectDimensions(project.aspectRatio, { width: 0, height: 0 });
-  const videoModel = getVideoModels().find((model) => model.id === project.modelId) || null;
+  const videoModel = videoModels.find((model) => model.id === project.modelId) || null;
   const render = {
     aspectRatio: project.aspectRatio,
     quality: project.quality,
@@ -150,7 +149,12 @@ function buildPlanView(project, toolSpecs) {
 }
 
 export async function buildPlanPrompt(project, { toolSpecs } = {}) {
-  const view = buildPlanView(project, toolSpecs);
+  // Keep the media registry off the treatment/evaluation import path. Several
+  // focused consumers intentionally mock only the PATHS keys they use; loading
+  // the on-disk model catalog is specific to planning and should happen only
+  // when a plan prompt is actually requested.
+  const { getVideoModels } = await import('./mediaModels.js');
+  const view = buildPlanView(project, toolSpecs, getVideoModels());
   return buildPrompt('cd-plan', view);
 }
 
