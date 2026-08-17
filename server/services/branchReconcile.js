@@ -1032,12 +1032,11 @@ export function desiredEndState(state, actions, { prNumber, worktreePath, collis
   }
   // IN_REVIEW
   const canMerge = actionOn(actions, 'autoMerge');
-  // The Copilot gate is time-boxed for the same reason the merge waits on CI
-  // in-session: a repo without Copilot review enabled never produces one, and an
-  // unbounded "await the review" leaves a green PR open forever. 10 minutes
-  // mirrors the claim-issue flow's Copilot poll.
-  return `Drive the open PR toward green: request/await the Copilot review and address feedback.${canMerge
-    ? ` Merge ONLY when the LATEST Copilot review reports "0 comments" (pre-resolved threads do NOT count; a PR over 20k lines is exempt from the Copilot check and needs only CI-green + mergeable). If no Copilot review lands within 10 minutes of requesting it, the Copilot gate is satisfied — this repo may not have Copilot review enabled — and CI-green + MERGEABLE is the whole gate. ${driveToMerge(pr)}`
+  // Existing PRs have already passed through whatever review workflow the repo
+  // uses. Reconciliation must not request or assume a particular reviewer; its
+  // merge gate is the forge's live CI and mergeability state.
+  return `Drive the open PR toward green: inspect any existing review feedback and address it.${canMerge
+    ? ` Merge ONLY when CI is green and the PR is MERGEABLE. ${driveToMerge(pr)}`
     : ' Do NOT merge (auto-merge is disabled) — stop once the PR is green and ready for the user to merge.'}`;
 }
 
