@@ -44,6 +44,7 @@ import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 const RE_NUMBERED_LIST = /([.!?:]) (\d+)\. /g;
 const RE_DASH_LIST = /([.!?:]) - /g;
 const RE_SECTION_LABELS = / (Expected output|Steps|Success criteria|Actionable focus|Focus|Suggestions?|Notes?|Context|Requirements?|Constraints?|Result|Output|Summary|Details)([: ])/gi;
+const FINISH_SENTINEL_MESSAGE = 'Finish work and write sentinel.';
 
 // Normalize raw task description text into markdown for readable rendering.
 // Descriptions often arrive as a single long line with embedded numbered lists,
@@ -190,12 +191,12 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
     copyToClipboard(promptContent, 'Prompt copied to clipboard');
   }, [promptContent]);
 
-  // Send BTW message to running agent
-  const sendBtw = useCallback(async () => {
-    if (sendingBtw || !btwInput.trim()) return;
+  // Send a message to the running agent
+  const sendBtw = useCallback(async (message = btwInput.trim(), label = 'BTW message') => {
+    if (sendingBtw || !message) return;
     setSendingBtw(true);
 
-    const result = await api.sendCosAgentBtw(agent.id, btwInput.trim(), { silent: true }).catch(err => {
+    const result = await api.sendCosAgentBtw(agent.id, message, { silent: true }).catch(err => {
       toast.error(`Failed to send: ${err.message}`);
       return null;
     });
@@ -203,9 +204,9 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
     setSendingBtw(false);
 
     if (result?.success) {
-      setBtwMessages(prev => [...prev, { message: btwInput.trim(), timestamp: new Date().toISOString() }]);
-      setBtwInput('');
-      toast.success('BTW message sent to agent');
+      setBtwMessages(prev => [...prev, { message, timestamp: new Date().toISOString() }]);
+      if (message === btwInput.trim()) setBtwInput('');
+      toast.success(`${label} sent to agent`);
     }
   }, [agent.id, btwInput, sendingBtw]);
 
@@ -751,13 +752,23 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               disabled={sendingBtw}
             />
             <button
-              onClick={sendBtw}
+              onClick={() => sendBtw()}
               disabled={sendingBtw || !btwInput.trim()}
               className="flex items-center gap-1.5 px-3 py-1 text-xs bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded transition-colors disabled:opacity-50 min-h-[32px]"
               title="Send BTW message to agent (pastes into the live Claude Code TUI session)"
             >
               {sendingBtw ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Send size={12} aria-hidden="true" />}
               BTW
+            </button>
+            <button
+              onClick={() => sendBtw(FINISH_SENTINEL_MESSAGE, 'Finish message')}
+              disabled={sendingBtw}
+              className="flex items-center gap-1.5 px-3 py-1 text-xs bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors disabled:opacity-50 min-h-[32px]"
+              title="Tell the agent to finish work and write the sentinel"
+              aria-label="Finish work and write sentinel"
+            >
+              {sendingBtw ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <CheckCircle size={12} aria-hidden="true" />}
+              Finish
             </button>
           </div>
         )}
