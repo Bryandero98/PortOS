@@ -1,0 +1,1 @@
+- Morse practice now adapts to recurring character confusions and progresses into words, callsigns, and short QSO phrases.

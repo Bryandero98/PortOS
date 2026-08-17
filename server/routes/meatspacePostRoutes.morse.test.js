@@ -41,6 +41,14 @@ describe('POST /api/meatspace/post/morse/rounds', () => {
     );
   });
 
+  it('accepts bounded adaptive sampler metadata', async () => {
+    const r = await request(app)
+      .post('/api/meatspace/post/morse/rounds')
+      .send({ mode: 'copy', samplerVersion: 'adaptive-v1', materialMode: 'words', targetedChars: ['M'], items: [{ sent: 'M', guessed: 'R', correct: false }] });
+    expect(r.status).toBe(201);
+    expect(morseService.appendMorseRound).toHaveBeenCalledWith(expect.objectContaining({ materialMode: 'words', targetedChars: ['M'] }));
+  });
+
   it('rejects an unknown mode', async () => {
     const r = await request(app)
       .post('/api/meatspace/post/morse/rounds')
