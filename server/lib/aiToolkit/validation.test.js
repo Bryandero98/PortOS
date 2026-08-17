@@ -139,6 +139,18 @@ describe('providerSchema', () => {
     });
   });
 
+  describe('Ollama generation controls', () => {
+    it('accepts temperature and thinking mode within their safe bounds', () => {
+      const result = providerSchema.safeParse({ ...minimalProvider, temperature: 0.6, thinking: false });
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ temperature: 0.6, thinking: false });
+    });
+
+    it('rejects an out-of-range Ollama temperature', () => {
+      expect(providerSchema.safeParse({ ...minimalProvider, temperature: 2.1 }).success).toBe(false);
+    });
+  });
+
   describe('default reasoning effort', () => {
     it('accepts known effort levels and treats an empty UI value as unset', () => {
       expect(providerSchema.safeParse({ ...minimalProvider, effort: 'xhigh' }).success).toBe(true);
