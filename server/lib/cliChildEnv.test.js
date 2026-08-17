@@ -162,6 +162,12 @@ describe('composeProviderEnv — delta for sites that do not spawn directly', ()
     }).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
   });
 
+  it('disables Claude/Ollama thinking when the provider requests it', () => {
+    const localClaude = { command: 'claude', ollamaBacked: true, thinking: false, envVars: {} };
+    expect(composeProviderEnv({ provider: localClaude }).MAX_THINKING_TOKENS).toBe('0');
+    expect(composeProviderEnv({ provider: { ...localClaude, thinking: true } }).MAX_THINKING_TOKENS).toBeUndefined();
+  });
+
   it('emits only the provider layers, with no base env, PWD, or strip', () => {
     const delta = composeProviderEnv({
       before: { GH_TOKEN: 'forge' },

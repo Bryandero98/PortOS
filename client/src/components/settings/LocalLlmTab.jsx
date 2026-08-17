@@ -640,6 +640,9 @@ export function LocalLlmTab() {
         <p className="text-xs text-gray-500">
           Both backends can be installed and running at the same time — <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading.
         </p>
+        <p className="text-xs text-gray-500">
+          For Ollama coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature and thinking defaults in AI Providers</Link>. Native Ollama and OpenCode receive both controls; Claude/Ollama honors the thinking toggle. New local providers start at temperature 0.6.
+        </p>
 
         {loading && !status ? (
           <BrailleSpinner text="Loading local LLM status" />

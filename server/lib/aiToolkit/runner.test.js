@@ -116,6 +116,19 @@ describe('AI Toolkit runner service', () => {
     expect(JSON.parse(fetch.mock.calls[0][1].body).num_ctx).toBe(32768);
   });
 
+  it('sends configured Ollama temperature and thinking mode', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const fetch = stubStreamingFetch();
+    const runner = createRunnerService({ dataDir, hooks: { ensureProviderReady: async () => ({ success: true }) } });
+    let done;
+    const completed = new Promise((resolve) => { done = resolve; });
+    await runner.executeApiRun({ runId: 'run-ollama-options', provider: runReady({ temperature: 0.6, thinking: false }), model: null, prompt: 'hi', workspacePath: process.cwd(), screenshots: [], onData: undefined, onComplete: () => done() });
+    await completed;
+
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ temperature: 0.6, think: false });
+  });
+
   it('omits num_ctx when the provider does not set it', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     tempDirs.push(dataDir);

@@ -89,7 +89,7 @@ export function toBareModelIds(models, providerKey = 'ollama') {
  * @param {'ollama'|'mtplx'} [providerKey='ollama']
  * @returns {object} OpenCode config object
  */
-export function buildOpencodeConfig(models, base = null, providerKey = 'ollama') {
+export function buildOpencodeConfig(models, base = null, providerKey = 'ollama', generation = null) {
   const bareIds = toBareModelIds(models, providerKey);
   const config = (base && typeof base === 'object')
     ? structuredClone(base)
@@ -107,6 +107,20 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama')
       ...Object.fromEntries(bareIds.map((id) => [id, { name: id, tool_call: true }])),
     };
   }
+  // OpenCode applies generation controls to agents, not provider definitions.
+  // `build` is its primary coding agent for both `opencode run` and the TUI;
+  // unknown agent options are passed through to the provider, including
+  // Ollama's native `think` flag.
+  if (generation && providerKey === 'ollama') {
+    const temperature = Number.isFinite(Number(generation.temperature)) ? Number(generation.temperature) : 0.6;
+    const thinking = typeof generation.thinking === 'boolean' ? generation.thinking : undefined;
+    config.agent = { ...(config.agent && typeof config.agent === 'object' ? config.agent : {}) };
+    config.agent.build = {
+      ...(config.agent.build && typeof config.agent.build === 'object' ? config.agent.build : {}),
+      temperature,
+      ...(thinking === undefined ? {} : { think: thinking }),
+    };
+  }
   return config;
 }
 
@@ -120,8 +134,8 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama')
  * @param {'ollama'|'mtplx'} [providerKey='ollama']
  * @returns {string} JSON string for OPENCODE_CONFIG_CONTENT
  */
-export function buildOpencodeConfigContent(models, base = null, providerKey = 'ollama') {
-  return JSON.stringify(buildOpencodeConfig(models, base, providerKey));
+export function buildOpencodeConfigContent(models, base = null, providerKey = 'ollama', generation = null) {
+  return JSON.stringify(buildOpencodeConfig(models, base, providerKey, generation));
 }
 
 /**
@@ -164,6 +178,6 @@ export function buildOpencodeEnvVars(provider, model) {
     model,
   ];
   return {
-    OPENCODE_CONFIG_CONTENT: buildOpencodeConfigContent(ids, base, providerKey),
+    OPENCODE_CONFIG_CONTENT: buildOpencodeConfigContent(ids, base, providerKey, provider),
   };
 }

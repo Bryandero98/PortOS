@@ -37,6 +37,14 @@ describe('Provider Service', () => {
     expect(provider.type).toBe('cli');
   });
 
+  it('persists Ollama generation controls when creating a provider', async () => {
+    const provider = await providerService.createProvider({
+      name: 'Local Ollama', type: 'cli', command: 'opencode', ollamaBacked: true,
+      temperature: 0.6, thinking: false,
+    });
+    expect(provider).toMatchObject({ temperature: 0.6, thinking: false });
+  });
+
   it('should get all providers', async () => {
     await providerService.createProvider({
       name: 'Test Provider 1',
