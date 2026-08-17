@@ -31,6 +31,7 @@ import {
   getStatus, listModels, listVisionModels, listToolUseModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer,
   describeInstallProgress
 } from '../services/localLlm.js'
+import { getSettings } from '../services/settings.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
 import { listUserModels } from '../services/audioModels.js'
 import { ENGINES } from '../services/pipeline/musicGen.js'
@@ -288,15 +289,28 @@ router.post('/migrate', asyncHandler(async (req, res) => {
 // Distinct from /catalog (disk-installed) — only flags what's eating VRAM
 // right now so the Memory Management panel can show what to unload before
 // kicking off a big diffusion render.
+//
+// A backend the user has marked intentionally disabled (localLlm.<id>.disabled —
+// "PortOS will not expect this backend to be running") is a KNOWN not-resident
+// state, not an unavailable one, so it is not probed and never surfaces as a
+// "Status unavailable for …" error for the Memory Management panel.
 router.get('/loaded', asyncHandler(async (_req, res) => {
+  // A disabled backend is a known not-resident state, so skip both the probe and
+  // the residency-error check for it — an intentionally-off backend must not read
+  // as "status unavailable".
+  const settings = await getSettings().catch(() => ({}))
+  const ollamaDisabled = Boolean(settings.localLlm?.ollama?.disabled)
+  const lmStudioDisabled = Boolean(settings.localLlm?.lmstudio?.disabled)
+  // The residency getters return [] on a failed/unreachable probe (never throw),
+  // recording the failure via their getLastLoadedModelsError().
   const [ollama, lmstudio] = await Promise.all([
-    getLoadedOllamaModels(),
-    getLoadedLmStudioModels(true),
-  ])
+    ollamaDisabled ? Promise.resolve([]) : getLoadedOllamaModels(),
+    lmStudioDisabled ? Promise.resolve([]) : getLoadedLmStudioModels(true),
+   ])
   const sourceErrors = [
-    ...(getOllamaResidencyError() ? ['ollama'] : []),
-    ...(getLmStudioResidencyError() ? ['lmstudio'] : []),
-  ]
+     ...(!ollamaDisabled && getOllamaResidencyError() ? ['ollama'] : []),
+     ...(!lmStudioDisabled && getLmStudioResidencyError() ? ['lmstudio'] : []),
+   ]
   res.json({ ollama, lmstudio, sourceErrors })
 }))
 

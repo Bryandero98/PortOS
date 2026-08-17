@@ -6,7 +6,8 @@ import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlay
 import { listModels, listVisionModels, listToolUseModels } from '../services/localLlm.js';
 import { enrichCatalogWithVariants } from '../services/huggingFaceCatalog.js';
 import { getLoadedModels, unloadModel } from '../services/ollamaManager.js';
-import { getLoadedModels as getLoadedLmStudioModels } from '../services/lmStudioManager.js';
+import { getLoadedModels as getLoadedLmStudioModels, getLastLoadedModelsError as getLmStudioResidencyError } from '../services/lmStudioManager.js';
+import { getSettings } from '../services/settings.js';
 import { localLlmCompareSchema, localLlmTestSchema } from '../lib/validation.js';
 import { errorEvents } from '../lib/errorHandler.js';
 
@@ -52,6 +53,12 @@ vi.mock('../services/lmStudioManager.js', () => ({
 vi.mock('../services/huggingFaceCatalog.js', () => ({
   searchHuggingFaceModels: vi.fn(async () => []),
   enrichCatalogWithVariants: vi.fn(async (catalog) => catalog),
+}));
+
+// /loaded reads getSettings() to honor a user's intentionally-disabled backends,
+// so mock it (defaults to no backends disabled; the disabled-case test flips it).
+vi.mock('../services/settings.js', () => ({
+  getSettings: vi.fn(async () => ({})),
 }));
 
 function makeApp() {
@@ -245,8 +252,8 @@ describe('local LLM memory-management routes', () => {
   });
 
   it('GET /loaded reports models both local backends currently have resident', async () => {
-    // Mirror the real getLoadedModels() field set so the fixture documents the
-    // pass-through contract and would catch any future field-stripping.
+     // Mirror the real getLoadedModels() field set so the fixture documents the
+     // pass-through contract and would catch any future field-stripping.
     const resident = { id: 'llama3.2', name: 'llama3.2', size: 4096, sizeVram: 4096, expiresAt: null };
     const lmStudioResident = { id: 'example/lmstudio', state: 'loaded' };
     getLoadedModels.mockResolvedValue([resident]);
@@ -258,7 +265,41 @@ describe('local LLM memory-management routes', () => {
     expect(res.body).toEqual({ ollama: [resident], lmstudio: [lmStudioResident], sourceErrors: [] });
     expect(getLoadedModels).toHaveBeenCalledTimes(1);
     expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
-  });
+   });
+
+  it('GET /loaded does not probe a user-disabled backend or report it unavailable', async () => {
+     // A backend the user marked intentionally disabled (localLlm.<id>.disabled) is
+     // a known not-resident state, not an unavailable one — so /loaded must skip
+     // probing it and never surface "Status unavailable for LM Studio" to the
+     // Memory Management panel. Even though the residency probe would otherwise
+     // record a "LM Studio is unavailable" error, a disabled backend must not carry it.
+    getSettings.mockResolvedValueOnce({ localLlm: { lmstudio: { disabled: true } } });
+    getLmStudioResidencyError.mockReturnValueOnce('LM Studio is unavailable');
+
+    const res = await request(makeApp()).get('/api/local-llm/loaded');
+
+    expect(res.status).toBe(200);
+    expect(res.body.sourceErrors).not.toContain('lmstudio');
+    expect(res.body.lmstudio).toEqual([]);
+     // The disabled backend is a no-residency state — never probed.
+    expect(getLoadedLmStudioModels).not.toHaveBeenCalled();
+    expect(getSettings).toHaveBeenCalled();
+   });
+
+  it('GET /loaded still reports an enabled backend whose residency probe fails', async () => {
+     // The disabled-skip must not suppress a genuine "status unavailable" — an
+     // enabled backend that fails its residency probe still surfaces as a source
+     // error so the panel keeps its "excluded from Free everything" guard.
+    getSettings.mockResolvedValueOnce({});
+    getLmStudioResidencyError.mockReturnValueOnce('LM Studio is unavailable');
+
+    const res = await request(makeApp()).get('/api/local-llm/loaded');
+
+    expect(res.status).toBe(200);
+    expect(res.body.sourceErrors).toContain('lmstudio');
+    expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
+   });
+
 
   it('POST /unload evicts a resident model and echoes the service result', async () => {
     // Real unloadModel() success shape is { unloaded: true, model } — NOT modelId
