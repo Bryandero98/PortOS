@@ -40,7 +40,7 @@ export default function AdvancedParamsPanel({
   // and the audio flags don't apply there.
   const showAudioFlags = mode !== 'a2v';
   const showDisableAudio = showAudioFlags && supportsVideoAudioControls(currentModel);
-  const showPromptAudioControls = showAudioFlags && supportsVideoAudioPromptControls(currentModel);
+  const showPromptAudioControls = showAudioFlags && noMusic != null && supportsVideoAudioPromptControls(currentModel);
   const audioDisabled = showDisableAudio && disableAudio;
   // Chunk chaining seeds chunk N+1 from chunk N's last frame, so it needs i2v —
   // the same predicate the picker uses, not a second reading of supportedModes.
