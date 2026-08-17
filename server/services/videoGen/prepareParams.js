@@ -59,6 +59,40 @@ import {
 import { videoModeContractError, videoChainUnsupportedError } from './modeContract.js';
 import { resolveByovRuntimeLoraCapable, videoLoraUnsupportedError } from './runtimes.js';
 
+export function validateVideoRetryParams(params = {}) {
+  const modelId = params.modelId || defaultVideoModelId();
+  const model = listVideoModels().find((entry) => entry.id === modelId);
+  if (!model) {
+    throw new ServerError(`Unknown modelId: ${modelId}`, { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' });
+  }
+  if (!isStockTextEncoder(params.textEncoderId)
+    && !supportsVideoTextEncoder(model, params.textEncoderId)) {
+    throw videoTextEncoderUnsupportedError(model, params.textEncoderId);
+  }
+  const mode = params.mode || (params.sourceImagePath ? 'image' : 'text');
+  const modeError = videoModeContractError({
+    model,
+    mode,
+    hasFirstImage: Boolean(params.sourceImagePath),
+    hasLastImage: Boolean(params.lastImagePath),
+    keyframes: params.keyframes,
+    extendFromVideo: params.extendFromVideoPath,
+    audioFile: params.audioFilePath,
+    icReferences: params.icReferencePaths,
+  });
+  if (modeError) throw modeError;
+  if (Number(params.chunks || 1) > 1) {
+    const chainError = videoChainUnsupportedError(model);
+    if (chainError) throw chainError;
+  }
+  if ((mode === 'a2v' || icLoraSpecForMode(mode)) && !isLtx2FamilyRuntime(model.runtime)) {
+    throw new ServerError(
+      `${mode} mode requires an ltx2-runtime model. Model "${modelId}" runs on "${model.runtime || 'mlx_video'}".`,
+      { status: 400, code: mode === 'a2v' ? 'A2V_REQUIRES_LTX2' : 'IC_LORA_REQUIRES_LTX2' },
+    );
+  }
+}
+
 /**
  * Best-effort unlink of every multipart temp file the parser wrote before the
  * handler ran. Exported because the route needs it on the Zod-parse failure

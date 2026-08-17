@@ -14,6 +14,7 @@ import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
+import { validateVideoRetryParams } from '../services/videoGen/prepareParams.js';
 
 const router = Router();
 
@@ -268,6 +269,7 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
     if (rawOverrides[key] === null) delete params[key];
   }
+  if (job.kind === 'video') validateVideoRetryParams(params);
   // Reset Codex effort to the shipped default: dropping the key lets codex.js's
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).

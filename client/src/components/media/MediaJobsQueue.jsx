@@ -702,6 +702,13 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];
   const encoderOptions = textEncoderOptionsForModel(currentModel);
   const originalEncoder = normalizeTextEncoderForModel(p.textEncoderId || STOCK_TEXT_ENCODER_ID, currentModel);
+  const handleModelChange = (event) => {
+    const nextModelId = event.target.value;
+    const nextModel = models.find((model) => model.id === nextModelId) || null;
+    setModelId(nextModelId);
+    setTextEncoderId(normalizeTextEncoderForModel(textEncoderId, nextModel));
+    if (videoLoraFamily(nextModel) !== loraFamily) setSelectedLoras([]);
+  };
   const setChunkPromptAt = (index, value) => setChunkPrompts((prev) => {
     const next = [...prev];
     next[index] = value;
@@ -754,7 +761,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <FormField className="col-span-2 sm:col-span-3" label="Model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
-          {models.length > 0 ? <ModelSelect models={models} value={modelId} onChange={(e) => setModelId(e.target.value)} /> : (
+          {models.length > 0 ? <ModelSelect models={models} value={modelId} onChange={handleModelChange} /> : (
             <input value={modelId} onChange={(e) => setModelId(e.target.value)} className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white" />
           )}
         </FormField>
