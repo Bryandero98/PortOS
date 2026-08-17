@@ -28,8 +28,6 @@ const STOPWORDS = new Set([
   'now', 'said', 'like', 'back', 'get', 'got',
 ]);
 
-const isEchoCandidate = (lower) => lower.length >= 5 && !STOPWORDS.has(lower);
-
 /**
  * Distinctive words repeated within a window of `windowWords` tokens. Returns
  * one finding per repeated word (the SECOND occurrence — the echo — anchored),
