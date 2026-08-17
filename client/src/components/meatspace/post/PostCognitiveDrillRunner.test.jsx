@@ -715,9 +715,9 @@ describe('executive-control runners', () => {
       onComplete={onComplete}
       isTraining={false}
     />);
-    fireEvent.click(screen.getByRole('button', { name: /go signal.*respond/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'filled circle' }));
     act(() => vi.advanceTimersByTime(251));
-    expect(screen.getByRole('button', { name: /no-go lure.*withhold/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'filled square' })).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(501));
     act(() => vi.advanceTimersByTime(251));
     expect(onComplete).toHaveBeenCalledTimes(1);

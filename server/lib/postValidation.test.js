@@ -73,6 +73,15 @@ describe('postConfigUpdateSchema llmDrills', () => {
   });
 });
 
+describe('postConfigUpdateSchema cognitive compatibility', () => {
+  it('accepts a legacy six-drill map after newer cognitive types are added', () => {
+    const legacyTypes = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
+    const drillTypes = Object.fromEntries(legacyTypes.map(type => [type, { enabled: true }]));
+    const parsed = postConfigUpdateSchema.parse({ cognitive: { enabled: true, drillTypes } });
+    expect(Object.keys(parsed.cognitive.drillTypes)).toEqual(legacyTypes);
+  });
+});
+
 describe('Morse drill types stay scoped to the training log', () => {
   // Regression: MORSE_DRILL_TYPES must never be spliced into the shared
   // DRILL_TYPES array — that array also backs the *scored* session submit

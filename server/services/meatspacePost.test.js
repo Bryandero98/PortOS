@@ -2031,10 +2031,11 @@ describe('progressive cognitive drills', () => {
     };
   }
 
-  function mockSessions(sessions, configOverride) {
+  function mockSessions(sessions, configOverride, training = []) {
     readJSONFile.mockImplementation((path, defaultValue) => {
       const p = String(path);
       if (p.includes('post-sessions')) return Promise.resolve({ sessions });
+      if (p.includes('post-training-log')) return Promise.resolve({ entries: training });
       if (p.includes('post-config')) return Promise.resolve(configOverride ?? defaultValue);
       return Promise.resolve(defaultValue);
     });
@@ -2187,6 +2188,29 @@ describe('progressive cognitive drills', () => {
     expect(progress['n-back'].levels[2].mastered).toBe(false);
     // Every laddered type reports; reaction-time is absent.
     expect(Object.keys(progress).sort()).toEqual(['digit-span', 'flanker', 'go-no-go', 'mental-rotation', 'n-back', 'schulte-table', 'stroop', 'task-switching']);
+  });
+
+  it('uses authoritative training accuracy and latency instead of raw totals', async () => {
+    const training = Array.from({ length: 3 }, (_, index) => ({
+      id: `go-no-go-${index}`,
+      runId: `run-${index}`,
+      date: today,
+      timestamp: `${today}T12:00:00.000Z`,
+      module: 'cognitive',
+      drillType: 'go-no-go',
+      difficulty: { level: 0 },
+      questionCount: 20,
+      correctCount: 16,
+      accuracy: 0.5,
+      completion: 1,
+      avgResponseMs: 300,
+      totalMs: 30000,
+    }));
+    mockSessions([], undefined, training);
+
+    const progress = await getCognitiveProgress();
+    expect(progress['go-no-go'].level).toBe(0);
+    expect(progress['go-no-go'].levels[0]).toMatchObject({ accuracy: 0.5, avgResponseMs: 300, mastered: false });
   });
 
   it('difficulty stamp survives submitPostSession (stored task carries config.level)', async () => {

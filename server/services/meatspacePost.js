@@ -730,7 +730,9 @@ function trainingEntryTask(entry) {
   const correctCount = Number.isFinite(rawCorrectCount)
     ? Math.max(0, Math.min(questionCount, rawCorrectCount))
     : 0;
-  const accuracy = questionCount > 0 ? correctCount / questionCount : null;
+  const accuracy = typeof entry?.accuracy === 'number'
+    ? entry.accuracy
+    : questionCount > 0 ? correctCount / questionCount : null;
   return {
     id: entry?.id,
     module: entry?.module,
@@ -740,7 +742,9 @@ function trainingEntryTask(entry) {
     score: Number.isFinite(entry?.score) ? entry.score : (accuracy == null ? null : accuracy * 100),
     accuracy,
     completion: typeof entry?.completion === 'number' ? entry.completion : (questionCount > 0 ? 1 : null),
-    avgResponseMs: questionCount > 0 ? (entry?.totalMs || 0) / questionCount : null,
+    avgResponseMs: typeof entry?.avgResponseMs === 'number'
+      ? entry.avgResponseMs
+      : questionCount > 0 ? (entry?.totalMs || 0) / questionCount : null,
     totalMs: entry?.totalMs || 0,
     totalCount: questionCount,
   };

@@ -19,7 +19,8 @@ function trainingAttempt(runId, attempt, position, localDay, startedAt) {
   // Training uses the same server-authoritative deterministic scorer as scored
   // sessions. The client sends drillData + raw answers for immediate feedback,
   // but its correctness, score, error counts, and cost metrics are advisory.
-  const scored = COGNITIVE_DRILL_TYPES.includes(attempt.drillType)
+  const hasAnswerKey = attempt.drillData?.type === attempt.drillType;
+  const scored = COGNITIVE_DRILL_TYPES.includes(attempt.drillType) && hasAnswerKey
     ? scoreCognitiveDrill(attempt.drillType, attempt.drillData, attempt.questions || [])
     : null;
   const normalized = scored ? { ...attempt, ...scored, scorerProvenance: 'server-deterministic' } : attempt;
@@ -120,9 +121,11 @@ export async function submitTrainingRun(input) {
           config: attempt.difficulty || {},
           questions: attempt.data?.questions || [],
           score: attempt.score,
-          accuracy: attempt.data?.questionCount > 0
-            ? attempt.data.correctCount / attempt.data.questionCount
-            : null,
+          accuracy: typeof attempt.data?.accuracy === 'number'
+            ? attempt.data.accuracy
+            : attempt.data?.questionCount > 0
+              ? attempt.data.correctCount / attempt.data.questionCount
+              : null,
           completion: attempt.completion,
         })),
       }, new Date(saved.run.completedAt || now));

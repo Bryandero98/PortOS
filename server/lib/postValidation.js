@@ -325,9 +325,12 @@ export const postConfigUpdateSchema = z.object({
     drillTypes: z.record(z.enum(LLM_DRILL_TYPES), llmDrillTypeConfigSchema).optional()
   }).optional(),
   // Deterministic cognitive drills — no provider, so no provider/model fields.
+  // Partial so an older browser's complete pre-executive-control map remains a
+  // valid patch after newer drill types are added to the enum (Zod 4 records
+  // with enum keys are otherwise exhaustive).
   cognitive: z.object({
     enabled: z.boolean().optional(),
-    drillTypes: z.record(z.enum(COGNITIVE_DRILL_TYPES), drillTypeConfigSchema).optional()
+    drillTypes: z.partialRecord(z.enum(COGNITIVE_DRILL_TYPES), drillTypeConfigSchema).optional()
   }).optional(),
   // Memory practice (issue #3252). Mirrors the other module blocks, plus an
   // `items` map so an INDIVIDUAL memorized text — e.g. the seeded Elements Song

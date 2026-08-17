@@ -191,8 +191,8 @@ export function getDrillTutorial(drill) {
         goal: 'Respond to go signals and withhold your response to no-go lures.',
         steps: [
           'A symbol appears briefly on every trial.',
-          'Tap or press Space for a green go signal.',
-          'Do nothing for a no-go lure; the next trial advances at the deadline.',
+          'Tap or press Space for the filled-circle go signal.',
+          'Do nothing for a square or ringed-circle lure; the next trial advances at the deadline.',
         ],
         controls: 'Tap the signal, or press Space / Enter. Withhold on no-go.',
       };
@@ -1704,6 +1704,7 @@ function GoNoGoRunner({ drill, drillIndex, drillCount, onComplete, isTraining })
   }, []);
 
   const trial = trials[trialIdx];
+  const symbolLabel = { '●': 'filled circle', '◉': 'ringed circle', '■': 'filled square' }[trial?.symbol] || 'signal';
   const toneClass = trial?.tone === 'red' ? 'text-port-error' : trial?.tone === 'amber' ? 'text-port-warning' : 'text-port-success';
   const progressPct = trials.length ? (trialIdx / trials.length) * 100 : 0;
   return (
@@ -1712,7 +1713,7 @@ function GoNoGoRunner({ drill, drillIndex, drillCount, onComplete, isTraining })
       <p className="text-center text-sm text-gray-400">Press for <span className="text-port-success font-medium">green go</span>. Withhold for red or amber no-go lures.</p>
       <button
         type="button"
-        aria-label={trial?.kind === 'no-go' ? 'No-go lure — withhold' : 'Go signal — respond'}
+        aria-label={symbolLabel}
         onClick={() => recordRef.current(true)}
         disabled={!accepting}
         className="mx-auto w-48 h-48 rounded-2xl border border-port-border bg-port-card flex items-center justify-center disabled:opacity-70 motion-reduce:transition-none"

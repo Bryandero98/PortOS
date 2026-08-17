@@ -201,6 +201,29 @@ describe('submitTrainingRun (#4441)', () => {
     expect(stored.entries[0].latencyDistributionMs).toHaveLength(6);
     expect(stored.entries[0].questions.every(question => question.correct)).toBe(true);
   });
+
+  it('preserves legacy cognitive results when no generated answer key is present', async () => {
+    const saved = await submitTrainingRun({
+      id: '33333333-3333-4333-8333-333333333333',
+      attempts: [{
+        id: 'legacy-stroop',
+        module: 'cognitive',
+        drillType: 'stroop',
+        questionCount: 2,
+        correctCount: 1,
+        latencyMs: 1500,
+        score: 50,
+        questions: [{ answered: 'red', correct: true }, { answered: 'blue', correct: false }],
+      }],
+    });
+
+    expect(saved.attempts[0]).toMatchObject({
+      id: 'legacy-stroop',
+      correctCount: 1,
+      score: 50,
+      scorerProvenance: 'post-client',
+    });
+  });
 });
 
 describe('getTrainingStats', () => {
