@@ -1,4 +1,4 @@
-import { GitMerge, Users } from 'lucide-react';
+import { GitBranch, GitMerge, Users } from 'lucide-react';
 import { badge, statusDot, getTaskStatusGroup, pipelineStages } from './scheduleConstants';
 import IntervalBadge from './IntervalBadge';
 
@@ -13,6 +13,8 @@ export default function TaskHeader({ taskType, config }) {
   // shows its own override select).
   const swarmCount = config.taskMetadata?.swarmCount;
   const swarmOn = Number.isInteger(swarmCount) && swarmCount >= 2;
+  const branchesPerAgent = config.taskMetadata?.branchesPerAgent;
+  const branchBatchOn = taskType === 'branch-reconcile' && Number.isInteger(branchesPerAgent) && branchesPerAgent > 0;
   return (
     <div className="flex items-start gap-2">
       <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${statusDot(group)}`} title={group} aria-hidden="true" />
@@ -22,6 +24,12 @@ export default function TaskHeader({ taskType, config }) {
           <span className={badge('cyan')} title={`Swarm mode — claims & ships up to ${swarmCount} independent issues in parallel per run`}>
             <Users size={11} className="inline mr-0.5" />
             ×{swarmCount}
+          </span>
+        )}
+        {branchBatchOn && (
+          <span className={badge('cyan')} title={`Branch-reconcile batch — up to ${branchesPerAgent} branch(es) per coordinator run`}>
+            <GitBranch size={11} className="inline mr-0.5" />
+            ×{branchesPerAgent}
           </span>
         )}
         {stages?.length > 0 && (

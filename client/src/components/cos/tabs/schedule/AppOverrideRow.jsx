@@ -1,7 +1,7 @@
 import { useState, memo } from 'react';
 import AppIcon from '../../../AppIcon';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
+import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
 import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
 import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
@@ -62,6 +62,7 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   // on) and 2..6; only 1 / out-of-range / non-integer are dropped. Inherit is
   // the absent key, distinct from a stored 0.
   const handleSwarmCountChange = (raw) => handleOverrideChange('swarmCount', raw === '' ? '' : Number(raw));
+  const handleBranchesPerAgentChange = (raw) => handleOverrideChange('branchesPerAgent', raw === '' ? '' : Number(raw));
 
   return (
     <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 py-2 px-3 rounded hover:bg-port-card/30">
@@ -181,6 +182,22 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
           >
             <option value="">Inherit ({SWARM_COUNT_OPTIONS.find(o => o.value === (globalTaskMetadata?.swarmCount || 0))?.label})</option>
             {SWARM_COUNT_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        )}
+
+        {BRANCHES_PER_AGENT_TASK_TYPES.has(taskType) && (
+          <select
+            value={override?.taskMetadata?.branchesPerAgent ?? ''}
+            onChange={(e) => handleBranchesPerAgentChange(e.target.value)}
+            disabled={updating}
+            aria-label={`Branches per agent for ${app.name}`}
+            title="How many prioritized branches this app's coordinator receives per run"
+            className="bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white min-w-[120px] min-h-[40px]"
+          >
+            <option value="">Inherit ({BRANCHES_PER_AGENT_OPTIONS.find(o => o.value === (globalTaskMetadata?.branchesPerAgent || BRANCHES_PER_AGENT_DEFAULT))?.label})</option>
+            {BRANCHES_PER_AGENT_OPTIONS.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>

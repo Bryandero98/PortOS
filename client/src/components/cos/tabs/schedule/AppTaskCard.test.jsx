@@ -29,12 +29,12 @@ const baseConfig = {
   status: { nextRunAt: '2999-01-01T00:00:00Z' },
 };
 
-function renderCard(overrides = {}, props = {}) {
+function renderCard(overrides = {}, props = {}, taskType = 'code-review') {
   const onTrigger = vi.fn();
   const onConfigure = vi.fn();
   render(
     <AppTaskCard
-      taskType="code-review"
+      taskType={taskType}
       config={{ ...baseConfig, ...overrides }}
       onTrigger={onTrigger}
       onConfigure={onConfigure}
@@ -119,6 +119,12 @@ describe('AppTaskCard', () => {
     expect(screen.queryByText(/^×\d/)).toBeNull();
     renderCard({});
     expect(screen.queryByText(/^×\d/)).toBeNull();
+  });
+
+  it('shows the configured branch batch badge on branch-reconcile', () => {
+    renderCard({ taskMetadata: { branchesPerAgent: 4 } }, {}, 'branch-reconcile');
+    expect(screen.getByText('×4')).toBeTruthy();
+    expect(screen.getByTitle(/up to 4 branch/)).toBeTruthy();
   });
 
   it('omits the quick model pins when no onUpdate handler is supplied', () => {

@@ -22,6 +22,7 @@ vi.mock('../lib/execGit.js', () => ({
 vi.mock('./worktreeManager.js', () => ({
   listWorktrees: vi.fn(async () => []),
   forceRemoveWorktreeDir: vi.fn(async () => {}),
+  reapMergedWorktrees: vi.fn(async () => ({ reaped: [], skipped: [] })),
   // Real pure classifier semantics: empty porcelain = clean, and every non-empty
   // line is a real change path (the suite never feeds it lockfile churn). The
   // paths matter — gatherDivergence intersects them with the default branch's
@@ -61,6 +62,7 @@ import {
   classifyBranch, classifyBranches, cleanupMerged, reconcile, gatherBranchState, worktreeProtectionReason,
   isAbandonedAgentWorktree, resolveLiveOwnerReason, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
+  limitBranchesForAgent,
   branchPriorityRank, prioritizeBranches,
   upstreamBranchName, parseRemoteHeads, partitionRemoteOrphans, reapOrphanedRemotes
 } from './branchReconcile.js';
@@ -81,6 +83,7 @@ beforeEach(() => {
   git.getDefaultBranch.mockResolvedValue('main');
   git.deleteBranch.mockResolvedValue({ branch: 'x', results: { local: 'deleted' } });
   wt.forceRemoveWorktreeDir.mockResolvedValue(undefined);
+  wt.reapMergedWorktrees.mockResolvedValue({ reaped: [], skipped: [] });
   execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
   tryReadFileMock.mockResolvedValue(null);
 });
@@ -591,7 +594,20 @@ describe('unreachable forge (#3358)', () => {
     expect(res.cleaned).toEqual(['feature/x']);
   });
 
-  it('skips the whole cycle (never touches git) when the gh probe is not ok', async () => {
+  it('runs clean-and-merged worktree cleanup before a forge probe', async () => {
+    wt.reapMergedWorktrees.mockResolvedValueOnce({ reaped: [{ branch: 'feature/done' }], skipped: [] });
+    ensureForgeReachableMock.mockResolvedValueOnce({ ok: false, status: 'unreachable', detail: 'dial tcp' });
+
+    const res = await reconcile('/repo');
+    expect(res.cleaned).toEqual(['feature/done']);
+    expect(wt.reapMergedWorktrees).toHaveBeenCalledWith('/repo', {
+      activeAgentIds: new Set(), includeClaudeTrees: true
+    });
+    expect(wt.reapMergedWorktrees.mock.invocationCallOrder[0])
+      .toBeLessThan(ensureForgeReachableMock.mock.invocationCallOrder[0]);
+  });
+
+  it('skips branch classification when the gh probe is not ok', async () => {
     ensureForgeReachableMock.mockResolvedValueOnce({ ok: false, status: 'unreachable', detail: 'dial tcp' });
     const res = await reconcile('/repo');
     expect(res.forgeUnavailable).toBe(true);
@@ -599,7 +615,8 @@ describe('unreachable forge (#3358)', () => {
     expect(res.inFlight).toEqual([]);
     expect(res.cleaned).toEqual([]);
     // Crucially: no branch enumeration and no deletion happened, so the empty
-    // result can't be mistaken for "the repo is clean".
+    // result can't be mistaken for "the repo is clean". The cleanup-first pass
+    // still ran, but had no candidates in this case.
     expect(git.getBranches).not.toHaveBeenCalled();
     expect(git.deleteBranch).not.toHaveBeenCalled();
   });
@@ -855,6 +872,21 @@ describe('actionOn', () => {
   });
 });
 
+describe('limitBranchesForAgent', () => {
+  it('keeps the prioritized prefix and leaves the input untouched', () => {
+    const input = [{ branch: 'claim/1' }, { branch: 'feature/2' }, { branch: 'fix/3' }];
+    expect(limitBranchesForAgent(input, 2)).toEqual(input.slice(0, 2));
+    expect(input).toHaveLength(3);
+  });
+
+  it('preserves legacy all-at-once behavior for an absent or invalid limit', () => {
+    const input = [{ branch: 'a' }, { branch: 'b' }];
+    expect(limitBranchesForAgent(input)).toBe(input);
+    expect(limitBranchesForAgent(input, 0)).toBe(input);
+    expect(limitBranchesForAgent(input, 1.5)).toBe(input);
+  });
+});
+
 describe('filterActionable', () => {
   const inFlight = [
     { branch: 'a', state: 'NEEDS_PR' },
@@ -1085,6 +1117,14 @@ describe('formatInFlightForPrompt', () => {
     expect(block).toContain('- Worktree: `/wt/1`');
     expect(block).toContain('### `next/issue-2` [NEEDS_PR] — no PR');
     expect(block).toContain('- Do: ');
+  });
+
+  it('states the configured batch limit when supplied', () => {
+    const block = formatInFlightForPrompt(
+      [{ branch: 'next/issue-1', state: 'NEEDS_PR' }],
+      { defaultBranch: 'main', actions: {}, branchesPerAgent: 3 }
+    );
+    expect(block).toContain('limited to up to 3 branch(es)');
   });
 
   // The collision set gets its own line, not just prose inside the Do: text, so

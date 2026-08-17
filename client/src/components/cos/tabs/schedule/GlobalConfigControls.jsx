@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
+import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
 import ReviewerPicker from '../../ReviewerPicker';
 import Banner from '../../../ui/Banner';
 import InfoTooltip from '../../../ui/InfoTooltip';
@@ -143,6 +143,14 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     // taskMetadata is replaced wholesale server-side, so spread the existing keys.
     await onUpdate(taskType, {
       taskMetadata: { ...(config.taskMetadata || {}), swarmCount: value }
+    });
+    setUpdating(false);
+  };
+
+  const handleBranchesPerAgentChange = async (value) => {
+    setUpdating(true);
+    await onUpdate(taskType, {
+      taskMetadata: { ...(config.taskMetadata || {}), branchesPerAgent: value }
     });
     setUpdating(false);
   };
@@ -399,6 +407,27 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
           <p className="text-xs text-gray-500 mt-1">
             {SWARM_COUNT_OPTIONS.find(o => o.value === (config.taskMetadata?.swarmCount || 0))?.description}.
             {' '}Mirrors slashdo <code>/do:next --swarm</code> — each run partitions independent issues, fans out one worktree agent per issue, and serializes the merges. GitHub/GitLab issue trackers only.
+          </p>
+        </div>
+      )}
+
+      {BRANCHES_PER_AGENT_TASK_TYPES.has(taskType) && (
+        <div>
+          <label htmlFor={`branches-per-agent-${taskType}`} className="text-sm text-gray-400 block mb-2">Branches per agent</label>
+          <select
+            id={`branches-per-agent-${taskType}`}
+            value={config.taskMetadata?.branchesPerAgent || BRANCHES_PER_AGENT_DEFAULT}
+            onChange={(e) => handleBranchesPerAgentChange(Number(e.target.value))}
+            disabled={updating}
+            className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
+          >
+            {BRANCHES_PER_AGENT_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            {BRANCHES_PER_AGENT_OPTIONS.find(o => o.value === (config.taskMetadata?.branchesPerAgent || BRANCHES_PER_AGENT_DEFAULT))?.description}.
+            {' '}Branches are prioritized deterministically; the next drain picks up the remainder after this batch progresses.
           </p>
         </div>
       )}

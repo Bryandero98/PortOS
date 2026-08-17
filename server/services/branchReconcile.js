@@ -25,7 +25,7 @@
 import { stat } from 'node:fs/promises';
 import { getBranches, getDefaultBranch, isBranchMergedInto, deleteBranch } from './git.js';
 import { execGit } from '../lib/execGit.js';
-import { listWorktrees, forceRemoveWorktreeDir, classifyWorktreeDirt } from './worktreeManager.js';
+import { listWorktrees, forceRemoveWorktreeDir, classifyWorktreeDirt, reapMergedWorktrees } from './worktreeManager.js';
 import { isAgentWorktreeId, worktreeOwnershipReason } from '../lib/worktreeOwnership.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
@@ -754,6 +754,18 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
  *   and the caller must retry rather than park on it (#3358).
  */
 export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRemotes = false, activeAgentIds = new Set() } = {}) {
+  // Worktree cleanup is the first reconcile step, before any forge probe. It
+  // only removes a tree after proving both that it is completely clean and
+  // that every branch commit is already in the default branch (including
+  // squash/rebase-equivalent merges). Keeping this pass ahead of gh means a
+  // temporary forge outage cannot strand locally-provable completed work.
+  const worktreeCleanup = cleanup
+    ? await reapMergedWorktrees(repoPath, { activeAgentIds, includeClaudeTrees: true }).catch(() => ({ reaped: [] }))
+    : { reaped: [] };
+  const cleanedWorktrees = (worktreeCleanup.reaped || [])
+    .map((entry) => typeof entry === 'string' ? entry : entry?.branch)
+    .filter(Boolean);
+
   // On a GitHub repo every classification below depends on PR state, so an
   // unreadable forge makes the whole pass a guess — skip with one line rather
   // than report a quiet repo. Probed against THIS repo's API host
@@ -768,7 +780,7 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   if (githubRepoSpec(origin)) {
     const forge = await ensureForgeReachable('branch-reconcile', { hostname: githubApiHost(origin.host) });
     if (!forge.ok) {
-      return { defaultBranch: null, cleaned: [], inFlight: [], wip: [], skipped: [], forgeUnavailable: true, forgeStatus: forge.status };
+      return { defaultBranch: null, cleaned: cleanedWorktrees, inFlight: [], wip: [], skipped: [], forgeUnavailable: true, forgeStatus: forge.status };
     }
   }
 
@@ -797,9 +809,10 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   // running sessions" rather than a bare "nothing actionable") filters `wip` on it.
   const wip = classified.filter((c) => c.state === 'WIP');
 
-  const { cleaned, skipped } = cleanup
+  const { cleaned: cleanedBranches, skipped } = cleanup
     ? await cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds })
     : { cleaned: [], skipped: merged.map((m) => ({ branch: m.branch, reason: 'cleanup-disabled' })) };
+  const cleaned = [...new Set([...cleanedWorktrees, ...cleanedBranches])];
 
   // Runs AFTER cleanupMerged on purpose: that step deletes merged local branches
   // and leaves their `origin/*` counterpart behind, which is precisely the orphan
@@ -1047,14 +1060,33 @@ export function actionableSignature(actionable) {
 }
 
 /**
+ * Select the deterministic prefix a single coordinator should receive. The
+ * reconciler has already prioritized the full set, so slicing here preserves
+ * that ordering and lets the next drain dispatch pick up the remainder after
+ * this batch makes progress. Absent/invalid limits retain the legacy all-at-once
+ * behavior for hand-authored task records that predate the setting.
+ * @param {object[]} inFlight
+ * @param {number} branchesPerAgent
+ * @returns {object[]}
+ */
+export function limitBranchesForAgent(inFlight, branchesPerAgent) {
+  if (!Array.isArray(inFlight)) return [];
+  if (!Number.isInteger(branchesPerAgent) || branchesPerAgent < 1) return inFlight;
+  return inFlight.slice(0, branchesPerAgent);
+}
+
+/**
  * Render the actionable in-flight branch set into the coordinator prompt body
  * (injected as `{inFlightBranches}`).
  * @param {object[]} inFlight - actionable branches (post-filterActionable)
- * @param {{ defaultBranch:string, actions:object }} ctx
+ * @param {{ defaultBranch:string, actions:object, branchesPerAgent?:number }} ctx
  * @returns {string}
  */
-export function formatInFlightForPrompt(inFlight, { defaultBranch, actions }) {
+export function formatInFlightForPrompt(inFlight, { defaultBranch, actions, branchesPerAgent } = {}) {
   const lines = [`Default branch: \`${defaultBranch}\`. Branches to reconcile (${inFlight.length}):`, ''];
+  if (Number.isInteger(branchesPerAgent) && branchesPerAgent > 0) {
+    lines.splice(1, 0, `This coordinator run is limited to up to ${branchesPerAgent} branch(es); finish every branch listed below before reporting done.`);
+  }
   for (const b of inFlight) {
     const pr = b.openPr ? ` — PR #${b.openPr.number} (${b.openPr.mergeable})${b.openPr.url ? ` ${b.openPr.url}` : ''}` : ' — no PR';
     lines.push(`### \`${b.branch}\` [${b.state}]${pr}`);
