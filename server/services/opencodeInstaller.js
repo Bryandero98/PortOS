@@ -19,6 +19,11 @@ export const OPENCODE_NPM_PACKAGE = 'opencode-ai@latest';
 export const OPENCODE_NPM_INSTALL_ARGS = Object.freeze([
   'install',
   '--global',
+  // PortOS pins ignore-scripts=true in its project .npmrc. OpenCode's package
+  // needs its postinstall to install the runnable CLI, so opt in explicitly for
+  // this fixed, user-triggered package install rather than weakening the repo
+  // default for every dependency.
+  '--ignore-scripts=false',
   // npm's carriage-return progress renderer can emit hundreds of repaint
   // frames per second. The installer streams stdout to the browser, so keep
   // the useful package messages without turning the modal into a re-render
