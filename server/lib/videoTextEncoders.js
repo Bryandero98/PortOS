@@ -89,7 +89,7 @@
  * vocabulary and layer count have no mapping onto the module tree mlx-lm's
  * `gemma4` builds.
  *
- * `verified` — COHERENCE GATE COMPLETED 2026-08-16 (#4320). Both candidates
+ * `verified` — COHERENCE GATE COMPLETED 2026-08-16 (#4320). Both initial candidates
  * strict-loaded and produced finite connector inputs on the pinned runtime,
  * then rendered a fixed-seed matrix at 512x320 / 33 frames / 24 fps / 8+3
  * steps / CFG 3: one benign motion prompt plus staged-bite, explicit-gesture
@@ -103,9 +103,19 @@
  * Both therefore remain `verified: false`, hidden from
  * `videoTextEncoderOptions` and the download lane (see
  * `isOfferedTextEncoder`). They stay declared as pinned failure records so a
- * later candidate search does not repeat either download or gate. LTX-2.5 is
- * stock-only until a substitute passes BOTH benign structural coherence and a
- * repeatable target-behavior improvement; that search continues in #4470.
+ * later candidate search does not repeat either download or gate.
+ *
+ * #4470 adds a third, still-gated candidate from the exact Heretic language
+ * backbone used by DeepNeuralNerd's LTX-2.5-specific ComfyUI conversion. That
+ * conversion keeps LTX's projection weights; PortOS already loads the pinned
+ * pack's connector separately, so the equivalent MLX artifact is the same
+ * language tower paired with that stock connector. Its three-shard MXFP8 export
+ * preserves all 48 language layers and the checkpoint's quantization metadata,
+ * while the existing narrow unified-checkpoint sanitizer removes only the
+ * eleven residual `vision_embedder.*` tensors. It remains unreachable until the
+ * repeated-seed render matrix passes. LTX-2.5 is stock-only until a substitute
+ * passes BOTH benign structural coherence and a repeatable target-behavior
+ * improvement.
  */
 
 import { ServerError } from './errorHandler.js';
@@ -219,9 +229,10 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
   // themselves. All of them are inputs to the shim the runner builds, and
   // `sizeBytes` is their exact published total.
   //
-  // Both substitutes failed the 2026-08-16 coherence/behavior gate described
-  // in the docblock. They remain declared as pinned provenance records, but
-  // `verified: false` keeps them out of the picker and download lane.
+  // The first two substitutes failed the 2026-08-16 coherence/behavior gate
+  // described in the docblock. The third is the LTX-specific follow-up being
+  // evaluated in #4470. All remain pinned provenance records, while
+  // `verified: false` keeps every non-passing entry out of both public lanes.
   ltx25: Object.freeze([
     STOCK_LTX25,
     Object.freeze({
@@ -294,6 +305,41 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
         modelCardUrl: 'https://huggingface.co/culturerevolt/gemma-4-12b-heretic-abliterated-8bit-mlx',
         weightsLicense: GEMMA_TERMS,
         reviewedAt: '2026-08-15',
+      }),
+    }),
+    Object.freeze({
+      id: 'ltx25-ltx-heretic-mxfp8',
+      label: 'LTX Heretic uncensored — Gemma 4 12B MXFP8',
+      description:
+        'The Heretic language backbone used by an LTX-2.5-specific conditioner conversion, '
+        + 'paired with the model pack\'s original LTX connector. Gated pending the repeated-seed render matrix.',
+      // #4470: the static gate passes (48 complete language layers, exact
+      // geometry, immutable MXFP8 metadata). Keep this false until the
+      // production render matrix proves benign coherence and repeatable gains.
+      verified: false,
+      repo: 'nightmedia/gemma-4-12B-it-uncensored-heretic-mxfp8-mlx',
+      revision: '20c9f4b167e56f3f749ea3e428188a5e7a35318a',
+      // Exact MLX quantization of llmfan46's Heretic backbone — the same source
+      // named by DeepNeuralNerd's LTX-2.5 conversion. The unified checkpoint
+      // carries eleven visual-only `vision_embedder.*` tensors; the runner's
+      // narrow sanitizer drops those while strict-loading every language key.
+      configOverrides: Object.freeze({ model_type: 'gemma4' }),
+      files: Object.freeze([
+        'config.json',
+        'generation_config.json',
+        'chat_template.jinja',
+        'model-00001-of-00003.safetensors',
+        'model-00002-of-00003.safetensors',
+        'model-00003-of-00003.safetensors',
+        'model.safetensors.index.json',
+        'tokenizer.json',
+        'tokenizer_config.json',
+      ]),
+      sizeBytes: 12375013657,
+      disclosure: Object.freeze({
+        modelCardUrl: 'https://huggingface.co/nightmedia/gemma-4-12B-it-uncensored-heretic-mxfp8-mlx',
+        weightsLicense: GEMMA_TERMS,
+        reviewedAt: '2026-08-17',
       }),
     }),
   ]),

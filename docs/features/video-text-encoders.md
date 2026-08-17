@@ -240,14 +240,13 @@ abliterated Gemma 4 12B a plausible drop-in. A different Gemma generation is not
 Gemma 3's tokenizer, vocabulary and layer count have no mapping onto the module
 tree mlx-lm's `gemma4` builds.
 
-### Status: initial substitutes failed; stock only
+### Status: initial substitutes failed; LTX-specific follow-up gated
 
-Two substitutes are declared in the registry (`ltx25-abliterated-4bit`,
-`ltx25-heretic-8bit`) and both carry `verified: false`, which keeps them out of
-the picker **and** out of the download lane — an unverified id is rejected by
-route validation and its weights cannot be pulled. The LTX-2.5 picker therefore
-hides itself today, exactly as it does for a runtime with no substitutes at all.
-The entries remain declared only as pinned failure records.
+The two initial substitutes (`ltx25-abliterated-4bit`,
+`ltx25-heretic-8bit`) carry `verified: false`, which keeps them out of the
+picker **and** out of the download lane — an unverified id is rejected by route
+validation and its weights cannot be pulled. The entries remain declared only
+as pinned failure records.
 
 The gate ran on the pinned production runtime with the same seed within each A/B,
 at 512x320, 33 frames, 24 fps, 8 guided steps plus 3 stage-two steps, and CFG 3.
@@ -264,6 +263,22 @@ difference alone is not the pass criterion. A future candidate must preserve
 benign structure **and** visibly improve at least one controlled challenge before
 its `verified` flag can be enabled. The repeated-seed candidate search is tracked
 in #4470.
+
+That search identified `nightmedia/gemma-4-12B-it-uncensored-heretic-mxfp8-mlx`
+at revision `20c9f4b167e56f3f749ea3e428188a5e7a35318a`. It is an exact MLX
+quantization of the Heretic language backbone named by DeepNeuralNerd's
+LTX-2.5-specific ComfyUI conversion. The ComfyUI artifact combines that
+backbone with LTX's own projections; PortOS already loads those projections and
+the connector from the pinned model pack, so the MLX candidate preserves the
+same separation rather than duplicating them inside the substitute.
+
+The candidate is pinned as `ltx25-ltx-heretic-mxfp8` with all three weight
+shards and support files (12,375,013,657 published bytes). Its index contains
+all 48 language layers, the embedding and final norm at the required 3840-wide /
+262144-vocabulary geometry, and eleven residual visual-only tensors handled by
+the existing exact-prefix sanitizer; MXFP8 metadata remains untouched. It stays
+`verified: false` until the production matrix confirms the behavioral gate, so
+LTX-2.5 remains stock-only while that evidence is incomplete.
 
 ## Related
 

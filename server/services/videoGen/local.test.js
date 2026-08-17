@@ -1110,7 +1110,11 @@ describe('generateVideo — LTX-2.5 sibling runtime spawn', () => {
 
   // Every ltx25 substitute is still gated behind the coherence check, so the
   // route/service path must reject its id rather than half-wire a render.
-  it.each(['ltx25-abliterated-4bit', 'ltx25-heretic-8bit'])('rejects the unverified %s', async (textEncoderId) => {
+  it.each([
+    'ltx25-abliterated-4bit',
+    'ltx25-heretic-8bit',
+    'ltx25-ltx-heretic-mxfp8',
+  ])('rejects the unverified %s', async (textEncoderId) => {
     await expect(generateVideo({
       jobId: `ltx25-unverified-${textEncoderId}`,
       pythonPath: '/usr/bin/python3',
