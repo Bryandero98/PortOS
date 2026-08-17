@@ -269,7 +269,9 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
     if (rawOverrides[key] === null) delete params[key];
   }
-  if (job.kind === 'video') validateVideoRetryParams(params);
+  // Grok video jobs use `mode` as the cloud-dispatch discriminator, not the
+  // local semantic mode validated by prepareParams.
+  if (job.kind === 'video' && params.mode !== 'grok') validateVideoRetryParams(params);
   // Reset Codex effort to the shipped default: dropping the key lets codex.js's
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).
