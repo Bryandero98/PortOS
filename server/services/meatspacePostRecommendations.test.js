@@ -127,16 +127,27 @@ describe('stalledProgressions', () => {
   });
 
   it('includes cognitive ladders and a Morse Koch step once level is set', () => {
-    const cog = { 'n-back': { level: 0, atHardest: false, currentMastered: false, thresholds: { minSamples: 3 }, levels: [
-      { level: 0, label: '1-back @ 2500ms', samples: 1, mastered: false },
-      { level: 1, label: '2-back @ 2500ms', samples: 0, mastered: false },
-    ] } };
+    const cognitiveLadder = (label) => ({ level: 0, atHardest: false, currentMastered: false, thresholds: { minSamples: 3 }, levels: [
+      { level: 0, label, samples: 1, mastered: false },
+      { level: 1, label: `Harder ${label}`, samples: 0, mastered: false },
+    ] });
+    const cog = {
+      'n-back': cognitiveLadder('1-back @ 2500ms'),
+      'task-switching': cognitiveLadder('Two rules'),
+      'go-no-go': cognitiveLadder('Distinct lures'),
+      flanker: cognitiveLadder('Mostly congruent'),
+    };
     const out = stalledProgressions(null, null, cog, { kochLevel: 5, kochLevelSet: true, maxKochLevel: 41 });
     const nback = out.find(o => o.drillType === 'n-back');
     expect(nback.remaining).toBe(2); // 3 - 1
     const morse = out.find(o => o.drillType === 'morse-copy');
     expect(morse.deepLink).toBe('/post/morse/copy');
     expect(morse.nextLabel).toBe('Koch level 6');
+    expect(out).toEqual(expect.arrayContaining([
+      expect.objectContaining({ drillType: 'task-switching', label: 'Task Switching' }),
+      expect.objectContaining({ drillType: 'go-no-go', label: 'Go No Go' }),
+      expect.objectContaining({ drillType: 'flanker', label: 'Flanker' }),
+    ]));
   });
 
   it('does not surface Morse for a fresh install (level not set)', () => {

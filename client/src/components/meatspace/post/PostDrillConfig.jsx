@@ -255,12 +255,58 @@ const COGNITIVE_DRILL_META = {
     ],
     defaults: { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 },
   },
+  'task-switching': {
+    label: 'Task Switching',
+    desc: 'Apply the currently cued rule — focused practice for switching between explicit classifications',
+    progressive: true,
+    ladderFields: ['ruleCount', 'switchRatePct', 'cueStimulusIntervalMs', 'incongruentPct', 'responseDeadlineMs'],
+    fields: [
+      { key: 'count', label: 'Trials', type: 'number', min: 6, max: 50 },
+      { key: 'ruleCount', label: 'Rules', type: 'number', min: 2, max: 3 },
+      { key: 'switchRatePct', label: 'Switch Trials (%)', type: 'number', min: 0, max: 100 },
+      { key: 'cueStimulusIntervalMs', label: 'Cue Lead (ms)', type: 'number', min: 100, max: 2000 },
+      { key: 'incongruentPct', label: 'Conflicting Stimuli (%)', type: 'number', min: 0, max: 100 },
+      { key: 'responseDeadlineMs', label: 'Response Deadline (ms)', type: 'number', min: 500, max: 5000 },
+    ],
+    defaults: { enabled: false, progressive: true, count: 18, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 },
+  },
+  'go-no-go': {
+    label: 'Go / No-Go',
+    desc: 'Respond to go signals and withhold to lures — focused response-inhibition practice',
+    progressive: true,
+    ladderFields: ['noGoPct', 'stimulusMs', 'lureSimilarity', 'responseDeadlineMs'],
+    fields: [
+      { key: 'count', label: 'Trials', type: 'number', min: 6, max: 60 },
+      { key: 'noGoPct', label: 'No-Go Trials (%)', type: 'number', min: 5, max: 80 },
+      { key: 'stimulusMs', label: 'Stimulus (ms)', type: 'number', min: 100, max: 2000 },
+      { key: 'lureSimilarity', label: 'Lure Similarity', type: 'select', options: [
+        { value: 'low', label: 'Low' },
+        { value: 'high', label: 'High' },
+      ] },
+      { key: 'responseDeadlineMs', label: 'Response Deadline (ms)', type: 'number', min: 500, max: 5000 },
+    ],
+    defaults: { enabled: false, progressive: true, count: 20, noGoPct: 25, stimulusMs: 600, lureSimilarity: 'low', responseDeadlineMs: 1400 },
+  },
+  'flanker': {
+    label: 'Flanker Control',
+    desc: 'Report the center arrow while ignoring surrounding arrows — narrow interference-control practice',
+    progressive: true,
+    ladderFields: ['congruentPct', 'flankerDistance', 'flankerStrength', 'responseDeadlineMs'],
+    fields: [
+      { key: 'count', label: 'Trials', type: 'number', min: 6, max: 60 },
+      { key: 'congruentPct', label: 'Congruent Trials (%)', type: 'number', min: 0, max: 100 },
+      { key: 'flankerDistance', label: 'Flanker Distance', type: 'number', min: 1, max: 4 },
+      { key: 'flankerStrength', label: 'Flanker Strength', type: 'number', min: 1, max: 3 },
+      { key: 'responseDeadlineMs', label: 'Response Deadline (ms)', type: 'number', min: 500, max: 5000 },
+    ],
+    defaults: { enabled: false, progressive: true, count: 20, congruentPct: 60, flankerDistance: 2, flankerStrength: 2, responseDeadlineMs: 1600 },
+  },
 };
 
 const COGNITIVE_TYPES = Object.keys(COGNITIVE_DRILL_META);
 
 // String-valued cognitive config keys must NOT be coerced to Number on edit.
-const COGNITIVE_STRING_FIELDS = new Set(['direction', 'mode']);
+const COGNITIVE_STRING_FIELDS = new Set(['direction', 'mode', 'lureSimilarity']);
 
 // Seed every cognitive drill type so a card's toggle reflects real, persistable
 // state — same enabled-by-presence convention as seedLlmDrillTypes.

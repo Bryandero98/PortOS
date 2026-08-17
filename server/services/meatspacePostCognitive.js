@@ -8,6 +8,9 @@
  *   - schulte-table   (visual attention)     — scan a shuffled grid for sequential numbers
  *   - mental-rotation (spatial reasoning)    — pick the rotated (not mirrored) match
  *   - reaction-time   (processing speed)     — simple/choice reaction-time baseline
+ *   - task-switching  (rule switching)       — apply a cued classification rule
+ *   - go-no-go        (response inhibition)  — respond to go stimuli, withhold to lures
+ *   - flanker         (interference control) — report a target direction around distractors
  *
  * These are deterministic: the drill's answer key lives in the generated data
  * and every score is recomputed here on session submit, so a client-supplied
@@ -20,7 +23,17 @@ import { shuffle } from '../lib/arrayUtils.js';
 // Coarse module tag stored on scored cognitive tasks, so stats read as
 // `byDrill['cognitive:<type>']` (parallel to `mental-math:<type>`).
 export const COGNITIVE_MODULE = 'cognitive';
-export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
+export const COGNITIVE_DRILL_TYPES = [
+  'n-back',
+  'digit-span',
+  'stroop',
+  'schulte-table',
+  'mental-rotation',
+  'reaction-time',
+  'task-switching',
+  'go-no-go',
+  'flanker',
+];
 
 const NBACK_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
@@ -49,6 +62,43 @@ function clampInt(value, min, max, fallback) {
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function seedString(value) {
+  if (value != null && String(value).trim()) return String(value).trim().slice(0, 100);
+  return `${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffffffff).toString(36)}`;
+}
+
+// Mulberry32 seeded from an FNV-1a-style string hash. The generated drill
+// stores the normalized seed in config, so the same seed + knobs reconstructs
+// the same answer key during server rescoring and in focused regression tests.
+function seededRandom(seed) {
+  let state = 2166136261;
+  for (const char of seed) {
+    state ^= char.charCodeAt(0);
+    state = Math.imul(state, 16777619);
+  }
+  return () => {
+    state |= 0;
+    state = (state + 0x6D2B79F5) | 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickWith(arr, random) {
+  return arr[Math.floor(random() * arr.length)];
+}
+
+function shuffleWith(items, random) {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }
 
 function clampMs(ms, refMs) {
@@ -360,6 +410,117 @@ export function generateReactionTime(config = {}) {
   return { type: 'reaction-time', config: trialConfig, trials };
 }
 
+const TASK_SWITCH_RULES = [
+  { id: 'color', values: ['blue', 'orange'] },
+  { id: 'shape', values: ['circle', 'triangle'] },
+  { id: 'fill', values: ['solid', 'outline'] },
+];
+
+function taskSwitchAnswer(trial) {
+  const rule = TASK_SWITCH_RULES.find(candidate => candidate.id === trial?.rule);
+  const value = trial?.stimulus?.[trial?.rule];
+  const index = rule?.values.indexOf(value) ?? -1;
+  return index === 0 ? 'left' : index === 1 ? 'right' : null;
+}
+
+/** Seeded cued task switching with an exact switch/conflict mix. */
+export function generateTaskSwitching(config = {}) {
+  const seed = seedString(config.seed);
+  const random = seededRandom(seed);
+  const count = clampInt(config.count, 6, 50, 18);
+  const ruleCount = clampInt(config.ruleCount, 2, 3, 2);
+  const switchRatePct = clampInt(config.switchRatePct, 0, 100, 50);
+  const cueStimulusIntervalMs = clampInt(config.cueStimulusIntervalMs, 100, 2000, 700);
+  const incongruentPct = clampInt(config.incongruentPct, 0, 100, 50);
+  const responseDeadlineMs = clampInt(config.responseDeadlineMs, 500, 5000, 2200);
+  const rules = TASK_SWITCH_RULES.slice(0, ruleCount);
+  const switchCount = Math.round(Math.max(0, count - 1) * switchRatePct / 100);
+  const switchFlags = [false, ...shuffleWith([
+    ...Array.from({ length: switchCount }, () => true),
+    ...Array.from({ length: Math.max(0, count - 1 - switchCount) }, () => false),
+  ], random)];
+  const incongruentCount = Math.round(count * incongruentPct / 100);
+  const conflictFlags = shuffleWith([
+    ...Array.from({ length: incongruentCount }, () => true),
+    ...Array.from({ length: count - incongruentCount }, () => false),
+  ], random);
+  let currentRule = pickWith(rules, random);
+  const trials = switchFlags.map((switched, index) => {
+    if (switched) currentRule = pickWith(rules.filter(rule => rule.id !== currentRule.id), random);
+    const activeIndex = random() < 0.5 ? 0 : 1;
+    const stimulus = {};
+    for (const rule of rules) stimulus[rule.id] = rule.values[activeIndex];
+    if (conflictFlags[index]) {
+      const competing = pickWith(rules.filter(rule => rule.id !== currentRule.id), random);
+      stimulus[competing.id] = competing.values[1 - activeIndex];
+    }
+    return {
+      rule: currentRule.id,
+      stimulus,
+      switched,
+      incongruent: conflictFlags[index],
+    };
+  });
+  return {
+    type: 'task-switching',
+    config: { seed, count, ruleCount, switchRatePct, cueStimulusIntervalMs, incongruentPct, responseDeadlineMs },
+    rules,
+    trials,
+  };
+}
+
+/** Seeded Go/No-Go sequence with an exact no-go frequency. */
+export function generateGoNoGo(config = {}) {
+  const seed = seedString(config.seed);
+  const random = seededRandom(seed);
+  const count = clampInt(config.count, 6, 60, 20);
+  const noGoPct = clampInt(config.noGoPct, 5, 80, 25);
+  const stimulusMs = clampInt(config.stimulusMs, 100, 2000, 600);
+  const responseDeadlineMs = clampInt(config.responseDeadlineMs, stimulusMs, 5000, 1400);
+  const lureSimilarity = config.lureSimilarity === 'high' ? 'high' : 'low';
+  const noGoCount = Math.round(count * noGoPct / 100);
+  const flags = shuffleWith([
+    ...Array.from({ length: noGoCount }, () => true),
+    ...Array.from({ length: count - noGoCount }, () => false),
+  ], random);
+  const trials = flags.map((noGo, index) => ({
+    kind: noGo ? 'no-go' : 'go',
+    symbol: lureSimilarity === 'high' ? (noGo ? '◉' : '●') : (noGo ? '■' : '●'),
+    tone: lureSimilarity === 'high' ? (noGo ? 'amber' : 'green') : (noGo ? 'red' : 'green'),
+    variant: index % 2,
+  }));
+  return {
+    type: 'go-no-go',
+    config: { seed, count, noGoPct, stimulusMs, lureSimilarity, responseDeadlineMs },
+    trials,
+  };
+}
+
+/** Seeded Eriksen-style flanker trials with an exact congruency mix. */
+export function generateFlanker(config = {}) {
+  const seed = seedString(config.seed);
+  const random = seededRandom(seed);
+  const count = clampInt(config.count, 6, 60, 20);
+  const congruentPct = clampInt(config.congruentPct, 0, 100, 60);
+  const flankerDistance = clampInt(config.flankerDistance, 1, 4, 2);
+  const flankerStrength = clampInt(config.flankerStrength, 1, 3, 2);
+  const responseDeadlineMs = clampInt(config.responseDeadlineMs, 500, 5000, 1600);
+  const congruentCount = Math.round(count * congruentPct / 100);
+  const flags = shuffleWith([
+    ...Array.from({ length: congruentCount }, () => true),
+    ...Array.from({ length: count - congruentCount }, () => false),
+  ], random);
+  const trials = flags.map(congruent => {
+    const target = random() < 0.5 ? 'left' : 'right';
+    return { target, flanker: congruent ? target : target === 'left' ? 'right' : 'left', congruent };
+  });
+  return {
+    type: 'flanker',
+    config: { seed, count, congruentPct, flankerDistance, flankerStrength, responseDeadlineMs },
+    trials,
+  };
+}
+
 export function generateCognitiveDrill(type, config = {}) {
   let drill;
   switch (type) {
@@ -380,6 +541,15 @@ export function generateCognitiveDrill(type, config = {}) {
       break;
     case 'reaction-time':
       drill = generateReactionTime(config);
+      break;
+    case 'task-switching':
+      drill = generateTaskSwitching(config);
+      break;
+    case 'go-no-go':
+      drill = generateGoNoGo(config);
+      break;
+    case 'flanker':
+      drill = generateFlanker(config);
       break;
     default:
       return null;
@@ -686,6 +856,157 @@ function scoreReactionTime(drillData, questions) {
   };
 }
 
+function averageLatency(questions) {
+  const timed = questions.filter(question => question.correct && question.responseMs > 0);
+  return timed.length ? Math.round(timed.reduce((sum, question) => sum + question.responseMs, 0) / timed.length) : null;
+}
+
+function groupAccuracy(questions, predicate) {
+  const group = questions.filter(predicate);
+  return group.length ? group.filter(question => question.correct).length / group.length : null;
+}
+
+function costBetween(questions, costlyPredicate, baselinePredicate) {
+  const costly = averageLatency(questions.filter(costlyPredicate));
+  const baseline = averageLatency(questions.filter(baselinePredicate));
+  return costly == null || baseline == null ? null : costly - baseline;
+}
+
+function executiveMetrics(recomputed, refMs) {
+  const totalCount = recomputed.length;
+  const attempted = recomputed.filter(question => question.attempted);
+  const answered = recomputed.filter(question => question.answered != null);
+  const accuracy = attempted.length ? attempted.filter(question => question.correct).length / attempted.length : null;
+  const completion = totalCount ? attempted.length / totalCount : null;
+  const avgResponseMs = averageLatency(attempted);
+  const speedBonus = avgResponseMs == null ? 0 : Math.max(0, 1 - avgResponseMs / refMs);
+  return {
+    score: Math.round(((accuracy || 0) * 0.8 + speedBonus * 0.2) * (completion || 0) * 100),
+    questions: recomputed,
+    accuracy,
+    completion,
+    avgResponseMs,
+    answeredCount: answered.length,
+    totalCount,
+    commissionErrors: answered.filter(question => !question.correct).length,
+    omissions: attempted.filter(question => question.answered == null && !question.correct).length,
+    latencyDistributionMs: answered.map(question => question.responseMs).filter(ms => ms > 0),
+  };
+}
+
+function scoreTaskSwitching(drillData, questions) {
+  const regenerated = generateTaskSwitching(drillData?.config || {});
+  const trials = regenerated.trials;
+  const refMs = regenerated.config.responseDeadlineMs;
+  const responses = new Map(questions.map(question => [question.index, question]));
+  const recomputed = trials.map((trial, index) => {
+    const question = responses.get(index);
+    const expected = taskSwitchAnswer(trial);
+    const answered = question?.answered === 'left' || question?.answered === 'right' ? question.answered : null;
+    return {
+      prompt: trial.rule || '',
+      index,
+      expected,
+      answered,
+      correct: question != null && expected != null && answered === expected,
+      attempted: question != null,
+      responseMs: clampMs(question?.responseMs, refMs),
+      rule: trial.rule,
+      switched: trial.switched === true,
+      incongruent: trial.incongruent === true,
+    };
+  });
+  return {
+    ...executiveMetrics(recomputed, refMs),
+    switchCostMs: costBetween(recomputed, question => question.switched, question => !question.switched),
+    switchAccuracy: groupAccuracy(recomputed, question => question.attempted && question.switched),
+    repeatAccuracy: groupAccuracy(recomputed, question => question.attempted && !question.switched),
+  };
+}
+
+function scoreGoNoGo(drillData, questions) {
+  const regenerated = generateGoNoGo(drillData?.config || {});
+  const trials = regenerated.trials;
+  const refMs = regenerated.config.responseDeadlineMs;
+  const responses = new Map(questions.map(question => [question.index, question]));
+  const recomputed = trials.map((trial, index) => {
+    const question = responses.get(index);
+    const shouldRespond = trial.kind === 'go';
+    const answered = question?.answered === 'go' ? 'go' : null;
+    return {
+      prompt: trial.symbol || '',
+      index,
+      expected: shouldRespond ? 'go' : 'withhold',
+      answered,
+      correct: question != null && (shouldRespond ? answered === 'go' : answered == null),
+      attempted: question != null,
+      responseMs: clampMs(question?.responseMs, refMs),
+      noGo: !shouldRespond,
+    };
+  });
+  const attempted = recomputed.filter(question => question.attempted);
+  const hits = attempted.filter(question => !question.noGo && question.answered === 'go').length;
+  const omissions = attempted.filter(question => !question.noGo && question.answered == null).length;
+  const falseAlarms = attempted.filter(question => question.noGo && question.answered === 'go').length;
+  const correctRejections = attempted.filter(question => question.noGo && question.answered == null).length;
+  const goCount = hits + omissions;
+  const noGoCount = falseAlarms + correctRejections;
+  const hitRate = goCount ? hits / goCount : null;
+  const correctRejectionRate = noGoCount ? correctRejections / noGoCount : null;
+  const accuracy = hitRate == null && correctRejectionRate == null
+    ? null
+    : ((hitRate ?? 0.5) + (correctRejectionRate ?? 0.5)) / 2;
+  const pressed = attempted.filter(question => question.answered === 'go');
+  const latencies = pressed.map(question => question.responseMs).filter(ms => ms > 0);
+  const completion = recomputed.length ? attempted.length / recomputed.length : null;
+  return {
+    score: accuracy == null ? 0 : Math.round(accuracy * (completion || 0) * 100),
+    questions: recomputed,
+    accuracy,
+    completion,
+    avgResponseMs: averageLatency(attempted),
+    medianMs: median(latencies),
+    bestMs: latencies.length ? Math.min(...latencies) : null,
+    answeredCount: pressed.length,
+    totalCount: recomputed.length,
+    hits,
+    omissions,
+    falseAlarms,
+    commissionErrors: falseAlarms,
+    correctRejections,
+    falseAlarmRate: noGoCount ? falseAlarms / noGoCount : null,
+    latencyDistributionMs: latencies,
+  };
+}
+
+function scoreFlanker(drillData, questions) {
+  const regenerated = generateFlanker(drillData?.config || {});
+  const trials = regenerated.trials;
+  const refMs = regenerated.config.responseDeadlineMs;
+  const responses = new Map(questions.map(question => [question.index, question]));
+  const recomputed = trials.map((trial, index) => {
+    const question = responses.get(index);
+    const expected = trial.target === 'left' || trial.target === 'right' ? trial.target : null;
+    const answered = question?.answered === 'left' || question?.answered === 'right' ? question.answered : null;
+    return {
+      prompt: `${trial.flanker || ''}-${trial.target || ''}`,
+      index,
+      expected,
+      answered,
+      correct: question != null && expected != null && answered === expected,
+      attempted: question != null,
+      responseMs: clampMs(question?.responseMs, refMs),
+      congruent: trial.congruent === true,
+    };
+  });
+  return {
+    ...executiveMetrics(recomputed, refMs),
+    congruencyCostMs: costBetween(recomputed, question => !question.congruent, question => question.congruent),
+    congruentAccuracy: groupAccuracy(recomputed, question => question.attempted && question.congruent),
+    incongruentAccuracy: groupAccuracy(recomputed, question => question.attempted && !question.congruent),
+  };
+}
+
 /**
  * Rescore a completed cognitive drill from its generated `drillData` + the
  * player's per-trial `questions`. Returns `{ score, questions, span? }`.
@@ -705,6 +1026,12 @@ export function scoreCognitiveDrill(type, drillData, questions = []) {
       return scoreMentalRotation(drillData, list);
     case 'reaction-time':
       return scoreReactionTime(drillData, list);
+    case 'task-switching':
+      return scoreTaskSwitching(drillData, list);
+    case 'go-no-go':
+      return scoreGoNoGo(drillData, list);
+    case 'flanker':
+      return scoreFlanker(drillData, list);
     default:
       return { score: 0, questions: list };
   }

@@ -2186,7 +2186,7 @@ describe('progressive cognitive drills', () => {
     expect(progress['n-back'].levels[1].mastered).toBe(true);
     expect(progress['n-back'].levels[2].mastered).toBe(false);
     // Every laddered type reports; reaction-time is absent.
-    expect(Object.keys(progress).sort()).toEqual(['digit-span', 'mental-rotation', 'n-back', 'schulte-table', 'stroop']);
+    expect(Object.keys(progress).sort()).toEqual(['digit-span', 'flanker', 'go-no-go', 'mental-rotation', 'n-back', 'schulte-table', 'stroop', 'task-switching']);
   });
 
   it('difficulty stamp survives submitPostSession (stored task carries config.level)', async () => {
@@ -2351,13 +2351,55 @@ describe('getSessionSkillContext', () => {
       { type: 'multiplication', config: { level: 2 }, questions: [{ answered: 1, correct: true }] },
       { type: 'powers', config: { level: 1 }, questions: [{ answered: 81, correct: true }] },
       { type: 'n-back', config: { level: 1 }, accuracy: 0.9, questions: [] },
+      { type: 'task-switching', config: { level: 2 }, accuracy: 0.9, questions: [] },
+      { type: 'go-no-go', config: { level: 1 }, accuracy: 0.9, questions: [] },
+      { type: 'flanker', config: { level: 3 }, accuracy: 0.9, questions: [] },
       { type: 'memory-sequence', memoryItemId: 'song-1', questions: [{ chunkId: 'verse-1', correct: true }, { chunkId: 'verse-2', correct: true }] },
     ] };
     const { practicedSkillIds, reviewResults } = getSessionSkillContext(session);
     expect(reviewResults).toEqual([]);
     expect(practicedSkillIds.sort()).toEqual([
-      'cognitive:n-back:L1', 'memory:song-1:verse-1', 'memory:song-1:verse-2', 'multiplication:L2', 'powers:L1',
+      'cognitive:flanker:L3', 'cognitive:go-no-go:L1', 'cognitive:n-back:L1', 'cognitive:task-switching:L2',
+      'memory:song-1:verse-1', 'memory:song-1:verse-2', 'multiplication:L2', 'powers:L1',
     ]);
+  });
+
+  it('regenerates a due executive-control review at its mastered ladder rung', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-review-schedule')) return Promise.resolve({
+        skills: {
+          'cognitive:flanker:L2': {
+            skillId: 'cognitive:flanker:L2',
+            kind: 'cognitive',
+            label: 'Flanker Balanced field',
+            drillType: 'flanker',
+            level: 2,
+            config: { level: 2, congruentPct: 50, flankerDistance: 'near', flankerStrength: 'strong' },
+            nextReviewAt: '2020-01-01T00:00:00.000Z',
+            status: 'fresh',
+          },
+        },
+      });
+      if (p.includes('post-config')) return Promise.resolve({
+        cognitive: { drillTypes: { flanker: { enabled: true, progressive: true } } },
+      });
+      return Promise.resolve(defaultValue);
+    });
+
+    const [rep] = await getPostReviewReps(new Date('2026-07-31T00:00:00.000Z'));
+    expect(rep).toMatchObject({
+      type: 'flanker',
+      config: {
+        level: 2,
+        congruentPct: 50,
+        flankerDistance: 'near',
+        flankerStrength: 'strong',
+        review: true,
+        reviewSkillId: 'cognitive:flanker:L2',
+      },
+    });
+    expect(generateDrill(rep.type, rep.config).trials.length).toBeGreaterThan(0);
   });
 
   it('regenerates a due Powers review from only its mastered technique rung', async () => {

@@ -11,39 +11,58 @@ import { recordDayKey, ymdShift } from '../lib/postStreak.js';
 import { getUnifiedActivityStreak } from './postActivityStreak.js';
 import { getAllTrainingEntries } from './postTrainingLogStore.js';
 import { saveStoredTrainingRun } from './postRunStore.js';
+import { COGNITIVE_DRILL_TYPES, scoreCognitiveDrill } from './meatspacePostCognitive.js';
 
 export { getAllTrainingEntries };
 
 function trainingAttempt(runId, attempt, position, localDay, startedAt) {
-  const questionCount = attempt.questionCount ?? attempt.questions?.length ?? 0;
-  const correctCount = attempt.correctCount
-    ?? attempt.questions?.filter((question) => question?.correct === true).length
+  // Training uses the same server-authoritative deterministic scorer as scored
+  // sessions. The client sends drillData + raw answers for immediate feedback,
+  // but its correctness, score, error counts, and cost metrics are advisory.
+  const scored = COGNITIVE_DRILL_TYPES.includes(attempt.drillType)
+    ? scoreCognitiveDrill(attempt.drillType, attempt.drillData, attempt.questions || [])
+    : null;
+  const normalized = scored ? { ...attempt, ...scored, scorerProvenance: 'server-deterministic' } : attempt;
+  const questionCount = scored ? scored.questions.length : normalized.questionCount ?? normalized.questions?.length ?? 0;
+  const correctCount = scored
+    ? scored.questions.filter((question) => question?.correct === true).length
+    : normalized.correctCount
+    ?? normalized.questions?.filter((question) => question?.correct === true).length
     ?? 0;
-  const score = attempt.score !== undefined
-    ? attempt.score
+  const score = normalized.score !== undefined
+    ? normalized.score
     : (questionCount > 0 ? (correctCount / questionCount) * 100 : null);
-  const id = attempt.id || `${runId}:attempt:${position}`;
+  const id = normalized.id || `${runId}:attempt:${position}`;
   const record = {
     id,
     runId,
     date: localDay,
     timestamp: startedAt,
-    module: attempt.module,
-    drillType: attempt.drillType,
-    ...(attempt.memoryItemId ? { memoryItemId: attempt.memoryItemId } : {}),
+    module: normalized.module,
+    drillType: normalized.drillType,
+    ...(normalized.memoryItemId ? { memoryItemId: normalized.memoryItemId } : {}),
     questionCount,
     correctCount,
-    totalMs: attempt.latencyMs ?? attempt.totalMs ?? 0,
-    ...(Array.isArray(attempt.questions) ? { questions: attempt.questions } : {}),
-    difficulty: attempt.difficulty !== undefined ? attempt.difficulty : (attempt.config ?? null),
-    configVersion: attempt.configVersion || null,
-    correct: attempt.correct !== undefined ? attempt.correct : (questionCount > 0 ? correctCount === questionCount : null),
+    totalMs: normalized.latencyMs ?? normalized.totalMs ?? 0,
+    ...(Array.isArray(normalized.questions) ? { questions: normalized.questions } : {}),
+    difficulty: normalized.difficulty !== undefined ? normalized.difficulty : (normalized.config ?? null),
+    configVersion: normalized.configVersion || null,
+    correct: scored
+      ? (questionCount > 0 ? correctCount === questionCount : null)
+      : normalized.correct !== undefined ? normalized.correct : (questionCount > 0 ? correctCount === questionCount : null),
     score,
-    completion: attempt.completion !== undefined ? attempt.completion : (questionCount > 0 ? 1 : null),
-    hintUsed: attempt.hintUsed === true,
-    confidence: attempt.confidence ?? null,
-    inputMode: attempt.inputMode || 'unknown',
-    scorerProvenance: attempt.scorerProvenance || 'post-client',
+    completion: normalized.completion !== undefined ? normalized.completion : (questionCount > 0 ? 1 : null),
+    hintUsed: normalized.hintUsed === true,
+    confidence: normalized.confidence ?? null,
+    inputMode: normalized.inputMode || 'unknown',
+    scorerProvenance: normalized.scorerProvenance || 'post-client',
+    ...Object.fromEntries([
+      'accuracy', 'avgResponseMs', 'answeredCount', 'totalCount', 'attemptCount', 'errorCount',
+      'medianMs', 'bestMs', 'span', 'hits', 'misses', 'omissions', 'commissionErrors',
+      'falseAlarms', 'correctRejections', 'switchCostMs', 'switchAccuracy', 'repeatAccuracy',
+      'congruencyCostMs', 'congruentAccuracy', 'incongruentAccuracy', 'falseAlarmRate',
+      'latencyDistributionMs',
+    ].filter(key => normalized[key] !== undefined).map(key => [key, normalized[key]])),
   };
   return {
     id,

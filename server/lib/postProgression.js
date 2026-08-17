@@ -258,6 +258,42 @@ export const COGNITIVE_LADDERS = {
     describe: rung => `${rung.incongruentPct}% conflict · ${rung.count} trials`,
     speedTargetsMs: [1500, 1400, 1300, 1200],
   },
+  // Executive rule switching: add a third rule, increase the proportion of
+  // switches/conflicting attributes, shorten the cue lead, and tighten the
+  // response window. Every rung changes at least two demand levers.
+  'task-switching': {
+    levels: [
+      { ruleCount: 2, switchRatePct: 25, cueStimulusIntervalMs: 900, incongruentPct: 30, responseDeadlineMs: 2500 },
+      { ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 },
+      { ruleCount: 3, switchRatePct: 45, cueStimulusIntervalMs: 550, incongruentPct: 65, responseDeadlineMs: 1900 },
+      { ruleCount: 3, switchRatePct: 65, cueStimulusIntervalMs: 350, incongruentPct: 80, responseDeadlineMs: 1600 },
+    ],
+    describe: rung => `${rung.ruleCount} rules · ${rung.switchRatePct}% switches · ${rung.incongruentPct}% conflict`,
+    speedTargetsMs: [1800, 1600, 1450, 1250],
+  },
+  // Response inhibition: no-go events become more frequent, the display and
+  // deadline tighten, then lure similarity increases.
+  'go-no-go': {
+    levels: [
+      { noGoPct: 20, stimulusMs: 750, lureSimilarity: 'low', responseDeadlineMs: 1600 },
+      { noGoPct: 30, stimulusMs: 600, lureSimilarity: 'low', responseDeadlineMs: 1400 },
+      { noGoPct: 35, stimulusMs: 475, lureSimilarity: 'high', responseDeadlineMs: 1200 },
+      { noGoPct: 40, stimulusMs: 350, lureSimilarity: 'high', responseDeadlineMs: 950 },
+    ],
+    describe: rung => `${rung.noGoPct}% no-go · ${rung.lureSimilarity} similarity · ${rung.responseDeadlineMs}ms`,
+  },
+  // Flanker interference: reduce the easy congruent share, bring distractors
+  // closer, strengthen them, and tighten the response window.
+  'flanker': {
+    levels: [
+      { congruentPct: 75, flankerDistance: 4, flankerStrength: 1, responseDeadlineMs: 1900 },
+      { congruentPct: 60, flankerDistance: 3, flankerStrength: 2, responseDeadlineMs: 1650 },
+      { congruentPct: 50, flankerDistance: 2, flankerStrength: 2, responseDeadlineMs: 1400 },
+      { congruentPct: 40, flankerDistance: 1, flankerStrength: 3, responseDeadlineMs: 1150 },
+    ],
+    describe: rung => `${100 - rung.congruentPct}% conflict · distance ${rung.flankerDistance} · strength ${rung.flankerStrength}`,
+    speedTargetsMs: [1400, 1250, 1100, 950],
+  },
 };
 
 // Laddered cognitive drill types (drives getCognitiveProgress + the config UI).

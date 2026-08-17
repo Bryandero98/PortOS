@@ -73,7 +73,7 @@ export const POST_TOPICS = [
     label: 'Cognitive',
     module: 'cognitive',
     surface: 'session',
-    drillTypes: ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'],
+    drillTypes: ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'],
   },
   {
     // Morse is deliberately outside POST_MODULES (it posts through the separate,

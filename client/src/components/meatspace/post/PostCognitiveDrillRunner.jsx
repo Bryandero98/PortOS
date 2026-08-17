@@ -59,6 +59,12 @@ function renderCognitiveDrill(shared) {
       return <MentalRotationRunner {...shared} />;
     case 'reaction-time':
       return <ReactionTimeRunner {...shared} />;
+    case 'task-switching':
+      return <TaskSwitchingRunner {...shared} />;
+    case 'go-no-go':
+      return <GoNoGoRunner {...shared} />;
+    case 'flanker':
+      return <FlankerRunner {...shared} />;
     default:
       return <div className="text-port-error text-center py-8">Unsupported cognitive drill: {shared.drill.type}</div>;
   }
@@ -170,6 +176,36 @@ export function getDrillTutorial(drill) {
         controls: choice ? 'Number keys, or tap the lit box.' : 'Space / Enter, or tap.',
       };
     }
+    case 'task-switching':
+      return {
+        goal: 'Use the rule cue to classify each stimulus, switching rules when the cue changes.',
+        steps: [
+          'Read the rule cue first: color, shape, or fill.',
+          'When the stimulus appears, answer using only that rule and ignore its other attributes.',
+          'Rule changes and conflicting attributes are deliberate — accuracy comes before speed.',
+        ],
+        controls: 'Tap Left / Right, or press the Left / Right arrow key.',
+      };
+    case 'go-no-go':
+      return {
+        goal: 'Respond to go signals and withhold your response to no-go lures.',
+        steps: [
+          'A symbol appears briefly on every trial.',
+          'Tap or press Space for a green go signal.',
+          'Do nothing for a no-go lure; the next trial advances at the deadline.',
+        ],
+        controls: 'Tap the signal, or press Space / Enter. Withhold on no-go.',
+      };
+    case 'flanker':
+      return {
+        goal: 'Report the center arrow while ignoring the surrounding arrows.',
+        steps: [
+          'A row of arrows appears.',
+          'Answer the direction of the center arrow only.',
+          'The outer arrows may agree or conflict; keep attention on the center.',
+        ],
+        controls: 'Tap Left / Right, or press the Left / Right arrow key.',
+      };
     default:
       return null;
   }
@@ -305,6 +341,93 @@ export function localSchulteMetrics(drill, questions) {
   return { score, accuracy, completion, avgResponseMs, answeredCount, totalCount, attemptCount, errorCount };
 }
 
+function localAverageLatency(questions) {
+  const timed = questions.filter(question => question.correct && question.responseMs > 0);
+  return timed.length ? Math.round(timed.reduce((sum, question) => sum + question.responseMs, 0) / timed.length) : null;
+}
+
+function localGroupAccuracy(questions, predicate) {
+  const group = questions.filter(predicate);
+  return group.length ? group.filter(question => question.correct).length / group.length : null;
+}
+
+function localCost(questions, costlyPredicate, baselinePredicate) {
+  const costly = localAverageLatency(questions.filter(costlyPredicate));
+  const baseline = localAverageLatency(questions.filter(baselinePredicate));
+  return costly == null || baseline == null ? null : costly - baseline;
+}
+
+function localExecutiveMetrics(questions, totalCount = questions.length, refMs = 1800) {
+  const answered = questions.filter(question => question.answered != null);
+  const accuracy = questions.length ? questions.filter(question => question.correct).length / questions.length : null;
+  const completion = totalCount ? questions.length / totalCount : null;
+  const avgResponseMs = localAverageLatency(questions);
+  const speedBonus = avgResponseMs == null ? 0 : Math.max(0, 1 - avgResponseMs / refMs);
+  return {
+    score: Math.round(((accuracy || 0) * 0.8 + speedBonus * 0.2) * (completion || 0) * 100),
+    accuracy,
+    completion,
+    avgResponseMs,
+    answeredCount: answered.length,
+    totalCount,
+    commissionErrors: answered.filter(question => !question.correct).length,
+    omissions: questions.filter(question => question.answered == null && !question.correct).length,
+    latencyDistributionMs: answered.map(question => question.responseMs).filter(ms => ms > 0),
+  };
+}
+
+export function localTaskSwitchMetrics(questions, totalCount, refMs) {
+  return {
+    ...localExecutiveMetrics(questions, totalCount, refMs),
+    switchCostMs: localCost(questions, question => question.switched, question => !question.switched),
+    switchAccuracy: localGroupAccuracy(questions, question => question.switched),
+    repeatAccuracy: localGroupAccuracy(questions, question => !question.switched),
+  };
+}
+
+export function localGoNoGoMetrics(questions, totalCount = questions.length) {
+  const hits = questions.filter(question => !question.noGo && question.answered === 'go').length;
+  const omissions = questions.filter(question => !question.noGo && question.answered == null).length;
+  const falseAlarms = questions.filter(question => question.noGo && question.answered === 'go').length;
+  const correctRejections = questions.filter(question => question.noGo && question.answered == null).length;
+  const goCount = hits + omissions;
+  const noGoCount = falseAlarms + correctRejections;
+  const accuracy = goCount || noGoCount
+    ? ((goCount ? hits / goCount : 0.5) + (noGoCount ? correctRejections / noGoCount : 0.5)) / 2
+    : null;
+  const latencies = questions.filter(question => question.answered === 'go' && question.responseMs > 0).map(question => question.responseMs);
+  const sorted = [...latencies].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const medianMs = sorted.length ? (sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2)) : null;
+  const completion = totalCount ? questions.length / totalCount : null;
+  return {
+    score: accuracy == null ? 0 : Math.round(accuracy * (completion || 0) * 100),
+    accuracy,
+    completion,
+    avgResponseMs: localAverageLatency(questions),
+    medianMs,
+    bestMs: sorted.length ? sorted[0] : null,
+    answeredCount: latencies.length,
+    totalCount,
+    hits,
+    omissions,
+    falseAlarms,
+    commissionErrors: falseAlarms,
+    correctRejections,
+    falseAlarmRate: noGoCount ? falseAlarms / noGoCount : null,
+    latencyDistributionMs: latencies,
+  };
+}
+
+export function localFlankerMetrics(questions, totalCount, refMs) {
+  return {
+    ...localExecutiveMetrics(questions, totalCount, refMs),
+    congruencyCostMs: localCost(questions, question => !question.congruent, question => question.congruent),
+    congruentAccuracy: localGroupAccuracy(questions, question => question.congruent),
+    incongruentAccuracy: localGroupAccuracy(questions, question => !question.congruent),
+  };
+}
+
 // Renders a `[x, y]` cell list (mental-rotation shapes) as a small filled-cell
 // grid within a `size x size` box — no images/canvas, just CSS grid squares.
 function ShapeGrid({ cells, size = 4, cellPx = 14 }) {
@@ -336,11 +459,17 @@ export function buildCognitiveResult({ type, drill, questions, totalMs }) {
   // results screen doesn't show a number that jumps on save. Other types keep
   // the raw-accuracy approximation (server adds only a small speed bonus).
   const schulteMetrics = type === 'schulte-table' ? localSchulteMetrics(drill, questions) : null;
+  const plannedTrials = drill.trials?.length || questions.length;
+  const executiveMetrics = type === 'task-switching'
+    ? localTaskSwitchMetrics(questions, plannedTrials, drill.config?.responseDeadlineMs || 2200)
+    : type === 'go-no-go'
+      ? localGoNoGoMetrics(questions, plannedTrials)
+      : type === 'flanker' ? localFlankerMetrics(questions, plannedTrials, drill.config?.responseDeadlineMs || 1600) : null;
   const score = type === 'n-back'
     ? localNBackScore(drill, questions)
     : type === 'reaction-time'
       ? localReactionTimeScore(drill, questions)
-      : schulteMetrics?.score ?? localAccuracyScore(questions);
+      : executiveMetrics?.score ?? schulteMetrics?.score ?? localAccuracyScore(questions);
   return {
     module: 'cognitive',
     type,
@@ -349,6 +478,7 @@ export function buildCognitiveResult({ type, drill, questions, totalMs }) {
     questions,
     score,
     ...(schulteMetrics || {}),
+    ...(executiveMetrics || {}),
     totalMs,
   };
 }
@@ -453,6 +583,56 @@ export function scoreSchulteClick({ target, value, responseMs }) {
     answered: value,
     correct: value === target,
     responseMs,
+  };
+}
+
+const TASK_SWITCH_VALUES = {
+  color: ['blue', 'orange'],
+  shape: ['circle', 'triangle'],
+  fill: ['solid', 'outline'],
+};
+
+export function scoreTaskSwitchTrial({ trial, index, answer, responseMs }) {
+  const values = TASK_SWITCH_VALUES[trial?.rule] || [];
+  const valueIndex = values.indexOf(trial?.stimulus?.[trial?.rule]);
+  const expected = valueIndex === 0 ? 'left' : valueIndex === 1 ? 'right' : null;
+  return {
+    prompt: trial?.rule || '',
+    index,
+    expected,
+    answered: answer,
+    correct: expected != null && answer === expected,
+    responseMs,
+    rule: trial?.rule,
+    switched: trial?.switched === true,
+    incongruent: trial?.incongruent === true,
+  };
+}
+
+export function scoreGoNoGoTrial({ trial, index, pressed, responseMs }) {
+  const noGo = trial?.kind === 'no-go';
+  const answered = pressed ? 'go' : null;
+  return {
+    prompt: trial?.symbol || '',
+    index,
+    expected: noGo ? 'withhold' : 'go',
+    answered,
+    correct: noGo ? answered == null : answered === 'go',
+    responseMs,
+    noGo,
+  };
+}
+
+export function scoreFlankerTrial({ trial, index, answer, responseMs }) {
+  const expected = trial?.target === 'left' || trial?.target === 'right' ? trial.target : null;
+  return {
+    prompt: `${trial?.flanker || ''}-${trial?.target || ''}`,
+    index,
+    expected,
+    answered: answer,
+    correct: expected != null && answer === expected,
+    responseMs,
+    congruent: trial?.congruent === true,
   };
 }
 
@@ -1272,6 +1452,279 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
         <div className="w-full h-1.5 bg-port-border rounded-full overflow-hidden">
           <div className="h-full bg-rose-400/60 transition-all" style={{ width: `${progressPct}%` }} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// EXECUTIVE CONTROL — shared binary-choice timing shell
+// =============================================================================
+function BinaryChoiceRunner({ type, drill, drillIndex, drillCount, onComplete, isTraining }) {
+  const trials = drill.trials || [];
+  const cueDelayMs = type === 'task-switching' ? (drill.config?.cueStimulusIntervalMs || 700) : 0;
+  const deadlineMs = drill.config?.responseDeadlineMs || 1800;
+  const [trialIdx, setTrialIdx] = useState(0);
+  const [phase, setPhase] = useState(cueDelayMs ? 'cue' : 'stimulus');
+  const [feedback, setFeedback] = useState(null);
+  const questionsRef = useRef([]);
+  const stimulusStartRef = useRef(0);
+  const startedAtRef = useRef(Date.now());
+  const acceptingRef = useRef(false);
+  const cueTimerRef = useRef(null);
+  const deadlineTimerRef = useRef(null);
+  const advanceTimerRef = useRef(null);
+  const finishedRef = useRef(false);
+  const mountedRef = useMounted();
+
+  const finish = useCallback(() => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    onComplete(buildCognitiveResult({ type, drill, questions: questionsRef.current, totalMs: Date.now() - startedAtRef.current }));
+  }, [type, drill, onComplete]);
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+
+  const recordAnswer = useCallback((answer) => {
+    if (!acceptingRef.current) return;
+    acceptingRef.current = false;
+    clearTimeout(deadlineTimerRef.current);
+    const trial = trials[trialIdx];
+    const responseMs = stimulusStartRef.current ? Date.now() - stimulusStartRef.current : deadlineMs;
+    const question = type === 'task-switching'
+      ? scoreTaskSwitchTrial({ trial, index: trialIdx, answer, responseMs })
+      : scoreFlankerTrial({ trial, index: trialIdx, answer, responseMs });
+    questionsRef.current.push(question);
+    setFeedback(question.correct ? 'Correct' : answer == null ? 'Too slow' : `Center answer: ${question.expected}`);
+    setPhase('feedback');
+    const isLast = trialIdx + 1 >= trials.length;
+    advanceTimerRef.current = setTimeout(() => {
+      if (!mountedRef.current) return;
+      if (isLast) finishRef.current(); else setTrialIdx(index => index + 1);
+    }, isTraining ? 700 : 250);
+  }, [deadlineMs, isTraining, trialIdx, trials, type]);
+  const recordRef = useRef(recordAnswer);
+  recordRef.current = recordAnswer;
+
+  useEffect(() => {
+    if (trialIdx >= trials.length) { finishRef.current(); return undefined; }
+    acceptingRef.current = false;
+    setFeedback(null);
+    setPhase(cueDelayMs ? 'cue' : 'stimulus');
+    const reveal = () => {
+      if (!mountedRef.current) return;
+      stimulusStartRef.current = Date.now();
+      acceptingRef.current = true;
+      setPhase('stimulus');
+      deadlineTimerRef.current = setTimeout(() => recordRef.current(null), deadlineMs);
+    };
+    if (cueDelayMs) cueTimerRef.current = setTimeout(reveal, cueDelayMs);
+    else reveal();
+    return () => {
+      acceptingRef.current = false;
+      clearTimeout(cueTimerRef.current);
+      clearTimeout(deadlineTimerRef.current);
+      clearTimeout(advanceTimerRef.current);
+    };
+  }, [cueDelayMs, deadlineMs, trialIdx, trials]);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (phase !== 'stimulus') return;
+      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        recordRef.current('left');
+      } else if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        recordRef.current('right');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [phase]);
+
+  const trial = trials[trialIdx];
+  const activeRule = drill.rules?.find(rule => rule.id === trial?.rule);
+  const leftLabel = type === 'task-switching' ? activeRule?.values?.[0] || 'Left' : 'Left';
+  const rightLabel = type === 'task-switching' ? activeRule?.values?.[1] || 'Right' : 'Right';
+  const shape = trial?.stimulus?.shape === 'triangle'
+    ? (trial?.stimulus?.fill === 'outline' ? '△' : '▲')
+    : (trial?.stimulus?.fill === 'outline' ? '○' : '●');
+  const flankerCount = Math.max(1, drill.config?.flankerStrength || 2);
+  const arrow = direction => direction === 'left' ? '←' : '→';
+  const progressPct = trials.length ? (trialIdx / trials.length) * 100 : 0;
+
+  return (
+    <div className="max-w-lg mx-auto space-y-6">
+      <DrillHeader type={type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />
+      <p className="text-center text-sm text-gray-400">
+        {type === 'task-switching'
+          ? <>Use the <span className="text-white font-medium">cued rule</span>; ignore the other attributes.</>
+          : <>Answer the direction of the <span className="text-white font-medium">center arrow</span>; ignore the flankers.</>}
+      </p>
+
+      <div className="min-h-[11rem] flex flex-col items-center justify-center gap-5" role="status" aria-live="polite">
+        {type === 'task-switching' && (
+          <div className="rounded-full border border-rose-500/40 bg-rose-500/10 px-5 py-2 text-sm font-semibold uppercase tracking-wider text-rose-200">
+            Rule: {trial?.rule || '—'}
+          </div>
+        )}
+        {phase === 'cue' && <div className="text-gray-500">Get ready…</div>}
+        {phase === 'stimulus' && type === 'task-switching' && trial && (
+          <div
+            aria-label={`${trial.stimulus.color} ${trial.stimulus.fill} ${trial.stimulus.shape}`}
+            className="text-8xl leading-none motion-reduce:transition-none"
+            style={{ color: trial.stimulus.color === 'blue' ? '#3b82f6' : '#f97316' }}
+          >
+            {shape}
+          </div>
+        )}
+        {phase === 'stimulus' && type === 'flanker' && trial && (
+          <div
+            aria-label={`Center arrow ${trial.target}`}
+            className="flex items-center font-mono text-5xl text-white motion-reduce:transition-none"
+            style={{ gap: `${Math.max(0.2, (drill.config?.flankerDistance || 2) * 0.3)}rem` }}
+          >
+            <span className="text-gray-500" aria-hidden="true">{arrow(trial.flanker).repeat(flankerCount)}</span>
+            <span>{arrow(trial.target)}</span>
+            <span className="text-gray-500" aria-hidden="true">{arrow(trial.flanker).repeat(flankerCount)}</span>
+          </div>
+        )}
+        {phase === 'feedback' && (
+          <div className={feedback === 'Correct' ? 'text-port-success' : 'text-port-error'}>{feedback}</div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <button type="button" onClick={() => recordRef.current('left')} disabled={phase !== 'stimulus'} className="px-5 py-4 rounded-lg border border-port-border bg-port-card hover:bg-port-bg disabled:opacity-40 text-white font-medium">
+          ← {leftLabel}
+        </button>
+        <button type="button" onClick={() => recordRef.current('right')} disabled={phase !== 'stimulus'} className="px-5 py-4 rounded-lg border border-port-border bg-port-card hover:bg-port-bg disabled:opacity-40 text-white font-medium">
+          {rightLabel} →
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex justify-between text-xs text-gray-500"><span>Trial {Math.min(trialIdx + 1, trials.length)} of {trials.length}</span><span>{Math.round(progressPct)}%</span></div>
+        <div className="w-full h-1.5 bg-port-border rounded-full overflow-hidden"><div className="h-full bg-rose-400/60 transition-all motion-reduce:transition-none" style={{ width: `${progressPct}%` }} /></div>
+      </div>
+    </div>
+  );
+}
+
+function TaskSwitchingRunner(props) {
+  return <BinaryChoiceRunner type="task-switching" {...props} />;
+}
+
+function FlankerRunner(props) {
+  return <BinaryChoiceRunner type="flanker" {...props} />;
+}
+
+// =============================================================================
+// GO / NO-GO — press for go, withhold through the deadline for no-go
+// =============================================================================
+function GoNoGoRunner({ drill, drillIndex, drillCount, onComplete, isTraining }) {
+  const trials = drill.trials || [];
+  const stimulusMs = drill.config?.stimulusMs || 600;
+  const deadlineMs = drill.config?.responseDeadlineMs || 1400;
+  const [trialIdx, setTrialIdx] = useState(0);
+  const [visible, setVisible] = useState(true);
+  const [feedback, setFeedback] = useState(null);
+  const [accepting, setAccepting] = useState(true);
+  const questionsRef = useRef([]);
+  const trialStartRef = useRef(Date.now());
+  const startedAtRef = useRef(Date.now());
+  const acceptingRef = useRef(false);
+  const hideTimerRef = useRef(null);
+  const deadlineTimerRef = useRef(null);
+  const advanceTimerRef = useRef(null);
+  const finishedRef = useRef(false);
+  const mountedRef = useMounted();
+
+  const finish = useCallback(() => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    onComplete(buildCognitiveResult({ type: 'go-no-go', drill, questions: questionsRef.current, totalMs: Date.now() - startedAtRef.current }));
+  }, [drill, onComplete]);
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+
+  const record = useCallback((pressed) => {
+    if (!acceptingRef.current) return;
+    acceptingRef.current = false;
+    setAccepting(false);
+    clearTimeout(hideTimerRef.current);
+    clearTimeout(deadlineTimerRef.current);
+    const question = scoreGoNoGoTrial({
+      trial: trials[trialIdx],
+      index: trialIdx,
+      pressed,
+      responseMs: pressed ? Date.now() - trialStartRef.current : deadlineMs,
+    });
+    questionsRef.current.push(question);
+    setFeedback(question.correct ? (pressed ? 'Go' : 'Held') : pressed ? 'No-go lure' : 'Missed go signal');
+    setVisible(false);
+    const isLast = trialIdx + 1 >= trials.length;
+    advanceTimerRef.current = setTimeout(() => {
+      if (!mountedRef.current) return;
+      if (isLast) finishRef.current(); else setTrialIdx(index => index + 1);
+    }, isTraining ? 700 : 250);
+  }, [deadlineMs, isTraining, trialIdx, trials]);
+  const recordRef = useRef(record);
+  recordRef.current = record;
+
+  useEffect(() => {
+    if (trialIdx >= trials.length) { finishRef.current(); return undefined; }
+    acceptingRef.current = true;
+    setAccepting(true);
+    trialStartRef.current = Date.now();
+    setVisible(true);
+    setFeedback(null);
+    hideTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) setVisible(false);
+    }, stimulusMs);
+    deadlineTimerRef.current = setTimeout(() => recordRef.current(false), deadlineMs);
+    return () => {
+      acceptingRef.current = false;
+      clearTimeout(hideTimerRef.current);
+      clearTimeout(deadlineTimerRef.current);
+      clearTimeout(advanceTimerRef.current);
+    };
+  }, [deadlineMs, stimulusMs, trialIdx, trials]);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.code === 'Space' || event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        recordRef.current(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const trial = trials[trialIdx];
+  const toneClass = trial?.tone === 'red' ? 'text-port-error' : trial?.tone === 'amber' ? 'text-port-warning' : 'text-port-success';
+  const progressPct = trials.length ? (trialIdx / trials.length) * 100 : 0;
+  return (
+    <div className="max-w-lg mx-auto space-y-6">
+      <DrillHeader type="go-no-go" isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />
+      <p className="text-center text-sm text-gray-400">Press for <span className="text-port-success font-medium">green go</span>. Withhold for red or amber no-go lures.</p>
+      <button
+        type="button"
+        aria-label={trial?.kind === 'no-go' ? 'No-go lure — withhold' : 'Go signal — respond'}
+        onClick={() => recordRef.current(true)}
+        disabled={!accepting}
+        className="mx-auto w-48 h-48 rounded-2xl border border-port-border bg-port-card flex items-center justify-center disabled:opacity-70 motion-reduce:transition-none"
+      >
+        <span role="status" aria-live="polite" className={`text-8xl ${visible ? toneClass : 'text-transparent'}`}>
+          {visible ? trial?.symbol : '·'}
+        </span>
+      </button>
+      <div className={`text-center min-h-6 ${feedback && !questionsRef.current.at(-1)?.correct ? 'text-port-error' : 'text-port-success'}`} role="status" aria-live="polite">{feedback || 'Ready'}</div>
+      <div className="space-y-1">
+        <div className="flex justify-between text-xs text-gray-500"><span>Trial {Math.min(trialIdx + 1, trials.length)} of {trials.length}</span><span>{Math.round(progressPct)}%</span></div>
+        <div className="w-full h-1.5 bg-port-border rounded-full overflow-hidden"><div className="h-full bg-rose-400/60 transition-all motion-reduce:transition-none" style={{ width: `${progressPct}%` }} /></div>
       </div>
     </div>
   );

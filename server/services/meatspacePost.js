@@ -119,7 +119,12 @@ const DEFAULT_CONFIG = {
       'stroop': { enabled: true, progressive: true, count: 15, incongruentPct: 75 },
       'schulte-table': { enabled: true, progressive: true, size: 5 },
       'mental-rotation': { enabled: true, progressive: true, count: 8, rotationComplexity: 3, optionCount: 4 },
-      'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 }
+      'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 },
+      // Executive-control pack is opt-in for existing installs: additive config
+      // must not silently lengthen a user's established composed session.
+      'task-switching': { enabled: false, progressive: true, count: 18, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 },
+      'go-no-go': { enabled: false, progressive: true, count: 20, noGoPct: 25, stimulusMs: 600, lureSimilarity: 'low', responseDeadlineMs: 1400 },
+      'flanker': { enabled: false, progressive: true, count: 20, congruentPct: 60, flankerDistance: 2, flankerStrength: 2, responseDeadlineMs: 1600 }
     }
   },
   // Memory practice (issue #3252). Present so the block's shape is discoverable
@@ -314,6 +319,11 @@ export async function submitPostSession(sessionData) {
       answeredCount: _ac, totalCount: _tc, attemptCount: _attempts, errorCount: _errors,
       medianMs: _med, bestMs: _best, span: _span,
       hits: _h, misses: _m, falseAlarms: _fa, correctRejections: _cr,
+      omissions: _omissions, commissionErrors: _commissionErrors,
+      switchCostMs: _switchCost, switchAccuracy: _switchAccuracy, repeatAccuracy: _repeatAccuracy,
+      congruencyCostMs: _congruencyCost, congruentAccuracy: _congruentAccuracy,
+      incongruentAccuracy: _incongruentAccuracy, falseAlarmRate: _falseAlarmRate,
+      latencyDistributionMs: _latencyDistribution,
       ...rest
     } = t || {};
 
@@ -356,7 +366,7 @@ export async function submitPostSession(sessionData) {
     // persisted alongside the blended score (issue #2094).
     if (COGNITIVE_DRILL_TYPES.includes(rest.type)) {
       const scored = scoreCognitiveDrill(rest.type, rest.drillData, rest.questions || []);
-      return { ...rest, ...scored };
+      return { ...rest, ...scored, scorerProvenance: 'server-deterministic' };
     }
 
     // Math drills: strip correct from individual questions and rescore
@@ -1671,6 +1681,9 @@ export function generateDrill(type, config = {}) {
     case 'schulte-table':
     case 'mental-rotation':
     case 'reaction-time':
+    case 'task-switching':
+    case 'go-no-go':
+    case 'flanker':
       return generateCognitiveDrill(type, config);
     default:
       return null;

@@ -644,6 +644,51 @@ describe('usePostSession — atomic training-run save (#4441)', () => {
     expect(retryPayload.attempts.map((attempt) => attempt.id))
       .toEqual(firstPayload.attempts.map((attempt) => attempt.id));
   });
+
+  it('sends deterministic drill data and executive metrics for server-authoritative training rescoring', async () => {
+    const drillData = {
+      type: 'flanker',
+      config: { seed: 'client-flanker', responseDeadlineMs: 1500 },
+      trials: [{ target: 'right', flanker: 'left', congruent: false }],
+    };
+    generatePostDrill.mockResolvedValue(drillData);
+    submitTrainingRun.mockResolvedValue({ id: 'training-run', attemptCount: 1 });
+    const { result } = renderHook(() => usePostSession());
+    await act(async () => {
+      await result.current.startSession([{ type: 'flanker', config: {} }], true);
+    });
+    act(() => {
+      result.current.completeCognitiveDrill({
+        module: 'cognitive',
+        type: 'flanker',
+        config: drillData.config,
+        drillData,
+        questions: [{ index: 0, answered: 'right', correct: true, responseMs: 400, congruent: false }],
+        score: 100,
+        accuracy: 1,
+        completion: 1,
+        congruencyCostMs: null,
+        incongruentAccuracy: 1,
+        omissions: 0,
+        commissionErrors: 0,
+        latencyDistributionMs: [400],
+        totalMs: 400,
+      });
+    });
+    await act(async () => { await result.current.saveSession({}); });
+
+    expect(submitTrainingRun.mock.calls[0][0].attempts[0]).toEqual(expect.objectContaining({
+      drillType: 'flanker',
+      drillData,
+      accuracy: 1,
+      congruencyCostMs: null,
+      incongruentAccuracy: 1,
+      omissions: 0,
+      commissionErrors: 0,
+      latencyDistributionMs: [400],
+      scorerProvenance: 'client-deterministic',
+    }));
+  });
 });
 
 describe('usePostSession — LLM training-log per-question breakdown (issue #2114)', () => {

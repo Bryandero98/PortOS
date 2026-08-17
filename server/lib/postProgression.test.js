@@ -106,7 +106,7 @@ describe('PROGRESSION_MASTERY_DEFAULTS', () => {
 
 describe('cognitive ladders', () => {
   it('ladders exist for every skill drill but not reaction-time', () => {
-    expect(COGNITIVE_LADDER_TYPES).toEqual(['n-back', 'digit-span', 'schulte-table', 'mental-rotation', 'stroop']);
+    expect(COGNITIVE_LADDER_TYPES).toEqual(['n-back', 'digit-span', 'schulte-table', 'mental-rotation', 'stroop', 'task-switching', 'go-no-go', 'flanker']);
     expect(cognitiveLadder('reaction-time')).toBeNull();
     expect(cognitiveLadder('nope')).toBeNull();
   });
@@ -129,6 +129,23 @@ describe('cognitive ladders', () => {
     const rotation = COGNITIVE_LADDERS['mental-rotation'].levels;
     expect(rotation.map(r => r.rotationComplexity)).toEqual([1, 2, 3, 3]);
     expect(rotation.map(r => r.optionCount)).toEqual([2, 3, 3, 4]);
+  });
+
+  it('executive-control ladders change multiple cognitive-demand levers beyond trial count', () => {
+    const switching = COGNITIVE_LADDERS['task-switching'].levels;
+    expect(switching.map(rung => rung.ruleCount)).toEqual([2, 2, 3, 3]);
+    expect(switching.map(rung => rung.switchRatePct)).toEqual([25, 50, 45, 65]);
+    expect(switching.map(rung => rung.cueStimulusIntervalMs)).toEqual([900, 700, 550, 350]);
+
+    const inhibition = COGNITIVE_LADDERS['go-no-go'].levels;
+    expect(inhibition.map(rung => rung.noGoPct)).toEqual([20, 30, 35, 40]);
+    expect(inhibition.map(rung => rung.lureSimilarity)).toEqual(['low', 'low', 'high', 'high']);
+    expect(inhibition.map(rung => rung.stimulusMs)).toEqual([750, 600, 475, 350]);
+
+    const flanker = COGNITIVE_LADDERS.flanker.levels;
+    expect(flanker.map(rung => rung.congruentPct)).toEqual([75, 60, 50, 40]);
+    expect(flanker.map(rung => rung.flankerDistance)).toEqual([4, 3, 2, 1]);
+    expect(flanker.map(rung => rung.flankerStrength)).toEqual([1, 2, 2, 3]);
   });
 
   it('cognitiveLevelConfig returns the clamped rung knobs (a fresh copy)', () => {

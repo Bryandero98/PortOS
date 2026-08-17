@@ -24,7 +24,15 @@ Memory Builder drills drawn from the user's memory items: `memory-sequence`, `me
 `what-if` (absurd hypotheticals), `alternative-uses` (divergent-thinking classic), `story-prompt` (micro-story from 3 random words), `invention-pitch`, `reframe` (recast a negative situation positively/humorously). LLM-scored for originality, elaboration, and feasibility.
 
 ### Cognitive (~90s)
-Classic psychometric drills, scored deterministically server-side (`server/services/meatspacePostCognitive.js`, runner `PostCognitiveDrillRunner.jsx`): `n-back`, `digit-span`, `stroop`, `schulte-table`, `mental-rotation`, `reaction-time`.
+Focused cognitive-skill drills, scored deterministically server-side (`server/services/meatspacePostCognitive.js`, runner `PostCognitiveDrillRunner.jsx`): `n-back`, `digit-span`, `stroop`, `schulte-table`, `mental-rotation`, `reaction-time`, `task-switching`, `go-no-go`, and `flanker`.
+
+The executive-control pack practices three narrow task skills; it is not a clinical assessment and makes no claim of generalized cognitive transfer:
+
+- **Task Switching** applies a visible color/shape/fill rule, measuring switch cost and repeat-vs-switch accuracy. Its ladder changes rule count, switch rate, cue lead, conflicting attributes, and response deadline.
+- **Go / No-Go** responds to go signals and withholds to no-go lures, measuring hits, omissions, false alarms/commission errors, correct rejections, and latency. Its ladder changes no-go frequency, stimulus duration, lure similarity, and deadline.
+- **Flanker Control** reports a center arrow around agreeing or conflicting flankers, measuring congruency cost, congruent/incongruent accuracy, omissions, and latency. Its ladder changes congruency ratio, flanker distance/strength, and deadline.
+
+Each generated executive-control drill carries a seed. The server regenerates its answer key from that seed and the validated difficulty config when saving either a scored session or an atomic training run; client-provided correctness and aggregate metrics are never authoritative.
 
 ### Morse (training-only)
 `MorseTrainer.jsx` (`morse-copy`, `morse-head-copy`, `morse-send`, deep-linked at `/post/morse/:mode`) is deliberately excluded from scored sessions — Morse practice posts to the training log only.
@@ -55,7 +63,7 @@ Configurable memory training for songs, poems, sequences, speeches, or any order
 ## Scoring
 
 - **Math**: server-rescored — the server strips client-provided correctness and re-derives expected answers (`meatspacePost.js`, "never trust client-provided expected"); estimation compares within tolerance. Accuracy plus speed bonus.
-- **Cognitive**: deterministic server-side rescoring per drill type.
+- **Cognitive**: deterministic server-side rescoring per drill type. Executive-control attempts additionally retain switch/congruency cost, false alarms, omissions, commission errors, accuracy/completion, and the per-response latency distribution in the unified run/attempt record.
 - **Wordplay/Verbal/Imagination**: LLM-scored against per-drill rubrics (e.g. wit-comeback: humor 40% / cleverness 30% / relevance 30%), blended as quality 80% + speed bonus 20% (`server/services/meatspacePostLlm.js`).
 - **Session score**: per-module weighted mean across completed drills (`computeSessionScore`, weights from `config.scoring.weights`, issue #2099). Every module defaults to weight `1.0`, so an unconfigured install still gets the plain arithmetic mean; a module absent from a saved `weights` map also defaults to `1.0` rather than dropping out.
 

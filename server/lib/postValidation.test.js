@@ -5,6 +5,7 @@ import {
   postSessionSubmitSchema,
   postDrillRequestSchema,
   trainingEntrySchema,
+  trainingRunSubmitSchema,
   memoryItemCreateSchema,
   memoryScheduleSchema,
   memoryPracticeSchema,
@@ -557,6 +558,25 @@ describe('drillTypeConfigSchema numeric bounds', () => {
     });
   });
 
+  it('accepts seeded executive-control difficulty knobs', () => {
+    const parsed = postDrillRequestSchema.parse({
+      type: 'task-switching',
+      config: {
+        seed: 'example-seed', ruleCount: 3, switchRatePct: 65,
+        cueStimulusIntervalMs: 350, incongruentPct: 80, responseDeadlineMs: 1600,
+        noGoPct: 40, lureSimilarity: 'high', congruentPct: 40,
+        flankerDistance: 1, flankerStrength: 3,
+      },
+    });
+    expect(parsed.config).toMatchObject({ seed: 'example-seed', ruleCount: 3, switchRatePct: 65, lureSimilarity: 'high', flankerStrength: 3 });
+  });
+
+  it('rejects out-of-range executive-control knobs', () => {
+    expect(() => postDrillRequestSchema.parse({ type: 'task-switching', config: { ruleCount: 4 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'go-no-go', config: { noGoPct: 0 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'flanker', config: { flankerStrength: 4 } })).toThrow();
+  });
+
   it('rejects out-of-range interference and rotation complexity knobs', () => {
     expect(() => postDrillRequestSchema.parse({ type: 'stroop', config: { incongruentPct: 101 } })).toThrow();
     expect(() => postDrillRequestSchema.parse({ type: 'mental-rotation', config: { rotationComplexity: 4 } })).toThrow();
@@ -685,6 +705,27 @@ describe('postSessionSubmitSchema client-generated id (issue #2098)', () => {
 
   it('rejects a non-uuid id', () => {
     expect(() => postSessionSubmitSchema.parse({ ...baseBody(), id: 'not-a-uuid' })).toThrow();
+  });
+});
+
+describe('trainingRunSubmitSchema executive-control evidence (#4445)', () => {
+  it('preserves drill data and task-specific metrics for server rescoring', () => {
+    const parsed = trainingRunSubmitSchema.parse({
+      id: '33333333-3333-4333-8333-333333333333',
+      attempts: [{
+        id: 'attempt-1', module: 'cognitive', drillType: 'flanker',
+        difficulty: { seed: 'flanker' },
+        drillData: { type: 'flanker', config: { seed: 'flanker' }, trials: [] },
+        questionCount: 1, correctCount: 1, latencyMs: 400,
+        questions: [{ prompt: 'left-right', index: 0, answered: 'right', correct: true, responseMs: 400, congruent: false }],
+        accuracy: 1, completion: 1, congruencyCostMs: null,
+        incongruentAccuracy: 1, omissions: 0, commissionErrors: 0,
+        latencyDistributionMs: [400],
+      }],
+    });
+    expect(parsed.attempts[0]).toMatchObject({ drillType: 'flanker', accuracy: 1, incongruentAccuracy: 1, omissions: 0 });
+    expect(parsed.attempts[0].drillData.config.seed).toBe('flanker');
+    expect(parsed.attempts[0].questions[0].congruent).toBe(false);
   });
 });
 

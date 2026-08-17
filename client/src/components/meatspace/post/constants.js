@@ -7,7 +7,7 @@ export const LLM_DRILL_TYPES = ['word-association', 'story-recall', 'verbal-flue
 export const MEMORY_DRILL_TYPES = ['memory-fill-blank', 'memory-sequence', 'memory-element-flash'];
 // Deterministic cognitive drills (no LLM). Mirror the server's
 // COGNITIVE_DRILL_TYPES in server/services/meatspacePostCognitive.js.
-export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
+export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'];
 
 // Drill types valid elsewhere but not yet wired into the interactive POST
 // session drill picker. Multi-blank fill-in-the-blank is now wired end to end,
@@ -107,7 +107,7 @@ export const POST_TOPICS = [
     label: 'Cognitive',
     module: 'cognitive',
     surface: 'session',
-    drillTypes: ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'],
+    drillTypes: ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'],
   },
   {
     id: 'morse',
@@ -291,6 +291,9 @@ export const DRILL_LABELS = {
   'schulte-table': 'Schulte Table',
   'mental-rotation': 'Mental Rotation',
   'reaction-time': 'Reaction Time',
+  'task-switching': 'Task Switching',
+  'go-no-go': 'Go / No-Go',
+  'flanker': 'Flanker Control',
 };
 
 // Human-readable label for a domain key. `other` collects drills whose type
