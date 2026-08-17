@@ -185,7 +185,7 @@ const currentEvaluationSchema = z.object({
 
 const historicalEvaluationScoreSchema = z.object({
   score: z.number().min(0).max(100).optional(),
-  feedback: z.string(),
+  feedback: z.string().optional().default(''),
   validCount: z.number().int().min(0).optional(),
   validItems: z.array(z.string()).optional(),
   invalidItems: z.array(z.string()).optional(),

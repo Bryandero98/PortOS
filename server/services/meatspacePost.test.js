@@ -1651,7 +1651,11 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
       score: 70,
       tasks: [{
         module: 'llm-drills', type: 'word-association', score: 70,
-        evaluation: { score: 70, breakdown: [{ score: 70, feedback: historicalFeedback }] },
+        evaluation: {
+          overallScore: 70,
+          scores: [{ score: 70, feedback: historicalFeedback }, { score: 70 }],
+          summary: 'Historical response',
+        },
       }],
     }]);
 
@@ -1659,7 +1663,7 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
 
     expect(session.tasks[0].evaluation).toMatchObject({
       overallScore: 70,
-      scores: [{ score: 70, feedback: historicalFeedback }],
+      scores: [{ score: 70, feedback: historicalFeedback }, { score: 70, feedback: '' }],
       provenance: {
         generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
         scorer: { kind: 'legacy', rubricVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
