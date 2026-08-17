@@ -104,8 +104,7 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
     navigate(`${location.pathname}?${params}`);
   }
 
-  // Save success either continues the daily recommendation chain or opens the
-  // deep-linkable saved result. The run id === session id.
+  // Find and route to the next unpracticed item in the daily routine.
   async function continueDailyRoutine() {
     const result = await getPostRecommendations(1).catch(() => null);
     const recommendation = result?.recommendations?.[0];
@@ -126,11 +125,15 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
     navigate(`/post/launcher?continue=${encodeURIComponent(recommendation.id)}`);
   }
 
+  // Save success either continues the daily recommendation chain or opens a
+  // deep-linkable SCORED result. Training runs have durable ids too, but the
+  // scored-session detail endpoint deliberately excludes them, so they return
+  // to the launcher instead of navigating to a guaranteed not-found route.
   async function handleSaved(savedSession, { continueDaily = false } = {}) {
     await loadData();
     session.reset();
     if (continueDaily) await continueDailyRoutine();
-    else if (savedSession?.id) navigate(`/post/session/${savedSession.id}`);
+    else if (savedSession?.id && !savedSession.training) navigate(`/post/session/${savedSession.id}`);
     else navigate('/post/launcher');
   }
 
