@@ -263,9 +263,10 @@ export const generateMemoryDrill = (data) => request('/meatspace/post/memory-dri
 });
 
 // MeatSpace - POST Training Log
-export const submitTrainingEntry = (data) => request('/meatspace/post/training', {
+export const submitTrainingEntry = (data, options = {}) => request('/meatspace/post/training', {
   method: 'POST',
-  body: JSON.stringify(data)
+  body: JSON.stringify(data),
+  ...options
 });
 export const submitTrainingRun = (data, options = {}) => request('/meatspace/post/training/runs', {
   method: 'POST',

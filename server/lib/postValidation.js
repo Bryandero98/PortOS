@@ -100,8 +100,13 @@ const DRILL_TYPES = [...MATH_DRILL_TYPES, ...LLM_DRILL_TYPES, ...MEMORY_DRILL_TY
 // LLM/MEMORY/COGNITIVE types and falls through everything else to scoreDrill's
 // math-expression parser (computeExpectedFromPrompt) — a Morse task type would
 // pass validation there but silently mis-score as a failed math drill instead
-// of being rejected. Morse only ever posts through trainingEntrySchema below.
+// of being rejected. Morse and rhetoric only ever post through
+// trainingEntrySchema below.
 const MORSE_DRILL_TYPES = ['morse-copy', 'morse-head-copy', 'morse-send'];
+// Rhetoric is a standalone, self-assessed training surface. It never enters a
+// scored POST session or calls an LLM, but its rounds still use the shared
+// training log endpoint for streaks and progress reporting.
+const RHETORIC_DRILL_TYPES = ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-progressia', 'rhetoric-brainstorm'];
 
 const drillTypeConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -590,8 +595,8 @@ export const trainingEntrySchema = z.object({
   // Training log entries also cover Morse (client-side scored, never a scored
   // POST session) — union in MORSE_DRILL_TYPES here rather than in the shared
   // DRILL_TYPES so postSessionSubmitSchema/postDrillRequestSchema can't accept
-  // a Morse type (see the MORSE_DRILL_TYPES comment above).
-  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES]),
+  // a Morse or rhetoric type (see the standalone-type comment above).
+  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES, ...RHETORIC_DRILL_TYPES]),
   questionCount: z.number().int().min(0),
   correctCount: z.number().int().min(0),
   totalMs: z.number().min(0),
@@ -610,7 +615,7 @@ export const trainingEntrySchema = z.object({
 const trainingAttemptSchema = z.object({
   id: z.string().min(1).max(200),
   module: z.string().min(1).max(100),
-  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES]),
+  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES, ...RHETORIC_DRILL_TYPES]),
   memoryItemId: z.string().min(1).max(200).nullable().optional(),
   difficulty: z.record(z.string(), z.unknown()).nullable().optional(),
   configVersion: z.string().max(100).nullable().optional(),
