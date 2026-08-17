@@ -2,7 +2,7 @@
 
 PortOS can opt in to serving local media-generation capacity to another registered PortOS peer. The first wire contract, `/api/federation/media/v1`, supports queued audio generation through the existing durable `mediaJobQueue` and local music engines.
 
-This is provider-side infrastructure. A peer can call the contract directly, but automatic provider discovery, selection, failover, and consumer-side commission reconciliation are later slices of issue #4348.
+Provider-side queued audio and consumer-side capacity discovery/selection are available. Remote proxy-job execution, failover, and consumer-side commission reconciliation remain later slices of issue #4348.
 
 ## Enable a provider
 
@@ -26,6 +26,28 @@ The default is disabled:
 ```
 
 An older install without this settings slice behaves exactly like the default above. Known fields are validated while unknown future fields are preserved, so rolling an install back does not erase newer provider settings.
+
+## Configure a consumer
+
+1. Register the provider under **Instances** and make the relationship mutual so the provider recognizes this consumer's instance id.
+2. Store the provider's instance-password credential on its peer card. The normal peer health probe may work without it when provider auth is off, but the federated-media API intentionally does not.
+3. Expand **Remote media provider** on the peer card and enable **Use this peer for remote audio**. PortOS immediately probes the versioned status endpoint through `peerFetch`.
+4. Select the exact advertised engine/model pairs this instance may use. This local allowlist is independent from the provider's sharing allowlist; both sides must permit a model.
+
+The consumer default is also disabled:
+
+```json
+{
+  "mediaProvider": {
+    "enabled": false,
+    "audioModels": []
+  }
+}
+```
+
+This configuration and the last sanitized capacity snapshot live only on the local peer record. They are stripped from announce responses and do not become federation records. Older peers without the wire-v1 endpoint show as **older peer** rather than making the normal instance probe fail.
+
+The Instances card reports the provider's ready/busy/unavailable state, shared active-job count, queue depth, and advertised model readiness. A consumer preflight accepts a model only when the peer is explicitly enabled, the exact model is locally allowlisted, the wire response validates, the capacity timestamp is fresh, the queue is accepting, and runtime/model/CUDA readiness is positive. Unknown, malformed, clock-skewed, or stale status blocks assignment. The provider remains authoritative and repeats admission checks when a later executor submits the job.
 
 ## Authentication and identity
 
@@ -52,7 +74,7 @@ All successful JSON responses include `wireVersion: 1`. The version is also fixe
 
 ### Capacity status
 
-`GET /status` is computed live and carries `generatedAt` plus `staleAfterMs`. Consumers must stop assigning new work after that window instead of treating stale capacity as available.
+`GET /status` is computed live and carries `generatedAt` plus `staleAfterMs`. Consumers must stop assigning new work after that window instead of treating stale capacity as available. A provider timestamp more than 30 seconds in the future is also rejected as unknown clock state rather than extending capacity indefinitely.
 
 CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
 
@@ -89,4 +111,4 @@ Provider filesystem paths and original filenames never cross the API boundary.
 
 ## Current boundary
 
-Wire v1 currently provides audio only. Still remaining from #4348 are consumer-side `peerFetch` proxying and restart reconciliation, converting the Music studio's synchronous generation route to the durable queue, capacity-aware peer selection/failover, remote image/video jobs and input-asset transfer, and aggregate provider health in Instances/System Health.
+Wire v1 currently provides audio only. Consumers can discover and explicitly allowlist a peer/model, but PortOS does not yet submit a local proxy job through that selection. Still remaining from #4348 are consumer-side job proxying and restart reconciliation, converting the Music studio's synchronous generation route to the durable queue, multi-provider fairness/failover, remote image/video jobs and input-asset transfer, and aggregate provider health on System Health.

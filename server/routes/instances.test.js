@@ -3,14 +3,16 @@ import express from 'express';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 
-// Only GET /api/instances/sync-status is exercised here — it's the forPeer
-// validation that regressed (a non-GUID peer probe threw a 500 every sync
-// cycle). Heavy service deps are mocked so importing the router is cheap.
+// Heavy service deps are mocked so route validation stays cheap and does not
+// reach the live instance store.
 vi.mock('../services/syncOrchestrator.js', () => ({
   getSyncStatus: vi.fn(),
   syncWithPeer: vi.fn(),
 }));
-vi.mock('../services/instances.js', () => ({}));
+vi.mock('../services/instances.js', () => ({
+  updatePeer: vi.fn(),
+  sanitizePeerForClient: vi.fn((peer) => peer),
+}));
 vi.mock('../services/sharing/peerSync.js', () => ({
   getFullSyncCoverageForPeer: vi.fn(),
 }));
@@ -22,6 +24,7 @@ vi.mock('../lib/tailscale.js', () => ({
 }));
 
 import { getSyncStatus } from '../services/syncOrchestrator.js';
+import * as instances from '../services/instances.js';
 import instancesRoutes from './instances.js';
 
 const buildApp = () => {
@@ -93,5 +96,42 @@ describe('GET /api/instances/sync-status — forPeer scoping', () => {
     const res = await request(buildApp()).get('/api/instances/sync-status?forPeer=peer-1');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ brainSeq: 3, memorySeq: 5, cursorForYou: 42 });
+  });
+});
+
+describe('PUT /api/instances/peers/:id — media provider selection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    instances.updatePeer.mockImplementation(async (id, updates) => ({ id, ...updates }));
+  });
+
+  it('validates and preserves mixed-version fields in the consumer allowlist', async () => {
+    const mediaProvider = {
+      enabled: true,
+      futureField: 'keep',
+      audioModels: [{
+        engine: 'minimax-music3',
+        modelId: 'minimax-music3',
+        futureModelField: 'keep-too',
+      }],
+    };
+
+    const res = await request(buildApp())
+      .put('/api/instances/peers/peer-example')
+      .send({ mediaProvider });
+
+    expect(res.status).toBe(200);
+    expect(instances.updatePeer).toHaveBeenCalledWith('peer-example', { mediaProvider });
+    expect(res.body.mediaProvider).toEqual(mediaProvider);
+  });
+
+  it('rejects duplicate engine/model pairs before mutating the peer record', async () => {
+    const model = { engine: 'minimax-music3', modelId: 'minimax-music3' };
+    const res = await request(buildApp())
+      .put('/api/instances/peers/peer-example')
+      .send({ mediaProvider: { enabled: true, audioModels: [model, model] } });
+
+    expect(res.status).toBe(400);
+    expect(instances.updatePeer).not.toHaveBeenCalled();
   });
 });
