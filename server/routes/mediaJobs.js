@@ -203,8 +203,8 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
     (v) => v === undefined || v === EFFORT_CLEAR_SENTINEL || CODEX_EFFORT_LEVELS.includes(v),
     { message: `effort must be one of ${CODEX_EFFORT_LEVELS.join(', ')} or '${EFFORT_CLEAR_SENTINEL}'` },
   ),
-  width: z.number().int().min(64).max(2048).optional(),
-  height: z.number().int().min(64).max(2048).optional(),
+  width: z.number().int().min(64).max(4096).optional(),
+  height: z.number().int().min(64).max(4096).optional(),
   steps: z.number().int().min(1).max(200).nullable().optional(),
   guidance: z.number().min(0).max(30).optional(),
   guidanceScale: z.number().min(0).max(30).nullable().optional(),
@@ -225,6 +225,14 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
     scale: z.number().min(0).max(2).optional(),
   })).max(8).optional(),
 }).partial();
+
+const VIDEO_RETRY_BOUNDS_SCHEMA = z.object({
+  width: z.number().int().min(64).max(2048).optional(),
+  height: z.number().int().min(64).max(2048).optional(),
+  seed: z.number().int().min(0).nullable().optional(),
+  numFrames: z.number().int().min(1).max(1024).optional(),
+  fps: z.number().int().min(1).max(60).optional(),
+}).passthrough();
 
 const retryBodySchema = z.object({
   params: RETRY_OVERRIDE_SCHEMA.optional(),
@@ -270,6 +278,10 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
     ),
   );
   const params = { ...job.params, ...overrides };
+  if (job.kind === 'video') {
+    const bounds = VIDEO_RETRY_BOUNDS_SCHEMA.safeParse(params);
+    if (!bounds.success) throw new ServerError('Video retry settings are outside the supported range', { status: 400, code: 'VALIDATION_ERROR' });
+  }
   for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
     if (rawOverrides[key] === null) delete params[key];
   }
