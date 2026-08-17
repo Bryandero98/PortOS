@@ -6,98 +6,43 @@ This directory contains detailed release notes for each version of PortOS.
 
 ## Structure
 
-### next/ — Where You Write Your Entry
+### No per-branch entries — release notes come from the commit log
 
-**Write your changelog entry as a fragment file, not by appending to `NEXT.md`.**
+There is nothing to write while you work. `/do:release` builds the changelog
+for a release by reading `git log` since the last tag and grouping commits by
+feature/theme into a human-readable summary — it does this automatically as
+part of the release, not from anything staged in this directory. Do not create
+a `NEXT.md`, do not write a per-branch fragment, and do not hand-edit a
+changelog file for unreleased work.
 
-```bash
-npm run changelog:add -- fixed "Notifications panel no longer clips on a phone."
-```
+**Practical consequence: write commit subjects and bodies for a human deciding
+whether to upgrade**, not just for `git log --oneline`. A commit message that
+states what changed and why is what `/do:release` turns into a release-note
+bullet. See "Git commits and PRs" in the global instructions for the format —
+one specific sentence in the subject, body only when the why is non-obvious.
 
-That writes `.changelog/next/fixed-<your-branch>.md`. Sections are `added`,
-`changed`, `fixed`, `removed`.
+#### Why not per-branch fragments
 
-The slug defaults to the last segment of your current branch (`claim/issue-3916`
-→ `issue-3916`, `cos/task-x/agent-d3651f27` → `agent-d3651f27`), which is already
-unique per unit of work. Pass `--slug <slug>` to override — required on a
-detached HEAD, since there is no branch name to derive from. Adding a second
-entry for the same branch and section appends to the same file rather than
-creating another one.
-
-Writing the file by hand is fine too; the CLI just gets the name and the bullet
-formatting right.
-
-#### Why fragments
-
-Every parallel agent, `/claim` worktree, and swarm worker used to append a
-bullet to the end of the same section of the same file. Two branches cut from
-the same base therefore added different lines in the same place — the textbook
-shape of a merge conflict. Every second PR of a parallel run stalled on a
-hand-resolved changelog, and conflict markers have reached `main` more than once.
-
-Ordering conventions do not fix this. Alphabetizing by agent id, or leaving a
-blank line between entries, still leaves both branches editing adjacent lines,
-and git's three-way merge conflicts on adjacent changed hunks regardless of what
-the lines say. The only structural fix is for two branches never to write the
-same file: **git merges by path**, so two different paths always merge cleanly.
-
-This is the same fragment/"news file" pattern used by towncrier, reno, and
-changesets. `scripts/changelogFragments.js` carries the implementation notes.
-
-#### Collecting before a release
-
-`npm run changelog:collect` folds every fragment into `NEXT.md` under its
-matching heading (creating the heading when absent) and deletes the fragments.
-**Run it before `/do:release`.**
-
-`npm run changelog:preview` prints the same result and changes nothing, which is
-how to read the full set of unreleased notes while entries are still split
-across fragments.
-
-Collection is append-only and deterministic — fragments are folded in filename
-order, so two installs collecting the same set produce identical output. Nothing
-is lost by forgetting to collect: uncollected fragments simply ride along to the
-next release.
-
-#### Why `NEXT.md` is deliberately not union-merged
-
-`.gitattributes` marks `.changelog/next/*.md` with git's built-in `union` merge
-driver. That covers the one residual fragment collision: two branches whose
-names share a last segment derive the same slug and write the same file, where
-keeping both bullets is the right answer. A fragment is short-lived — created on
-a branch, deleted at collection — so it has no cross-release failure mode.
-
-`NEXT.md` is **not** union-merged, and that is on purpose even though it looks
-like the same append-only shape. `/do:release` renames `NEXT.md` to
-`v{version}.md` and starts a fresh one, and git does not pair that rename
-because the path still exists on `main`. Any branch that outlives a release is
-therefore a plain modify/modify on `NEXT.md`, and union resolves it by keeping
-both sides — reviving the **entire previous release's entries** into the next
-release's notes, cleanly, with no conflict and no warning. Verified both ways:
-with union the merge succeeds and republishes the old entries; without it git
-raises a conflict, which is the correct outcome.
-
-So a direct append to `NEXT.md` on a branch still conflicts with a parallel one.
-That is not a gap to be patched — it is the reason to write fragments.
-
-### NEXT.md — Unreleased Changes Accumulator
-
-`NEXT.md` accumulates collected entries across multiple commits until a release
-is created.
-
-- `/do:release` (a Claude Code slash command skill) renames `NEXT.md` to `v{version}.md` and finalizes it with the version number and release date. The release workflow then uses this versioned file for the GitHub release notes
-- Do NOT create versioned changelog files manually — `/do:release` handles that
-- Editing `NEXT.md` directly still works, and is the right move when correcting an entry that is already collected. For a *new* entry on a branch, write a fragment instead
+PortOS used to require every branch to write a changelog fragment
+(`.changelog/next/<section>-<branch>.md`, collected into `NEXT.md` at release
+time) specifically so that two branches cut from the same base never touched
+the same changelog line — a guaranteed merge conflict otherwise. That
+machinery is gone now: since no branch writes anything under `.changelog/`
+during development, there is no shared file for parallel branches to collide
+on in the first place. `/do:release` reads commit history instead, which
+every branch already produces without any extra step.
 
 ### Versioned Files
 
-Each release has its own markdown file:
+Each release has its own markdown file, written by `/do:release` when it runs:
 
 ```
 v{major}.{minor}.{patch}.md
 ```
 
-These are created automatically by `/do:release` from `NEXT.md`.
+Don't create these manually and don't bump the version manually — `/do:release`
+handles both. If you need to correct an already-published release's notes, edit
+the versioned file directly (see Maintenance below).
 
 ## Format
 
@@ -108,9 +53,10 @@ Each changelog file should follow this structure:
 
 Released: YYYY-MM-DD
 
-## Overview
+## Highlights
 
-A brief summary of the release.
+A few plain-language bullets grouped by feature area, for someone deciding
+whether to upgrade.
 
 ## Added
 
@@ -141,27 +87,13 @@ The GitHub Actions release workflow (`.github/workflows/release.yml`) automatica
 2. If found, uses it as the GitHub release description
 3. If not found, falls back to generating a simple changelog from git commits
 
-## Development Workflow
-
-1. **During Development**: `npm run changelog:add -- <section> "entry"` writes a
-   per-branch fragment under `.changelog/next/`. Never append a new entry to
-   `NEXT.md` on a branch — that is what makes parallel agents collide.
-
-2. **Before Release**: `npm run changelog:collect` folds the fragments into
-   `NEXT.md`. This is the first step of `/do:release`.
-
-3. **During Release** (`/do:release`):
-   - Determines the version bump from conventional commit prefixes
-   - Bumps `package.json` version
-   - Renames `NEXT.md` → `v{new_version}.md`
-   - Adds version header, release date, and diff link
-   - Commits the version bump + finalized changelog
-
 ## Style Rules
 
 Release notes are read by end users — not by the developer who wrote the change.
 Write so a non-PortOS-developer can understand what changed and decide whether
-they care about this release.
+they care about this release. These rules apply both to the commit messages
+`/do:release` reads (since the notes are synthesized from them) and to any
+manual correction of an already-published versioned file.
 
 ### Do
 - **One sentence per change.** Two if a meaningful "why" needs to land. Major
@@ -175,8 +107,6 @@ they care about this release.
 - **Group related entries.** When a single feature spans many sub-bullets
   (e.g. ten Writers Room changes), introduce it once with a short paragraph
   and follow with terse bullets, rather than ten separate paragraph entries.
-- **Update the changelog as you work** so detail doesn't have to be
-  reconstructed at release time.
 
 ### Don't
 - **No file paths, module names, function names, route paths, or CSS class

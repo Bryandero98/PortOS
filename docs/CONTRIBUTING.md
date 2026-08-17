@@ -67,13 +67,11 @@ See [VERSIONING.md](./VERSIONING.md) for full details.
 
 ### Changelog
 
-On every user-visible change, write a fragment — do **not** append to `.changelog/NEXT.md` (that file is assembled at release time; two branches editing it is a guaranteed merge conflict):
-
-```bash
-npm run changelog:add -- <added|changed|fixed|removed> "Daily log no longer double-saves on blur."
-```
-
-See [`.changelog/README.md`](../.changelog/README.md) for the fragment convention.
+Nothing to write here — there is no per-branch changelog file or fragment.
+`/do:release` synthesizes the release notes from the commit log when it runs,
+so write commit subjects/bodies for a human release-note reader (see Commit
+Messages below). See [`.changelog/README.md`](../.changelog/README.md) for
+details.
 
 > **Note:** Some older code or automation notes may still reference a `dev` branch workflow. The `main`→`release` workflow described here is the current source of truth.
 
@@ -93,7 +91,7 @@ to re-index files with LF line endings.
 Use conventional commit prefixes with a human-readable subject — a future reader of `git log --oneline` should understand the change without opening the diff:
 
 ```
-feat: add a --dry-run flag to changelog:add
+feat: add a --dry-run flag to the backup CLI
 fix: daily log no longer double-saves on blur
 docs: point the API allowlist at commandSecurity.js
 ```

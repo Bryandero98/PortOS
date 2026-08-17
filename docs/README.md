@@ -55,5 +55,5 @@ Comms & voice: [openclaw-operator-chat](./features/openclaw-operator-chat.md) ([
 
 - **[themes/](./themes/README.md)** — UI theme specs and the theme integration contract.
 - **[examples/](./examples/README.md)** — copy-ready config examples (e.g. Claude Code → Ollama settings).
-- **[`.changelog/README.md`](../.changelog/README.md)** — how to write an unreleased changelog fragment (`npm run changelog:add`).
+- **[`.changelog/README.md`](../.changelog/README.md)** — how `/do:release` synthesizes release notes from the commit log, and the versioned-file format.
 - **media/** — screenshots and logo used by the root README.
