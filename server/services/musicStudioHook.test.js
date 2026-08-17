@@ -1,0 +1,67 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+const queue = vi.hoisted(() => {
+  const listeners = new Set();
+  return {
+    events: {
+      on: (_event, handler) => listeners.add(handler),
+      off: (_event, handler) => listeners.delete(handler),
+      emit: (_event, job) => listeners.forEach((handler) => handler(job)),
+    },
+    updateJobResult: vi.fn(),
+  };
+});
+const trackStore = vi.hoisted(() => ({ getTrack: vi.fn(), buildRenderAppend: vi.fn(), updateTrack: vi.fn(), createTrack: vi.fn() }));
+const albumStore = vi.hoisted(() => ({ getAlbum: vi.fn(), updateAlbum: vi.fn() }));
+
+vi.mock('./mediaJobQueue/index.js', () => ({ mediaJobEvents: queue.events, updateJobResult: queue.updateJobResult }));
+vi.mock('./tracks/index.js', () => trackStore);
+vi.mock('./albums/index.js', () => albumStore);
+
+const { initMusicStudioHook, __testing } = await import('./musicStudioHook.js');
+
+describe('music studio completion hook', () => {
+  beforeEach(() => {
+    __testing.reset();
+    queue.updateJobResult.mockReset();
+    trackStore.getTrack.mockReset();
+    trackStore.buildRenderAppend.mockReset().mockReturnValue({ renders: [{ id: 'render-1' }] });
+    trackStore.updateTrack.mockReset().mockResolvedValue({ id: 'track-1' });
+    trackStore.createTrack.mockReset().mockResolvedValue({ id: 'track-new', albumId: 'album-1' });
+    albumStore.getAlbum.mockReset().mockResolvedValue({ trackIds: [] });
+    albumStore.updateAlbum.mockReset().mockResolvedValue({});
+    initMusicStudioHook();
+  });
+
+  it('attaches a completed render to an existing track and records its id', async () => {
+    trackStore.getTrack.mockResolvedValue({ id: 'track-1', renders: [] });
+    queue.events.emit('completed', {
+      id: 'job-1', kind: 'audio', queuedAt: new Date().toISOString(),
+      params: { prompt: 'fake prompt', lyrics: '[verse] fake', musicStudio: { trackId: 'track-1', lyricsEnabled: true, lyricsProvided: true } },
+      result: { filename: 'fake.wav', durationSec: 12, engine: 'acestep', modelId: 'a' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(trackStore.updateTrack).toHaveBeenCalledWith('track-1', expect.objectContaining({ audioFilename: 'fake.wav', lyrics: '[verse] fake' }));
+    expect(queue.updateJobResult).toHaveBeenCalledWith('job-1', { trackId: 'track-1' });
+  });
+
+  it('creates a standalone track, appends its album, and does not crash when target is deleted', async () => {
+    trackStore.createTrack.mockResolvedValue({ id: 'track-new', albumId: 'album-1' });
+    queue.events.emit('completed', {
+      id: 'job-2', kind: 'audio', queuedAt: new Date().toISOString(),
+      params: { prompt: 'fake prompt', musicStudio: { trackId: null, title: 'Fake song', albumId: 'album-1' } },
+      result: { filename: 'fake.wav', durationSec: 8, engine: 'musicgen', modelId: 'm' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(trackStore.createTrack).toHaveBeenCalledWith(expect.objectContaining({ title: 'Fake song', albumId: 'album-1' }));
+    expect(albumStore.updateAlbum).toHaveBeenCalledWith('album-1', { trackIds: ['track-new'] });
+
+    trackStore.getTrack.mockResolvedValue(null);
+    queue.events.emit('completed', {
+      id: 'job-3', kind: 'audio', queuedAt: new Date().toISOString(),
+      params: { prompt: 'fake prompt', musicStudio: { trackId: 'deleted-track' } },
+      result: { filename: 'orphan.wav' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(trackStore.updateTrack).not.toHaveBeenCalledWith('deleted-track', expect.anything());
+  });
+});

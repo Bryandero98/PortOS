@@ -4,7 +4,7 @@
  *   GET  /api/music/engines              → { engines, defaultEngine }
  *   POST /api/music/describe             → { description, llm }
  *   POST /api/music/lyrics               → { lyrics, llm }
- *   POST /api/music/generate             → { track, filename, durationSec, engine, modelId }
+ *   POST /api/music/generate             → { jobId, position, status }
  *
  * `describe`/`lyrics` are the Generate tab's stepped designer (#4305): an LLM
  * expands a short reference/vibe into a rich conditioning prompt, then writes
@@ -12,15 +12,13 @@
  * fires them on its own (AI Provider Usage Policy).
  *
  * Generation runs the engine-agnostic `generateMusic` (server/services/pipeline/
- * musicGen.js) — MusicGen / AudioLDM2 / ACE-Step / MiniMax-Music3 behind one contract — lands the
- * WAV in the shared music library (data/music/), then creates a new Track (or
- * updates an existing one via `trackId`) with the audio pointer + the prompt /
- * lyrics / engine / model / duration metadata. The pipeline audio stage has its
- * own generator routes; this is the studio's standalone path.
+ * musicGen.js) through the unified audio media-job lane. The completion hook
+ * lands the WAV in the shared music library and creates or updates the Track,
+ * independently of whether the requesting browser remains mounted. The pipeline
+ * audio stage has its own generator routes; this is the studio's standalone path.
  *
- * Generation is synchronous here (one render at a time, like the pipeline audio
- * stage's generate route) — a long ACE-Step render holds the request open. An
- * async mediaJobQueue lane can be added later behind the same response shape.
+ * Generation is acknowledged immediately and drained by the audio media-job
+ * lane, so a long render never holds the HTTP request open.
  */
 
 import { Router } from 'express';
@@ -32,7 +30,7 @@ import { createLineReader } from '../lib/streamLines.js';
 import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
   ENGINES, getEngine, isEngineHealthy, isEnginePlatformSupported,
-  enginePlatformLabel, generateMusic,
+  enginePlatformLabel,
 } from '../services/pipeline/musicGen.js';
 import { listEngineModels, addAudioModel, removeAudioModel, isValidRepoId } from '../services/audioModels.js';
 import { listMusicEngineCapabilities } from '../services/musicEngineCapabilities.js';
@@ -41,8 +39,8 @@ import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { inspectModelCache } from '../lib/hfCache.js';
 import { getCudaCapability } from '../lib/cudaCapability.js';
+import { enqueueJob, listJobs } from '../services/mediaJobQueue/index.js';
 import * as tracks from '../services/tracks/index.js';
-import * as albums from '../services/albums/index.js';
 
 const router = Router();
 
@@ -388,78 +386,41 @@ router.post('/generate', asyncHandler(async (req, res) => {
   // track's old words").
   const usedLyrics = engine.lyrics ? (body.lyrics ?? '') : '';
 
-  // generateMusic throws a typed ServerError (503 venv-missing / 500 sidecar
-  // failure) that asyncHandler maps verbatim — no need to re-wrap here.
-  const result = await generateMusic({
-    prompt: body.prompt,
-    lyrics: usedLyrics,
-    engine: engine.id,
-    modelId: body.modelId,
-    repo,
-    durationSec: body.durationSec,
-    durationMode: body.durationMode,
+  const liveJobs = listJobs({ kind: 'audio' }).filter((job) => job.status === 'queued' || job.status === 'running');
+  const duplicate = liveJobs.find((job) => {
+    const tag = job.params?.musicStudio;
+    return body.trackId ? tag?.trackId === body.trackId : tag && !tag.trackId;
   });
-
-  // Persist the audio + gen metadata. Lyrics follow the audio that was actually
-  // rendered: for a lyric-aware engine we persist what the caller SENT —
-  // including an intentional '' clear (the audio was generated without lyrics) —
-  // but an ABSENT lyrics field leaves the track's lyrics untouched. A non-lyric
-  // engine never writes lyrics (it can't erase a song's words by adding a bed).
-  const durationSec = Math.round(result.durationSec);
-  // Re-read the track AFTER the (minutes-long) render so the append lands on the
-  // FRESHEST persisted history — a render uploaded/generated to this same track
-  // while this generation was running isn't dropped by writing back a stale
-  // pre-render array. (The sub-millisecond getTrack→updateTrack window is a
-  // single-user request race we intentionally don't lock against — trust model.)
-  const current = existing ? ((await tracks.getTrack(body.trackId)) ?? existing) : null;
-  const { renders } = tracks.buildRenderAppend(current, {
-    audioFilename: result.filename,
-    prompt: body.prompt,
-    lyrics: usedLyrics,
-    engine: result.engine,
-    modelId: result.modelId,
-    durationSec,
-  });
-
-  const meta = {
-    audioFilename: result.filename,
-    engine: result.engine,
-    modelId: result.modelId,
-    durationSec,
-    prompt: body.prompt,
-    renders,
-  };
-  if (engine.lyrics && body.lyrics !== undefined) meta.lyrics = body.lyrics;
-
-  let track;
-  if (existing) {
-    track = await tracks.updateTrack(body.trackId, meta);
-  } else {
-    track = await tracks.createTrack({
-      title: body.title?.trim() || body.prompt.slice(0, 60),
-      artistId: body.artistId,
-      artist: body.artist,
-      albumId: body.albumId,
-      ...(engine.lyrics && body.lyrics !== undefined ? { lyrics: body.lyrics } : {}),
-      ...meta,
+  if (duplicate) {
+    throw new ServerError('Music generation is already in progress', {
+      status: 409,
+      code: 'PIPELINE_MUSIC_BUSY',
+      context: { jobId: duplicate.id },
     });
-    // Mirror the /api/tracks create path: a new track with an albumId must be
-    // appended to that album's ordered trackIds so album views show it.
-    if (track.albumId) {
-      const album = await albums.getAlbum(track.albumId).catch(() => null);
-      if (album && !(album.trackIds || []).includes(track.id)) {
-        await albums.updateAlbum(track.albumId, { trackIds: [...(album.trackIds || []), track.id] }).catch(() => {});
-      }
-    }
   }
 
-  res.status(body.trackId ? 200 : 201).json({
-    track,
-    filename: result.filename,
-    durationSec: result.durationSec,
-    engine: result.engine,
-    modelId: result.modelId,
+  const result = enqueueJob({
+    kind: 'audio',
+    params: {
+      prompt: body.prompt,
+      lyrics: usedLyrics,
+      engine: engine.id,
+      modelId: body.modelId,
+      repo,
+      durationSec: body.durationSec,
+      durationMode: body.durationMode,
+      musicStudio: {
+        trackId: body.trackId || null,
+        title: body.title || body.prompt.slice(0, 60),
+        artistId: body.artistId,
+        artist: body.artist,
+        albumId: body.albumId,
+        lyricsEnabled: engine.lyrics === true,
+        lyricsProvided: body.lyrics !== undefined,
+      },
+    },
   });
+  res.status(202).json(result);
 }));
 
 export default router;

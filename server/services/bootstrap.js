@@ -119,6 +119,7 @@ import { initWritersRoomSceneImageHook } from './writersRoomSceneImageHook.js';
 import { initMusicVideoSceneImageHook } from './musicVideoSceneImageHook.js';
 import { initMusicVideoSceneVideoHook } from './musicVideoSceneVideoHook.js';
 import { initCreativeDirectorMusicBedHook } from './creativeDirectorMusicBedHook.js';
+import { initMusicStudioHook } from './musicStudioHook.js';
 import { initImageGenQuotaHook } from './imageGenQuota.js';
 import { initSpriteReferenceImageHook } from './spriteReferenceImageHook.js';
 import { initCreativeDirectorSceneImageHook } from './creativeDirectorSceneImageHook.js';
@@ -476,6 +477,9 @@ const initMediaJobDependentHooks = () => {
   // audio render onto its project's `musicBed` field on completion, even if
   // the requesting client unmounted mid-render (#1928).
   initCreativeDirectorMusicBedHook();
+  // Music Studio audio jobs attach to their track after completion so the
+  // library remains correct across a client remount or navigation.
+  initMusicStudioHook();
   // Image-gen quota observation — the cloud image backends expose no quota API,
   // so the Usage page's Image Gen card is built from renders we watched succeed
   // or get refused. One bus subscriber, never per-provider edits.

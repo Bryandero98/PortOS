@@ -247,6 +247,21 @@ export function getJob(jobId) {
   return findJob(jobId);
 }
 
+// Completion hooks may attach a generated artifact to a domain record after
+// the audio worker has emitted its result. Persist that attachment on the job
+// too so a remounted client can discover the created track without guessing.
+export async function updateJobResult(jobId, patch) {
+  const job = findJob(jobId);
+  if (!job || !patch || typeof patch !== 'object') return false;
+  job.result = { ...(job.result || {}), ...patch };
+  await persist();
+  return true;
+}
+
+export function getRunningJob() {
+  return running;
+}
+
 export function listJobs({ status, kind, owner } = {}) {
   const all = [
     ...(running ? [running] : []),
