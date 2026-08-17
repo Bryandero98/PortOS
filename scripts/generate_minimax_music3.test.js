@@ -46,6 +46,13 @@ const PRELUDE = [
 const runPython = (body) => execFileSync(pyBin, ['-c', `${PRELUDE}\n${body}`, script], {
   encoding: 'utf8',
 }).trim();
+const runPythonWithoutNumpy = (body) => execFileSync(pyBin, ['-c', [
+  'import importlib.util, json, sys',
+  'spec = importlib.util.spec_from_file_location("mm3", sys.argv[1])',
+  'mod = importlib.util.module_from_spec(spec)',
+  'spec.loader.exec_module(mod)',
+  body,
+].join('\n'), script], { encoding: 'utf8' }).trim();
 
 describe.skipIf(!hasNumpy)('generate_minimax_music3 sidecar helpers', () => {
   describe('to_numpy', () => {
@@ -113,5 +120,31 @@ describe.skipIf(!hasNumpy)('generate_minimax_music3 sidecar helpers', () => {
         'mod.to_stereo(a, np)',
       ].join('\n'))).toThrow();
     });
+  });
+});
+
+describe.skipIf(!pyBin)('generate_minimax_music3 deterministic benchmark hook', () => {
+  it('builds a CUDA generator for pipelines that expose generator', () => {
+    const out = runPythonWithoutNumpy([
+      'class Generator:',
+      '    def __init__(self, device): self.device = device',
+      '    def manual_seed(self, seed): self.seed = seed; return self',
+      'class SeedTorch:',
+      '    Generator = Generator',
+      'class Supported:',
+      '    def __call__(self, prompt, generator=None): pass',
+      'r = mod.seeded_generation_kwargs(Supported(), SeedTorch, 17)["generator"]',
+      'print(json.dumps({"device": r.device, "seed": r.seed}))',
+    ].join('\n'));
+    expect(JSON.parse(out)).toEqual({ device: 'cuda', seed: 17 });
+  });
+
+  it('does not claim deterministic support when generator is absent', () => {
+    const out = runPythonWithoutNumpy([
+      'class Unsupported:',
+      '    def __call__(self, prompt): pass',
+      'print(json.dumps(mod.seeded_generation_kwargs(Unsupported(), object(), 17)))',
+    ].join('\n'));
+    expect(JSON.parse(out)).toEqual({});
   });
 });
