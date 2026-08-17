@@ -52,6 +52,19 @@ describe('sanitizeCommissionFeedbackForSync', () => {
     expect(rec.deleted).toBe(true);
     expect(rec.deletedAt).toBe('2026-02-02T00:00:00.000Z');
   });
+
+  it('preserves structured taste tags while remaining compatible with older untagged reactions', () => {
+    const tagged = sanitizeCommissionFeedbackForSync({
+      id: 'cfeedback-tagged', commissionId: 'commission-x', runId: 'run-tagged', rating: 'up',
+      tags: ['more-familiar', 'keep-anchors'], updatedAt: '2026-08-16T00:00:00.000Z',
+    });
+    const legacy = sanitizeCommissionFeedbackForSync({
+      id: 'cfeedback-legacy', commissionId: 'commission-x', runId: 'run-legacy', rating: 'down',
+      updatedAt: '2026-08-15T00:00:00.000Z',
+    });
+    expect(tagged.tags).toEqual(['more-familiar', 'keep-anchors']);
+    expect(legacy.tags).toEqual([]);
+  });
 });
 
 describe('mergeCommissionFeedbackRecord (LWW)', () => {
@@ -71,6 +84,17 @@ describe('mergeCommissionFeedbackRecord (LWW)', () => {
     expect(remoteWins).toBe(true);
     expect(changed).toBe(true);
     expect(next.rating).toBe('down');
+  });
+
+  it('lets a newer tagged re-rating win over an older peer that omitted tags', () => {
+    const local = { ...base, tags: [] };
+    const remote = {
+      ...base, rating: 'up', tags: ['more-experimental', 'change-anchors'],
+      updatedAt: '2026-03-03T00:00:00.000Z',
+    };
+    const { next, remoteWins } = mergeCommissionFeedbackRecord(local, remote);
+    expect(remoteWins).toBe(true);
+    expect(next.tags).toEqual(['more-experimental', 'change-anchors']);
   });
 
   it('older remote loses to a newer local (LWW, no clobber)', () => {

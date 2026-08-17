@@ -34,7 +34,7 @@ const NON_FIELD_TOKENS = new Set([
   // Output-contract vocabulary.
   'issues', 'severity', 'high', 'medium', 'low',
   // `arcRole` VALUES, not field names.
-  'pilot', 'finale', 'complication', 'midpoint', 'b-plot', 'all-is-lost',
+  'pilot', 'climax', 'finale', 'complication', 'midpoint', 'b-plot', 'all-is-lost', 'extended',
 ]);
 
 const renderableFields = () => new Set([

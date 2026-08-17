@@ -466,7 +466,7 @@
     },
     "pipeline-season-episodes": {
       "name": "Pipeline — Season Episode Breakdown",
-      "description": "Plan the episode-by-episode breakdown for one season of a multi-season series. Slots N episodes between the season's pickup state and ending hook, respecting prior seasons' continuity, the protagonist's whole-series arc, and a balanced mix of pilot / complication / midpoint / b-plot / all-is-lost / finale arc roles.",
+      "description": "Plan the episode-by-episode breakdown for one season of a multi-season series. Slots N episodes between the season's pickup state and ending hook, respecting prior seasons' continuity, the protagonist's whole-series arc, and a balanced mix of pilot / complication / midpoint / b-plot / all-is-lost / climax / finale arc roles.",
       "model": "default",
       "returnsJson": true,
       "variables": []

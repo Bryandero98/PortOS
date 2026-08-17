@@ -125,14 +125,50 @@ export function sanitizeFeedbackEntry(raw) {
   };
 }
 
+function sanitizeMusicGeneration(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const engine = isStr(raw.engine) ? raw.engine.trim().slice(0, 64) : '';
+  const modelId = isStr(raw.modelId) ? raw.modelId.trim().slice(0, 200) : '';
+  const repo = isStr(raw.repo) ? raw.repo.trim().slice(0, 200) : '';
+  const durationSec = Number(raw.durationSec);
+  if (!engine || !modelId || !Number.isInteger(durationSec) || durationSec < 1 || durationSec > 600) return null;
+  return { engine, modelId, ...(repo ? { repo } : {}), durationSec };
+}
+
+function sanitizeMusicOutput(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const filename = isStr(raw.filename) ? raw.filename.trim().slice(0, 240) : '';
+  if (!filename) return null;
+  return {
+    filename,
+    durationSec: Number.isFinite(raw.durationSec) ? raw.durationSec : null,
+    engine: isStr(raw.engine) ? raw.engine.trim().slice(0, 64) : null,
+    modelId: isStr(raw.modelId) ? raw.modelId.trim().slice(0, 200) : null,
+    recipeVersion: Number.isInteger(raw.recipeVersion) ? raw.recipeVersion : null,
+    sourceHash: isStr(raw.sourceHash) ? raw.sourceHash.trim().slice(0, 64) : null,
+    completedAt: isStr(raw.completedAt) ? raw.completedAt : new Date().toISOString(),
+  };
+}
+
 function sanitizeRunHistoryEntry(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !('tasteRecipe' in raw)) return raw;
-  const tasteRecipe = sanitizeMusicTasteRecipe(raw.tasteRecipe);
-  if (!tasteRecipe) {
-    const { tasteRecipe: _discarded, ...withoutRecipe } = raw;
-    return withoutRecipe;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const next = { ...raw };
+  if ('tasteRecipe' in raw) {
+    const tasteRecipe = sanitizeMusicTasteRecipe(raw.tasteRecipe);
+    if (tasteRecipe) next.tasteRecipe = tasteRecipe;
+    else delete next.tasteRecipe;
   }
-  return { ...raw, tasteRecipe };
+  if ('musicGeneration' in raw) {
+    const musicGeneration = sanitizeMusicGeneration(raw.musicGeneration);
+    if (musicGeneration) next.musicGeneration = musicGeneration;
+    else delete next.musicGeneration;
+  }
+  if ('musicOutput' in raw) {
+    const musicOutput = sanitizeMusicOutput(raw.musicOutput);
+    if (musicOutput) next.musicOutput = musicOutput;
+    else delete next.musicOutput;
+  }
+  return next;
 }
 
 /**
@@ -669,6 +705,7 @@ export async function recordCommissionRun(id, runEntry) {
     if (!currentRaw) return null;
     const current = sanitizeCommission(currentRaw);
     const tasteRecipe = sanitizeMusicTasteRecipe(runEntry.tasteRecipe);
+    const musicGeneration = sanitizeMusicGeneration(runEntry.musicGeneration);
     const run = {
       id: runEntry.id || `run-${randomUUID()}`,
       ranAt: runEntry.ranAt || new Date().toISOString(),
@@ -682,10 +719,54 @@ export async function recordCommissionRun(id, runEntry) {
       reason: isStr(runEntry.reason) ? runEntry.reason : null,
       error: isStr(runEntry.error) ? runEntry.error : null,
       ...(tasteRecipe ? { tasteRecipe } : {}),
+      ...(musicGeneration ? { musicGeneration } : {}),
     };
     const runs = [...(current.runs || []), run].slice(-MAX_PERSISTED_RUNS);
     await store.writeRaw(id, { ...current, runs, updatedAt: new Date().toISOString() });
     return run;
+  });
+}
+
+/**
+ * Resolve the machine-local taste run that owns a Creative Director project.
+ * The caller uses this to override planner-authored audio params; raw Digital
+ * Twin evidence never leaves the commission store.
+ */
+export async function getCommissionMusicContextForProject(projectId) {
+  if (!isStr(projectId) || !projectId) return null;
+  const raw = await commissionStore().listRaw();
+  for (const value of raw) {
+    const commission = sanitizeCommission(value);
+    if (!commission || commission.targetAbility !== 'music') continue;
+    const run = [...commission.runs].reverse().find((entry) => entry?.projectId === projectId);
+    if (!run?.tasteRecipe || !run?.musicGeneration) continue;
+    return {
+      commissionId: commission.id,
+      runId: run.id,
+      prompt: run.promptUsed,
+      tasteRecipe: run.tasteRecipe,
+      musicGeneration: run.musicGeneration,
+    };
+  }
+  return null;
+}
+
+/** Persist completed render provenance on the local run without syncing it. */
+export async function recordCommissionMusicOutput(id, runId, output) {
+  const musicOutput = sanitizeMusicOutput(output);
+  if (!musicOutput || !isStr(runId) || !runId) return null;
+  const store = commissionStore();
+  return store.queueRecordWrite(id, async () => {
+    const currentRaw = await store.readRaw(id);
+    if (!currentRaw) return null;
+    const current = sanitizeCommission(currentRaw);
+    const index = current.runs.findIndex((entry) => entry?.id === runId);
+    if (index < 0) return null;
+    if (!current.runs[index]?.tasteRecipe || !current.runs[index]?.musicGeneration) return null;
+    const runs = [...current.runs];
+    runs[index] = { ...runs[index], musicOutput };
+    await store.writeRaw(id, { ...current, runs, updatedAt: new Date().toISOString() });
+    return runs[index];
   });
 }
 

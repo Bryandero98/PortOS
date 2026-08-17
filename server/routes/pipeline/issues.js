@@ -379,6 +379,12 @@ const autoRunSchema = z.object({
 // Issue routes
 // =====================
 
+// Server-owned issue vocabulary keeps client pickers aligned with persisted
+// validation and importer/Creative Director contracts.
+router.get('/config', (_req, res) => {
+  res.json({ arcRoles: [...ARC_ROLES] });
+});
+
 // Recent issues across all series — used by the sidebar's dynamic Pipeline
 // child list. Routes through `listRecentIssues` which sorts the FULL issue
 // set by `updatedAt` desc before applying limit; `listIssues` would

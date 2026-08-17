@@ -474,13 +474,13 @@ async function getPipelineSnapshot({ exclude } = {}) {
   return { data, checksum: computeChecksum(data) };
 }
 
-async function applyPipelineRemote(remoteData, source) {
+async function applyPipelineRemote(remoteData, source, { senderSchemaVersions = null } = {}) {
   if (!remoteData) return { applied: false, count: 0 };
   // Routes through the service merge entry points so each incoming record
   // passes through the same sanitizer and LWW contract as local writes.
   const [seriesResult, issuesResult] = await Promise.all([
     mergeSeriesFromSync(remoteData.series || [], { source }),
-    mergeIssuesFromSync(remoteData.issues || [], { source }),
+    mergeIssuesFromSync(remoteData.issues || [], { source, senderSchemaVersions }),
   ]);
 
   const seriesChanged = seriesResult.count;

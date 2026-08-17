@@ -114,7 +114,7 @@ function pickFromPool(pool, count, seed, attempt, used) {
   return picked;
 }
 
-function selectAnchors(candidates, config, seed, recentRecipes, explorationPercent) {
+function selectAnchors(candidates, config, seed, recentRecipes, explorationPercent, keepRecipe = null) {
   if (candidates.length === 0) return [];
   const anchorCount = Math.min(config.anchorCount, candidates.length);
   const explorationCount = Math.min(anchorCount, Math.round(anchorCount * explorationPercent / 100));
@@ -123,6 +123,29 @@ function selectAnchors(candidates, config, seed, recentRecipes, explorationPerce
   const exploratory = orderedPool(candidates, `${seed}:explore`, 'explore');
   const all = orderedPool(candidates, `${seed}:all`, 'familiar');
   const recent = new Set((recentRecipes || []).map((recipe) => combinationKey(recipe?.anchors)).filter(Boolean));
+
+  // `keep-anchors` is a literal steering command, not merely a request to lower
+  // exploration. Reuse every still-available anchor from the rated run, then
+  // deterministically fill any gaps if the observed window has changed.
+  if (keepRecipe?.anchors?.length) {
+    const candidatesByKey = new Map(candidates.map((candidate) => [anchorKey(candidate), candidate]));
+    const retained = [];
+    const used = new Set();
+    for (const anchor of keepRecipe.anchors) {
+      const candidate = candidatesByKey.get(anchorKey(anchor));
+      const key = candidate && anchorKey(candidate);
+      if (!candidate || used.has(key)) continue;
+      used.add(key);
+      retained.push(candidate);
+      if (retained.length === anchorCount) return retained;
+    }
+    if (retained.length > 0) {
+      return [
+        ...retained,
+        ...pickFromPool(all, anchorCount - retained.length, `${seed}:keep`, 0, used),
+      ];
+    }
+  }
 
   let selected = [];
   for (let attempt = 0; attempt <= candidates.length; attempt += 1) {
@@ -136,6 +159,23 @@ function selectAnchors(candidates, config, seed, recentRecipes, explorationPerce
     if (!recent.has(combinationKey(next)) || attempt === candidates.length) break;
   }
   return selected;
+}
+
+function anchorFeedbackPreference(feedback, recentRuns) {
+  const reactions = Array.isArray(feedback) ? feedback.slice(-5) : [];
+  const runs = Array.isArray(recentRuns) ? recentRuns : [];
+  for (let index = reactions.length - 1; index >= 0; index -= 1) {
+    const reaction = reactions[index];
+    const tags = Array.isArray(reaction?.tags) ? reaction.tags : [];
+    const keep = tags.includes('keep-anchors');
+    const change = tags.includes('change-anchors');
+    if (keep === change) continue; // neither, or a contradictory legacy record
+    if (change) return { mode: 'change', recipe: null };
+    const ratedRun = runs.find((run) => run?.id === reaction?.runId);
+    const fallbackRun = runs.length ? runs[runs.length - 1] : null;
+    return { mode: 'keep', recipe: ratedRun?.tasteRecipe || fallbackRun?.tasteRecipe || null };
+  }
+  return { mode: null, recipe: null };
 }
 
 function feedbackAdjustment(feedback) {
@@ -228,7 +268,15 @@ export function buildMusicTasteRecipe({ commissionId, config: rawConfig, stated,
     .slice(0, MUSIC_TASTE_RECIPE_MAX_SOURCE_VERSION);
   const stableSeed = seed || `${commissionId || 'commission'}:${sourceHash}:${(recentRuns || []).map((run) => run?.id || '').join(',')}`;
   const recentRecipes = (recentRuns || []).map((run) => run?.tasteRecipe).filter(Boolean);
-  const anchors = selectAnchors(candidates, config, stableSeed, recentRecipes, effectiveExplorationPercent);
+  const anchorPreference = anchorFeedbackPreference(feedback, recentRuns);
+  const anchors = selectAnchors(
+    candidates,
+    config,
+    stableSeed,
+    recentRecipes,
+    effectiveExplorationPercent,
+    anchorPreference.mode === 'keep' ? anchorPreference.recipe : null,
+  );
   return {
     status: 'ready',
     recipe: sanitizeMusicTasteRecipe({

@@ -701,6 +701,7 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
   const {
     containerRef: splitRef,
     width: sidebarWidth,
+    maxWidth: sidebarMaxWidth,
     onMouseDown: onSplitMouseDown,
     reset: resetSidebarWidth,
   } = useSidebarResize({
@@ -709,7 +710,6 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
     minWidth: SIDEBAR_MIN,
     maxFraction: SIDEBAR_MAX_FRACTION,
   });
-
   const toggleReadingTheme = useCallback(() => {
     setReadingTheme((prev) => {
       const next = prev === 'dark' ? 'light' : 'dark';
@@ -951,6 +951,9 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
           role="separator"
           aria-label="Resize storyboard sidebar"
           aria-orientation="vertical"
+          aria-valuemin={SIDEBAR_MIN}
+          aria-valuemax={Math.round(sidebarMaxWidth)}
+          aria-valuenow={Math.round(sidebarWidth)}
           title="Drag to resize · double-click to reset"
           className="hidden lg:block w-1 shrink-0 cursor-col-resize bg-port-border hover:bg-port-accent/60 active:bg-port-accent transition-colors"
         />

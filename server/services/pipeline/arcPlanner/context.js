@@ -33,11 +33,14 @@ export const ARC_ROLES = new Set(ARC_ROLE_LIST);
 // at prompt time. Limit to the canonical preset names.
 export const SEASON_LENGTH_PRESETS = new Set(LENGTH_PROFILE_NAMES.filter((n) => n !== 'custom'));
 
-// Finale-role episodes should size like a finale even when the LLM omits
-// (or misspells) lengthProfile. Other arcRoles fall back to the default
-// profile so a missing/misspelled length doesn't cascade into the wrong
-// size for the whole arc.
-export const lengthProfileForArcRole = (arcRole) => (arcRole === 'finale' ? 'finale' : DEFAULT_LENGTH_PROFILE);
+// Structural climax and denouement/finale are independent beats with
+// independent runtime defaults. Preserve that distinction even when the LLM
+// omits (or misspells) lengthProfile.
+export const lengthProfileForArcRole = (arcRole) => {
+  if (arcRole === 'climax') return 'extended';
+  if (arcRole === 'finale') return 'finale';
+  return DEFAULT_LENGTH_PROFILE;
+};
 
 // Each prior season renders as its header (logline + synopsis) plus the
 // committed per-episode beats from `stages.idea.input` — that field was
@@ -523,14 +526,15 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
 // `synopsis` (not `beats`) matches the prompt's existing language; it is sourced
 // from idea.input, which carries the LLM's logline+synopsis.
 export const renderVerifyIssueLeaf = (iss) => {
-  const targets = computeIssueTargets(iss);
+  const lengthProfile = iss.lengthProfile || lengthProfileForArcRole(iss.arcRole);
+  const targets = computeIssueTargets({ ...iss, lengthProfile });
   return {
     number: iss.number,
     title: iss.title,
     status: iss.status,
     arcPosition: iss.arcPosition,
     arcRole: iss.arcRole || null,
-    lengthProfile: iss.lengthProfile || null,
+    lengthProfile,
     pageTarget: targets.pageTarget,
     minutesTarget: targets.minutesTarget,
     synopsis: (iss.stages?.idea?.input || '').trim() || null,

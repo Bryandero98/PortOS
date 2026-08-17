@@ -78,7 +78,11 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // makes the older peer reject the ahead-version issue transfer instead.
   // Per-category gate → only issue sync pauses with old peers; series/universes
   // keep flowing.
-  pipelineIssues: 2,
+  // v3 = `issue.arcRole: "climax"` added (#4454). A <=v2 peer rejects the
+  // ahead-version transfer; when its older snapshot is later received by a v3
+  // peer, the merge preserves an existing climax role instead of letting the
+  // older sanitizer's omission LWW-strip or overwrite it.
+  pipelineIssues: 3,
   // v2 = `series.arc.readerMap` added (Unified Story Builder). Additive +
   // gracefully-degrading, but version-gated so a not-yet-upgraded peer can't
   // round-trip a series through its readerMap-unaware sanitizer and LWW-strip

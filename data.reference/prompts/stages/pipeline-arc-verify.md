@@ -110,7 +110,7 @@ Score each volume + each episode against the arc. Specifically check:
 3. **Dropped subplots.** A subplot introduced in an early volume's `endingHook` or episode `synopsis` that never resolves in a later volume or episode.
 4. **Episode-count vs. arc-weight mismatch.** A volume with `episodeCountTarget: 12` whose synopsis carries only 3 meaningful turns, or a short volume carrying a full novel's weight.
 5. **Unresolved hooks at the series finale.** The final volume fails to pay off the whole-arc logline, protagonist arc, or major themes.
-6. **Arc-role imbalance.** Once episodes exist, a volume with 8 episodes and zero `pilot` / `finale` `arcRole` entries (or duplicate pilots/finales).
+6. **Arc-role imbalance and climax order.** Once episodes exist, require one `pilot`, one `climax`, and one later `finale` `arcRole` per volume. Flag missing/duplicate structural roles, a finale before the climax, or a finale that merely repeats the climax instead of delivering consequences and denouement. Use each episode's `lengthProfile` when judging whether the decisive climax has enough room independently from the closing finale; `extended` is the preferred climax default.
 7. **Theme drift.** A theme is named in `arc.themes` but does not appear in any volume synopsis or episode logline.
 8. **Story-shape adherence.** If a Vonnegut shape was selected, verify the volume-level fortune trajectory traces that curve. The whole-series finale must land at the shape's terminal level.
 9. **Cross-record fact reconciliation.** Compare the full-arc summary,

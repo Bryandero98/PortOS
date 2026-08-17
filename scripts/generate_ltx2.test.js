@@ -205,6 +205,23 @@ describe.skipIf(!pyBin)('generate_ltx2.py', () => {
     expect(JSON.parse(output)).toEqual({ model_type: 'gemma4', text_config: { a: 1 } });
   });
 
+  it('drops only the unified checkpoint visual embedder before strict loading', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json',
+      'weights = {',
+      '    "model.vision_embedder.patch_dense.weight": "drop-prefixed",',
+      '    "vision_embedder.pos_embedding": "drop-flat",',
+      '    "model.language_model.model.embed_tokens.weight": "keep-language",',
+      '    "vision_embedderish.weight": "keep-near-match",',
+      '}',
+      'print(json.dumps(runner.filter_ltx25_unified_weights(weights), sort_keys=True))',
+    ].join('\n')}`);
+    expect(JSON.parse(output)).toEqual({
+      'model.language_model.model.embed_tokens.weight': 'keep-language',
+      'vision_embedderish.weight': 'keep-near-match',
+    });
+  });
+
   // Rebuilt from scratch every render: a stale shim pointing at a blob the user
   // has since re-downloaded would otherwise load silently-wrong weights.
   it('replaces a stale shim rather than merging into it', () => {

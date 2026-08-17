@@ -57,7 +57,7 @@ export const LENGTH_PROFILES = Object.freeze({
   }),
   finale: Object.freeze({
     label: 'Finale',
-    description: 'Season/series finale or annual — full-runtime climax with reveals and act-outs.',
+    description: 'Season/series finale or annual — full-runtime closure with payoffs and act-outs.',
     pageTarget: 44,
     minutesTarget: 48,
     proseWordsMin: 6500,
