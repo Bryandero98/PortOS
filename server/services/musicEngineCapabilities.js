@@ -16,6 +16,7 @@ import {
   isEngineHealthy,
   isEnginePlatformSupported,
   enginePlatformLabel,
+  resolveEngineVramReadiness,
 } from './pipeline/musicGen.js';
 import { listEngineModels } from './audioModels.js';
 
@@ -40,6 +41,7 @@ export async function listMusicEngineCapabilities() {
       : null;
     const runtimeReady = await isEngineHealthy(engine.id);
     const cudaState = engine.cudaRequired ? cuda.status : 'available';
+    const vram = resolveEngineVramReadiness(engine.id, cuda);
 
     return {
       id: engine.id,
@@ -62,7 +64,16 @@ export async function listMusicEngineCapabilities() {
       platformSupported: isEnginePlatformSupported(engine.id),
       platformLabel: enginePlatformLabel(engine.id),
       cudaState,
-      ready: runtimeReady && (!engine.cudaRequired || cudaState === 'available') && modelReady,
+      executionProfile: vram.executionProfile,
+      vramState: vram.state,
+      vramProfileLabel: vram.profileLabel,
+      minVramGb: vram.minVramGb,
+      recommendedVramGb: vram.recommendedVramGb,
+      maxVramGb: vram.maxVramGb,
+      ready: runtimeReady
+        && (!engine.cudaRequired || cudaState === 'available')
+        && (!engine.cudaRequired || vram.state === 'sufficient')
+        && modelReady,
       installEnv: engine.installEnv,
       venvDefault: engine.venvDefault,
     };

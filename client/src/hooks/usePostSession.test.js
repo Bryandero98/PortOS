@@ -282,7 +282,7 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
     };
   }
 
-  it('marks a fill-blank answer correct when it matches an acceptable answer word', async () => {
+  it('marks a single-blank answer correct and preserves its index', async () => {
     generatePostDrill.mockResolvedValue(
       fillBlankDrill([{ index: 1, word: 'quick', element: null }])
     );
@@ -297,11 +297,14 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
 
     const task = result.current.drillResults[0];
     expect(task.questions[0].correct).toBe(true);
+    expect(task.questions[0].answered).toEqual([
+      { index: 1, value: 'quick', expected: 'quick', correct: true },
+    ]);
     expect(task.module).toBe('memory');
     expect(task.memoryItemId).toBe('song-1');
   });
 
-  it('is case/whitespace-insensitive, matching any of several acceptable blanked words', async () => {
+  it('scores every generated blank instead of treating one matching word as full credit', async () => {
     generatePostDrill.mockResolvedValue(
       fillBlankDrill([
         { index: 1, word: 'quick', element: null },
@@ -314,10 +317,15 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
       await result.current.startSession([{ type: 'memory-fill-blank', config: {}, timeLimitSec: 60 }]);
     });
     act(() => {
-      result.current.submitAnswer('  FOX  ');
+      result.current.submitAnswer([{ index: 2, value: '  FOX  ' }]);
     });
 
-    expect(result.current.drillResults[0].questions[0].correct).toBe(true);
+    const question = result.current.drillResults[0].questions[0];
+    expect(question.correct).toBe(false);
+    expect(question.answered).toEqual([
+      { index: 1, value: null, expected: 'quick', correct: false },
+      { index: 2, value: 'FOX', expected: 'fox', correct: true },
+    ]);
   });
 
   it('marks a fill-blank answer incorrect when it matches none of the acceptable words', async () => {
@@ -336,13 +344,9 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
     expect(result.current.drillResults[0].questions[0].correct).toBe(false);
   });
 
-  // Regression (codex review of issue #2099): a correct fill-blank match on
-  // an element-name blank must carry that element through to the answer so
-  // mergeMasteryFromSession can credit item.mastery.elements — previously
-  // only chunkId (question-level) survived; the per-answer element was
-  // silently dropped because memoryAttribution(q) only reads q.element,
-  // which fill-blank questions never carry (only answers[i].element does).
-  it('attributes the matched answer\'s element on a correct match', async () => {
+  // Element attribution follows the indexed blank, while the question remains
+  // partial until every generated answer is supplied.
+  it('attributes indexed answer elements independently', async () => {
     generatePostDrill.mockResolvedValue(
       fillBlankDrill([
         { index: 1, word: 'hydrogen', element: 'H' },
@@ -355,12 +359,14 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
       await result.current.startSession([{ type: 'memory-fill-blank', config: {}, timeLimitSec: 60 }]);
     });
     act(() => {
-      result.current.submitAnswer('hydrogen');
+      result.current.submitAnswer([{ index: 1, value: 'hydrogen' }]);
     });
 
     const q = result.current.drillResults[0].questions[0];
-    expect(q.correct).toBe(true);
-    expect(q.element).toBe('H');
+    expect(q.correct).toBe(false);
+    expect(q.element).toBeUndefined();
+    expect(q.answered[0]).toMatchObject({ index: 1, value: 'hydrogen', expected: 'hydrogen', correct: true, element: 'H' });
+    expect(q.answered[1]).toMatchObject({ index: 3, value: null, expected: 'fox', correct: false });
   });
 
   it('omits element on an incorrect match — which blank was intended is ambiguous', async () => {
@@ -379,6 +385,7 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
     const q = result.current.drillResults[0].questions[0];
     expect(q.correct).toBe(false);
     expect(q).not.toHaveProperty('element');
+    expect(q.answered).toEqual([{ index: 1, value: 'nope', expected: 'hydrogen', correct: false }]);
   });
 
   it('omits element when the matched answer has none (a plain-word blank)', async () => {
@@ -397,6 +404,7 @@ describe('usePostSession — memory-fill-blank scoring (issue #2099/#2116)', () 
     const q = result.current.drillResults[0].questions[0];
     expect(q.correct).toBe(true);
     expect(q).not.toHaveProperty('element');
+    expect(q.answered[0]).toEqual({ index: 1, value: 'quick', expected: 'quick', correct: true });
     // chunkId still comes through via memoryAttribution(q) regardless.
     expect(q.chunkId).toBe('verse-1');
   });
@@ -493,6 +501,73 @@ describe('usePostSession — LLM training-log correctCount (issue #2097)', () =>
       inputMode: 'text',
       scorerProvenance: 'server-llm',
     }));
+  });
+
+  it('reuses immediate training scores instead of calling the scorer again at completion', async () => {
+    generatePostDrill.mockResolvedValue({
+      type: 'compound-chain', config: {}, challenges: [{ rootWord: 'fire' }],
+    });
+    const evaluation = {
+      overallScore: 90,
+      scores: [{ score: 90, feedback: 'Validated' }],
+      summary: 'Validated',
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'hybrid', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    };
+
+    const { result } = renderHook(() => usePostSession());
+    await act(async () => {
+      await result.current.startSession([{ type: 'compound-chain', config: {}, timeLimitSec: 120 }], true);
+    });
+    await act(async () => {
+      await result.current.completeLlmDrill({
+        module: 'llm-drills',
+        type: 'compound-chain',
+        config: {},
+        drillData: {},
+        score: 90,
+        evaluation,
+        responses: [{ questionIndex: 0, items: ['firehouse'], responseMs: 500, llmScore: 90, llmFeedback: 'Validated' }],
+        totalMs: 5000,
+      });
+    });
+
+    expect(scorePostLlmDrill).not.toHaveBeenCalled();
+    expect(result.current.drillResults[0]).toMatchObject({ score: 90, evaluation });
+  });
+
+  it('scores a non-training response set in one completion batch', async () => {
+    generatePostDrill.mockResolvedValue({
+      type: 'word-association', config: {}, questions: [{ prompt: 'ocean' }, { prompt: 'forest' }],
+    });
+    scorePostLlmDrill.mockResolvedValue({
+      score: 75,
+      questions: [
+        { questionIndex: 0, response: 'wave', llmScore: 80 },
+        { questionIndex: 1, response: 'trees', llmScore: 70 },
+      ],
+      evaluation: { overallScore: 75, scores: [{ score: 80 }, { score: 70 }] },
+    });
+
+    const { result } = renderHook(() => usePostSession());
+    await act(async () => {
+      await result.current.startSession([{ type: 'word-association', config: {}, timeLimitSec: 120 }], false);
+    });
+    await act(async () => {
+      await result.current.completeLlmDrill({
+        module: 'llm-drills', type: 'word-association', drillData: result.current.currentDrill,
+        responses: [
+          { questionIndex: 0, response: 'wave', responseMs: 500 },
+          { questionIndex: 1, response: 'trees', responseMs: 500 },
+        ],
+        totalMs: 1000,
+      });
+    });
+
+    expect(scorePostLlmDrill).toHaveBeenCalledTimes(1);
+    expect(scorePostLlmDrill.mock.calls[0][2]).toHaveLength(2);
   });
 
   it('logs correctCount=0 when the llmScore is below the correct threshold', async () => {

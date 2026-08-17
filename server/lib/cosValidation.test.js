@@ -106,6 +106,14 @@ describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () =>
   });
 });
 
+describe('cosValidation task metadata claimFlow marker', () => {
+  it('sanitizes the claim lifecycle marker as a boolean', () => {
+    expect(sanitizeTaskMetadata({ claimFlow: true })).toEqual({ claimFlow: true });
+    expect(sanitizeTaskMetadata({ claimFlow: false })).toEqual({ claimFlow: false });
+    expect(sanitizeTaskMetadata({ claimFlow: 'true' })).toBeNull();
+  });
+});
+
 describe('cosValidation quick-template deliverable posture (#3651)', () => {
   it('taskTemplateSettingsSchema accepts worktreeChangesExpected (the block is .strict())', () => {
     // taskTemplates.js copies the slashdo catalog posture onto each built-in
@@ -224,10 +232,10 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
   it('normalizes a token-keyed map: aliases, case, and out-of-ladder levels', () => {
     expect(normalizeReviewerEfforts({
       gemini: 'HIGH',        // alias + case-folded
-      codex: 'ultra',        // in codex's ladder only
+      codex: 'xhigh',        // in codex's ladder only
       claude: 'medium',
       ollama: ' low ',       // trimmed
-    })).toEqual({ antigravity: 'high', codex: 'ultra', claude: 'medium', ollama: 'low' });
+    })).toEqual({ antigravity: 'high', codex: 'xhigh', claude: 'medium', ollama: 'low' });
   });
 
   it('DROPS rather than clamps a level the reviewer rejects — a displayed effort must be the one it runs', () => {

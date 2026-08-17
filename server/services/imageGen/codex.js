@@ -41,7 +41,7 @@ import { autoCleanGeneratedImage } from '../../lib/imageClean.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
-import { buildCodexStartupArgs, buildEffortArgs, CODEX_EFFORT_LEVELS } from '../../lib/providerModels.js';
+import { buildCodexStartupArgs, buildEffortArgs, resolveCliEffort } from '../../lib/providerModels.js';
 import {
   IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_MODEL, CODEX_IMAGEGEN_DEFAULT_EFFORT,
   describeFidelity, visualReferenceRole,
@@ -189,8 +189,12 @@ export async function generateImage({
   // override for it, and the child would silently inherit Codex's own configured
   // effort instead of the promised cheap `low` default. Fall back to the default
   // so the low-effort guarantee holds even for garbage input.
+  // `resolveCliEffort` (rather than a bare `CODEX_EFFORT_LEVELS.includes`) so a
+  // level saved when codex's ladder was wider — `max`/`ultra`, which codex
+  // rejects at config load — clamps DOWN to `xhigh` instead of collapsing to the
+  // cheap default and silently rendering at a fraction of the requested effort.
   const requestedEffort = (typeof effort === 'string' && effort.trim()) ? effort.trim() : CODEX_IMAGEGEN_DEFAULT_EFFORT;
-  const effectiveEffort = CODEX_EFFORT_LEVELS.includes(requestedEffort) ? requestedEffort : CODEX_IMAGEGEN_DEFAULT_EFFORT;
+  const effectiveEffort = resolveCliEffort(requestedEffort, { command: 'codex' }) || CODEX_IMAGEGEN_DEFAULT_EFFORT;
 
   // Re-anchors every path to the approved image roots and caps the list at what
   // codex's image_gen accepts — see inputImages.js.

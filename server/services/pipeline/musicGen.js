@@ -25,6 +25,11 @@
  * `generateMusic` throws a 503 with that backend's install hint rather than a
  * bare spawn error — exactly like the FLUX.2 venv gate.
  *
+ * Performance or memory profiles are not supported from metrics alone: the
+ * full-length benchmark protocol in
+ * `docs/features/music-renderer-benchmarks.md` requires an explicit listening
+ * review after the technical checks pass.
+ *
  * Output: a WAV written into the shared music library (PATHS.music) under a
  * `music-gen-<uuid>.wav` basename, so the picker treats a generated track
  * identically to an uploaded one.
@@ -67,6 +72,7 @@ const ACESTEP_SCRIPT = join(__dirname, '../../../scripts/generate_acestep.py');
 const ACESTEP15_SCRIPT = join(__dirname, '../../../scripts/generate_acestep15.py');
 const MINIMAX_MUSIC3_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3.py');
 const MINIMAX_MUSIC3_MLX_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3_mlx.py');
+export const MUSIC_RENDERER_BENCHMARK_GUIDE = 'docs/features/music-renderer-benchmarks.md';
 // Back-compat alias for the pre-multi-engine `buildMusicGenArgs` default.
 const SIDECAR_SCRIPT = MUSICGEN_SCRIPT;
 
@@ -130,6 +136,24 @@ export const MINIMAX_MUSIC3_MODELS = Object.freeze([
     downloadSizeGb: 29,
   },
 ]);
+
+// VRAM requirements belong to the execution profile, not the model name. The
+// current CUDA sidecar has no reproducible PortOS memory benchmark yet, so its
+// contract deliberately carries null floors and remains unknown-size until the
+// measured profile is recorded. A missing measurement must not be interpreted
+// as zero VRAM or as permission to start a run that will fail during loading.
+export const MUSIC_VRAM_READINESS = Object.freeze({
+  SUFFICIENT: 'sufficient',
+  INSUFFICIENT: 'insufficient',
+  UNKNOWN_SIZE: 'unknown-size',
+});
+export const MINIMAX_MUSIC3_VRAM_PROFILES = Object.freeze({
+  'cuda-bf16-single-gpu': Object.freeze({
+    label: 'CUDA BF16 (single GPU)',
+    minVramGb: null,
+    recommendedVramGb: null,
+  }),
+});
 
 // These are immutable HF revisions because a shipped model must not silently
 // change underneath an existing install. The 8-bit conversion is the practical
@@ -297,6 +321,10 @@ export const ENGINES = Object.freeze({
     customModels: false,
     fixedModelInstall: true,
     cudaRequired: true,
+    executionProfile: 'cuda-bf16-single-gpu',
+    vramProfiles: MINIMAX_MUSIC3_VRAM_PROFILES,
+    benchmarkGuide: MUSIC_RENDERER_BENCHMARK_GUIDE,
+    requiresFullLengthListening: true,
   },
   'minimax-music3-mlx': {
     id: 'minimax-music3-mlx',
@@ -367,6 +395,57 @@ export function isEnginePlatformSupported(engineId) {
 // null for a portable engine.
 export function enginePlatformLabel(engineId) {
   return getEngine(engineId).requiresPlatform?.label || null;
+}
+
+/**
+ * Resolve a VRAM contract without collapsing an unreadable measurement into
+ * zero. Keeping this pure makes the three readiness states testable without a
+ * CUDA host and lets callers use the exact same comparison at every boundary.
+ */
+export function resolveVramReadiness({ cudaStatus, maxVramGb, minVramGb } = {}) {
+  if (!Number.isFinite(minVramGb) || cudaStatus !== 'available' || !Number.isFinite(maxVramGb)) {
+    return MUSIC_VRAM_READINESS.UNKNOWN_SIZE;
+  }
+  return maxVramGb >= minVramGb
+    ? MUSIC_VRAM_READINESS.SUFFICIENT
+    : MUSIC_VRAM_READINESS.INSUFFICIENT;
+}
+
+/**
+ * Resolve the selected engine's execution-profile requirement against the
+ * largest CUDA card reported by cudaCapability. Portable engines are
+ * sufficient by definition; CUDA engines with no measured profile remain
+ * unknown-size and are fail-closed by install/generation callers.
+ */
+export function resolveEngineVramReadiness(engineId, cuda = {}) {
+  const engine = getEngine(engineId);
+  const profile = engine.vramProfiles?.[engine.executionProfile] || null;
+  const state = engine.cudaRequired
+    ? resolveVramReadiness({
+      cudaStatus: cuda.status,
+      maxVramGb: cuda.maxVramGb,
+      minVramGb: profile?.minVramGb,
+    })
+    : MUSIC_VRAM_READINESS.SUFFICIENT;
+  return {
+    state,
+    executionProfile: engine.executionProfile || null,
+    profileLabel: profile?.label || null,
+    minVramGb: profile?.minVramGb ?? null,
+    recommendedVramGb: profile?.recommendedVramGb ?? null,
+    maxVramGb: Number.isFinite(cuda.maxVramGb) ? cuda.maxVramGb : null,
+  };
+}
+
+export function formatEngineVramReadinessMessage(engineId, readiness, action = 'run') {
+  const engine = getEngine(engineId);
+  if (readiness?.state === MUSIC_VRAM_READINESS.INSUFFICIENT) {
+    return `${engine.name} requires at least ${readiness.minVramGb} GB of VRAM for the ${readiness.profileLabel || 'selected'} profile; this host reports ${readiness.maxVramGb} GB.`;
+  }
+  if (readiness?.state === MUSIC_VRAM_READINESS.UNKNOWN_SIZE) {
+    return `${engine.name} cannot be ${action} because the GPU VRAM requirement has not been measured for the ${readiness.profileLabel || 'selected'} execution profile.`;
+  }
+  return null;
 }
 
 // Whether a backend's venv interpreter exists. Cheap (an existsSync behind the
@@ -578,6 +657,15 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
         cuda.status === 'unknown' ? 'CUDA availability could not be determined.' : `${engine.name} requires an NVIDIA CUDA GPU.`,
         { status: 503, code: 'PIPELINE_MUSIC_CUDA_REQUIRED' },
       );
+    }
+    const vram = resolveEngineVramReadiness(engine.id, cuda);
+    if (vram.state !== MUSIC_VRAM_READINESS.SUFFICIENT) {
+      throw new ServerError(formatEngineVramReadinessMessage(engine.id, vram), {
+        status: 503,
+        code: vram.state === MUSIC_VRAM_READINESS.INSUFFICIENT
+          ? 'PIPELINE_MUSIC_VRAM_INSUFFICIENT'
+          : 'PIPELINE_MUSIC_VRAM_UNKNOWN',
+      });
     }
   }
   if (engine.fixedModelInstall) {

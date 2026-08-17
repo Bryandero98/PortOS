@@ -3,6 +3,7 @@ import { CACHEABLE_TYPES } from '../services/meatspacePostDrillCache.js';
 import { COGNITIVE_DRILL_TYPES } from '../services/meatspacePostCognitive.js';
 import { TOPIC_IDS } from './postTopics.js';
 import { HHMM_STRICT_RE } from './timezone.js';
+import { POST_LLM_MAX_SEMANTIC_CANDIDATES, postLlmEvaluationSchema } from './postLlmContracts.js';
 
 // =============================================================================
 // POST (Power On Self Test) VALIDATION SCHEMAS
@@ -18,6 +19,17 @@ export const postTagsSchema = z.record(z.string().max(200));
 // Individual question result (math + memory drills)
 // Math: server recomputes expected/correct via scoreDrill (numeric values)
 // Memory: client scores with string comparison (text values)
+const fillBlankAnswerSchema = z.object({
+  // `index` is the source question's answer index, not the position in the
+  // submitted array. Keeping it stable makes partial answers attributable even
+  // when a client submits them out of order.
+  index: z.number().int().min(0),
+  value: z.string().nullable(),
+  expected: z.string().optional(),
+  correct: z.boolean().optional(),
+  element: z.string().nullable().optional(),
+});
+
 const questionResultSchema = z.object({
   prompt: z.string(),
   // Cognitive drills key each trial back to its position in the generated
@@ -25,7 +37,10 @@ const questionResultSchema = z.object({
   // server can recompute the answer key. Absent for math/memory drills.
   index: z.number().int().min(0).optional(),
   expected: z.union([z.number(), z.string()]).optional(),
-  answered: z.union([z.number(), z.string()]).nullable(),
+  // Fill-blank now submits one indexed entry per generated blank. The scalar
+  // forms remain valid for old clients and are intentionally treated as one
+  // attributable attempt by the memory service, never as a full prompt pass.
+  answered: z.union([z.number(), z.string(), z.array(fillBlankAnswerSchema)]).nullable(),
   correct: z.boolean().optional(),
   responseMs: z.number().min(0),
   // Reaction-time drill only: player pressed before the stimulus appeared.
@@ -47,13 +62,13 @@ const llmResponseSchema = z.object({
   // back to the array index (always 0 for single-response submits), and every
   // answer would be evaluated against the first prompt.
   questionIndex: z.number().int().min(0).optional(),
-  prompt: z.string().optional(),
-  response: z.string().optional(),
-  answers: z.array(z.string()).optional(),
-  items: z.array(z.string()).optional(),
+  prompt: z.string().max(5000).optional(),
+  response: z.string().max(10000).optional(),
+  answers: z.array(z.string().max(1000)).max(100).optional(),
+  items: z.array(z.string().trim().min(1).max(500)).max(100).optional(),
   responseMs: z.number().min(0).optional().default(0),
   llmScore: z.number().min(0).max(100).optional(),
-  llmFeedback: z.string().optional()
+  llmFeedback: z.string().max(2000).optional()
 });
 
 // Drill type configuration
@@ -160,7 +175,7 @@ const taskResultSchema = z.object({
   type: z.enum(DRILL_TYPES),
   config: drillTypeConfigSchema.optional().default({}),
   questions: z.array(questionResultSchema).optional().default([]),
-  responses: z.array(llmResponseSchema).optional().default([]),
+  responses: z.array(llmResponseSchema).max(50).optional().default([]),
   drillData: z.any().optional(),
   // Memory drills: which memory item this task drilled, so the session-submit
   // path can map the result back and advance that item's spaced-repetition
@@ -193,18 +208,39 @@ const taskResultSchema = z.object({
   confidence: z.number().min(0).max(1).nullable().optional(),
   inputMode: z.string().min(1).max(50).optional(),
   scorerProvenance: z.string().min(1).max(100).optional(),
-  evaluation: z.object({
-    score: z.number().min(0).max(100).optional(),
-    breakdown: z.array(z.object({
-      question: z.string().optional(),
-      score: z.number().min(0).max(100).optional(),
-      feedback: z.string().optional()
-    })).optional()
-  }).optional(),
+  evaluation: postLlmEvaluationSchema.optional(),
   totalMs: z.number().min(0)
+}).superRefine((task, ctx) => {
+  if (!LLM_DRILL_TYPES.includes(task.type)) return;
+  if (!task.evaluation) {
+    ctx.addIssue({ code: 'custom', path: ['evaluation'], message: 'scored LLM drills require an evaluation' });
+  }
+  if (task.score === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['score'], message: 'scored LLM drills require a score' });
+  }
+  if (task.evaluation && task.evaluation.scores.length !== task.responses.length) {
+    ctx.addIssue({ code: 'custom', path: ['evaluation', 'scores'], message: 'evaluation score count must match response count' });
+  }
+  task.responses.forEach((response, index) => {
+    if (response.llmScore === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['responses', index, 'llmScore'], message: 'scored LLM responses require llmScore' });
+    }
+  });
 });
 
 // Full session submission
+export const POST_QUICK_DURATION_MINUTES = [3, 5, 10, 15];
+const postQuickDurationSchema = z.union(POST_QUICK_DURATION_MINUTES.map(minutes => z.literal(minutes)));
+
+export const postQuickSessionPlanSchema = z.object({
+  targetDurationSec: z.number().int().min(1).max(3600),
+  estimatedDurationSec: z.number().min(0).max(3600),
+  toleranceSec: z.number().int().min(0).max(600),
+  omittedDomains: z.array(z.string().max(100)).max(20),
+  omittedReviews: z.array(z.string().max(200)).max(10).optional(),
+  selectedTypes: z.array(z.string().max(100)).max(50),
+});
+
 export const postSessionSubmitSchema = z.object({
   // Client-generated session id (uuid) — keys the idempotent upsert in
   // submitPostSession so a retry after a dropped response can't double-record.
@@ -214,7 +250,9 @@ export const postSessionSubmitSchema = z.object({
   cadence: z.enum(['daily', 'weekly', 'monthly']).optional().default('daily'),
   modules: z.array(z.enum(POST_MODULES)).min(1),
   tasks: z.array(taskResultSchema).min(1),
-  tags: postTagsSchema.optional().default({})
+  tags: postTagsSchema.optional().default({}),
+  startedAt: z.string().datetime().optional(),
+  plan: postQuickSessionPlanSchema.optional(),
 });
 
 // LLM drill type configuration
@@ -285,6 +323,7 @@ export const postConfigUpdateSchema = z.object({
     enabled: z.boolean().optional()
   })).optional(),
   sessionModules: z.array(z.enum(POST_MODULES)).optional(),
+  quickDurationMin: postQuickDurationSchema.optional(),
   // Optional practice goals (issue #2100) — see postGoalsSchema above.
   goals: postGoalsSchema.optional(),
   scoring: z.object({
@@ -322,11 +361,21 @@ export const postDrillRequestSchema = z.object({
 // LLM drill scoring request
 export const postLlmScoreRequestSchema = z.object({
   type: z.enum(LLM_DRILL_TYPES),
-  drillData: z.any(),
-  responses: z.array(llmResponseSchema),
+  drillData: z.unknown(),
+  responses: z.array(llmResponseSchema).min(1).max(50),
   timeLimitMs: z.number().min(1000),
-  providerId: z.string().optional(),
-  model: z.string().optional()
+  providerId: z.string().min(1).max(300).optional(),
+  model: z.string().min(1).max(300).optional()
+}).superRefine((request, ctx) => {
+  if (!['compound-chain', 'verbal-fluency'].includes(request.type)) return;
+  const itemCount = request.responses.reduce((sum, response) => sum + (response.items?.length || 0), 0);
+  if (itemCount > POST_LLM_MAX_SEMANTIC_CANDIDATES) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['responses'],
+      message: `semantic drill responses support at most ${POST_LLM_MAX_SEMANTIC_CANDIDATES} items per scoring batch`,
+    });
+  }
 });
 
 // Explicit, user-consented request to warm the wordplay drill cache
@@ -414,12 +463,25 @@ const practiceResultSchema = z.object({
 
 export const memoryPracticeSchema = z.object({
   // `element-study` is the standalone flash-card study mode (ElementsSong.jsx) —
-  // logged like `learn`; it advances element mastery via results[].element but
-  // is NOT a POST-session drill type (no server generator, see generateMemoryDrill).
+  // logged like `learn` and intentionally does not advance mastery. It is NOT a
+  // POST-session drill type (no server generator, see generateMemoryDrill).
   mode: z.enum(['fill-blank', 'sequence', 'element-flash', 'element-study', 'learn', 'speed-run']),
   chunkId: z.string().nullable().optional(),
-  results: z.array(practiceResultSchema).min(1),
+  // Learn mode is an exposure event and legitimately has no scored results.
+  // Every retrieval mode still needs at least one result.
+  results: z.array(practiceResultSchema),
   totalMs: z.number().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!['learn', 'element-study'].includes(value.mode) && value.results.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_small,
+      minimum: 1,
+      inclusive: true,
+      origin: 'array',
+      path: ['results'],
+      message: 'Retrieval practice requires at least one result',
+    });
+  }
 });
 
 export const memoryMasteryAttestationSchema = z.object({

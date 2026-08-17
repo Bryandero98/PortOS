@@ -4,8 +4,9 @@
  * Lets the user pick a generation engine (MusicGen / AudioLDM2 / ACE-Step /
  * MiniMax Music 3 and MiniMax Music 3 MLX), pick or install a model, and Generate
  * audio from the track's prompt (+ lyrics for lyric-aware engines like ACE-Step
- * and MiniMax Music 3). On success the parent receives the updated track (the
- * server attaches the audio + gen metadata).
+ * and MiniMax Music 3), with an explicit instrumental-only override for every
+ * engine. On success the parent receives the updated track (the server attaches
+ * the audio + gen metadata).
  *
  * Engines that aren't provisioned (their opt-in venv is missing) are shown with
  * an in-app install action and the Generate button is gated — mirroring the FLUX.2
@@ -49,13 +50,21 @@ function engineSetupState(engine, selectedModelReady = null, selectedModelSizeGb
   const needsRuntime = engine.runtimeReady !== true;
   const needsWeights = engine.fixedModelInstall === true
     && (selectedModelReady === null ? engine.modelReady === false : selectedModelReady === false);
+  // Older servers do not send a VRAM verdict. Preserve their CUDA-only
+  // behavior during rolling upgrades; a new explicit verdict is authoritative.
+  const vramBlocked = engine.cudaRequired === true
+    && engine.vramState != null
+    && engine.vramState !== 'sufficient';
   const blocked = engine.platformSupported === false
-    || (engine.cudaRequired === true && engine.cudaState !== 'available');
+    || (engine.cudaRequired === true && engine.cudaState !== 'available')
+    || vramBlocked;
 
   let message;
   if (engine.platformSupported === false) message = `${engine.name} requires ${engine.platformLabel || 'a different host'} and is unavailable on this machine.`;
   else if (engine.cudaRequired === true && engine.cudaState === 'unknown') message = `${engine.name} is disabled because CUDA availability could not be determined.`;
   else if (engine.cudaRequired === true && engine.cudaState !== 'available') message = `${engine.name} requires an NVIDIA CUDA GPU and is unavailable on this host.`;
+  else if (engine.cudaRequired === true && engine.vramState === 'insufficient') message = `${engine.name} requires at least ${engine.minVramGb} GB of VRAM for the ${engine.vramProfileLabel || 'selected'} profile; this host reports ${engine.maxVramGb} GB.`;
+  else if (engine.cudaRequired === true && engine.vramState === 'unknown-size') message = `${engine.name} cannot run because the GPU VRAM requirement has not been measured for the ${engine.vramProfileLabel || 'selected'} execution profile.`;
   else if (engine.runtimeReady === false && needsWeights) message = `${engine.name} needs its runtime and model weights before generation.`;
   else if (engine.runtimeReady === false) message = `${engine.name} needs its runtime before generation.`;
   else if (needsWeights) message = `${engine.name} ${engine.modelReadyById && selectedModelReady === false ? 'selected model weights' : 'model weights'} are not installed yet.`;
@@ -85,6 +94,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const [modelId, setModelId] = useState('');
   const [durationSec, setDurationSec] = useState(null);
   const [durationMode, setDurationMode] = useState('auto');
+  // Lyric text and vocal intent are independent: a lyricless prompt can still
+  // ask for wordless vocals, so instrumental mode is always an explicit choice.
+  const [instrumentalOnly, setInstrumentalOnly] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [activeJob, setActiveJob] = useState(null);
   const [activeJobId, setActiveJobId] = useState(null);
@@ -112,6 +124,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     if (found) {
       setActiveJob(found);
       setActiveJobId(found.id);
+      if (typeof found.params?.musicStudio?.instrumentalOnly === 'boolean') {
+        setInstrumentalOnly(found.params.musicStudio.instrumentalOnly);
+      }
       setGenerating(true);
     } else if (progress.status !== 'completed') {
       setActiveJob(null);
@@ -191,11 +206,17 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
       ? engine.modelReadyById[selectedModelId] === true
       : engine.modelReady === true;
   const autoDurationAvailable = supportsAutoDuration(engine);
-  const lyricDuration = useMemo(() => analyzeMusicLyrics(lyrics, {
+  const hasLyrics = typeof lyrics === 'string' && lyrics.trim().length > 0;
+  const conditioningLyrics = engine?.lyrics && !instrumentalOnly ? lyrics : '';
+  const lyricDuration = useMemo(() => analyzeMusicLyrics(conditioningLyrics, {
     minDurationSec: Math.max(60, engine?.defaultDurationSec || 60),
     maxDurationSec: engine?.maxDurationSec || 300,
-  }), [lyrics, engine?.defaultDurationSec, engine?.maxDurationSec]);
+  }), [conditioningLyrics, engine?.defaultDurationSec, engine?.maxDurationSec]);
   const usingAutoDuration = autoDurationAvailable && durationMode === 'auto';
+
+  // A render-level choice must not leak into another track in the master-detail
+  // editor. Each destination starts in the backward-compatible vocal-capable mode.
+  useEffect(() => { setInstrumentalOnly(false); }, [track?.id]);
 
   // Remix: seed the engine / model / duration from a past render. Keyed on
   // `remix.nonce` (bumped per Remix click) so re-clicking the SAME render
@@ -208,6 +229,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     if (!remix) return;
     if (remix.engineId) setEngineId(remix.engineId);
     if (remix.modelId) setModelId(remix.modelId);
+    // Legacy/uploaded renders have no explicit mode. Do not infer vocal intent
+    // from an empty lyric snapshot; start those remixes vocal-capable.
+    setInstrumentalOnly(remix.instrumentalOnly === true);
     if (remix.durationSec != null) {
       setDurationSec(remix.durationSec);
       // Remix means "recreate this take"; preserve its exact manual ceiling.
@@ -290,10 +314,15 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     setGenerating(true);
     const body = {
       prompt: prompt.trim(),
-      lyrics: engine.lyrics ? (lyrics || '') : '',
       engine: engine.id,
       modelId: selectedModelId,
+      instrumentalOnly,
     };
+    if (engine.lyrics) {
+      // Keep authored lyrics available to the track record even when the server
+      // deliberately excludes them from this render's engine conditioning.
+      body.lyrics = lyrics || '';
+    }
     if (track?.id) body.trackId = track.id;
     else {
       body.title = title.trim();
@@ -312,7 +341,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
       onGenerated?.(res.track);
       toast.success('Track generated');
     } else if (res?.jobId) {
-      setActiveJob({ id: res.jobId, status: res.status, queuedAt: new Date().toISOString(), params: { musicStudio: { trackId: track?.id || null } } });
+      setActiveJob({
+        id: res.jobId,
+        status: res.status,
+        queuedAt: new Date().toISOString(),
+        params: { musicStudio: { trackId: track?.id || null, instrumentalOnly } },
+      });
       setActiveJobId(res.jobId);
     } else {
       setGenerating(false);
@@ -386,7 +420,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
           >
             {engines.map((e) => (
-              <option key={e.id} value={e.id}>{e.name}{e.platformSupported === false ? ' (unavailable on this host)' : e.cudaRequired && e.cudaState !== 'available' ? ' (CUDA unavailable)' : e.ready ? '' : ' (setup required)'}</option>
+              <option key={e.id} value={e.id}>{e.name}{e.platformSupported === false ? ' (unavailable on this host)' : e.cudaRequired && e.cudaState !== 'available' ? ' (CUDA unavailable)' : e.vramState === 'insufficient' ? ' (insufficient VRAM)' : e.vramState === 'unknown-size' ? ' (VRAM unknown)' : e.ready ? '' : ' (setup required)'}</option>
             ))}
           </select>
         </label>
@@ -487,9 +521,29 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
       {setupProgress ? (
         <p className="truncate text-[11px] text-gray-500">{setupProgress.message}</p>
       ) : null}
-      {engine?.lyrics ? (
-        <p className="text-[11px] text-gray-500">This engine uses the track’s lyrics as conditioning.</p>
-      ) : null}
+      <div className="rounded-lg border border-port-border bg-port-bg px-3 py-2">
+        <div className="flex items-center gap-2">
+          <input
+            id="musicgen-instrumental-only"
+            type="checkbox"
+            checked={instrumentalOnly}
+            onChange={(event) => setInstrumentalOnly(event.target.checked)}
+            disabled={isGenerating}
+            aria-describedby="musicgen-instrumental-only-hint"
+            className="h-4 w-4 accent-port-accent"
+          />
+          <label htmlFor="musicgen-instrumental-only" className="text-sm font-medium text-gray-300">
+            Instrumental only
+          </label>
+        </div>
+        <p id="musicgen-instrumental-only-hint" className="mt-1 text-[11px] text-gray-500">
+          {instrumentalOnly
+            ? `An explicit no-vocals instruction will be added${hasLyrics ? '; saved lyrics will not condition this render' : ''}.`
+            : engine?.lyrics && hasLyrics
+              ? 'This engine will use the track’s lyrics as conditioning.'
+              : 'No lyric text will condition this render, but vocals may still follow the prompt unless instrumental mode is enabled.'}
+        </p>
+      </div>
 
       <div className="flex items-center gap-2">
         <button

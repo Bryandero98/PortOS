@@ -36,6 +36,7 @@ export * as musicVideoValidation from './musicVideoValidation.js';
 export * as notesValidation from './notesValidation.js';
 export * as peerSyncValidation from './peerSyncValidation.js';
 export * as pipelineValidation from './pipelineValidation.js';
+export * as postLlmContracts from './postLlmContracts.js';
 export * as postValidation from './postValidation.js';
 export * as privacyValidation from './privacyValidation.js';
 export * as roundsValidation from './roundsValidation.js';

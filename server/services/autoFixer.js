@@ -123,6 +123,10 @@ const CATEGORY_TO_TIER = {
   'billing-error': FIX_TIERS.CONFIG_ENV,
   'usage-limit': FIX_TIERS.CONFIG_ENV,
   'spawn-error': FIX_TIERS.CONFIG_ENV,
+  // A provider CLI refusing to load its own config file: deterministic, and the
+  // fix is literally a config edit — never worth three identical retries plus an
+  // investigation task.
+  'cli-config-invalid': FIX_TIERS.CONFIG_ENV,
   'permission-denied': FIX_TIERS.CONFIG_ENV,
   'file-not-found': FIX_TIERS.CONFIG_ENV,
   // Tier 2 — schema/type (malformed request/response, parse/build/format)

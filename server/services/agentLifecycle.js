@@ -52,7 +52,7 @@ import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { createAgentRun } from './agentRunTracking.js';
 import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { capturePrimaryCheckoutState } from '../lib/primaryCheckoutGuard.js';
-import { buildAgentPrompt, getAppWorkspace, inlinePrLifecycleSection } from './agentPromptBuilder.js';
+import { buildAgentPrompt, getAppWorkspace, inlinePrLifecycleSection, isClaimFlowTask } from './agentPromptBuilder.js';
 import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 import { prClaimWasVerified } from '../lib/prDisposition.js';
@@ -563,6 +563,12 @@ async function runAgentSpawn(task) {
       jiraInstanceId: task.metadata?.jiraInstanceId || null,
       jiraCreatePR: task.metadata?.jiraCreatePR ?? null,
       configOpenPR: isTruthyMeta(task.metadata?.openPR),
+      // Claim prompts own their external claim/<item> worktree and forge
+      // lifecycle even though CoS must keep configOpenPR/configUseWorktree off
+      // to avoid provisioning a nested worktree. Preserve that distinction in
+      // the run record so completion diagnostics cannot mistake the claim path
+      // for the generic commit-only handoff.
+      configClaimFlow: isClaimFlowTask(task, isTruthyMeta),
       configSimplify: isTruthyMeta(task.metadata?.simplify),
       configReviewLoop: isTruthyMeta(task.metadata?.reviewLoop),
       configReviewers: normalizeReviewers(task.metadata),

@@ -528,6 +528,11 @@ export async function deleteMemoryItem(id) {
 // PRACTICE & MASTERY
 // =============================================================================
 
+// Only these modes are scored retrieval. Learn, flash-card study, and other
+// non-scored surfaces may record time/activity, but must never promote mastery
+// or move the spaced-repetition schedule from a self-reported exposure.
+const RETRIEVAL_PRACTICE_MODES = new Set(['spaced', 'sequence', 'fill-blank', 'element-flash']);
+
 function recordChunkResults(item, chunkId, results, nowIso) {
   if (!item.mastery.chunks[chunkId]) {
     item.mastery.chunks[chunkId] = { correct: 0, attempts: 0, lastPracticed: null };
@@ -540,12 +545,58 @@ function recordChunkResults(item, chunkId, results, nowIso) {
   preserveStatMastery(chunk, nowIso);
 }
 
+async function saveMemoryPracticeRun({ memoryItemId, mode, chunkId, results, totalMs, date, timestamp, exposure = false }) {
+  const practiceId = randomUUID();
+  const runId = `memory-practice:${practiceId}`;
+  const correctCount = results.filter(result => result.correct).length;
+  const record = {
+    id: practiceId,
+    runId,
+    memoryItemId,
+    mode,
+    chunkId: chunkId || null,
+    totalMs: totalMs || 0,
+    date,
+    timestamp,
+    ...(exposure ? {} : {
+      correct: correctCount,
+      total: results.length,
+    }),
+    inputMode: 'unknown',
+    scorerProvenance: 'memory-practice',
+  };
+  await saveStoredTrainingRun({
+    id: runId,
+    mode: 'training',
+    localDay: date,
+    startedAt: timestamp,
+    completedAt: timestamp,
+    status: 'completed',
+    planned: { modules: ['memory'] },
+    data: { id: runId, mode: 'training' },
+    attempts: [{
+      id: practiceId,
+      module: 'memory',
+      drillType: mode || 'unknown',
+      correct: exposure || results.length === 0 ? null : correctCount === results.length,
+      score: exposure || results.length === 0 ? null : (correctCount / results.length) * 100,
+      latencyMs: totalMs || 0,
+      completion: exposure || results.length === 0 ? null : 1,
+      hintUsed: !exposure && results.some(result => result?.hintUsed === true),
+      inputMode: 'unknown',
+      scorerProvenance: 'memory-practice',
+      data: record,
+    }],
+  });
+  return practiceId;
+}
+
 export async function submitPractice(id, practiceData) {
   const items = await loadMemoryItems();
   const item = items.find(i => i.id === id);
   if (!item) return null;
 
-  const { mode, chunkId, results, totalMs } = practiceData;
+  const { mode, chunkId, results = [], totalMs } = practiceData;
   const nowDate = new Date();
   const now = nowDate.toISOString();
   // Day-key in the user's local timezone (issue #2681): this practice is a
@@ -556,6 +607,26 @@ export async function submitPractice(id, practiceData) {
   // keeps the exact instant, matching submitTrainingEntry's shape. Derive the day
   // from the SAME `nowDate` so a midnight boundary can't split date and timestamp.
   const todayLocal = await userLocalToday(nowDate);
+
+  // Passive study is activity, not retrieval. Keep the event for time/streak
+  // reporting, but do not touch mastery, retention, schedule, or correctness.
+  // This also makes old clients that sent a synthetic `{ correct: true }` learn
+  // result harmless: the service ignores the payload entirely in this branch.
+  if (!RETRIEVAL_PRACTICE_MODES.has(mode)) {
+    const practiceId = await saveMemoryPracticeRun({
+      memoryItemId: id,
+      mode,
+      chunkId: null,
+      results,
+      totalMs,
+      date: todayLocal,
+      timestamp: now,
+      exposure: true,
+    });
+    console.log(`🧠 Memory exposure logged: "${item.title}" mode=${mode}`);
+    return { mastery: item.mastery, schedule: item.schedule, practiceId };
+  }
+
   const correctCount = results.filter(r => r.correct).length;
   const ratio = results.length ? correctCount / results.length : 0;
   const spotCheckDue = isMemorySpotCheckDue(item, nowDate);
@@ -617,44 +688,14 @@ export async function submitPractice(id, practiceData) {
   await saveMemoryItems(items);
 
   // Log the practice session
-  const practiceId = randomUUID();
-  const runId = `memory-practice:${practiceId}`;
-  const record = {
-    id: practiceId,
-    runId,
+  const practiceId = await saveMemoryPracticeRun({
     memoryItemId: id,
     mode,
-    chunkId: chunkId || null,
-    correct: results.filter(r => r.correct).length,
-    total: results.length,
-    totalMs: totalMs || 0,
+    chunkId,
+    results,
+    totalMs,
     date: todayLocal,
     timestamp: now,
-    inputMode: 'unknown',
-    scorerProvenance: 'memory-practice',
-  };
-  await saveStoredTrainingRun({
-    id: runId,
-    mode: 'training',
-    localDay: todayLocal,
-    startedAt: now,
-    completedAt: now,
-    status: 'completed',
-    planned: { modules: ['memory'] },
-    data: { id: runId, mode: 'training' },
-    attempts: [{
-      id: practiceId,
-      module: 'memory',
-      drillType: mode || 'unknown',
-      correct: results.length > 0 ? correctCount === results.length : null,
-      score: results.length > 0 ? (correctCount / results.length) * 100 : null,
-      latencyMs: totalMs || 0,
-      completion: results.length > 0 ? 1 : null,
-      hintUsed: results.some((result) => result?.hintUsed === true),
-      inputMode: 'unknown',
-      scorerProvenance: 'memory-practice',
-      data: record,
-    }],
   });
 
   console.log(`🧠 Practice logged: "${item.title}" mode=${mode} ${correctCount}/${results.length} → next review in ${item.schedule.intervalDays}d`);
@@ -671,8 +712,8 @@ export async function submitPractice(id, practiceData) {
  * result data `submitPractice` uses for that.
  *
  * Returns the updated schedule, or `null` when `memoryItemId` is absent or
- * doesn't match a known item (unsupported memory drills like
- * `memory-fill-blank` carry no memoryItemId — see POST_SUPPORTED_MEMORY_TYPES).
+ * doesn't match a known item. The composed-session path uses
+ * `applySessionToMemoryItems`, which gates tasks to scored retrieval types.
  */
 export async function advanceScheduleFromSession(memoryItemId, ratio, now = new Date()) {
   if (!memoryItemId) return null;
@@ -706,6 +747,62 @@ function applyScheduleAdvanceToItem(item, ratio, now) {
   item.schedule = mergeScheduleAdvance(item.schedule, advanced, now);
   item.updatedAt = now.toISOString();
   return item.schedule;
+}
+
+function normalizeFillBlankValue(value) {
+  return String(value ?? '').toLowerCase().trim();
+}
+
+/**
+ * Expand the indexed answer list introduced for multi-blank recall into the
+ * per-blank attempts used by mastery and scheduling. A legacy scalar question
+ * deliberately remains one attempt, even if its generated prompt once had
+ * several hidden words.
+ */
+export function expandMemoryQuestionResults(questions = []) {
+  return (Array.isArray(questions) ? questions : []).flatMap(question => {
+    if (!Array.isArray(question?.answered)) return [question];
+    return question.answered.map(answer => {
+      const answered = answer?.value ?? null;
+      // New clients send the answer key with each indexed response. For a
+      // one-entry legacy structured payload, the question-level expected value
+      // is a safe fallback; never apply a scalar key to every blank.
+      const expected = answer?.expected ?? (
+        question.answered.length === 1 && typeof question.expected === 'string'
+          ? question.expected
+          : undefined
+      );
+      const correct = typeof expected === 'string'
+        ? answered !== null && normalizeFillBlankValue(answered) === normalizeFillBlankValue(expected)
+        : Boolean(answer?.correct);
+      return {
+        ...question,
+        expected,
+        answered,
+        correct,
+        ...(answer?.element !== undefined ? { element: answer.element } : {}),
+      };
+    });
+  });
+}
+
+/** Recompute question-level correctness for persisted multi-blank results. */
+export function normalizeMemoryQuestionResults(questions = []) {
+  return (Array.isArray(questions) ? questions : []).map(question => {
+    if (!Array.isArray(question?.answered)) return question;
+    const attempts = expandMemoryQuestionResults([question]);
+    return {
+      ...question,
+      answered: question.answered.map((answer, index) => ({
+        ...answer,
+        value: attempts[index]?.answered ?? null,
+        ...(attempts[index]?.expected !== undefined ? { expected: attempts[index].expected } : {}),
+        correct: attempts[index]?.correct ?? false,
+        ...(attempts[index]?.element !== undefined ? { element: attempts[index].element } : {}),
+      })),
+      correct: attempts.length > 0 && attempts.every(attempt => attempt.correct),
+    };
+  });
 }
 
 // In-place mastery merge shared by mergeMasteryFromSession and
@@ -778,10 +875,12 @@ export async function mergeMasteryFromSession(memoryItemId, questions, now = new
   const item = items.find(i => i.id === memoryItemId);
   if (!item) return null;
 
-  applyMasteryMergeToItem(item, questions, now);
+  const attempts = expandMemoryQuestionResults(questions);
+  if (!attempts.length) return null;
+  applyMasteryMergeToItem(item, attempts, now);
   await saveMemoryItems(items);
 
-  console.log(`🧠 POST session mastery merged: "${item.title}" ${questions.length} answers → ${item.mastery.overallPct}% overall`);
+  console.log(`🧠 POST session mastery merged: "${item.title}" ${attempts.length} answers → ${item.mastery.overallPct}% overall`);
   return item.mastery;
 }
 
@@ -798,7 +897,10 @@ export async function mergeMasteryFromSession(memoryItemId, questions, now = new
  * @returns {Promise<{updated:number}>} how many memory items were touched
  */
 export async function applySessionToMemoryItems(tasks, now = new Date()) {
-  const memoryTasks = (Array.isArray(tasks) ? tasks : []).filter(t => t?.memoryItemId);
+  const memoryTasks = (Array.isArray(tasks) ? tasks : []).filter(t => (
+    t?.memoryItemId
+    && (!t.type || ['memory-fill-blank', 'memory-sequence', 'memory-element-flash'].includes(t.type))
+  ));
   if (!memoryTasks.length) return { updated: 0 };
 
   const items = await loadMemoryItems();
@@ -806,7 +908,7 @@ export async function applySessionToMemoryItems(tasks, now = new Date()) {
   for (const task of memoryTasks) {
     const item = items.find(i => i.id === task.memoryItemId);
     if (!item) continue;
-    const questions = Array.isArray(task.questions) ? task.questions : [];
+    const questions = expandMemoryQuestionResults(task.questions);
     const total = questions.length;
     const correct = questions.filter(q => q?.correct).length;
     const ratio = total ? correct / total : 0;
@@ -956,11 +1058,9 @@ function generateFillBlank(item, count) {
       prompt: display,
       fullText: line.text,
       // Scalar primary answer (the first blanked word) — kept alongside the
-      // full `answers[]` acceptable-word list so consumers that expect a
-      // single `expected` field (DrillQuestionReview, scoring) have a
-      // consistent value instead of always reading "—"/undefined (issue
-      // #2116). Scoring still checks `answers[]` for a match against ANY
-      // blanked word, not just this primary one.
+      // indexed `answers[]` key for legacy consumers. New POST clients render
+      // and submit every entry; a scalar response remains a one-blank legacy
+      // attempt rather than a full-prompt pass.
       expected: answers[0]?.word ?? null,
       answers,
       chunkId: findChunkForLine(item, lines.indexOf(line)),

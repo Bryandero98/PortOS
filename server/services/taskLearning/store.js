@@ -242,7 +242,10 @@ export const ENVIRONMENTAL_ERROR_CATEGORIES = new Set([
   'startup-failure',
   'model-not-available',
   'model-not-found',
-  'model-not-supported'
+  'model-not-supported',
+  // The provider CLI never started — its config file was invalid. Nothing about
+  // the task itself failed, so it must not dent the task type's success rate.
+  'cli-config-invalid'
 ]);
 
 const DEFAULT_LEARNING_DATA = {

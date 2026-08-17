@@ -4,10 +4,10 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import ElementsSong, { elementMasteryProgress, recommendedElementsMode } from './ElementsSong';
 
 // The Flash Cards study mode (issue #2480) is a flip-to-reveal study surface —
-// distinct from the Element Flash recall test — that must still advance element
-// mastery through the shared submitMemoryPractice path. These tests pin that
-// contract: the mode is offered, a card flips + self-rates, and completing the
-// deck submits `mode: 'element-study'` with element-tagged results.
+// distinct from the Element Flash recall test — self-ratings are exposure, not
+// retrieval evidence. These tests pin that the mode is offered, a card flips +
+// self-rates locally, and completing the deck submits an activity-only
+// `mode: 'element-study'` event.
 
 const submitMemoryPractice = vi.fn(() => Promise.resolve({ mastery: { overallPct: 10, chunks: {}, elements: {} } }));
 const attestMemoryMastery = vi.fn(() => Promise.resolve({
@@ -71,7 +71,7 @@ describe('ElementsSong — Flash Cards study mode', () => {
     expect(screen.getByText('Element Flash')).toBeInTheDocument();
   });
 
-  it('flips a card to reveal the pairing, then self-rates through the deck and submits element-study mastery', async () => {
+  it('flips a card to reveal the pairing, then records the deck as exposure', async () => {
     render(<RoutedElementsSong item={item} onBack={() => {}} />);
     await settle();
 
@@ -97,11 +97,7 @@ describe('ElementsSong — Flash Cards study mode', () => {
     const [id, payload] = submitMemoryPractice.mock.calls[0];
     expect(id).toBe('elements-song');
     expect(payload.mode).toBe('element-study');
-    expect(payload.results).toHaveLength(2);
-    // Every result is element-tagged (drives per-element mastery server-side) and
-    // exactly one was marked known.
-    expect(payload.results.every((r) => r.element === 'H' || r.element === 'He')).toBe(true);
-    expect(payload.results.filter((r) => r.correct)).toHaveLength(1);
+    expect(payload.results).toEqual([]);
   });
 
   it('saves the deck before continuing the daily routine', async () => {

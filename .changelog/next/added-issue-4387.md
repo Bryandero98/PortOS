@@ -1,0 +1,1 @@
+- Three.js model previews now offer shareable audit cameras and material inspection modes without changing the saved model.

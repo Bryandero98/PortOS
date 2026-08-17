@@ -243,6 +243,45 @@ describe('no-code / API-action task completion (CD agents must NOT be told to /d
   });
 });
 
+describe('claim-flow completion handoff', () => {
+  it('keeps self-managed claim work out of the generic false/false handoff', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { claimFlow: true, useWorktree: false, openPR: false, simplify: true } }),
+      '/repo', null, isTruthyMeta,
+      { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' },
+    );
+
+    expect(prompt).toMatch(/## Claim Workflow Handoff/);
+    expect(prompt).toMatch(/owns its claim worktree, branch, PR\/MR, review, merge or human-handoff, and cleanup/);
+    expect(prompt).toMatch(/\.agent-done/);
+    expect(prompt).not.toMatch(/PortOS will merge it back after completion/);
+    expect(prompt).not.toMatch(/Do NOT push this worktree branch yourself/);
+    expect(prompt).not.toMatch(/Commit and push using `\/do:push`/);
+  });
+
+  it('uses the claim handoff on the full API prompt path too', async () => {
+    const prompt = await buildAgentPrompt(
+      makeTask({ metadata: { claimFlow: true, useWorktree: false, openPR: false, simplify: true } }),
+      {}, '/repo', null, isTruthyMeta, { providerType: 'api' },
+    );
+
+    expect(prompt).toMatch(/## Claim Workflow Handoff/);
+    expect(prompt).toMatch(/follow the claim workflow prompt above/i);
+    expect(prompt).not.toMatch(/PortOS will merge it back after completion/);
+  });
+
+  it('recognizes a queued legacy claim task by analysisType', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { analysisType: 'claim-issue', useWorktree: false, openPR: false } }),
+      '/repo', null, isTruthyMeta,
+      { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' },
+    );
+
+    expect(prompt).toMatch(/## Claim Workflow Handoff/);
+    expect(prompt).not.toMatch(/PortOS will merge it back after completion/);
+  });
+});
+
 describe('buildLightContextPrompt', () => {
   describe('what it omits', () => {
     it('does NOT include the obsolete "# Chief of Staff Agent Briefing" header', () => {
@@ -1928,6 +1967,16 @@ describe('buildCompletionGuidelineBullet', () => {
     expect(bullet).toMatch(/reasoning-only task/i);
     expect(bullet).toMatch(/discarded on exit/);
     expect(bullet).not.toMatch(/`\/do:pr`/);
+  });
+
+  it('claimFlow short-circuits to the claim-owned lifecycle bullet', () => {
+    const bullet = buildCompletionGuidelineBullet({
+      isReadOnly: false, isTui: true, tuiCompletionCommand: '/do:push',
+      worktreeInfo: null, willOpenPR: false, claimFlow: true,
+    });
+    expect(bullet).toMatch(/self-managed claim flow/i);
+    expect(bullet).toMatch(/Do NOT stop after committing/);
+    expect(bullet).not.toMatch(/PortOS will merge/);
   });
 
   it('noCodeOutput wins over discardWorktree — the deliverable is the action, not the sentinel', () => {

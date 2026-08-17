@@ -11,6 +11,7 @@ import { EventEmitter } from 'events';
 import { atomicWrite, PATHS, ensureDir, readJSONFile } from '../lib/fileUtils.js';
 import { deepMerge } from '../lib/objects.js';
 import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from '../lib/postValidation.js';
+import { normalizeHistoricalPostLlmEvaluation, normalizePostLlmEvaluation } from '../lib/postLlmContracts.js';
 import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
 import { resolveMultiplicationLevel, MASTERY_DEFAULTS } from '../lib/postMultiplicationLadder.js';
@@ -28,7 +29,14 @@ import {
   COGNITIVE_MASTERY_DEFAULTS,
 } from '../lib/postProgression.js';
 import { COGNITIVE_DRILL_TYPES, generateCognitiveDrill, scoreCognitiveDrill } from './meatspacePostCognitive.js';
-import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
+import {
+  applySessionToMemoryItems,
+  getMemoryItems,
+  getDueMemoryItems,
+  expandMemoryQuestionResults,
+  normalizeMemoryQuestionResults,
+  MASTERY_TARGET_ACCURACY,
+} from './meatspacePostMemory.js';
 import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from './meatspacePostReview.js';
 // From postTrainingLogStore.js (NOT meatspacePostTraining.js) — that module
 // imports getUnifiedActivityStreak from postActivityStreak.js, which in turn
@@ -141,6 +149,10 @@ const DEFAULT_CONFIG = {
   // installs that persisted the old
   // `['mental-math']` default are upgraded to this by migration 159.
   sessionModules: ['mental-math', 'cognitive'],
+  // Quick-session target presets are persisted so a user's chosen budget is
+  // stable across launcher visits and refreshes. The client mirrors these
+  // four values; validation rejects anything outside the supported presets.
+  quickDurationMin: 5,
   // Optional practice goals (issue #2100). All fields absent by default so a
   // fresh/legacy install shows no goal UI until the user sets one. Bounds are
   // enforced by postGoalsSchema (server/lib/postValidation.js).
@@ -230,6 +242,17 @@ async function loadSessions({ strict = false } = {}) {
   return { sessions: await listPostSessions({ strict }) };
 }
 
+function normalizeHistoricalLlmEvaluations(session) {
+  return {
+    ...session,
+    tasks: (session?.tasks || []).map((task) => (
+      LLM_DRILL_TYPES.includes(task?.type) && task.evaluation
+        ? { ...task, evaluation: normalizeHistoricalPostLlmEvaluation(task.evaluation) }
+        : task
+    )),
+  };
+}
+
 /**
  * All scored sessions, with each record's `date` RE-DERIVED from its `startedAt`
  * instant in the user's CURRENT timezone (issue #4168). This is the single read
@@ -242,7 +265,7 @@ async function loadSessions({ strict = false } = {}) {
 export async function getPostSessions(from, to, options) {
   const data = await loadSessions(options);
   const timezone = await getUserTimezone();
-  let sessions = withDerivedDayKeys(data.sessions, timezone);
+  let sessions = withDerivedDayKeys(data.sessions, timezone).map(normalizeHistoricalLlmEvaluations);
   // Re-derivation can move a record across a day boundary, so re-sort rather
   // than trusting the stored-date order `submitPostSession` wrote.
   sessions.sort((a, b) => (a?.date || '').localeCompare(b?.date || ''));
@@ -263,7 +286,7 @@ export async function getPostSessions(from, to, options) {
 export async function getPostSession(id) {
   const session = await getStoredPostSession(id);
   if (!session) return null;
-  return { ...session, date: recordDayKey(session, await getUserTimezone()) };
+  return normalizeHistoricalLlmEvaluations({ ...session, date: recordDayKey(session, await getUserTimezone()) });
 }
 
 export async function submitPostSession(sessionData) {
@@ -299,14 +322,29 @@ export async function submitPostSession(sessionData) {
     // This is a single-user internal tool so client score trust is acceptable.
     // The evaluation field and per-response llmScore/llmFeedback contain the server-generated breakdown.
     if (LLM_DRILL_TYPES.includes(rest.type)) {
-      return { ...rest, score: t.score || 0 };
+      if (!Number.isFinite(t.score)) {
+        throw new Error(`Cannot store ${rest.type} result without a validated score`);
+      }
+      return {
+        ...rest,
+        evaluation: normalizePostLlmEvaluation(rest.evaluation),
+        score: t.score,
+      };
     }
 
     // Memory drills: trust client-side scoring only for supported types
     if (POST_SUPPORTED_MEMORY_TYPES.includes(rest.type)) {
-      return { ...rest, score: t.score || 0 };
+      return {
+        ...rest,
+        // Multi-blank fill-in-the-blank results carry one indexed response per
+        // generated blank. Recompute the question-level flag before storing so
+        // history and later readers cannot turn one correct blank into a full
+        // prompt pass.
+        questions: normalizeMemoryQuestionResults(rest.questions || []),
+        score: t.score || 0,
+      };
     }
-    // Unsupported memory drills (e.g. memory-fill-blank): preserve data, zero score
+    // Unsupported memory drills: preserve data, zero score.
     if (MEMORY_DRILL_TYPES.includes(rest.type)) {
       return { ...rest, score: 0 };
     }
@@ -341,6 +379,17 @@ export async function submitPostSession(sessionData) {
   const existingIndex = data.sessions.findIndex(s => s.id === sessionId);
   let isNewSession = existingIndex < 0;
   const existing = isNewSession ? null : data.sessions[existingIndex];
+  const requestedStartedAtMs = Date.parse(sessionData.startedAt || '');
+  const requestedStartedAt = Number.isFinite(requestedStartedAtMs)
+    && requestedStartedAtMs <= nowDate.getTime()
+    && nowDate.getTime() - requestedStartedAtMs <= 24 * 60 * 60 * 1000
+    ? new Date(requestedStartedAtMs).toISOString()
+    : now;
+  const startedAt = existing?.startedAt ?? requestedStartedAt;
+  const startedAtMs = Date.parse(startedAt);
+  const actualDurationMs = Number.isFinite(startedAtMs)
+    ? Math.max(0, nowDate.getTime() - startedAtMs)
+    : 0;
 
   let session = {
     id: sessionId,
@@ -349,14 +398,16 @@ export async function submitPostSession(sessionData) {
     // new date, which would corrupt history ordering and streak math. Only a
     // fresh insert stamps "now".
     date: existing?.date ?? todayLocal,
-    startedAt: existing?.startedAt ?? now,
+    startedAt,
     completedAt: now,
     durationMs: rescoredTasks.reduce((sum, t) => sum + (t.totalMs || 0), 0),
+    actualDurationMs,
     cadence: sessionData.cadence || 'daily',
     modules: sessionData.modules,
     tasks: rescoredTasks,
     score: computeSessionScore(rescoredTasks, config.scoring?.weights),
-    tags: sessionData.tags || {}
+    tags: sessionData.tags || {},
+    ...(sessionData.plan ? { plan: sessionData.plan } : {}),
   };
 
   const stored = await saveStoredPostSession(session);
@@ -381,8 +432,8 @@ export async function submitPostSession(sessionData) {
   //     try/catch: the session is already saved; there is nothing to roll back.)
   if (isNewSession) {
     // Pre-filter to POST-supported memory tasks with a memoryItemId — the exact
-    // gate the prior per-task loop used, so an unsupported memory drill (e.g.
-    // memory-fill-blank) is never scheduled even if it somehow carried an id.
+    // gate the prior per-task loop used, so a future generation-only memory
+    // drill is never scheduled even if it somehow carries an id.
     const memoryTasks = rescoredTasks.filter(t => POST_SUPPORTED_MEMORY_TYPES.includes(t.type) && t.memoryItemId);
     try {
       await applySessionToMemoryItems(memoryTasks, new Date(now));
@@ -620,6 +671,10 @@ export function deriveTaskAccuracy(task) {
   // (otherwise a legacy never-press run still reads ~70%). Mirrors the client
   // fallbacks in PostHistory/PostSessionResults.
   if (task?.type === 'n-back') return nBackBalancedAccuracy(qs);
+  if (task?.type === 'memory-fill-blank') {
+    const attempts = expandMemoryQuestionResults(qs);
+    return attempts.length ? attempts.filter(q => q?.correct).length / attempts.length : null;
+  }
   const answered = qs.filter(q => q?.answered != null);
   if (!answered.length) return null;
   return answered.filter(q => q?.correct).length / answered.length;
@@ -635,6 +690,11 @@ export function deriveTaskCompletion(task) {
   const qs = Array.isArray(task?.questions) ? task.questions : [];
   if (!qs.length) return null;
   if (task?.type === 'n-back') return 1;
+  if (task?.type === 'memory-fill-blank') {
+    const attempts = expandMemoryQuestionResults(qs);
+    if (!attempts.length) return null;
+    return attempts.filter(q => q?.answered != null).length / attempts.length;
+  }
   return qs.filter(q => q?.answered != null).length / qs.length;
 }
 

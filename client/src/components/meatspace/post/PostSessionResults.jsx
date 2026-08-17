@@ -3,7 +3,7 @@ import PostSessionSummary from './PostSessionSummary';
 import PostCompletionActions from './PostCompletionActions';
 
 export default function PostSessionResults({ session, tags = {}, onSaved, onBack }) {
-  const { drillResults, sessionScore, state, saveSession, isTraining } = session;
+  const { drillResults, sessionScore, state, saveSession, isTraining, sessionPlan, savedSession } = session;
 
   async function handleSave(continueDaily) {
     const savedSession = await saveSession(tags);
@@ -12,7 +12,13 @@ export default function PostSessionResults({ session, tags = {}, onSaved, onBack
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <PostSessionSummary drillResults={drillResults} sessionScore={sessionScore} isTraining={isTraining} />
+      <PostSessionSummary
+        drillResults={drillResults}
+        sessionScore={sessionScore}
+        isTraining={isTraining}
+        plan={sessionPlan}
+        actualDurationMs={savedSession?.actualDurationMs}
+      />
 
       {/* Every completed assessment offers the same explicit daily-routine fork. */}
       {state === 'complete' && (

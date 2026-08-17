@@ -1433,8 +1433,8 @@ describe('validation.js', () => {
 
   describe('buildReviewWithArgs — per-reviewer ~effort=<level> selector', () => {
     it('emits ~effort=<level> for tokens carrying an effort pin', () => {
-      expect(buildReviewWithArgs(['claude', 'codex'], { reviewerEfforts: { claude: 'high', codex: 'max' } }))
-        .toBe('--review-with claude~effort=high,codex~effort=max');
+      expect(buildReviewWithArgs(['claude', 'codex'], { reviewerEfforts: { claude: 'high', codex: 'xhigh' } }))
+        .toBe('--review-with claude~effort=high,codex~effort=xhigh');
     });
 
     it('combines model brackets, ~opt, ~max, and ~effort in canonical order', () => {
