@@ -1,0 +1,1 @@
+- Calendar event drawers now reopen from shareable URLs and survive refreshes.

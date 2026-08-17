@@ -7,6 +7,7 @@ import ChronotypeOverlay from './ChronotypeOverlay';
 import { buildSubcalendarColorMap } from './calendarUtils';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatMonthDay, formatWeekdayShort, formatDateShort } from '../../utils/formatters';
+import useUrlParams from '../../hooks/useUrlParams';
 
 const START_HOUR = 6;
 const END_HOUR = 23;
@@ -112,7 +113,7 @@ export default function WeekView({ accounts }) {
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [searchParams, updateParams] = useUrlParams();
 
   const weekDays = getWeekDays(weekStart);
   const weekEnd = new Date(weekStart);
@@ -151,6 +152,8 @@ export default function WeekView({ accounts }) {
   };
 
   const colorMap = useMemo(() => buildSubcalendarColorMap(accounts), [accounts]);
+  const selectedEventKey = searchParams.get('event');
+  const selectedEvent = events.find((event) => `${event.accountId}:${event.id}` === selectedEventKey) || null;
 
   // Group events by day
   const eventsByDay = useMemo(() => weekDays.map(day => {
@@ -230,7 +233,7 @@ export default function WeekView({ accounts }) {
                     return (
                       <button
                         key={eventKey(event)}
-                        onClick={() => setSelectedEvent(event)}
+                        onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                         className="w-full text-left px-1 py-0.5 rounded text-[10px] truncate transition-colors hover:brightness-125"
                         style={{
                           backgroundColor: adColor ? `${adColor}20` : 'rgb(59 130 246 / 0.15)',
@@ -289,7 +292,7 @@ export default function WeekView({ accounts }) {
                       return (
                         <button
                           key={key}
-                          onClick={() => setSelectedEvent(event)}
+                        onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                           className={`absolute px-0.5 py-0.5 border-l-2 rounded text-left overflow-hidden transition-colors ${evColor ? 'hover:brightness-125' : 'hover:bg-port-accent/30'}`}
                           style={{
                             top,
@@ -320,7 +323,7 @@ export default function WeekView({ accounts }) {
         </div>
       )}
 
-      {selectedEvent && <EventDetail event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
+      {selectedEvent && <EventDetail event={selectedEvent} onClose={() => updateParams({ event: null })} />}
     </div>
   );
 }

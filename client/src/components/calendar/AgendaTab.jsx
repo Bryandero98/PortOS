@@ -6,6 +6,7 @@ import socket from '../../services/socket';
 import EventDetail from './EventDetail';
 import { formatTimeOfDay as formatTime, formatWeekdayDate } from '../../utils/formatters';
 import BrailleSpinner from '../BrailleSpinner';
+import useUrlParams from '../../hooks/useUrlParams';
 
 const RSVP_STYLES = {
   accepted: 'bg-port-success/20 text-port-success',
@@ -45,7 +46,7 @@ export default function AgendaTab({ accounts }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [accountFilter, setAccountFilter] = useState('');
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [searchParams, updateParams] = useUrlParams();
   const [syncing, setSyncing] = useState(false);
 
   const fetchEvents = useCallback(async () => {
@@ -80,6 +81,8 @@ export default function AgendaTab({ accounts }) {
   };
 
   const grouped = groupEventsByDay(events);
+  const selectedEventKey = searchParams.get('event');
+  const selectedEvent = events.find((event) => `${event.accountId}:${event.id}` === selectedEventKey) || null;
 
   return (
     <div className="space-y-4">
@@ -140,7 +143,7 @@ export default function AgendaTab({ accounts }) {
                 {group.events.map((event) => (
                   <button
                     key={`${event.accountId}-${event.id}`}
-                    onClick={() => setSelectedEvent(event)}
+                    onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                     className="w-full text-left flex items-center gap-3 p-3 bg-port-card rounded-lg border border-port-border hover:border-port-accent/50 transition-colors"
                   >
                     <div className="flex-1 min-w-0">
@@ -188,7 +191,7 @@ export default function AgendaTab({ accounts }) {
 
       {/* Event detail slide-out */}
       {selectedEvent && (
-        <EventDetail event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+        <EventDetail event={selectedEvent} onClose={() => updateParams({ event: null })} />
       )}
     </div>
   );
