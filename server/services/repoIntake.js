@@ -22,6 +22,7 @@ import * as cos from './cos.js';
 import { getAppById, PORTOS_APP_ID } from './apps.js';
 import { prepareScanReportDirectory, reportPathForId } from './malwareScanReports.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import { GENERIC_REPO_STUDY_LABEL_CONTRACT } from '../lib/dispatchLabels.js';
 import { normalizeRepoIntake } from '../lib/repoIntakeActions.js';
 
 /** `owner/repo` when the link carries GitHub metadata, else its display title. */
@@ -141,11 +142,11 @@ End with: the studied repo, its license, how many proposals you filed (with thei
  *
  * @returns {Promise<{ queued: boolean, reason?: string, taskId?: string, linkPatch?: object }>}
  */
-export async function queueRepoStudy(link) {
+export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
   if (!isCloneReadable(link)) return { queued: false, reason: 'not-cloned' };
 
-  const app = await getAppById(PORTOS_APP_ID);
-  if (!app?.repoPath) return { queued: false, reason: 'app-not-found' };
+  const app = await getAppById(targetAppId || PORTOS_APP_ID);
+  if (!app?.repoPath || app.archived) return { queued: false, reason: 'app-not-found' };
 
   // Same four-part resolution every tracker-filing dispatch runs: the block
   // telling the agent where to file, the tracker it names, and the
@@ -153,11 +154,17 @@ export async function queueRepoStudy(link) {
   // never disagree (a github/gitlab/jira run files out of band and leaves the
   // tree clean; without the flag it is mistaken for missing code work, #3102).
   const { trackerInstructions, workTracker, worktreeChangesExpected } =
-    await resolveTrackerFilingBlock(app, 'repo-study');
+    await resolveTrackerFilingBlock(app, 'repo-study', app.id === PORTOS_APP_ID
+      ? {}
+      : { issueLabelContract: GENERIC_REPO_STUDY_LABEL_CONTRACT });
 
   const result = await cos.addTask(
     {
       description: `Repo study: ${repoLabel(link)} — what can ${app.name} learn from it?`,
+      // Workspace routing must follow the same managed app whose tracker and
+      // repo path are described in the prompt; otherwise agent preparation
+      // defaults to the PortOS workspace.
+      app: app.id,
       context: buildRepoStudyContext(link, {
         appName: app.name,
         repoPath: app.repoPath,
@@ -210,7 +217,9 @@ export async function runRepoIntake(link, intake) {
   let patch = {};
   for (const [key, queue] of Object.entries(INTAKE_QUEUERS)) {
     if (!requested[key]) continue;
-    const result = await queue(link).catch(err => ({ queued: false, reason: err.message }));
+    const result = key === 'learn'
+      ? await queue(link, requested.targetAppId).catch(err => ({ queued: false, reason: err.message }))
+      : await queue(link).catch(err => ({ queued: false, reason: err.message }));
     if (result.queued) patch = { ...patch, ...result.linkPatch };
     else console.error(`❌ Capture-time ${key} not queued for link ${link.id}: ${result.reason}`);
   }

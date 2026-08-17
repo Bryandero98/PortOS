@@ -22,6 +22,18 @@ describe('normalizeRepoIntake', () => {
     expect(normalizeRepoIntake({ learn: true, rmRf: true })).toEqual({ malwareScan: false, learn: true });
   });
 
+  it('keeps a selected target app only for repo study', () => {
+    expect(normalizeRepoIntake({ learn: true, targetAppId: ' app-2 ' })).toEqual({
+      malwareScan: false,
+      learn: true,
+      targetAppId: 'app-2',
+    });
+    expect(normalizeRepoIntake({ malwareScan: true, targetAppId: 'app-2' })).toEqual({
+      malwareScan: true,
+      learn: false,
+    });
+  });
+
   it('rejects non-objects, including arrays', () => {
     expect(normalizeRepoIntake([true])).toBeNull();
     expect(normalizeRepoIntake('malwareScan')).toBeNull();

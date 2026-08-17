@@ -217,6 +217,9 @@ export default function QuickBrainCapture() {
         idPrefix="quick-brain-repo"
         repo={repoIntake.repo}
         options={repoIntake.options}
+        managedApps={repoIntake.managedApps}
+        targetAppId={repoIntake.targetAppId}
+        onTargetAppChange={repoIntake.setTargetAppId}
         onToggle={repoIntake.toggle}
       />
 

@@ -191,7 +191,9 @@ export const reviewRecordSchema = z.object({
 // Opt-in post-clone agent actions for a captured GitHub repo URL. Keys derive
 // from REPO_INTAKE_KEYS so the wire contract can't drift from the normalizer
 // that reads it (server/lib/repoIntakeActions.js).
-export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS));
+export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS)).extend({
+  targetAppId: z.string().trim().min(1).max(200).optional()
+});
 const repoIntakeInputSchema = repoIntakeSchema.optional();
 
 // Capture input schema
@@ -203,9 +205,9 @@ export const captureInputSchema = z.object({
   // (vs a todo/reference). Creative notes are later batch-sendable into the
   // creative catalog as ingredients (see catalog brain-bridge ingest).
   creative: z.boolean().optional(),
-  // Post-clone agent actions for a bare GitHub repo URL. Ignored for every other
-  // capture — only a repo URL gets cloned, and only a clone can be scanned or
-  // studied (services/brain.js#createLinkFromUrl).
+  // Post-clone agent actions for a bare GitHub repo URL. `targetAppId` selects
+  // the managed app whose tracker receives repo-study issues; omitted means
+  // PortOS for backward compatibility. Ignored for every other capture.
   repoIntake: repoIntakeInputSchema
 });
 

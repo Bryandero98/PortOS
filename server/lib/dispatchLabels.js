@@ -295,3 +295,14 @@ export const REPO_STUDY_LABEL_CONTRACT = Object.freeze({
     'If a proposal cannot be classified defensibly on all three axes, do not file that proposal; filing an incomplete issue is not a valid fallback. After each NEW issue, read its labels back and repair any missing required label before continuing; never relabel a duplicate you skipped. Contributor labels remain optional and must follow the shared guidance.',
   ].join('\n'),
 });
+
+/** Repo-study contract for managed apps whose label taxonomy is not PortOS's. */
+export const GENERIC_REPO_STUDY_LABEL_CONTRACT = Object.freeze({
+  forgeFlags: '--label area:<area> --label model:<tier> --label effort:<level>',
+  jiraFlags: '`area:<area>` + `model-<tier>` + `effort-<level>`',
+  instructions: [
+    '**Repo-study complete-label contract (mandatory):** every NEW proposal must carry `repo-study`, `plan`, at least one relevant `area:*`, exactly one justified model label (`model:*` on GitHub/GitLab, `model-*` on JIRA), and exactly one justified effort label (`effort:*` on GitHub/GitLab, `effort-*` on JIRA). The dispatch axes are independent: choose them from the inspected target-app files and proposed implementation, never by stamping `medium` on both.',
+    'Scope labels (`area:*`) are required for repo-study issues. Inspect the target app\'s existing tracker labels and apply the narrowest relevant labels; create a genuinely missing, clearly scoped area label only when the tracker supports it.',
+    'If a proposal cannot be classified defensibly on all three axes, do not file that proposal; filing an incomplete issue is not a valid fallback. After each NEW issue, read its labels back and repair any missing required label before continuing; never relabel a duplicate you skipped. Contributor labels remain optional and must follow the shared guidance.',
+  ].join('\n'),
+});

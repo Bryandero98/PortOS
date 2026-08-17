@@ -103,6 +103,17 @@ describe('queueRepoStudy', () => {
     expect(taskData.context).toContain('--label area:<area> --label model:<tier> --label effort:<level>');
   });
 
+  it('files against the selected managed app', async () => {
+    const target = { id: 'app-2', name: 'Example App', repoPath: '/srv/example-app', workTracker: 'github' };
+    getAppById.mockImplementation(async id => id === target.id ? target : null);
+    await queueRepoStudy(LINK, target.id);
+    expect(getAppById).toHaveBeenCalledWith(target.id);
+    expect(addTask.mock.calls[0][0].app).toBe(target.id);
+    expect(addTask.mock.calls[0][0].context).toContain('Example App');
+    expect(addTask.mock.calls[0][0].context).toContain('inspected target-app files');
+    expect(addTask.mock.calls[0][0].context).not.toContain('current PortOS area vocabulary');
+  });
+
   // `analysisType` enrolls a task in taskSchedule's per-type consecutive-failure
   // ledger (agentFinalization.js), which auto-parks and notifies. A hand-queued
   // repo study has no schedule to park, so it must reach the no-commit gate via
@@ -119,6 +130,12 @@ describe('queueRepoStudy', () => {
     expect(taskData.workTracker).toBe('plan');
     expect(taskData.worktreeChangesExpected).toBe(true);
     expect(taskData.context).toContain('PLAN.md');
+  });
+
+  it('does not queue against an app archived after capture', async () => {
+    getAppById.mockResolvedValue({ ...APP, archived: true });
+    expect(await queueRepoStudy(LINK)).toEqual({ queued: false, reason: 'app-not-found' });
+    expect(addTask).not.toHaveBeenCalled();
   });
 
   it('degrades to the PLAN.md block when the origin lookup fails', async () => {

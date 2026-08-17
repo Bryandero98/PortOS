@@ -27,5 +27,9 @@ export const REPO_INTAKE_KEYS = ['malwareScan', 'learn'];
 export function normalizeRepoIntake(input) {
   if (!isPlainObject(input)) return null;
   const normalized = Object.fromEntries(REPO_INTAKE_KEYS.map(key => [key, input[key] === true]));
-  return REPO_INTAKE_KEYS.some(key => normalized[key]) ? normalized : null;
+  if (!REPO_INTAKE_KEYS.some(key => normalized[key])) return null;
+  if (normalized.learn && typeof input.targetAppId === 'string' && input.targetAppId.trim()) {
+    normalized.targetAppId = input.targetAppId.trim();
+  }
+  return normalized;
 }
