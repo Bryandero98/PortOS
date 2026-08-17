@@ -67,6 +67,7 @@ const RUNTIME_LICENSE = {
   },
   // The diffusers CUDA path executes no vendored source — the license that
   // governs the inference code is diffusers' own.
+  cuda_video: { name: 'Apache-2.0', url: 'https://github.com/huggingface/diffusers/blob/main/LICENSE' },
   minimax_h3_cuda: { name: 'Apache-2.0', url: 'https://github.com/huggingface/diffusers/blob/main/LICENSE' },
   hunyuan: {
     name: 'Tencent Hunyuan Community License',
@@ -270,13 +271,12 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
   },
-  // Windows-only legacy entry. It carries no `repo` (the mlx_video CLI resolves
-  // the weights itself), so there is no model card to point at and no weights
-  // license we can attribute from a primary source — both stay Unknown.
+  // Legacy CUDA entry. It carries no `repo` because its diffusers helper
+  // resolves LTX-Video 0.9.5 directly, so its weights license stays Unknown.
   ltx_video: {
     shippedRepo: null,
     disclosure: {
-      runtimeLicense: RUNTIME_LICENSE.mlx_video,
+      runtimeLicense: RUNTIME_LICENSE.cuda_video,
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
   },
