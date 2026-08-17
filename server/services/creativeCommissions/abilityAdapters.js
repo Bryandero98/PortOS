@@ -35,6 +35,7 @@ import {
   ABILITY_GENERATION_SPEC, GENERATION_KEY_DEFS, CREATIVE_COMMISSION_ABILITIES,
   COMMISSION_RENDER_BACKEND_AUTO,
 } from '../../lib/creativeCommissionValidation.js';
+import { buildVideoPromptGuidance } from './videoPromptGuidance.js';
 
 const isStr = (v) => typeof v === 'string';
 
@@ -99,6 +100,11 @@ function briefContext(commission, leadSentence) {
 // sanitizer applies (so the goal never quotes an out-of-range count).
 function genValue(commission, key) {
   return coerceGenerationValue(key, commission?.generation);
+}
+
+function videoPromptGuidanceFor(commission) {
+  const generation = commission?.generation;
+  return buildVideoPromptGuidance(generation?.videoModelId || generation?.model);
 }
 
 /**
@@ -181,6 +187,7 @@ const videoAdapter = {
     const duration = commission?.generation?.durationMode === 'auto'
       ? ' Choose an appropriate duration between 5 and 600 seconds for the brief.' : '';
     const { lines, digest, constraints } = briefContext(commission, `Create a short-form video piece.${duration}`);
+    lines.unshift(videoPromptGuidanceFor(commission));
     return { goal: composeDirectiveGoal(lines, digest), deliverables: ['One rendered video matching the brief'], constraints };
   },
 };
@@ -232,6 +239,7 @@ const musicVideoAdapter = {
       ? ' Choose an appropriate video duration between 5 and 600 seconds for the brief.' : '';
     const lead = `Create a short-form music video:${duration} Generate an original music bed AND a matching video scored to it.`;
     const { lines, digest, constraints } = briefContext(commission, lead);
+    lines.unshift(videoPromptGuidanceFor(commission));
     return {
       goal: composeDirectiveGoal(lines, digest),
       deliverables: ['One original music bed', 'One video matching the brief, scored to the music bed'],

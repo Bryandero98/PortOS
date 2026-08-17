@@ -3,6 +3,7 @@ import {
   ABILITY_ADAPTERS, getAbilityAdapter, buildCommissionDirective, buildRenderBackendPin,
 } from './abilityAdapters.js';
 import { CREATIVE_COMMISSION_ABILITIES, ABILITY_GENERATION_SPEC } from '../../lib/creativeCommissionValidation.js';
+import { buildVideoPromptGuidance, isMiniMaxVideoModel } from './videoPromptGuidance.js';
 
 describe('ability adapter registry', () => {
   it('has an adapter for every supported ability (and no extras)', () => {
@@ -73,6 +74,32 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
   it('falls back to the video adapter for an unknown ability', () => {
     const directive = buildCommissionDirective({ targetAbility: 'hologram', brief: { intent: 'x' } });
     expect(directive.goal).toContain('Create a short-form video piece.');
+  });
+
+  it('adds the generic shot recipe and MiniMax guidance for the selected model', () => {
+    const directive = buildCommissionDirective({
+      targetAbility: 'video',
+      brief: { intent: 'a courier crosses a rainy plaza' },
+      generation: { videoModelId: 'minimax_h3_8bit' },
+    });
+    expect(directive.goal).toContain('beginning, middle, and end');
+    expect(directive.goal).toContain('master timeline plus timestamped micro-beats');
+    expect(directive.goal).toContain('7000 characters');
+  });
+
+  it('keeps model-specific guidance off the generic path while retaining the shot recipe', () => {
+    expect(isMiniMaxVideoModel('ltx-2.5')).toBe(false);
+    expect(buildVideoPromptGuidance('ltx-2.5')).toContain('production-ready prompt');
+    expect(buildVideoPromptGuidance('ltx-2.5')).not.toContain('[Tracking shot]');
+  });
+
+  it('keeps the MiniMax recipe when the brief nearly fills the directive budget', () => {
+    const directive = buildCommissionDirective({
+      targetAbility: 'video',
+      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(2000) },
+      generation: { videoModelId: 'minimax_h3_cuda' },
+    });
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
   });
 });
 
