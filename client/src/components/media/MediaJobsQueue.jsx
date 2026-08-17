@@ -716,6 +716,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   };
   const setChunkPromptAt = (index, value) => setChunkPrompts((prev) => {
     const next = [...prev];
+    while (next.length <= index) next.push('');
     next[index] = value;
     return next;
   });
