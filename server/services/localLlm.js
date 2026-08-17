@@ -36,6 +36,7 @@ import { commandExists } from '../lib/commandExists.js'
 import * as ollamaManager from './ollamaManager.js'
 import * as lmStudioManager from './lmStudioManager.js'
 import { getProviderById, getAllProviders, updateProvider, refreshProviderModelsBatch, isOllamaBackedProvider } from './providers.js'
+import { getSettings } from './settings.js'
 
 const execFileAsync = promisify(execFile)
 const ENV_PATH = join(PATHS.root, '.env')
@@ -687,7 +688,7 @@ export async function listModels(backend, forceRefresh = false) {
  * Combined status for both backends plus the active marker.
  */
 export async function getStatus() {
-  const [ollamaStatus, ollamaCli, lmStudioStatus, lmsCli, lmStudioModels, latestOllamaVersion] = await Promise.all([
+  const [ollamaStatus, ollamaCli, lmStudioStatus, lmsCli, lmStudioModels, latestOllamaVersion, settings] = await Promise.all([
     ollamaManager.getStatus(true),
     commandExists('ollama', ['--version']),
     lmStudioManager.getStatus(),
@@ -695,7 +696,8 @@ export async function getStatus() {
     // forceRefresh: status/refresh path bypasses the list cache.
     listModels('lmstudio', true).catch(() => []),
     // Cached (6h) — never blocks the steady-state UI on a GitHub round-trip.
-    getLatestOllamaVersion().catch(() => null)
+    getLatestOllamaVersion().catch(() => null),
+    getSettings()
   ])
 
   const ollamaModels = normalizeModels('ollama', ollamaStatus.models)
@@ -710,6 +712,7 @@ export async function getStatus() {
   return {
     backend: getBackend(),
     ollama: {
+      disabled: Boolean(settings.localLlm?.ollama?.disabled),
       installed: ollamaCli || ollamaStatus.available,
       available: ollamaStatus.available,
       version: ollamaStatus.version,
@@ -728,6 +731,7 @@ export async function getStatus() {
       downloadUrl: DOWNLOAD_URL.ollama
     },
     lmstudio: {
+      disabled: Boolean(settings.localLlm?.lmstudio?.disabled),
       // macOS app bundle counts as installed even with no CLI / server stopped.
       installed: lmsCli || lmStudioStatus.available || lmStudioManager.isAppInstalled(),
       available: lmStudioStatus.available,

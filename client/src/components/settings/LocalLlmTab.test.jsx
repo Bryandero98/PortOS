@@ -14,6 +14,7 @@ vi.mock('../../services/api', () => ({
   upgradeLocalLlmBackend: vi.fn(),
   controlOllamaService: vi.fn(),
   installAudioModel: vi.fn(),
+  patchSettingsSlice: vi.fn(),
 }));
 vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
@@ -24,7 +25,7 @@ vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
 
-import { getLocalLlmStatus, getLocalLlmCatalog } from '../../services/api';
+import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice } from '../../services/api';
 import { LocalLlmTab } from './LocalLlmTab';
 
 // A realistically long HF model id — the shape that got ellipsised to
@@ -61,6 +62,32 @@ beforeEach(() => {
     lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
   });
   getLocalLlmCatalog.mockResolvedValue({ models: [] });
+  patchSettingsSlice.mockResolvedValue({});
+});
+
+describe('LocalLlmTab backend disable state', () => {
+  it('suppresses the offline warning and persists the intentional disabled state', async () => {
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: true, available: true, modelCount: 0, models: [] },
+      lmstudio: { installed: true, available: false, disabled: false, modelCount: 0, models: [] },
+    });
+    getLocalLlmStatus.mockResolvedValueOnce({
+      backend: 'lmstudio',
+      ollama: { installed: true, available: true, modelCount: 0, models: [] },
+      lmstudio: { installed: true, available: false, disabled: false, modelCount: 0, models: [] },
+    }).mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: true, available: true, modelCount: 0, models: [] },
+      lmstudio: { installed: true, available: false, disabled: true, modelCount: 0, models: [] },
+    });
+    await renderTab();
+    expect(screen.getByText(/LM Studio isn't running/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Mark LM Studio as intentionally disabled'));
+    await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith('localLlm.lmstudio', { disabled: true }));
+    await waitFor(() => expect(screen.queryByText(/LM Studio isn't running/)).toBeNull());
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+  });
 });
 
 describe('LocalLlmTab installed models', () => {

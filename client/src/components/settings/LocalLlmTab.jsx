@@ -10,7 +10,7 @@ import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
-  installAudioModel
+  installAudioModel, patchSettingsSlice
 } from '../../services/api';
 import socket from '../../services/socket';
 import MemoryManagement from './MemoryManagement.jsx';
@@ -129,8 +129,8 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
   const Icon = backend.icon;
   const other = backend.id === 'ollama' ? 'lmstudio' : 'ollama';
   const otherData = status?.[other];
-  const statusLabel = data?.available ? 'Running' : data?.installed ? 'Installed (stopped)' : 'Not installed';
-  const statusColor = data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
+  const statusLabel = data?.disabled ? 'Disabled' : data?.available ? 'Running' : data?.installed ? 'Installed (stopped)' : 'Not installed';
+  const statusColor = data?.disabled ? 'bg-gray-600' : data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
   const startupService = backend.id === 'ollama' ? data?.service : null;
   const runsAtStartup = Boolean(startupService?.runAtStartup);
   // The window resident models were ACTUALLY loaded at — Ollama picks it from
@@ -307,6 +307,23 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
           )}
         </div>
       )}
+
+      <div className="flex items-center justify-between gap-2 pt-1 border-t border-port-border/50">
+        <span className="text-xs text-gray-500">{data?.disabled ? 'PortOS will not expect this backend to be running.' : 'Show a warning when this backend is offline.'}</span>
+        <button
+          onClick={() => runAction(
+            `toggle-disabled-${backend.id}`,
+            () => patchSettingsSlice(`localLlm.${backend.id}`, { disabled: !data?.disabled }),
+            data?.disabled ? `${backend.label} enabled` : `${backend.label} marked as disabled`
+          )}
+          disabled={busy}
+          className={`${btnClass} ${data?.disabled ? 'bg-port-border hover:bg-port-border/70 text-white' : 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning'}`}
+          title={data?.disabled ? `Re-enable ${backend.label} availability warnings` : `Mark ${backend.label} as intentionally disabled`}
+        >
+          {actionInProgress === `toggle-disabled-${backend.id}` ? <BrailleSpinner /> : data?.disabled ? <Power size={12} /> : <PowerOff size={12} />}
+          {data?.disabled ? 'Enable warnings' : 'Mark disabled'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -763,7 +780,7 @@ export function LocalLlmTab() {
           </div>
         </div>
 
-        {selectedData && !selectedData.available && (
+        {selectedData && !selectedData.available && !selectedData.disabled && (
           <div className="flex items-center gap-2 flex-wrap text-xs text-port-warning">
             <span>
               {labelFor(selected)} isn't running — {selectedData.installed

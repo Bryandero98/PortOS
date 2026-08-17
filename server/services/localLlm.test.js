@@ -19,6 +19,7 @@ vi.mock('../lib/fileUtils.js', async () => {
 });
 
 const mocks = vi.hoisted(() => ({
+  settings: { getSettings: vi.fn(async () => ({})) },
   ollama: {
     getInstalledModels: vi.fn(async () => []),
     getModelCapabilities: vi.fn(async () => []),
@@ -75,6 +76,7 @@ vi.mock('./providers.js', async () => {
     isOllamaBackedProvider: real.isOllamaBackedProvider
   };
 });
+vi.mock('./settings.js', () => mocks.settings);
 
 // child_process is mocked so the install/upgrade paths (spawn-based streaming +
 // execFile-based presence checks) are drivable. Defaults are benign for the rest
