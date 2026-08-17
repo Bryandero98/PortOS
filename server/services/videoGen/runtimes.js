@@ -248,11 +248,13 @@ export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(Object.keys(BYOV_RUNTIM
 export const runtimeIsCacheOnly = (runtime) => BYOV_RUNTIME_INFO[runtime]?.cacheOnly === true;
 export const runtimeNeedsProcessGroupKill = (runtime) => BYOV_RUNTIME_INFO[runtime]?.killProcessGroup === true;
 
-// Does this model render through the legacy Windows helper, `generate_win.py`?
-// That script is the fallback `buildArgs` reaches only after every BYOV runtime
-// has declined, so the answer is "on win32, and not a BYOV runtime" — NOT the
-// bare `process.platform === 'win32'` this used to be spelled as at three
-// separate sites in local.js.
+// Does this model render through the legacy CUDA helper, `generate_win.py`?
+// Despite its historical name, the diffusers script is portable CUDA Python and
+// runs on Linux as well as Windows. Windows keeps its legacy fallback for any
+// non-BYOV model; Linux reaches it only for an entry that explicitly declares
+// `cuda_video`, so a Linux custom `mlx_video` entry cannot silently ignore its
+// own repo. This replaces the bare win32 predicate that used to be spelled at
+// three separate sites in local.js.
 //
 // The distinction became load-bearing the moment Windows gained a BYOV runtime
 // (MiniMax H3 CUDA): `generate_win.py` hardcodes its repo and reads only
@@ -260,8 +262,11 @@ export const runtimeNeedsProcessGroupKill = (runtime) => BYOV_RUNTIME_INFO[runti
 // that ONE script — it takes no repo id, and it never opens the last frame.
 // Applied to an H3 CUDA render those become wrong answers: it does require a
 // pinned repo, and it does anchor both keyframes.
-export const routesToWindowsHelper = (model) => process.platform === 'win32'
-  && !BYOV_VIDEO_RUNTIMES.has(model?.runtime);
+export const routesToWindowsHelper = (model) => (
+  process.platform === 'win32'
+    ? !BYOV_VIDEO_RUNTIMES.has(model?.runtime)
+    : process.platform !== 'darwin' && model?.runtime === 'cuda_video'
+);
 
 // Runtimes whose FFLF *last* frame is a real conditioning anchor rather than an
 // advisory hint: ltx2 runs a true keyframe-interpolation pipeline, and

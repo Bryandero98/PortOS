@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
+import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
 import ReviewerPicker from '../../ReviewerPicker';
 import Banner from '../../../ui/Banner';
 import InfoTooltip from '../../../ui/InfoTooltip';
@@ -147,6 +147,14 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     setUpdating(false);
   };
 
+  const handleBranchesPerAgentChange = async (value) => {
+    setUpdating(true);
+    await onUpdate(taskType, {
+      taskMetadata: { ...(config.taskMetadata || {}), branchesPerAgent: value }
+    });
+    setUpdating(false);
+  };
+
   // '' drops the key so the task inherits its app's `defaultPrCompletion` —
   // which works because no DEFAULT_TASK_INTERVALS entry ships a `prCompletion`
   // for loadSchedule to merge back underneath. The legacy `reviewLoop` bit is
@@ -189,7 +197,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <label className="text-sm text-gray-400">Global Pause</label>
+          <span className="text-sm text-gray-400">Global Pause</span>
           <InfoTooltip label="What does Global Pause do?">
             When paused, no scheduled runs will execute for this task — even if individual apps are enabled.
           </InfoTooltip>
@@ -236,7 +244,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
       {selectedType === 'perpetual' && (
         <div>
-          <label className="text-sm text-gray-400 block mb-2">Recheck Cadence</label>
+          <span className="text-sm text-gray-400 block mb-2">Recheck Cadence</span>
           {(recheckEditing || config.recheckCron) ? (
             <CronInput
               value={config.recheckCron || '0 9 * * *'}
@@ -403,6 +411,27 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
         </div>
       )}
 
+      {BRANCHES_PER_AGENT_TASK_TYPES.has(taskType) && (
+        <div>
+          <label htmlFor={`branches-per-agent-${taskType}`} className="text-sm text-gray-400 block mb-2">Branches per agent</label>
+          <select
+            id={`branches-per-agent-${taskType}`}
+            value={config.taskMetadata?.branchesPerAgent || BRANCHES_PER_AGENT_DEFAULT}
+            onChange={(e) => handleBranchesPerAgentChange(Number(e.target.value))}
+            disabled={updating}
+            className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
+          >
+            {BRANCHES_PER_AGENT_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            {BRANCHES_PER_AGENT_OPTIONS.find(o => o.value === (config.taskMetadata?.branchesPerAgent || BRANCHES_PER_AGENT_DEFAULT))?.description}.
+            {' '}Branches are prioritized deterministically; the next drain picks up the remainder after this batch progresses.
+          </p>
+        </div>
+      )}
+
       <PromptEditor
         config={config}
         promptValue={promptValue}
@@ -415,7 +444,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
       />
 
       <div>
-        <label className="text-sm text-gray-400 block mb-2">Agent Options</label>
+        <span className="text-sm text-gray-400 block mb-2">Agent Options</span>
         <div className="space-y-2">
           {AGENT_OPTIONS.map(({ field, label, description }) => {
             const enabled = config.taskMetadata?.[field] ?? false;
@@ -500,7 +529,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
       {allTaskTypes?.length > 1 && (
         <div>
-          <label className="text-sm text-gray-400 block mb-2">Run After (dependencies)</label>
+          <span className="text-sm text-gray-400 block mb-2">Run After (dependencies)</span>
           <div className="flex flex-wrap gap-2">
             {allTaskTypes.filter(t => t !== taskType).map(dep => {
               const isSelected = (config.runAfter || []).includes(dep);

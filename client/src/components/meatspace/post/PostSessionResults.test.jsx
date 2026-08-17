@@ -81,6 +81,26 @@ describe('PostSessionResults drill breakdown', () => {
     expect(screen.queryByText('6 x 7')).not.toBeInTheDocument();
   });
 
+  it('surfaces wrong Schulte taps in the saved-performance summary', () => {
+    renderResults({
+      drillResults: [{
+        type: 'schulte-table',
+        score: 72,
+        accuracy: 2 / 3,
+        completion: 1,
+        avgResponseMs: 1200,
+        errorCount: 1,
+        questions: [
+          { prompt: '1', expected: 1, answered: 2, correct: false, responseMs: 400 },
+          { prompt: '1', expected: 1, answered: 1, correct: true, responseMs: 700 },
+          { prompt: '2', expected: 2, answered: 2, correct: true, responseMs: 1200 },
+        ],
+      }],
+    });
+
+    expect(screen.getByText(/67% acc · 1 error · 1\.2s/)).toBeInTheDocument();
+  });
+
   it('collapses the review again on a second click', () => {
     const { container } = renderResults();
     const row = screen.getByText('Multiplication');

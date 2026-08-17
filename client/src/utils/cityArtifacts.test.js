@@ -184,3 +184,4 @@ describe('computeArtifacts', () => {
     }
   });
 });
+// @vitest-environment node

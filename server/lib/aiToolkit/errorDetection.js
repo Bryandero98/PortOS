@@ -190,8 +190,8 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
   {
     // Antigravity leaves its composer visible while Google verifies account
     // eligibility, so a CoS agent can appear ready, accept a paste, then do no
-    // work until the idle reaper eventually kills it. This exact two-line banner
-    // is provider chrome (not a generic auth word an agent may print), so it is
+    // work until the provider-signal grace window fails over. This exact two-line
+    // banner is provider chrome (not a generic auth word an agent may print), so it is
     // safe to act on and let the task select a fallback.
     //
     // NOT actionable: the account is fine and nothing in PortOS config is wrong
@@ -233,9 +233,8 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
     // asks for, and fails over only once those retries are exhausted.
     //
     // Why 120s: with retries every 20s that is five real attempts rather than
-    // one dead wait, and it still sits under the 180s default TUI idle timeout —
-    // a genuinely stuck provider fails over sooner than the idle reaper would
-    // have caught it, which is the whole point of an immediate signal.
+    // one dead wait. The signal has its own bounded fail-over window, which is
+    // the whole point of an immediate provider signal.
     graceMs: 120000,
     pattern: /We're finishing verifying your account eligibility\.\s*This usually takes a moment\. Please try again shortly\./i,
     // The banner sentence is distinctive, but it is not chrome-ONLY: it matches

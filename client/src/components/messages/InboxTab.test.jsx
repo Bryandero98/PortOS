@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 
 const api = vi.hoisted(() => ({
   evaluateMessages: vi.fn(),
   executeMessageAction: vi.fn(),
   fetchFullContent: vi.fn(),
   generateMessageDraft: vi.fn(),
+  getMessageDetail: vi.fn(),
   getMessageInbox: vi.fn(),
+  getMessageThread: vi.fn(),
+  getSettings: vi.fn(),
   syncMessageAccount: vi.fn(),
 }));
 const toast = vi.hoisted(() => Object.assign(vi.fn(), {
@@ -46,9 +49,28 @@ function renderInbox(accounts, { route = '/messages/inbox' } = {}) {
   );
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+}
+
+function renderInboxWithLocation(accounts, { route = '/messages/inbox' } = {}) {
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      <LocationProbe />
+      <Routes>
+        <Route path="/messages/inbox" element={<InboxTab accounts={accounts} />} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.getMessageInbox.mockResolvedValue({ messages: [], total: 0 });
+  api.getMessageDetail.mockResolvedValue(null);
+  api.getMessageThread.mockResolvedValue({ messages: [] });
+  api.getSettings.mockResolvedValue({});
   api.syncMessageAccount.mockResolvedValue({ newMessages: 0, pruned: 0 });
 });
 
@@ -165,5 +187,45 @@ describe('InboxTab empty state', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /open config/i }));
     expect(await screen.findByText('CONFIG SCREEN')).toBeInTheDocument();
+  });
+});
+
+describe('InboxTab message selection URL', () => {
+  const message = {
+    id: 'message-1',
+    accountId: neverSyncedAccount.id,
+    subject: 'A message to inspect',
+    bodyText: 'Message body',
+    from: { name: 'Example Sender' },
+    date: '2026-08-16T00:00:00.000Z',
+    source: 'gmail',
+    evaluation: { action: 'reply', priority: 'medium' },
+  };
+
+  it('opens a selected message while preserving triage in the URL and removes selection on back', async () => {
+    api.getMessageInbox.mockResolvedValue({ messages: [message], total: 1 });
+    renderInboxWithLocation([neverSyncedAccount], { route: '/messages/inbox?triage=reply' });
+
+    fireEvent.click(await screen.findByRole('button', { name: /a message to inspect/i }));
+    expect(await screen.findByText('Message body')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      `/messages/inbox?triage=reply&message=${message.id}&account=${message.accountId}`,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/messages/inbox?triage=reply'));
+  });
+
+  it('fetches a URL-selected message when it is missing from the current list', async () => {
+    api.getMessageDetail.mockResolvedValue(message);
+    renderInboxWithLocation([neverSyncedAccount], {
+      route: `/messages/inbox?triage=review&message=${message.id}&account=${message.accountId}`,
+    });
+
+    expect(await screen.findByText('Message body')).toBeInTheDocument();
+    expect(api.getMessageDetail).toHaveBeenCalledWith(neverSyncedAccount.id, message.id);
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      `/messages/inbox?triage=review&message=${message.id}&account=${message.accountId}`,
+    );
   });
 });

@@ -23,7 +23,7 @@ describe('EffortSelect', () => {
   it('offers codex its full ladder', () => {
     render(<EffortSelect provider={CODEX} value="" onChange={() => {}} />);
     expect(screen.getAllByRole('option').map(o => o.textContent))
-      .toEqual(['Default effort', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+      .toEqual(['Default effort', 'minimal', 'low', 'medium', 'high', 'xhigh']);
   });
 
   // The server clamps an out-of-ladder effort rather than dropping it, so the

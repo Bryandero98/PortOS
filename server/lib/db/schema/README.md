@@ -21,6 +21,7 @@ Parity with `server/scripts/init-db.sql` (the fresh-install path) is locked by
 | `core.js` | `coreDdl` | Memory sync columns + the `schema_migrations` version tracker |
 | `tribe.js` | `tribeDdl` | Tribe CRM — people, touchpoints, memory links (machine-local) |
 | `humanActivity.js` | `humanActivityDdl` | Human-activity timeline event store (machine-local) |
+| `post.js` | `postDdl` | MeatSpace POST normalized runs and attempts (machine-local) |
 | `commissions.js` | `commissionsDdl` | Creative Commissions + feedback (machine-local) |
 | `catalog.js` | `catalogDdl`, `catalogUserTypesDdl` | Catalog scraps/ingredients/tags/media + user-defined types |
 | `media.js` | `mediaDdl` | Creative-director / music-video projects, mood boards, media assets |
@@ -36,7 +37,7 @@ Parity with `server/scripts/init-db.sql` (the fresh-install path) is locked by
 
 ### Composer (`index.js`)
 
-- `buildUpgradeDdl()` → phase-1 list (`core` → `tribe` → `humanActivity` → `commissions`).
+- `buildUpgradeDdl()` → phase-1 list (`core` → `tribe` → `humanActivity` → `post` → `commissions`).
 - `buildCatalogDdl()` → phase-2 list (`catalog` → `media` → `catalogUserTypes` →
   `universes` → `library` → `pipeline` → `writersRoom` → `lora` → `privacy` → `stackerNews` → `x` →
   `audit` DDL → audit triggers).

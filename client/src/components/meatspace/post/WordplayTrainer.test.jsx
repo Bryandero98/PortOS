@@ -25,6 +25,22 @@ import {
 // suite is competing for CI's event loop.
 const GENERATED_DRILL_TIMEOUT = 5_000;
 
+function wordplayScore(score, feedback, response = {}) {
+  return {
+    score,
+    evaluation: {
+      overallScore: score,
+      scores: [{ score, feedback }],
+      summary: feedback,
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'local', rubricVersion: '1', providerId: 'local', model: 'local' },
+      },
+    },
+    questions: [{ questionIndex: 0, responseMs: 1000, llmScore: score, llmFeedback: feedback, ...response }],
+  };
+}
+
 // Vitest's default per-test timeout is also 5s, so a `waitFor` bounded at
 // GENERATED_DRILL_TIMEOUT was allowed to consume the entire test budget: the
 // inner bound could never actually report its own failure, and a test with work
@@ -105,9 +121,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       type: 'compound-chain',
       challenges: [{ rootWord: 'fire', position: 'prefix', minExpected: 1 }],
     });
-    scorePostLlmDrill.mockResolvedValue({
-      evaluation: { scores: [{ score: 85, feedback: 'Nice compounds!' }] },
-    });
+    scorePostLlmDrill.mockResolvedValue(wordplayScore(85, 'Nice compounds!', { items: ['firehouse'] }));
 
     render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
 
@@ -161,9 +175,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       type: 'compound-chain',
       challenges: [{ rootWord: 'fire', position: 'prefix', minExpected: 1 }],
     });
-    scorePostLlmDrill.mockResolvedValue({
-      evaluation: { scores: [{ score: 85, feedback: 'Nice compounds!' }] },
-    });
+    scorePostLlmDrill.mockResolvedValue(wordplayScore(85, 'Nice compounds!', { items: ['firehouse'] }));
 
     render(<TrainerHarness onBack={() => {}} onContinue={onContinue} config={{}} onConfigUpdate={() => {}} />);
     await selectMode('Compound Chain');
@@ -238,9 +250,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
         { clues: ['sun___', '___light'], answer: 'flower' },
       ],
     });
-    scorePostLlmDrill.mockResolvedValue({
-      evaluation: { scores: [{ score: 40, feedback: 'Not quite' }] },
-    });
+    scorePostLlmDrill.mockResolvedValue(wordplayScore(40, 'Not quite', { response: 'wrongword' }));
 
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 
@@ -283,9 +293,7 @@ describe('WordplayTrainer — training-log persistence (issue #2097)', () => {
       type: 'bridge-word',
       puzzles: [{ clues: ['news___', '___back'], answer: 'paper' }],
     });
-    scorePostLlmDrill.mockResolvedValue({
-      evaluation: { scores: [{ score: 40, feedback: 'Not quite' }] },
-    });
+    scorePostLlmDrill.mockResolvedValue(wordplayScore(40, 'Not quite', { response: 'wrongword' }));
 
     render(<TrainerHarness onBack={() => {}} config={{}} onConfigUpdate={() => {}} />);
 

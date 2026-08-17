@@ -5,6 +5,10 @@
  * versioning, and compile idempotency. Fixtures lock a real reference set
  * (real normalize + chroma-key selection) and hand-write the walk artifacts
  * with a correct hash chain.
+ *
+ * Candidate / walk-frame PNGs are Sharp-encoded once per unique pixel config
+ * (`spriteTestFixtures.js`) then written from the cached buffer. Excluded from
+ * `npm run test:fast` (`VITEST_FAST=1`).
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
@@ -14,7 +18,12 @@ import { join } from 'path';
 import sharp from 'sharp';
 import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
-import { lockAllAnchors as lockAllAnchorsFixture, placeCandidate, trackSpan as fullSpan } from './spriteTestFixtures.js';
+import {
+  lockAllAnchors as lockAllAnchorsFixture,
+  placeCandidate,
+  trackSpan as fullSpan,
+  writeWalkFramePng,
+} from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-atlas-test-'));
 
@@ -63,33 +72,7 @@ async function lockAllAnchors(id) {
   await lockAllAnchorsFixture(TEST_ROOT, id, { lockReference, directions: SPRITE_DIRECTIONS });
 }
 
-/** Transparent 40×40 RGBA frame with an opaque 20×30 figure. */
-/**
- * `armX` (optional) adds a protruding block at that column — a stand-in for a
- * swinging limb, so a direction's frames differ in SILHOUETTE and not just in
- * tint. Registration bugs (#3021) only show up across differing silhouettes:
- * with the identical-shape default, every placement rule agrees and an
- * inter-cell assertion would pass vacuously.
- */
-async function walkFramePng(path, tint, armX = null, speck = false) {
-  const w = 40; const h = 40;
-  const buf = Buffer.alloc(w * h * 4);
-  for (let y = 5; y < 35; y++) {
-    for (let x = 10; x < 30; x++) {
-      buf.set([tint, 107, 101, 255], (y * w + x) * 4);
-    }
-  }
-  if (armX !== null) {
-    for (let y = 12; y < 20; y++) {
-      for (let x = armX; x < armX + 6; x++) buf.set([tint, 107, 101, 255], (y * w + x) * 4);
-    }
-  }
-  // A lone opaque pixel below the sole — the despill survivor / dropped shadow
-  // that used to drag the whole frame's grounding down with it.
-  if (speck) buf.set([tint, 107, 101, 255], (35 * w + 20) * 4);
-  await mkdir(join(path, '..'), { recursive: true });
-  await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toFile(path);
-}
+const walkFramePng = writeWalkFramePng;
 
 async function buildFinalizedWalkSet(recordId, {
   frameCount = WALK_PHASES.length, fps, varyArm = false, alignment = null, speckFrames = [],

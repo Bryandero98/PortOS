@@ -1091,6 +1091,7 @@ describe('CoS Routes', () => {
       // prompt builder append the whole /do:next body on top of the claim prompt).
       expect(taskData.slashdoCommand).toBeUndefined();
       expect(taskData.description).not.toContain('/do:');
+      expect(taskData.claimFlow).toBe(true);
     });
 
     // `next` is commit-shaped in the catalog, but the claim flow resolves the
@@ -1153,6 +1154,13 @@ describe('CoS Routes', () => {
         .post('/api/cos/tasks/slashdo')
         .send({
           command: 'next', app: 'my-app', target: '#412', issueAuthorFilter: 'any',
+          issueContext: {
+            number: 412,
+            title: 'Add telemetry',
+            body: 'Capture the request timing in the health endpoint.',
+            url: 'https://github.com/acme/widget/issues/412'
+          },
+          overrideContext: 'Prefer the smallest safe fix and include a regression test.',
           reviewers: ['claude', 'codex'], usernames: ['alice'], optionalReviewers: ['codex'],
           reviewerMaxRounds: { codex: 2, ollama: 1 },
           provider: 'claude-cli', model: 'claude-opus-5', effort: 'high', simplify: true
@@ -1163,6 +1171,13 @@ describe('CoS Routes', () => {
         expect.objectContaining({ id: 'my-app' }),
         {
           target: '#412',
+          issueContext: {
+            number: 412,
+            title: 'Add telemetry',
+            body: 'Capture the request timing in the health endpoint.',
+            url: 'https://github.com/acme/widget/issues/412'
+          },
+          overrideContext: 'Prefer the smallest safe fix and include a regression test.',
           issueAuthorFilter: 'any',
           reviewers: ['claude', 'codex'],
           usernames: ['alice'],
@@ -1176,6 +1191,7 @@ describe('CoS Routes', () => {
       expect(taskData.provider).toBe('claude-cli');
       expect(taskData.model).toBe('claude-opus-5');
       expect(taskData.effort).toBe('high');
+      expect(taskData.claimTarget).toBe('412');
       expect(taskData.simplify).toBe(true);
       // The claim prompt owns its own review sequence — no CoS loop on top.
       expect(taskData.reviewLoop).toBe(false);
@@ -1187,6 +1203,29 @@ describe('CoS Routes', () => {
       const response = await request(app)
         .post('/api/cos/tasks/slashdo')
         .send({ command: 'next', app: 'my-app', issueAuthorFilter: 'everyone' });
+
+      expect(response.status).toBe(400);
+      expect(buildClaimWorkTask).not.toHaveBeenCalled();
+    });
+
+    it('rejects an oversized prefetched issue body at the route boundary', async () => {
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({
+          command: 'next',
+          app: 'my-app',
+          target: '412',
+          issueContext: { number: 412, body: 'x'.repeat(12_001) }
+        });
+
+      expect(response.status).toBe(400);
+      expect(buildClaimWorkTask).not.toHaveBeenCalled();
+    });
+
+    it('rejects oversized claim override context at the route boundary', async () => {
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command: 'next', app: 'my-app', overrideContext: 'x'.repeat(4_001) });
 
       expect(response.status).toBe(400);
       expect(buildClaimWorkTask).not.toHaveBeenCalled();
@@ -1261,6 +1300,7 @@ describe('CoS Routes', () => {
       // claim-issue-jira self-manages its worktree + PR.
       expect(taskData.useWorktree).toBe(false);
       expect(taskData.openPR).toBe(false);
+      expect(taskData.claimFlow).toBe(true);
     });
 
     it('uppercases the ticket key', async () => {

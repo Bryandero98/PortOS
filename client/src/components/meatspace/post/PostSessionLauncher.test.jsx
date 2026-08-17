@@ -20,12 +20,13 @@ vi.mock('../../../services/api', () => ({
   getMorseProgress: vi.fn().mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } }),
   getPostProgress: vi.fn().mockResolvedValue({ series: { byDay: [] } }),
   getMemoryItems: vi.fn().mockResolvedValue([{ id: 'example-memory' }]),
+  updatePostConfig: vi.fn().mockResolvedValue({}),
   // useUserTimezone (via the today day key) reads getSettings; pin to UTC.
   getSettings: vi.fn().mockResolvedValue({ timezone: 'UTC' }),
 }));
 
 import PostSessionLauncher, { buildCleanTags, cognitiveSummary, interleaveByDomain } from './PostSessionLauncher';
-import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getMemoryItems } from '../../../services/api';
+import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getMemoryItems, updatePostConfig } from '../../../services/api';
 
 // Pure-function tests for PostSessionLauncher's pre-submit helpers (issue
 // #2102 gap #10). Both were lifted from component-body closures to module
@@ -79,12 +80,18 @@ describe('cognitiveSummary', () => {
     expect(cognitiveSummary('reaction-time', { count: 20, mode: 'choice' })).toBe('20 trials (choice)');
   });
 
-  it('falls back to "<count> trials" for an unrecognized type with a count', () => {
-    expect(cognitiveSummary('stroop', { count: 10 })).toBe('10 trials');
+  it('summarizes the Stroop interference mix', () => {
+    expect(cognitiveSummary('stroop', {})).toBe('75% conflict');
+    expect(cognitiveSummary('stroop', { incongruentPct: 90 })).toBe('90% conflict');
   });
 
-  it('falls back to an empty string for an unrecognized type with no count', () => {
-    expect(cognitiveSummary('mental-rotation', {})).toBe('');
+  it('summarizes mental-rotation option complexity', () => {
+    expect(cognitiveSummary('mental-rotation', {})).toBe('4 options');
+    expect(cognitiveSummary('mental-rotation', { optionCount: 3 })).toBe('3 options');
+  });
+
+  it('falls back to "<count> trials" for an unrecognized type with a count', () => {
+    expect(cognitiveSummary('future-cognitive-drill', { count: 10 })).toBe('10 trials');
   });
 });
 
@@ -175,6 +182,29 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     await waitFor(() => expect(screen.getByText('Goals')).toBeTruthy());
     // streakTarget 10 with a 4-day streak → "4/10 d".
     expect(screen.getByText(/4\/10/)).toBeTruthy();
+  });
+
+  it('persists a selected Quick preset and passes the budget plan to the session', async () => {
+    const onStart = vi.fn();
+    renderLauncher({
+      onStart,
+      config: {
+        ...baseConfig,
+        cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true, length: 20 } } },
+      },
+    });
+
+    const duration = await screen.findByLabelText('Quick session duration');
+    fireEvent.change(duration, { target: { value: '10' } });
+    await waitFor(() => expect(updatePostConfig).toHaveBeenCalledWith({ quickDurationMin: 10 }, { silent: true }));
+    fireEvent.click(screen.getByRole('button', { name: /Quick 10 Min/ }));
+
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(onStart.mock.calls[0][3]).toMatchObject({
+      targetDurationSec: 600,
+      toleranceSec: 30,
+      selectedTypes: expect.arrayContaining(['multiplication', 'n-back']),
+    });
   });
 
   it('starts exactly the recommended drill (not the whole domain) for a launcher-targeted rec', async () => {

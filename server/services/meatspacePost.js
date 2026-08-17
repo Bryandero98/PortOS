@@ -9,8 +9,9 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { atomicWrite, PATHS, ensureDir, readJSONFile } from '../lib/fileUtils.js';
-import { deepMerge, isPlainObject } from '../lib/objects.js';
+import { deepMerge } from '../lib/objects.js';
 import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from '../lib/postValidation.js';
+import { normalizeHistoricalPostLlmEvaluation, normalizePostLlmEvaluation } from '../lib/postLlmContracts.js';
 import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
 import { resolveMultiplicationLevel, MASTERY_DEFAULTS } from '../lib/postMultiplicationLadder.js';
@@ -28,7 +29,14 @@ import {
   COGNITIVE_MASTERY_DEFAULTS,
 } from '../lib/postProgression.js';
 import { COGNITIVE_DRILL_TYPES, generateCognitiveDrill, scoreCognitiveDrill } from './meatspacePostCognitive.js';
-import { applySessionToMemoryItems, getMemoryItems, getDueMemoryItems, MASTERY_TARGET_ACCURACY } from './meatspacePostMemory.js';
+import {
+  applySessionToMemoryItems,
+  getMemoryItems,
+  getDueMemoryItems,
+  expandMemoryQuestionResults,
+  normalizeMemoryQuestionResults,
+  MASTERY_TARGET_ACCURACY,
+} from './meatspacePostMemory.js';
 import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from './meatspacePostReview.js';
 // From postTrainingLogStore.js (NOT meatspacePostTraining.js) — that module
 // imports getUnifiedActivityStreak from postActivityStreak.js, which in turn
@@ -38,6 +46,7 @@ import { getAllTrainingEntries } from './postTrainingLogStore.js';
 import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
 import { computePostStreaks, computeUnifiedStreak, normalizeYmd, recordDayKey, withDerivedDayKeys, ymdToUTC, ymdShift } from '../lib/postStreak.js';
 import { getUserTimezone, todayInTimezone, userLocalToday as localToday } from '../lib/timezone.js';
+import { getStoredPostSession, listPostSessions, saveStoredPostSession } from './postRunStore.js';
 
 // Re-export the shared streak helper so existing importers of
 // `computePostStreaks` from this module keep working after it moved to
@@ -55,7 +64,6 @@ export { computePostStreaks };
 // first-visit/handled markers (#2666).
 
 const MEATSPACE_DIR = PATHS.meatspace;
-const SESSIONS_FILE = join(MEATSPACE_DIR, 'post-sessions.json');
 const CONFIG_FILE = join(MEATSPACE_DIR, 'post-config.json');
 
 // Tiny pub/sub (mirrors settingsEvents in server/services/settings.js) so
@@ -108,9 +116,9 @@ const DEFAULT_CONFIG = {
     drillTypes: {
       'n-back': { enabled: true, progressive: true, n: 2, length: 20, stimulusMs: 2500 },
       'digit-span': { enabled: true, progressive: true, direction: 'forward', startLength: 3, maxLength: 8, showMs: 1000 },
-      'stroop': { enabled: true, progressive: true, count: 15 },
+      'stroop': { enabled: true, progressive: true, count: 15, incongruentPct: 75 },
       'schulte-table': { enabled: true, progressive: true, size: 5 },
-      'mental-rotation': { enabled: true, progressive: true, count: 8 },
+      'mental-rotation': { enabled: true, progressive: true, count: 8, rotationComplexity: 3, optionCount: 4 },
       'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 }
     }
   },
@@ -141,6 +149,10 @@ const DEFAULT_CONFIG = {
   // installs that persisted the old
   // `['mental-math']` default are upgraded to this by migration 159.
   sessionModules: ['mental-math', 'cognitive'],
+  // Quick-session target presets are persisted so a user's chosen budget is
+  // stable across launcher visits and refreshes. The client mirrors these
+  // four values; validation rejects anything outside the supported presets.
+  quickDurationMin: 5,
   // Optional practice goals (issue #2100). All fields absent by default so a
   // fresh/legacy install shows no goal UI until the user sets one. Bounds are
   // enforced by postGoalsSchema (server/lib/postValidation.js).
@@ -227,15 +239,18 @@ export async function updatePostConfig(updates) {
  *   that COUNT sessions opt in — a fake 0 there is a lie, not a default (#2726).
  */
 async function loadSessions({ strict = false } = {}) {
-  const raw = await readJSONFile(SESSIONS_FILE, { sessions: [] }, { allowArray: false, strict });
-  // Under strict, a file that parsed to a non-countable shape is as untrustworthy as
-  // one that failed to parse — validate rather than silently substituting an empty.
-  if (strict && (!isPlainObject(raw) || !Array.isArray(raw.sessions))) {
-    throw new Error(`POST sessions malformed: ${SESSIONS_FILE}`);
-  }
-  const data = isPlainObject(raw) ? raw : { sessions: [] };
-  if (!Array.isArray(data.sessions)) data.sessions = [];
-  return data;
+  return { sessions: await listPostSessions({ strict }) };
+}
+
+function normalizeHistoricalLlmEvaluations(session) {
+  return {
+    ...session,
+    tasks: (session?.tasks || []).map((task) => (
+      LLM_DRILL_TYPES.includes(task?.type) && task.evaluation
+        ? { ...task, evaluation: normalizeHistoricalPostLlmEvaluation(task.evaluation) }
+        : task
+    )),
+  };
 }
 
 /**
@@ -250,7 +265,7 @@ async function loadSessions({ strict = false } = {}) {
 export async function getPostSessions(from, to, options) {
   const data = await loadSessions(options);
   const timezone = await getUserTimezone();
-  let sessions = withDerivedDayKeys(data.sessions, timezone);
+  let sessions = withDerivedDayKeys(data.sessions, timezone).map(normalizeHistoricalLlmEvaluations);
   // Re-derivation can move a record across a day boundary, so re-sort rather
   // than trusting the stored-date order `submitPostSession` wrote.
   sessions.sort((a, b) => (a?.date || '').localeCompare(b?.date || ''));
@@ -269,10 +284,9 @@ export async function getPostSessions(from, to, options) {
  * history row beside it shows the re-keyed one.
  */
 export async function getPostSession(id) {
-  const data = await loadSessions();
-  const session = data.sessions.find(s => s.id === id);
+  const session = await getStoredPostSession(id);
   if (!session) return null;
-  return { ...session, date: recordDayKey(session, await getUserTimezone()) };
+  return normalizeHistoricalLlmEvaluations({ ...session, date: recordDayKey(session, await getUserTimezone()) });
 }
 
 export async function submitPostSession(sessionData) {
@@ -297,7 +311,8 @@ export async function submitPostSession(sessionData) {
     const {
       score: _score, correct: _correct,
       accuracy: _acc, completion: _comp, avgResponseMs: _avg,
-      answeredCount: _ac, totalCount: _tc, medianMs: _med, bestMs: _best, span: _span,
+      answeredCount: _ac, totalCount: _tc, attemptCount: _attempts, errorCount: _errors,
+      medianMs: _med, bestMs: _best, span: _span,
       hits: _h, misses: _m, falseAlarms: _fa, correctRejections: _cr,
       ...rest
     } = t || {};
@@ -307,14 +322,29 @@ export async function submitPostSession(sessionData) {
     // This is a single-user internal tool so client score trust is acceptable.
     // The evaluation field and per-response llmScore/llmFeedback contain the server-generated breakdown.
     if (LLM_DRILL_TYPES.includes(rest.type)) {
-      return { ...rest, score: t.score || 0 };
+      if (!Number.isFinite(t.score)) {
+        throw new Error(`Cannot store ${rest.type} result without a validated score`);
+      }
+      return {
+        ...rest,
+        evaluation: normalizePostLlmEvaluation(rest.evaluation),
+        score: t.score,
+      };
     }
 
     // Memory drills: trust client-side scoring only for supported types
     if (POST_SUPPORTED_MEMORY_TYPES.includes(rest.type)) {
-      return { ...rest, score: t.score || 0 };
+      return {
+        ...rest,
+        // Multi-blank fill-in-the-blank results carry one indexed response per
+        // generated blank. Recompute the question-level flag before storing so
+        // history and later readers cannot turn one correct blank into a full
+        // prompt pass.
+        questions: normalizeMemoryQuestionResults(rest.questions || []),
+        score: t.score || 0,
+      };
     }
-    // Unsupported memory drills (e.g. memory-fill-blank): preserve data, zero score
+    // Unsupported memory drills: preserve data, zero score.
     if (MEMORY_DRILL_TYPES.includes(rest.type)) {
       return { ...rest, score: 0 };
     }
@@ -347,31 +377,42 @@ export async function submitPostSession(sessionData) {
   // clients / direct service callers) falls back to a fresh uuid.
   const sessionId = sessionData.id || randomUUID();
   const existingIndex = data.sessions.findIndex(s => s.id === sessionId);
-  const isNewSession = existingIndex < 0;
+  let isNewSession = existingIndex < 0;
   const existing = isNewSession ? null : data.sessions[existingIndex];
+  const requestedStartedAtMs = Date.parse(sessionData.startedAt || '');
+  const requestedStartedAt = Number.isFinite(requestedStartedAtMs)
+    && requestedStartedAtMs <= nowDate.getTime()
+    && nowDate.getTime() - requestedStartedAtMs <= 24 * 60 * 60 * 1000
+    ? new Date(requestedStartedAtMs).toISOString()
+    : now;
+  const startedAt = existing?.startedAt ?? requestedStartedAt;
+  const startedAtMs = Date.parse(startedAt);
+  const actualDurationMs = Number.isFinite(startedAtMs)
+    ? Math.max(0, nowDate.getTime() - startedAtMs)
+    : 0;
 
-  const session = {
+  let session = {
     id: sessionId,
     // Preserve the ORIGINAL day/start on an idempotent re-submit — a retry that
     // crosses midnight (or just arrives later) must not move the session to a
     // new date, which would corrupt history ordering and streak math. Only a
     // fresh insert stamps "now".
     date: existing?.date ?? todayLocal,
-    startedAt: existing?.startedAt ?? now,
+    startedAt,
     completedAt: now,
     durationMs: rescoredTasks.reduce((sum, t) => sum + (t.totalMs || 0), 0),
+    actualDurationMs,
     cadence: sessionData.cadence || 'daily',
     modules: sessionData.modules,
     tasks: rescoredTasks,
     score: computeSessionScore(rescoredTasks, config.scoring?.weights),
-    tags: sessionData.tags || {}
+    tags: sessionData.tags || {},
+    ...(sessionData.plan ? { plan: sessionData.plan } : {}),
   };
 
-  if (isNewSession) data.sessions.push(session);
-  else data.sessions[existingIndex] = session;
-  data.sessions.sort((a, b) => a.date.localeCompare(b.date));
-  await ensureMeatspaceDir();
-  await atomicWrite(SESSIONS_FILE, data);
+  const stored = await saveStoredPostSession(session);
+  session = stored.session;
+  isNewSession = stored.isNew;
   console.log(`🧪 POST session ${isNewSession ? 'saved' : 'updated'}: score=${session.score} modules=${session.modules.join(',')}`);
 
   // A memory drill completed inside this session IS a review — mirror the
@@ -391,8 +432,8 @@ export async function submitPostSession(sessionData) {
   //     try/catch: the session is already saved; there is nothing to roll back.)
   if (isNewSession) {
     // Pre-filter to POST-supported memory tasks with a memoryItemId — the exact
-    // gate the prior per-task loop used, so an unsupported memory drill (e.g.
-    // memory-fill-blank) is never scheduled even if it somehow carried an id.
+    // gate the prior per-task loop used, so a future generation-only memory
+    // drill is never scheduled even if it somehow carries an id.
     const memoryTasks = rescoredTasks.filter(t => POST_SUPPORTED_MEMORY_TYPES.includes(t.type) && t.memoryItemId);
     try {
       await applySessionToMemoryItems(memoryTasks, new Date(now));
@@ -630,6 +671,10 @@ export function deriveTaskAccuracy(task) {
   // (otherwise a legacy never-press run still reads ~70%). Mirrors the client
   // fallbacks in PostHistory/PostSessionResults.
   if (task?.type === 'n-back') return nBackBalancedAccuracy(qs);
+  if (task?.type === 'memory-fill-blank') {
+    const attempts = expandMemoryQuestionResults(qs);
+    return attempts.length ? attempts.filter(q => q?.correct).length / attempts.length : null;
+  }
   const answered = qs.filter(q => q?.answered != null);
   if (!answered.length) return null;
   return answered.filter(q => q?.correct).length / answered.length;
@@ -645,6 +690,11 @@ export function deriveTaskCompletion(task) {
   const qs = Array.isArray(task?.questions) ? task.questions : [];
   if (!qs.length) return null;
   if (task?.type === 'n-back') return 1;
+  if (task?.type === 'memory-fill-blank') {
+    const attempts = expandMemoryQuestionResults(qs);
+    if (!attempts.length) return null;
+    return attempts.filter(q => q?.answered != null).length / attempts.length;
+  }
   return qs.filter(q => q?.answered != null).length / qs.length;
 }
 
@@ -661,6 +711,68 @@ export function deriveTaskAvgResponseMs(task) {
   const timed = qs.filter(q => (q?.responseMs || 0) > 0);
   if (!timed.length) return null;
   return Math.round(timed.reduce((sum, q) => sum + q.responseMs, 0) / timed.length);
+}
+
+function trainingEntryTask(entry) {
+  const rawQuestionCount = Number(entry?.questionCount);
+  const rawCorrectCount = Number(entry?.correctCount);
+  const questionCount = Number.isFinite(rawQuestionCount) && rawQuestionCount > 0 ? rawQuestionCount : 0;
+  const correctCount = Number.isFinite(rawCorrectCount)
+    ? Math.max(0, Math.min(questionCount, rawCorrectCount))
+    : 0;
+  const accuracy = questionCount > 0 ? correctCount / questionCount : null;
+  return {
+    id: entry?.id,
+    module: entry?.module,
+    type: entry?.drillType,
+    config: entry?.difficulty || {},
+    questions: Array.isArray(entry?.questions) ? entry.questions : [],
+    score: Number.isFinite(entry?.score) ? entry.score : (accuracy == null ? null : accuracy * 100),
+    accuracy,
+    completion: typeof entry?.completion === 'number' ? entry.completion : (questionCount > 0 ? 1 : null),
+    avgResponseMs: questionCount > 0 ? (entry?.totalMs || 0) / questionCount : null,
+    totalMs: entry?.totalMs || 0,
+    totalCount: questionCount,
+  };
+}
+
+function skillEvidenceSessions(sessions, training) {
+  return [
+    ...sessions,
+    ...training.map((entry) => ({
+      id: entry.runId || entry.id,
+      date: entry.date,
+      startedAt: entry.timestamp,
+      completedAt: entry.timestamp,
+      evidenceMode: 'training',
+      tasks: [trainingEntryTask(entry)],
+    })),
+  ];
+}
+
+function summarizeSkillEvidence(sessions, training) {
+  const accuracyLists = {};
+  const completionLists = {};
+  const counts = {};
+  const add = (task) => {
+    if (!task?.module || !task?.type) return;
+    const key = `${task.module}:${task.type}`;
+    counts[key] = (counts[key] || 0) + 1;
+    const accuracy = deriveTaskAccuracy(task);
+    if (accuracy != null) (accuracyLists[key] ||= []).push(accuracy);
+    const completion = deriveTaskCompletion(task);
+    if (completion != null) (completionLists[key] ||= []).push(completion);
+  };
+  for (const session of sessions) for (const task of session.tasks || []) add(task);
+  for (const entry of training) add(trainingEntryTask(entry));
+  const meanMap = (lists) => Object.fromEntries(
+    Object.entries(lists).map(([key, values]) => [key, values.reduce((sum, value) => sum + value, 0) / values.length]),
+  );
+  return {
+    evidenceByDrillCount: counts,
+    evidenceByDrillAccuracy: meanMap(accuracyLists),
+    evidenceByDrillCompletion: meanMap(completionLists),
+  };
 }
 
 export async function getPostStats(days = 30) {
@@ -684,6 +796,7 @@ export async function getPostStats(days = 30) {
     lastDate: unified.lastActiveDate,
   };
   let recent = sessions;
+  let recentTraining = training;
   if (days > 0) {
     // Window the stats relative to the user's local today (day-string math via
     // UTC midnight, DST-safe) so the cutoff matches the tz-correct session dates.
@@ -692,10 +805,16 @@ export async function getPostStats(days = 30) {
       const date = recordDayKey(s, timezone);
       return date && date >= cutoffStr;
     });
+    recentTraining = training.filter((entry) => {
+      const date = recordDayKey(entry, timezone);
+      return date && date >= cutoffStr;
+    });
   }
 
+  const evidence = summarizeSkillEvidence(recent, recentTraining);
+
   if (recent.length === 0) {
-    return { days, sessionCount: 0, overall: null, byModule: {}, byDrill: {}, byDrillCount: {}, byDrillAccuracy: {}, byDrillCompletion: {}, ...streaks };
+    return { days, sessionCount: 0, overall: null, byModule: {}, byDrill: {}, byDrillCount: {}, byDrillAccuracy: {}, byDrillCompletion: {}, ...evidence, ...streaks };
   }
 
   const scores = recent.map(s => s.score);
@@ -739,7 +858,7 @@ export async function getPostStats(days = 30) {
   const byDrillCompletion = {};
   for (const key of Object.keys(byDrillCompletionList)) byDrillCompletion[key] = avgFrac(byDrillCompletionList[key]);
 
-  return { days, sessionCount: recent.length, overall, byModule, byDrill, byDrillCount, byDrillAccuracy, byDrillCompletion, ...streaks };
+  return { days, sessionCount: recent.length, overall, byModule, byDrill, byDrillCount, byDrillAccuracy, byDrillCompletion, ...evidence, ...streaks };
 }
 
 // =============================================================================
@@ -797,7 +916,7 @@ function finalizeMetricSeries(map) {
  *   practice-entry count over the window.
  * - `streak`           ONE unified streak (sessions OR training-log activity),
  *   computed over ALL history like `getPostStats`.
- * - `mastery`          multiplication ladder rung + memory items (mastery/due).
+ * - `mastery`          multiplication/cognitive ladder evidence + memory items.
  *
  * Accuracy/speed are reported separately (issue #2094): the persisted per-task
  * `accuracy`/`avgResponseMs` are preferred, with a per-question derivation
@@ -873,6 +992,13 @@ export async function getPostProgress({ days = 90 } = {}) {
     const date = recordDayKey(e, timezone);
     if (!date) continue;
     ensureDay(date).minutes += (e.totalMs || 0) / 60000;
+    const task = trainingEntryTask(e);
+    const accuracy = deriveTaskAccuracy(task);
+    const responseMs = deriveTaskAvgResponseMs(task);
+    // Training updates skill/domain evidence, but it does not enter the scored
+    // benchmark headline (`byDay.score`, session count, or overall score).
+    pushMetricSeries(domainMap, task.module, date, task.score, accuracy, responseMs);
+    pushMetricSeries(drillMap, task.type, date, task.score, accuracy, responseMs);
   }
 
   const byDay = Array.from(dayMap.entries())
@@ -894,16 +1020,20 @@ export async function getPostProgress({ days = 90 } = {}) {
   const sessionMs = sessions.reduce((sum, s) => sum + (s.durationMs || 0), 0);
   const trainingMs = training.reduce((sum, e) => sum + (e.totalMs || 0), 0);
 
-  // Mastery block: multiplication ladder rung + per-item memory mastery/due.
-  const mulProgress = await getMultiplicationProgress();
-  const memoryItems = await getMemoryItems();
-  const dueItems = await getDueMemoryItems();
+  // Mastery block: multiplication + cognitive ladder evidence and per-item
+  // memory mastery/due. Cognitive entries retain every exact-rung measure used
+  // to promote or hold so the Progress UI can explain the decision.
+  const [mulProgress, cognitiveProgress, memoryItems, dueItems, reviews] = await Promise.all([
+    getMultiplicationProgress(),
+    getCognitiveProgress(),
+    getMemoryItems(),
+    getDueMemoryItems(),
+    getRetentionReport(new Date()),
+  ]);
   const dueIds = new Set(dueItems.map(i => i.id));
   // Skill re-verification retention state (issue #2096): per-skill fresh / due /
   // needs-refresh + a 90-day retention %. Empty on fresh installs (nothing
   // tracked until the first skill is mastered).
-  const reviews = await getRetentionReport(new Date());
-
   return {
     days: window,
     series: {
@@ -923,6 +1053,7 @@ export async function getPostProgress({ days = 90 } = {}) {
         description: mulProgress.label,
         floorLevel: mulProgress.floorLevel,
       },
+      cognitive: cognitiveProgress,
       memoryItems: memoryItems.map(it => ({
         id: it.id,
         title: it.title,
@@ -957,8 +1088,8 @@ const DRILL_LABEL = (type) =>
  * `"<module>:<type>"`.
  */
 export function weakestSkillFromStats(stats) {
-  const acc = stats?.byDrillAccuracy || {};
-  const counts = stats?.byDrillCount || {};
+  const acc = stats?.evidenceByDrillAccuracy || stats?.byDrillAccuracy || {};
+  const counts = stats?.evidenceByDrillCount || stats?.byDrillCount || {};
   let worst = null;
   for (const [key, a] of Object.entries(acc)) {
     if (typeof a !== 'number' || Number.isNaN(a)) continue;
@@ -1561,9 +1692,9 @@ export function generateDrill(type, config = {}) {
 async function getAdaptiveSignal(type) {
   const stats = await getPostStats(ADAPTIVE_DEFAULTS.windowDays);
   const key = `${MATH_MODULE}:${type}`;
-  const accuracy = stats.byDrillAccuracy?.[key];
-  const samples = stats.byDrillCount?.[key] || 0;
-  const completion = stats.byDrillCompletion?.[key];
+  const accuracy = stats.evidenceByDrillAccuracy?.[key];
+  const samples = stats.evidenceByDrillCount?.[key] || 0;
+  const completion = stats.evidenceByDrillCompletion?.[key];
   return {
     score: accuracy == null ? null : Math.round(accuracy * 100),
     samples,
@@ -1588,7 +1719,8 @@ async function getAdaptiveSignal(type) {
  */
 async function getMultiplicationLevelStats(windowDays = MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
-  const sessions = await getPostSessions();
+  const [scoredSessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
+  const sessions = skillEvidenceSessions(scoredSessions, training);
   // Window off the user's local today (DST-safe day math) so the cutoff stays
   // consistent with the tz-correct session dates submitPostSession now stamps
   // (issue #2681) — a UTC-day cutoff would skew the window edge by the tz offset.
@@ -1635,7 +1767,8 @@ async function getMultiplicationLevelStats(windowDays = MASTERY_DEFAULTS.windowD
 
 async function getPowersLevelStats(windowDays = POWERS_MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
-  const sessions = await getPostSessions();
+  const [scoredSessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
+  const sessions = skillEvidenceSessions(scoredSessions, training);
   const timezone = await getUserTimezone();
   const todayStr = todayInTimezone(timezone, atDate);
   const cutoffStr = windowDays > 0 ? ymdShift(todayStr, -windowDays) : null;
@@ -1704,21 +1837,21 @@ export async function getPowersProgress() {
 
 /**
  * Aggregate a laddered cognitive drill's performance per level from scored
- * history so its ladder can decide whether each rung is mastered. Cognitive
- * mastery is accuracy-only, and a "sample" is one completed drill (not one
- * answered question) — so each task contributes its stamped level and its
- * task-level `accuracy` (the balanced/SDT accuracy for n-back, #2094; the
- * answered accuracy elsewhere), which is what a raw per-question ratio can't
- * express (it would reward n-back's do-nothing exploit).
+ * history so its ladder can decide whether each rung is mastered. A "sample"
+ * is one completion-qualified drill (not one answered question), bucketed by
+ * its exact stamped level. Each task contributes task-level accuracy (balanced
+ * SDT accuracy for n-back, #2094) and response latency for the two speed-gated
+ * skills. Incomplete attempts remain visible but do not bank mastery samples.
  *
  * Returns the windowed per-level stats plus the all-time `floorLevel` (the
  * highest rung ever reached), the anti-demotion signal for resolveLevel.
  *
- * @returns {Promise<{stats: Record<number, {samples,accuracy,avgResponseMs}>, floorLevel: number}>}
+ * @returns {Promise<{stats: Record<number, {samples,attempts,accuracy,completion,incompleteSamples,avgResponseMs}>, floorLevel: number}>}
  */
 async function getCognitiveLevelStats(type, windowDays = COGNITIVE_MASTERY_DEFAULTS.windowDays) {
   const atDate = new Date();
-  const sessions = await getPostSessions();
+  const [scoredSessions, training] = await Promise.all([getPostSessions(), getAllTrainingEntries()]);
+  const sessions = skillEvidenceSessions(scoredSessions, training);
   // Window off the user's local today (DST-safe) so the cutoff stays consistent
   // with the tz-correct session dates submitPostSession now stamps (issue #2681).
   const timezone = await getUserTimezone();
@@ -1739,24 +1872,49 @@ async function getCognitiveLevelStats(type, windowDays = COGNITIVE_MASTERY_DEFAU
       // Mastery stats are windowed.
       const date = recordDayKey(session, timezone);
       if (cutoffStr && (!date || date < cutoffStr)) continue;
-      const acc = Number.isFinite(task.accuracy) ? task.accuracy : null;
-      if (acc == null) continue;
+      const acc = deriveTaskAccuracy(task);
+      const derivedComp = deriveTaskCompletion(task);
+      const comp = derivedComp == null ? 1 : derivedComp;
+      const bucket = byLevel[level] || (byLevel[level] = {
+        attempts: 0,
+        samples: 0,
+        incompleteSamples: 0,
+        accSum: 0,
+        completionSum: 0,
+        responseSamples: 0,
+        totalResponseMs: 0,
+      });
+      bucket.attempts += 1;
+      bucket.completionSum += comp;
       // Skip low-completion runs: accuracy is answered-only, so a run that
       // leaves the harder trials blank must not bank a high-accuracy sample and
       // promote the rung (issue #2095 review). A null completion (legacy tasks)
       // is treated as complete so old history still counts.
-      const comp = Number.isFinite(task.completion) ? task.completion : null;
-      if (comp != null && comp < COGNITIVE_MASTERY_DEFAULTS.minCompletion) continue;
-      const bucket = byLevel[level] || (byLevel[level] = { samples: 0, accSum: 0 });
+      if (acc == null || comp < COGNITIVE_MASTERY_DEFAULTS.minCompletion) {
+        bucket.incompleteSamples += 1;
+        continue;
+      }
       bucket.samples += 1;
       bucket.accSum += acc;
+      const responseMs = deriveTaskAvgResponseMs(task);
+      if (responseMs != null && responseMs > 0) {
+        bucket.responseSamples += 1;
+        bucket.totalResponseMs += Math.min(responseMs, COGNITIVE_MASTERY_DEFAULTS.responseMsCap);
+      }
     }
   }
 
   const stats = {};
   for (const [level, b] of Object.entries(byLevel)) {
-    // avgResponseMs is 0 (unused) — cognitive mastery is accuracy-only.
-    stats[level] = { samples: b.samples, accuracy: b.samples ? b.accSum / b.samples : 0, avgResponseMs: 0 };
+    stats[level] = {
+      samples: b.samples,
+      attempts: b.attempts,
+      accuracy: b.samples ? b.accSum / b.samples : 0,
+      completion: b.attempts ? b.completionSum / b.attempts : 0,
+      incompleteSamples: b.incompleteSamples,
+      timedSamples: b.responseSamples,
+      avgResponseMs: b.responseSamples ? b.totalResponseMs / b.responseSamples : 0,
+    };
   }
   return { stats, floorLevel };
 }
@@ -1840,8 +1998,9 @@ export async function resolveDrillConfig(type, requestedConfig = {}) {
 
   // Progressive cognitive ladders (default ON) — per-skill difficulty rungs
   // (n-back n/stimulusMs, digit-span span/direction, schulte grid, mental-
-  // rotation/stroop trial count). Selects the rung by sustained-accuracy
-  // mastery so the drill ramps up; when off, the caller's manual knobs
+  // rotation transformation/options, Stroop interference mix). Selects the
+  // rung by exact-level completion + accuracy, with speed gates where latency
+  // is part of the skill; when off, the caller's manual knobs
   // (incl. stimulusMs/showMs) pass through unchanged. reaction-time has no
   // ladder and always passes through (issue #2095).
   if (cognitiveLadder(type)) {

@@ -5,6 +5,26 @@ import { scorePostLlmDrill } from '../../../services/api';
 import { DRILL_LABELS, WORDPLAY_LLM_DRILL_TYPES } from './constants';
 import { AILoadingIndicator, MissedExamplesDisplay, CompoundChainUI, BridgeWordUI, DoubleMeaningUI, IdiomTwistUI, scoreWordplayResponse } from './WordplayDrillUI';
 
+export function combineTrainingScoreResults(scoreResults) {
+  if (!scoreResults.length) return null;
+  const scores = scoreResults.flatMap((result) => result.evaluation.scores);
+  const representativeProvenance = scoreResults.find(
+    (result) => result.evaluation.provenance.scorer.kind !== 'local',
+  )?.evaluation.provenance || scoreResults[0].evaluation.provenance;
+  const overallScore = Math.round(
+    scoreResults.reduce((sum, result) => sum + result.evaluation.overallScore, 0) / scoreResults.length,
+  );
+  return {
+    score: Math.round(scoreResults.reduce((sum, result) => sum + result.score, 0) / scoreResults.length),
+    evaluation: {
+      overallScore,
+      scores,
+      summary: `Average ${overallScore}% across ${scores.length} training responses`,
+      provenance: representativeProvenance,
+    },
+  };
+}
+
 export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, drillCount, onComplete, isTraining, providerId, model }) {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [responses, setResponses] = useState([]);
@@ -13,12 +33,15 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
   const [phase, setPhase] = useState('active'); // active | reading | recall
   const [items, setItems] = useState([]); // for verbal-fluency
   const [trainingFeedback, setTrainingFeedback] = useState(null); // { score, feedback, scoring }
+  const [completionFeedback, setCompletionFeedback] = useState(null); // { scoring, error, responses, totalMs }
   const inputRef = useRef(null);
   const timerRef = useRef(null);
   const questionStartRef = useRef(Date.now());
   const drillStartRef = useRef(Date.now());
   const responsesRef = useRef([]);
   const questionIndexRef = useRef(0);
+  const trainingScoreResultsRef = useRef([]);
+  const completionInFlightRef = useRef(false);
 
   const timeLimitMs = (timeLimitSec || 120) * 1000;
   const drillType = drill?.type;
@@ -28,18 +51,28 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
   const totalPrompts = prompts.length;
   const currentPrompt = prompts[questionIndex];
 
-  const finishDrill = useCallback((finalResponses) => {
+  const finishDrill = useCallback((finalResponses, preservedTotalMs) => {
+    if (completionInFlightRef.current) return;
+    completionInFlightRef.current = true;
     clearInterval(timerRef.current);
-    const totalMs = Date.now() - drillStartRef.current;
-    onComplete({
-      module: 'llm-drills',
-      type: drillType,
-      config: drill.config,
-      drillData: drill,
-      responses: finalResponses,
-      totalMs
-    });
-  }, [drill, drillType, onComplete]);
+    const totalMs = preservedTotalMs ?? Date.now() - drillStartRef.current;
+    const preScored = isTraining ? combineTrainingScoreResults(trainingScoreResultsRef.current) : null;
+    setCompletionFeedback({ scoring: true, error: null, responses: finalResponses, totalMs });
+    Promise.resolve()
+      .then(() => onComplete({
+        module: 'llm-drills',
+        type: drillType,
+        config: drill.config,
+        drillData: drill,
+        responses: finalResponses,
+        totalMs,
+        ...(preScored || {}),
+      }))
+      .catch((err) => {
+        setCompletionFeedback({ scoring: false, error: err.message, responses: finalResponses, totalMs });
+      })
+      .finally(() => { completionInFlightRef.current = false; });
+  }, [drill, drillType, isTraining, onComplete]);
 
   const handleTimeExpired = useCallback(() => {
     // Submit whatever we have so far (use refs to avoid stale closures in interval callback)
@@ -58,6 +91,9 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
     questionStartRef.current = Date.now();
     setPhase(drillType === 'story-recall' ? 'reading' : 'active');
     setTrainingFeedback(null);
+    setCompletionFeedback(null);
+    trainingScoreResultsRef.current = [];
+    completionInFlightRef.current = false;
 
     if (isTraining) {
       setTimeLeft(0);
@@ -97,9 +133,6 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
 
     const responseObj = buildLlmResponseObj({ drillType, questionIndex, items, inputValue, currentPrompt, responseMs });
 
-    const newResponses = [...responses, responseObj];
-    setResponses(newResponses);
-
     // Training mode: score this response immediately and show feedback.
     // The four wordplay types (compound-chain/bridge-word/double-meaning/
     // idiom-twist) delegate to scoreWordplayResponse — the same scoring core
@@ -108,23 +141,34 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
     // existing inline path unchanged.
     if (isTraining) {
       setTrainingFeedback({ scoring: true });
-      if (WORDPLAY_LLM_DRILL_TYPES.includes(drillType)) {
-        const result = await scoreWordplayResponse(drillType, drill, responseObj, timeLimitMs, providerId, model);
-        setTrainingFeedback({ scoring: false, ...result });
-      } else {
-        const scored = await scorePostLlmDrill(
-          drillType, drill, [responseObj], timeLimitMs, providerId, model
-        ).catch(() => null);
-        const fb = scored?.evaluation?.scores?.[0] || {};
-        setTrainingFeedback({
-          scoring: false,
-          score: fb.score ?? scored?.score ?? 0,
-          feedback: fb.feedback || scored?.evaluation?.summary || 'No feedback available',
-          missedExamples: fb.missedExamples,
-        });
-      }
+      const scoreResult = await (
+        WORDPLAY_LLM_DRILL_TYPES.includes(drillType)
+          ? scoreWordplayResponse(drillType, drill, responseObj, timeLimitMs, providerId, model, { silent: true })
+            .then((result) => result.scoreResult)
+          : scorePostLlmDrill(drillType, drill, [responseObj], timeLimitMs, providerId, model, { silent: true })
+      ).catch((err) => {
+        setTrainingFeedback({ scoring: false, error: err.message });
+        return null;
+      });
+      if (!scoreResult) return;
+      const scoredResponse = scoreResult.questions[0];
+      const feedback = scoreResult.evaluation.scores[0];
+      const newResponses = [...responses, scoredResponse];
+      trainingScoreResultsRef.current = [...trainingScoreResultsRef.current, scoreResult];
+      setResponses(newResponses);
+      setTrainingFeedback({
+        scoring: false,
+        score: feedback.score,
+        feedback: feedback.feedback || scoreResult.evaluation.summary,
+        invalidItems: feedback.invalidItems,
+        duplicateItems: feedback.duplicateItems,
+        missedExamples: feedback.missedExamples,
+      });
       return;
     }
+
+    const newResponses = [...responses, responseObj];
+    setResponses(newResponses);
 
     if (questionIndex + 1 >= totalPrompts) {
       finishDrill(newResponses);
@@ -193,6 +237,31 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
   if (timePct <= 10) timerTone = 'error';
   else if (timePct <= 25) timerTone = 'warning';
 
+  if (completionFeedback) {
+    if (completionFeedback.scoring) {
+      return (
+        <div className="max-w-lg mx-auto space-y-6">
+          <AILoadingIndicator label="Scoring your completed drill..." />
+        </div>
+      );
+    }
+    return (
+      <div className="max-w-lg mx-auto space-y-6">
+        <div className="bg-port-card border border-port-error/50 rounded-lg p-5 space-y-3 text-center">
+          <XCircle size={40} className="mx-auto text-port-error" />
+          <p className="text-sm text-gray-200">Scoring failed: {completionFeedback.error}</p>
+          <p className="text-xs text-gray-500">Your completed responses are preserved and have not been assigned a fallback score.</p>
+        </div>
+        <button
+          onClick={() => finishDrill(completionFeedback.responses, completionFeedback.totalMs)}
+          className="w-full px-6 py-3 bg-port-accent hover:bg-port-accent/80 text-white font-medium rounded-lg transition-colors"
+        >
+          Retry scoring
+        </button>
+      </div>
+    );
+  }
+
   // Training mode: feedback overlay
   if (isTraining && trainingFeedback) {
     if (trainingFeedback.scoring) {
@@ -203,6 +272,24 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
             <span>Drill {drillIndex + 1} of {drillCount}</span>
           </div>
           <AILoadingIndicator label="Evaluating your response..." />
+        </div>
+      );
+    }
+
+    if (trainingFeedback.error) {
+      return (
+        <div className="max-w-lg mx-auto space-y-6">
+          <div className="bg-port-card border border-port-error/50 rounded-lg p-5 space-y-3 text-center">
+            <XCircle size={40} className="mx-auto text-port-error" />
+            <p className="text-sm text-gray-200">Scoring failed: {trainingFeedback.error}</p>
+            <p className="text-xs text-gray-500">Your response is still available. Retry when the provider is ready.</p>
+          </div>
+          <button
+            onClick={handleSubmit}
+            className="w-full px-6 py-3 bg-port-accent-2 hover:bg-port-accent-2/80 text-port-on-accent-2 font-medium rounded-lg transition-colors"
+          >
+            Retry scoring
+          </button>
         </div>
       );
     }
@@ -223,6 +310,12 @@ export default function PostLlmDrillRunner({ drill, timeLimitSec, drillIndex, dr
         </div>
         <div className="bg-port-card border border-port-border rounded-lg p-4 space-y-2">
           <p className="text-sm text-gray-300">{trainingFeedback.feedback}</p>
+          {trainingFeedback.invalidItems?.length > 0 && (
+            <p className="text-xs text-port-error">Invalid: {trainingFeedback.invalidItems.join(', ')}</p>
+          )}
+          {trainingFeedback.duplicateItems?.length > 0 && (
+            <p className="text-xs text-gray-500">Duplicates: {trainingFeedback.duplicateItems.join(', ')}</p>
+          )}
           <MissedExamplesDisplay examples={trainingFeedback.missedExamples} />
         </div>
         <button

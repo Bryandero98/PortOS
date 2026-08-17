@@ -23,6 +23,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { atomicWrite, DAY, ensureDir, HOUR, readJSONFile, PATHS, safeDate } from '../lib/fileUtils.js';
+import { BRANCHES_PER_AGENT_MAX, BRANCHES_PER_AGENT_MIN } from '../lib/cosValidation.js';
 import { isPlainObject } from '../lib/objects.js';
 import { mapWithConcurrency } from '../lib/mapWithConcurrency.js';
 import { getAdaptiveCooldownMultiplier } from './taskLearning.js';
@@ -180,7 +181,7 @@ async function getPerformanceAdjustedInterval(taskType, baseIntervalMs) {
 // Unified default interval settings for all task types
 export const SELF_IMPROVEMENT_TASK_TYPES = [
   'security', 'code-quality', 'test-coverage', 'performance',
-  'accessibility', 'branch-cleanup', 'branch-reconcile', 'issue-reconcile', 'console-errors', 'dependency-updates', 'documentation',
+  'accessibility', 'branch-reconcile', 'issue-reconcile', 'console-errors', 'dependency-updates', 'documentation',
   'ui-bugs', 'mobile-responsive', 'feature-ideas', 'plan-task', 'claim-issue', 'claim-work', 'error-handling',
   'typing', 'release-check', 'pr-reviewer', 'code-reviewer-a', 'code-reviewer-b',
   'jira-sprint-manager', 'jira-status-report', 'do-replan',
@@ -231,8 +232,8 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
 ];
 
 // Shared taskMetadata posture for the NON-COMMITTING COORDINATOR types
-// (NON_COMMITTING_COORDINATOR_TASK_TYPES in taskTypeHooks.js — branch-cleanup /
-// branch-reconcile / issue-reconcile / jira-status-report). Each delivers its work
+// (NON_COMMITTING_COORDINATOR_TASK_TYPES in taskTypeHooks.js — branch-reconcile /
+// issue-reconcile / jira-status-report). Each delivers its work
 // as a SIDE EFFECT in the app's live checkout — a deleted branch, a merged PR, a
 // relabeled issue, a posted report — and by design produces no commit of its own.
 // Two code-shipping criteria therefore have to be switched off or every SUCCESSFUL
@@ -240,18 +241,24 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
 //   * `useWorktree`/`openPR` — explicitly false (not merely absent) so
 //     applyAppWorktreeDefault's `=== undefined` checks can't fill them from the
 //     app's `defaultOpenPR`/`defaultUseWorktree`. A worktree these tasks never cd
-//     into is at best unused and at worst harmful (it holds refs branch-cleanup is
-//     trying to delete), and the implied PR expectation fails the run at finalize
+//     into is at best unused and at worst harmful (it hides sibling refs the
+//     reconcile scan must inspect), and the implied PR expectation fails the run at finalize
 //     with `pr-missing` — there is no code to open a PR for. Locked in
 //     MANAGED_AGENT_OPTIONS below so a per-app override can't re-attach them.
 //     `readOnly: true` is NOT a substitute: it gates worktree CREATION
 //     (agentWorkspacePrep.js) but the PR-claim check reads `metadata.openPR`
 //     directly (agentTuiSpawning.js).
-//   * `worktreeChangesExpected` — a clean tree IS the success shape here, so the
-//     TUI idle-complete changes gate must not read it as "produced no work".
+  //   * `worktreeChangesExpected` — a clean tree IS the success shape here, so the
+  //     task's deliverable posture must record that this is not code work.
 // A guard test in taskSchedule.test.js asserts every member of that set carries
 // this posture, so a new coordinator type can't be added to one list only.
 const NON_COMMITTING_COORDINATOR_METADATA = { useWorktree: false, openPR: false, worktreeChangesExpected: false };
+// Migration 274 removes branch-cleanup from new schedules, but a partially
+// upgraded install may still load its stored task before the migration runs.
+// Keep its safety posture available without making it a newly-shipped task.
+const LEGACY_MANAGED_TASK_METADATA = {
+  'branch-cleanup': NON_COMMITTING_COORDINATOR_METADATA
+};
 
 // Shared config for code-reviewer-a and code-reviewer-b (two instances for independent provider/model configuration)
 const CODE_REVIEWER_INTERVAL = { type: INTERVAL_TYPES.WEEKLY, enabled: false, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true, pipeline: { stages: [{ name: 'Codebase Review', promptKey: 'code-reviewer-review', readOnly: true, providerId: null, model: null, precondition: { fileNotExists: 'REVIEW.md' } }, { name: 'Triage & Implement', promptKey: 'code-reviewer-implement', readOnly: false, providerId: null, model: null, precondition: { fileExists: 'REVIEW.md' } }] } } };
@@ -287,6 +294,7 @@ const CODE_REVIEWER_INTERVAL = { type: INTERVAL_TYPES.WEEKLY, enabled: false, we
  * idle park remains the only brake) and only the reconcile scans carry a number.
  */
 export const PERPETUAL_DRAIN_DISPATCH_CAP = 5;
+export const DEFAULT_BRANCHES_PER_AGENT = 3;
 
 export const DEFAULT_TASK_INTERVALS = {
   'security':            { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
@@ -294,28 +302,27 @@ export const DEFAULT_TASK_INTERVALS = {
   'test-coverage':       { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
   'performance':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
   'accessibility':       { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
-  // branch-cleanup deletes merged local/remote branches in the app's LIVE checkout
-  // (its prompt `cd`s to {repoPath} and runs `git branch -d` / `git push --delete`),
-  // hence the shared non-committing-coordinator posture above.
-  'branch-cleanup':      { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
-  // branch-reconcile finishes THIS machine's in-flight LOCAL branches per app
-  // (open a PR for pushed-but-unopened work, resolve merge conflicts, drive the
-  // review loop, auto-merge when green) AFTER a deterministic pass that removes
-  // fully-merged orphaned branches + their worktrees. PERPETUAL (drain-until-done):
+  // branch-reconcile first removes fully-merged, clean orphaned worktrees and
+  // branches, then finishes THIS machine's remaining in-flight LOCAL branches
+  // per app (open a PR for pushed-but-unopened work, resolve merge conflicts,
+  // drive the review loop, auto-merge when green). PERPETUAL (drain-until-done):
   // the generator runs the deterministic reconcile every dispatch, and dispatches
   // the coordinator agent only while actionable in-flight branches remain — then
   // PARKS on the daily recheckCron. The action toggles (cleanupMerged / openPr /
   // resolveConflicts / autoMerge / finishAbandoned) are per-app taskMetadata
   // booleans (each ON unless explicitly false); `finishAbandoned` covers the work
   // a dead agent left UNCOMMITTED in its worktree — commit + ship it, or report it
-  // as unfinished. useWorktree/openPR are LOCKED off (MANAGED_AGENT_OPTIONS):
+  // as unfinished. `branchesPerAgent` bounds each coordinator prompt to a
+  // prioritized batch so a large backlog drains across several agents. It is
+  // independently overridable per app. useWorktree/openPR are LOCKED off
+  // (MANAGED_AGENT_OPTIONS):
   // the coordinator runs in the app's live checkout so it can see + operate on the
   // sibling worktrees; a CoS-managed worktree would hide the branches and could
   // trigger cleanupAgentWorktree's auto-merge. Its edits likewise land in those
   // SIBLING worktrees, never in its own cwd — hence the shared non-committing
   // -coordinator posture above. Off by default — enabling it is the user's
   // explicit consent to let it drive PRs on a schedule.
-  'branch-reconcile':    { type: INTERVAL_TYPES.PERPETUAL, enabled: false, providerId: null, model: null, prompt: null, recheckCron: '0 3 * * *', drainDispatchCap: PERPETUAL_DRAIN_DISPATCH_CAP, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, cleanupMerged: true, openPr: true, resolveConflicts: true, autoMerge: true, finishAbandoned: true } },
+  'branch-reconcile':    { type: INTERVAL_TYPES.PERPETUAL, enabled: false, providerId: null, model: null, prompt: null, recheckCron: '0 3 * * *', drainDispatchCap: PERPETUAL_DRAIN_DISPATCH_CAP, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, cleanupMerged: true, openPr: true, resolveConflicts: true, autoMerge: true, finishAbandoned: true, branchesPerAgent: DEFAULT_BRANCHES_PER_AGENT } },
   // issue-reconcile heals ZOMBIE issues: open + `in-progress` (claimed) yet with
   // their PR already MERGED and no live claim anywhere — a partial ship left the
   // claim marker on, so the queue (which skips `in-progress`) never re-picks the
@@ -349,8 +356,13 @@ export const DEFAULT_TASK_INTERVALS = {
   //     `cleanupAgentWorktree`'s auto-merge into whatever the source repo's HEAD is on (clobbering a TUI user's in-flight claim branch).
   //   * `openPR: false` — keeps the cos.js "openPR implies useWorktree" invariant from forcing useWorktree back on. The agent opens its own PR via `gh pr create`
   //     and merges via `gh pr merge`, so CoS doesn't need to.
+  // `claimFlow: true` is the lifecycle marker. It is deliberately separate from
+  // `openPR`: the former tells prompt/completion handling that the claim prompt
+  // owns push → PR/MR → review → merge/cleanup, while the latter tells CoS whether
+  // it should provision and publish a managed worktree. Conflating them sent
+  // claim agents into the generic commit-only handoff (#4153).
   // The agent runs in the source repo's working directory; `git worktree add` doesn't touch that working tree, so it's safe even with uncommitted user changes.
-  'plan-task':           { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true } },
+  'plan-task':           { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true } },
   // claim-issue drives the /claim --issues flow — the agent creates its OWN
   // claim/issue-<num> worktree, opens the PR (Closes #<num>), merges via
   // `gh pr merge`, and cleans up. Both `useWorktree` and `openPR` are OFF on the
@@ -363,7 +375,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // access (GitHub collaborators / GitLab project members); 'owner' only claims
   // issues the repo owner filed; 'any' claims any open issue. Per-app override
   // supported via taskTypeOverrides.
-  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true, issueAuthorFilter: 'self' } },
+  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
   // claim-work is the SINGLE-SOURCE router: one toggle per app that ships the
   // next work item from whatever tracker the app is configured for
   // (app.workTracker, default 'auto' → resolved from the git origin host). At
@@ -377,7 +389,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // hide the claim slug and trigger cleanupAgentWorktree's auto-merge).
   // `issueAuthorFilter` applies only when the resolved tracker is a forge
   // (github/gitlab); it's inert for plan/jira.
-  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, simplify: true, issueAuthorFilter: 'self' } },
+  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
   'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
   'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
   'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null },
@@ -393,7 +405,7 @@ export const DEFAULT_TASK_INTERVALS = {
   'jira-status-report':  { type: INTERVAL_TYPES.WEEKLY, enabled: false, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, readOnly: true } },
   // do-replan audits PLAN.md after open PRs and stale branches have been cleaned up,
   // so the plan reflects what actually merged.
-  'do-replan':           { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, runAfter: ['pr-reviewer', 'branch-cleanup'], taskMetadata: { useWorktree: true, openPR: true } },
+  'do-replan':           { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, runAfter: ['pr-reviewer', 'branch-reconcile'], taskMetadata: { useWorktree: true, openPR: true } },
   // Writable — the v2 reference-watch prompt (PROMPT_VERSIONS['reference-watch'] = 2)
   // instructs the agent to APPEND slug-tagged `[ref-watch-…]` checklist items to
   // PLAN.md and commit them. `readOnly: true` would inject the "do not modify or
@@ -448,16 +460,15 @@ export const DEFAULT_TASK_INTERVALS = {
 // (e.g., plan-task's prompt creates its own claim/<slug> worktree, so a
 // CoS-managed worktree would clobber it).
 export const MANAGED_AGENT_OPTIONS = {
-  'plan-task': ['useWorktree', 'openPR'],
+  'plan-task': ['useWorktree', 'openPR', 'claimFlow'],
   // The non-committing coordinators (NON_COMMITTING_COORDINATOR_METADATA above) all
   // run in the app's LIVE checkout and ship no code, so a CoS-managed worktree is at
   // best unused and at worst harmful — branch-reconcile needs to see the sibling
   // worktrees of the in-flight branches (a managed worktree hides them from the scan
-  // AND could trip cleanupAgentWorktree's auto-merge), and branch-cleanup's worktree
-  // would hold refs it is trying to delete. Locking both off also keeps the
+  // AND could trip cleanupAgentWorktree's auto-merge). Locking both off also keeps the
   // finalize-time PR-claim check from scoring a completed run `pr-missing`.
   //
-  // `worktreeChangesExpected` is managed for these four as well — the one type-keyed
+  // `worktreeChangesExpected` is managed for these coordinators as well — the one type-keyed
   // exception to it being a free per-app override. A clean tree is definitionally the
   // success shape for a branch deletion or a posted report, so setting it back to
   // `true` can only make successful runs fail; it is exactly as non-negotiable here as
@@ -465,17 +476,17 @@ export const MANAGED_AGENT_OPTIONS = {
   // `taskMetadata: null` clear — loadSchedule preserves that null (skipping the
   // defaults deep-merge), and enforceManagedAgentOptions rebuilds only the MANAGED
   // fields, so an unmanaged `worktreeChangesExpected` would silently go absent and the
-  // TUI idle-complete gate would fail the run as `idle-no-changes`.
+  // task bookkeeping would otherwise treat the clean worktree as missing code work.
   ...Object.fromEntries(
     ['branch-reconcile', 'branch-cleanup', 'issue-reconcile', 'jira-status-report']
       .map((t) => [t, ['useWorktree', 'openPR', 'worktreeChangesExpected']])
   ),
   // claim-issue's prompt creates its own claim/issue-<num> worktree (same
   // rationale as plan-task), so CoS must not pre-create one or open the PR.
-  'claim-issue': ['useWorktree', 'openPR'],
+  'claim-issue': ['useWorktree', 'openPR', 'claimFlow'],
   // claim-work delegates to one of the above prompt bodies, each of which
   // creates its own worktree + PR — so the same lock applies to the router.
-  'claim-work': ['useWorktree', 'openPR'],
+  'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
   // ux's deliverable is tracker issues, not code — it never edits source, so a
   // worktree/PR would only produce an empty branch. Lock both off.
   'ux': ['useWorktree', 'openPR']
@@ -497,12 +508,14 @@ export function stripManagedAgentOptionsFromOverride(taskType, taskMetadata) {
 function enforceManagedAgentOptions(taskType, config) {
   const managed = MANAGED_AGENT_OPTIONS[taskType];
   if (!managed || !config) return false;
-  const defaults = DEFAULT_TASK_INTERVALS[taskType]?.taskMetadata || {};
+  const defaults = DEFAULT_TASK_INTERVALS[taskType]?.taskMetadata
+    || LEGACY_MANAGED_TASK_METADATA[taskType]
+    || {};
   let changed = false;
   // If the stored config explicitly cleared taskMetadata (or never had it),
   // we still need the managed fields present — otherwise upstream resolvers
   // (e.g., cos.js applyAppWorktreeDefault) can flip them on via app defaults.
-  if (!config.taskMetadata || typeof config.taskMetadata !== 'object') {
+  if (!config.taskMetadata || typeof config.taskMetadata !== 'object' || Array.isArray(config.taskMetadata)) {
     config.taskMetadata = {};
     changed = true;
   }
@@ -513,6 +526,23 @@ function enforceManagedAgentOptions(taskType, config) {
     }
   }
   return changed;
+}
+
+// The batch size is user-configurable, but an old schedule or an explicit
+// metadata clear must not silently restore the pre-batch all-at-once behavior.
+// Keep the persisted global task on the same safe default as a fresh install;
+// per-app overrides still layer on top of it at dispatch time.
+function enforceBranchReconcileBatch(taskType, config) {
+  if (taskType !== 'branch-reconcile' || !config) return false;
+  if (!config.taskMetadata || typeof config.taskMetadata !== 'object' || Array.isArray(config.taskMetadata)) {
+    config.taskMetadata = {};
+  }
+  const value = config.taskMetadata.branchesPerAgent;
+  if (!Number.isInteger(value) || value < BRANCHES_PER_AGENT_MIN || value > BRANCHES_PER_AGENT_MAX) {
+    config.taskMetadata.branchesPerAgent = DEFAULT_BRANCHES_PER_AGENT;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -691,6 +721,7 @@ export async function loadSchedule() {
   let needsSave = false;
   for (const [taskType, config] of Object.entries(schedule.tasks)) {
     if (enforceManagedAgentOptions(taskType, config)) needsSave = true;
+    if (enforceBranchReconcileBatch(taskType, config)) needsSave = true;
     // Stamp a creation timestamp the first time we see a task so the cron
     // catch-up bound (shouldRunTask) never replays a slot that predates the
     // task. Backfilling to "now" is conservative: it only suppresses catch-up
@@ -799,6 +830,7 @@ export async function updateTaskInterval(taskType, settings) {
   // tries to flip them (UI bypass, hand-edited TASKS.md, direct API call)
   // gets the locked value back in its response.
   enforceManagedAgentOptions(taskType, schedule.tasks[taskType]);
+  enforceBranchReconcileBatch(taskType, schedule.tasks[taskType]);
 
   // Config change unparks a failure-parked type (#2616): editing a type's
   // settings is an explicit "I've addressed the cause" signal, so clear the
@@ -2187,7 +2219,6 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'claim-issue': 'Claim and ship the next open GitHub issue (owner-filed or any author), PR closes it',
   'claim-work': "Ship the next work item from the app's configured tracker (PLAN.md, GitHub/GitLab issues, or JIRA), routed automatically",
   'accessibility': 'Accessibility audit',
-  'branch-cleanup': 'Clean up merged branches',
   'branch-reconcile': "Finish this machine's in-flight local branches: clean up merged ones, open PRs, resolve conflicts, drive review, auto-merge when green",
   'issue-reconcile': "Heal zombie issues: open + in-progress but their PR already merged with no live claim — close + file a scoped follow-up when work remains, or release the claim so the queue re-picks it",
   'dependency-updates': 'Land or resolve open Dependabot/Renovate PRs, then update the dependencies they missed',

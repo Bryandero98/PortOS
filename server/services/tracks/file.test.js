@@ -35,7 +35,7 @@ const journalEntries = () => cj.conflictJournalStore().loadAll();
 // mergeTracksFromSync actually persists (the fields participate in the
 // content hash as of #2912 — see conflictJournal.js HASH_FIELDS).
 const track = (id, extra = {}) => ({
-  id, title: id, albumId: '', artistId: '', artist: '', lyrics: '', prompt: '',
+  id, title: id, albumId: '', artistId: '', artist: '', concept: '', lyrics: '', prompt: '',
   engine: '', modelId: '', durationSec: null, audioFilename: '',
   chiptuneScore: null, chiptunePrompt: '',
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',

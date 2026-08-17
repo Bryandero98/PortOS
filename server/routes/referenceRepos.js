@@ -60,7 +60,9 @@ router.post('/:refId/check', asyncHandler(async (req, res) => {
   const { appId, refId } = req.params;
   const snapshot = await checkReferenceRepo(appId, refId);
   let analysis = { queued: false, reason: 'no-new-commits' };
-  if (snapshot.commitCount > 0) {
+  if (snapshot.stale) {
+    analysis = { queued: false, reason: 'stale-snapshot' };
+  } else if (snapshot.commitCount > 0) {
     const app = await getAppById(appId);
     const ref = app?.referenceRepos?.find((r) => r.id === refId);
     if (!app) {

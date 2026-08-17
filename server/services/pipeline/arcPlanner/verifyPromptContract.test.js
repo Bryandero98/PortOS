@@ -34,7 +34,7 @@ const NON_FIELD_TOKENS = new Set([
   // Output-contract vocabulary.
   'issues', 'severity', 'high', 'medium', 'low',
   // `arcRole` VALUES, not field names.
-  'pilot', 'finale', 'complication', 'midpoint', 'b-plot', 'all-is-lost',
+  'pilot', 'climax', 'finale', 'complication', 'midpoint', 'b-plot', 'all-is-lost', 'extended',
 ]);
 
 const renderableFields = () => new Set([
@@ -61,6 +61,19 @@ describe('pipeline-arc-verify prompt ↔ buildVerifyContext leaf contract', () =
     const unrenderable = [...citedByPrompt]
       .filter((token) => !NON_FIELD_TOKENS.has(token) && !leafWithoutArcRole.has(token));
     expect(unrenderable).toEqual(['arcRole']);
+  });
+
+  it('materializes custom numeric targets for metadata-fit checks', () => {
+    expect(renderVerifyIssueLeaf({
+      lengthProfile: 'custom',
+      pageTarget: 4,
+      minutesTarget: 120,
+      stages: {},
+    })).toMatchObject({
+      lengthProfile: 'custom',
+      pageTarget: 4,
+      minutesTarget: 120,
+    });
   });
 });
 

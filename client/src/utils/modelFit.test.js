@@ -113,3 +113,4 @@ describe('fitModelToHeight', () => {
     });
   });
 });
+// @vitest-environment node

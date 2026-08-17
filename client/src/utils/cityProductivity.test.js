@@ -132,3 +132,4 @@ describe('computeProductivityMonument', () => {
     expect(vm.longest).toBeNull();
   });
 });
+// @vitest-environment node

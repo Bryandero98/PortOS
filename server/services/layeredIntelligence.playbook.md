@@ -82,6 +82,11 @@ not one of these:
   when it is done. Narrow it or drop it.
 - **Speculative "nice to have"** with no goal tie and no measured need. Costs the
   user triage time and lowers your merge rate further.
+- **Future-triggered refactor.** Two similar call sites are not enough reason to
+  file an abstraction whose payoff starts only when a third consumer appears. If
+  the refactor pays off in the current code, file that concrete work; otherwise
+  return `proposal: null` and let a later run rediscover it when the evidence
+  changes.
 - **Maps to a chronically-failing execution domain** (see the next section).
 
 ## 4. Task Type Selection Rules

@@ -17,6 +17,7 @@
 // `digitalTwinValidation.X`. The catch-all `validation.js` stays flat — its
 // names are the canonical PortOS-wide schemas.
 export * as agentValidation from './agentValidation.js';
+export * as agentContextValidation from './agentContextValidation.js';
 export * as appleHealthValidation from './appleHealthValidation.js';
 export * as brainValidation from './brainValidation.js';
 export * as catalogValidation from './catalogValidation.js';
@@ -35,6 +36,7 @@ export * as musicVideoValidation from './musicVideoValidation.js';
 export * as notesValidation from './notesValidation.js';
 export * as peerSyncValidation from './peerSyncValidation.js';
 export * as pipelineValidation from './pipelineValidation.js';
+export * as postLlmContracts from './postLlmContracts.js';
 export * as postValidation from './postValidation.js';
 export * as privacyValidation from './privacyValidation.js';
 export * as roundsValidation from './roundsValidation.js';
@@ -213,6 +215,7 @@ export * from './ytdlp.js';
 export * from './abortTimeout.js';
 export * from './connectivity.js';
 export * from './fetchWithTimeout.js';
+export * from './federatedMediaWire.js';
 export * from './requestAbort.js';
 export * from './httpClient.js';
 export * from './httpsState.js';
@@ -269,6 +272,7 @@ export * from './localModelHeuristics.js';
 export * from './ollamaContext.js';
 export * from './loraDataset.js';
 export * from './issueLength.js';
+export * from './musicDuration.js';
 export * from './investigationTasks.js';
 export * from './learningVerdict.js';
 export * from './mediaItemKey.js';
@@ -318,6 +322,7 @@ export * from './arrayUtils.js';
 export * from './asyncMutex.js';
 export * from './authGate.js';
 export * from './concurrencyGate.js';
+export * from './dispatchLabels.js';
 export * from './domainAutonomy.js';
 export * from './domainBudgets.js';
 export * from './errorHandler.js';
@@ -351,6 +356,7 @@ export * from './workspaceRoots.js';
 export * from './zodCompat.js';
 
 // === Test support (consumed by *.test.js files) ===
+export * from './gitTestRepo.js';
 export * from './mockPathsDataRoot.js';
 export * from './settingsTestUtil.js';
 export * from './testHelper.js';

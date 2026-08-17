@@ -197,6 +197,15 @@ export const getDigitalTwinGaps = () => request('/digital-twin/gaps');
 
 // Digital Twin External Import
 export const getDigitalTwinImportSources = () => request('/digital-twin/import/sources');
+export const openDigitalTwinSpotifyBrowser = (options = {}) => request('/digital-twin/import/spotify/browser/open', {
+  method: 'POST',
+  ...options
+});
+export const importDigitalTwinSpotifyBrowser = (providerId, model, options = {}) => request('/digital-twin/import/spotify/browser/import', {
+  method: 'POST',
+  body: JSON.stringify({ providerId, model }),
+  ...options
+});
 export const analyzeDigitalTwinImport = (source, data, providerId, model, options = {}) => request('/digital-twin/import/analyze', {
   method: 'POST',
   body: JSON.stringify({ source, data, providerId, model }),

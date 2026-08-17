@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MiniMax Music 3 Diffusers sidecar using PortOS' STAGE/RESULT protocol."""
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -29,6 +30,22 @@ def to_stereo(audio, np):
     return audio.T if audio.shape[1] == 2 else np.stack([audio[0], audio[0]])
 
 
+def seeded_generation_kwargs(pipe, torch, seed):
+    """Return a CUDA generator only when this Diffusers pipeline accepts one."""
+    if seed is None:
+        return {}
+    try:
+        parameters = inspect.signature(pipe.__call__).parameters
+    except (TypeError, ValueError):
+        return {}
+    accepts_generator = 'generator' in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if not accepts_generator:
+        return {}
+    return {'generator': torch.Generator(device='cuda').manual_seed(int(seed))}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', required=True)
@@ -37,6 +54,10 @@ def main():
     parser.add_argument('--duration', type=float, required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--runtime-dir', default='')
+    # This is intentionally a sidecar-only benchmark hook. The production
+    # server does not pass it, so normal user renders retain the model's
+    # default sampling behavior.
+    parser.add_argument('--seed', type=int, default=None)
     args = parser.parse_args()
     if args.runtime_dir:
         sys.path.insert(0, args.runtime_dir)
@@ -52,11 +73,15 @@ def main():
     pipe.load_components(dtype=torch.bfloat16)
     pipe.to('cuda')
     print('STAGE:generate', file=sys.stderr, flush=True)
+    generation_kwargs = seeded_generation_kwargs(pipe, torch, args.seed)
+    if args.seed is not None and not generation_kwargs:
+        raise RuntimeError('this Diffusers pipeline does not support deterministic --seed generation')
     audio = to_numpy(pipe(
         prompt=args.text,
         lyrics=args.lyrics,
         audio_duration=float(max(1, min(300, args.duration))),
         output='audios',
+        **generation_kwargs,
     )[0], np, torch)
     audio = to_stereo(audio, np)
     source_rate = int(pipe.sampling_rate)
@@ -69,7 +94,10 @@ def main():
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with wave.open(args.output, 'wb') as wav:
         wav.setnchannels(2); wav.setsampwidth(2); wav.setframerate(32000); wav.writeframes(pcm.tobytes())
-    print('RESULT:' + json.dumps({'durationSec': len(pcm) / 32000}), flush=True)
+    print('RESULT:' + json.dumps({
+        'durationSec': len(pcm) / 32000,
+        **({'seed': args.seed, 'seedApplied': True} if args.seed is not None else {}),
+    }), flush=True)
 
 
 if __name__ == '__main__':

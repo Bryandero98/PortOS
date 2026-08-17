@@ -58,7 +58,7 @@ describe('cognitive drill generators', () => {
   });
 
   it('stroop produces the requested trial count with a valid ink answer', () => {
-    const drill = generateStroop({ count: 12 });
+    const drill = generateStroop({ count: 12, incongruentPct: 75 });
     expect(drill.type).toBe('stroop');
     expect(drill.trials).toHaveLength(12);
     const names = STROOP_COLORS.map(c => c.name);
@@ -67,6 +67,8 @@ describe('cognitive drill generators', () => {
       expect(names).toContain(t.inkColor);
       expect(t.congruent).toBe(t.word === t.inkColor);
     }
+    expect(drill.trials.filter(t => !t.congruent)).toHaveLength(9);
+    expect(drill.config.incongruentPct).toBe(75);
     expect(drill.options.map(o => o.name).sort()).toEqual([...names].sort());
   });
 
@@ -112,6 +114,18 @@ describe('cognitive drill generators', () => {
       // preserve cell count) — a cheap sanity check that nothing was corrupted.
       for (const opt of trial.options) expect(opt.length).toBe(trial.target.length);
     }
+  });
+
+  it('mental-rotation applies transformation range and option-count difficulty', () => {
+    const introductory = generateMentalRotation({ count: 6, rotationComplexity: 1, optionCount: 2 });
+    expect(introductory.config).toMatchObject({ rotationComplexity: 1, optionCount: 2 });
+    expect(introductory.trials.every(trial => trial.rotationSteps === 1)).toBe(true);
+    expect(introductory.trials.every(trial => trial.options.length === 2)).toBe(true);
+
+    const advanced = generateMentalRotation({ count: 6, rotationComplexity: 3, optionCount: 4 });
+    expect(advanced.config).toMatchObject({ rotationComplexity: 3, optionCount: 4 });
+    expect(advanced.trials.every(trial => trial.rotationSteps >= 1 && trial.rotationSteps <= 3)).toBe(true);
+    expect(advanced.trials.every(trial => trial.options.length === 4)).toBe(true);
   });
 
   it('ROTATION_SHAPES chirality invariant: every rotation is distinct, every mirrored-rotation is distinct, and no rotation ever equals a mirrored-rotation', () => {
@@ -310,6 +324,40 @@ describe('cognitive drill scorers (recompute the answer key, never trust client)
     expect(score).toBeLessThan(100);
   });
 
+  it('schulte-table preserves wrong taps in order and cannot score a completed error run as perfect', () => {
+    const drillData = { type: 'schulte-table', config: { size: 2 }, cells: [3, 1, 4, 2] };
+    const result = scoreCognitiveDrill('schulte-table', drillData, [
+      { index: 99, expected: 99, answered: 1, correct: false, responseMs: 400 },
+      { index: 99, expected: 99, answered: 4, correct: true, responseMs: 200 }, // wrong; target stays 2
+      { index: 0, expected: 1, answered: 2, correct: true, responseMs: 700 },
+      { answered: 3, correct: true, responseMs: 500 },
+      { answered: 4, correct: true, responseMs: 450 },
+    ]);
+    expect(result.questions.map(q => [q.expected, q.answered, q.correct])).toEqual([
+      [1, 1, true],
+      [2, 4, false],
+      [2, 2, true],
+      [3, 3, true],
+      [4, 4, true],
+    ]);
+    expect(result).toMatchObject({ completion: 1, accuracy: 0.8, errorCount: 1, attemptCount: 5 });
+    expect(result.score).toBeLessThan(100);
+  });
+
+  it('schulte-table repeated wrong inputs stay errors and incomplete runs stay incomplete', () => {
+    const drillData = { type: 'schulte-table', config: { size: 3 }, cells: [1, 2, 3, 4, 5, 6, 7, 8, 9] };
+    const result = scoreCognitiveDrill('schulte-table', drillData, [
+      { answered: 2, responseMs: 100 },
+      { answered: 2, responseMs: 200 },
+      { answered: 1, responseMs: 300 },
+      { answered: 2, responseMs: 400 },
+    ]);
+    expect(result.questions.map(q => q.expected)).toEqual([1, 1, 1, 2]);
+    expect(result.errorCount).toBe(2);
+    expect(result.answeredCount).toBe(2);
+    expect(result.completion).toBeCloseTo(2 / 9);
+  });
+
   it('mental-rotation recomputes the answer from trials[index].correctIndex, not client claims', () => {
     const drillData = {
       type: 'mental-rotation',
@@ -324,6 +372,20 @@ describe('cognitive drill scorers (recompute the answer key, never trust client)
     ]);
     expect(questions[0].correct).toBe(true);
     expect(questions[1].correct).toBe(false);
+  });
+
+  it('mental-rotation recomputes new drill answers from shape + rotation, not stored correctIndex', () => {
+    const base = ROTATION_SHAPES.L;
+    const correct = rotateCells(base, 1);
+    const distractor = mirrorCells(base);
+    const drillData = {
+      type: 'mental-rotation',
+      trials: [{ shape: 'L', rotationSteps: 1, correctIndex: 1, options: [correct, distractor] }],
+    };
+    const result = scoreCognitiveDrill('mental-rotation', drillData, [
+      { index: 0, answered: 0, correct: false, responseMs: 3000 },
+    ]);
+    expect(result.questions[0]).toMatchObject({ expected: 0, answered: 0, correct: true });
   });
 
   it('reaction-time simple mode marks a false start wrong even with a fast responseMs', () => {

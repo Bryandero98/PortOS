@@ -57,6 +57,19 @@ describe('cosValidation effort field', () => {
   });
 });
 
+describe('branch-reconcile batch metadata', () => {
+  it('keeps integer batch sizes from 1 through 6', () => {
+    expect(sanitizeTaskMetadata({ branchesPerAgent: 1 })).toEqual({ branchesPerAgent: 1 });
+    expect(sanitizeTaskMetadata({ branchesPerAgent: 6 })).toEqual({ branchesPerAgent: 6 });
+  });
+
+  it('drops zero, fractional, string, and unbounded batch sizes', () => {
+    for (const branchesPerAgent of [0, 7, 1.5, '3', null]) {
+      expect(sanitizeTaskMetadata({ branchesPerAgent })).toBeNull();
+    }
+  });
+});
+
 describe('cosValidation autonomous-job effort field', () => {
   it('accepts every EFFORT_LEVELS value on create and rejects unknown values', () => {
     for (const effort of EFFORT_LEVELS) {
@@ -90,6 +103,14 @@ describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () =>
     expect(parsed.taskMetadata).toEqual({ useWorktree: true, worktreeChangesExpected: false });
     expect(createCosJobSchema.safeParse({ name: 'j', taskMetadata: { worktreeChangesExpected: 'nope' } }).success)
       .toBe(false);
+  });
+});
+
+describe('cosValidation task metadata claimFlow marker', () => {
+  it('sanitizes the claim lifecycle marker as a boolean', () => {
+    expect(sanitizeTaskMetadata({ claimFlow: true })).toEqual({ claimFlow: true });
+    expect(sanitizeTaskMetadata({ claimFlow: false })).toEqual({ claimFlow: false });
+    expect(sanitizeTaskMetadata({ claimFlow: 'true' })).toBeNull();
   });
 });
 
@@ -211,10 +232,10 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
   it('normalizes a token-keyed map: aliases, case, and out-of-ladder levels', () => {
     expect(normalizeReviewerEfforts({
       gemini: 'HIGH',        // alias + case-folded
-      codex: 'ultra',        // in codex's ladder only
+      codex: 'xhigh',        // in codex's ladder only
       claude: 'medium',
       ollama: ' low ',       // trimmed
-    })).toEqual({ antigravity: 'high', codex: 'ultra', claude: 'medium', ollama: 'low' });
+    })).toEqual({ antigravity: 'high', codex: 'xhigh', claude: 'medium', ollama: 'low' });
   });
 
   it('DROPS rather than clamps a level the reviewer rejects — a displayed effort must be the one it runs', () => {

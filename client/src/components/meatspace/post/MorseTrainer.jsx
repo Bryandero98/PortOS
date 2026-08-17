@@ -7,6 +7,7 @@ import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
 import { resumeAudioContext } from '../../../lib/audioContext.js';
+import { MORSE_MATERIAL_MODES, canAdvanceMorseLevel, selectMorsePrompt } from '../../../lib/morsePractice.js';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSaves } from './completionSave';
 
@@ -97,7 +98,7 @@ const PREFS_KEY = 'portos-post-morse-prefs';
 // now a write-through cache; the server holds the authoritative level. A fresh
 // install with no server level and no cache stays at this base (no regression).
 const DEFAULT_KOCH_LEVEL = 2;
-const DEFAULT_PREFS = { wpm: 18, effectiveWpm: 18, hz: 700, kochLevel: DEFAULT_KOCH_LEVEL, bestAccuracy: 0 };
+const DEFAULT_PREFS = { wpm: 18, effectiveWpm: 18, hz: 700, kochLevel: DEFAULT_KOCH_LEVEL, bestAccuracy: 0, adaptivePractice: true, materialMode: 'groups' };
 
 // Tone envelope ramp — fast enough to avoid clicks, slow enough to feel like a key
 const RAMP_SEC = 0.005;
@@ -199,22 +200,6 @@ function playMorse(ctx, text, { wpm, effectiveWpm, hz }) {
       resolve();
     };
   });
-}
-
-function pickKochPrompt(level) {
-  const pool = KOCH_ORDER.slice(0, Math.max(2, Math.min(level, KOCH_ORDER.length)));
-  const groupLen = level >= 5 ? 5 : 1;
-  let out = '';
-  for (let i = 0; i < groupLen; i++) {
-    out += pool[Math.floor(Math.random() * pool.length)];
-  }
-  return out;
-}
-
-const SEND_PROMPTS = ['SOS', 'CQ', 'HELLO', 'PORTOS', 'TEST', 'PARIS', 'DE K1AB', 'TNX 73'];
-
-function pickSendPrompt() {
-  return SEND_PROMPTS[Math.floor(Math.random() * SEND_PROMPTS.length)];
 }
 
 function useAudioContext() {
@@ -465,6 +450,7 @@ export const MORSE_MODE_IDS = MODES.map((m) => m.id);
 // source of truth for which drill is open, so there is no local mode state.
 export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, onBack, onContinue }) {
   const [prefs, setPrefs] = useState(loadPrefs);
+  const [morseProgress, setMorseProgress] = useState(null);
   const [trainingStats, setTrainingStats] = useState(null);
   // Bumped after each round submit so the progress panel refetches its trends /
   // confusion matrix without a manual reload.
@@ -488,6 +474,7 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
     getMorseProgress(30, { silent: true })
       .then(async (p) => {
         if (cancelled || !p) return;
+        setMorseProgress(p);
         if (!p.kochLevelSet) {
           const cachedLevel = loadPrefs().kochLevel;
           if (cachedLevel > DEFAULT_KOCH_LEVEL) {
@@ -531,7 +518,10 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
   // Completion actions await this promise and retry it if the first write fails.
   const submitRound = useCallback((round) => {
     return submitMorseRound(round)
-      .then(() => setProgressRefresh((n) => n + 1));
+      .then(() => {
+        setProgressRefresh((n) => n + 1);
+        return getMorseProgress(30, { silent: true }).then(setMorseProgress);
+      });
   }, []);
 
   // Fetches the training log's 30-day view and reduces it to what this trainer
@@ -579,16 +569,16 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
 
       <div className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}>
         <div className="space-y-6 min-w-0 max-w-2xl">
-          <SettingsPanel prefs={prefs} updatePrefs={updatePrefs} onResetProgress={resetProgress} trainingStats={trainingStats} />
+          <SettingsPanel prefs={prefs} updatePrefs={updatePrefs} onResetProgress={resetProgress} trainingStats={trainingStats} progress={morseProgress} />
           {!mode && <ModeGrid onPick={onSelectMode} />}
           {mode === 'copy' && (
-            <CopyDrill prefs={prefs} updatePrefs={updatePrefs} ensureCtx={ensureCtx} claimSession={claimSession} releaseSession={releaseSession} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
+            <CopyDrill prefs={prefs} progress={morseProgress} updatePrefs={updatePrefs} ensureCtx={ensureCtx} claimSession={claimSession} releaseSession={releaseSession} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
           )}
           {mode === 'head-copy' && (
-            <CopyDrill prefs={prefs} updatePrefs={updatePrefs} ensureCtx={ensureCtx} claimSession={claimSession} releaseSession={releaseSession} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} headCopy />
+            <CopyDrill prefs={prefs} progress={morseProgress} updatePrefs={updatePrefs} ensureCtx={ensureCtx} claimSession={claimSession} releaseSession={releaseSession} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} headCopy />
           )}
           {mode === 'send' && (
-            <SendDrill keying={keying} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
+            <SendDrill keying={keying} prefs={prefs} progress={morseProgress} onExit={onExitMode} onContinue={onContinue} onSessionComplete={logTraining} onRoundSubmit={submitRound} />
           )}
           {!mode && <MorseProgressPanel refreshKey={progressRefresh} />}
         </div>
@@ -598,7 +588,9 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
   );
 }
 
-function SettingsPanel({ prefs, updatePrefs, onResetProgress, trainingStats }) {
+function SettingsPanel({ prefs, updatePrefs, onResetProgress, trainingStats, progress }) {
+  const adaptiveId = useId();
+  const materialId = useId();
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
       <SliderRow
@@ -627,6 +619,21 @@ function SettingsPanel({ prefs, updatePrefs, onResetProgress, trainingStats }) {
         onChange={(v) => updatePrefs({ hz: v })}
         suffix="Hz"
       />
+      <div>
+        <label htmlFor={materialId} className="block text-xs text-gray-400 uppercase tracking-wide mb-1">Material</label>
+        <select
+          id={materialId}
+          value={prefs.materialMode}
+          onChange={(e) => updatePrefs({ materialMode: e.target.value })}
+          className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm text-white"
+        >
+          {MORSE_MATERIAL_MODES.map((materialMode) => <option key={materialMode} value={materialMode}>{materialMode === 'qso' ? 'QSO phrases' : materialMode}</option>)}
+        </select>
+      </div>
+      <label htmlFor={adaptiveId} className="flex items-center gap-2 text-xs text-gray-300 pt-5 cursor-pointer">
+        <input id={adaptiveId} type="checkbox" checked={prefs.adaptivePractice} onChange={(e) => updatePrefs({ adaptivePractice: e.target.checked })} className="accent-port-accent" />
+        Adaptive practice
+      </label>
       <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs text-gray-500 border-t border-port-border pt-3">
         <span>
           Koch level: <span className="text-white font-mono">{prefs.kochLevel}</span> /{' '}
@@ -645,6 +652,9 @@ function SettingsPanel({ prefs, updatePrefs, onResetProgress, trainingStats }) {
                 </>
               )}
             </>
+          )}
+          {progress?.practiceAccuracy?.targeted?.attempts > 0 && (
+            <> · Targeted: <span className="text-white font-mono">{progress.practiceAccuracy.targeted.accuracy}%</span> vs coverage <span className="text-white font-mono">{progress.practiceAccuracy.coverage.accuracy == null ? '—' : `${progress.practiceAccuracy.coverage.accuracy}%`}</span></>
           )}
         </span>
         <button
@@ -916,8 +926,8 @@ const ROUND_SIZE = 10;
 export function resultsToItems(results) {
   const items = [];
   for (const r of results) {
-    const promptChars = (r.prompt || '').toUpperCase().split('');
-    const guessChars = (r.guess || '').toUpperCase().split('');
+    const promptChars = (r.prompt || '').toUpperCase().replace(/\s/g, '').split('');
+    const guessChars = (r.guess || '').toUpperCase().replace(/\s/g, '').split('');
     const len = Math.max(promptChars.length, guessChars.length);
     for (let i = 0; i < len; i++) {
       const sent = promptChars[i] ?? '';
@@ -928,7 +938,7 @@ export function resultsToItems(results) {
   return items;
 }
 
-function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession, onExit, onContinue, onSessionComplete, onRoundSubmit, headCopy = false }) {
+function CopyDrill({ prefs, progress, updatePrefs, ensureCtx, claimSession, releaseSession, onExit, onContinue, onSessionComplete, onRoundSubmit, headCopy = false }) {
   const [prompt, setPrompt] = useState('');
   const [input, setInput] = useState('');
   const [results, setResults] = useState([]);
@@ -936,6 +946,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
   const [playing, setPlaying] = useState(false);
   const [playbackError, setPlaybackError] = useState(null);
   const [done, setDone] = useState(false);
+  const [selection, setSelection] = useState(null);
   const inputRef = useRef(null);
   const roundStartRef = useRef(0);
   // Set when a prompt finishes playing; drives per-question responseMs (time from
@@ -955,6 +966,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
     if (playingRef.current) return;
     setResults([]);
     setFeedback(null);
+    setSelection(null);
     setDone(false);
     roundStartRef.current = Date.now();
     await playPrompt(true);
@@ -984,9 +996,19 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
       setPlaybackError('Audio playback could not start. Check your browser audio settings and try again.');
       return;
     }
-    const text = isNew ? pickKochPrompt(prefs.kochLevel) : prompt;
+    const nextSelection = isNew ? selectMorsePrompt({
+      seed: `${roundStartRef.current}:${results.length}`,
+      pool: KOCH_ORDER.slice(0, Math.max(2, Math.min(prefs.kochLevel, KOCH_ORDER.length))),
+      progress,
+      materialMode: prefs.materialMode,
+      adaptive: prefs.adaptivePractice,
+      groupLength: prefs.kochLevel >= 5 ? 5 : 1,
+      recentChars: results.slice(-2).flatMap((result) => result.prompt.replace(/\s/g, '').split('')),
+    }) : selection;
+    const text = isNew ? nextSelection.text : prompt;
     if (isNew) {
       setPrompt(text);
+      setSelection(nextSelection);
       setInput('');
       setFeedback(null);
     }
@@ -1016,7 +1038,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
     const guess = input.trim().toUpperCase();
     const correct = guess === prompt;
     const responseMs = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
-    const next = [...results, { prompt, guess, correct, responseMs }];
+    const next = [...results, { prompt, guess, correct, responseMs, selection }];
     setResults(next);
     setFeedback({ correct, prompt, guess });
     if (next.length >= ROUND_SIZE) {
@@ -1033,7 +1055,8 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
     const correctCount = rs.filter((r) => r.correct).length;
     const accuracy = Math.round((correctCount / rs.length) * 100);
     const patch = { bestAccuracy: Math.max(prefs.bestAccuracy, accuracy) };
-    if (accuracy >= 90 && prefs.kochLevel < KOCH_ORDER.length) {
+    const items = resultsToItems(rs);
+    if (canAdvanceMorseLevel({ items, accuracy, wpm: prefs.wpm, effectiveWpm: prefs.effectiveWpm }) && prefs.kochLevel < KOCH_ORDER.length) {
       patch.kochLevel = prefs.kochLevel + 1;
     }
     updatePrefs(patch);
@@ -1054,7 +1077,10 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
       wpm: prefs.wpm,
       farnsworthWpm: prefs.effectiveWpm,
       durationMs,
-      items: resultsToItems(rs),
+      items,
+      samplerVersion: rs[0]?.selection?.samplerVersion || selection?.samplerVersion,
+      materialMode: rs[0]?.selection?.materialMode || selection?.materialMode,
+      targetedChars: [...new Set(rs.flatMap((result) => result.selection?.targetedChars || selection?.targetedChars || []))],
     };
     saveRef.current = startRetryableSaves([
       onSessionComplete && (() => onSessionComplete(trainingPayload)),
@@ -1122,6 +1148,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
             ? 'Listen to a 10-question round. No code hints on the results screen — pure recall. Hit 90% to unlock the next letter.'
             : 'Listen to a 10-question round. Hit 90% to unlock the next letter.'}
         </p>
+        <p className="text-xs text-gray-500">{prefs.adaptivePractice ? 'Adaptive practice prioritizes repeated confusions while retaining full Koch-pool coverage.' : 'Balanced Koch-pool coverage is enabled.'}</p>
         {playbackError && <p role="alert" className="text-sm text-port-error">{playbackError}</p>}
         <button
           onClick={startRound}
@@ -1146,6 +1173,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
           <Volume2 size={14} /> Replay
         </button>
       </div>
+      {selection && <p className="text-xs text-gray-500 text-center">{selection.reason}</p>}
       <div className="text-center py-6">
         {playing ? (
           <div className="text-cyan-400 text-sm animate-pulse">▮ ▮ ▮ playing...</div>
@@ -1178,7 +1206,7 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
         <input
           ref={inputRef}
           value={input}
-          onChange={(e) => setInput(e.target.value.toUpperCase().replace(/\s+/g, ''))}
+          onChange={(e) => setInput(e.target.value.toUpperCase().replace(/\s+/g, ' '))}
           onKeyDown={onKey}
           autoFocus
           className="w-full px-4 py-3 bg-port-bg border border-port-border focus:border-port-accent rounded-lg text-white text-center font-mono text-lg uppercase tracking-widest outline-none"
@@ -1199,8 +1227,17 @@ function CopyDrill({ prefs, updatePrefs, ensureCtx, claimSession, releaseSession
   );
 }
 
-function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmit }) {
-  const [prompt, setPrompt] = useState(() => pickSendPrompt());
+function SendDrill({ keying, prefs, progress, onExit, onContinue, onSessionComplete, onRoundSubmit }) {
+  const pickPrompt = useCallback((seed = Date.now()) => selectMorsePrompt({
+    seed,
+    pool: KOCH_ORDER.slice(0, Math.max(2, Math.min(prefs.kochLevel, KOCH_ORDER.length))),
+    progress,
+    materialMode: prefs.materialMode,
+    adaptive: prefs.adaptivePractice,
+    groupLength: prefs.kochLevel >= 5 ? 5 : 1,
+  }), [prefs, progress]);
+  const [selection, setSelection] = useState(() => pickPrompt());
+  const [prompt, setPrompt] = useState(() => selection.text);
   const [feedback, setFeedback] = useState(null);
   const promptStartRef = useRef(Date.now());
   const saveRef = useRef(() => Promise.resolve());
@@ -1253,7 +1290,7 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
       items.push({ sent: '', guessed: ' ', correct: false, responseMs: 0 });
     }
     if (items.length > 0) {
-      const roundPayload = { mode: 'send', durationMs, items };
+      const roundPayload = { mode: 'send', durationMs, items, samplerVersion: selection.samplerVersion, materialMode: selection.materialMode, targetedChars: selection.targetedChars };
       saveRef.current = startRetryableSaves([
         onSessionComplete && (() => onSessionComplete(trainingPayload)),
         onRoundSubmit && (() => onRoundSubmit(roundPayload)),
@@ -1268,7 +1305,9 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
   function nextPrompt() {
     keying.clear();
     setFeedback(null);
-    setPrompt(pickSendPrompt());
+    const nextSelection = pickPrompt();
+    setSelection(nextSelection);
+    setPrompt(nextSelection.text);
     promptStartRef.current = Date.now();
   }
 
@@ -1282,6 +1321,7 @@ function SendDrill({ keying, onExit, onContinue, onSessionComplete, onRoundSubmi
       <p className="text-xs text-gray-500 text-center">
         Hold space (or tap the practice key on the right) to send dits and dahs. Use the reference tabs if you need a hint.
       </p>
+      <p className="text-xs text-gray-500 text-center">{selection.reason}</p>
 
       <div className="bg-port-bg border border-port-border rounded-lg p-3 min-h-[3rem] flex flex-col items-center justify-center">
         <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Your sending</div>

@@ -481,6 +481,27 @@ describe('submitPractice', () => {
     expect(result.mastery.chunks['verse-1'].lastPracticed).toBeTruthy();
   });
 
+  it('records learn as exposure without changing mastery, schedule, or correctness', async () => {
+    const result = await submitPractice('elements-song', {
+      mode: 'learn',
+      chunkId: 'verse-1',
+      // Accept the legacy synthetic success too; passive study must ignore it.
+      results: [{ correct: true, element: 'H' }],
+      totalMs: 12000,
+    });
+
+    expect(result.mastery.overallPct).toBe(0);
+    expect(result.mastery.elements).toEqual({});
+    expect(result.schedule.lastReviewed).toBeNull();
+    expect(atomicWrite.mock.calls.some(([path]) => String(path).includes('post-memory-items'))).toBe(false);
+
+    const trainingWrite = atomicWrite.mock.calls.find(([path]) => String(path).includes('post-training-log'));
+    expect(trainingWrite).toBeTruthy();
+    expect(trainingWrite[1].entries.at(-1)).toMatchObject({ mode: 'learn', totalMs: 12000 });
+    expect(trainingWrite[1].entries.at(-1)).not.toHaveProperty('correct');
+    expect(trainingWrite[1].entries.at(-1)).not.toHaveProperty('total');
+  });
+
   it('stamps the training-log entry date in the user local timezone (issue #2681)', async () => {
     // 2026-07-16T05:00Z = 2026-07-15 22:00 PDT — UTC day July 16, LA day July 15.
     // The logged practice must key off the local day so it counts toward today's
@@ -733,6 +754,34 @@ describe('applySessionToMemoryItems (consolidated one-pass, issue #2098)', () =>
     expect(written.mastery.chunks).toEqual(legacyMastery.chunks);
     expect(written.mastery.elements).toEqual(legacyMastery.elements);
     expect(written.mastery.overallPct).toEqual(legacyMastery.overallPct);
+  });
+
+  it('counts every indexed fill-blank response as its own mastery attempt', async () => {
+    readJSONFile.mockResolvedValueOnce({ items: [seedItem()] });
+    await applySessionToMemoryItems([{
+      type: 'memory-fill-blank',
+      memoryItemId: 'elements-song',
+      questions: [{
+        prompt: 'The ____ ____',
+        expected: 'quick',
+        answered: [
+          { index: 1, value: 'quick', expected: 'quick', correct: true },
+          { index: 2, value: 'slow', expected: 'fox', correct: false },
+          { index: 3, value: 'late', expected: 'runner', correct: false },
+        ],
+        correct: false,
+        chunkId: 'verse-1',
+      }],
+    }], now);
+
+    const written = atomicWrite.mock.calls[0][1].items[0];
+    expect(written.mastery.chunks['verse-1']).toEqual({
+      correct: 1,
+      attempts: 3,
+      lastPracticed: now.toISOString(),
+      recent: [1, 0, 0],
+    });
+    expect(written.schedule.intervalDays).toBe(0);
   });
 });
 

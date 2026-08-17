@@ -82,3 +82,4 @@ describe('WEEKDAYS', () => {
     expect(WEEKDAYS[0].label).toBe('Sun');
   });
 });
+// @vitest-environment node

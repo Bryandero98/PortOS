@@ -8,7 +8,7 @@ import {
   MAX_BASE64_UPLOAD_BYTES,
   MAX_SCREENSHOT_BYTES,
 } from './uploadLimits.js';
-import { detectImageFormat } from './fileUtils.js';
+import { ATTACHMENT_ALLOWED_EXTENSIONS, detectImageFormat } from './fileUtils.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (p) => readFileSync(join(HERE, p), 'utf8');
@@ -45,6 +45,14 @@ describe('uploadLimits', () => {
     const indexSrc = read('../index.js');
     expect(indexSrc).toContain('JSON_BODY_LIMIT');
     expect(indexSrc).not.toMatch(/express\.(json|urlencoded)\(\{\s*limit:\s*['"]/);
+  });
+
+  it('keeps the client attachment-extension list in lockstep with the server', () => {
+    const clientSrc = read('../../client/src/utils/fileUpload.js');
+    const match = clientSrc.match(/export const ALLOWED_ATTACHMENT_EXTENSIONS = \[([\s\S]*?)\];/);
+    expect(match, 'client ALLOWED_ATTACHMENT_EXTENSIONS not found').toBeTruthy();
+    const clientExts = [...match[1].matchAll(/'(\.[a-z0-9]+)'/g)].map((m) => m[1]);
+    expect(new Set(clientExts)).toEqual(ATTACHMENT_ALLOWED_EXTENSIONS);
   });
 
   it('matches the client mirror, which cannot import this module', () => {

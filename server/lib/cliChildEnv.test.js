@@ -147,6 +147,21 @@ describe('buildCliChildEnv — pm2 guard', () => {
 // are exactly the sites an earlier draft of the guard could not see, and where
 // the OpenCode sweep was missed once before.
 describe('composeProviderEnv — delta for sites that do not spawn directly', () => {
+  it('widens Claude Code output for Ollama harnesses while preserving explicit provider overrides', () => {
+    const localClaude = { command: '/usr/local/bin/claude', ollamaBacked: true, envVars: {} };
+    expect(composeProviderEnv({ provider: localClaude }).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('65536');
+    expect(composeProviderEnv({
+      provider: { ...localClaude, envVars: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '48000' } },
+    }).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('48000');
+
+    expect(composeProviderEnv({
+      provider: { command: 'claude', ollamaBacked: false, envVars: {} },
+    }).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
+    expect(composeProviderEnv({
+      provider: { command: 'opencode', ollamaBacked: true, envVars: {} },
+    }).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
+  });
+
   it('emits only the provider layers, with no base env, PWD, or strip', () => {
     const delta = composeProviderEnv({
       before: { GH_TOKEN: 'forge' },

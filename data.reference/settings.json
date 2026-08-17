@@ -54,5 +54,12 @@
   "apiAccess": {
     "voice": { "exposed": false, "requireAuth": false },
     "sdapi": { "exposed": false, "requireAuth": false }
+  },
+  "federation": {
+    "mediaProvider": {
+      "enabled": false,
+      "maxQueuedJobs": 2,
+      "audioModels": []
+    }
   }
 }

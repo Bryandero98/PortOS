@@ -9,6 +9,7 @@ import * as digitalTwinService from '../../services/digital-twin.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
 import { validateRequest } from '../../lib/validation.js';
 import { importDataInputSchema } from '../../lib/digitalTwinValidation.js';
+import * as spotifyBrowserImport from '../../services/spotifyBrowserImport.js';
 
 const importSaveSchema = z.object({
   source: z.string().min(1),
@@ -29,6 +30,32 @@ const router = Router();
 router.get('/import/sources', asyncHandler(async (req, res) => {
   const sources = digitalTwinService.getImportSources();
   res.json({ sources });
+}));
+
+/**
+ * POST /api/digital-twin/import/spotify/browser/open
+ * Open Spotify's fixed privacy page in the PortOS managed browser.
+ *
+ * The browser keeps its own session, so this endpoint never accepts a URL or
+ * Spotify credential. A signed-out browser returns an auth-required state for
+ * the UI to render rather than turning the login page into an API error.
+ */
+router.post('/import/spotify/browser/open', asyncHandler(async (req, res) => {
+  res.json(await spotifyBrowserImport.openSpotifyBrowser());
+}));
+
+const spotifyBrowserImportSchema = z.object({
+  providerId: z.string().min(1),
+  model: z.string().min(1),
+});
+
+/**
+ * POST /api/digital-twin/import/spotify/browser/import
+ * Request/read the Spotify browser export and analyze it without a file upload.
+ */
+router.post('/import/spotify/browser/import', asyncHandler(async (req, res) => {
+  const { providerId, model } = validateRequest(spotifyBrowserImportSchema, req.body);
+  res.json(await spotifyBrowserImport.importSpotifyFromBrowser(providerId, model));
 }));
 
 /**

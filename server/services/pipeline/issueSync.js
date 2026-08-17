@@ -24,8 +24,13 @@ import { store, readState, saveIssuesNow, renumberInline, sanitizeIssue } from '
  * valid id format). LWW by `updatedAt`; returns `{ applied, count }` where
  * `count` is the number of issues actually changed/added.
  */
-export async function mergeIssuesFromSync(remoteIssues, { source = { via: 'sync', peerId: null } } = {}) {
+export async function mergeIssuesFromSync(remoteIssues, {
+  source = { via: 'sync', peerId: null },
+  senderSchemaVersions = null,
+} = {}) {
   if (!Array.isArray(remoteIssues)) return { applied: false, count: 0 };
+  const senderCannotRepresentClimax = senderSchemaVersions !== null
+    && (Number(senderSchemaVersions?.pipelineIssues) || 0) < 3;
   // Series IDs whose issue set saw at least one delete-transition — drives a
   // post-write renumber so the receiver's issue numbering catches up with the
   // sender's (otherwise a synced tombstone would leave a gap).
@@ -62,7 +67,7 @@ export async function mergeIssuesFromSync(remoteIssues, { source = { via: 'sync'
       // sanitized.seriesId may be either the existing local series or a
       // remote-only target; reject either way.
       if (ephemeralSeriesIds.has(remote.seriesId)) continue;
-      const sanitized = sanitizeIssue(remote);
+      let sanitized = sanitizeIssue(remote);
       if (!sanitized) continue;
       // Strip inbound `ephemeral` — see mergeUniversesFromSync.
       if ('ephemeral' in sanitized) delete sanitized.ephemeral;
@@ -94,6 +99,12 @@ export async function mergeIssuesFromSync(remoteIssues, { source = { via: 'sync'
         const localTs = local.updatedAt || '';
         const remoteTs = sanitized.updatedAt || '';
         if (remoteTs > localTs) {
+          // An older sender cannot represent `climax`: its sanitizer either
+          // omitted the role or coerced it to another legacy value. Accept its
+          // newer fields while preserving the local v3-only role.
+          if (senderCannotRepresentClimax && local.arcRole === 'climax' && sanitized.arcRole !== 'climax') {
+            sanitized = { ...sanitized, arcRole: 'climax' };
+          }
           // Non-blocking conflict journal — archive the losing local issue on
           // a true 3-way divergence; always advances the base hash. Never
           // throws into the merge (convergence wins).

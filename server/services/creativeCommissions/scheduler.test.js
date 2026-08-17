@@ -45,6 +45,23 @@ const getProviderByIdMock = vi.fn(async (id) => ({ id, type: 'tui' }));
 vi.mock('../providers.js', () => ({ getProviderById: (...a) => getProviderByIdMock(...a) }));
 vi.mock('../../lib/aiToolkit/constants.js', () => ({ PROVIDER_TYPES: { CLI: 'cli', TUI: 'tui', API: 'api' } }));
 
+const tasteProfileMock = vi.fn(async () => ({ sections: [{ id: 'music', summary: 'Example stated preference' }], lastSessionAt: '2026-08-15T00:00:00.000Z' }));
+const tasteEvidenceMock = vi.fn(async () => ({
+  derivedAt: '2026-08-16T00:00:00.000Z',
+  windows: { month: { listen: {
+    topArtists: [{ name: 'Example Artist', count: 3 }],
+    topTracks: [{ name: 'Example Track', artist: 'Example Artist', count: 2 }],
+  } } },
+}));
+vi.mock('../taste-questionnaire.js', () => ({ getTasteProfile: (...a) => tasteProfileMock(...a) }));
+vi.mock('../twinEnrichment.js', () => ({ getTasteEvidence: (...a) => tasteEvidenceMock(...a) }));
+const resolveMusicEngineSelectionMock = vi.fn(async () => ({
+  status: 'ready', selection: { engine: 'musicgen', modelId: 'musicgen-medium', repo: 'example/musicgen-medium' },
+}));
+vi.mock('../musicEngineCatalog.js', () => ({
+  resolveMusicEngineSelection: (...a) => resolveMusicEngineSelectionMock(...a),
+}));
+
 const loadStateMock = vi.fn(async () => ({ config: {} }));
 vi.mock('../cosState.js', () => ({ loadState: (...a) => loadStateMock(...a) }));
 const creativeModeMock = vi.fn(() => 'execute');
@@ -84,6 +101,17 @@ beforeEach(() => {
   creativeModeMock.mockReturnValue('execute');
   budgetMock.mockResolvedValue({ withinBudget: true });
   loadStateMock.mockResolvedValue({ config: {} });
+  tasteProfileMock.mockResolvedValue({ sections: [{ id: 'music', summary: 'Example stated preference' }], lastSessionAt: '2026-08-15T00:00:00.000Z' });
+  tasteEvidenceMock.mockResolvedValue({
+    derivedAt: '2026-08-16T00:00:00.000Z',
+    windows: { month: { listen: {
+      topArtists: [{ name: 'Example Artist', count: 3 }],
+      topTracks: [{ name: 'Example Track', artist: 'Example Artist', count: 2 }],
+    } } },
+  });
+  resolveMusicEngineSelectionMock.mockResolvedValue({
+    status: 'ready', selection: { engine: 'musicgen', modelId: 'musicgen-medium', repo: 'example/musicgen-medium' },
+  });
 });
 
 describe('activeCommissions', () => {
@@ -282,6 +310,64 @@ describe('runScheduledCommission gates', () => {
     // The directive steers the CD planner to the music tools rather than a video render.
     expect(createProjectMock.mock.calls[0][0].directive.goal).toMatch(/music generation tools/i);
     expect(recordRunMock).toHaveBeenCalledWith('commission-1', expect.objectContaining({ status: 'started' }));
+  });
+
+  it('builds and persists a deterministic Digital Twin recipe for opted-in music', async () => {
+    getCommissionMock.mockResolvedValue(videoCommission({
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin', window: 'month', anchorCount: 2, explorationPercent: 25 } },
+      generation: { lengthSeconds: 45 },
+    }));
+    await runScheduledCommission('commission-1');
+    expect(createProjectMock.mock.calls[0][0].directive.goal).toContain('Example Artist');
+    expect(createProjectMock.mock.calls[0][0].directive.goal).toContain('Create an original work');
+    expect(recordRunMock).toHaveBeenCalledWith('commission-1', expect.objectContaining({
+      status: 'started', tasteRecipe: expect.objectContaining({ source: 'digital-twin', anchors: expect.any(Array) }),
+      musicGeneration: {
+        engine: 'musicgen', modelId: 'musicgen-medium', repo: 'example/musicgen-medium', durationSec: 45,
+      },
+    }));
+  });
+
+  it('records an explicit skip when the configured music renderer is unavailable', async () => {
+    resolveMusicEngineSelectionMock.mockResolvedValueOnce({ status: 'unavailable', reason: 'music-model-unavailable' });
+    getCommissionMock.mockResolvedValue(videoCommission({
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin', musicEngineId: 'acestep', musicModelId: 'removed-model' } },
+      generation: { lengthSeconds: 45 },
+    }));
+    await runScheduledCommission('commission-1');
+    expect(recordRunMock).toHaveBeenCalledWith('commission-1', expect.objectContaining({
+      status: 'skipped', reason: 'music-model-unavailable',
+    }));
+    expect(createProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('does not advance a taste project when its authoritative local run failed to persist', async () => {
+    recordRunMock.mockResolvedValueOnce(null);
+    getCommissionMock.mockResolvedValue(videoCommission({
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      generation: { lengthSeconds: 45 },
+    }));
+    const outcome = await runCommissionNow('commission-1');
+    expect(outcome).toMatchObject({ status: 'failed', error: 'taste-run-persistence-unavailable' });
+    expect(createProjectMock).toHaveBeenCalledTimes(1);
+    expect(advanceMock).not.toHaveBeenCalled();
+  });
+
+  it('records an explicit skip when taste mode has no usable observed anchors', async () => {
+    tasteEvidenceMock.mockResolvedValueOnce({ derivedAt: '2026-08-16T00:00:00.000Z', windows: { month: { listen: { topArtists: [], topTracks: [] } } } });
+    getCommissionMock.mockResolvedValue(videoCommission({
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      generation: { lengthSeconds: 45 },
+    }));
+    await runScheduledCommission('commission-1');
+    expect(recordRunMock).toHaveBeenCalledWith('commission-1', expect.objectContaining({
+      status: 'skipped', reason: 'taste-source-unavailable', trigger: 'schedule',
+    }));
+    expect(createProjectMock).not.toHaveBeenCalled();
   });
 
   it('skips an UNKNOWN target ability rather than mis-generating (#2769)', async () => {

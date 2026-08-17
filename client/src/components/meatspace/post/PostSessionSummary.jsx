@@ -3,13 +3,23 @@ import { CheckCircle, ChevronDown, ChevronUp, Dumbbell } from 'lucide-react';
 import { LLM_DRILL_TYPES, DRILL_TO_DOMAIN, DOMAINS, DRILL_LABELS, nBackBalancedAccuracy } from './constants';
 import DrillQuestionReview from './DrillQuestionReview';
 
+function fillBlankAttempts(questions) {
+  return questions.flatMap(question => Array.isArray(question?.answered)
+    ? question.answered.map(answer => ({
+      answered: answer?.value ?? null,
+      correct: answer?.correct,
+      responseMs: question.responseMs,
+    }))
+    : [question]);
+}
+
 // Presentational session breakdown shared by the live post-save results screen
 // (PostSessionResults) and the deep-linkable saved-session view
 // (PostSessionDetail) — so a just-finished session and a revisited one from
 // History render identically. `drillResults` is the live hook's results array
 // OR a saved session's `tasks` array (same task shape); `sessionScore` is the
 // blended session score.
-export default function PostSessionSummary({ drillResults = [], sessionScore = 0, isTraining = false }) {
+export default function PostSessionSummary({ drillResults = [], sessionScore = 0, isTraining = false, plan = null, actualDurationMs = null }) {
   const [expandedDrill, setExpandedDrill] = useState(null);
 
   const scoreColor = sessionScore >= 80 ? 'text-port-success' :
@@ -31,6 +41,19 @@ export default function PostSessionSummary({ drillResults = [], sessionScore = 0
           </div>
         )}
       </div>
+
+      {plan && (
+        <div className="bg-port-card border border-port-border rounded-lg p-3 text-sm text-gray-400">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span>Quick target: {Math.round(plan.targetDurationSec / 60)} min</span>
+            <span>Estimated: {Math.ceil(plan.estimatedDurationSec / 60)} min</span>
+            {actualDurationMs != null && <span>Actual: {Math.ceil(actualDurationMs / 60000)} min</span>}
+          </div>
+          {plan.omittedDomains?.length > 0 && (
+            <div className="mt-1 text-xs">Omitted domains: {plan.omittedDomains.join(', ')}</div>
+          )}
+        </div>
+      )}
 
       {/* Domain Scores (for multi-domain sessions) */}
       {(() => {
@@ -85,22 +108,32 @@ export default function PostSessionSummary({ drillResults = [], sessionScore = 0
               // (raw `correct` averaging would pay ~70% for never pressing).
               const questions = result.questions || [];
               const noGo = result.type === 'n-back';
-              const reached = noGo ? questions : questions.filter(q => q.answered !== null);
+              const fillBlank = result.type === 'memory-fill-blank';
+              const attempts = fillBlank ? fillBlankAttempts(questions) : questions;
+              const reached = noGo || fillBlank ? attempts : questions.filter(q => q.answered !== null);
               const derivedAcc = noGo
                 ? nBackBalancedAccuracy(questions)
-                : (reached.length > 0 ? reached.filter(q => q.correct).length / reached.length : null);
+                : (fillBlank
+                  ? (attempts.length > 0 ? attempts.filter(q => q.correct).length / attempts.length : null)
+                  : (reached.length > 0 ? reached.filter(q => q.correct).length / reached.length : null));
               const accPct = result.accuracy != null
                 ? Math.round(result.accuracy * 100)
                 : (derivedAcc != null ? Math.round(derivedAcc * 100) : null);
               const compPct = result.completion != null
                 ? Math.round(result.completion * 100)
-                : (questions.length > 0 ? Math.round((reached.length / questions.length) * 100) : null);
+                : (fillBlank
+                  ? (attempts.length > 0 ? Math.round((reached.filter(q => q.answered != null).length / attempts.length) * 100) : null)
+                  : (questions.length > 0 ? Math.round((reached.length / questions.length) * 100) : null));
               const timed = reached.filter(q => q.responseMs > 0);
               const avgMs = result.avgResponseMs != null
                 ? result.avgResponseMs
                 : (timed.length > 0 ? Math.round(timed.reduce((s, q) => s + q.responseMs, 0) / timed.length) : null);
               const parts = [];
               if (accPct != null) parts.push(`${accPct}% acc`);
+              if (result.type === 'schulte-table') {
+                const errorCount = result.errorCount ?? questions.filter(q => q.correct === false).length;
+                parts.push(`${errorCount} ${errorCount === 1 ? 'error' : 'errors'}`);
+              }
               if (avgMs != null) parts.push(`${(avgMs / 1000).toFixed(1)}s`);
               if (compPct != null && compPct < 100) parts.push(`${compPct}% done`);
               subtitle = parts.join(' · ') || `${questions.length} questions`;

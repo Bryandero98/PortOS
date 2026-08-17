@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { creativeCommissionUpdateSchema } from '../../lib/creativeCommissionValidation.js';
+import { creativeCommissionCreateSchema, creativeCommissionUpdateSchema } from '../../lib/creativeCommissionValidation.js';
 
 // In-memory collectionStore so CRUD is exercised without touching the filesystem.
 // Keyed by collection `type` so the machine-local commission store and the
@@ -47,6 +47,8 @@ const {
   getCommission,
   listCommissions,
   recordCommissionRun,
+  getCommissionMusicContextForProject,
+  recordCommissionMusicOutput,
   submitCommissionFeedback,
   backfillAllCommissionFeedback,
   sanitizeCommissionForSync,
@@ -87,6 +89,23 @@ describe('sanitizeCommission', () => {
     expect(rec.generation).toMatchObject({ quality: 'standard', aspectRatio: '16:9', targetDurationSeconds: 10 });
     expect(rec.runs).toEqual([]);
     expect(rec.feedback).toEqual([]);
+    expect(rec.brief.musicTaste).toBeUndefined();
+  });
+
+  it('preserves bounded Digital Twin taste configuration in the federated brief', () => {
+    const rec = sanitizeCommission({ id: 'c-taste', brief: {
+      intent: 'ambient',
+      musicTaste: { source: 'digital-twin', anchorCount: 4, explorationPercent: 40, musicEngineId: '  engine-a  ' },
+    } });
+    expect(rec.brief.musicTaste).toEqual({
+      source: 'digital-twin', window: 'month', anchorCount: 4, explorationPercent: 40,
+      musicEngineId: 'engine-a', musicModelId: null,
+    });
+    expect(creativeCommissionCreateSchema.parse({
+      name: 'Example Taste Commission',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      schedule: { kind: 'DAILY', atLocalTime: '02:00' },
+    }).brief.musicTaste).toMatchObject({ source: 'digital-twin', anchorCount: 3, explorationPercent: 20 });
   });
 
   it('routes generation through the ability adapter per output type (#2769)', () => {
@@ -255,6 +274,23 @@ describe('updateCommission', () => {
     expect(updated.generation.targetDurationSeconds).toBe(20); // preserved, not defaulted to 10
   });
 
+  it('preserves or explicitly clears taste configuration on a partial brief patch', async () => {
+    const created = await createCommission({
+      ...validInput(),
+      targetAbility: 'music',
+      brief: { ...validInput().brief, musicTaste: { source: 'digital-twin', anchorCount: 2 } },
+    });
+    const parsed = creativeCommissionUpdateSchema.parse({ brief: { intent: 'reworked' } });
+    const preserved = await updateCommission(created.id, parsed);
+    expect(preserved.brief.musicTaste).toMatchObject({ source: 'digital-twin', anchorCount: 2 });
+    const partiallyUpdated = await updateCommission(created.id, creativeCommissionUpdateSchema.parse({
+      brief: { musicTaste: { explorationPercent: 45 } },
+    }));
+    expect(partiallyUpdated.brief.musicTaste).toMatchObject({ anchorCount: 2, explorationPercent: 45 });
+    const cleared = await updateCommission(created.id, creativeCommissionUpdateSchema.parse({ brief: { musicTaste: null } }));
+    expect(cleared.brief.musicTaste).toBeUndefined();
+  });
+
   it('throws NOT_FOUND for an unknown id', async () => {
     try { await updateCommission('nope', { enabled: false }); }
     catch (e) { expect(e.code).toBe(ERR_NOT_FOUND); }
@@ -278,6 +314,49 @@ describe('recordCommissionRun', () => {
     await recordCommissionRun(created.id, { status: 'started', trigger: 'bogus' });
     const after = await getCommission(created.id);
     expect(after.runs.map((r) => r.trigger)).toEqual(['manual', 'schedule', 'schedule']);
+  });
+
+  it('persists bounded taste recipe provenance only on the local run history', async () => {
+    const created = await createCommission({
+      ...validInput(),
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      generation: { lengthSeconds: 45 },
+    });
+    const recipe = {
+      version: 1,
+      source: 'digital-twin',
+      window: 'month',
+      anchorCount: 1,
+      explorationPercent: 20,
+      explorationCount: 0,
+      explorationDirection: 'balanced',
+      anchors: [{ kind: 'artist', name: 'Example Artist', count: 3, source: 'observed' }],
+      statedContext: 'Example preference',
+      sourceVersion: 'music-taste-v1:example',
+      sourceHash: 'example-hash',
+    };
+    const run = await recordCommissionRun(created.id, {
+      status: 'started', projectId: 'cd-taste', promptUsed: 'Original bounded directive', tasteRecipe: recipe,
+      musicGeneration: { engine: 'musicgen', modelId: 'example-model', repo: 'example/model', durationSec: 45 },
+    });
+    const after = await getCommission(created.id);
+    expect(after.runs[0].tasteRecipe).toEqual(recipe);
+    expect(after.runs[0].musicGeneration).toEqual({
+      engine: 'musicgen', modelId: 'example-model', repo: 'example/model', durationSec: 45,
+    });
+    expect(sanitizeCommission({ ...after, runs: after.runs }).runs[0].tasteRecipe).toEqual(recipe);
+    expect(await getCommissionMusicContextForProject('cd-taste')).toMatchObject({
+      commissionId: created.id, runId: run.id, prompt: 'Original bounded directive',
+    });
+    await recordCommissionMusicOutput(created.id, run.id, {
+      filename: 'music-gen-example.wav', durationSec: 45, engine: 'musicgen', modelId: 'example-model',
+      recipeVersion: 1, sourceHash: 'example-hash', completedAt: '2026-08-16T00:00:00.000Z',
+    });
+    const completed = await getCommission(created.id);
+    expect(completed.runs[0].musicOutput).toMatchObject({
+      filename: 'music-gen-example.wav', engine: 'musicgen', modelId: 'example-model', sourceHash: 'example-hash',
+    });
   });
 });
 

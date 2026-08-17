@@ -35,6 +35,7 @@ describe('huggingFaceCatalog', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   it('maps GGUF search results to Ollama hf.co install ids with preferred quants', async () => {
@@ -663,6 +664,20 @@ describe('huggingFaceCatalog', () => {
       expect(results.some((r) => r.repository === mlxRepo)).toBe(false)
     })
 
+    it('does not offer non-standalone MTP drafter checkpoints as MLX installs', async () => {
+      const drafterRepo = 'mlx-community/Qwen3.8-27B-MTP-4bit'
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', [mlxListing(drafterRepo, ['model.safetensors'])]],
+        ['filter=gguf', []],
+      ]))
+
+      const results = await searchHuggingFaceModels({
+        backend: 'lmstudio', query: 'qwen3.8', appleSilicon: true
+      })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
     it('does not surface MLX on a non-Apple host even for LM Studio', async () => {
       const mlxRepo = 'mlx-community/Hidden-On-Intel-4bit'
       fetch.mockImplementation(urlRouter([
@@ -749,6 +764,39 @@ describe('huggingFaceCatalog', () => {
       // 128 GB → highest-fidelity that fits becomes the recommended default.
       expect(catalog[0].variants.find((v) => v.recommended).installId).toBe(`${repo}@Q8_0`)
       expect(catalog[0].sizeBytes).toBe(8_000_000_000)
+    })
+
+    it('enriches a curated LM Studio MLX entry with one installed native-format variant', async () => {
+      const repo = 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+      fetch.mockResolvedValueOnce(blobs(repo, {
+        'model-00001-of-00003.safetensors': 5_400_000_000,
+        'model-00002-of-00003.safetensors': 5_300_000_000,
+        'model-00003-of-00003.safetensors': 5_300_000_000,
+      }))
+
+      const catalog = [{
+        id: repo,
+        key: 'qwen3.8-27b-mlx-4bit',
+        name: 'Qwen3.8 27B MLX 4-bit',
+        category: 'general',
+        format: 'mlx',
+        size: '15.0 GB'
+      }]
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio',
+        systemMemoryBytes: 128 * 1024 ** 3,
+        installedIds: [`${repo}@4bit`]
+      })
+
+      expect(catalog[0]).toMatchObject({ format: 'mlx', quant: '4bit', sizeBytes: 16_000_000_000, installed: true })
+      expect(catalog[0].variants).toEqual([expect.objectContaining({
+        format: 'mlx',
+        quant: '4bit',
+        installId: repo,
+        sizeBytes: 16_000_000_000,
+        installed: true,
+        recommended: true
+      })])
     })
 
     it('enriches an Ollama hf.co curated id and keeps the hf.co install ids', async () => {
@@ -1058,10 +1106,8 @@ describe('huggingFaceCatalog', () => {
 
     // A durable answer IS worth caching — the counterpart to the test above, so a
     // fix for one can't quietly disable the other.
-    it.each([
-      ['a 404 (repo gone)', 404],
-      ['a 403 (gated)', 403]
-    ])('caches %s as a durable "no data" answer', async (_label, status) => {
+    it('caches a 404 (repo gone) as a durable "no data" answer', async () => {
+      const status = 404
       const repo = `permanent-${status}/Repo-GGUF`
       const { writeCachedRepoModel } = await import('./huggingFaceRepoCache.js')
 
@@ -1077,6 +1123,41 @@ describe('huggingFaceCatalog', () => {
       })
 
       expect(writeCachedRepoModel.mock.calls).toEqual([[repo, null]])
+    })
+
+    it('re-fetches a gated repo after credentials are configured', async () => {
+      const repo = 'gated-auth/Repo-GGUF'
+      const { writeCachedRepoModel } = await import('./huggingFaceRepoCache.js')
+      let blobsCalls = 0
+      vi.stubEnv('HUGGINGFACE_TOKEN', '')
+      vi.stubEnv('HF_TOKEN', '')
+      fetch.mockImplementation(async (url, options) => {
+        if (!String(url).includes('blobs=true')) return response([])
+        blobsCalls += 1
+        if (blobsCalls === 1) {
+          expect(options.headers.Authorization).toBeUndefined()
+          return { ok: false, status: 403, json: vi.fn(), text: vi.fn(async () => 'gated') }
+        }
+        expect(options.headers.Authorization).toBe('Bearer test-token')
+        return response({ id: repo, siblings: [{ rfilename: 'G-Q4_K_M.gguf', size: 4_000_000_000 }] })
+      })
+
+      const first = [{ id: repo, key: 'gated-first', name: 'Gated', category: 'chat', size: '2.0 GB' }]
+      await enrichCatalogWithVariants(first, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+      expect(first[0].variants).toBeUndefined()
+      expect(writeCachedRepoModel.mock.calls).toEqual([])
+
+      vi.stubEnv('HUGGINGFACE_TOKEN', 'test-token')
+      const second = [{ id: repo, key: 'gated-second', name: 'Gated', category: 'chat', size: '2.0 GB' }]
+      await enrichCatalogWithVariants(second, {
+        backend: 'lmstudio', systemMemoryBytes: 128 * 1024 ** 3, installedIds: [], timeoutMs: 0
+      })
+
+      expect(blobsCalls).toBe(2)
+      expect(second[0].variants).toHaveLength(1)
+      expect(writeCachedRepoModel.mock.calls).toEqual([[repo, expect.any(Object)]])
     })
 
     // The gate must bound open CONNECTIONS, not just header waits — releasing the

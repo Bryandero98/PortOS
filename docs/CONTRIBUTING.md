@@ -65,6 +65,16 @@ See [VERSIONING.md](./VERSIONING.md) for full details.
 3. Push `main` to `release` branch to trigger GitHub Release workflow
 4. Push pattern: `git pull --rebase --autostash && git push`
 
+### Changelog
+
+On every user-visible change, write a fragment — do **not** append to `.changelog/NEXT.md` (that file is assembled at release time; two branches editing it is a guaranteed merge conflict):
+
+```bash
+npm run changelog:add -- <added|changed|fixed|removed> "Daily log no longer double-saves on blur."
+```
+
+See [`.changelog/README.md`](../.changelog/README.md) for the fragment convention.
+
 > **Note:** Some older code or automation notes may still reference a `dev` branch workflow. The `main`→`release` workflow described here is the current source of truth.
 
 ### Line Endings on Windows
@@ -80,14 +90,12 @@ to re-index files with LF line endings.
 
 ### Commit Messages
 
-Use conventional commit format:
+Use conventional commit prefixes with a human-readable subject — a future reader of `git log --oneline` should understand the change without opening the diff:
 
 ```
-feat: add new feature
-fix: resolve bug
-build: version/CI changes
-docs: documentation updates
-refactor: code restructuring
+feat: add a --dry-run flag to changelog:add
+fix: daily log no longer double-saves on blur
+docs: point the API allowlist at commandSecurity.js
 ```
 
 ## Project Structure

@@ -90,7 +90,7 @@ const DEFAULT_LAYOUTS = [
       'quick-brain', 'quick-idea', 'quick-image', 'quick-task',
       'apps',
       'cos', 'goal-progress', 'upcoming-tasks',
-      'proactive-alerts', 'review-hub', 'while-away', 'system-health', 'network-exposure', 'backup', 'death-clock', 'quick-stats', 'decision-log',
+      'proactive-alerts', 'review-hub', 'while-away', 'system-health', 'active-processing', 'network-exposure', 'backup', 'death-clock', 'quick-stats', 'decision-log',
       'activity-streak', 'hourly-activity', 'tribe-care', 'feeds',
     ],
     // Above-the-fold capture row stretches to h=5 so the Quick Task card
@@ -105,30 +105,31 @@ const DEFAULT_LAYOUTS = [
       { id: 'quick-image',      x: 0, w: 3,  order: 3,  h: 3 },
       // Primary monitoring + alerts
       { id: 'system-health',    x: 0, w: 5,  order: 4,  h: 5 },
-      { id: 'proactive-alerts', x: 5, w: 3,  order: 5,  h: 3 },
-      { id: 'death-clock',      x: 8, w: 4,  order: 6,  h: 2 },
-      { id: 'activity-streak',  x: 8, w: 4,  order: 7,  h: 3 },
-      { id: 'review-hub',       x: 5, w: 3,  order: 8,  h: 2 },
+      { id: 'active-processing',x: 5, w: 3,  order: 5,  h: 5 },
+      { id: 'proactive-alerts', x: 8, w: 3,  order: 6,  h: 3 },
+      { id: 'death-clock',      x: 8, w: 4,  order: 7,  h: 2 },
+      { id: 'activity-streak',  x: 8, w: 4,  order: 8,  h: 3 },
+      { id: 'review-hub',       x: 5, w: 3,  order: 9,  h: 2 },
       // Secondary widgets
-      { id: 'backup',           x: 0, w: 3,  order: 9,  h: 4 },
-      { id: 'quick-stats',      x: 3, w: 3,  order: 10, h: 3 },
-      { id: 'goal-progress',    x: 6, w: 3,  order: 11, h: 4 },
-      { id: 'network-exposure', x: 9, w: 3,  order: 12, h: 5 },
+      { id: 'backup',           x: 0, w: 3,  order: 10, h: 4 },
+      { id: 'quick-stats',      x: 3, w: 3,  order: 11, h: 3 },
+      { id: 'goal-progress',    x: 6, w: 3,  order: 12, h: 4 },
+      { id: 'network-exposure', x: 9, w: 3,  order: 13, h: 5 },
       // Lower-priority + cos
-      { id: 'decision-log',     x: 0, w: 4,  order: 13, h: 2 },
-      { id: 'cos',              x: 4, w: 5,  order: 14, h: 4 },
-      { id: 'while-away',       x: 9, w: 3,  order: 15, h: 3 },
+      { id: 'decision-log',     x: 0, w: 4,  order: 14, h: 2 },
+      { id: 'cos',              x: 4, w: 5,  order: 15, h: 4 },
+      { id: 'while-away',       x: 9, w: 3,  order: 16, h: 3 },
       // Full-width visualizations + apps
-      { id: 'hourly-activity',  x: 0, w: 12, order: 16, h: 3 },
-      { id: 'apps',             x: 0, w: 12, order: 17, h: 8 },
+      { id: 'hourly-activity',  x: 0, w: 12, order: 17, h: 3 },
+      { id: 'apps',             x: 0, w: 12, order: 18, h: 8 },
       // Quick-idea (catalog) is sequenced below apps so the seeded layout
       // doesn't crowd the tightly-packed above-the-fold band.
       // Reorderable via the Arrange button on the dashboard.
-      { id: 'quick-idea',       x: 0, w: 4,  order: 18, h: 4 },
+      { id: 'quick-idea',       x: 0, w: 4,  order: 19, h: 4 },
       // Gated on the Tribe having people — hidden on installs that don't use it.
-      { id: 'tribe-care',       x: 4, w: 4,  order: 19, h: 4 },
+      { id: 'tribe-care',       x: 4, w: 4,  order: 20, h: 4 },
       // Gated on having subscribed feeds — hidden on installs with none.
-      { id: 'feeds',            x: 8, w: 3,  order: 20, h: 4 },
+      { id: 'feeds',            x: 8, w: 3,  order: 21, h: 4 },
     ],
   },
   {
@@ -173,18 +174,19 @@ const DEFAULT_LAYOUTS = [
     id: 'ops',
     name: 'Ops',
     builtIn: true,
-    widgets: ['system-health', 'network-exposure', 'cos', 'backup', 'apps', 'quick-stats'],
+    widgets: ['system-health', 'active-processing', 'network-exposure', 'cos', 'backup', 'apps', 'quick-stats'],
     // System monitoring focus — system-health takes the tall left column
     // (the primary alarm surface), cos in the center for ChiefOfStaff
-    // status, backup + quick-stats stacked on the right, apps grid fills
-    // the empty cell below cos so all 5 widgets fit above the fold.
+    // status, active-processing + quick-stats stacked on the right, apps grid
+    // fills the empty cell below cos so the monitoring widgets stay above fold.
     grid: [
       { id: 'system-health',    x: 0, w: 6,  order: 0, h: 5 },
-      { id: 'quick-stats',      x: 6, w: 6,  order: 1, h: 3 },
-      { id: 'cos',              x: 6, w: 6,  order: 2, h: 4 },
-      { id: 'backup',           x: 0, w: 3,  order: 3, h: 3 },
-      { id: 'network-exposure', x: 3, w: 3,  order: 4, h: 5 },
-      { id: 'apps',             x: 0, w: 12, order: 5, h: 11 },
+      { id: 'active-processing',x: 6, w: 6,  order: 1, h: 5 },
+      { id: 'quick-stats',      x: 6, w: 6,  order: 2, h: 3 },
+      { id: 'cos',              x: 6, w: 6,  order: 3, h: 4 },
+      { id: 'backup',           x: 0, w: 3,  order: 4, h: 3 },
+      { id: 'network-exposure', x: 3, w: 3,  order: 5, h: 5 },
+      { id: 'apps',             x: 0, w: 12, order: 6, h: 11 },
     ],
   },
   ...INTENT_LAYOUTS.map((l) => ({ ...l, builtIn: true })),

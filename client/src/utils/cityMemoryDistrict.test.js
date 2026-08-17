@@ -169,3 +169,4 @@ describe('computeMemoryDistrict', () => {
     expect(d.bridges.every(b => b.fromPos && b.toPos)).toBe(true);
   });
 });
+// @vitest-environment node

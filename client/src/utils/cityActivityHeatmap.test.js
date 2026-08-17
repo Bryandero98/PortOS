@@ -140,3 +140,4 @@ describe('computeActivityHeatmap', () => {
     expect(vm.tiles.every((t) => t.z === 0)).toBe(true);
   });
 });
+// @vitest-environment node

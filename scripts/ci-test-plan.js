@@ -15,6 +15,7 @@ const FULL_TRIGGER_RULES = [
   { re: /^\.github\/workflows\//, reason: 'workflow definition changed' },
   { re: /^(?:package|server\/package|client\/package)(?:-lock)?\.json$/, reason: 'dependency manifest changed' },
   { re: /^(?:server|client)\/vitest\.config(?:\.db)?\.js$/, reason: 'test runner configuration changed' },
+  { re: /^scripts\/vitestCiPool(?:\.test)?\.js$/, reason: 'test runner pool configuration changed' },
   { re: /^server\/vitest\.setup\.js$/, reason: 'server test setup changed' },
   { re: /^client\/src\/test\/setup\.js$/, reason: 'client test setup changed' },
   // Biome config + its GritQL plugins (the former client/eslint.config.js). The
@@ -24,9 +25,70 @@ const FULL_TRIGGER_RULES = [
   { re: /^client\/vite\.config\.js$/, reason: 'client build configuration changed' },
   { re: /^server\/index\.js$/, reason: 'server composition root changed' },
   { re: /^client\/src\/App\.jsx$/, reason: 'client composition root changed' },
-  { re: /^server\/lib\/(?:index|schemaVersions|validation)\.js$/, reason: 'shared server contract changed' },
+  { re: /^server\/lib\/(?:schemaVersions|validation)\.js$/, reason: 'shared server contract changed' },
   { re: /^scripts\/ci-test-plan(?:\.test)?\.js$/, reason: 'CI impact planner changed' },
-  { re: /^scripts\/run-ci-(?:lint|tests)\.js$/, reason: 'CI runner changed' },
+  { re: /^scripts\/run-ci-(?:lint|tests)(?:\.test)?\.js$/, reason: 'CI runner changed' },
+];
+
+// Files whose Windows behavior is not faithfully exercised by pinPlatform()
+// stubs on Linux: real .cmd spawn, PowerShell BOM, PTY wrap, path.basename
+// on backslashes. A PR that does not touch these still gets a full Windows
+// run on main / nightly / release.
+const WINDOWS_RISK_RULES = [
+  /\.(?:ps1|cmd|bat)$/i,
+  /^scripts\/fix-windows-console(?:\.test)?\.js$/,
+  /^scripts\/ps1-bom\.test\.js$/,
+  /^server\/lib\/(?:bufferedSpawn|detachedSpawn|childProcess|bashResolver|processEnv|platform|spawnCwd|cliProviderRun|grok)\b/,
+  /^server\/lib\/agentGuard\//,
+  /^server\/cos-runner\//,
+  /^server\/services\/(?:shell|pm2|appBuilder)\b/,
+  /^server\/services\/autonomousJobs\/execution\.shellSpawn/,
+  /^server\/routes\/apps\//,
+  /^server\/routes\/scaffoldVite\.js$/,
+];
+
+// These are the cross-platform contracts that cannot be faithfully simulated
+// by pinning process.platform on Linux. For a Windows-risk PR, Vitest also
+// adds import-graph-related tests for the diff; this stable baseline catches
+// spawn, shell, PowerShell, PTY, and path regressions without rerunning every
+// platform-independent server assertion. Full CI still runs the entire suite.
+export const WINDOWS_CONTRACT_TESTS = [
+  'scripts/ps1-bom.test.js',
+  'server/cos-runner/allowedCommands.parity.test.js',
+  'server/cos-runner/allowedCommands.test.js',
+  'server/cos-runner/index.test.js',
+  'server/cos-runner/processStats.test.js',
+  'server/cos-runner/runnerState.test.js',
+  'server/cos-runner/streamJsonParser.test.js',
+  'server/lib/agentGuard/index.test.js',
+  'server/lib/bashResolver.test.js',
+  'server/lib/bufferedSpawn.test.js',
+  'server/lib/childProcess.guards.test.js',
+  'server/lib/childProcess.promisify.test.js',
+  'server/lib/childProcess.test.js',
+  'server/lib/cliProviderRun.test.js',
+  'server/lib/detachedSpawn.test.js',
+  'server/lib/grok.test.js',
+  'server/lib/grokVideoClip.test.js',
+  'server/lib/platform.test.js',
+  'server/lib/processEnv.spawnOptions.test.js',
+  'server/lib/processEnv.test.js',
+  'server/lib/spawnCwd.test.js',
+  'server/routes/apps/crud.test.js',
+  'server/routes/apps/icons.test.js',
+  'server/routes/apps/issues.test.js',
+  'server/routes/apps/launch.test.js',
+  'server/routes/apps/lifecycle.test.js',
+  'server/routes/apps/taskTypes.test.js',
+  'server/routes/apps/viteTls.test.js',
+  'server/routes/apps/xcode.test.js',
+  'server/services/appBuilder.test.js',
+  'server/services/autonomousJobs/execution.shellSpawn.test.js',
+  'server/services/pm2.launch.test.js',
+  'server/services/pm2.parseJlist.test.js',
+  'server/services/pm2Standardizer.test.js',
+  'server/services/shell.test.js',
+  'server/services/shellImageDrop.test.js',
 ];
 
 // Contract guards that run on EVERY plan, whatever the impact scope selects.
@@ -179,6 +241,7 @@ const uniqueSorted = (values) => [...new Set(values)].sort();
 // Guarded by trackedSet like every other selector: an untracked path handed to
 // Vitest as an exact selector makes the run exit non-zero.
 const alwaysRunTests = (trackedSet) => ALWAYS_RUN_TESTS.filter((path) => trackedSet.has(path));
+const windowsContractTests = (trackedSet) => WINDOWS_CONTRACT_TESTS.filter((path) => trackedSet.has(path));
 
 const skippedRunner = () => ({ mode: 'skip', files: [] });
 
@@ -205,6 +268,10 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
       lint: { mode: 'full', files: [] },
       build: true,
       smoke: true,
+      windows: true,
+      windowsMode: 'full',
+      windowsFiles: [],
+      serverNative: true,
     };
   }
 
@@ -232,6 +299,10 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
       lint: { mode: 'skip', files: [] },
       build: false,
       smoke: false,
+      windows: false,
+      windowsMode: 'skip',
+      windowsFiles: [],
+      serverNative: false,
     };
   }
 
@@ -293,6 +364,8 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
       ? { mode: 'related', files: [] }
       : skippedRunner();
 
+  const windows = executable.some((path) => WINDOWS_RISK_RULES.some((rule) => rule.test(path)));
+
   return {
     full: false,
     reason: features.length
@@ -310,7 +383,17 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
     },
     build: hasClientSource,
     smoke: hasServerSource,
+    windows,
+    windowsMode: windows ? 'related' : 'skip',
+    windowsFiles: windows ? windowsContractTests(trackedSet) : [],
+    serverNative: needsServerNative(server),
   };
+}
+
+function needsServerNative(server) {
+  if (server.mode === 'skip') return false;
+  if (server.mode !== 'files') return true;
+  return server.files.some((path) => !ALWAYS_RUN_TESTS.includes(path));
 }
 
 function fullPlan(changedFiles, reason) {
@@ -324,6 +407,10 @@ function fullPlan(changedFiles, reason) {
     lint: { mode: 'full', files: [] },
     build: true,
     smoke: true,
+    windows: true,
+    windowsMode: 'full',
+    windowsFiles: [],
+    serverNative: true,
   };
 }
 
@@ -351,6 +438,10 @@ export function emitGitHubPlan(plan) {
     lint_files: JSON.stringify(plan.lint.files),
     build: plan.build,
     smoke: plan.smoke,
+    windows: plan.windows,
+    windows_mode: plan.windowsMode,
+    windows_files: JSON.stringify(plan.windowsFiles),
+    server_native: plan.serverNative,
   };
 
   Object.entries(outputs).forEach(([name, value]) => writeOutput(name, value));

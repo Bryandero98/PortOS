@@ -22,7 +22,8 @@ import {
   GitBranch,
   GitPullRequest,
   Sparkles,
-  RefreshCw
+  RefreshCw,
+  Copy
 } from 'lucide-react';
 import * as api from '../../../services/api';
 import OutputBlocks from '../OutputBlocks';
@@ -402,6 +403,18 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
           <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
             <Cpu size={16} aria-hidden="true" className={`shrink-0 ${inactive ? 'text-gray-500' : 'text-port-accent animate-pulse'}`} />
             <span className="font-mono text-sm text-gray-400 truncate">{agent.id}</span>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                copyToClipboard(agent.id, 'Agent ID copied to clipboard');
+              }}
+              className="p-1 rounded text-gray-500 hover:bg-port-border/60 hover:text-white transition-colors shrink-0"
+              title="Copy agent ID"
+              aria-label="Copy agent ID"
+            >
+              <Copy size={13} aria-hidden="true" />
+            </button>
             {remote && peerName && (
               <span className="px-1.5 py-0.5 text-xs bg-port-accent/20 text-port-accent rounded shrink-0" title={`Remote agent on ${peerName}`}>
                 {peerName}
@@ -432,14 +445,9 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             {!inactive && (
               <span className={`px-2 py-0.5 text-xs rounded animate-pulse shrink-0 ${
                 agent.metadata?.phase === 'initializing' ? 'bg-yellow-500/20 text-yellow-400' :
-                // Hit its max runtime and was asked to write its sentinel — it has
-                // minutes left before it's reaped, so say so rather than showing a
-                // reassuring "Working" right up to the kill.
-                agent.metadata?.phase === 'wrap-up' ? 'bg-orange-500/20 text-orange-400' :
                 'bg-port-accent/20 text-port-accent'
               }`}>
                 {agent.metadata?.phase === 'initializing' ? 'Initializing'
-                  : agent.metadata?.phase === 'wrap-up' ? 'Wrapping up'
                     : 'Working'}
               </span>
             )}

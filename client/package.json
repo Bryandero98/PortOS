@@ -13,7 +13,7 @@
     "lint": "biome lint --error-on-warnings src",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:ci": "vitest run --bail=1 --reporter=default --reporter=github-actions",
+    "test:ci": "vitest run --bail=1 --silent=passed-only --reporter=default --reporter=github-actions",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -33,11 +33,11 @@
     "three": "0.185.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
+    "@biomejs/biome": "2.5.8",
     "@tailwindcss/postcss": "4.3.3",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.2",
-    "@testing-library/user-event": "14.6.3",
+    "@testing-library/user-event": "14.6.4",
     "@vitejs/plugin-react": "6.0.5",
     "jsdom": "30.0.1",
     "rollup-plugin-visualizer": "7.0.1",

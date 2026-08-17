@@ -36,6 +36,40 @@ export const NVIDIA_SMI_QUERY_ARGS = Object.freeze([
   '--format=csv,noheader,nounits',
 ]);
 
+export const NVIDIA_SMI_UTILIZATION_QUERY_ARGS = Object.freeze([
+  '--query-gpu=name,utilization.gpu,memory.used,memory.total',
+  '--format=csv,noheader,nounits',
+]);
+
+export function parseNvidiaSmiUtilization(stdout) {
+  return String(stdout ?? '').split(/\r?\n/).flatMap((raw) => {
+    const [name, utilization, memoryUsed, memoryTotal] = raw.trim().split(',').map((cell) => cell.trim());
+    if (!name) return [];
+    const numeric = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    };
+    return [{
+      name,
+      utilizationPercent: numeric(utilization),
+      memoryUsedMib: numeric(memoryUsed),
+      memoryTotalMib: numeric(memoryTotal),
+    }];
+  });
+}
+
+export async function detectCudaUtilization({ execFileImpl = execFile, timeoutMs = 2000 } = {}) {
+  const result = await new Promise((resolve) => {
+    execFileImpl('nvidia-smi', [...NVIDIA_SMI_UTILIZATION_QUERY_ARGS], { timeout: timeoutMs },
+      (err, stdout) => resolve({ err, stdout: String(stdout ?? '') }));
+  }).catch((err) => ({ err, stdout: '' }));
+  if (result.err) {
+    return { status: result.err.code === 'ENOENT' ? 'absent' : 'unknown', gpus: [], error: result.err.message || null };
+  }
+  const gpus = parseNvidiaSmiUtilization(result.stdout);
+  return { status: gpus.length ? 'available' : 'absent', gpus, error: null };
+}
+
 /**
  * Parse `nvidia-smi --query-gpu=name,memory.total` CSV output into GPU descriptors.
  * Pure, so the format is covered deterministically instead of depending on whatever
@@ -172,4 +206,21 @@ export async function getCudaCapability({ refresh = false, now = Date.now, ...pr
 export function resetCudaCapabilityCache() {
   cachedProbe = null;
   cacheExpiresAt = Infinity;
+}
+
+let cachedUtilization = null;
+let utilizationExpiresAt = 0;
+export const CUDA_UTILIZATION_TTL_MS = 4000;
+
+export async function getCudaUtilization({ refresh = false, now = Date.now, ...probeOpts } = {}) {
+  if (!refresh && cachedUtilization && now() < utilizationExpiresAt) return cachedUtilization;
+  const pending = detectCudaUtilization(probeOpts);
+  cachedUtilization = pending;
+  utilizationExpiresAt = now() + CUDA_UTILIZATION_TTL_MS;
+  return pending;
+}
+
+export function resetCudaUtilizationCache() {
+  cachedUtilization = null;
+  utilizationExpiresAt = 0;
 }

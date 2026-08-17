@@ -369,6 +369,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // their existing auto-merge behavior so automation isn't silently gated on a
     // human merging a PR.
     else if (taskData.useWorktree === true && taskType === 'user') metadata.openPR = true;
+    // Claim prompts own their forge lifecycle in a separately-created
+    // claim/<item> worktree. Keep this marker independent from openPR: false is
+    // still required to stop CoS from provisioning a second worktree.
+    if (taskData.claimFlow === true) metadata.claimFlow = true;
     if (PR_COMPLETION_VALUES.includes(taskData.prCompletion)) {
       metadata.prCompletion = taskData.prCompletion;
     } else if (metadata.openPR === true && taskType === 'user') {
@@ -444,6 +448,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // no-commit gate without having to masquerade as a scheduled task type —
     // see taskTypeHooks.js#isTrackerFilingDispatch.
     if (taskData.workTracker) metadata.workTracker = taskData.workTracker;
+    // A manually pinned /do:next issue needs a durable target so realtime
+    // consumers can associate lifecycle events with the row that launched it.
+    // The route has already normalized this value, and unpinned runs omit it.
+    if (typeof taskData.claimTarget === 'string' && taskData.claimTarget) metadata.claimTarget = taskData.claimTarget;
     if (taskData.jiraTicketId) metadata.jiraTicketId = taskData.jiraTicketId;
     if (taskData.jiraTicketUrl) metadata.jiraTicketUrl = taskData.jiraTicketUrl;
     if (taskData.screenshots?.length > 0) metadata.screenshots = taskData.screenshots;

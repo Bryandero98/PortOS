@@ -71,6 +71,12 @@ describe('detectCudaGpus', () => {
     expect(result.maxVramGb).toBe(24);
   });
 
+  it('keeps CUDA available but VRAM size unknown when nvidia-smi cannot size a card', async () => {
+    const result = await detectCudaGpus({ execFileImpl: execStub(null, 'GRID V100D-32Q, [N/A]\n') });
+    expect(result).toMatchObject({ status: 'available', maxVramGb: null });
+    expect(result.gpus).toEqual([{ name: 'GRID V100D-32Q', vramMib: null, vramGb: null }]);
+  });
+
   it('treats a missing nvidia-smi as a definitive "no GPU", not a failed probe', async () => {
     const enoent = Object.assign(new Error('spawn nvidia-smi ENOENT'), { code: 'ENOENT' });
     expect(await detectCudaGpus({ execFileImpl: execStub(enoent) })).toMatchObject({

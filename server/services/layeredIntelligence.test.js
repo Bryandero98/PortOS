@@ -396,6 +396,34 @@ describe('validateReasonerResponse', () => {
     expect(junk.proposal.safe).toBe(false);
   });
 
+  it('validates optional model/effort independently of complexity and of each other', () => {
+    const bare = validateReasonerResponse({ proposal: { scope: 'app-improvement', slug: 'x', title: 'X' } });
+    expect(bare.proposal.model).toBe(null);
+    expect(bare.proposal.effort).toBe(null);
+    expect(bare.proposal.goodFirstIssue).toBe(false);
+    expect(bare.proposal.helpWanted).toBe(false);
+
+    const offDiagonal = validateReasonerResponse({
+      proposal: { scope: 'app-improvement', slug: 'x', title: 'X', complexity: 'complex', model: 'light', effort: 'max' }
+    });
+    expect(offDiagonal.proposal.complexity).toBe('complex');
+    expect(offDiagonal.proposal.model).toBe('light');
+    expect(offDiagonal.proposal.effort).toBe('max');
+
+    const junk = validateReasonerResponse({
+      proposal: { scope: 'app-improvement', slug: 'x', title: 'X', model: 'opus', effort: 'none', goodFirstIssue: 'yes' }
+    });
+    expect(junk.proposal.model).toBe(null);
+    expect(junk.proposal.effort).toBe(null);
+    expect(junk.proposal.goodFirstIssue).toBe(false);
+
+    const contributor = validateReasonerResponse({
+      proposal: { scope: 'app-improvement', slug: 'x', title: 'X', model: 'light', goodFirstIssue: true, helpWanted: true }
+    });
+    expect(contributor.proposal.goodFirstIssue).toBe(true);
+    expect(contributor.proposal.helpWanted).toBe(true);
+  });
+
   describe('invalidFields (#4166)', () => {
     it('reports a wrong-typed analysis and drops it', () => {
       const r = validateReasonerResponse({ analysis: 7 });
@@ -1573,6 +1601,11 @@ describe('buildPrompt', () => {
     expect(out).toContain('existing-thing');
     expect(out).toContain('ship faster');
     expect(out).toContain('JSON only');
+    expect(out).toContain('"model": "light | medium | heavy"');
+    expect(out).toContain('"effort": "low | medium | high | xhigh | max"');
+    expect(out).toContain('"goodFirstIssue"');
+    expect(out).toContain('"helpWanted"');
+    expect(out).toContain('never mark a wide mechanical sweep as a good first issue');
   });
 
   it('mentions the hand-off only when it is enabled', () => {
@@ -1644,6 +1677,9 @@ describe('buildPrompt', () => {
     expect(bare).toContain('Goal Alignment Check');
     // NOT_PLANNED = roadmap conflict is the headline rejection heuristic.
     expect(bare).toContain('NOT_PLANNED');
+    expect(bare).toContain('Future-triggered refactor');
+    expect(bare).toContain('third consumer appears');
+    expect(bare).toContain('return `proposal: null`');
     // Rendered under its dedicated heading, never dumped as a generic source block.
     expect(bare).toContain('apply it as a hard constraint');
   });
@@ -2787,6 +2823,34 @@ describe('forge I/O (injected exec)', () => {
     const createCall = exec.mock.calls[2][1];
     const bodyIdx = createCall.indexOf('--body') + 1;
     expect(createCall[bodyIdx]).toContain(slugMarker('my-slug'));
+    expect(createCall.filter((a) => a === '--label')).toHaveLength(1);
+    expect(createCall).toContain(LI_LABEL);
+  });
+
+  it('fileProposalToForge creates and applies independent dispatch + contributor labels', async () => {
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: 'https://github.com/o/r/issues/9\n' });
+    const res = await fileProposalToForge({
+      cli: 'gh', cwd: '/x', title: 'T', body: 'B', slug: 's',
+      model: 'light', effort: 'max', goodFirstIssue: true, exec
+    });
+    expect(res.success).toBe(true);
+    const created = exec.mock.calls.filter((c) => c[1][0] === 'label').map((c) => c[1][2]);
+    expect(created).toContain(LI_LABEL);
+    expect(created).toContain('model:light');
+    expect(created).toContain('effort:max');
+    expect(created).toContain('good first issue');
+    const createCall = exec.mock.calls.find((c) => c[1][0] === 'issue')[1];
+    expect(createCall).toEqual(expect.arrayContaining([
+      '--label', LI_LABEL, '--label', 'model:light', '--label', 'effort:max', '--label', 'good first issue'
+    ]));
+  });
+
+  it('fileProposalToForge does not invent dispatch labels from a missing hint', async () => {
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: 'https://github.com/o/r/issues/9\n' });
+    await fileProposalToForge({ cli: 'gh', cwd: '/x', title: 'T', body: 'B', slug: 's', exec });
+    const created = exec.mock.calls.filter((c) => c[1][0] === 'label').map((c) => c[1][2]);
+    expect(created).not.toContain('model:medium');
+    expect(created).not.toContain('good first issue');
   });
 
   it('fileProposalToForge reports failure on nonzero exit', async () => {
@@ -2878,6 +2942,17 @@ describe('Jira filer', () => {
     expect(payload).toMatchObject({ projectKey: 'PROJ', summary: 'T', issueType: 'Task', labels: [LI_LABEL] });
     expect(payload.description).toContain(slugMarker('add-x'));
     expect(payload.description).toContain('B');
+  });
+
+  it('fileProposalToJira forwards hyphenated dispatch + contributor labels without deriving them', async () => {
+    const create = vi.fn().mockResolvedValue({ success: true, ticketId: 'PROJ-11', url: 'https://j/browse/PROJ-11' });
+    await fileProposalToJira({
+      instanceId: 'i', projectKey: 'PROJ', title: 'T', body: 'B', slug: 'add-x',
+      model: 'heavy', effort: 'low', goodFirstIssue: true, create
+    });
+    expect(create.mock.calls[0][1].labels).toEqual([
+      LI_LABEL, 'model-heavy', 'effort-low', 'good-first-issue'
+    ]);
   });
 
   it('fileProposalToJira surfaces a create failure rather than throwing', async () => {

@@ -764,27 +764,38 @@ function reviewerModelLookup(reviewerModels) {
 }
 
 /**
+ * Build a lowercased-token → effort-level lookup for the builders. Tolerates the raw
+ * (unnormalized) map. A `Map` for the same reasons as the cap and model lookups.
+ */
+function reviewerEffortLookup(reviewerEfforts) {
+  const normalized = normalizeReviewerEfforts(reviewerEfforts) || {};
+  return new Map(Object.entries(normalized).map(([token, effort]) => [token.toLowerCase(), effort]));
+}
+
+/**
  * Render one emitted `--review-with` entry: the reviewer token, its optional
  * `[<model>]` selector, then slashdo's per-entry suffixes in canonical storage
- * order — `~opt`, then `~max=<n>`.
+ * order — `~opt`, `~max=<n>`, then `~effort=<level>`.
  *
  * Order matters. slashdo's grammar is
- * `entry := ( <agent> [ "[" <model> "]" ] | "@" <login> ) ( "~opt" | "~max=" <n> )*`
+ * `entry := ( <agent> [ "[" <model> "]" ] | "@" <login> ) ( "~opt" | "~max=" <n> | "~effort=" <level> )*`
  * and its parser strips the `~` suffixes from the RIGHT before reading the
  * bracket — so the bracket has to sit between the slug and the suffixes.
  *
  * A reviewer with no pinned model emits no bracket, which is what leaves that
  * reviewer's own default in place; likewise a reviewer with no cap emits no
- * `~max` at all (`~max=0` is a real, distinct value meaning "loop until clean").
+ * `~max` at all (`~max=0` is a real, distinct value meaning "loop until clean"), and
+ * a reviewer with no effort level emits no `~effort`.
  * Only BRACKET_MODEL_REVIEWERS get a bracket — `copilot`/`@login` reject one, and
  * PortOS's `lmstudio` reviewer has no slashdo slug at all (its model rides in the
  * `POST /api/code-review/local` body instead).
  */
-function markSuffixes(token, optSet, maxLookup, modelLookup) {
+function markSuffixes(token, optSet, maxLookup, modelLookup, effortLookup) {
   const key = token.toLowerCase();
   const max = maxLookup?.get(key);
   const model = BRACKET_MODEL_REVIEWERS.includes(key) ? modelLookup?.get(key) : undefined;
-  return `${token}${model ? `[${model}]` : ''}${optSet.has(key) ? '~opt' : ''}${max === undefined ? '' : `~max=${max}`}`;
+  const effort = effortLookup?.get(key);
+  return `${token}${model ? `[${model}]` : ''}${optSet.has(key) ? '~opt' : ''}${max === undefined ? '' : `~max=${max}`}${effort ? `~effort=${effort}` : ''}`;
 }
 
 /**
@@ -840,17 +851,19 @@ export function resolveKeyedReviewers(reviewers, hasUsernames) {
  * Reviewers in `optionalReviewers` get slashdo's `~opt` non-blocking suffix, and
  * reviewers carrying a `reviewerMaxRounds` cap get `~max=<n>` after it. A
  * reviewer with a `reviewerModels` pin gets slashdo's `[<model>]` selector
- * between the slug and those suffixes.
+ * between the slug and those suffixes, and a reviewer with a `reviewerEfforts` pin
+ * gets `~effort=<level>`.
  * The flag-string variant is `buildReviewWithArgs`.
  */
-export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}) {
+export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}) {
   const keyed = Array.isArray(reviewers) && reviewers.length ? reviewers : [...DEFAULT_REVIEWERS];
   const users = normalizeReviewUsernames(usernames);
   const optSet = optionalReviewerSet(optionalReviewers);
   const maxLookup = reviewerMaxRoundsLookup(reviewerMaxRounds);
   const modelLookup = reviewerModelLookup(reviewerModels);
+  const effortLookup = reviewerEffortLookup(reviewerEfforts);
   const combined = [...keyed, ...users.map(u => `@${u}`)];
-  return combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup)).join(',');
+  return combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup, effortLookup)).join(',');
 }
 
 /**
@@ -865,18 +878,16 @@ export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers =
  *   username reviewer is an external PR reviewer, not a CLI that applies fixes).
  * - Reviewers in `optionalReviewers` get slashdo's `~opt` non-blocking suffix on
  *   their emitted token, so an inconclusive verdict from them doesn't gate the
- *   merge. Reviewers with a `reviewerMaxRounds` cap get `~max=<n>` after it, and
- *   a reviewer with a `reviewerModels` pin gets a `[<model>]` selector before both.
- *   A lone default `copilot` that is marked optional OR carries a cap DOES force
- *   the flag on (otherwise the suffix — the whole point — would be dropped with
- *   the flag). A model pin can't trigger that exemption because `copilot[…]` isn't
- *   a legal slashdo entry (see BRACKET_MODEL_REVIEWERS) — so a lone copilot with a
- *   stray pin emits nothing extra, exactly as before.
+ *   merge. Reviewers with a `reviewerMaxRounds` cap get `~max=<n>` after it,
+ *   a reviewer with a `reviewerModels` pin gets a `[<model>]` selector before both,
+ *   and a reviewer with a `reviewerEfforts` pin gets `~effort=<level>`.
+ *   A lone default `copilot` that is marked optional, carries a cap, or carries an
+ *   effort DOES force the flag on (otherwise the suffix — the whole point — would be
+ *   dropped with the flag).
  *
  * Everything past `reviewers` is an options object: the two reviewer-name lists
- * (`usernames` / `optionalReviewers`) and the two per-reviewer lookup maps
- * (`reviewerMaxRounds` / `reviewerModels`) are same-shaped and were silently
- * transposable as positionals.
+ * (`usernames` / `optionalReviewers`) and the three per-reviewer lookup maps
+ * (`reviewerMaxRounds` / `reviewerModels` / `reviewerEfforts`) are same-shaped.
  *
  * @param {string[]} reviewers - ordered keyed reviewer slugs
  * @param {Object} [options]
@@ -886,6 +897,7 @@ export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers =
  * @param {string[]} [options.optionalReviewers] - reviewers that get the `~opt` suffix
  * @param {Object<string, number>} [options.reviewerMaxRounds] - per-reviewer `~max=<n>` caps
  * @param {Object<string, string>} [options.reviewerModels] - per-reviewer `[<model>]` pins
+ * @param {Object<string, string>} [options.reviewerEfforts] - per-reviewer `~effort=<level>` pins
  * @returns {string} the slashdo review flag string (possibly empty)
  */
 export function buildReviewWithArgs(reviewers, {
@@ -895,6 +907,7 @@ export function buildReviewWithArgs(reviewers, {
   optionalReviewers = [],
   reviewerMaxRounds = {},
   reviewerModels = {},
+  reviewerEfforts = {},
 } = {}) {
   const users = normalizeReviewUsernames(usernames);
   const keyed = resolveKeyedReviewers(reviewers, users.length > 0);
@@ -902,14 +915,16 @@ export function buildReviewWithArgs(reviewers, {
   const optSet = optionalReviewerSet(optionalReviewers);
   const maxLookup = reviewerMaxRoundsLookup(reviewerMaxRounds);
   const modelLookup = reviewerModelLookup(reviewerModels);
+  const effortLookup = reviewerEffortLookup(reviewerEfforts);
   // The lone-default-copilot suppression only applies when copilot carries NO
-  // per-entry suffix — a `copilot~opt` / `copilot~max=2`-only list must still
+  // per-entry suffix — a `copilot~opt` / `copilot~max=2` / `copilot~effort=high` list must still
   // emit the flag to carry that suffix.
   const isDefaultOnly = combined.length === 1 && combined[0] === DEFAULT_REVIEWER
-    && !optSet.has(DEFAULT_REVIEWER) && maxLookup.get(DEFAULT_REVIEWER) === undefined;
+    && !optSet.has(DEFAULT_REVIEWER) && maxLookup.get(DEFAULT_REVIEWER) === undefined
+    && effortLookup.get(DEFAULT_REVIEWER) === undefined;
   const hasNonCopilot = keyed.some(r => r !== DEFAULT_REVIEWER);
   const parts = [];
-  if (!isDefaultOnly) parts.push(`--review-with ${combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup)).join(',')}`);
+  if (!isDefaultOnly) parts.push(`--review-with ${combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup, effortLookup)).join(',')}`);
   if (combined.length >= 2) {
     if (stopMode === 'on-findings') parts.push('--review-stop-on-findings');
     else if (stopMode === 'on-clean') parts.push('--review-stop-on-clean');
@@ -960,6 +975,26 @@ const slashdoCommandSchema = z.string().refine(isValidSlashdoCommand, {
   message: 'must be a bare slashdo command name (lowercase, digits, hyphens)',
 });
 
+// The app Issues tab already fetched the selected forge issue while listing the
+// page. Keep that payload bounded when it is carried into a manual claim so the
+// prompt cannot be inflated by a hand-crafted request. The generator truncates
+// direct service calls too; this is the route boundary for browser requests.
+const prefetchedIssueContextSchema = z.object({
+  number: z.number().int().positive(),
+  title: z.string().max(1000).optional(),
+  body: z.string().max(12_000).optional(),
+  url: z.string().max(2048).optional(),
+});
+
+// Optional guidance entered on the managed-app Issues tab. It is appended to
+// the selected claim prompt, not stored as the task's human note, so it reaches
+// the agent even though the claim prompt is assembled before queueing.
+export const CLAIM_OVERRIDE_CONTEXT_MAX_CHARS = 4_000;
+const claimOverrideContextSchema = z.preprocess(
+  v => typeof v === 'string' ? (v.trim() || undefined) : v,
+  z.string().max(CLAIM_OVERRIDE_CONTEXT_MAX_CHARS).optional()
+);
+
 export const createCosTaskSchema = z.object({
   description: z.string().min(1),
   diagnostics: cosTaskDiagnosticsSchema.optional(),
@@ -999,8 +1034,8 @@ export const createCosTaskSchema = z.object({
   ),
   // The slashdo catalog's deliverable posture (#3636): whether this run is
   // EXPECTED to leave commits in its worktree. A report-shaped workflow
-  // (`/do:review`) carries `false` so the TUI idle reaper doesn't score its
-  // correctly-clean tree as `idle-no-changes`. Carried onto the task by
+  // (`/do:review`) carries `false` so downstream bookkeeping does not treat its
+  // correctly-clean tree as missing code work. Carried onto the task by
   // `cosTaskStore.js` only on a strict boolean — absent means "no opinion".
   worktreeChangesExpected: z.preprocess(
     v => v === 'true' ? true : v === 'false' ? false : v,
@@ -1186,8 +1221,8 @@ export const createCosJobSchema = z.object({
     openPR: z.boolean().optional(),
     prCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
     simplify: z.boolean().optional(),
-    // Absent = true (a clean worktree at idle-out is a failure). `false` opts the
-    // job out of the TUI idle-complete worktree-changes gate — see
+    // Absent = true for code-shaped work. `false` marks a report-shaped job whose
+    // deliverable is intentionally outside the worktree — see
     // ALLOWED_TASK_METADATA_KEYS below and agentTuiSpawning.js (#3102).
     worktreeChangesExpected: z.boolean().optional(),
   }).optional(),
@@ -1360,18 +1395,17 @@ export const MAX_TOTAL_SPAWNS = 5;
 // override can disable an individual rectification behavior and survive
 // sanitizeTaskMetadata.
 const ALLOWED_TASK_METADATA_KEYS = [
-  ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly',
+  ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly', 'claimFlow',
   'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'finishAbandoned', 'autoClose',
   // Throwaway-worktree posture for programmatic-I/O reasoning tasks (layered-
   // intelligence): the worktree is discarded without a merge or PR so a reasoning
   // agent can't land code. See agentWorktreeCleanup.js.
   'discardWorktree',
   // Whether a successful run is EXPECTED to leave file changes in the worktree
-  // (#3102). Default (absent) = true: the TUI idle-complete gate fails a run that
-  // idled out on a clean tree. `false` opts a task type out of that gate — e.g. a
-  // reference-watch run against a GitHub/GitLab/JIRA work tracker files its
-  // proposals as issues and, per the prompt, edits no application code, so a
-  // clean worktree is the SUCCESS shape. See agentTuiSpawning.js.
+  // (#3102). Default (absent) = true for code-shaped work. `false` marks a task
+  // type whose deliverable is outside the repo — e.g. a reference-watch run
+  // against a GitHub/GitLab/JIRA work tracker files its proposals as issues and,
+  // per the prompt, edits no application code, so a clean worktree is expected.
   'worktreeChangesExpected'
 ];
 
@@ -1403,6 +1437,13 @@ export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 export const SWARM_COUNT_MIN = 2;
 export const SWARM_COUNT_MAX = 6;
 
+// branch-reconcile coordinator batch size. Unlike claim-issue's swarm count,
+// this is the number of already-classified branches one coordinator receives
+// in a run. A one-branch batch is valid, and the scheduler supplies the default
+// when the key is absent so old task records remain compatible.
+export const BRANCHES_PER_AGENT_MIN = 1;
+export const BRANCHES_PER_AGENT_MAX = 6;
+
 // POST /api/cos/tasks/slashdo — a `/do:*` button click from an app's Agent
 // Operations panel. The run-settings fields are PICKED from createCosTaskSchema
 // rather than restated, so the drawer's provider/model/effort/simplify/reviewer
@@ -1410,7 +1451,10 @@ export const SWARM_COUNT_MAX = 6;
 // preprocessors). `command` is only shape-checked here — the route owns the
 // allowed-command map and its 400 message. The remaining fields are `/do:next`
 // specific: `target` pins the run to ONE work item (empty ⇒ the agent picks),
-// and `issueAuthorFilter` overrides the app's configured claim-work gate.
+// `issueContext` carries title/body already fetched by the app Issues tab, and
+// `issueAuthorFilter` overrides the app's configured claim-work gate. The
+// optional `overrideContext` is user guidance appended to the selected claim
+// prompt, rather than the queue's one-line human note.
 export const slashdoTaskSchema = createCosTaskSchema
   .pick({
     model: true, provider: true, effort: true, simplify: true,
@@ -1421,6 +1465,11 @@ export const slashdoTaskSchema = createCosTaskSchema
     command: z.string().min(1),
     app: z.string().min(1),
     target: z.preprocess(emptyToUndefined, z.string().trim().max(80).optional()),
+    // Content already fetched by the managed-app Issues tab for a manually
+    // targeted forge claim. `buildClaimWorkTask` embeds it in the agent prompt;
+    // scheduled/self-claim flows omit it and continue to read live issue state.
+    issueContext: prefetchedIssueContextSchema.optional(),
+    overrideContext: claimOverrideContextSchema,
     issueAuthorFilter: z.enum(ISSUE_AUTHOR_FILTERS).optional(),
   });
 
@@ -1437,7 +1486,8 @@ export const resumeCosAgentSchema = createCosTaskSchema
 
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags
- * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`reviewerApplies`)
+ * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`claimFlow`/
+ * `reviewerApplies`)
  * are kept only when actually boolean; constrained values include `prCompletion`,
  * reviewers, reviewer usernames, and `reviewStopMode` — plus a validated pipeline
  * object. Prevents prototype pollution and reserved-field overrides.
@@ -1532,6 +1582,18 @@ export function sanitizeTaskMetadata(raw) {
       && (raw.swarmCount === 0
         || (raw.swarmCount >= SWARM_COUNT_MIN && raw.swarmCount <= SWARM_COUNT_MAX))) {
     clean.swarmCount = raw.swarmCount;
+    hasKeys = true;
+  }
+  // `branchesPerAgent` bounds the branch-reconcile prompt to a deterministic
+  // prefix of the prioritized in-flight set. It is separate from swarmCount:
+  // branch-reconcile runs one coordinator over a batch, while claim-issue fans
+  // out independent issue agents. Absent means inherit; there is no "off"
+  // value because the task default intentionally supplies a safe batch size.
+  if (Object.prototype.hasOwnProperty.call(raw, 'branchesPerAgent')
+      && Number.isInteger(raw.branchesPerAgent)
+      && raw.branchesPerAgent >= BRANCHES_PER_AGENT_MIN
+      && raw.branchesPerAgent <= BRANCHES_PER_AGENT_MAX) {
+    clean.branchesPerAgent = raw.branchesPerAgent;
     hasKeys = true;
   }
   // Pass through pipeline config (validated shape: object with stages array)

@@ -478,13 +478,13 @@
       {
         "id": "ltx_video",
         "name": "LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)",
-        "runtime": "mlx_video",
+        "runtime": "cuda_video",
         "steps": 25,
         "guidance": 3,
         "disclosure": {
           "runtimeLicense": {
-            "name": "MIT",
-            "url": "https://pypi.org/project/mlx-video-with-audio/"
+            "name": "Apache-2.0",
+            "url": "https://github.com/huggingface/diffusers/blob/main/LICENSE"
           },
           "reviewedAt": "2026-08-09"
         }

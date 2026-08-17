@@ -55,6 +55,7 @@ export const VIDEO_BASE_MODES = Object.freeze(['text', 'image', 'fflf', 'extend'
 const MINIMAX_H3_MODE_SET = Object.freeze(['text', 'image', 'fflf']);
 
 export const VIDEO_RUNTIME_MODES = Object.freeze({
+  cuda_video: Object.freeze(['text', 'image']),
   mlx_video: Object.freeze(['text', 'image', 'fflf', 'extend']),
   ltx2: Object.freeze(['text', 'image', 'fflf', 'extend']),
   ltx25: Object.freeze(['text', 'image', 'fflf', 'extend']),

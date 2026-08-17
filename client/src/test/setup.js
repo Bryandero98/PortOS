@@ -20,8 +20,43 @@ installTestStorage();
 // and the resulting unhandled error fails the whole run despite passing assertions
 // (#2958). Stub it once, guarded so it never clobbers a real implementation — on real
 // DOM elements scrollIntoView is always present, so production is unaffected.
-if (!Element.prototype.scrollIntoView) {
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
+}
+
+// Stub jsdom missing media/canvas methods to eliminate stderr noise in test runs
+if (typeof HTMLMediaElement !== 'undefined') {
+  HTMLMediaElement.prototype.play = () => Promise.resolve();
+  HTMLMediaElement.prototype.pause = () => {};
+}
+
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => ({
+    fillRect: () => {},
+    clearRect: () => {},
+    getImageData: (_x, _y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+    putImageData: () => {},
+    createImageData: () => ({ data: new Uint8ClampedArray(0) }),
+    setTransform: () => {},
+    drawImage: () => {},
+    save: () => {},
+    fillText: () => {},
+    restore: () => {},
+    beginPath: () => {},
+    moveTo: () => {},
+    lineTo: () => {},
+    closePath: () => {},
+    stroke: () => {},
+    translate: () => {},
+    scale: () => {},
+    rotate: () => {},
+    arc: () => {},
+    fill: () => {},
+    measureText: () => ({ width: 0 }),
+    transform: () => {},
+    rect: () => {},
+    clip: () => {},
+  });
 }
 
 // Fail any test that triggers React's "not wrapped in act(...)" warning (#2406).

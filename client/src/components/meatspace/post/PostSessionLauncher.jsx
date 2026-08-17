@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router';
 import { Zap, History, Settings, Play, Brain, BookOpen, Dumbbell, Timer, Radio, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
-import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getMemoryItems } from '../../../services/api';
+import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getMemoryItems, updatePostConfig } from '../../../services/api';
 import { FormField } from '../../ui/FormField';
 import Pill from '../../ui/Pill';
 import { enabledApiProviderFilter } from '../../../utils/providers';
@@ -10,6 +10,13 @@ import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, computeDomainAverages, computeG
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import { todayKeyInTimezone } from '../../../utils/timezone.js';
+import {
+  QUICK_DURATION_MINUTES,
+  QUICK_DURATION_TOLERANCE_SEC,
+  normalizeQuickDurationMinutes,
+  deriveQuickObservedDurations,
+  composeQuickSession,
+} from '../../../lib/postQuickSession.js';
 
 // Canonical domain visiting order for interleaved "Full POST" composition
 // (issue #2100): alternate domains — math → cognitive → memory → verbal — so a
@@ -54,6 +61,8 @@ export function cognitiveSummary(type, cfg) {
   if (type === 'n-back') return `${cfg.n ?? 2}-back`;
   if (type === 'digit-span') return `${cfg.startLength ?? 3}–${cfg.maxLength ?? 8}`;
   if (type === 'schulte-table') return `${cfg.size ?? 5}×${cfg.size ?? 5}`;
+  if (type === 'stroop') return `${cfg.incongruentPct ?? 75}% conflict`;
+  if (type === 'mental-rotation') return `${cfg.optionCount ?? 4} options`;
   if (type === 'reaction-time') return `${cfg.count ?? 15} trials (${cfg.mode ?? 'simple'})`;
   return cfg.count ? `${cfg.count} trials` : '';
 }
@@ -109,6 +118,12 @@ export default function PostSessionLauncher({
   // lives above it, so collapsing never discards typed values.
   const [showConditions, setShowConditions] = useState(false);
   const [mode, setMode] = useState('test'); // 'test' | 'train'
+  const [quickDurationMin, setQuickDurationMin] = useState(() => normalizeQuickDurationMinutes(config?.quickDurationMin));
+  const [quickDurationSaveState, setQuickDurationSaveState] = useState('idle');
+
+  useEffect(() => {
+    setQuickDurationMin(normalizeQuickDurationMinutes(config?.quickDurationMin));
+  }, [config?.quickDurationMin]);
   // `getProviders()` resolves `{ activeProvider, providers }`, not a bare array.
   // Unwrapping it by hand here read the object as the list and threw on every
   // mount, so the panel below never learned which provider a run would use — go
@@ -254,7 +269,10 @@ export default function PostSessionLauncher({
     maxLength: cfg.maxLength,
     showMs: cfg.showMs,
     count: cfg.count,
+    incongruentPct: cfg.incongruentPct,
     size: cfg.size,
+    rotationComplexity: cfg.rotationComplexity,
+    optionCount: cfg.optionCount,
     mode: cfg.mode,
     minDelayMs: cfg.minDelayMs,
     maxDelayMs: cfg.maxDelayMs,
@@ -351,82 +369,69 @@ export default function PostSessionLauncher({
     if (allowed.length) sessionEnabledDomains[domainKey] = allowed;
   }
 
-  function handleQuickSession() {
-    // Bias toward the top recommendation instead of pure random (issue #2100):
-    // if it names a drill type in an enabled domain, run that domain first and
-    // pick that exact drill; every other domain still gets a random pick.
-    const topRec = recommendations[0] || null;
-    const recDrill = topRec?.drillType || null;
-    const recDomain = recDrill ? DRILL_TO_DOMAIN[recDrill] : null;
-    const domainKeys = Object.keys(sessionEnabledDomains);
-    const orderedKeys = recDomain && sessionEnabledDomains[recDomain]
-      ? [recDomain, ...domainKeys.filter(k => k !== recDomain)]
-      : domainKeys;
+  const quickMemoryItemIds = {};
+  for (const [type] of enabledMemoryDrills) {
+    quickMemoryItemIds[type] = memoryDrillConfig(type, 3).memoryItemId;
+  }
+  const quickPlan = composeQuickSession({
+    domainEntries: Object.entries(sessionEnabledDomains).map(([domain, drills]) => ({ domain, drills })),
+    recommendation: recommendations[0] || null,
+    reviewReps: allowedReviewReps.map(rep => ({ ...rep, domain: DRILL_TO_DOMAIN[rep.type] })),
+    durationMinutes: quickDurationMin,
+    toleranceSec: QUICK_DURATION_TOLERANCE_SEC,
+    observedDurations: deriveQuickObservedDurations(recentSessions),
+    memoryItemIds: quickMemoryItemIds,
+  });
 
-    const drillConfigs = [];
-    for (const domainKey of orderedKeys) {
-      const drills = sessionEnabledDomains[domainKey];
-      const domain = DOMAINS[domainKey];
-      // Prefer the recommended drill in its domain; otherwise pick at random.
-      const recommendedPick = domainKey === recDomain
-        ? drills.find(d => d.type === recDrill)
-        : null;
-      const pick = recommendedPick || drills[Math.floor(Math.random() * drills.length)];
-      const cfg = pick.cfg;
-
-      let quickConfig;
-      if (pick.source === 'math') {
-        quickConfig = {
-          steps: cfg.steps,
-          count: cfg.count ? Math.min(cfg.count, 5) : undefined,
-          maxDigits: cfg.maxDigits,
-          subtrahend: cfg.subtrahend,
-          startRange: cfg.startRange,
-          bases: cfg.bases,
-          maxExponent: cfg.maxExponent,
-          tolerancePct: cfg.tolerancePct,
-        };
-      } else if (pick.source === 'cognitive') {
-        // Keep the drill short for a balanced 5-minute session.
-        quickConfig = { ...cognitiveDrillConfig(cfg), count: cfg.count ? Math.min(cfg.count, 10) : undefined };
-      } else {
-        const count = Math.min(cfg.count || 5, 3);
-        quickConfig = pick.source === 'memory'
-          ? memoryDrillConfig(pick.type, count)
-          : { count }; // Fewer prompts for quick session
-      }
-
-      const drillConfig = {
-        type: pick.type,
-        domain: domainKey,
-        config: quickConfig,
-        timeLimitSec: domain.timeBudgetSec,
-      };
-
-      if (pick.source === 'llm') {
-        drillConfig.providerId = cfg.providerId || llmProviderId;
-        drillConfig.model = cfg.model || llmModel;
-      }
-
-      drillConfigs.push(drillConfig);
-    }
-
-    // Mix in up to 2 maintenance reps for mastered-but-inactive skills that are
-    // due for re-verification (issue #2096). Each carries the review markers so
-    // the server re-verifies the specific rung and records the pass/fail.
-    for (const rep of allowedReviewReps.slice(0, 2)) {
-      drillConfigs.push({
-        type: rep.type,
-        domain: DRILL_TO_DOMAIN[rep.type],
-        config: rep.config,
-        timeLimitSec: DOMAINS[DRILL_TO_DOMAIN[rep.type]]?.timeBudgetSec,
-        isReview: true,
-        reviewLabel: rep.label,
-        ...(rep.providerId && { providerId: rep.providerId }),
+  function handleQuickDurationChange(event) {
+    const next = normalizeQuickDurationMinutes(event.target.value);
+    const previous = quickDurationMin;
+    setQuickDurationMin(next);
+    setQuickDurationSaveState('saving');
+    updatePostConfig({ quickDurationMin: next }, { silent: true })
+      .then(() => setQuickDurationSaveState('saved'))
+      .catch(() => {
+        setQuickDurationMin(previous);
+        setQuickDurationSaveState('error');
       });
-    }
+  }
 
-    onStart(drillConfigs, buildCleanTags(tags), mode === 'train');
+  function handleQuickSession() {
+    const drillConfigs = quickPlan.selected.map(candidate => {
+      const domain = candidate.domain || DRILL_TO_DOMAIN[candidate.type];
+      if (candidate.kind === 'review') {
+        return {
+          type: candidate.type,
+          domain,
+          config: candidate.config,
+          timeLimitSec: DOMAINS[domain]?.timeBudgetSec,
+          isReview: true,
+          reviewLabel: candidate.reviewLabel,
+          ...(candidate.providerId && { providerId: candidate.providerId }),
+          ...(candidate.model && { model: candidate.model }),
+        };
+      }
+      const drillConfig = {
+        type: candidate.type,
+        domain,
+        config: candidate.quickConfig,
+        timeLimitSec: DOMAINS[domain]?.timeBudgetSec,
+      };
+      if (candidate.source === 'llm') {
+        drillConfig.providerId = candidate.cfg?.providerId || llmProviderId;
+        drillConfig.model = candidate.cfg?.model || llmModel;
+      }
+      return drillConfig;
+    });
+    if (!drillConfigs.length) return;
+    onStart(drillConfigs, buildCleanTags(tags), mode === 'train', {
+      targetDurationSec: quickPlan.targetDurationSec,
+      estimatedDurationSec: quickPlan.estimatedDurationSec,
+      toleranceSec: quickPlan.toleranceSec,
+      omittedDomains: quickPlan.omittedDomains,
+      omittedReviews: quickPlan.omittedReviews,
+      selectedTypes: quickPlan.selected.map(candidate => candidate.type),
+    });
   }
 
   // Build a full-length (non-abbreviated) drill config for a single enabled
@@ -513,7 +518,7 @@ export default function PostSessionLauncher({
 
   const hasAnyDrills = enabledMathDrills.length > 0 || enabledLlmDrills.length > 0 || enabledCognitiveDrills.length > 0 || enabledMemoryDrills.length > 0;
   // Quick-session domain count reflects the sessionModules-filtered set, so the
-  // "Quick 5 Min (N domains)" button matches what it will actually run.
+  // Quick button and preview match what the composer can actually run.
   const domainCount = Object.keys(sessionEnabledDomains).length;
   // A COMPOSED session (Full/Quick) only has drills to run if the
   // sessionModules-filtered set is non-empty — the buttons gate on this, not on
@@ -702,11 +707,46 @@ export default function PostSessionLauncher({
             )}
 
             {/* Standard sessions */}
+            {domainCount >= 2 && (
+              <div className="bg-port-bg/50 border border-port-border rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <label htmlFor="post-quick-duration" className="text-sm text-gray-300">Quick session budget</label>
+                  <select
+                    id="post-quick-duration"
+                    aria-label="Quick session duration"
+                    value={quickDurationMin}
+                    onChange={handleQuickDurationChange}
+                    className="bg-port-card border border-port-border rounded px-2 py-1 text-sm text-white"
+                  >
+                    {QUICK_DURATION_MINUTES.map(minutes => (
+                      <option key={minutes} value={minutes}>{minutes} minutes</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="text-xs text-gray-400" aria-label="Quick session preview">
+                  <div>
+                    Preview: {quickPlan.selected.map(candidate => candidate.reviewLabel || DRILL_LABELS[candidate.type] || candidate.type).join(' · ') || 'No drills fit this budget'}
+                  </div>
+                  <div>
+                    Estimated {Math.ceil(quickPlan.estimatedDurationSec / 60)} min of {quickDurationMin} min target.
+                  </div>
+                  {quickPlan.omittedDomains.length > 0 && (
+                    <div>Omitted domains: {quickPlan.omittedDomains.map(domain => DOMAINS[domain]?.label || domain).join(', ')}.</div>
+                  )}
+                  {quickPlan.omittedReviews.length > 0 && (
+                    <div>Omitted maintenance reviews: {quickPlan.omittedReviews.join(', ')}.</div>
+                  )}
+                  {quickDurationSaveState === 'saving' && <div>Saving budget...</div>}
+                  {quickDurationSaveState === 'saved' && <div>Budget saved.</div>}
+                  {quickDurationSaveState === 'error' && <div className="text-port-error">Budget could not be saved; reverted.</div>}
+                </div>
+              </div>
+            )}
             <div className="flex flex-col sm:flex-row gap-3">
               {domainCount >= 2 && (
                 <button
                   onClick={handleQuickSession}
-                  disabled={!hasSessionDrills}
+                  disabled={!quickPlan.selected.length}
                   className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 ${
                     mode === 'train'
                       ? 'bg-port-accent-2 hover:bg-port-accent-2/80 text-port-on-accent-2'
@@ -714,7 +754,7 @@ export default function PostSessionLauncher({
                   } disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-lg transition-colors`}
                 >
                   <Timer size={18} />
-                  Quick 5 Min ({domainCount} domains)
+                  Quick {quickDurationMin} Min ({domainCount} domains)
                 </button>
               )}
               <button

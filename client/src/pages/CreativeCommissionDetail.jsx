@@ -238,9 +238,9 @@ export default function CreativeCommissionDetail() {
   };
 
   // Rate/annotate a run's output — folds into the next scheduled run's directive.
-  const handleRate = useCallback(async (runId, rating, note) => {
+  const handleRate = useCallback(async (runId, rating, note, tags = []) => {
     try {
-      const updated = await submitCommissionFeedback(id, { runId, rating, note: note || '' }, { silent: true });
+      const updated = await submitCommissionFeedback(id, { runId, rating, note: note || '', tags }, { silent: true });
       setCommission(updated);
       toast.success('Feedback saved — it steers the next run');
     } catch (e) {

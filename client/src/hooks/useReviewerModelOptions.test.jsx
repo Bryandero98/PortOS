@@ -111,7 +111,7 @@ describe('useReviewerModelOptions', () => {
     });
 
     it('leaves every other reviewer on its static ladder', async () => {
-      expect(await levelsFor('codex', 'gpt-5.6-sol')).toContain('ultra');
+      expect(await levelsFor('codex', 'gpt-5.6-sol')).toContain('xhigh');
       expect(await levelsFor('claude', 'gemini-3.1-pro')).toContain('max');
       expect(await levelsFor('copilot', null)).toBeNull();
       expect(await levelsFor('@octocat', null)).toBeNull();

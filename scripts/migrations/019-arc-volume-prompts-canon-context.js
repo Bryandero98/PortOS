@@ -63,9 +63,9 @@ export const ACCEPTED_OLD_MD5 = {
 
 export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-overview.md':   '5ed760caaf3cf88916ec28b220e2f590', // post-250 arc spine checkpoint
-  'pipeline-arc-verify.md':     '9f32e91bd33b97d30e1cbb2e697f4fc3', // post-263 world category canon
-  'pipeline-arc-resolve.md':    'aa2e463ebe0857859d79aa0c6ccb0256', // post-267 (character-arc budgets)
-  'pipeline-volume-verify.md':  '49458d36700cb94e34806d536ffe2940', // post-019
+  'pipeline-arc-verify.md':     '4b60a322e35b536405d0fbf543580562', // post-276 distinct climax
+  'pipeline-arc-resolve.md':    '638b988c84b3e5599f7a2ce09fa149ce', // post-274 planning economy
+  'pipeline-volume-verify.md':  '9c0839d7fe1760c0891464afd4a3b8fd', // post-274 planning economy
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

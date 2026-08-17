@@ -1,0 +1,141 @@
+# Federated Media Providers
+
+PortOS can opt in to serving local media-generation capacity to another registered PortOS peer. The first wire contract, `/api/federation/media/v1`, supports queued audio generation through the existing durable `mediaJobQueue` and local music engines.
+
+Provider-side queued audio, consumer-side capacity discovery, and durable remote audio execution are available. Multi-provider scheduling, image/video transfer, and higher-level commission routing remain later slices of issue #4348.
+
+## Enable a provider
+
+1. In **Settings → Security**, configure an instance password. The provider API remains closed when authentication is off, even though ordinary PortOS APIs normally trust the private network in that posture.
+2. Register the consumer under **Instances**. The consumer must store this provider's Basic credential on its peer record and send its own registered instance id on every request.
+3. Install and verify the desired music runtime and model under **Music**. A model must be locally ready before it can be advertised or accept work.
+4. In **Settings → Sharing → Federated media provider**, select the allowed audio models, choose the shared active-job limit, and enable the provider.
+
+The default is disabled:
+
+```json
+{
+  "federation": {
+    "mediaProvider": {
+      "enabled": false,
+      "maxQueuedJobs": 2,
+      "audioModels": []
+    }
+  }
+}
+```
+
+An older install without this settings slice behaves exactly like the default above. Known fields are validated while unknown future fields are preserved, so rolling an install back does not erase newer provider settings.
+
+## Configure a consumer
+
+1. Register the provider under **Instances** and make the relationship mutual so the provider recognizes this consumer's instance id.
+2. Store the provider's instance-password credential on its peer card. The normal peer health probe may work without it when provider auth is off, but the federated-media API intentionally does not.
+3. Expand **Remote media provider** on the peer card and enable **Use this peer for remote audio**. PortOS immediately probes the versioned status endpoint through `peerFetch`.
+4. Select the exact advertised engine/model pairs this instance may use. This local allowlist is independent from the provider's sharing allowlist; both sides must permit a model.
+
+The consumer default is also disabled:
+
+```json
+{
+  "mediaProvider": {
+    "enabled": false,
+    "audioModels": []
+  }
+}
+```
+
+This configuration and the last sanitized capacity snapshot live only on the local peer record. They are stripped from announce responses and do not become federation records. Older peers without the wire-v1 endpoint show as **older peer** rather than making the normal instance probe fail.
+
+The Instances card reports the provider's ready/busy/unavailable state, shared active-job count, queue depth, and advertised model readiness. A consumer preflight accepts a model only when the peer is explicitly enabled, the exact model is locally allowlisted, the wire response validates, the capacity timestamp is fresh, the queue is accepting, and runtime/model/CUDA readiness is positive. Unknown, malformed, clock-skewed, or stale status blocks assignment. The provider remains authoritative and repeats admission checks when a later executor submits the job.
+
+An API caller deliberately selects remote execution on Music generation by sending the local peer-record id together with an explicit advertised engine/model and a fixed-vocabulary instrumental profile:
+
+```json
+{
+  "prompt": "A fictional slow synthetic pulse",
+  "engine": "minimax-music3",
+  "modelId": "minimax-music3",
+  "mediaProviderPeerId": "00000000-0000-4000-8000-000000000001",
+  "remoteMusicProfile": {
+    "style": "cinematic",
+    "mood": "dreamy",
+    "tempo": "slow",
+    "energy": "medium",
+    "instruments": ["strings", "synthesizer"]
+  }
+}
+```
+
+`POST /api/music/generate` performs the fresh capacity preflight before returning the normal queued media-job response. Omitting `mediaProviderPeerId` keeps the existing local-engine behavior. The peer id and free-form `prompt` stay local. The worker renders the provider prompt only from the profile's enum values; non-empty remote lyrics are rejected so arbitrary personal text cannot cross the federation boundary.
+
+## Authentication and identity
+
+Every request requires both:
+
+- `Authorization: Basic …`, verified against the provider instance password by the global auth gate; browser session and Bearer authentication are deliberately rejected for this peer-only surface.
+- `X-PortOS-Instance-Id: <consumer-instance-id>`, resolving to an enabled peer registered on the provider.
+
+Use `peerFetch` for PortOS-to-PortOS calls; it already attaches the configured Basic credential and local instance id. The instance-id header identifies the registered peer, while the Basic credential authenticates access to this PortOS install.
+
+As with existing peer sync, the instance-id header is self-asserted. Basic authentication proves access to the provider install; it does not cryptographically bind that credential to one peer row. Owner-scoped job lookup is therefore a least-disclosure boundary for cooperating peers on the trusted network, not protection from another holder of the same instance password spoofing a registered id.
+
+## Wire v1
+
+All successful JSON responses include `wireVersion: 1`. The version is also fixed in the route path so an incompatible future contract can coexist rather than silently changing v1.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/api/federation/media/v1/status` | Fresh allowlisted capabilities, CUDA/runtime/model readiness, queue depth, and staleness window |
+| `POST` | `/api/federation/media/v1/jobs` | Submit an idempotent audio job; returns `202` for new work and `200` for a replay |
+| `GET` | `/api/federation/media/v1/jobs/:id` | Read an owner-scoped sanitized job projection |
+| `POST` | `/api/federation/media/v1/jobs/:id/cancel` | Cancel the caller's queued or running job |
+| `GET` | `/api/federation/media/v1/jobs/:id/result` | Download completed WAV bytes with integrity metadata |
+
+### Capacity status
+
+`GET /status` is computed live and carries `generatedAt` plus `staleAfterMs`. Consumers must stop assigning new work after that window instead of treating stale capacity as available. A provider timestamp more than 30 seconds in the future is also rejected as unknown clock state rather than extending capacity indefinitely.
+
+CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
+
+The configured `maxQueuedJobs` is conservative: all queued/running work that consumes this machine's media resources counts against it. Outgoing proxy jobs are excluded because they consume another peer's capacity; counting them could make two idle peers report busy while waiting on each other.
+
+Status never includes prompts, lyrics, credentials, local paths, commission records, or private creative metadata.
+
+### Submit a job
+
+Send a unique, stable `Idempotency-Key` header with the canonical instrumental request rendered by the consumer:
+
+```json
+{
+  "engine": "minimax-music3",
+  "modelId": "minimax-music3",
+  "prompt": "Instrumental cinematic music with a dreamy mood, slow tempo, medium energy, featuring strings and synthesizer. No vocals or spoken words.",
+  "durationSec": 60,
+  "durationMode": "manual"
+}
+```
+
+Unknown fields, free-form prompts, and non-empty lyrics are rejected. The contract accepts no source URL, filesystem path, shell argument, provider credential, or arbitrary proxy target. Keeping the wire shape as prompt text lets an older wire-v1 provider accept a newer consumer, while the canonical grammar lets a newer provider fail closed on arbitrary text from an older consumer.
+
+Within the queue's retained job window, repeating the same caller/key/body returns the original job without enqueuing again. Reusing that key with a different body returns `409 MEDIA_PROVIDER_IDEMPOTENCY_CONFLICT`. Job lookup and cancellation return the same not-found response for an unknown id and another peer's id.
+
+The provider persists accepted work in the existing machine-local `data/media-jobs.json` queue. No commission, CoS, schedule, taste, Digital Twin record, free-form prompt, or lyrics are copied to the provider. Its queue contains only the canonical instrumental prompt derived from fixed musical descriptors.
+
+### Download and verify a result
+
+A completed job projection includes `result.sha256`, `result.sizeBytes`, `result.mimeType`, and an owner-scoped `result.downloadUrl`. The download repeats the digest in `X-Content-SHA256`. Consumers should stream to a temporary file, verify both byte count and SHA-256, then atomically promote it into their local library. A missing or changed provider-side file returns a typed unavailable result instead of a dangling path.
+
+Provider filesystem paths and original filenames never cross the API boundary.
+
+### Consumer reconciliation
+
+Remote audio jobs use a dedicated non-GPU lane in the consumer's durable media queue. The local job UUID is also the stable provider `Idempotency-Key`. If the consumer restarts while the job is running, it requeues that same local record, replays the submission to recover the provider job id, and resumes status/progress polling. Temporary peer and provider outages remain queued rather than creating duplicate work.
+
+Cancellation intent is persisted before the consumer contacts the provider. After a restart it is replayed against the recovered provider job instead of resurrecting the render. A provider restart is handled by its own durable media queue; the consumer continues polling the owner-scoped wire job.
+
+On completion, the consumer ignores the advisory download URL and derives the fixed owner-scoped v1 result endpoint from the validated provider job id. It streams into a local partial file, verifies `Content-Length`, MIME type, both advertised digests, actual byte count, and SHA-256, then atomically promotes the WAV into the local Music library. Only that verified local filename is handed to the normal Music Studio completion hook.
+
+## Current boundary
+
+Wire v1 currently provides instrumental audio only, and remote selection is exposed through the generation API rather than a Music-page peer picker. Still remaining from #4348 are that Music UI, a privacy-preserving design for remote lyrical conditioning, multi-provider fairness/failover, remote image/video jobs and input-asset transfer, Creative Commission routing/UX, and aggregate provider health on System Health.

@@ -293,7 +293,9 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   // services/ollamaAgentContext.js.
   // Gated on the predicate here (not just inside the helper) so a cloud-provider
   // run — the overwhelmingly common case — takes no async hop at all.
-  const ollamaContext = isOllamaBackedProvider(provider) ? await ensureOllamaAgentContext(provider) : null;
+  const ollamaContext = isOllamaBackedProvider(provider)
+    ? await ensureOllamaAgentContext(provider, { model: provider.defaultModel ?? null })
+    : null;
   if (ollamaContext?.warning) onData?.(`${ollamaContext.warning}\n`);
 
   // Shared composition (provider.envVars + OpenCode models map + PWD pin +

@@ -393,7 +393,35 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
     expect(out.episodes[1].primaryCharacters).toEqual(['LINA']); // non-string + blank entries filtered
   });
 
-  it('rejects the `custom` length sentinel and derives a finale-role fallback to `finale`', async () => {
+  it('keeps generated episode synopses within the shared planning budget at a clause boundary', async () => {
+    const { series, seasons } = await setupSeriesWithSeasons();
+    const overlong = `${'A consequential setup. '.repeat(220)}This tail must be removed`;
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { episodes: [{ number: 1, title: 'Budgeted', synopsis: overlong, arcRole: 'pilot' }] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.generateSeasonEpisodes(series.id, seasons[0].id);
+    expect(out.episodes[0].synopsis.length).toBeLessThanOrEqual(4_000);
+    expect(out.episodes[0].synopsis).toMatch(/[.!?]$/);
+    expect(out.episodes[0].synopsis).not.toContain('This tail must be removed');
+  });
+
+  it('keeps generated episode loglines within their budget at a word boundary', async () => {
+    const { series, seasons } = await setupSeriesWithSeasons();
+    const overlong = `${'A consequential choice changes the pursuit without ending it. '.repeat(12)}consequence`;
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { episodes: [{ number: 1, title: 'Budgeted', logline: overlong, arcRole: 'pilot' }] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.generateSeasonEpisodes(series.id, seasons[0].id);
+    expect(out.episodes[0].logline.length).toBeLessThanOrEqual(500);
+    expect(overlong.split(' ')).toContain(out.episodes[0].logline.split(' ').pop());
+    expect(out.episodes[0].logline).not.toMatch(/conseque$/);
+  });
+
+  it('rejects the `custom` length sentinel and derives distinct climax/finale fallbacks', async () => {
     const { series, seasons } = await setupSeriesWithSeasons();
     stageRunnerSpy = vi.fn(async () => ({
       content: {
@@ -401,6 +429,9 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
           // LLM emitted `custom` without page/minute companions → reject sentinel,
           // fall back via arcRole. arcRole=finale → finale preset.
           { number: 1, title: 'Finale', arcRole: 'finale', lengthProfile: 'custom' },
+          // Climax independently defaults to extended rather than borrowing
+          // the later finale's full-runtime profile.
+          { number: 4, title: 'Climax', arcRole: 'climax', lengthProfile: 'custom' },
           // arcRole=midpoint and missing lengthProfile → default profile (standard).
           { number: 2, title: 'Midpoint', arcRole: 'midpoint' },
           // Valid preset is kept as-is.
@@ -412,6 +443,7 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
     const out = await planner.generateSeasonEpisodes(series.id, seasons[0].id);
     const byTitle = Object.fromEntries(out.episodes.map((e) => [e.title, e]));
     expect(byTitle.Finale.lengthProfile).toBe('finale');
+    expect(byTitle.Climax.lengthProfile).toBe('extended');
     expect(byTitle.Midpoint.lengthProfile).toBe('standard');
     expect(byTitle.Extra.lengthProfile).toBe('extended');
   });
@@ -564,13 +596,14 @@ describe('arcPlanner — verifyArc', () => {
   // pilot and finale still reported "zero pilot/finale" on every pass — and
   // because the foundation gate's structure arm reverts whenever verifyArc
   // leaves any blocker, that permanent false positive stalled the gate.
-  it('renders each episode arcRole so the arc-role imbalance check can see it', async () => {
+  it('renders climax and later finale roles with independent length profiles', async () => {
     const s = await setupSeries();
     await seriesSvc.updateSeries(s.id, { arc: { logline: 'L', summary: 'S' } });
     const sea = await seasonsSvc.createSeason(s.id, { title: 'V1' });
     await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 1', seasonId: sea.id, arcPosition: 1, arcRole: 'pilot' });
     await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 2', seasonId: sea.id, arcPosition: 2 });
-    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 3', seasonId: sea.id, arcPosition: 3, arcRole: 'finale' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 3', seasonId: sea.id, arcPosition: 3, arcRole: 'climax', lengthProfile: 'extended' });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Ep 4', seasonId: sea.id, arcPosition: 4, arcRole: 'finale', lengthProfile: 'finale' });
 
     stageRunnerSpy = vi.fn(async () => ({ content: { issues: [] }, runId: 'r1', providerId: 'p', model: 'm' }));
     await planner.verifyArc(s.id);
@@ -578,7 +611,8 @@ describe('arcPlanner — verifyArc', () => {
     const tree = JSON.parse(stageRunnerSpy.mock.calls[0][1].seasonsTreeJson);
     // null (not absent) for the middle episode — "no role" has to be legible as
     // a value, or the check can't tell an unset role from a dropped field.
-    expect(tree[0].episodes.map((e) => e.arcRole)).toEqual(['pilot', null, 'finale']);
+    expect(tree[0].episodes.map((e) => e.arcRole)).toEqual(['pilot', null, 'climax', 'finale']);
+    expect(tree[0].episodes.map((e) => e.lengthProfile)).toEqual(['standard', 'standard', 'extended', 'finale']);
   });
 
   it('drops malformed verify issues + defaults severity to medium', async () => {
@@ -2248,6 +2282,16 @@ describe('arcPlanner — shapeEpisodeResolutions', () => {
     const many = Array.from({ length: 60 }, (_, i) => ({ episodeNumber: i + 1, synopsis: `s${i}` }));
     expect(planner.shapeEpisodeResolutions(many)).toHaveLength(50);
   });
+
+  it('cannot inflate a repaired episode beyond the generation synopsis budget', () => {
+    const overlong = `${'One complete dramatic sentence. '.repeat(180)}unfinished tail`;
+    const [episode] = planner.shapeEpisodeResolutions([
+      { seasonNumber: 1, episodeNumber: 4, synopsis: overlong },
+    ]);
+    expect(episode.synopsis.length).toBeLessThanOrEqual(4_000);
+    expect(episode.synopsis).toMatch(/[.!?]$/);
+    expect(episode.synopsis).not.toContain('unfinished tail');
+  });
 });
 
 describe('arcPlanner — resolvedEpisodeEdits (rollback mutation manifest)', () => {
@@ -3312,6 +3356,27 @@ describe('arcPlanner — refineArc', () => {
 });
 
 describe('arcPlanner — manuscript completeness + derive-from-manuscript', () => {
+  it('fingerprints manuscript completeness context canonically and includes narrative references', () => {
+    const initial = {
+      manuscript: 'A short draft.',
+      series: { premise: 'An alliance must hold.', name: 'Example' },
+      arc: { summary: 'The alliance survives.' },
+      existingCharactersJson: '[{"name":"Ari"}]',
+    };
+    const reordered = {
+      existingCharactersJson: '[{"name":"Ari"}]',
+      arc: { summary: 'The alliance survives.' },
+      series: { name: 'Example', premise: 'An alliance must hold.' },
+      manuscript: 'A short draft.',
+    };
+
+    expect(planner.completenessSourceHash(reordered)).toBe(planner.completenessSourceHash(initial));
+    expect(planner.completenessSourceHash({
+      ...initial,
+      arc: { summary: 'The alliance shatters.' },
+    })).not.toBe(planner.completenessSourceHash(initial));
+  });
+
   beforeEach(() => {
     fileStore.clear();
     uuidCounter = 0;
@@ -3384,6 +3449,7 @@ describe('arcPlanner — manuscript completeness + derive-from-manuscript', () =
     });
     const out = await planner.analyzeManuscriptCompleteness(s.id, { withEdits: true });
     expect(out.issues[0].replace).toBe('She left, but paused.');
+    expect(out.issues[0].sourceContentHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('analyzeManuscriptCompleteness defaults withEdits false (ctx.withEdits=false, no replace shaped)', async () => {

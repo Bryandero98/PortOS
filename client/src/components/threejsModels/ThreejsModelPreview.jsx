@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { Bounds, OrbitControls, useBounds } from '@react-three/drei';
 import * as THREE from 'three';
 import { createSculptBufferGeometry, needsSculptBufferGeometry, sculptMaterialProps } from '../../lib/threejsSculpt';
 import { buildPartSelectionIndex, computeExplodeLayout, isReliefPart } from '../../lib/threejsExplode';
 import { summarizeThreejsArticulation } from '../../lib/threejsRig';
+import {
+  createRenderBudget,
+  getEffectiveTier,
+  recordFrame,
+  resetRenderBudget,
+} from '../../utils/cityRenderBudget';
 
 const radians = (degrees = 0) => THREE.MathUtils.degToRad(degrees);
 const rotation = (degrees = [0, 0, 0]) => degrees.map(radians);
@@ -13,12 +19,65 @@ const rotation = (degrees = [0, 0, 0]) => degrees.map(radians);
 const HIGHLIGHT_COLOR = '#38bdf8';
 const HIGHLIGHT_EMISSIVE_INTENSITY = 0.9;
 
+// These settings change only the renderer's presentation cost. The generated
+// spec remains the source of truth for geometry, materials, lights, and export.
+const PREVIEW_QUALITY = Object.freeze({
+  low: { dpr: [0.75, 1], shadows: 'basic' },
+  medium: { dpr: [1, 1], shadows: 'percentage' },
+  high: { dpr: [1, 1.5], shadows: 'soft' },
+  ultra: { dpr: [1, 2], shadows: 'soft' },
+});
+
+const PREVIEW_QUALITY_TIERS = Object.keys(PREVIEW_QUALITY);
+
 const BACKGROUND_PRESETS = [
   { id: 'black', label: 'Black', value: '#000000' },
   { id: 'white', label: 'White', value: '#ffffff' },
   { id: 'transparent', label: 'Transparent', value: null },
   { id: 'green', label: 'Green screen', value: '#00ff00' },
 ];
+
+const AUDIT_CAMERAS = [
+  { id: 'authored', label: 'Authored' },
+  { id: 'near', label: 'Near' },
+  { id: 'far', label: 'Far' },
+  { id: 'family', label: 'Family review' },
+];
+
+const AUDIT_RENDER_MODES = [
+  { id: 'final', label: 'Final' },
+  { id: 'neutral', label: 'Neutral' },
+  { id: 'normals', label: 'Normals' },
+  { id: 'wireframe', label: 'Wireframe' },
+  { id: 'boundaries', label: 'Part boundaries' },
+];
+
+const isAuditCamera = (value) => AUDIT_CAMERAS.some((camera) => camera.id === value);
+const isAuditRenderMode = (value) => AUDIT_RENDER_MODES.some((mode) => mode.id === value);
+
+const auditPartColor = (partId) => {
+  const hue = [...String(partId)].reduce((total, char) => ((total * 31) + char.charCodeAt(0)) % 360, 0);
+  return `hsl(${hue} 72% 58%)`;
+};
+
+// Camera bookmarks intentionally derive only from the validated scene camera.
+// This keeps the inspector deterministic for a saved scene while avoiding a
+// second provider-authored camera contract just for review.
+function getAuditCameraPosition(spec, auditCamera) {
+  const target = Array.isArray(spec?.camera?.target) ? spec.camera.target : [0, 0, 0];
+  const authored = Array.isArray(spec?.camera?.position) ? spec.camera.position : [0, 0, 3];
+  const offset = authored.map((value, axis) => value - target[axis]);
+  const direction = Math.hypot(...offset) > 0 ? offset : [0, 0, 3];
+  const scale = auditCamera === 'near' ? 0.6 : auditCamera === 'far' ? 1.7 : 1;
+  const familyOffset = auditCamera === 'family'
+    ? [
+      (direction[0] * Math.SQRT1_2) + (direction[2] * Math.SQRT1_2),
+      direction[1],
+      (-direction[0] * Math.SQRT1_2) + (direction[2] * Math.SQRT1_2),
+    ]
+    : direction;
+  return target.map((value, axis) => value + (familyOffset[axis] * scale));
+}
 
 const checkerboardStyle = {
   backgroundColor: '#191919',
@@ -61,7 +120,13 @@ function Geometry({ definition }) {
   }
 }
 
-function Material({ definition, highlighted = false }) {
+function Material({ definition, highlighted = false, auditMode = 'final', partId }) {
+  if (auditMode === 'normals') return <meshNormalMaterial />;
+  if (auditMode === 'wireframe') return <meshBasicMaterial color="#cbd5e1" wireframe />;
+  if (auditMode === 'boundaries') {
+    return <meshStandardMaterial color={auditPartColor(partId)} metalness={0} roughness={0.62} />;
+  }
+  if (auditMode === 'neutral') return <meshStandardMaterial color="#a8b0bd" metalness={0} roughness={0.72} />;
   const props = sculptMaterialProps(definition);
   // Basic materials are unlit and have no emissive channel, so the only way to
   // show them as selected is the base color.
@@ -80,7 +145,7 @@ function Material({ definition, highlighted = false }) {
 const offsetPosition = (position = [0, 0, 0], offset) =>
   (Array.isArray(offset) ? position.map((value, axis) => value + offset[axis]) : position);
 
-function Part({ part, materials, layout, selection, selectedId, onSelect }) {
+function Part({ part, materials, layout, selection, selectedId, onSelect, auditMode }) {
   const transform = {
     name: part.name,
     position: offsetPosition(part.position, layout.offsets[part.id]),
@@ -103,11 +168,11 @@ function Part({ part, materials, layout, selection, selectedId, onSelect }) {
       {part.geometry && (
         <mesh castShadow={part.castShadow} receiveShadow={part.receiveShadow} onClick={select}>
           <Geometry definition={part.geometry} />
-          <Material definition={materials[part.material]} highlighted={highlighted} />
+          <Material definition={materials[part.material]} highlighted={highlighted} auditMode={auditMode} partId={part.id} />
         </mesh>
       )}
       {part.children.filter(isReliefPart).map((child) => (
-        <Part key={child.id} part={child} materials={materials} layout={layout} selection={selection} selectedId={selectedId} onSelect={onSelect} />
+        <Part key={child.id} part={child} materials={materials} layout={layout} selection={selection} selectedId={selectedId} onSelect={onSelect} auditMode={auditMode} />
       ))}
     </>
   );
@@ -124,6 +189,7 @@ function Part({ part, materials, layout, selection, selectedId, onSelect }) {
           selection={selection}
           selectedId={selectedId}
           onSelect={onSelect}
+          auditMode={auditMode}
         />
       ))}
     </group>
@@ -139,6 +205,32 @@ function ExplodeRefit({ growth }) {
   useEffect(() => {
     bounds?.refresh().clip().fit();
   }, [bounds, growth]);
+  return null;
+}
+
+// The preview owns only the R3F sampling boundary; the quality decisions stay in
+// cityRenderBudget so its warm-up, hysteresis, cooldown, and gap handling remain
+// deterministic and shared with CyberCity.
+function PreviewAdaptiveQuality({ enabled, resetToken, onTierChange }) {
+  const stateRef = useRef(null);
+  if (stateRef.current === null) stateRef.current = createRenderBudget('high', 0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const now = typeof performance === 'undefined' ? 0 : performance.now();
+    stateRef.current = resetRenderBudget(stateRef.current, 'high', now);
+    onTierChange(getEffectiveTier(stateRef.current));
+  }, [enabled, resetToken, onTierChange]);
+
+  useFrame((_, delta) => {
+    if (!enabled) return;
+    const now = typeof performance === 'undefined' ? 0 : performance.now();
+    const previousTier = getEffectiveTier(stateRef.current);
+    stateRef.current = recordFrame(stateRef.current, { now, dt: delta * 1000 });
+    const nextTier = getEffectiveTier(stateRef.current);
+    if (nextTier !== previousTier) onTierChange(nextTier);
+  });
+
   return null;
 }
 
@@ -167,7 +259,7 @@ function SceneLight({ light }) {
   return <directionalLight color={light.color} intensity={light.intensity} position={light.position} castShadow />;
 }
 
-function ProceduralScene({ spec, background, layout, selection, selectedId, onSelect }) {
+function ProceduralScene({ spec, background, layout, selection, selectedId, onSelect, auditMode }) {
   return (
     <>
       {background && <color attach="background" args={[background]} />}
@@ -187,6 +279,7 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
               selection={selection}
               selectedId={selectedId}
               onSelect={onSelect}
+              auditMode={auditMode}
             />
           ))}
         </group>
@@ -204,11 +297,15 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
   );
 }
 
-export default function ThreejsModelPreview({ spec, className = '' }) {
+export default function ThreejsModelPreview({ spec, family = null, className = '' }) {
   const [background, setBackground] = useState(() => spec?.background || '#000000');
   const [explode, setExplode] = useState(0);
+  const [qualityMode, setQualityMode] = useState('auto');
+  const [autoTier, setAutoTier] = useState('high');
+  const [fixedTier, setFixedTier] = useState('high');
   const [searchParams, setSearchParams] = useSearchParams();
   const explodeSliderId = useId();
+  const qualitySelectId = useId();
 
   // Keyed on the authored background, not on `spec` — the detail page re-fetches
   // the record every 2s while a generation runs, and a fresh object with the
@@ -230,16 +327,47 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
     setExplode(0);
   }, [partSignature]);
 
+  // Equivalent polling snapshots should not reset adaptation, but any authored
+  // model change must start a fresh measurement window instead of borrowing the
+  // previous model's pressure history.
+  const modelSignature = useMemo(() => JSON.stringify(spec), [spec]);
+  const effectiveTier = qualityMode === 'auto' ? autoTier : fixedTier;
+  const quality = PREVIEW_QUALITY[effectiveTier];
+  const handleAutoTierChange = useCallback((tier) => {
+    setAutoTier((previous) => previous === tier ? previous : tier);
+  }, []);
+  const handleQualityChange = (event) => {
+    const next = event.target.value;
+    if (next === 'auto') {
+      setQualityMode('auto');
+      return;
+    }
+    setFixedTier(next);
+    setQualityMode('fixed');
+  };
+
   // The URL is the source of truth for what is selected, so a picked part is
   // shareable and reload-safe; an id the current model doesn't have degrades to
   // no selection instead of an empty label.
   const requestedPartId = searchParams.get('part');
   const selectedId = requestedPartId && selection.names[requestedPartId] ? requestedPartId : null;
+  const requestedAuditCamera = searchParams.get('auditCamera');
+  const auditCamera = isAuditCamera(requestedAuditCamera) ? requestedAuditCamera : 'authored';
+  const requestedAuditMode = searchParams.get('auditMode');
+  const auditMode = isAuditRenderMode(requestedAuditMode) ? requestedAuditMode : 'final';
+  const auditCameraPosition = getAuditCameraPosition(spec, auditCamera);
   const handleSelect = useCallback((partId) => {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous);
       if (partId) next.set('part', partId);
       else next.delete('part');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const setAuditParam = useCallback((key, value) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set(key, value);
       return next;
     }, { replace: true });
   }, [setSearchParams]);
@@ -259,12 +387,17 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
       style={transparent ? checkerboardStyle : undefined}
     >
       <Canvas
-        key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}`}
-        shadows
-        camera={{ position: spec.camera.position, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
-        dpr={[1, 2]}
+        key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}-${auditCamera}-${auditMode}`}
+        shadows={quality.shadows}
+        camera={{ position: auditCameraPosition, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
+        dpr={quality.dpr}
         gl={{ alpha: transparent }}
       >
+        <PreviewAdaptiveQuality
+          enabled={qualityMode === 'auto'}
+          resetToken={modelSignature}
+          onTierChange={handleAutoTierChange}
+        />
         <ProceduralScene
           spec={spec}
           background={background}
@@ -272,6 +405,7 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
           selection={selection}
           selectedId={selectedId}
           onSelect={handleSelect}
+          auditMode={auditMode}
         />
       </Canvas>
       <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
@@ -301,6 +435,22 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
           />
         </label>
         <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+        <label htmlFor={qualitySelectId} className="whitespace-nowrap text-port-text-muted">
+          Quality
+        </label>
+        <select
+          id={qualitySelectId}
+          value={qualityMode === 'auto' ? 'auto' : fixedTier}
+          onChange={handleQualityChange}
+          className="port-media-overlay-item rounded px-1.5 py-1 text-[10px]"
+        >
+          <option value="auto">Auto</option>
+          {PREVIEW_QUALITY_TIERS.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+        </select>
+        <span className="whitespace-nowrap text-port-text-muted">
+          {qualityMode === 'auto' ? `Auto · ${effectiveTier}` : `Fixed · ${effectiveTier}`}
+        </span>
+        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
         <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
           Explode
         </label>
@@ -325,6 +475,43 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
             Reassemble
           </button>
         )}
+        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+        <span className="whitespace-nowrap text-port-text-muted">Audit camera</span>
+        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Audit camera">
+          {AUDIT_CAMERAS.map((camera) => {
+            const unavailable = camera.id === 'family' && !family;
+            return (
+              <button
+                key={camera.id}
+                type="button"
+                aria-label={camera.label}
+                aria-pressed={auditCamera === camera.id}
+                disabled={unavailable}
+                title={unavailable ? 'Choose a subject family to enable family review' : undefined}
+                onClick={() => setAuditParam('auditCamera', camera.id)}
+                className="port-media-overlay-item rounded px-1.5 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {camera.label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+        <span className="whitespace-nowrap text-port-text-muted">Inspection</span>
+        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Inspection mode">
+          {AUDIT_RENDER_MODES.map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              aria-label={mode.label}
+              aria-pressed={auditMode === mode.id}
+              onClick={() => setAuditParam('auditMode', mode.id)}
+              className="port-media-overlay-item rounded px-1.5 py-1"
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
       </div>
       {selectedId && (
         <div className="port-media-overlay absolute right-2 top-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-[10px]">
@@ -352,8 +539,14 @@ export default function ThreejsModelPreview({ spec, className = '' }) {
       )}
       <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
         <span className="port-media-overlay rounded px-2 py-1">
-          Drag to orbit · scroll to zoom · click a part to identify it
+          Drag to orbit · scroll to zoom · click a part to identify it · audit controls never change the saved model
         </span>
+        {family && (
+          <span className="port-media-overlay rounded px-2 py-1 text-port-text-muted">
+            Family review: {(family.orbitViews || []).join(', ') || 'review the authored subject'}
+            {family.reviewAxes?.length > 0 ? ` · ${family.reviewAxes.join('; ')}` : ''}
+          </span>
+        )}
         {/* Never "animation-ready": nothing here is skinned. The badge says only
             whether the spec declared a usable articulation graph, and a model
             that predates the contract has none and reads as a static assembly. */}

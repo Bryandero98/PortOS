@@ -13,6 +13,7 @@ import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchiv
 import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
+import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
 
 const router = Router();
 
@@ -94,64 +95,6 @@ const promptFromMediaSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'filename is required', path: ['filename'] });
   }
 });
-
-// Sanitize a job before serialization. The internal job record carries
-// worker-only data (the python interpreter path, absolute filesystem paths
-// to multipart uploads / source images) that the UI doesn't need and that
-// shouldn't ride out over the API. Only surface the user-visible params
-// the Render Queue UI actually renders (prompt, owner-supplied settings).
-const PARAM_ALLOWLIST = new Set([
-  'prompt', 'negativePrompt', 'modelId',
-  // `model` is the codex-side counterpart to `modelId` (different field name
-  // because Codex passes a model string straight to the CLI, while local /
-  // video providers carry a registry-id). Without it the UI can't tell which
-  // codex model a failed job tried to use — the row would just say "codex".
-  'model',
-  // `effort` is the Codex per-render reasoning-effort level (`low` by default).
-  // Surfacing it lets the Render Queue row show which effort a failed job used
-  // and lets the retry editor pre-fill the current level (see the retry-editor
-  // Reasoning-effort control). Codex-only; local/external/video jobs never set it.
-  'effort',
-  'width', 'height', 'numFrames', 'fps', 'steps', 'guidanceScale',
-  'seed', 'tiling', 'disableAudio', 'mode', 'imageStrength',
-  'cfgScale', 'guidance', 'quantize',
-  // Training-kind label fields so the Render Queue UI can title training
-  // rows ("Training: Kessa · mflux · 1000 steps") without exposing paths.
-  'runId', 'runtime', 'datasetId', 'characterId', 'characterName',
-  'triggerWord', 'rank', 'baseModelId',
-  // Sprite reference destination tag (#2896) — pure identifiers (record id,
-  // target/direction, key hex, mode/model), no filesystem paths. The Sprites
-  // UI correlates queued/running renders by it to rehydrate its in-flight
-  // guard after a reload.
-  'spriteRef',
-  // Sprite walk-video destination tag (#2897) — record id, direction, run id,
-  // key hex; same rehydration contract as spriteRef, for kind:'video' jobs.
-  'spriteWalk',
-]);
-function sanitizeJob(job) {
-  if (!job) return job;
-  const safeParams = job.params
-    ? Object.fromEntries(Object.entries(job.params).filter(([k]) => PARAM_ALLOWLIST.has(k)))
-    : undefined;
-  return {
-    id: job.id,
-    kind: job.kind,
-    owner: job.owner,
-    status: job.status,
-    queuedAt: job.queuedAt,
-    startedAt: job.startedAt,
-    completedAt: job.completedAt,
-    position: job.position,
-    progress: job.progress,
-    statusMsg: job.statusMsg,
-    // History-calibrated render ETA (#3801); undefined when the gen produced
-    // no estimate, which the client renders as "unknown".
-    etaMs: job.etaMs,
-    error: job.error,
-    result: job.result,
-    params: safeParams,
-  };
-}
 
 router.get('/', asyncHandler(async (req, res) => {
   const filters = validateRequest(listQuerySchema, req.query);

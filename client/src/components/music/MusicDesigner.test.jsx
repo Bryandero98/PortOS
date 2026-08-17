@@ -5,10 +5,13 @@ import MusicDesigner from './MusicDesigner';
 import * as api from '../../services/api';
 
 vi.mock('../../services/api', () => ({
+  createTrack: vi.fn(),
   describeMusic: vi.fn(),
   generateLyrics: vi.fn(),
   getSettings: vi.fn(),
+  getTrack: vi.fn(),
   updateSettings: vi.fn(),
+  updateTrack: vi.fn(),
 }));
 
 // The render step hosts MusicGenPanel unchanged; stub it to a props readout so
@@ -61,6 +64,7 @@ const renderAt = (path) => render(
 describe('<MusicDesigner>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     hook.providers = [{ id: 'provider-a', name: 'Provider A', models: ['model-a'], defaultModel: 'model-a' }];
     hook.selectedProviderId = 'provider-a';
     hook.selectedModel = 'model-a';
@@ -68,7 +72,10 @@ describe('<MusicDesigner>', () => {
     hook.setSelectedProviderId = vi.fn();
     hook.setSelectedModel = vi.fn();
     api.getSettings.mockResolvedValue({ music: {} });
+    api.createTrack.mockResolvedValue({ id: 'track-draft', title: 'Untitled music draft', concept: '', prompt: '', lyrics: '' });
+    api.getTrack.mockResolvedValue({ id: 'track-draft', title: 'Untitled music draft', concept: '', prompt: '', lyrics: '' });
     api.updateSettings.mockResolvedValue({});
+    api.updateTrack.mockResolvedValue({ id: 'track-draft', title: 'Untitled music draft' });
   });
 
   afterEach(cleanup);
@@ -96,6 +103,47 @@ describe('<MusicDesigner>', () => {
       await screen.findByLabelText(/what do you want to hear/i);
       fireEvent.click(screen.getByRole('tab', { name: /render/i }));
       expect(screen.getByTestId('location')).toHaveTextContent('/music/generate/render');
+    });
+
+    it('creates a persisted draft immediately and uses its id for the wizard', async () => {
+      renderAt('/music/generate/concept');
+
+      await screen.findByLabelText(/what do you want to hear/i);
+      expect(api.createTrack).toHaveBeenCalledWith({ title: 'Untitled music draft' }, { silent: true });
+    });
+
+    it('reopens the active unnamed draft after leaving the Music section', async () => {
+      renderAt('/music/generate/concept');
+      await screen.findByLabelText(/what do you want to hear/i);
+      cleanup();
+
+      renderAt('/music/generate/lyrics');
+      await screen.findByLabelText('Lyrics');
+      expect(api.getTrack).toHaveBeenCalledWith('track-draft', { silent: true });
+    });
+
+    it('hydrates a saved draft when returning through its track id', async () => {
+      api.getTrack.mockResolvedValue({
+        id: 'track-saved', title: 'Untitled music draft', concept: 'A dusk-time pulse',
+        prompt: 'Warm synths and a patient beat.', lyrics: '[verse]\nKeep moving',
+      });
+      renderAt('/music/generate/lyrics?trackId=track-saved');
+
+      expect(await screen.findByLabelText('Lyrics')).toHaveValue('[verse]\nKeep moving');
+      expect(screen.getByLabelText('Lyrics')).toHaveValue('[verse]\nKeep moving');
+      expect(api.getTrack).toHaveBeenCalledWith('track-saved', { silent: true });
+      expect(api.createTrack).not.toHaveBeenCalled();
+    });
+
+    it('keeps an unrelated unnamed draft resumable while designing a saved track', async () => {
+      window.localStorage.setItem('portos.musicDesigner.activeDraft', 'track-draft');
+      api.getTrack.mockResolvedValue({
+        id: 'track-saved', title: 'Named Track', concept: '', prompt: '', lyrics: '',
+      });
+      renderAt('/music/generate/concept?trackId=track-saved');
+
+      await screen.findByLabelText(/what do you want to hear/i);
+      expect(window.localStorage.getItem('portos.musicDesigner.activeDraft')).toBe('track-draft');
     });
   });
 
@@ -128,8 +176,14 @@ describe('<MusicDesigner>', () => {
 
       const box = screen.getByLabelText(/music description/i);
       expect(box).toHaveValue('Lush pads over a broken beat.');
+      expect(screen.getByText(/MiniMax structured caption/i)).toBeInTheDocument();
+      expect(screen.getByText(/meter or time signature/i)).toBeInTheDocument();
       fireEvent.change(box, { target: { value: 'My own words.' } });
       expect(box).toHaveValue('My own words.');
+      await waitFor(() => expect(api.updateTrack).toHaveBeenCalledWith(
+        'track-draft', expect.objectContaining({ concept: 'a rainy downtempo loop', prompt: 'Lush pads over a broken beat.' }),
+        { silent: true },
+      ));
     });
 
     it('persists the provider pin after a successful describe', async () => {
@@ -170,6 +224,7 @@ describe('<MusicDesigner>', () => {
       fireEvent.click(screen.getByRole('button', { name: /generate lyrics/i }));
 
       await waitFor(() => expect(screen.getByLabelText('Lyrics')).toHaveValue('[verse]\nrain on the window'));
+      expect(screen.getByText(/manual composition structure/i)).toBeInTheDocument();
       expect(api.generateLyrics).toHaveBeenCalledWith({
         description: 'Lush pads over a broken beat.',
         guidance: 'about leaving at dawn',
@@ -181,7 +236,7 @@ describe('<MusicDesigner>', () => {
       expect(screen.getByTestId('location')).toHaveTextContent('/music/generate/lyrics');
     });
 
-    it('is skippable — an instrumental reaches the generator with empty lyrics', async () => {
+    it('lets the user continue without lyrics while leaving vocal intent for the render step', async () => {
       api.describeMusic.mockResolvedValue({ description: 'Lush pads over a broken beat.', llm: {} });
       renderAt('/music/generate/concept');
 
@@ -190,7 +245,8 @@ describe('<MusicDesigner>', () => {
       await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/music/generate/description'));
       fireEvent.click(screen.getByRole('button', { name: /next: lyrics/i }));
 
-      fireEvent.click(screen.getByRole('button', { name: /skip — make it instrumental/i }));
+      expect(screen.getByText(/enable instrumental only to prohibit wordless or background vocals/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /continue without lyrics/i }));
 
       const panel = await screen.findByTestId('gen-panel');
       expect(panel).toHaveAttribute('data-prompt', 'Lush pads over a broken beat.');

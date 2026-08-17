@@ -37,11 +37,24 @@ const hook = createMediaJobImageHook({
   extractResult: (job) => {
     const filename = job.result?.filename;
     if (typeof filename !== 'string' || !filename) return null;
+    const rawProvenance = job.result?.provenance;
+    const provenance = rawProvenance?.kind === 'creative-commission-music-taste'
+      && typeof rawProvenance.commissionId === 'string'
+      && typeof rawProvenance.runId === 'string'
+      ? {
+        kind: rawProvenance.kind,
+        commissionId: rawProvenance.commissionId,
+        runId: rawProvenance.runId,
+        recipeVersion: Number.isInteger(rawProvenance.recipeVersion) ? rawProvenance.recipeVersion : null,
+        sourceHash: typeof rawProvenance.sourceHash === 'string' ? rawProvenance.sourceHash.slice(0, 64) : null,
+      }
+      : null;
     return {
       filename,
       durationSec: Number.isFinite(job.result?.durationSec) ? job.result.durationSec : null,
       engine: typeof job.result?.engine === 'string' ? job.result.engine : null,
       modelId: typeof job.result?.modelId === 'string' ? job.result.modelId : null,
+      provenance,
     };
   },
   // The project may have been deleted between enqueue and completion —
@@ -53,12 +66,22 @@ const hook = createMediaJobImageHook({
   // the first completion to attach wins and this later one must not clobber
   // it (return null — the factory's "nothing applied" signal — instead of
   // overwriting the existing musicBed).
-  attach: async ({ projectId, filename, durationSec, engine, modelId }) => {
+  attach: async ({ projectId, filename, durationSec, engine, modelId, provenance }) => {
     const current = await getProject(projectId);
     if (current?.musicBed?.filename) return null;
+    const generatedAt = new Date().toISOString();
     await updateProject(projectId, {
-      musicBed: { filename, durationSec, engine, modelId, generatedAt: new Date().toISOString() },
+      musicBed: { filename, durationSec, engine, modelId, generatedAt },
     });
+    if (provenance) {
+      const { recordCommissionMusicOutput } = await import('./creativeCommissions/store.js');
+      await recordCommissionMusicOutput(provenance.commissionId, provenance.runId, {
+        filename, durationSec, engine, modelId,
+        recipeVersion: provenance.recipeVersion,
+        sourceHash: provenance.sourceHash,
+        completedAt: generatedAt,
+      }).catch(() => null);
+    }
     return 'attached';
   },
   onAttached: ({ projectId, filename }) => {

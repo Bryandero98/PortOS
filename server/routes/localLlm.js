@@ -36,7 +36,15 @@ import { listUserModels } from '../services/audioModels.js'
 import { ENGINES } from '../services/pipeline/musicGen.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
 import { awaitWritableDrain } from '../lib/streamBackpressure.js'
-import { getLoadedModels as getLoadedOllamaModels, unloadModel as unloadOllamaModel } from '../services/ollamaManager.js'
+import {
+  getLastLoadedModelsError as getOllamaResidencyError,
+  getLoadedModels as getLoadedOllamaModels,
+  unloadModel as unloadOllamaModel,
+} from '../services/ollamaManager.js'
+import {
+  getLastLoadedModelsError as getLmStudioResidencyError,
+  getLoadedModels as getLoadedLmStudioModels,
+} from '../services/lmStudioManager.js'
 
 const router = Router()
 
@@ -87,7 +95,13 @@ router.get('/catalog', asyncHandler(async (req, res) => {
   const installedForVariants = installedModels.map((m) => (
     backend === 'lmstudio' && m.quantization ? `${m.id}@${m.quantization}` : m.id
   ))
-  const models = q ? searchCatalog(backend, q, installedRaw) : getCatalog(backend, installedRaw)
+  // Native MLX entries are meaningful only on Apple Silicon. Keep this gate at
+  // the route boundary so the pure catalog remains useful to tests and other
+  // callers while the user-facing picker never offers an un-runnable format.
+  const catalogOptions = { appleSilicon: isAppleSilicon() }
+  const models = q
+    ? searchCatalog(backend, q, installedRaw, catalogOptions)
+    : getCatalog(backend, installedRaw, catalogOptions)
   // Total system memory drives the RAM-aware recommended quant (unified memory on
   // Apple Silicon also backs the GPU, so a big box can default to higher fidelity).
   const systemMemoryBytes = os.totalmem()
@@ -266,13 +280,23 @@ router.post('/migrate', asyncHandler(async (req, res) => {
   res.json(result)
 }))
 
-// GET /api/local-llm/loaded — models currently resident in memory.
+// GET /api/local-llm/loaded — models currently resident in memory across both
+// local backends. The endpoint stays 200 for a partial outage, but names the
+// affected source explicitly so an unknown residency state is never mistaken
+// for a trustworthy empty list by cleanup controls.
 // Distinct from /catalog (disk-installed) — only flags what's eating VRAM
 // right now so the Memory Management panel can show what to unload before
 // kicking off a big diffusion render.
-router.get('/loaded', asyncHandler(async (req, res) => {
-  const loaded = await getLoadedOllamaModels()
-  res.json({ ollama: loaded })
+router.get('/loaded', asyncHandler(async (_req, res) => {
+  const [ollama, lmstudio] = await Promise.all([
+    getLoadedOllamaModels(),
+    getLoadedLmStudioModels(true),
+  ])
+  const sourceErrors = [
+    ...(getOllamaResidencyError() ? ['ollama'] : []),
+    ...(getLmStudioResidencyError() ? ['lmstudio'] : []),
+  ]
+  res.json({ ollama, lmstudio, sourceErrors })
 }))
 
 // POST /api/local-llm/unload — body: { backend: 'ollama', modelId }.

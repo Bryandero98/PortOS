@@ -255,6 +255,14 @@ Presets are **templates**: picking one COPIES its prompt into the job's own
 `params.prompt`, and nothing on disk points back at the preset id. So editing the
 text here never rewrites a configured job on any install (no migration needed) —
 and an improved prompt reaches an existing job only when the user re-picks it.
+
+Each audit prompt now tells the agent to apply independent slashdo dispatch
+hints (`model:light|medium|heavy`, `effort:low|medium|high|xhigh|max`) and
+contributor labels (`good first issue`, `help wanted`) when the finding
+justifies them, create missing labels lazily, and keep category labels
+(`plan`, `ux`, `bug`, `tests`, …) intact. Existing jobs keep whatever prompt
+was copied when they were created; re-pick the preset to pick up the new
+filing contract.
 ### The "lands no code" postures
 
 An `agent-prompt` job has two of them, and they are not the same thing:

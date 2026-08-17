@@ -162,7 +162,7 @@ export function buildPrompt({ app, config, sources = {}, openIssues = [], isPort
     ? `\n### liHardExclusions\n${hardExclusionNotice.trim()}\n`
     : '';
 
-  return `You are the Layered Intelligence reasoner for the app "${app.name}". Your job is to evaluate how THIS app is performing against its OWN goals and purpose${isPortos ? '' : ', not how well PortOS\'s tooling manages it'}. Decide the SINGLE highest-value improvement to propose this run (signal, not noise), grounded in the app's own goals and its own performance metrics (user success, KPIs, production telemetry). You never write code; you return structured JSON that a deterministic system files as ONE tracker issue.
+  return `You are the Layered Intelligence reasoner for the app "${app.name}". Your job is to evaluate how THIS app is performing against its OWN goals and purpose${isPortos ? '' : ', not how well PortOS\'s tooling manages it'}. Decide the SINGLE highest-value improvement to propose this run (signal, not noise), grounded in the app's own goals and its own performance metrics (user success, KPIs, production telemetry). You never write code; you return structured JSON that a deterministic system files as ONE tracker issue. Optional \`model\` / \`effort\` dispatch hints and \`goodFirstIssue\` / \`helpWanted\` labels are independent of each other and of \`complexity\` — set them only when justified; omit rather than guessing; never stamp medium on both axes; never mark a wide mechanical sweep as a good first issue.
 ${handoffNote}${metricsGuidance}${hardExclusionBlock}
 Rules & guidance from the operator:
 ${config.rules?.trim() || '(none)'}
@@ -186,7 +186,11 @@ Respond with JSON only (no markdown fences):
     "body": "markdown detail for the coding agent",
     "value": "why this is the single highest-value item now",
     "complexity": "trivial | moderate | complex",   // honest effort/risk estimate
-    "safe": false            // true ONLY if a coding agent could implement it end-to-end with no regression/data-loss risk
+    "safe": false,           // true ONLY if a coding agent could implement it end-to-end with no regression/data-loss risk
+    "model": "light | medium | heavy",   // optional dispatch capability; omit if unjustified. Independent of complexity.
+    "effort": "low | medium | high | xhigh | max",   // optional reasoning budget; independent of model AND of complexity
+    "goodFirstIssue": false, // true ONLY if a new contributor can ship this without deep repo context (not implied by model:light)
+    "helpWanted": false      // true ONLY if extra hands are welcome and the body is scoped enough to pick up cold
   },
   "pause": {                 // null if not pausing
     "blockOnIssue": "this" or <existing issue number>,

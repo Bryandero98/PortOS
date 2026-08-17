@@ -24,7 +24,7 @@ import { audioGenEvents } from './events.js';
 // jobId → AbortController, so cancelJob() can interrupt an in-flight render.
 const controllers = new Map();
 
-export async function generateAudio({ jobId, prompt, lyrics, engine, durationSec, modelId, repo }) {
+export async function generateAudio({ jobId, prompt, lyrics, engine, durationSec, durationMode, modelId, repo, provenance }) {
   const controller = new AbortController();
   controllers.set(jobId, controller);
   try {
@@ -33,8 +33,10 @@ export async function generateAudio({ jobId, prompt, lyrics, engine, durationSec
       lyrics,
       engine,
       durationSec,
+      durationMode,
       modelId,
       repo,
+      provenance,
       signal: controller.signal,
       onActivity: () => audioGenEvents.emit('activity', { generationId: jobId }),
     });

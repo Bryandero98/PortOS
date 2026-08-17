@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useMemo } from 'react';
+import { useState, memo, useMemo } from 'react';
 import { Link } from 'react-router';
 import {
   Activity,
@@ -11,28 +11,26 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  Zap
+  Zap,
+  RefreshCw
 } from 'lucide-react';
-import * as api from '../services/api';
 import { MicroGlyph } from './micrographics';
 
 /**
  * SystemHealthWidget - Compact system health overview for the Dashboard
  * Shows server uptime, memory/CPU usage, process status, and warnings
  */
-const SystemHealthWidget = memo(function SystemHealthWidget() {
-  const [health, setHealth] = useState(null);
-  const [loading, setLoading] = useState(true);
+const SystemHealthWidget = memo(function SystemHealthWidget({ dashboardState }) {
+  const health = dashboardState?.health;
+  const refetchHealth = dashboardState?.refetchHealth;
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    const loadData = async () => {
-      const data = await api.getSystemHealth({ silent: true }).catch(() => null);
-      setHealth(data);
-      setLoading(false);
-    };
-
-    loadData();
-  }, []);
+  const handleRefresh = async () => {
+    if (!refetchHealth || refreshing) return;
+    setRefreshing(true);
+    await refetchHealth();
+    setRefreshing(false);
+  };
 
   // Decorative chrome that reflects real state — top row reads as a HUD
   // readout (memory/cpu/proc/apps/disk), rows below fade so the eye
@@ -61,11 +59,6 @@ const SystemHealthWidget = memo(function SystemHealthWidget() {
     }
     return cells;
   }, [memPct, cpuPct, diskPct, procOnline, procTotal, appOnline, appTotal]);
-
-  // Don't render while loading
-  if (loading) {
-    return null;
-  }
 
   // Don't render if no data
   if (!health) {
@@ -133,8 +126,18 @@ const SystemHealthWidget = memo(function SystemHealthWidget() {
           >
             <MicroGlyph variant="matrix" size={28} intensity={matrixIntensity} />
           </span>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={!refetchHealth || refreshing}
+            className="inline-flex min-h-[40px] min-w-[40px] items-center justify-center rounded text-gray-400 transition-colors hover:bg-port-border/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            title="Refresh system health"
+            aria-label={refreshing ? 'Refreshing system health' : 'Refresh system health'}
+          >
+            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} aria-hidden="true" />
+          </button>
           <Link
-            to="/system-health"
+            to="/system-resources/overview"
             className="flex items-center gap-1 text-sm text-port-accent hover:text-port-accent/80 transition-colors min-h-[40px] px-2"
           >
             <span className="hidden sm:inline">Details</span>
@@ -264,7 +267,11 @@ const SystemHealthWidget = memo(function SystemHealthWidget() {
 
         {/* Disk Usage */}
         {system.disk && (
-          <div className="bg-port-bg/50 rounded-lg p-3">
+          <Link
+            to="/system-resources/storage"
+            aria-label="Open disk usage report"
+            className="block rounded-lg bg-port-bg/50 p-3 transition-colors hover:bg-port-bg/80 focus:outline-none focus:ring-2 focus:ring-port-accent/60"
+          >
             <div className="flex items-center gap-2 mb-1">
               <Database size={14} className="text-cyan-400" />
               <span className="text-xs text-gray-500">Disk</span>
@@ -281,7 +288,7 @@ const SystemHealthWidget = memo(function SystemHealthWidget() {
                 style={{ width: `${system.disk.usagePercent}%` }}
               />
             </div>
-          </div>
+          </Link>
         )}
       </div>
 

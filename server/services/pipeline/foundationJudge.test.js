@@ -332,6 +332,8 @@ describe('foundationInputsHash + staleness — fast-pass pinning', () => {
     const issue = { id: 'iss-1', seasonId: 'sea-1', number: 1, stages: { idea: { input: 'Opening promise' } } };
     const base = foundationInputsHash(series, null, [issue]);
     expect(foundationInputsHash(series, null, [{ ...issue, stages: { idea: { input: 'Different promise' } } }])).not.toBe(base);
+    expect(foundationInputsHash(series, null, [{ ...issue, arcRole: 'midpoint' }])).not.toBe(base);
+    expect(foundationInputsHash(series, null, [{ ...issue, lengthProfile: 'extended' }])).not.toBe(base);
     expect(foundationInputsHash({ ...series, characterArcs: [{ characterId: 'chr-1', want: 'belong' }] }, null, [issue])).not.toBe(base);
     expect(foundationInputsHash({ ...series, styleNotes: 'lyrical' }, null, [issue])).not.toBe(base);
   });
@@ -475,9 +477,34 @@ describe('renderArc — episode-list budget', () => {
 
   it('renders every episode when unbudgeted', () => {
     const out = __testing.renderArc(bigSeries, manyIssues);
-    expect(out).toContain('#1 Ep 1:');
-    expect(out).toContain('#40 Ep 40:');
+    expect(out).toContain('#1 Ep 1 [role=unset, length=unset, 1 synopsis words]:');
+    expect(out).toContain('#40 Ep 40 [role=unset, length=unset, 1 synopsis words]:');
     expect(out).not.toContain('omitted to fit the prompt budget');
+  });
+
+  it('renders authored episode metadata and exact synopsis word counts', () => {
+    const issues = [
+      {
+        number: 1,
+        seasonId: 'sea-1',
+        title: 'Opening',
+        arcRole: 'pilot',
+        lengthProfile: 'teaser',
+        stages: { idea: { input: 'Three deliberate words' } },
+      },
+      {
+        number: 2,
+        seasonId: 'sea-1',
+        title: 'Finale',
+        arcRole: 'finale',
+        lengthProfile: 'custom',
+        stages: { idea: { input: '' } },
+      },
+    ];
+
+    const out = __testing.renderArc(bigSeries, issues);
+    expect(out).toContain('#1 Opening [role=pilot, length=teaser, 3 synopsis words]: Three deliberate words');
+    expect(out).toContain('#2 Finale [role=finale, length=custom, 0 synopsis words]: (no synopsis)');
   });
 
   it('drops whole trailing episode lines to fit, keeping the plan spine intact', () => {
@@ -490,8 +517,8 @@ describe('renderArc — episode-list budget', () => {
     expect(out).toContain('Authored character arcs (1):');
     // Earliest episodes are the ones kept; the tail is dropped by whole lines
     // (never sliced mid-sentence) and the omitted count is named.
-    expect(out).toContain('#1 Ep 1:');
-    expect(out).not.toContain('#40 Ep 40:');
+    expect(out).toContain('#1 Ep 1 [');
+    expect(out).not.toContain('#40 Ep 40 [');
     expect(out).toMatch(/\[\d+ later episode synopsis lines omitted to fit the prompt budget\]/);
     for (const line of out.split('\n')) {
       if (line.startsWith('    #')) expect(line.endsWith('x'.repeat(20))).toBe(true);
@@ -512,7 +539,7 @@ describe('renderArc — episode-list budget', () => {
     expect(out).toContain('Logline: AL');
     expect(out).toContain('  V1 V1: VL');
     expect(out).not.toContain('    Synopsis: ');
-    expect(out).not.toContain('#1 Ep 1:');
+    expect(out).not.toContain('#1 Ep 1 [');
     expect(out).toContain('[60 volume synopsis lines omitted to fit the prompt budget]');
   });
 

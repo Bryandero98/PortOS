@@ -19,6 +19,7 @@
  * the config catalog; the client's preset picker applies one to a job row.
  */
 
+import { DISPATCH_HINT_GUIDANCE } from './dispatchLabels.js';
 import { QUOTA_BURN_JOB_TYPE } from './quotaBurnConfig.js';
 
 /** Params every audit preset sets, and why they differ from the job defaults. */
@@ -71,14 +72,18 @@ const auditContract = ({ labels, dedupeSearch }) => `
    plain keyword search per finding). If it is already filed, skip it; comment on
    the existing issue only when you have genuinely new evidence.
 4. **File each surviving finding as its own issue.** Write the body to a scratch
-   file OUTSIDE the repository — \`BODY=$(mktemp)\` — then
+   file OUTSIDE the repository — \`BODY=$(mktemp)\` — then create with repeated
+   \`--label\` flags:
    \`gh issue create --title "..." --body-file "$BODY" --label ...\`. Keep scratch
    files out of the working tree: you are running in the repository's OWN
    checkout, on the branch it is currently on — not a throwaway copy — so
-   anything you leave behind is left in the user's working tree. Suggested
-   labels:
-   ${labels}. Run \`gh label list\` first and use only labels that exist. One
-   problem per issue — never a bundle.
+   anything you leave behind is left in the user's working tree. Category
+   labels (create each missing one immediately before applying it —
+   \`gh label create <name> --color 0366D6 2>/dev/null || true\`):
+   ${labels}. Then add independent dispatch hints when the finding justifies
+   them. ${DISPATCH_HINT_GUIDANCE.split('\n').join(' ')} One problem per
+   issue — never a bundle. Do not relabel an existing issue you skipped as a
+   duplicate.
 5. **Bodies must be decision-complete**, in this shape:
    - **Problem** — what is wrong, with file:line references.
    - **Impact** — the user-visible consequence, not the code smell.

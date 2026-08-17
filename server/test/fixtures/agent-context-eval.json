@@ -1,0 +1,376 @@
+{
+  "name": "agent-context-public-contract",
+  "version": 1,
+  "fixtures": {
+    "complete": {
+      "navigation": [
+        {
+          "id": "nav.example-home",
+          "path": "/example-home",
+          "label": "Example Home",
+          "section": "Example",
+          "aliases": ["home"],
+          "keywords": ["overview"]
+        }
+      ],
+      "workspaces": [
+        {
+          "appId": "fixture-app-1",
+          "appName": "Example Workspace One",
+          "taskCount": 1,
+          "repoPath": "/tmp/example-one",
+          "savedBranch": "private-branch-one"
+        },
+        {
+          "appId": "fixture-app-2",
+          "appName": "Example Workspace Two",
+          "taskCount": 2,
+          "repoPath": "/tmp/example-two",
+          "savedBranch": "private-branch-two"
+        },
+        {
+          "appId": "fixture-app-3",
+          "appName": "Example Workspace Three",
+          "taskCount": 3,
+          "repoPath": "/tmp/example-three",
+          "savedBranch": "private-branch-three"
+        }
+      ],
+      "brain": {
+        "projects": [
+          {
+            "id": "fixture-project-1",
+            "title": "Example Secret Project",
+            "description": "Contact alice@example.com at 192.0.2.10 from /Users/alice/example.",
+            "privateBody": "FORBIDDEN_FIXTURE_BODY"
+          }
+        ]
+      },
+      "identity": {
+        "identity": {
+          "label": "Example Identity",
+          "present": true,
+          "privateBody": "FORBIDDEN_IDENTITY_BODY"
+        }
+      }
+    },
+    "stale": {
+      "workspaces": [
+        {
+          "appId": "fixture-stale-app",
+          "appName": "Example Stale Workspace",
+          "taskCount": 1
+        }
+      ],
+      "sourceStatus": {
+        "workspaces": "stale"
+      }
+    },
+    "source-error": {
+      "errors": ["workspaces"]
+    }
+  },
+  "cases": [
+    {
+      "id": "manifest-tool-parity",
+      "title": "Manifest advertises the complete read-only runtime surface",
+      "severity": "critical",
+      "source": "server/test/fixtures/agent-context-eval.json#manifest-tool-parity",
+      "fixture": "complete",
+      "operation": "manifest",
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "summary",
+          "scopes": ["navigation", "workspaces", "brain", "identity"]
+        }
+      },
+      "expect": {
+        "advertisedToolsCovered": true,
+        "readOnlyTools": true,
+        "equals": [
+          { "path": "manifest.schemaVersion", "value": 2 },
+          { "path": "manifest.limits.maxApproxTokens", "value": 5000 },
+          { "path": "manifest.tools.length", "value": 5 }
+        ],
+        "contains": [
+          { "path": "manifest.exclusions", "value": "Privacy Vault and encrypted privacy records" }
+        ]
+      }
+    },
+    {
+      "id": "profile-scope-and-budgets",
+      "title": "Profile reports the selected scopes and bounded budgets",
+      "severity": "high",
+      "source": "server/test/fixtures/agent-context-eval.json#profile-scope-and-budgets",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "context_profile",
+      "args": {},
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "summary",
+          "scopes": ["navigation", "workspaces", "brain", "identity"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "contentParity": true,
+        "withinBudgets": true,
+        "equals": [
+          { "path": "output.profile", "value": "summary" },
+          { "path": "output.scopes", "value": ["navigation", "workspaces", "brain", "identity"] }
+        ]
+      }
+    },
+    {
+      "id": "search-redacts-and-omits-fields",
+      "title": "Search matches fixture text without leaking forbidden values or fields",
+      "severity": "critical",
+      "source": "server/test/fixtures/agent-context-eval.json#search-redacts-and-omits-fields",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "search_context",
+      "args": { "query": "secret", "scopes": ["brain"] },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "summary",
+          "scopes": ["brain"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "contentParity": true,
+        "withinBudgets": true,
+        "contains": [
+          { "path": "output.items.0.summary", "value": "[REDACTED EMAIL]" },
+          { "path": "output.items.0.summary", "value": "[REDACTED IP]" }
+        ],
+        "excludes": [
+          "alice@example.com",
+          "192.0.2.10",
+          "/Users/alice",
+          "FORBIDDEN_FIXTURE_BODY"
+        ],
+        "absentKeys": ["privateBody"]
+      }
+    },
+    {
+      "id": "get-unknown-record",
+      "title": "Unknown opaque references return an honest null result",
+      "severity": "medium",
+      "source": "server/test/fixtures/agent-context-eval.json#get-unknown-record",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "get_context",
+      "args": { "ref": "brain:projects:does-not-exist" },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["brain"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "contentParity": true,
+        "equals": [
+          { "path": "output.item", "value": null },
+          { "path": "output.sourceStatus", "value": "fresh" }
+        ]
+      }
+    },
+    {
+      "id": "list-pagination-and-field-boundary",
+      "title": "List honors result limits and omits workspace implementation fields",
+      "severity": "high",
+      "source": "server/test/fixtures/agent-context-eval.json#list-pagination-and-field-boundary",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "list_context",
+      "args": { "scope": "workspaces", "limit": 2 },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["workspaces"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "contentParity": true,
+        "withinBudgets": true,
+        "equals": [
+          { "path": "output.total", "value": 3 },
+          { "path": "output.nextCursor", "value": 2 },
+          { "path": "output.truncated", "value": true }
+        ],
+        "maxItems": [
+          { "path": "output.items", "value": 2 }
+        ],
+        "excludes": [
+          "Example Workspace One",
+          "/tmp/example-one",
+          "private-branch-one",
+          "fixture-app-1"
+        ],
+        "absentKeys": ["repoPath", "savedBranch", "appId"]
+      }
+    },
+    {
+      "id": "navigation-resolution",
+      "title": "Navigation resolves only through the advertised fixture command",
+      "severity": "medium",
+      "source": "server/test/fixtures/agent-context-eval.json#navigation-resolution",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "resolve_navigation",
+      "args": { "query": "home" },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["navigation"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "contentParity": true,
+        "equals": [
+          { "path": "output.match.path", "value": "/example-home" },
+          { "path": "output.sourceStatus", "value": "fresh" }
+        ]
+      }
+    },
+    {
+      "id": "stale-source-signaling",
+      "title": "A stale fixture source is explicit in the public result",
+      "severity": "high",
+      "source": "server/test/fixtures/agent-context-eval.json#stale-source-signaling",
+      "fixture": "stale",
+      "operation": "tool",
+      "tool": "list_context",
+      "args": { "scope": "workspaces" },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["workspaces"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "equals": [
+          { "path": "output.sourceStatus", "value": "stale" }
+        ]
+      }
+    },
+    {
+      "id": "identity-privacy-boundary",
+      "title": "Identity results expose presence metadata without fixture payloads",
+      "severity": "critical",
+      "source": "server/test/fixtures/agent-context-eval.json#identity-privacy-boundary",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "list_context",
+      "args": { "scope": "identity" },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "summary",
+          "scopes": ["identity"]
+        }
+      },
+      "expect": {
+        "isError": false,
+        "inputSchemaValid": true,
+        "outputSchemaValid": true,
+        "contains": [
+          { "path": "output.items.0.summary", "value": "raw records are excluded" }
+        ],
+        "excludes": ["FORBIDDEN_IDENTITY_BODY"],
+        "absentKeys": ["privateBody"]
+      }
+    },
+    {
+      "id": "invalid-result-limit",
+      "title": "Inputs above the advertised result limit fail before source access",
+      "severity": "high",
+      "source": "server/test/fixtures/agent-context-eval.json#invalid-result-limit",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "list_context",
+      "args": { "scope": "workspaces", "limit": 26 },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["workspaces"]
+        }
+      },
+      "expect": {
+        "isError": true,
+        "inputSchemaValid": false,
+        "contains": [
+          { "path": "toolResult.content.0.text", "value": "Invalid tool input" }
+        ]
+      }
+    },
+    {
+      "id": "source-error-is-not-empty",
+      "title": "Source failures remain errors instead of empty successful results",
+      "severity": "high",
+      "source": "server/test/fixtures/agent-context-eval.json#source-error-is-not-empty",
+      "fixture": "source-error",
+      "operation": "tool",
+      "tool": "list_context",
+      "args": { "scope": "workspaces" },
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["workspaces"]
+        }
+      },
+      "expect": {
+        "isError": true,
+        "inputSchemaValid": true,
+        "contains": [
+          { "path": "toolResult.content.0.text", "value": "Context source unavailable" }
+        ]
+      }
+    },
+    {
+      "id": "localized-profile",
+      "title": "Localized context labels",
+      "severity": "low",
+      "source": "server/test/fixtures/agent-context-eval.json#localized-profile",
+      "fixture": "complete",
+      "operation": "tool",
+      "tool": "context_profile",
+      "args": {},
+      "settings": {
+        "agentContext": {
+          "enabled": true,
+          "profile": "metadata",
+          "scopes": ["navigation"]
+        }
+      },
+      "skip": "The agent-context schema does not advertise localization yet."
+    }
+  ]
+}

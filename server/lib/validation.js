@@ -13,6 +13,7 @@ import {
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { EFFORT_LEVELS } from './providerModels.js';
 import { MAX_TIMEOUT as AI_RUN_TIMEOUT_MAX_MS, MIN_TIMEOUT as AI_RUN_TIMEOUT_MIN_MS } from './aiToolkit/constants.js';
+import { isFederatedMediaAudioPrompt } from './federatedMediaWire.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
 // pixels. Mirror the ceiling for every image-gen route. Local mflux can
@@ -416,12 +417,7 @@ export const providerSchema = z.object({
   allowCustomEndpoint: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
   headlessArgs: z.array(z.string()).optional(),
-  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
-  tuiIdleTimeoutMs: z.number().int().min(10000).max(1800000).optional(),
-  // Absolute wall-clock ceiling for long-running TUI agents (mirrors the
-  // aiToolkit providerSchema; the idle reaper can't bound a busy-but-stuck agent
-  // — see DEFAULT_TUI_MAX_RUNTIME_MS in tuiHandshake.js). Min 1min, max 12h.
-  tuiMaxRuntimeMs: z.number().int().min(60000).max(43200000).optional()
+  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional()
 });
 
 // Run command schema
@@ -699,6 +695,77 @@ export const musicSettingsSchema = z.object({
     lyricsTemplate: z.preprocess(emptyToUndefined, z.string().max(8000).optional()),
   }).partial().optional(),
 });
+
+// Federated media is an opt-in provider surface. The outer objects remain
+// passthrough for mixed-version peers/settings UIs: a rolled-back install must
+// preserve fields introduced by a newer build while still validating every
+// field this build understands.
+export const federatedMediaModelSchema = z.object({
+  engine: z.string().trim().min(1).max(80),
+  modelId: z.string().trim().min(1).max(256),
+}).passthrough();
+
+const federatedMediaModelListSchema = z.array(federatedMediaModelSchema).max(100).refine(
+  (models) => new Set(models.map((model) => `${model.engine}\u0000${model.modelId}`)).size === models.length,
+  { message: 'audioModels must not contain duplicate engine/model pairs' },
+);
+
+export const federatedMediaProviderSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxQueuedJobs: z.number().int().min(1).max(20).optional(),
+  audioModels: federatedMediaModelListSchema.optional(),
+}).passthrough();
+
+// Consumer-side peer selection is independent from the provider's local queue
+// limit. Unknown fields stay round-trip-safe across mixed-version Instances
+// clients while known model pairs remain unique and bounded.
+export const federatedMediaPeerSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  audioModels: federatedMediaModelListSchema.optional(),
+}).passthrough();
+
+export const federationSettingsSchema = z.object({
+  strictPullAuthorization: z.boolean().optional(),
+  mediaProvider: federatedMediaProviderSettingsSchema.optional(),
+}).passthrough();
+
+export const federatedMediaJobRoutingSchema = z.object({
+  engine: z.string().trim().min(1).max(80),
+  modelId: z.string().trim().min(1).max(256),
+  durationSec: z.number().finite().min(1).max(3600).optional(),
+  durationMode: z.enum(['auto', 'manual']).optional(),
+}).strict();
+
+// Provider submissions intentionally accept model selection plus only the
+// canonical fixed-vocabulary instrumental prompt. Free-form prompt/lyrics can
+// contain PII and must remain on the consumer; URLs, paths, commands, provider
+// credentials, and unknown fields are excluded by the strict object as before.
+export const federatedMediaJobSubmissionSchema = federatedMediaJobRoutingSchema.extend({
+  prompt: z.string().trim().min(1).max(8000),
+  lyrics: z.string().max(50_000).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!isFederatedMediaAudioPrompt(value.prompt)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['prompt'],
+      message: 'prompt must be rendered from a privacy-safe federated audio profile',
+    });
+  }
+  if (value.lyrics) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['lyrics'],
+      message: 'federated audio submissions are instrumental only',
+    });
+  }
+});
+
+export const federatedMediaIdempotencyKeySchema = z.string().trim().min(1).max(200)
+  .regex(/^[A-Za-z0-9._:-]+$/, 'Idempotency-Key contains unsupported characters');
+
+export const federatedMediaJobParamsSchema = z.object({
+  id: z.string().uuid(),
+}).strict();
 
 // Creative Director settings slice. Each LLM-backed stage can pin its own
 // provider/model instead of inheriting the system default. `evaluation` is a
@@ -1301,3 +1368,4 @@ export * from './mediaValidation.js';
 export * from './pipelineValidation.js';
 export * from './quotaBurnValidation.js';
 export * from './spriteValidation.js';
+export * from './agentContextValidation.js';

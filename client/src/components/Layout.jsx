@@ -274,7 +274,7 @@ const navItems = [
       { to: '/devtools/quota-burn', label: 'Quota Burn', icon: Flame },
       { to: '/security', label: 'Security', icon: Camera },
       { to: '/shell', label: 'Shell', icon: SquareTerminal },
-      { to: '/system-health', label: 'System Health', icon: Activity },
+      { to: '/system-resources', label: 'System Resources', icon: Activity },
       { to: '/uploads', label: 'Uploads', icon: Upload },
       { to: '/devtools/usage', label: 'Usage', icon: BarChart3 },
       { to: '/devtools/video-download', label: 'Video Downloader', icon: Film },
@@ -556,6 +556,10 @@ const FULL_WIDTH_PATH_PREFIXES = [
 ];
 
 const FULL_WIDTH_PATH_REGEXES = [
+  // Music mirrors the Media Gen page shell: title bar + tabs over a separately
+  // scrolling body. Keep this boundary-specific so `/music-video` retains its
+  // own route classification.
+  /^\/music(?:\/|$)/,
   // Only Game DETAIL workspaces own an internal scroll region; the
   // bare /game index stays on the normal padded page layout.
   /^\/game\/[^/]+\/?$/,

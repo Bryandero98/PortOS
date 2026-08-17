@@ -6,19 +6,20 @@
  * and an audio file. Audio is stored in the shared music library; the editor
  * uploads a file or attaches an existing library track, and plays it inline.
  *
- * On-device generation (engine/model/duration) lands in Phase 4 — for now the
- * engine/model/duration are shown as read-only metadata on a generated track
- * and the prompt/lyrics fields are captured so a later Generate button can use
- * them. Mirrors the Authors/Artists master-detail pattern.
+ * The editor hosts both on-device audio generation and LLM-composed chiptunes.
+ * It can also save the open form and hand the same persisted track to the
+ * stepped MusicDesigner workflow. Mirrors the Authors/Artists master-detail
+ * pattern.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { Plus, Loader2, Trash2, Save, Upload, Music2, Library } from 'lucide-react';
+import { Plus, Loader2, Trash2, Save, Upload, Music2, Library, Sparkles } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import FilePickerButton from '../ui/FilePickerButton';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
+import Field from '../ui/FormField';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import { formatBytes, formatTimecode } from '../../utils/formatters';
 import ArtistPicker from './ArtistPicker';
@@ -53,16 +54,6 @@ const formFromTrack = (t) => ({
   audioFilename: t.audioFilename || '',
 });
 
-function Field({ label, hint, children }) {
-  return (
-    <label className="block">
-      <span className="block text-xs uppercase tracking-wider text-gray-500 mb-1">{label}</span>
-      {children}
-      {hint ? <span className="block text-[11px] text-gray-500 mt-1">{hint}</span> : null}
-    </label>
-  );
-}
-
 export default function TracksManager() {
   const navigate = useNavigate();
   // Selection lives in the URL (`/music/tracks/:id`, `/music/tracks/new`) so it's
@@ -72,6 +63,7 @@ export default function TracksManager() {
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [openingDesigner, setOpeningDesigner] = useState(false);
   const { isConfirming: isConfirmingDelete, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
   const [uploading, setUploading] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -143,7 +135,7 @@ export default function TracksManager() {
   // for every selection change (incl. idle / not-found) so a modal/remix left
   // open can't drive the previous track (see Authors.jsx for the base pattern).
   const hydratedRef = useRef(null);
-  // Set by `handleSave` to the id it just created. The create flow navigates
+  // Set by `persistForm` to the id it just created. The create flow navigates
   // /music/tracks/new → /music/tracks/<id>, which re-runs this effect; without
   // the marker the derivation below would snap a "Chiptune score" chosen BEFORE
   // saving back to "Audio model" the moment the track came into existence
@@ -179,14 +171,14 @@ export default function TracksManager() {
     });
   };
 
-  const handleSave = async () => {
+  const persistForm = async () => {
     const title = form.title.trim();
-    if (!title) { toast.error('Track title is required'); return; }
+    if (!title) { toast.error('Track title is required'); return null; }
     setSaving(true);
     if (isCreate) {
       const created = await createTrack({ ...form, title }, { silent: true }).catch((err) => { toast.error(err.message || 'Failed to create track'); return null; });
       setSaving(false);
-      if (!created) return;
+      if (!created) return null;
       upsertLocal(created);
       // Point the async-handler ref at the new id immediately (the hydration
       // effect also sets it, but not until after navigation re-renders).
@@ -194,8 +186,7 @@ export default function TracksManager() {
       // Carry the pre-save generator choice through the create → navigate
       // hydration instead of re-deriving it from the (score-less) new track.
       justCreatedIdRef.current = created.id;
-      navigate(`/music/tracks/${encodeURIComponent(created.id)}`);
-      toast.success(`Created "${created.title}"`);
+      return created;
     } else {
       // Drop `albumId` from a metadata-only update unless the user actually
       // changed the album here — otherwise a stale form would re-send the old
@@ -206,10 +197,32 @@ export default function TracksManager() {
       if ((selected?.albumId || '') === form.albumId) delete payload.albumId;
       const updated = await updateTrack(id, payload, { silent: true }).catch((err) => { toast.error(err.message || 'Failed to save track'); return null; });
       setSaving(false);
-      if (!updated) return;
+      if (!updated) return null;
       upsertLocal(updated);
+      return updated;
+    }
+  };
+
+  const handleSave = async () => {
+    const saved = await persistForm();
+    if (!saved) return;
+    if (isCreate) {
+      navigate(`/music/tracks/${encodeURIComponent(saved.id)}`);
+      toast.success(`Created "${saved.title}"`);
+    } else {
       toast.success('Saved');
     }
+  };
+
+  // The stepped designer already knows how to hydrate and update a saved track
+  // by `trackId`. Persist the open form first so moving into the Concept →
+  // Description → Lyrics → Render flow never drops unsaved metadata or text.
+  const openDesigner = async () => {
+    setOpeningDesigner(true);
+    const saved = await persistForm();
+    setOpeningDesigner(false);
+    if (!saved) return;
+    navigate(`/music/generate/concept?trackId=${encodeURIComponent(saved.id)}`);
   };
 
   const handleDelete = async () => {
@@ -332,18 +345,26 @@ export default function TracksManager() {
     setGenMode('audio');
     setForm((f) => ({
       ...f,
-      ...(render.prompt ? { prompt: render.prompt } : {}),
+      ...((render.authoredPrompt || render.prompt) ? { prompt: render.authoredPrompt || render.prompt } : {}),
       ...(render.lyrics ? { lyrics: render.lyrics } : {}),
     }));
-    setRemix({ engineId: render.engine, modelId: render.modelId, durationSec: render.durationSec, nonce: remixNonceRef.current });
+    setRemix({
+      engineId: render.engine,
+      modelId: render.modelId,
+      durationSec: render.durationSec,
+      // Only new renders carry an explicit vocal-mode decision. Legacy empty
+      // lyric snapshots are ambiguous and must not be reclassified as no-vocals.
+      ...(typeof render.instrumentalOnly === 'boolean' ? { instrumentalOnly: render.instrumentalOnly } : {}),
+      nonce: remixNonceRef.current,
+    });
   };
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <p className="text-sm text-gray-400 max-w-2xl">
-          Tracks are singles or album members. Set the artist, write lyrics and a generation prompt, then
-          upload an audio file or attach one from your music library. On-device generation lands next update.
+          Tracks are singles or album members. Design a prompt and lyrics with AI, edit them directly, then
+          render on-device, upload an audio file, or attach one from your music library.
         </p>
         <button
           type="button"
@@ -393,7 +414,24 @@ export default function TracksManager() {
             <div className="text-gray-500 text-sm">Select a track to edit, or create a new one.</div>
           ) : (
             <div className="space-y-3">
-              <Field label="Title">
+              <div className="flex flex-col gap-3 rounded-lg border border-port-accent/30 bg-port-accent/5 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium text-white">Generative workflow</p>
+                  <p className="text-xs text-gray-400">
+                    Take this track through the same Concept → Description → Lyrics → Render steps as the Generate wizard.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={openDesigner}
+                  disabled={saving || !form.title.trim()}
+                  className="inline-flex min-h-[40px] shrink-0 items-center justify-center gap-2 rounded-lg border border-port-accent px-3 py-2 text-sm font-medium text-port-accent transition-colors hover:bg-port-accent/10 disabled:opacity-50"
+                >
+                  {openingDesigner ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                  {openingDesigner ? 'Opening designer…' : (isCreate ? 'Save & design with AI' : 'Design with AI')}
+                </button>
+              </div>
+              <Field compact label="Title">
                 <input
                   value={form.title}
                   onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
@@ -403,7 +441,7 @@ export default function TracksManager() {
                   autoFocus
                 />
               </Field>
-              <Field label="Artist">
+              <Field compact label="Artist">
                 <ArtistPicker
                   id="track-artist"
                   value={form.artistId}
@@ -411,7 +449,7 @@ export default function TracksManager() {
                   onChange={(artistId, artist) => setForm((f) => ({ ...f, artistId, artist }))}
                 />
               </Field>
-              <Field label="Album" hint="Optional — none means a standalone single. Saving syncs the album's tracklist.">
+              <Field compact label="Album" hint="Optional — none means a standalone single. Saving syncs the album's tracklist.">
                 <select
                   id="track-album"
                   value={form.albumId}
@@ -427,7 +465,7 @@ export default function TracksManager() {
                   ) : null}
                 </select>
               </Field>
-              <Field label="Prompt" hint="Text/style prompt for generation (used by the upcoming on-device generators).">
+              <Field compact label="Prompt" hint="Text/style prompt used by the on-device generators.">
                 <textarea
                   value={form.prompt}
                   onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
@@ -437,7 +475,7 @@ export default function TracksManager() {
                   className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
                 />
               </Field>
-              <Field label="Lyrics" hint="Full lyrics — also the conditioning text for lyric-aware generators (Ace-Step).">
+              <Field compact label="Lyrics" hint="Full lyrics — also the conditioning text for lyric-aware generators (Ace-Step).">
                 <textarea
                   value={form.lyrics}
                   onChange={(e) => setForm((f) => ({ ...f, lyrics: e.target.value }))}

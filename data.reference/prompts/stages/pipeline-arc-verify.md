@@ -110,7 +110,7 @@ Score each volume + each episode against the arc. Specifically check:
 3. **Dropped subplots.** A subplot introduced in an early volume's `endingHook` or episode `synopsis` that never resolves in a later volume or episode.
 4. **Episode-count vs. arc-weight mismatch.** A volume with `episodeCountTarget: 12` whose synopsis carries only 3 meaningful turns, or a short volume carrying a full novel's weight.
 5. **Unresolved hooks at the series finale.** The final volume fails to pay off the whole-arc logline, protagonist arc, or major themes.
-6. **Arc-role imbalance.** Once episodes exist, a volume with 8 episodes and zero `pilot` / `finale` `arcRole` entries (or duplicate pilots/finales).
+6. **Arc-role imbalance and climax order.** Once episodes exist, require one `pilot`, one `climax`, and one later `finale` `arcRole` per volume. Flag missing/duplicate structural roles, a finale before the climax, or a finale that merely repeats the climax instead of delivering consequences and denouement. Use each episode's `lengthProfile` when judging whether the decisive climax has enough room independently from the closing finale; `extended` is the preferred climax default.
 7. **Theme drift.** A theme is named in `arc.themes` but does not appear in any volume synopsis or episode logline.
 8. **Story-shape adherence.** If a Vonnegut shape was selected, verify the volume-level fortune trajectory traces that curve. The whole-series finale must land at the shape's terminal level.
 9. **Cross-record fact reconciliation.** Compare the full-arc summary,
@@ -120,6 +120,27 @@ Score each volume + each episode against the arc. Specifically check:
    - resource quantities, deadlines, extensions, and who approves them;
    - the issue/episode where each irreversible character choice happens, so a milestone is neither spent early nor repeated;
    - issue/episode load, so independent climaxes have room for setup, resistance, choice, and consequence.
+10. **Dramatic economy.** Once episodes exist, each synopsis needs a concrete
+    goal, obstacle, consequential choice, and changed situation. Flag a plan
+    dominated by permissions, ledgers, clauses, exceptions, or repeated
+    statements of what nobody may do. Procedural precision can support a turn;
+    it is not a substitute for one. Adjacent episodes must not resolve the same
+    conflict by making another authority relinquish control.
+11. **Planning altitude and metadata fit.** An episode synopsis is a drafting
+    seed, not a near-manuscript or a running continuity appendix. Roughly
+    150–300 words is usually enough; above 450 words is a medium concern unless
+    the episode demonstrably needs the complexity, and above 700 is high. Flag
+    append-only caveats, duplicated facts, or minor procedures that bury the
+    dramatic turn. The title, `arcRole`, and `lengthProfile` must describe what
+    the episode actually does — especially pilot, midpoint, all-is-lost, and
+    finale labels. The numeric `pageTarget` and `minutesTarget` are the
+    materialized scope for both presets and custom profiles; judge whether the
+    planned action can actually fill that space without padding or compression.
+12. **Premise-engine continuity.** Track every major quest or promise in the
+    originating premise across the whole series. A survival, rescue, romance,
+    or institutional subplot must not silently erase a co-equal search, mystery,
+    relationship, or personal need. The finale may defer an engine only through
+    a visible choice that preserves a credible next step or payoff.
 
 ## Output contract
 

@@ -142,3 +142,4 @@ describe('applyMoodOverride', () => {
     expect(applyMoodOverride(null, null)).toBe(null);
   });
 });
+// @vitest-environment node

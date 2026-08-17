@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../mediaJobQueue/index.js', () => ({ enqueueJob: vi.fn(() => ({ jobId: 'mj-test' })) }));
 vi.mock('../../settings.js', () => ({ getSettings: vi.fn(async () => ({})) }));
 vi.mock('../../creativeDirector/local.js', () => ({ getProject: vi.fn(async () => null) }));
+const getCommissionMusicContextForProject = vi.fn(async () => null);
+vi.mock('../../creativeCommissions/store.js', () => ({
+  getCommissionMusicContextForProject: (...args) => getCommissionMusicContextForProject(...args),
+}));
 
 import { enqueueJob } from '../../mediaJobQueue/index.js';
 import { getSettings } from '../../settings.js';
@@ -24,6 +28,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   getSettings.mockResolvedValue({});
   getProject.mockResolvedValue(null);
+  getCommissionMusicContextForProject.mockResolvedValue(null);
 });
 
 describe('render-backend pin — the auto/unpinned path is a strict no-op (#3135)', () => {
@@ -316,11 +321,52 @@ describe('render-backend pin — video (#3135)', () => {
   });
 });
 
-describe('audio enqueues never consult the render-backend pin', () => {
+describe('audio enqueues', () => {
   it('tags the music bed without reading the project or settings', async () => {
     await run('media_enqueueAudioJob', { prompt: 'a mournful synth score' }, { projectId: 'cd-1' });
     expect(enqueued().params.creativeDirectorMusicBed).toEqual({ projectId: 'cd-1' });
     expect(getProject).not.toHaveBeenCalled();
     expect(getSettings).not.toHaveBeenCalled();
+  });
+
+  it('authoritatively applies a taste commission recipe and configured renderer', async () => {
+    getCommissionMusicContextForProject.mockResolvedValue({
+      commissionId: 'commission-example',
+      runId: 'run-example',
+      prompt: 'Bounded taste directive with original-work constraints',
+      tasteRecipe: { version: 1, sourceHash: 'example-hash' },
+      musicGeneration: { engine: 'acestep', modelId: 'example-model', repo: 'example/model', durationSec: 45 },
+    });
+    await run('media_enqueueAudioJob', {
+      prompt: 'planner guess', engine: 'musicgen', modelId: 'wrong', durationSec: 5, durationMode: 'auto',
+    }, { projectId: 'cd-1' });
+    expect(enqueued().params).toEqual({
+      prompt: 'Bounded taste directive with original-work constraints',
+      engine: 'acestep', modelId: 'example-model', repo: 'example/model', durationSec: 45,
+      creativeDirectorMusicBed: { projectId: 'cd-1' },
+      provenance: {
+        kind: 'creative-commission-music-taste', commissionId: 'commission-example', runId: 'run-example',
+        recipeVersion: 1, sourceHash: 'example-hash',
+      },
+    });
+  });
+
+  it('fails closed when local taste provenance cannot be resolved', async () => {
+    getCommissionMusicContextForProject.mockRejectedValueOnce(new Error('commission store unavailable'));
+    await expect(run('media_enqueueAudioJob', {
+      prompt: 'planner guess', engine: 'musicgen', modelId: 'planner-model', durationSec: 5,
+    }, { projectId: 'cd-1' })).rejects.toThrow('commission store unavailable');
+    expect(enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a taste run lost its bounded authoritative prompt', async () => {
+    getCommissionMusicContextForProject.mockResolvedValueOnce({
+      commissionId: 'commission-example', runId: 'run-example', prompt: null,
+      tasteRecipe: { version: 1, sourceHash: 'example-hash' },
+      musicGeneration: { engine: 'acestep', modelId: 'example-model', durationSec: 45 },
+    });
+    await expect(run('media_enqueueAudioJob', { prompt: 'planner guess' }, { projectId: 'cd-1' }))
+      .rejects.toThrow('taste-commission-prompt-unavailable');
+    expect(enqueueJob).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import useProviderModels from '../../hooks/useProviderModels';
 import { refineMediaPrompt } from '../../services/api';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
+import { safeReadStorage, safeRemoveStorage, safeWriteStorage } from '../../lib/safeStorage';
 
 const LS_KEY_PROVIDER = 'portos_enhance_prompt_provider';
 const LS_KEY_MODEL = 'portos_enhance_prompt_model';
@@ -20,13 +21,7 @@ export default function PromptEnhancer({
   disabled = false,
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [effort, setEffort] = useState(() => {
-    try {
-      return localStorage.getItem(LS_KEY_EFFORT) || '';
-    } catch {
-      return '';
-    }
-  });
+  const [effort, setEffort] = useState(() => safeReadStorage(LS_KEY_EFFORT) || '');
   const [enhancing, setEnhancing] = useState(false);
 
   const {
@@ -42,61 +37,36 @@ export default function PromptEnhancer({
   // Restore saved provider / model preference once provider list loads
   useEffect(() => {
     if (providersLoading || !providers.length) return;
-    try {
-      const savedProvider = localStorage.getItem(LS_KEY_PROVIDER);
-      const savedModel = localStorage.getItem(LS_KEY_MODEL);
-      if (savedProvider && providers.some((p) => p.id === savedProvider)) {
-        setSelectedProviderId(savedProvider);
-        if (savedModel) {
-          setSelectedModel(savedModel);
-        }
+    const savedProvider = safeReadStorage(LS_KEY_PROVIDER);
+    const savedModel = safeReadStorage(LS_KEY_MODEL);
+    if (savedProvider && providers.some((p) => p.id === savedProvider)) {
+      setSelectedProviderId(savedProvider);
+      if (savedModel) {
+        setSelectedModel(savedModel);
       }
-    } catch {
-      // Ignore localStorage errors
     }
   }, [providers, providersLoading, setSelectedProviderId, setSelectedModel]);
 
   const handleProviderChange = (id) => {
     setSelectedProviderId(id);
     setEffort('');
-    try {
-      if (id) {
-        localStorage.setItem(LS_KEY_PROVIDER, id);
-      } else {
-        localStorage.removeItem(LS_KEY_PROVIDER);
-      }
-      localStorage.removeItem(LS_KEY_MODEL);
-      localStorage.removeItem(LS_KEY_EFFORT);
-    } catch {
-      // Ignore localStorage errors
-    }
+    if (id) safeWriteStorage(LS_KEY_PROVIDER, id);
+    else safeRemoveStorage(LS_KEY_PROVIDER);
+    safeRemoveStorage(LS_KEY_MODEL);
+    safeRemoveStorage(LS_KEY_EFFORT);
   };
 
   const handleModelChange = (model) => {
     setSelectedModel(model);
-    try {
-      if (selectedProviderId) localStorage.setItem(LS_KEY_PROVIDER, selectedProviderId);
-      if (model) {
-        localStorage.setItem(LS_KEY_MODEL, model);
-      } else {
-        localStorage.removeItem(LS_KEY_MODEL);
-      }
-    } catch {
-      // Ignore localStorage errors
-    }
+    if (selectedProviderId) safeWriteStorage(LS_KEY_PROVIDER, selectedProviderId);
+    if (model) safeWriteStorage(LS_KEY_MODEL, model);
+    else safeRemoveStorage(LS_KEY_MODEL);
   };
 
   const handleEffortChange = (val) => {
     setEffort(val);
-    try {
-      if (val) {
-        localStorage.setItem(LS_KEY_EFFORT, val);
-      } else {
-        localStorage.removeItem(LS_KEY_EFFORT);
-      }
-    } catch {
-      // Ignore localStorage errors
-    }
+    if (val) safeWriteStorage(LS_KEY_EFFORT, val);
+    else safeRemoveStorage(LS_KEY_EFFORT);
   };
 
   const handleEnhance = async () => {

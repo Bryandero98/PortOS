@@ -28,6 +28,7 @@ import { settingsEvents } from '../settings.js';
 import { listCommissions, getCommission, recordCommissionRun, commissionEvents } from './store.js';
 import { commissionToCron } from './directive.js';
 import { buildCommissionDirective, getAbilityAdapter } from './abilityAdapters.js';
+import { buildMusicTasteRecipe } from './musicTasteRecipe.js';
 import { surfaceCommissionRun } from './surface.js';
 
 const eventId = (commissionId) => `creative-commission-${commissionId}`;
@@ -168,6 +169,36 @@ export async function runCommissionNow(commissionId) {
   return fireCommission(commission, 'manual');
 }
 
+// Source reads are intentionally lazy and machine-local. The recipe receives
+// only the bounded stated summary and observed rollup; raw Digital Twin answers,
+// Spotify caches, and activity events never enter a commission record or CD
+// project. A source read failure is treated exactly like absent taste data so an
+// opted-in commission records an explicit skip instead of generating generically.
+async function resolveMusicTasteRecipe(commission) {
+  const config = commission?.targetAbility === 'music' ? commission?.brief?.musicTaste : null;
+  if (!config) return null;
+  const [profile, observed] = await Promise.all([
+    import('../taste-questionnaire.js')
+      .then(({ getTasteProfile }) => getTasteProfile())
+      .catch(() => null),
+    import('../twinEnrichment.js')
+      .then(({ getTasteEvidence }) => getTasteEvidence())
+      .catch(() => null),
+  ]);
+  const musicSection = profile?.sections?.find((section) => section?.id === 'music');
+  return buildMusicTasteRecipe({
+    commissionId: commission.id,
+    config,
+    stated: {
+      summary: musicSection?.summary || null,
+      lastSessionAt: profile?.lastSessionAt || null,
+    },
+    observed,
+    feedback: commission.feedback,
+    recentRuns: commission.runs,
+  });
+}
+
 /**
  * The shared fire core. Never throws (callers may be outside the Express
  * request lifecycle — a throw would crash Node). Re-reads the creative autonomy
@@ -186,6 +217,8 @@ async function fireCommission(commission, trigger) {
   // manual caller sees a bare failure, can't find the orphaned CD project, and
   // a retry mints a duplicate.
   let startedProjectId = null;
+  let startedTasteRecipe = null;
+  let startedMusicGeneration = null;
   const skip = async (reason) => {
     const run = await recordCommissionRun(commissionId, { status: 'skipped', reason, trigger }).catch(() => null);
     return { status: 'skipped', reason, run };
@@ -215,6 +248,22 @@ async function fireCommission(commission, trigger) {
     const abilityAdapter = getAbilityAdapter(commission.targetAbility);
     if (!abilityAdapter) return skip('unknown-ability');
 
+    const tasteResult = await resolveMusicTasteRecipe(commission);
+    if (tasteResult?.status === 'unavailable') return skip(tasteResult.reason);
+    startedTasteRecipe = tasteResult?.recipe || null;
+    if (startedTasteRecipe) {
+      const { resolveMusicEngineSelection } = await import('../musicEngineCatalog.js');
+      const engineResult = await resolveMusicEngineSelection({
+        engineId: commission.brief.musicTaste.musicEngineId,
+        modelId: commission.brief.musicTaste.musicModelId,
+      }).catch(() => ({ status: 'unavailable', reason: 'music-engine-unavailable' }));
+      if (engineResult.status !== 'ready') return skip(engineResult.reason);
+      startedMusicGeneration = {
+        ...engineResult.selection,
+        durationSec: commission.generation.lengthSeconds,
+      };
+    }
+
     // NOTE: we deliberately do NOT pre-charge the cos budget here. The planner
     // spawns as a normal CoS agent (a `cd-` task) and is accounted by
     // `completeAgent` → `recordDomainUsage('cos', { actions: 1 })` on completion,
@@ -228,7 +277,7 @@ async function fireCommission(commission, trigger) {
       import('../videoGen/local.js'),
     ]);
 
-    const directive = buildCommissionDirective(commission);
+    const directive = buildCommissionDirective(commission, { tasteRecipe: startedTasteRecipe });
     // Fan the commission's single LLM pin onto BOTH CD cognitive stages
     // (treatment + plan) as the project's `modelOverrides`, so the scheduled
     // fire is processed by the provider/model the user chose rather than the
@@ -295,7 +344,13 @@ async function fireCommission(commission, trigger) {
       trigger,
       projectId: project.id,
       promptUsed: directive.goal,
+      ...(startedTasteRecipe ? { tasteRecipe: startedTasteRecipe } : {}),
+      ...(startedMusicGeneration ? { musicGeneration: startedMusicGeneration } : {}),
     }).catch(() => null);
+    // A taste-aware audio enqueue resolves its authoritative prompt/renderer
+    // from this local run. If the write failed, advancing would make that lookup
+    // look legitimately absent and silently release planner defaults instead.
+    if (startedTasteRecipe && !run) throw new Error('taste-run-persistence-unavailable');
 
     // Surface the fire (notification + brain inbox) so the user can rate the
     // result once it lands — the reaction feeds the next run via
@@ -311,7 +366,11 @@ async function fireCommission(commission, trigger) {
   } catch (err) {
     console.error(`❌ Creative commission ${commissionId} ${trigger} fire failed: ${err?.message || err}`);
     const error = err?.message || String(err);
-    const run = await recordCommissionRun(commissionId, { status: 'failed', error, trigger, projectId: startedProjectId }).catch(() => null);
+    const run = await recordCommissionRun(commissionId, {
+      status: 'failed', error, trigger, projectId: startedProjectId,
+      ...(startedTasteRecipe ? { tasteRecipe: startedTasteRecipe } : {}),
+      ...(startedMusicGeneration ? { musicGeneration: startedMusicGeneration } : {}),
+    }).catch(() => null);
     return { status: 'failed', error, projectId: startedProjectId, run };
   }
 }

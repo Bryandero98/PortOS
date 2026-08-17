@@ -194,11 +194,37 @@ export function gradeComicReferencedNouns(comicScript, canon, thinChars = CANON_
   }, thinChars);
 }
 
-// Fallback free-text source when there's no parseable comic script: TV draws
-// from the teleplay, anything else from teleplay-or-prose. (Comic targets with
-// a comic script go through gradeComicReferencedNouns, not this.)
-function fallbackSourceText(issue) {
-  return issue.stages?.teleplay?.output || issue.stages?.prose?.output || '';
+const requiredVisualStages = (targetFormat) => {
+  if (targetFormat === 'comic') return ['comicScript'];
+  if (targetFormat === 'tv') return ['teleplay'];
+  return ['comicScript', 'teleplay'];
+};
+
+const resolveVisualStages = (targetFormat, sourceStages) => {
+  if (!Array.isArray(sourceStages) || sourceStages.length === 0) {
+    return requiredVisualStages(targetFormat);
+  }
+  const scoped = [...new Set(sourceStages.filter((stageId) => stageId === 'comicScript' || stageId === 'teleplay'))];
+  return scoped.length > 0 ? scoped : requiredVisualStages(targetFormat);
+};
+
+function mergeGrades(grades) {
+  const none = new Map();
+  const thin = new Map();
+  let referenced = 0;
+  for (const grade of grades) {
+    referenced += grade.referenced;
+    for (const entry of grade.none) {
+      const key = `${entry.kind}:${entry.id || entry.name}`;
+      none.set(key, entry);
+      thin.delete(key);
+    }
+    for (const entry of grade.thin) {
+      const key = `${entry.kind}:${entry.id || entry.name}`;
+      if (!none.has(key)) thin.set(key, entry);
+    }
+  }
+  return { referenced, none: [...none.values()], thin: [...thin.values()], ready: none.size === 0 };
 }
 
 /**
@@ -206,21 +232,52 @@ function fallbackSourceText(issue) {
  * checking many issues. Returns
  * `{ issueId, number, title, referenced, none[], thin[], ready }`.
  *
- * Comic targets with a comic script grade against the DRAWABLE text only (panel
- * descriptions + dialogue speakers) so an off-page character named only in
- * narration/dialogue body isn't a false blocker; everything else grades the
- * teleplay/prose.
+ * Comic sources grade against the DRAWABLE text only (panel descriptions +
+ * dialogue speakers) so an off-page character named only in dialogue body
+ * isn't a false blocker. TV sources grade the teleplay. A prose draft or empty
+ * outline is not a visual source and therefore cannot produce a vacuous
+ * `ready:true`; hybrid series require both parallel-format scripts unless a
+ * caller explicitly scopes `sourceStages` to the format it is about to render.
  */
-export async function checkIssueCanonReadiness(issueId, { canon = null, series = null, thinChars = CANON_THIN_CHARS } = {}) {
+export async function checkIssueCanonReadiness(issueId, {
+  canon = null,
+  series = null,
+  thinChars = CANON_THIN_CHARS,
+  sourceStages = null,
+} = {}) {
   const issue = await getIssue(issueId);
   const ser = series || await getSeries(issue.seriesId).catch(() => null);
   const c = canon || (ser ? await getSeriesCanon(ser).catch(() => null) : null) || { characters: [], places: [], objects: [] };
   const fmt = ser?.targetFormat || 'comic+tv';
-  const comic = (issue.stages?.comicScript?.output || '').trim();
-  const graded = (fmt !== 'tv' && comic)
-    ? gradeComicReferencedNouns(comic, c, thinChars)
-    : gradeReferencedNouns(fallbackSourceText(issue), c, thinChars);
-  return { issueId, number: issue.number, title: issue.title, referenced: graded.referenced, none: graded.none, thin: graded.thin, ready: graded.ready };
+  const visualStages = resolveVisualStages(fmt, sourceStages);
+  const sourceText = Object.fromEntries(visualStages.map((stageId) => [
+    stageId,
+    (issue.stages?.[stageId]?.output || '').trim(),
+  ]));
+  const missingSourceStages = visualStages.filter((stageId) => !sourceText[stageId]);
+  const grades = visualStages.flatMap((stageId) => {
+    const text = sourceText[stageId];
+    if (!text) return [];
+    return [stageId === 'comicScript'
+      ? gradeComicReferencedNouns(text, c, thinChars)
+      : gradeReferencedNouns(text, c, thinChars)];
+  });
+  const graded = mergeGrades(grades);
+  const ready = missingSourceStages.length === 0 && graded.ready;
+  return {
+    issueId,
+    number: issue.number,
+    title: issue.title,
+    referenced: graded.referenced,
+    none: graded.none,
+    thin: graded.thin,
+    ready,
+    sourceStages: visualStages,
+    missingSourceStages,
+    blockingReason: missingSourceStages.length > 0
+      ? 'missing-visual-source'
+      : (graded.ready ? null : 'undescribed-canon'),
+  };
 }
 
 /**
@@ -228,13 +285,15 @@ export async function checkIssueCanonReadiness(issueId, { canon = null, series =
  * series-level roll-up: `ready` (no issue has an undescribed drawn noun),
  * `blockingIssues[]`, and the de-duplicated `undescribed[]` noun list.
  */
-export async function checkSeriesCanonReadiness(seriesId, { thinChars = CANON_THIN_CHARS } = {}) {
+export async function checkSeriesCanonReadiness(seriesId, { thinChars = CANON_THIN_CHARS, sourceStages = null } = {}) {
   const series = await getSeries(seriesId);
   const canon = await getSeriesCanon(series).catch(() => ({ characters: [], places: [], objects: [] }));
   const issues = await listIssues({ seriesId });
   const perIssue = [];
   for (const issue of issues) {
-    perIssue.push(await checkIssueCanonReadiness(issue.id, { canon, series, thinChars }));
+    perIssue.push(await checkIssueCanonReadiness(issue.id, {
+      canon, series, thinChars, sourceStages,
+    }));
   }
   const blocking = perIssue.filter((r) => !r.ready);
   const noneById = new Map();
@@ -245,7 +304,14 @@ export async function checkSeriesCanonReadiness(seriesId, { thinChars = CANON_TH
     seriesId,
     ready: blocking.length === 0,
     issues: perIssue,
-    blockingIssues: blocking.map((r) => ({ issueId: r.issueId, number: r.number, title: r.title, none: r.none })),
+    blockingIssues: blocking.map((r) => ({
+      issueId: r.issueId,
+      number: r.number,
+      title: r.title,
+      none: r.none,
+      missingSourceStages: r.missingSourceStages,
+      blockingReason: r.blockingReason,
+    })),
     undescribed: [...noneById.values()],
   };
 }

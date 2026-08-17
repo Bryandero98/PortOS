@@ -351,7 +351,7 @@ describe('AutopilotPanel', () => {
     ));
   });
 
-  it('can split Luna/max creation from Sol/xhigh judging for one run', async () => {
+  it('can split Luna/xhigh creation from Sol/medium judging for one run', async () => {
     getProviders.mockResolvedValue({
       activeProvider: 'codex-tui',
       providers: [{
@@ -362,21 +362,21 @@ describe('AutopilotPanel', () => {
     renderPanel({ id: 's1', targetFormat: 'comic', llm: { provider: 'codex-tui', model: 'gpt-5.6-luna' } });
     await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /options/i }));
-    fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'max' } });
+    fireEvent.change(await screen.findByLabelText('Thinking effort'), { target: { value: 'xhigh' } });
     fireEvent.click(screen.getByLabelText(/separate model for judging/i));
     const models = screen.getAllByLabelText('Model');
     fireEvent.change(models[1], { target: { value: 'gpt-5.6-sol' } });
     const efforts = screen.getAllByLabelText('Thinking effort');
-    fireEvent.change(efforts[1], { target: { value: 'xhigh' } });
-    expect(screen.getByText(/Luna\/max writing with an independent Sol\/xhigh critic/i)).toBeInTheDocument();
+    fireEvent.change(efforts[1], { target: { value: 'medium' } });
+    expect(screen.getByText(/Luna\/xhigh writing with an independent Sol\/medium critic/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /run autopilot/i }));
     await waitFor(() => expect(startPipelineAutopilot).toHaveBeenCalledWith(
       's1',
       {
         includeVisual: true,
         fileGaps: false,
-        effortOverride: 'max',
-        judgeLlm: { modelOverride: 'gpt-5.6-sol', effortOverride: 'xhigh' },
+        effortOverride: 'xhigh',
+        judgeLlm: { modelOverride: 'gpt-5.6-sol', effortOverride: 'medium' },
       },
       { silent: true },
     ));
@@ -1028,5 +1028,44 @@ describe('AutopilotPanel', () => {
     expect(await screen.findByText(/Kai \(character\)/i)).toBeInTheDocument();
     const link = screen.getByRole('link', { name: /#3 Backdoor/i });
     expect(link).toHaveAttribute('href', '/pipeline/issues/iss-9/nouns');
+  });
+
+  it('explains that outline-only issues are missing a visual source', async () => {
+    getPipelineSeriesCanonReadiness.mockResolvedValue({
+      ready: false,
+      undescribed: [],
+      blockingIssues: [{
+        issueId: 'iss-2', number: 2, title: 'Threshold', none: [],
+        blockingReason: 'missing-visual-source', missingSourceStages: ['comicScript'],
+      }],
+    });
+    renderPanel({ id: 's1', targetFormat: 'comic' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /^check$/i }));
+
+    expect(await screen.findByText(/outline or prose draft cannot prove canon is ready/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /#2 Threshold/i }))
+      .toHaveAttribute('href', '/pipeline/issues/iss-2/comicScript');
+  });
+
+  it('shows visual-source and canon-noun blockers for the same issue', async () => {
+    getPipelineSeriesCanonReadiness.mockResolvedValue({
+      ready: false,
+      undescribed: [{ id: 'c1', name: 'Kai', kind: 'character' }],
+      blockingIssues: [{
+        issueId: 'iss-2', number: 2, title: 'Threshold',
+        none: [{ id: 'c1', name: 'Kai', kind: 'character' }],
+        blockingReason: 'missing-visual-source', missingSourceStages: ['teleplay'],
+      }],
+    });
+    renderPanel({ id: 's1', targetFormat: 'hybrid' });
+    await waitFor(() => expect(getPipelineAutopilotStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /^check$/i }));
+
+    expect(await screen.findByText(/Kai \(character\)/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Threshold — visual script/i }))
+      .toHaveAttribute('href', '/pipeline/issues/iss-2/teleplay');
+    expect(screen.getByRole('link', { name: /Threshold — canon nouns/i }))
+      .toHaveAttribute('href', '/pipeline/issues/iss-2/nouns');
   });
 });

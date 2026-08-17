@@ -1,6 +1,6 @@
 {
   "name": "portos",
-  "version": "2.44.0",
+  "version": "2.45.0",
   "private": true,
   "description": "Local dev machine App OS portal",
   "author": "Adam Eivy (@antic|@atomantic)",
@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "node scripts/checkNodeVersion.js && node scripts/dev-start.js",
     "dev:stop": "node ./node_modules/pm2/bin/pm2 stop ecosystem.config.cjs",
+    "eval:agent-context": "node scripts/agent-context-eval.js",
     "build": "npm run build --prefix client",
     "changelog:add": "node scripts/changelog-add.js",
     "changelog:collect": "node scripts/changelog-collect.js",

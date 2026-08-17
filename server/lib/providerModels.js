@@ -71,20 +71,40 @@ export const resolveCliModel = (model) => isConfiguredDefaultModel(model) ? null
 // Reasoning-effort levels — Claude Code (`--effort <level>`), Antigravity
 // (`--effort <level>`) and Codex (`-c model_reasoning_effort=<level>`) all
 // accept a per-invocation override of how hard the model thinks. Value sets
-// verified against claude CLI v2.1.x (`--help`), codex-cli 0.144 (config enum)
-// and agy (`--help`: "Reasoning effort for the current CLI session
-// (low|medium|high)"). Mirrored in client/src/utils/providers.js — keep in sync.
+// verified against claude CLI v2.1.x (`--help`), codex-cli 0.130 (its config
+// enum, read straight off codex's own rejection message: `none`, `minimal`,
+// `low`, `medium`, `high`, `xhigh`) and agy (`--help`: "Reasoning effort for
+// the current CLI session (low|medium|high)"). Mirrored in
+// client/src/utils/providers.js — keep in sync.
+//
+// Codex does NOT accept `max`/`ultra`. Listing them here emitted
+// `-c model_reasoning_effort=max`, which codex rejects while LOADING ITS CONFIG
+// — before the prompt is ever read — so the agent died at startup with "unknown
+// variant `max`, expected one of …" and burned every retry. `resolveCliEffort`
+// clamps those levels to `xhigh` instead, which also degrades gracefully if a
+// future codex does add them.
+//
+// `none` is a real codex variant but is deliberately NOT offered: it means "do
+// not reason at all", which no PortOS effort control should be able to select.
 // ---------------------------------------------------------------------------
 
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+
+// Effort values no CLI ladder accepts any more, kept ACCEPTED as stored/API
+// input so records saved under an older ladder still validate after an install
+// updates (see the distribution model in CLAUDE.md — installs update
+// independently). `resolveCliEffort` clamps them to a level the target CLI
+// really takes, so none of these ever reaches a CLI verbatim.
+const LEGACY_EFFORT_LEVELS = Object.freeze(['ultra']);
 
 /** Union of every accepted effort value across effort-capable CLIs, low→high. */
 export const EFFORT_LEVELS = Object.freeze([...new Set([
   ...CODEX_EFFORT_LEVELS,
   ...CLAUDE_EFFORT_LEVELS,
   ...ANTIGRAVITY_EFFORT_LEVELS,
+  ...LEGACY_EFFORT_LEVELS,
 ])]);
 
 // ---------------------------------------------------------------------------
@@ -289,9 +309,10 @@ const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 
  * accepts, or null when the flag should be omitted entirely (no override set,
  * provider has no effort control, or the value isn't a known effort at all).
  * An out-of-range value is clamped to the nearest supported level at or below
- * it (`ultra`→`max` on claude, `xhigh`/`max`/`ultra`→`high` on agy), falling
- * back to the provider's weakest level when nothing sits below it
- * (`minimal`→`low`) — rather than being dropped.
+ * it (`ultra`→`max` on claude, `max`/`ultra`→`xhigh` on codex,
+ * `xhigh`/`max`/`ultra`→`high` on agy), falling back to the provider's weakest
+ * level when nothing sits below it (`minimal`→`low`) — rather than being
+ * dropped.
  * @param {string|null|undefined} effort
  * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
  * @param {string|null} [model] - narrows the Antigravity ladder (see effortLevelsForProvider)

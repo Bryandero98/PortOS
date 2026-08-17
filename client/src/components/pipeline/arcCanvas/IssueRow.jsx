@@ -69,6 +69,14 @@ export default function IssueRow({ issue, seasons, onIssuesUpdate }) {
             <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded ${ISSUE_STATUS_COLORS[issue.status] || ISSUE_STATUS_COLORS.draft}`}>
               {issue.status}
             </span>
+            {issue.arcRole ? (
+              <span
+                className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-port-accent/10 text-port-accent"
+                title="Arc role"
+              >
+                {issue.arcRole}
+              </span>
+            ) : null}
           </div>
           <p className="text-sm text-white font-medium line-clamp-2">{issue.title || 'Untitled'}</p>
           <p className="text-[10px] text-gray-600">updated {timeAgo(issue.updatedAt)}</p>

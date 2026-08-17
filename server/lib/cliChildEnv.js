@@ -44,6 +44,21 @@ import { withSpawnCwdEnv } from './spawnCwd.js';
 import { buildOpencodeEnvVars } from './opencodeConfig.js';
 import { agentGuardEnv } from './agentGuard/index.js';
 
+// Claude Code defaults to 32K output tokens. Thinking-capable local models can
+// legitimately spend more than that before returning their final tool call;
+// when they do, Claude Code paints a terminal API Error and waits forever at an
+// empty composer. Cloud Claude models own their own output budgets, so widen the
+// ceiling only for a Claude harness explicitly marked as Ollama-backed. A value
+// in provider.envVars still wins below.
+const CLAUDE_OLLAMA_MAX_OUTPUT_TOKENS = '65536';
+
+function claudeOllamaEnvDefaults(provider) {
+  const command = String(provider?.command || '').split(/[\\/]/).pop()?.replace(/\.(?:cmd|exe)$/i, '').toLowerCase();
+  return provider?.ollamaBacked === true && command === 'claude'
+    ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: CLAUDE_OLLAMA_MAX_OUTPUT_TOKENS }
+    : {};
+}
+
 /**
  * The ordered provider env layers, without a base env, PWD pin, or strip.
  *
@@ -65,6 +80,7 @@ import { agentGuardEnv } from './agentGuard/index.js';
 export function composeProviderEnv({ before = null, provider = null, model = null, extra = null } = {}) {
   return {
     ...(before || {}),
+    ...claudeOllamaEnvDefaults(provider),
     ...(provider?.envVars || {}),
     // Rebuilds OPENCODE_CONFIG_CONTENT with a declared models map for OpenCode
     // local providers (an empty object for everyone else) so the injected

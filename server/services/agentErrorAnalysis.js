@@ -111,6 +111,52 @@ function snippetAround(text, index) {
  * test whose tail prints "rate limit" is NOT misread as an infra outage.
  */
 export const ERROR_PATTERNS = [
+  // ===== CLI Config Errors =====
+  // A provider CLI that refuses to START because its own config file is
+  // invalid. Codex reads `~/.codex/config.toml` (plus any `-c key=value`
+  // override) BEFORE it reads the prompt, so an unaccepted value kills every
+  // attempt identically — the run burns all three retries and the agent never
+  // gets a single token in. Listed first: the message is unmistakable, and
+  // untriaged it landed in the `unknown` bucket (Tier 4 escalate), which spawns
+  // an investigation task for what is a one-line config edit (real incident
+  // 2026-08-17: `model_reasoning_effort = "max"`, a variant codex does not
+  // accept, sitting in the global config). Deliberately does NOT echo the
+  // matched path — it embeds the OS username (see Sensitive Data & Privacy in
+  // CLAUDE.md).
+  {
+    pattern: /(?:error loading )?config\.toml(?::\d+:\d+)?:\s*unknown (variant|field) `([^`]+)`(?:[\s\S]{0,200}?in `([^`]+)`)?/i,
+    category: 'cli-config-invalid',
+    actionable: true,
+    origin: 'runner', // fully structured — the CLI's own config-load rejection
+    escalation: 'Edit the CLI config (or the PortOS override that produced it) so the rejected key holds a value the CLI accepts, then approve the retry.',
+    extract: (match) => {
+      const kind = match[1].toLowerCase();
+      const value = match[2];
+      const key = match[3] || null;
+      const keyRef = key ? `\`${key}\`` : 'the rejected key';
+      return {
+        message: `Provider CLI rejected its config: unknown ${kind} "${value}"${key ? ` for ${key}` : ''}`,
+        suggestedFix: `The CLI failed while LOADING its config, before the prompt was read, so every retry dies identically. Set ${keyRef} to a value this CLI version accepts (its own error message lists them) in the CLI's config file — for codex that is \`~/.codex/config.toml\`. If PortOS supplied the value as a \`-c <key>=<value>\` override instead, it is out of the provider's ladder in server/lib/providerModels.js.`,
+        rejectedConfigKey: key,
+        rejectedConfigValue: value
+      };
+    }
+  },
+  {
+    // Anything else that stops the CLI at config load — a TOML syntax error, an
+    // unreadable file — same blast radius and same Tier 1 fix, without the
+    // key/value detail the pattern above extracts.
+    pattern: /error loading config\.toml/i,
+    category: 'cli-config-invalid',
+    actionable: true,
+    origin: 'runner',
+    escalation: 'Fix the provider CLI config file it failed to load, then approve the retry.',
+    extract: () => ({
+      message: 'Provider CLI could not load its config file',
+      suggestedFix: 'The CLI failed while loading its own config (for codex, `~/.codex/config.toml`), before the prompt was read — every retry fails the same way until the file parses. Check it for a syntax error or a key this CLI version no longer accepts.'
+    })
+  },
+
   // ===== API & Authentication Errors =====
   {
     pattern: /API Error: 404.*model:\s*(\S+)/i,
@@ -298,6 +344,33 @@ export const ERROR_PATTERNS = [
   },
 
   // ===== Context & Token Errors =====
+  {
+    // Claude Code's own terminal output-ceiling banner. This exact wording is
+    // structured harness chrome, so it may override an idle-reaper verdict;
+    // otherwise the empty composer that follows gets blamed on whichever phase
+    // marker happened to be latched from the repainted prompt. Keep this ahead
+    // of the generic token/context patterns and require the env-var guidance so
+    // ordinary agent prose about output limits stays an output-scan match.
+    pattern: /Claude's response exceeded the \d+ output token maximum[\s\S]{0,240}?CLAUDE_CODE_MAX_OUTPUT_TOKENS/i,
+    category: 'output-length',
+    actionable: false,
+    origin: 'provider',
+    structuredMarker: /API Error:\s*Claude's response exceeded the \d+ output token maximum[\s\S]{0,240}?CLAUDE_CODE_MAX_OUTPUT_TOKENS/i,
+    extract: (match, output) => ({
+      message: 'Output length exceeded',
+      suggestedFix: 'Claude Code exhausted its response ceiling. Retry with a larger CLAUDE_CODE_MAX_OUTPUT_TOKENS value or reduce the requested response.',
+      compaction: {
+        needed: true,
+        reason: 'output-limit',
+        outputSize: Buffer.byteLength(output || ''),
+        retryHints: [
+          'Limit output to changed files and a brief summary only',
+          'Do not echo file contents back — just reference file paths and line numbers',
+          'Combine related changes into single descriptions'
+        ]
+      }
+    })
+  },
   {
     pattern: /context.?length|max.?tokens|token.?limit|context.?window/i,
     category: 'context-length',
@@ -617,7 +690,8 @@ const TUI_PLACEHOLDER_HINT_PATTERN = /^\s*[❯>]\s*Try\s+["'].*$/gm;
  * "lines". That defeated a line-only window entirely — the "last 200 lines" was
  * the WHOLE 17-minute session, so a keyword anywhere in it (in the pasted prompt,
  * or in a `grep -rn "maxTokens\|max_tokens"` the agent itself ran) classified the
- * failure. That is exactly how an idle-reaper kill got labelled `context-length`.
+ * failure. That is exactly how an earlier idle-reaper kill got labelled
+ * `context-length`.
  *
  * So: strip escape sequences, treat CR as a line break (repaints overwrite a
  * line rather than starting one), drop blanks, then bound by lines AND by
@@ -657,14 +731,17 @@ function resolvePatternOrigin(errorDef, analysisOutput) {
 /**
  * Runner-resolved completion reasons → the failure they actually describe.
  *
- * When the spawner's own finalize path already KNOWS why a run ended (the idle
- * reaper fired, max runtime elapsed, the shell session never came up), that is a
+ * When the spawner's own finalize path already KNOWS why a run ended (a legacy
+ * forced-stop was applied, or the shell session never came up), that is a
  * structural signal about the process — strictly better evidence than a regex
  * sweep over the transcript. Keyed by the `reason` each `finish()` call passes;
  * see `server/services/agentTuiSpawning.js`. Categories are deliberately reused
  * from ERROR_PATTERNS so downstream taxonomies (task-learning metrics,
  * layeredIntelligenceExecutionFailures) keep classifying them without a new token.
  */
+// Legacy idle-out and forced-stop reasons remain readable for archived agent
+// records and retries; the current CoS TUI path completes by sentinel, process
+// exit, or explicit provider failure.
 export const COMPLETION_REASON_ANALYSES = {
   'idle-no-changes': {
     category: 'no-changes',
@@ -729,18 +806,16 @@ export const COMPLETION_REASON_ANALYSES = {
   'max-runtime-timeout': {
     category: 'timeout',
     actionable: false,
-    message: 'Agent exceeded its maximum runtime',
-    suggestedFix: 'Task took longer than the configured max runtime. Break it into smaller subtasks or raise the runtime budget.'
+    message: 'Agent was stopped by a retired maximum-runtime limit',
+    suggestedFix: 'This result came from an older PortOS runtime guard; current CoS TUI agents have no wall-clock runtime ceiling.'
   },
-  // Distinct from the bare ceiling above: this agent was explicitly ASKED to wrap
-  // up and write its sentinel (see MAX_RUNTIME_WRAP_UP_GRACE_MS) and never did, so
-  // "raise the runtime budget" is the wrong advice — a session that can't answer a
-  // direct prompt in five minutes is wedged, not merely slow.
+  // Historical counterpart for runs that were asked to wrap up during the
+  // retired wall-clock guard and never did.
   'max-runtime-no-wrap-up': {
     category: 'timeout',
     actionable: false,
-    message: 'Agent did not wrap up when asked at its max runtime',
-    suggestedFix: 'The agent was asked to write its completion sentinel and did not respond within the grace window — its provider/CLI is likely wedged rather than merely slow. Check the raw transcript for a stalled request, and check for open or merged-but-uncleaned PRs it left behind.'
+    message: 'Agent was stopped by a retired maximum-runtime wrap-up limit',
+    suggestedFix: 'This result came from an older PortOS runtime guard; current CoS TUI agents have no wall-clock runtime ceiling.'
   },
   // The PTY was terminated by a signal rather than exiting on its own — almost
   // always pm2's TreeKill taking portos-server's descendants down with it on a
@@ -802,8 +877,8 @@ export const COMPLETION_REASON_ANALYSES = {
 /**
  * Screen signatures of a TUI parked on an interactive prompt — a multiple-choice
  * selector, an approval gate, a confirmation. A CoS agent is unattended, so
- * nothing ever answers: the session repaints the prompt until the idle reaper
- * kills it, and the run lands as a plain idle-out. That verdict is true but
+ * nothing ever answers: older TUI handling repaints the prompt until its idle
+ * fallback kills it, and the run lands as a plain idle-out. That verdict is true but
  * diagnostically useless — it sends the reader hunting for a stalled provider
  * request, and a retry re-runs the same command straight into the same gate.
  * (Observed cost: three identical `/do:plan-task` attempts, each parked on a
@@ -837,8 +912,8 @@ export function endsAwaitingUserInput(analysisOutput) {
 }
 
 /**
- * Idle-out reasons worth re-explaining as an unanswered prompt. All three are
- * "the reaper killed it" verdicts, so when the tail shows a selector or approval
+ * Legacy idle-out reasons worth re-explaining as an unanswered prompt. All three
+ * are "the reaper killed it" verdicts, so when the tail shows a selector or approval
  * gate that IS the proximate cause — including for a programmatic-I/O run, whose
  * payload went unwritten precisely because it never got past the prompt.
  */
@@ -855,7 +930,7 @@ const AWAITING_INPUT_REFINABLE_REASONS = new Set(['idle-no-changes', 'idle-no-ac
 const STARTUP_GATE_REFINABLE_REASONS = new Set(['paste-not-rendered', 'tui-not-ready']);
 
 /**
- * Re-word a run whose transcript ends on an unanswered prompt — an idle-out that
+ * Re-word a run whose transcript ends on an unanswered prompt — a legacy idle-out that
  * stalled ON one, or a startup verdict where a dialog was up BEFORE the prompt
  * could land (the two groups get different prose; see the reason sets). The
  * original `category` is preserved — downstream taxonomies (auto-fix tiers,
@@ -878,7 +953,7 @@ function refineIdleReasonAnalysis(def, completionReason, analysisOutput) {
   return {
     ...def,
     message: 'Agent stalled on an interactive prompt with nobody to answer it',
-    suggestedFix: 'The transcript ends on an unanswered prompt (a choice selector or approval gate), so the agent never got past it and the idle reaper killed the run. Agents run unattended — re-running as-is will stall the same way. Invoke the command in its non-interactive form (e.g. `/do:plan-task --yes`) or reword the task so no approval is needed.'
+    suggestedFix: 'The transcript ends on an unanswered prompt (a choice selector or approval gate), so the agent never got past it and the old idle fallback killed the run. Agents run unattended — re-running as-is will stall the same way. Invoke the command in its non-interactive form (e.g. `/do:plan-task --yes`) or reword the task so no approval is needed.'
   };
 }
 
@@ -910,7 +985,7 @@ function structuralReasonAnalysis(def, completionReason, completionError) {
  * becomes the default classification, and only a STRUCTURED provider/runner
  * signal in the transcript (an `API Error: NNN` line, a Node error code) may
  * override it — a loose output-scan keyword match may not. Without that gate an
- * idle-reaper kill was labelled `context-length` (actionable → task blocked +
+ * an idle-reaper kill was labelled `context-length` (actionable → task blocked +
  * investigation filed) purely because the agent had run a grep for `max_tokens`
  * fifteen minutes earlier.
  */

@@ -20,23 +20,55 @@ for shared composition roots, test configuration, dependency manifests,
 workflow changes, unknown artifacts, or wide diffs.
 
 A short always-run list (`ALWAYS_RUN_TESTS` in the planner) is added to every
-plan, so no impact scope can drop it — currently just
-`server/services/taskPromptDefaults.test.js`, which pins the cross-install
-prompt-upgrade contract nothing else in the suite covers. A documentation-only
-PR therefore still runs the server job with that one file selected.
+plan, so no impact scope can drop it — currently
+`server/services/taskPromptDefaults.test.js` (cross-install prompt-upgrade) and
+`scripts/changelogFragments.test.js` (release-note fragment parse). A
+documentation-only PR therefore still runs the server job with those files
+selected.
+
+### Vitest runner tuning
+
+On GitHub Actions, `CI=true` caps each Vitest runner at `maxWorkers: 2`
+(`scripts/vitestCiPool.js`, spread into `server/vitest.config.js` and
+`client/vitest.config.js`). Standard hosted runners are 2 vCPU / 7GB;
+uncapped forks oversubscribe those cores during transform. Local `npm test`
+is unbounded. File-level parallelism stays on for unit tests so the two
+workers stay busy; the DB suite already serializes files because those tests
+share one Postgres.
+
+Each test job restores Vite/Vitest transform artifacts
+(`node_modules/.vite`, `node_modules/.vitest`) **after** `npm ci` — install
+wipes `node_modules`, so a pre-install restore is lost. `scripts/run-ci-tests.js`
+writes Vitest wall time to the job summary so later runs can be compared
+against the pre-change full-suite job wall on `main` (2026-08-16, run
+`31951919659`): server ~300s, client+build ~467s, Windows ~463s.
 
 The selected work is split across parallel jobs:
 
-- **Server tests** — full, related, or explicit feature test files.
+- **Server tests** — full, related, or explicit feature test files. Smoke-boots
+  the server on the same job when server source changed (the smoke path uses the
+  file backend under `NODE_ENV=test` and does not need Postgres). Always-run-only
+  plans skip the native-addon rebuild.
 - **Client tests and build** — affected client tests; production build whenever
-  client source changed.
-- **DB tests and server smoke** — provisions only the isolated `portos_test`
-  database and runs DB tests when database-sensitive files changed; smoke-boots
-  for server source changes.
-- **Client lint** — only changed JS/JSX files on targeted PRs, the complete
-  client tree during full CI.
+  client source changed; client lint on the same install so Biome does not pay a
+  second `npm ci`.
+- **DB tests** — provisions only the isolated `portos_test` database and runs
+  the serial DB suite when database-sensitive files changed.
+- **Windows server tests** — the same server selection, but only on full CI
+  (push to `main`, nightly, release, workflow dispatch) or when a
+  Windows-sensitive surface changed (`.ps1` / `.cmd` spawn, PowerShell BOM,
+  `bufferedSpawn`, `cos-runner`, shell/PM2, etc.). Docs-only and ordinary
+  Linux-faithful PRs skip this job. `pinPlatform('win32')` tests still run on
+  Linux.
+- **lint** — historical required-check name. The real lint step lives in the
+  client job; this job only mirrors that result.
 - **CI Gate** — always reports one stable required-check result and fails if any
   selected job failed or was cancelled.
+
+Targeted `files` / `related` plans run **one** Vitest process for the union of
+planner-selected files and Vitest's `--changed` import graph. The two sets are
+listed then merged — they cannot share one argv, because Vitest ANDs
+`--changed` with path selectors.
 
 No third-party change-filter action is used. The planner passes test paths as a
 JSON argument array to `spawnSync`, never through shell interpolation.

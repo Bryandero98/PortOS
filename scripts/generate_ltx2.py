@@ -570,6 +570,45 @@ def build_ltx25_encoder_shim(
     return root
 
 
+def filter_ltx25_unified_weights(weights: dict) -> dict:
+    """Drop the unified checkpoint's residual visual-only tensors.
+
+    mlx-lm's Gemma 4 sanitizer already removes ``vision_tower.*``,
+    ``audio_tower.*`` and the multimodal projectors before strict weight
+    loading.  The pinned Heretic unified checkpoints additionally publish ten
+    or eleven ``vision_embedder.*`` tensors (sometimes under a leading
+    ``model.``),
+    which are not part of the text-only ``gemma4`` module tree and otherwise
+    make strict loading fail.  Filter only that proven visual prefix: using
+    ``strict=False`` would also hide a genuinely missing language tensor.
+    """
+    return {
+        key: value
+        for key, value in weights.items()
+        if not key.removeprefix("model.").startswith("vision_embedder.")
+    }
+
+
+def install_ltx25_unified_weight_filter() -> None:
+    """Extend mlx-lm's Gemma 4 sanitizer for the pinned unified candidate.
+
+    Installed only for an explicit LTX-2.5 substitution and before the model
+    loads.  Mark the wrapper so a process that installs the adapter twice does
+    not stack it; normal PortOS renders install it once and then ``os._exit``.
+    """
+    from mlx_lm.models.gemma4 import Model
+
+    original = Model.sanitize
+    if getattr(original, "_portos_ltx25_unified_filter", False):
+        return
+
+    def sanitize(self, weights):
+        return original(self, filter_ltx25_unified_weights(weights))
+
+    sanitize._portos_ltx25_unified_filter = True
+    Model.sanitize = sanitize
+
+
 def install_ltx25_encoder_override(shim_dir: Path) -> None:
     """Point the pack's conditioner resolution at the shim, for every pipeline.
 
@@ -1186,6 +1225,7 @@ def main() -> NoReturn:
         # cannot ride along in the marker itself.
         print("STAGE:swap-text-encoder", file=sys.stderr, flush=True)
         emit_status(f"Conditioning with the {args.text_encoder_id} text encoder")
+        install_ltx25_unified_weight_filter()
         install_ltx25_encoder_override(build_ltx25_encoder_shim(
             Path(args.text_encoder_shim_root),
             args.text_encoder_id,

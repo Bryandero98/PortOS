@@ -37,7 +37,7 @@ export const ACCEPTED_OLD_MD5 = {
 // Mirror this into every earlier migration that tracks the same file
 // (003/004/025/054/098) so their drift-catch tests stay green.
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-idea-expansion.md': 'd6fa86a435f978336661dcabca67258f', // post-127 (scene markers)
+  'pipeline-idea-expansion.md': 'a032e4a724251ed3e3495d33c4dbab8e', // post-127 (scene markers)
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

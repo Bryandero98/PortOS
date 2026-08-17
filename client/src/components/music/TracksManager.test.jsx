@@ -1,13 +1,20 @@
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const musicGenProps = vi.hoisted(() => ({ current: null }));
 
 // Stub the heavy children — this suite pins the MIDI read-through wiring
 // (#2477 follow-up), not the editor/generation internals.
 vi.mock('./ArtistPicker', () => ({ default: () => <div data-testid="artist-picker" /> }));
-vi.mock('./MusicGenPanel', () => ({ default: () => <div data-testid="gen-panel" /> }));
+vi.mock('./MusicGenPanel', () => ({ default: (props) => {
+  musicGenProps.current = props;
+  return <div data-testid="gen-panel" />;
+} }));
 vi.mock('./ChiptunePanel', () => ({ default: () => <div data-testid="chiptune-panel" /> }));
-vi.mock('./TrackRenderCard', () => ({ default: () => <div data-testid="render-card" /> }));
+vi.mock('./TrackRenderCard', () => ({ default: ({ render: item, onRemix }) => (
+  <button type="button" data-testid="render-card" onClick={() => onRemix(item)}>Remix {item.id}</button>
+) }));
 vi.mock('./TrackRenderModal', () => ({ default: () => null }));
 vi.mock('../songs/MidiVisualization.jsx', () => ({
   default: ({ url, model }) => <div data-testid="midi-viz" data-url={url} data-model={model} />,
@@ -36,10 +43,16 @@ import { listMusicVideoProjects } from '../../services/apiMusicVideo.js';
 
 const TRACK = { id: 'track-1', title: 'Example Song', audioFilename: 'example.mp3', renders: [] };
 
+function LocationDisplay() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
+}
+
 const renderAt = (id) => render(
   <MemoryRouter initialEntries={[`/music/tracks/${id}`]}>
     <Routes>
       <Route path="/music/tracks/:id" element={<TracksManager />} />
+      <Route path="/music/generate/:step" element={<LocationDisplay />} />
     </Routes>
   </MemoryRouter>,
 );
@@ -155,6 +168,69 @@ describe('<TracksManager> generator mode toggle', () => {
 
     expect(await screen.findByTestId('gen-panel')).toBeInTheDocument();
     expect(screen.queryByTestId('chiptune-panel')).toBeNull();
+  });
+});
+
+describe('<TracksManager> generative workflow hand-off', () => {
+  beforeEach(() => {
+    listTracks.mockResolvedValue([TRACK]);
+    listAlbums.mockResolvedValue([]);
+    listMusicVideoProjects.mockResolvedValue([]);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('saves open edits before loading the same track in the stepped designer', async () => {
+    updateTrack.mockResolvedValue({ ...TRACK, prompt: 'A patient analog pulse.' });
+    renderAt('track-1');
+
+    const prompt = await screen.findByLabelText(/^Prompt/);
+    fireEvent.change(prompt, { target: { value: 'A patient analog pulse.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Design with AI' }));
+
+    await waitFor(() => expect(updateTrack).toHaveBeenCalledWith(
+      'track-1',
+      {
+        title: 'Example Song',
+        artistId: '',
+        artist: '',
+        lyrics: '',
+        prompt: 'A patient analog pulse.',
+        audioFilename: 'example.mp3',
+      },
+      { silent: true },
+    ));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/music/generate/concept?trackId=track-1');
+  });
+
+  it('remixes only explicit instrumental modes and restores the authored prompt', async () => {
+    listTracks.mockResolvedValue([{
+      ...TRACK,
+      prompt: 'Current source',
+      lyrics: 'Current lyrics',
+      renders: [
+        {
+          id: 'render-explicit', audioFilename: 'explicit.wav', engine: 'acestep', prompt: 'Conditioned prompt',
+          authoredPrompt: 'Authored prompt', lyrics: '', instrumentalOnly: true, createdAt: '2026-01-02T00:00:00Z',
+        },
+        {
+          id: 'render-legacy', audioFilename: 'legacy.wav', engine: 'acestep', prompt: 'Legacy vocal texture',
+          lyrics: '', createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    }]);
+    musicGenProps.current = null;
+    renderAt('track-1');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remix render-explicit' }));
+    await waitFor(() => expect(musicGenProps.current?.remix).toEqual(expect.objectContaining({ instrumentalOnly: true })));
+    expect(musicGenProps.current.prompt).toBe('Authored prompt');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remix render-legacy' }));
+    await waitFor(() => expect(musicGenProps.current?.remix?.nonce).toBe(2));
+    expect(musicGenProps.current.remix).not.toHaveProperty('instrumentalOnly');
   });
 });
 

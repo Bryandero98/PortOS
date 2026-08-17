@@ -138,6 +138,16 @@ describe('Layout — pinned single nav rows', () => {
   });
 });
 
+describe('Layout — System Resources location state', () => {
+  it('keeps Dev Tools expanded and System Resources active on every subtab', async () => {
+    await renderLayout('/system-resources/storage');
+
+    const link = screen.getByRole('link', { name: 'System Resources' });
+    expect(link).toHaveAttribute('href', '/system-resources');
+    expect(link.className).toContain('text-port-accent');
+  });
+});
+
 describe('Layout — persistent mobile touch targets', () => {
   const expectAtLeast44px = (element) => {
     expect(element.className).toContain('min-w-[44px]');
@@ -267,6 +277,9 @@ describe('Layout — isFullWidthRoute classification', () => {
     ['/story-builder', false], ['/story-builder/s1/step', true],
     ['/pipeline', false], ['/pipeline/series/s1', true],
     ['/local-llm', false], ['/local-llm/m', true],
+    // Music owns the same full-bleed title/tab/body shell as Media Gen, but
+    // its similarly named Music Video route is classified independently.
+    ['/music', true], ['/music/generate', true], ['/music-video', false],
     // Game: only a single-segment detail workspace.
     ['/game', false], ['/game/', false], ['/game/g1', true], ['/game/g1/x', false],
     // Apps: detail editor is full-width, but the Add App form is explicitly excluded

@@ -575,7 +575,6 @@ describe('validation.js', () => {
         type: 'tui',
         command: 'codex',
         tuiPromptDelayMs: 2500,
-        tuiIdleTimeoutMs: 180000
       };
       const result = providerSchema.safeParse(provider);
       expect(result.success).toBe(true);
@@ -1429,6 +1428,25 @@ describe('validation.js', () => {
     it('combines the bracket with both ~ suffixes in slashdo\'s canonical order', () => {
       expect(buildReviewersCsv(['ollama'], [], ['ollama'], { ollama: 0 }, { ollama: 'codellama' }))
         .toBe('ollama[codellama]~opt~max=0');
+    });
+  });
+
+  describe('buildReviewWithArgs — per-reviewer ~effort=<level> selector', () => {
+    it('emits ~effort=<level> for tokens carrying an effort pin', () => {
+      expect(buildReviewWithArgs(['claude', 'codex'], { reviewerEfforts: { claude: 'high', codex: 'xhigh' } }))
+        .toBe('--review-with claude~effort=high,codex~effort=xhigh');
+    });
+
+    it('combines model brackets, ~opt, ~max, and ~effort in canonical order', () => {
+      expect(buildReviewWithArgs(['ollama'], { optionalReviewers: ['ollama'], reviewerMaxRounds: { ollama: 1 }, reviewerModels: { ollama: 'qwen2.5:7b' }, reviewerEfforts: { ollama: 'low' } }))
+        .toBe('--review-with ollama[qwen2.5:7b]~opt~max=1~effort=low');
+    });
+  });
+
+  describe('buildReviewersCsv — per-reviewer ~effort=<level> selector', () => {
+    it('carries ~effort=<level> into the claim prompts\' {reviewers} token', () => {
+      expect(buildReviewersCsv(['codex', 'claude'], [], [], {}, {}, { codex: 'high' }))
+        .toBe('codex~effort=high,claude');
     });
   });
 

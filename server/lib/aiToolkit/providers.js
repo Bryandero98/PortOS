@@ -565,12 +565,7 @@ export function createProviderService(config = {}) {
         envVars: providerData.envVars || {},
         secretEnvVars: providerData.secretEnvVars || [],
         headlessArgs: providerData.headlessArgs || [],
-        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500,
-        tuiIdleTimeoutMs: providerData.tuiIdleTimeoutMs || 180000,
-        // Absolute wall-clock ceiling for long-running TUI agents (3h). The idle
-        // reaper can't bound a busy-but-stuck agent whose working counter keeps
-        // repainting; the consumer (agentTuiSpawning) enforces this backstop.
-        tuiMaxRuntimeMs: providerData.tuiMaxRuntimeMs || 10800000
+        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500
       };
 
       data.providers[id] = provider;

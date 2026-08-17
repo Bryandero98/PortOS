@@ -25,7 +25,7 @@
 import { stat } from 'node:fs/promises';
 import { getBranches, getDefaultBranch, isBranchMergedInto, deleteBranch } from './git.js';
 import { execGit } from '../lib/execGit.js';
-import { listWorktrees, forceRemoveWorktreeDir, classifyWorktreeDirt } from './worktreeManager.js';
+import { listWorktrees, forceRemoveWorktreeDir, classifyWorktreeDirt, reapMergedWorktrees } from './worktreeManager.js';
 import { isAgentWorktreeId, worktreeOwnershipReason } from '../lib/worktreeOwnership.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
@@ -116,8 +116,9 @@ const PR_LIST_LIMIT = 200;
  *   `prStateUnavailable` means the forge could not be READ this cycle — distinct
  *   from `openPr: null` ("the forge answered: no open PR").
  *   `liveOwnerReason` is `resolveLiveOwnerReason`'s verdict for the branch — non-null
- *   means somebody (an active CoS agent, a live human `/claim`, a deliberate lock) is
- *   working on it right now, whether or not its worktree still exists.
+ *   means an active CoS agent or deliberate lock owns it right now, whether or not
+ *   its worktree still exists. A clean `claim-*` directory is only a claim marker;
+ *   dirty claim trees still remain WIP through the ordinary dirty-tree guard.
  * @returns {'ABANDONED_WIP'|'MERGED'|'CONFLICTED'|'IN_REVIEW'|'NEEDS_PR'|'WIP'}
  */
 export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandonedAgentWorktree, liveOwnerReason = null, openPr, prStateUnavailable = false }) {
@@ -132,16 +133,14 @@ export function classifyBranch({ hasUpstream, isMerged, worktreeDirty, abandoned
   // indefinitely while every run logged "nothing in-flight".
   if (worktreeDirty && abandonedAgentWorktree) return 'ABANDONED_WIP';
   if (isMerged) return 'MERGED';
-  // A branch with a LIVE owner belongs to whoever is working on it — an active CoS
-  // agent, a live human `/claim`, or a worktree the user locked. It will keep moving
-  // (commits, a PR opened, a rebase) for as long as that session runs, so handing it
-  // to the coordinator is wrong twice over: the agent races the live session's git
-  // operations, and every push the live session makes re-advances the drain's
-  // progress signature, which is exactly how the perpetual drain came to re-dispatch
-  // itself dozens of times in one night. Clean or dirty, PR or no PR: report it and
-  // never touch it. Checked AFTER `isMerged` on purpose — a merged branch with a live
-  // owner still belongs in the MERGED bucket, where `cleanupMerged` applies the same
-  // protection and reports it as held back.
+  // A branch with a LIVE owner belongs to an active CoS agent or an explicitly
+  // locked worktree. It may keep moving (commits, a PR opened, a rebase) for as
+  // long as that session runs, so handing it to the coordinator races the live
+  // session's git operations and can re-advance the drain's progress signature.
+  // Checked AFTER `isMerged` on purpose — a merged branch with a live owner still
+  // belongs in the MERGED bucket, where `cleanupMerged` applies the same protection
+  // and reports it as held back. A clean `claim-*` tree is not a live-owner signal;
+  // a dirty one is caught by the ordinary WIP guard below.
   if (liveOwnerReason) return 'WIP';
   // A worktree with real uncommitted changes is NEVER handed to the coordinator
   // agent — even for a branch with an open PR. The agent's per-state actions
@@ -280,7 +279,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
 
 /**
  * Why this branch must be left ALONE this cycle — the dispatch-side counterpart to
- * `worktreeProtectionReason`'s teardown gate. Three cases that gate doesn't cover:
+ * `worktreeProtectionReason`'s teardown gate. Two cases that gate doesn't cover:
  *
  * 1. **Liveness we could not determine.** `worktreeProtectionReason` is only ever
  *    called with an authoritative `activeAgentIds` Set (cleanupMerged defaults it to
@@ -296,7 +295,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
  *    otherwise classifies IN_REVIEW and gets handed to the coordinator while its own
  *    agent is still working. That is the bug this whole guard exists to prevent,
  *    surviving in a narrower window. So the branch name is checked too.
- * 3. A branch with no worktree at all and no live owner is simply free (null).
+ * A branch with no worktree at all and no live owner is simply free (null).
  *
  * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null }} input
  * @returns {string|null} a stable reason slug, or null when nobody owns it
@@ -309,7 +308,7 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
     return 'branch-active-agent';
   }
   if (!path) return null;
-  return worktreeOwnershipReason({
+  const reason = worktreeOwnershipReason({
     path,
     locked,
     activeAgentIds,
@@ -318,6 +317,17 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
     staleClaimIdleMs: STALE_CLAIM_IDLE_MS,
     requireKnownLiveness: true,
   });
+
+  // A `claim-*` directory is a claim marker, not a live-process marker. The
+  // claim flow has no durable local agent id for this branch, so treating the
+  // directory's existence as liveness hides clean, open-PR claims after the
+  // claim agent has exited — exactly the branches branch-reconcile exists to
+  // finish. Cleanup still uses worktreeProtectionReason and keeps every claim
+  // worktree protected; this dispatch-side exception only applies after the
+  // classifier has established that the tree is clean. A lock remains an
+  // explicit hold even for a claim worktree.
+  if (reason === 'worktree-human-claim') return locked ? 'worktree-locked' : null;
+  return reason;
 }
 
 /**
@@ -754,6 +764,18 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
  *   and the caller must retry rather than park on it (#3358).
  */
 export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRemotes = false, activeAgentIds = new Set() } = {}) {
+  // Worktree cleanup is the first reconcile step, before any forge probe. It
+  // only removes a tree after proving both that it is completely clean and
+  // that every branch commit is already in the default branch (including
+  // squash/rebase-equivalent merges). Keeping this pass ahead of gh means a
+  // temporary forge outage cannot strand locally-provable completed work.
+  const worktreeCleanup = cleanup
+    ? await reapMergedWorktrees(repoPath, { activeAgentIds, includeClaudeTrees: true }).catch(() => ({ reaped: [] }))
+    : { reaped: [] };
+  const cleanedWorktrees = (worktreeCleanup.reaped || [])
+    .map((entry) => typeof entry === 'string' ? entry : entry?.branch)
+    .filter(Boolean);
+
   // On a GitHub repo every classification below depends on PR state, so an
   // unreadable forge makes the whole pass a guess — skip with one line rather
   // than report a quiet repo. Probed against THIS repo's API host
@@ -768,7 +790,7 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   if (githubRepoSpec(origin)) {
     const forge = await ensureForgeReachable('branch-reconcile', { hostname: githubApiHost(origin.host) });
     if (!forge.ok) {
-      return { defaultBranch: null, cleaned: [], inFlight: [], wip: [], skipped: [], forgeUnavailable: true, forgeStatus: forge.status };
+      return { defaultBranch: null, cleaned: cleanedWorktrees, inFlight: [], wip: [], skipped: [], forgeUnavailable: true, forgeStatus: forge.status };
     }
   }
 
@@ -797,9 +819,10 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   // running sessions" rather than a bare "nothing actionable") filters `wip` on it.
   const wip = classified.filter((c) => c.state === 'WIP');
 
-  const { cleaned, skipped } = cleanup
+  const { cleaned: cleanedBranches, skipped } = cleanup
     ? await cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds })
     : { cleaned: [], skipped: merged.map((m) => ({ branch: m.branch, reason: 'cleanup-disabled' })) };
+  const cleaned = [...new Set([...cleanedWorktrees, ...cleanedBranches])];
 
   // Runs AFTER cleanupMerged on purpose: that step deletes merged local branches
   // and leaves their `origin/*` counterpart behind, which is precisely the orphan
@@ -946,7 +969,7 @@ const verifyGate = 'Rebase onto the default branch before opening or updating a 
 // placeholder the agent fills in after opening it.
 const driveToMerge = (pr) => [
   'Opening (or approving) the PR is NOT the end state — a green PR left open is still an unfinished branch that this task will simply re-drive on its next run.',
-  `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s — each poll prints output, which keeps this run clear of the idle reaper the way a silent \`--watch\` does not. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
+  `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s so the run stays observable while CI is pending. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
   'If a required check FAILS, fix it on the branch, push, and re-poll (max 3 rounds); if it is still red after that, leave the PR open and report exactly which check failed.',
   `Once every required check is green AND the PR is MERGEABLE, merge it — from the repo root, NOT from inside the branch's worktree (\`gh\` can't delete a branch that is checked out elsewhere): \`gh pr merge ${pr} --merge --delete-branch\`. Repos differ in which methods they allow, so on a "not allowed" error retry with \`--squash\`, then \`--rebase\`. Never \`--auto\`: a queued auto-merge outlives this run, so a check that goes red afterward has nobody left to fix it.`,
   'After the merge, remove the branch\'s worktree first, then delete the local branch — the delete fails while a worktree still has it checked out.'
@@ -1009,12 +1032,11 @@ export function desiredEndState(state, actions, { prNumber, worktreePath, collis
   }
   // IN_REVIEW
   const canMerge = actionOn(actions, 'autoMerge');
-  // The Copilot gate is time-boxed for the same reason the merge waits on CI
-  // in-session: a repo without Copilot review enabled never produces one, and an
-  // unbounded "await the review" leaves a green PR open forever. 10 minutes
-  // mirrors the claim-issue flow's Copilot poll.
-  return `Drive the open PR toward green: request/await the Copilot review and address feedback.${canMerge
-    ? ` Merge ONLY when the LATEST Copilot review reports "0 comments" (pre-resolved threads do NOT count; a PR over 20k lines is exempt from the Copilot check and needs only CI-green + mergeable). If no Copilot review lands within 10 minutes of requesting it, the Copilot gate is satisfied — this repo may not have Copilot review enabled — and CI-green + MERGEABLE is the whole gate. ${driveToMerge(pr)}`
+  // Existing PRs have already passed through whatever review workflow the repo
+  // uses. Reconciliation must not request or assume a particular reviewer; its
+  // merge gate is the forge's live CI and mergeability state.
+  return `Drive the open PR toward green: inspect any existing review feedback and address it.${canMerge
+    ? ` Merge ONLY when CI is green and the PR is MERGEABLE. ${driveToMerge(pr)}`
     : ' Do NOT merge (auto-merge is disabled) — stop once the PR is green and ready for the user to merge.'}`;
 }
 
@@ -1047,14 +1069,33 @@ export function actionableSignature(actionable) {
 }
 
 /**
+ * Select the deterministic prefix a single coordinator should receive. The
+ * reconciler has already prioritized the full set, so slicing here preserves
+ * that ordering and lets the next drain dispatch pick up the remainder after
+ * this batch makes progress. Absent/invalid limits retain the legacy all-at-once
+ * behavior for hand-authored task records that predate the setting.
+ * @param {object[]} inFlight
+ * @param {number} branchesPerAgent
+ * @returns {object[]}
+ */
+export function limitBranchesForAgent(inFlight, branchesPerAgent) {
+  if (!Array.isArray(inFlight)) return [];
+  if (!Number.isInteger(branchesPerAgent) || branchesPerAgent < 1) return inFlight;
+  return inFlight.slice(0, branchesPerAgent);
+}
+
+/**
  * Render the actionable in-flight branch set into the coordinator prompt body
  * (injected as `{inFlightBranches}`).
  * @param {object[]} inFlight - actionable branches (post-filterActionable)
- * @param {{ defaultBranch:string, actions:object }} ctx
+ * @param {{ defaultBranch:string, actions:object, branchesPerAgent?:number }} ctx
  * @returns {string}
  */
-export function formatInFlightForPrompt(inFlight, { defaultBranch, actions }) {
+export function formatInFlightForPrompt(inFlight, { defaultBranch, actions, branchesPerAgent } = {}) {
   const lines = [`Default branch: \`${defaultBranch}\`. Branches to reconcile (${inFlight.length}):`, ''];
+  if (Number.isInteger(branchesPerAgent) && branchesPerAgent > 0) {
+    lines.splice(1, 0, `This coordinator run is limited to up to ${branchesPerAgent} branch(es); finish every branch listed below before reporting done.`);
+  }
   for (const b of inFlight) {
     const pr = b.openPr ? ` — PR #${b.openPr.number} (${b.openPr.mergeable})${b.openPr.url ? ` ${b.openPr.url}` : ''}` : ' — no PR';
     lines.push(`### \`${b.branch}\` [${b.state}]${pr}`);

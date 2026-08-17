@@ -47,6 +47,7 @@ import {
   getMultiplicationProgress,
   getAdaptivePreview,
   getPostStats,
+  getPostConfig,
   getPostSessions,
   getPostSession,
   deriveTaskAccuracy,
@@ -56,6 +57,34 @@ import {
   getSessionSkillContext,
   getPostReviewReps,
 } from './meatspacePost.js';
+
+describe('Quick POST config', () => {
+  it('defaults a new install to the five-minute preset', async () => {
+    const config = await getPostConfig();
+    expect(config.quickDurationMin).toBe(5);
+  });
+});
+
+function llmTaskResult(score, overrides = {}) {
+  const responses = overrides.responses || [{ response: 'example', responseMs: 1000, llmScore: score }];
+  return {
+    module: 'llm-drills',
+    type: 'word-association',
+    responses,
+    score,
+    evaluation: {
+      overallScore: score,
+      scores: responses.map(() => ({ score, feedback: 'Validated response' })),
+      summary: 'Validated response',
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    },
+    totalMs: 1000,
+    ...overrides,
+  };
+}
 
 // =============================================================================
 // DOUBLING CHAIN TESTS
@@ -758,6 +787,44 @@ describe('submitPostSession — memory drill schedule advance', () => {
     const updatedMastery = masteryWrite[1].items.find(i => i.id === 'song-1');
     expect(updatedMastery.mastery.chunks['verse-1']).toEqual({ correct: 1, attempts: 1, lastPracticed: expect.any(String), recent: [1] });
   });
+
+  it('scores each generated fill-blank independently and never promotes from one partial match', async () => {
+    const session = await submitPostSession({
+      cadence: 'daily',
+      modules: ['memory'],
+      tasks: [{
+        module: 'memory',
+        type: 'memory-fill-blank',
+        memoryItemId: 'song-1',
+        questions: [{
+          prompt: 'The ____ ____',
+          expected: 'quick',
+          answered: [
+            { index: 1, value: 'quick', expected: 'quick', correct: true },
+            { index: 2, value: 'slow', expected: 'fox', correct: false },
+            { index: 3, value: 'late', expected: 'runner', correct: false },
+          ],
+          correct: true,
+          responseMs: 500,
+          chunkId: 'verse-1',
+        }],
+        score: 50,
+        totalMs: 500,
+      }],
+      tags: {},
+    });
+
+    expect(session.tasks[0].questions[0].correct).toBe(false);
+    const memoryWrite = atomicWrite.mock.calls.find(([path]) => String(path).includes('post-memory-items'));
+    const updatedItem = memoryWrite[1].items.find(i => i.id === 'song-1');
+    expect(updatedItem.mastery.chunks['verse-1']).toEqual({
+      correct: 1,
+      attempts: 3,
+      lastPracticed: expect.any(String),
+      recent: [1, 0, 0],
+    });
+    expect(updatedItem.schedule.intervalDays).toBe(0);
+  });
 });
 
 // =============================================================================
@@ -777,9 +844,7 @@ describe('submitPostSession — weighted scoring (issue #2099)', () => {
     vi.clearAllMocks();
   });
 
-  const llmTask = (score) => ({
-    module: 'llm-drills', type: 'word-association', responses: [], score, totalMs: 1000,
-  });
+  const llmTask = (score) => llmTaskResult(score);
   const memoryTask = (score) => ({
     module: 'memory', type: 'memory-sequence', questions: [], score, totalMs: 500,
   });
@@ -1159,6 +1224,21 @@ describe('deriveTaskAccuracy / deriveTaskCompletion — legacy-session fallback'
     };
     expect(deriveTaskAccuracy(task)).toBe(0.5);
     expect(deriveTaskCompletion(task)).toBeCloseTo(2 / 3, 5);
+  });
+
+  it('derives multi-blank accuracy and completion from indexed blank attempts', () => {
+    const task = {
+      type: 'memory-fill-blank',
+      questions: [{
+        answered: [
+          { index: 1, value: 'quick', expected: 'quick', correct: true },
+          { index: 2, value: null, expected: 'fox', correct: false },
+        ],
+        correct: false,
+      }],
+    };
+    expect(deriveTaskAccuracy(task)).toBe(0.5);
+    expect(deriveTaskCompletion(task)).toBe(0.5);
   });
 
   it('returns null (never NaN) when there is nothing to derive from', () => {
@@ -1562,6 +1642,35 @@ describe('POST readers re-derive day keys after a timezone change (issue #4168)'
     expect(laHistory.map(s => s.date)).toEqual(['2026-07-16', '2026-07-17']);
   });
 
+  it('normalizes historical LLM evaluations with explicit legacy provenance on read', async () => {
+    const historicalFeedback = 'f'.repeat(2501);
+    freezeAt('2026-07-18T12:00:00Z', 'UTC');
+    mockHistory([{
+      date: '2026-07-17',
+      startedAt: '2026-07-17T12:00:00.000Z',
+      score: 70,
+      tasks: [{
+        module: 'llm-drills', type: 'word-association', score: 70,
+        evaluation: {
+          overallScore: 70,
+          scores: [{ score: 70, feedback: historicalFeedback }, { score: 70 }],
+          summary: 'Historical response',
+        },
+      }],
+    }]);
+
+    const [session] = await getPostSessions();
+
+    expect(session.tasks[0].evaluation).toMatchObject({
+      overallScore: 70,
+      scores: [{ score: 70, feedback: historicalFeedback }, { score: 70, feedback: '' }],
+      provenance: {
+        generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+        scorer: { kind: 'legacy', rubricVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+      },
+    });
+  });
+
   it('getPostStats counts the streak and today against the new zone', async () => {
     // Under UTC the second session lands on 2026-07-18, which IS today there.
     freezeAt('2026-07-18T12:00:00Z', 'UTC');
@@ -1823,13 +1932,10 @@ describe('submitPostSession — non-memory task types', () => {
     const session = await submitPostSession({
       cadence: 'daily',
       modules: ['llm-drills'],
-      tasks: [{
-        module: 'llm-drills',
-        type: 'word-association',
+      tasks: [llmTaskResult(87, {
         responses: [{ questionIndex: 0, response: 'church', responseMs: 3000, llmScore: 90 }],
-        score: 87,
         totalMs: 3000,
-      }],
+      })],
       tags: {},
     });
     expect(session.tasks[0].score).toBe(87);
@@ -1846,7 +1952,7 @@ describe('submitPostSession — non-memory task types', () => {
           questions: [{ prompt: '4 x 2', answered: 8, responseMs: 500 }],
           totalMs: 500,
         },
-        { module: 'llm-drills', type: 'word-association', responses: [], score: 50, totalMs: 1000 },
+        llmTaskResult(50),
       ],
       tags: {},
     });
@@ -1874,6 +1980,34 @@ describe('submitPostSession — non-memory task types', () => {
     expect(persisted.tags).toEqual({ mood: 'focused' });
     expect(persisted.id).toBeTruthy();
     expect(persisted.date).toBeTruthy();
+  });
+
+  it('persists the Quick plan and wall-clock actual duration separately from task duration', async () => {
+    const startedAt = new Date(Date.now() - 5000).toISOString();
+    const plan = {
+      targetDurationSec: 300,
+      estimatedDurationSec: 270,
+      toleranceSec: 30,
+      omittedDomains: ['imagination'],
+      selectedTypes: ['doubling-chain'],
+    };
+    const session = await submitPostSession({
+      modules: ['mental-math'],
+      tasks: [{
+        module: 'mental-math', type: 'doubling-chain',
+        config: { startValue: 4, steps: 1 },
+        questions: [{ prompt: '4 x 2', answered: 8, responseMs: 500 }],
+        totalMs: 1234,
+      }],
+      startedAt,
+      plan,
+      tags: {},
+    });
+
+    expect(session.plan).toEqual(plan);
+    expect(session.startedAt).toBe(startedAt);
+    expect(session.actualDurationMs).toBeGreaterThanOrEqual(5000);
+    expect(session.durationMs).toBe(1234);
   });
 });
 
@@ -1941,6 +2075,53 @@ describe('progressive cognitive drills', () => {
     mockSessions([lowCompletion(0), lowCompletion(0), lowCompletion(0)]);
     const { progression } = await resolveDrillConfig('digit-span', {});
     expect(progression.level).toBe(0);
+    expect(progression.levels[0]).toMatchObject({ attempts: 3, samples: 0, incompleteSamples: 3, completion: 0.25 });
+  });
+
+  it('keeps fully unanswered timed-out runs visible as excluded attempts', async () => {
+    const timedOut = {
+      date: today,
+      tasks: [{
+        module: 'cognitive',
+        type: 'stroop',
+        config: { level: 0 },
+        accuracy: null,
+        completion: 0,
+        totalCount: 10,
+        questions: Array.from({ length: 10 }, (_, index) => ({ index, answered: null, responseMs: 0 })),
+      }],
+    };
+    mockSessions([timedOut, timedOut, timedOut]);
+
+    const { progression } = await resolveDrillConfig('stroop', {});
+    expect(progression.level).toBe(0);
+    expect(progression.levels[0]).toMatchObject({ attempts: 3, samples: 0, incompleteSamples: 3, completion: 0 });
+  });
+
+  it('speed-gated cognitive rungs require enough fast exact-rung runs', async () => {
+    const timedSession = (avgResponseMs) => ({
+      date: today,
+      tasks: [{
+        module: 'cognitive',
+        type: 'stroop',
+        config: { level: 0 },
+        accuracy: 0.95,
+        completion: 1,
+        avgResponseMs,
+        totalCount: 10,
+        questions: Array.from({ length: 10 }, (_, index) => ({ index, answered: 'blue', responseMs: avgResponseMs })),
+      }],
+    });
+
+    mockSessions([timedSession(1700), timedSession(1700), timedSession(1700)]);
+    const slow = await resolveDrillConfig('stroop', {});
+    expect(slow.progression.level).toBe(0);
+    expect(slow.progression.decision).toMatchObject({ action: 'hold', reasons: ['speed'] });
+
+    mockSessions([timedSession(1000), timedSession(1100), timedSession(1200)]);
+    const fast = await resolveDrillConfig('stroop', {});
+    expect(fast.progression.level).toBe(1);
+    expect(fast.config).toMatchObject({ incongruentPct: 65, count: 12 });
   });
 
   it('does not advance when accuracy is below the mastery bar', async () => {
@@ -1977,6 +2158,13 @@ describe('progressive cognitive drills', () => {
     const { config, progression } = await resolveDrillConfig('reaction-time', { mode: 'choice' });
     expect(progression == null).toBe(true);
     expect(config).toEqual({ mode: 'choice' });
+  });
+
+  it('mental-rotation progression stamps transformation and visual-complexity knobs', async () => {
+    mockSessions([]);
+    const { config, progression } = await resolveDrillConfig('mental-rotation', {});
+    expect(progression.label).toContain('90°');
+    expect(config).toMatchObject({ level: 0, rotationComplexity: 1, optionCount: 2 });
   });
 
   it('generateDrill stamps the resolved level into the generated cognitive config', async () => {

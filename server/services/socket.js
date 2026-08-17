@@ -887,6 +887,10 @@ function setupCosEventForwarding() {
   cosEvents.on('log', (data) => broadcastToCos('cos:log', data));
 
   // Task events
+  // `cosTaskStore` emits this immediately for every persisted lifecycle
+  // transition. Forward the task itself so focused views can update one row
+  // without waiting for the file watcher to rebuild the entire task list.
+  cosEvents.on('tasks:changed', (data) => broadcastToCos('cos:tasks:changed', data));
   cosEvents.on('tasks:user:changed', (data) => broadcastToCos('cos:tasks:user:changed', data));
   cosEvents.on('tasks:user:added', (data) => broadcastToCos('cos:tasks:user:added', data));
   cosEvents.on('tasks:user:completed', (data) => broadcastToCos('cos:tasks:user:completed', data));

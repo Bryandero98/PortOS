@@ -34,6 +34,19 @@ const PROGRESS = {
   streak: { current: 3, longest: 5, lastActiveDate: '2026-06-03' },
   mastery: {
     multiplication: { level: 2, description: '1×1×1-digit', floorLevel: 1 },
+    cognitive: {
+      stroop: {
+        type: 'stroop',
+        level: 1,
+        label: '12 trials · 65% incongruent',
+        levels: [
+          { level: 0, samples: 3, accuracy: 0.9, completion: 1, incompleteSamples: 0, avgResponseMs: 1350, targetMs: 1500 },
+          { level: 1, samples: 2, accuracy: 0.88, completion: 0.92, incompleteSamples: 1, avgResponseMs: 1450, targetMs: 1400 },
+        ],
+        thresholds: { minSamples: 3, targetAccuracy: 0.85, minCompletion: 0.75 },
+        decision: { action: 'hold', reasons: ['samples', 'speed'] },
+      },
+    },
     memoryItems: [{ id: 'm1', title: 'Elements', overallPct: 42, dueCount: 1 }],
   },
 };
@@ -62,9 +75,14 @@ describe('PostProgress', () => {
     expect(screen.getByText('Score Trend')).toBeInTheDocument();
     expect(screen.getByText('Accuracy Trend')).toBeInTheDocument();
     expect(screen.getByText(/Response Time/)).toBeInTheDocument();
-    // Mastery panel: multiplication rung + memory item.
+    // Mastery panel: multiplication + performance-valid cognitive rung + memory.
     expect(screen.getByText('Multiplication Ladder')).toBeInTheDocument();
     expect(screen.getByText('L2')).toBeInTheDocument();
+    expect(screen.getByText('Cognitive Ladders')).toBeInTheDocument();
+    expect(screen.getByText('Stroop')).toBeInTheDocument();
+    expect(screen.getByText('2/3 exact-rung runs')).toBeInTheDocument();
+    expect(screen.getByText('1 incomplete excluded')).toBeInTheDocument();
+    expect(screen.getByText('1.4s / ≤1.4s')).toBeInTheDocument();
     expect(screen.getByText('Elements')).toBeInTheDocument();
   });
 
@@ -82,7 +100,7 @@ describe('PostProgress', () => {
       series: { byDay: [], byDomain: {}, byDrill: {} },
       totals: { minutesTrained: 0, sessions: 0, practiceEntries: 0 },
       streak: { current: 0, longest: 0, lastActiveDate: null },
-      mastery: { multiplication: null, memoryItems: [] },
+      mastery: { multiplication: null, cognitive: {}, memoryItems: [] },
     });
     renderProgress();
     await waitFor(() => expect(screen.getByText(/No training activity yet/)).toBeInTheDocument());

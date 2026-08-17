@@ -211,6 +211,15 @@ describe('checkReferenceRepo', () => {
     expect(persisted.status).toBe('ok');
     expect(persisted.lastError).toBeNull();
     expect(persisted.lastCheckedAt).toBeTruthy();
+    expect(persisted.lastKnownGoodSnapshot).toMatchObject({
+      schemaVersion: 1,
+      head: 'a'.repeat(40),
+      branch: 'main',
+      commitCount: 1,
+      fetchedAt: expect.any(String),
+    });
+    expect(persisted.lastKnownGoodSnapshot).not.toHaveProperty('cwd');
+    expect(persisted.lastKnownGoodSnapshot.commits[0]).not.toHaveProperty('email');
   });
 
   it('skips clone when .git already exists', async () => {
@@ -225,6 +234,30 @@ describe('checkReferenceRepo', () => {
     expect(snapshot.commitCount).toBe(0);
     // First git call should be fetch, not clone.
     expect(execGitMock.mock.calls[0][0][0]).toBe('fetch');
+  });
+
+  it('replaces the prior snapshot with bounded, credential-free commit metadata', async () => {
+    seedApp('app-1', [{
+      id: 'r1', name: 'p', repoUrl: 'https://github.com/x/y.git', branch: 'main', lastReviewedSha: null,
+      lastKnownGoodSnapshot: {
+        schemaVersion: 1, fetchedAt: '2026-01-01T00:00:00.000Z', head: 'a'.repeat(40),
+        commits: [], branch: 'main', commitCount: 0, truncated: false, totalCommitCount: null,
+      },
+    }]);
+    existsMock.mockImplementation((p) => String(p).endsWith('/.git'));
+    execGitMock
+      .mockReturnValueOnce({ stdout: '' }) // fetch
+      .mockReturnValueOnce({ stdout: 'b'.repeat(40) }) // rev-parse
+      .mockReturnValueOnce({ stdout: ['b'.repeat(40), 'A'.repeat(250), 'person@example.test', '2026-05-01T00:00:00Z', 'S'.repeat(550)].join('\t') }); // log
+
+    await svc.checkReferenceRepo('app-1', 'r1');
+
+    const persisted = mockApps.get('app-1').referenceRepos[0].lastKnownGoodSnapshot;
+    expect(persisted.head).toBe('b'.repeat(40));
+    expect(persisted.commits).toHaveLength(1);
+    expect(persisted.commits[0]).toMatchObject({ author: 'A'.repeat(200), subject: 'S'.repeat(500) });
+    expect(persisted.commits[0]).not.toHaveProperty('email');
+    expect(persisted).not.toHaveProperty('cwd');
   });
 
   it('uses lastReviewedSha as the lower bound when set', async () => {
@@ -254,6 +287,41 @@ describe('checkReferenceRepo', () => {
     const persisted = mockApps.get('app-1').referenceRepos[0];
     expect(persisted.status).toBe('error');
     expect(persisted.lastError).toMatch(/bad branch/);
+  });
+
+  it('returns a stale last-known-good snapshot after a failed refresh', async () => {
+    const savedSnapshot = {
+      schemaVersion: 1,
+      fetchedAt: '2026-01-01T00:00:00.000Z',
+      head: 'a'.repeat(40),
+      headShort: 'aaaaaaaa',
+      sinceSha: null,
+      sinceShort: null,
+      branch: 'main',
+      commitCount: 1,
+      truncated: false,
+      totalCommitCount: null,
+      commits: [{ sha: 'a'.repeat(40), author: 'Alice', date: '2026-01-01T00:00:00.000Z', subject: 'saved commit' }],
+    };
+    seedApp('app-1', [{
+      id: 'r1', name: 'p', repoUrl: 'https://github.com/x/y.git', branch: 'main',
+      lastReviewedSha: null, lastKnownGoodSnapshot: savedSnapshot,
+    }]);
+    existsMock.mockImplementation((p) => String(p).endsWith('/.git'));
+    execGitMock.mockReturnValueOnce({ error: new Error('fatal: temporary outage') });
+
+    const snapshot = await svc.checkReferenceRepo('app-1', 'r1');
+
+    expect(snapshot).toMatchObject({
+      ...savedSnapshot,
+      stale: true,
+      staleAgeMs: expect.any(Number),
+      error: { code: 'REFERENCE_REPO_GIT_FAILED', message: expect.stringContaining('temporary outage') },
+    });
+    const persisted = mockApps.get('app-1').referenceRepos[0];
+    expect(persisted.status).toBe('stale');
+    expect(persisted.lastKnownGoodSnapshot).toEqual(savedSnapshot);
+    expect(persisted.lastError).toContain('temporary outage');
   });
 
   it('skips clone+fetch for local-path refs and reads SHA via rev-parse on the user path', async () => {
@@ -367,6 +435,12 @@ describe('triggerReferenceAnalysis', () => {
   it('skips when snapshot is null', async () => {
     const result = await svc.triggerReferenceAnalysis(app, ref, null);
     expect(result).toEqual({ queued: false, reason: 'no-new-commits' });
+  });
+
+  it('never queues an analysis from a stale snapshot', async () => {
+    const result = await svc.triggerReferenceAnalysis(app, ref, { ...snapshot, stale: true });
+    expect(result).toEqual({ queued: false, reason: 'stale-snapshot' });
+    expect(addTaskMock).not.toHaveBeenCalled();
   });
 
   it('skips when app is null', async () => {

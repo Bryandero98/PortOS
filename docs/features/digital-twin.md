@@ -52,7 +52,48 @@ Gap recommendations identify the lowest-confidence aspects, generate specific qu
 - **Letterboxd** film export
 - **iCal** calendar files — event categorization and recurring-pattern analysis (routines)
 
-Routes: `GET /import/sources`, `POST /import/analyze`, `POST /import/save`.
+Spotify can also be imported interactively from the Digital Twin Import tab.
+PortOS opens Spotify's fixed Account Privacy page in the persistent managed CDP
+browser, preserves the browser's own login session, and requests the extended
+history package when the page exposes the matching controls. A completed ZIP or
+JSON download is parsed locally, sent through the existing analysis path, and
+removed from the browser download cache afterward. The flow never accepts an
+arbitrary destination or Spotify password/API credential; if Spotify requires a
+login, confirmation, or time to prepare the package, the UI reports that state
+and can be retried. Manual JSON upload remains available as a fallback.
+
+Routes: `GET /import/sources`, `POST /import/analyze`, `POST /import/save`,
+`POST /import/spotify/browser/open`, and `POST /import/spotify/browser/import`.
+
+## Taste-aware Music Commissions
+
+Music Creative Commissions can opt into a bounded Digital Twin recipe. The
+scheduled fire reads the stated music summary and the selected observed rollup
+window, then deterministically chooses a small set of artist/track anchors and
+an exploration level. The commission editor exposes the source, week/month
+window, anchor count, exploration percentage, and installed music engine/model.
+It also reports an unavailable runtime, platform, GPU, or model before a user
+depends on the schedule. Creating and enabling the commission is the explicit
+consent step for this scheduled automation; merely starting PortOS makes no AI
+or music-generation calls.
+
+The commission brief carries only the non-sensitive opt-in configuration. Raw
+Spotify caches, activity events, full Digital Twin responses, and the selected
+recipe remain machine-local. Recipes are recorded as bounded run provenance and
+are removed by the Creative Commission wire projection along with all local run
+history. If taste mode has no usable observed anchors, the run records
+`taste-source-unavailable` instead of silently generating a generic track.
+At fire time, PortOS revalidates the configured renderer and records an explicit
+engine/model-unavailable skip if it changed. The bounded directive, renderer,
+and duration then override planner guesses on the actual audio job. Completion
+records the rendered engine/model and recipe version/hash on the local run while
+the federated Creative Director project receives only ordinary audio metadata.
+
+Run history shows the bounded anchors, exploration level, source hash, and
+actual renderer. In addition to thumbs and notes, taste-aware runs offer
+`more familiar`, `more experimental`, `keep anchors`, and `change anchors`
+feedback. These structured reactions federate with the existing feedback record
+and deterministically steer later recipes without exposing raw listening data.
 
 ## Transcript & Image Analysis
 

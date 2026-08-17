@@ -61,8 +61,9 @@ export const addCosTask = (task, options = {}) => request('/cos/tasks', {
 });
 // Queue a `/do:*` agent task for an app. `settings` carries the run options the
 // Agent Operations drawer collects — provider/model/effort/simplify for every
-// command, plus the `/do:next`-only target work item, issue author filter, and
-// reviewer list. Omit it for a bare "run with the app's configured defaults".
+// command, plus the `/do:next`-only target work item, issue author filter,
+// reviewer list, and optional override context. Omit it for a bare "run with
+// the app's configured defaults".
 export const createSlashdoTask = (command, app, settings = {}, options = {}) => request('/cos/tasks/slashdo', {
   method: 'POST',
   body: JSON.stringify({ command, app, ...settings }),

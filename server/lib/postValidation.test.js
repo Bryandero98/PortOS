@@ -11,6 +11,8 @@ import {
   LLM_DRILL_TYPES,
   POST_MODULES,
   POST_SUPPORTED_MEMORY_TYPES,
+  POST_QUICK_DURATION_MINUTES,
+  postQuickSessionPlanSchema,
 } from './postValidation.js';
 import { getTopic, POST_TOPICS } from './postTopics.js';
 
@@ -218,6 +220,46 @@ describe('questionResultSchema chunkId/element (issue #2016)', () => {
     });
     expect(parsed.tasks[0].questions[0].chunkId).toBeNull();
   });
+
+  it('accepts and preserves indexed multi-blank responses', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['memory'],
+      tasks: [{
+        module: 'memory',
+        type: 'memory-fill-blank',
+        questions: [{
+          prompt: 'The ____ ____',
+          expected: 'quick',
+          answered: [
+            { index: 1, value: 'quick', expected: 'quick', correct: true },
+            { index: 2, value: 'slow', expected: 'fox', correct: false },
+          ],
+          correct: false,
+          responseMs: 800,
+        }],
+        totalMs: 800,
+      }],
+    });
+    expect(parsed.tasks[0].questions[0].answered).toHaveLength(2);
+    expect(parsed.tasks[0].questions[0].answered[1].index).toBe(2);
+  });
+});
+
+describe('postSessionSubmitSchema Schulte evidence metrics', () => {
+  it('preserves server-recomputed attempt and error counts on the task shape', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['cognitive'],
+      tasks: [{
+        module: 'cognitive',
+        type: 'schulte-table',
+        questions: [{ prompt: '1', index: 0, expected: 1, answered: 2, correct: false, responseMs: 300 }],
+        attemptCount: 2,
+        errorCount: 1,
+        totalMs: 300,
+      }],
+    });
+    expect(parsed.tasks[0]).toMatchObject({ attemptCount: 2, errorCount: 1 });
+  });
 });
 
 describe('postSessionSubmitSchema.modules — enum of known modules (issue #2099, fix #6)', () => {
@@ -283,6 +325,33 @@ describe('postConfigUpdateSchema goals (issue #2100)', () => {
   });
 });
 
+describe('Quick POST session budget validation', () => {
+  it('accepts and preserves every supported persisted duration preset', () => {
+    for (const quickDurationMin of POST_QUICK_DURATION_MINUTES) {
+      expect(postConfigUpdateSchema.parse({ quickDurationMin }).quickDurationMin).toBe(quickDurationMin);
+    }
+    expect(() => postConfigUpdateSchema.parse({ quickDurationMin: 7 })).toThrow();
+  });
+
+  it('accepts the preview metadata persisted with a composed session', () => {
+    const plan = postQuickSessionPlanSchema.parse({
+      targetDurationSec: 300,
+      estimatedDurationSec: 270,
+      toleranceSec: 30,
+      omittedDomains: ['imagination'],
+      omittedReviews: ['Old powers'],
+      selectedTypes: ['multiplication', 'n-back'],
+    });
+    expect(plan.targetDurationSec).toBe(300);
+    expect(postSessionSubmitSchema.parse({
+      modules: ['mental-math'],
+      tasks: [{ module: 'mental-math', type: 'doubling-chain', totalMs: 100 }],
+      startedAt: '2026-08-17T12:00:00.000Z',
+      plan,
+    }).plan).toEqual(plan);
+  });
+});
+
 describe('POST_SUPPORTED_MEMORY_TYPES (issue #2099, fix #1)', () => {
   // Regression: memory-fill-blank used to be absent, which forced its score
   // to 0 and skipped schedule/mastery advancement in submitPostSession.
@@ -327,6 +396,100 @@ describe('postLlmScoreRequestSchema', () => {
       timeLimitMs: 60000
     })).toThrow();
   });
+
+  it('rejects semantic drill requests above the one-batch item limit', () => {
+    const hundredItems = Array.from({ length: 100 }, (_, index) => `item-${index}`);
+    const request = {
+      type: 'verbal-fluency',
+      drillData: {},
+      responses: [
+        { items: hundredItems, responseMs: 1000 },
+        { items: hundredItems, responseMs: 1000 },
+      ],
+      timeLimitMs: 60000,
+    };
+
+    expect(postLlmScoreRequestSchema.parse(request).responses).toHaveLength(2);
+    expect(() => postLlmScoreRequestSchema.parse({
+      ...request,
+      responses: [...request.responses, { items: ['overflow'], responseMs: 1000 }],
+    })).toThrow(/at most 200 items/i);
+  });
+});
+
+describe('postSessionSubmitSchema LLM evaluation contract', () => {
+  const provenance = {
+    generator: {
+      schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a', apiKey: 'strip-me',
+    },
+    scorer: {
+      kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a', authHeader: 'strip-me',
+    },
+  };
+
+  const task = (evaluation) => ({
+    module: 'llm-drills',
+    type: 'word-association',
+    score: 80,
+    responses: [{ response: 'ocean blue', responseMs: 1000, llmScore: 80, llmFeedback: 'Relevant' }],
+    evaluation,
+    totalMs: 1000,
+  });
+
+  it('preserves the producer shape and strips undeclared provenance secrets', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({
+        overallScore: 80,
+        scores: [{ score: 80, feedback: 'Relevant' }],
+        summary: 'Good response',
+        provenance,
+      })],
+    });
+
+    expect(parsed.tasks[0].evaluation).toEqual({
+      overallScore: 80,
+      scores: [{ score: 80, feedback: 'Relevant' }],
+      summary: 'Good response',
+      provenance: {
+        generator: { schemaVersion: '1', promptVersion: '1', providerId: 'provider-a', model: 'model-a' },
+        scorer: { kind: 'llm', rubricVersion: '1', providerId: 'provider-a', model: 'model-a' },
+      },
+    });
+    expect(JSON.stringify(parsed.tasks[0].evaluation)).not.toContain('strip-me');
+  });
+
+  it('normalizes historical evaluation fields with an explicit legacy sentinel', () => {
+    const parsed = postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({ score: 70, breakdown: [{ score: 70, feedback: 'Historical feedback' }] })],
+    });
+
+    expect(parsed.tasks[0].evaluation).toMatchObject({
+      overallScore: 70,
+      scores: [{ score: 70, feedback: 'Historical feedback' }],
+      provenance: {
+        generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+        scorer: { kind: 'legacy', rubricVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+      },
+    });
+  });
+
+  it('rejects missing, malformed, and wrong-count evaluations', () => {
+    expect(() => postSessionSubmitSchema.parse({
+      modules: ['llm-drills'], tasks: [task(undefined)],
+    })).toThrow(/evaluation/i);
+
+    expect(() => postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({ overallScore: '80', scores: [], summary: 'Wrong type', provenance })],
+    })).toThrow();
+
+    expect(() => postSessionSubmitSchema.parse({
+      modules: ['llm-drills'],
+      tasks: [task({ overallScore: 80, scores: [], summary: 'Truncated', provenance })],
+    })).toThrow(/score count/i);
+  });
 });
 
 // =============================================================================
@@ -366,12 +529,26 @@ describe('drillTypeConfigSchema numeric bounds', () => {
     expect(() => postDrillRequestSchema.parse({ type: 'estimation', config: { tolerancePct: 51 } })).toThrow();
   });
 
-  it('accepts cognitive-drill knobs within bounds (n, length, size, choices)', () => {
+  it('accepts cognitive-drill knobs within bounds', () => {
     const parsed = postDrillRequestSchema.parse({
-      type: 'n-back',
-      config: { n: 3, length: 60, size: 7, choices: 4 },
+      type: 'mental-rotation',
+      config: { n: 3, length: 60, size: 7, choices: 4, incongruentPct: 90, rotationComplexity: 3, optionCount: 4 },
     });
-    expect(parsed.config).toMatchObject({ n: 3, length: 60, size: 7, choices: 4 });
+    expect(parsed.config).toMatchObject({
+      n: 3,
+      length: 60,
+      size: 7,
+      choices: 4,
+      incongruentPct: 90,
+      rotationComplexity: 3,
+      optionCount: 4,
+    });
+  });
+
+  it('rejects out-of-range interference and rotation complexity knobs', () => {
+    expect(() => postDrillRequestSchema.parse({ type: 'stroop', config: { incongruentPct: 101 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'mental-rotation', config: { rotationComplexity: 4 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'mental-rotation', config: { optionCount: 1 } })).toThrow();
   });
 
   it('rejects an out-of-range n-back n (must be 1-3)', () => {
@@ -464,6 +641,11 @@ describe('memoryPracticeSchema mode enums', () => {
     });
     expect(parsed.chunkId).toBeNull();
     expect(parsed.totalMs).toBe(4000);
+  });
+
+  it('accepts an empty result list for passive learn exposure', () => {
+    expect(memoryPracticeSchema.parse({ mode: 'learn', results: [] }).results).toEqual([]);
+    expect(memoryPracticeSchema.parse({ mode: 'element-study', results: [] }).results).toEqual([]);
   });
 });
 

@@ -19,7 +19,7 @@ Building a native companion client? See [COMPANION_APP_API.md](./COMPANION_APP_A
 PortOS is designed for personal/developer use on trusted networks. It implements the following security measures:
 
 - **Network isolation**: By default, access should be restricted to trusted networks (e.g., Tailscale VPN, localhost)
-- **Command allowlist**: Shell command execution is restricted to an approved allowlist (see `server/lib/commandAllowlist.js`)
+- **Command allowlist**: Shell command execution is restricted to an approved allowlist (see `server/lib/commandSecurity.js`)
 - **Input validation**: All API inputs are validated using Zod schemas
 - **Opt-in authentication**: Off by default (trusting private network/Tailscale), PortOS supports opt-in instance password authentication (enforced by `server/lib/authGate.js`) gating `/api/*`, `/data/*`, and `/sdapi/*` via session cookies, Bearer tokens, or HTTP Basic credentials
 
@@ -84,6 +84,15 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | GET | `/agents` | List running AI agent processes |
 | GET | `/agents/:pid` | Get agent process details |
 | DELETE | `/agents/:pid` | Kill agent process |
+
+### Agent Context (MCP)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/agent-context/manifest` | Inspect the local context profile, scopes, schemas, exclusions, and limits; available while MCP is disabled |
+| POST | `/agent-context/mcp` | Loopback-only, opt-in MCP Streamable HTTP endpoint for bounded read-only context tools |
+
+See [Agent Context (MCP)](./features/agent-context.md) for setup, transport headers, privacy profiles, and tool schemas.
 
 ### Command Execution
 
@@ -345,6 +354,8 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | GET | `/digital-twin/gaps` | Get enrichment recommendations |
 | GET | `/digital-twin/completeness` | Get completeness validation |
 | POST | `/digital-twin/contradictions` | Detect contradictions |
+| POST | `/digital-twin/import/spotify/browser/open` | Open Spotify privacy page in the managed browser |
+| POST | `/digital-twin/import/spotify/browser/import` | Request/read the Spotify browser export and analyze it |
 | POST | `/digital-twin/import/analyze` | Analyze external data import |
 | POST | `/digital-twin/import/save` | Save analyzed import as document |
 
@@ -477,6 +488,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/avatar` | Avatar rendering/config |
 | `/api/system` | System health metrics |
 | `/api/capabilities` | Feature capability flags |
+| `/api/agent-context` | Opt-in, loopback-only read-only MCP context and runtime manifest |
 | `/api/workspace-contexts` | Workspace context management |
 | `/api/apps/:appId/reference-repos` | Per-app reference repos |
 | `/api/network-exposure` | Network exposure checks |
@@ -511,6 +523,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/health` | Health check |
 | `/api/insights` | Cross-domain insights |
 | `/api/instances`, `/api/sync`, `/api/peer-sync`, `/api/sharing` | Federation / peer sync (see [COMPANION_APP_API.md](./COMPANION_APP_API.md)) |
+| `/api/federation/media/v1` | Authenticated queued peer audio provider (see [FEDERATED_MEDIA_PROVIDERS.md](./FEDERATED_MEDIA_PROVIDERS.md)) |
 | `/api/mortalloom` | MortalLoom (iCloud-JSON sync precedent) |
 | `/api/review` | Review queue |
 | `/api/settings` | App settings |
@@ -536,6 +549,38 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/openclaw` | OpenClaw operator chat |
 | `/api/rounds` | Rounds (music + Morse training) |
 | `/api/ask` | Ask (LLM Q&A) |
+| `/api/quota-burn` | Quota-burn plan, catalog, and runs |
+| `/api/timeline` | Human-activity timeline (day + events) |
+| `/api/games` | Game projects |
+| `/api/sprites` | Sprite catalog / export |
+| `/api/threejs-models` | Procedural Three.js models |
+| `/api/image-to-3d` | Image-to-3D conversion |
+| `/api/privacy` | PII vault / trusted-org / broker opt-out |
+| `/api/shell` | Browser PTY shells |
+| `/api/workspace-contexts` | Per-app workspace save/restore |
+| `/api/ports` | Port scan / allocation |
+| `/api/logs` | PM2 process logs |
+| `/api/detect` | App-repo detection |
+| `/api/scaffold` | App scaffolding |
+| `/api/usage` | Provider usage / quota |
+| `/api/daily-driver` | Daily-driver snapshot |
+| `/api/media/sketches` | Media annotation sketches |
+| `/api/attachments` | Task / CoS file attachments |
+| `/api/autofix` | Autofixer metrics |
+| `/api/uploads` | Generic uploads |
+| `/api/agents` | Agent process management (personalities, accounts, schedules, activity, tools) |
+| `/api/cos` | Chief of Staff |
+| `/api/memory` | Memory CRUD / search |
+| `/api/brain` | Brain (second brain) |
+| `/api/media` | Media library |
+| `/api/imessage`, `/api/contacts`, `/api/signal`, `/api/spotify`, `/api/youtube` | Personal-data ingest |
+| `/api/notifications` | Notification stream |
+| `/api/standardize` | App PM2 standardizer |
+| `/api/stacker-news`, `/api/x` | Social integrations |
+| `/api/model-personality` | LLM personality tests |
+| `/api/browser` | Managed Chromium |
+| `/api/creative-commission` | Creative commissions |
+| `/api/midi-runtime` | MIDI runtime |
 
 ## WebSocket Events
 

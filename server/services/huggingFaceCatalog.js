@@ -568,6 +568,14 @@ function hasMlxSignal(model) {
     && hasSafetensors
 }
 
+// MTP/drafter checkpoints are auxiliary weights for speculative decoding, not
+// standalone chat models. Keep them out of the normal MLX install cards; the
+// catalog's complete target model is the safe one-click path.
+function isMlxDrafter(model) {
+  const haystack = `${repoIdOf(model)} ${tagsOf(model).join(' ')} ${model?.pipeline_tag || ''}`
+  return /(?:^|[\/_-])(?:mtp|drafter)(?:[\/_\-.]|$)/i.test(haystack)
+}
+
 // Build an MLX search result. Same shape as a GGUF result with `format: 'mlx'`,
 // a single variant (the repo's quant), and the LM Studio bare-repo install id.
 // Sizes/variant fit are backfilled in enrichWithSizes from `?blobs=true`.
@@ -694,11 +702,16 @@ const hfSearchGate = createConcurrencyGate(2)
 // curated catalog and the live search, and neither caches until it resolves.
 const repoModelFlight = createSingleFlight()
 
-// Statuses that are a real, durable "this repo has no data for you" answer and
-// so are safe to cache. Everything else non-OK (429 rate limit, 5xx, 408) is the
-// Hub having a bad moment — mirrors `resolveRegistryBody` in
-// ollamaRegistryCatalog.js, which has always drawn this line.
-const HF_PERMANENT_NOT_FOUND = new Set([401, 403, 404, 410])
+// Statuses that are a real, durable "this repo has no data" answer and so are
+// safe to cache. Everything else non-OK (including auth denials, rate limits,
+// 5xx, and 408) may change and must be retried on a later lookup — mirrors
+// `resolveRegistryBody` in ollamaRegistryCatalog.js, which has always drawn this
+// line.
+// Authentication denials are deliberately excluded: a user can add a token or
+// gain access to a gated repo at any time, so caching a 401/403 would keep the
+// catalog blank until the seven-day repo-cache TTL expires. A genuinely missing
+// or gone repo remains a durable no-data answer.
+const HF_PERMANENT_NOT_FOUND = new Set([404, 410])
 
 // Single door to the Hub: bounded concurrency + the shared one-shot retry.
 //
@@ -783,10 +796,10 @@ const TRANSIENT_FETCH = Symbol('transient-fetch')
 //
 // `null` = fetched-but-unavailable, and it is cached at both tiers (per the
 // absent-vs-empty sentinel rule) so a sizeless repo isn't re-probed every search
-// — but ONLY when the Hub gave a durable answer (401/403/404/410). A rate limit,
-// a 5xx, or a dropped connection also returns null and is NOT cached, so a
-// recovered Hub re-enriches on the next request instead of staying blank for the
-// week the disk TTL would otherwise hold it.
+// — but ONLY when the Hub gave a durable answer (404/410). An auth denial, rate
+// limit, 5xx, or dropped connection also returns null and is NOT cached, so a
+// newly authorized or recovered Hub re-enriches on the next request instead of
+// staying blank for the week the disk TTL would otherwise hold it.
 async function fetchRepoModel(repoId) {
   if (repoModelCache.has(repoId)) return repoModelCache.get(repoId)
   return repoModelFlight.run(repoId, async () => {
@@ -807,7 +820,8 @@ async function fetchRepoModel(repoId) {
     // as "no data" would bake a bad moment into the disk tier for the full TTL,
     // and a restart would no longer clear it the way the old memory-only cache did.
     if (result === TRANSIENT_FETCH || result.outcome === 'transient') return null
-    // 'permanent' (gated / private / gone) IS a real answer — cache the null.
+    // 'permanent' (gone) IS a real answer — cache the null. Auth denials are
+    // transient because the user's credentials or repository access can change.
     const model = result.outcome === 'ok' ? result.data : null
     rememberRepoModel(repoId, model)
     await writeCachedRepoModel(repoId, model)
@@ -888,6 +902,33 @@ function applyGgufVariants(result, model, { backend, usableBytes, installedIds, 
   return true
 }
 
+// MLX repos encode one quantization in the repository name and ship sharded
+// safetensors rather than a per-file GGUF picker. Keep the single-variant shape
+// shared by live Hugging Face results and curated catalog entries so both paths
+// use the same size, fit, and installed-state contract.
+function applyMlxVariant(result, model, { backend, usableBytes, installedIds }) {
+  const bytes = sumSafetensorsBytes(model)
+  if (Number.isFinite(bytes)) {
+    result.sizeBytes = bytes
+    result.size = formatBytes(bytes) || result.size
+  }
+  const quant = result.quant || mlxQuantFromRepo(result.repository || result.id)
+  if (result.quant == null && quant) result.quant = quant
+  const variant = {
+    quant: quant || 'mlx',
+    format: 'mlx',
+    installId: result.id, // bare repo — the repo name encodes the MLX quant
+    sizeBytes: Number.isFinite(result.sizeBytes) ? result.sizeBytes : null,
+    size: formatBytes(result.sizeBytes) || result.size || (quant ? quant.toUpperCase() : 'MLX'),
+    fit: classifyFit(result.sizeBytes, usableBytes),
+    installed: installIdInstalled(backend, result.id, result.repository, installedIds),
+    recommended: true
+  }
+  result.format = 'mlx'
+  result.variants = [variant]
+  result.installed = variant.installed
+}
+
 // Backfill real file sizes AND native context windows from the per-model
 // `?blobs=true` record (the search listing carries neither). Both are fetched
 // from the same cached repo record, so a result missing either triggers one
@@ -906,25 +947,7 @@ async function enrichWithSizes(results, { backend, usableBytes, installedIds = [
     const model = await fetchRepoModel(result.repository)
     if (!model) return
     if (isMlx) {
-      // MLX size = summed safetensors shards. The picker shows a single variant
-      // (the repo's quant) so the card UI matches the multi-quant GGUF cards.
-      const bytes = sumSafetensorsBytes(model)
-      if (Number.isFinite(bytes)) {
-        result.sizeBytes = bytes
-        result.size = formatBytes(bytes) || result.size
-      }
-      const variant = {
-        quant: result.quant || 'mlx',
-        format: 'mlx',
-        installId: result.id, // bare repo — mlx-community encodes the quant in the name
-        sizeBytes: Number.isFinite(result.sizeBytes) ? result.sizeBytes : null,
-        size: formatBytes(result.sizeBytes) || (result.quant ? result.quant.toUpperCase() : 'MLX'),
-        fit: classifyFit(result.sizeBytes, usableBytes),
-        installed: installIdInstalled(backend, result.id, result.repository, installedIds),
-        recommended: true
-      }
-      result.variants = [variant]
-      result.installed = variant.installed
+      applyMlxVariant(result, model, { backend, usableBytes, installedIds })
       return
     }
     if (!isAudio) {
@@ -1030,7 +1053,7 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
   // MLX results (LM Studio + Apple Silicon only) merge into the same list — each
   // is its own card (`format: 'mlx'`), deduped against the GGUF repos already seen.
   const mlxLive = mlxModelsRaw
-    .filter((model) => hasMlxSignal(model))
+    .filter((model) => hasMlxSignal(model) && !isMlxDrafter(model))
     .map((model) => toMlxResult(model, requestedCategory, installedIds))
     .filter(Boolean)
     .filter((model) => {
@@ -1144,9 +1167,9 @@ async function applyOllamaRegistryVariants(entry, { usableBytes, installedIds })
 // Enrich curated-catalog entries (from localLlmCatalog.getCatalog) in place with
 // the same per-quant variant picker + RAM-aware default the live HF search uses.
 // HF-repo-backed entries (see catalogRepoForBackend) read their GGUF siblings;
-// bare Ollama registry names are enriched from the Ollama registry instead. An
-// MLX-only repo (no GGUF quants) or a model absent from the registry is left
-// untouched — the card then shows the curator's single id with no picker.
+// curated MLX entries get one native-format variant; bare Ollama registry names
+// are enriched from the Ollama registry instead. A model absent from its source
+// is left untouched so the offline catalog still renders.
 // `usableBytes` makes the recommended quant fit this machine.
 export async function enrichCatalogWithVariants(catalog, { backend, systemMemoryBytes = null, installedIds = [], timeoutMs = CATALOG_ENRICH_TIMEOUT_MS } = {}) {
   if (!isBackend(backend) || !Array.isArray(catalog)) return catalog
@@ -1164,12 +1187,16 @@ export async function enrichCatalogWithVariants(catalog, { backend, systemMemory
     const model = await fetchRepoModel(repo)
     if (!model) return
     entry.repository = repo
+    if (entry.format === 'mlx') {
+      applyMlxVariant(entry, model, { backend, usableBytes, installedIds })
+      return
+    }
     // Seed the quant from the curator's id so the no-budget fallback anchors on it.
     if (entry.quant == null) entry.quant = quantFromInstallId(backend, entry.id)
     // Keep the curated entry's stable id (rewriteInstallId: false) — the playground
     // matches installed models on it; the UI installs the recommended variant.
     const applied = applyGgufVariants(entry, model, { backend, usableBytes, installedIds, rewriteInstallId: false })
-    if (!applied) return // MLX-only / no parseable GGUF quant — leave the curated entry as-is
+    if (!applied) return // no parseable GGUF quant — leave the curated entry as-is
     entry.format = 'gguf'
     // Backfill the real size + native context window the curated list hard-codes.
     if (!Number.isFinite(entry.sizeBytes)) {

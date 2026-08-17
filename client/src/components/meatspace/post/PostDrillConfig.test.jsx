@@ -82,10 +82,10 @@ beforeEach(() => {
       type: 'n-back', level: 1, label: '2-back @ 2500ms', atHardest: false, currentMastered: false,
       levels: [
         { level: 0, label: '1-back @ 2500ms', mastered: true },
-        { level: 1, label: '2-back @ 2500ms', mastered: false },
+        { level: 1, label: '2-back @ 2500ms', mastered: false, samples: 2, accuracy: 0.8, completion: 0.9, incompleteSamples: 1 },
         { level: 2, label: '3-back @ 2500ms', mastered: false },
       ],
-      thresholds: { minSamples: 3, targetAccuracy: 0.85 }, windowDays: 30,
+      thresholds: { minSamples: 3, targetAccuracy: 0.85, minCompletion: 0.75 }, windowDays: 30,
     },
   });
   getMemoryItems.mockResolvedValue([{
@@ -328,6 +328,8 @@ describe('PostDrillConfig', () => {
     expect(screen.queryByText('Stimulus (ms)')).toBeNull();
     await waitFor(() => expect(getPostCognitiveProgress).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText(/Level 2 of 3 · 2-back @ 2500ms/)).toBeTruthy());
+    expect(screen.getByText(/2\/3 qualifying runs/)).toBeTruthy();
+    expect(screen.getByText(/1 incomplete excluded/)).toBeTruthy();
     // `length` is NOT ladder-managed, so it stays visible + editable even under
     // progressive (only n/stimulusMs are hidden) — the knob is honestly forwarded.
     expect(screen.getByText('Sequence Length')).toBeTruthy();
@@ -340,6 +342,21 @@ describe('PostDrillConfig', () => {
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(updatePostConfig).toHaveBeenCalled());
     expect(updatePostConfig.mock.calls[0][0].cognitive.drillTypes['n-back'].progressive).toBe(false);
+  });
+
+  it('manual Stroop and mental-rotation modes expose meaningful difficulty knobs', async () => {
+    await renderConfig(<PostDrillConfig config={config} onSaved={vi.fn()} onBack={vi.fn()} />);
+    fireEvent.click(screen.getByRole('switch', { name: 'Progressive difficulty — Stroop' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Progressive difficulty — Mental Rotation' }));
+    expect(screen.getByText('Conflicting Trials (%)')).toBeTruthy();
+    expect(screen.getByText('Rotation Range')).toBeTruthy();
+    expect(screen.getByText('Answer Options')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(updatePostConfig).toHaveBeenCalled());
+    const cognitive = updatePostConfig.mock.calls[0][0].cognitive.drillTypes;
+    expect(cognitive.stroop).toMatchObject({ progressive: false, incongruentPct: 75 });
+    expect(cognitive['mental-rotation']).toMatchObject({ progressive: false, rotationComplexity: 3, optionCount: 4 });
   });
 
   it('toggling Adaptive on persists enabled=true', async () => {

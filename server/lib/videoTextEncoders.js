@@ -71,13 +71,14 @@
  * the `model_type` + `text_config` + `quantization` triple the fork's
  * `convert_ltx25_to_mlx.py --step text-encoder` emits). It exists because a
  * *unified* Gemma 4 checkpoint publishes `model_type: "gemma4_unified"`, which
- * `Gemma4LanguageModel.load()` hard-rejects — and that one string is the only
- * thing it gets wrong, since mlx-lm's `gemma4.Model.sanitize()` already
- * discards the `vision_tower.*` / `audio_tower.*` / `multi_modal_projector.*`
- * towers at load. Omit the field entirely for a text-only checkpoint that
- * already reports `gemma4`; the `quantization` block is NEVER overridden,
- * because per-layer group-size overrides are part of how the weights were
- * packed and a mismatched group size dequantizes to noise.
+ * `Gemma4LanguageModel.load()` hard-rejects. mlx-lm's
+ * `gemma4.Model.sanitize()` already discards the `vision_tower.*` /
+ * `audio_tower.*` / `multi_modal_projector.*` towers at load; the runner adds
+ * one exact-prefix filter for the eleven residual `vision_embedder.*` tensors
+ * found by the real strict-load gate. Omit the field entirely for a text-only
+ * checkpoint that already reports `gemma4`; the `quantization` block is NEVER
+ * overridden, because per-layer group-size overrides are part of how the
+ * weights were packed and a mismatched group size dequantizes to noise.
  *
  * COMPATIBILITY RULE for a new ltx25 entry: the checkpoint must be Gemma 4 12B
  * at the LTX-2.5 tower's exact geometry — 48 layers, hidden 3840, vocab 262144,
@@ -88,23 +89,36 @@
  * vocabulary and layer count have no mapping onto the module tree mlx-lm's
  * `gemma4` builds.
  *
- * `verified` — PENDING COHERENCE CHECK. Both ltx25 substitutes below are
- * declared `verified: false` and are therefore hidden from `videoTextEncoderOptions`
- * and from the download lane (see `isOfferedTextEncoder`), so neither can be
- * selected in the picker or accepted by route validation. They stay in code
- * because the mechanism, the pins and the sizes are all settled; what is NOT
- * settled is whether Lightricks' `gemma4-12b-with-proj-ltx-2.5` tower is stock
- * `google/gemma-4-12B-it` or an LTX fine-tune. If it is a fine-tune, a
- * stock-derived abliterated tower feeds the pack's connector out-of-distribution
- * features and renders incoherently — which static analysis cannot settle.
+ * `verified` — COHERENCE GATE COMPLETED 2026-08-16 (#4320). Both initial candidates
+ * strict-loaded and produced finite connector inputs on the pinned runtime,
+ * then rendered a fixed-seed matrix at 512x320 / 33 frames / 24 fps / 8+3
+ * steps / CFG 3: one benign motion prompt plus staged-bite, explicit-gesture
+ * and prop-cigarette challenges. The 4-bit tower stayed broadly coherent but
+ * did not improve the target behavior: stock described the staged bite and
+ * cigarette more literally, while both produced an index finger for the
+ * requested middle-finger gesture. The 8-bit tower was likewise stock-like on
+ * all three challenges, still produced an index finger, and fragmented the
+ * benign prompt's single kite into several red objects.
  *
- * To settle it: flip an entry to `verified: true` locally, download it from
- * Media Models, then render the same prompt/seed/steps/resolution against the
- * stock conditioner and against the substitute — once on a benign prompt (does
- * it stay structurally coherent?) and once on a prompt the stock conditioner
- * waters down (does it actually read differently?). Ship the flag flip only for
- * a substitute that passes both; record a failure here rather than deleting the
- * entry, so the next person does not re-derive it.
+ * Both therefore remain `verified: false`, hidden from
+ * `videoTextEncoderOptions` and the download lane (see
+ * `isOfferedTextEncoder`). They stay declared as pinned failure records so a
+ * later candidate search does not repeat either download or gate.
+ *
+ * #4470 adds a third, still-gated candidate from the exact Heretic language
+ * backbone used by DeepNeuralNerd's LTX-2.5-specific ComfyUI conversion. That
+ * conversion keeps LTX's projection weights; PortOS already loads the pinned
+ * pack's connector separately, so the equivalent MLX artifact is the same
+ * language tower paired with that stock connector. Its three-shard MXFP8 export
+ * preserves all 48 language layers and the checkpoint's quantization metadata,
+ * while the existing narrow unified-checkpoint sanitizer removes only its
+ * residual `vision_embedder.*` tensors. The 2026-08-17 production preflight
+ * removed exactly ten such tensors, strict-loaded with zero missing or extra
+ * language keys, and produced finite connector inputs for all four controlled
+ * prompts. The full repeated-seed visual matrix did not complete, so this is
+ * technical compatibility evidence, not a behavioral pass. It remains
+ * unreachable until that matrix proves BOTH benign structural coherence and a
+ * repeatable target-behavior improvement.
  */
 
 import { ServerError } from './errorHandler.js';
@@ -218,18 +232,20 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
   // themselves. All of them are inputs to the shim the runner builds, and
   // `sizeBytes` is their exact published total.
   //
-  // Both substitutes are `verified: false` pending the coherence check
-  // described in the docblock: they are declared here but hidden from the
-  // picker and from the download lane until an A/B render settles whether the
-  // pack's connector accepts a stock-derived Gemma 4 tower.
+  // The first two substitutes failed the 2026-08-16 coherence/behavior gate
+  // described in the docblock. The third is the LTX-specific follow-up being
+  // evaluated in #4470. All remain pinned provenance records, while
+  // `verified: false` keeps every non-passing entry out of both public lanes.
   ltx25: Object.freeze([
     STOCK_LTX25,
     Object.freeze({
       id: 'ltx25-abliterated-4bit',
       label: 'Abliterated uncensored — Gemma 4 12B 4-bit',
       description:
-        'Abliterated Gemma 4 12B conditioner, text tower only, MLX 4-bit. Reads prompts the stock '
-        + 'conditioner refuses or waters down; the diffusion weights are unchanged.',
+        'Abliterated Gemma 4 12B conditioner, text tower only, MLX 4-bit. Retained as a gated '
+        + 'candidate record after fixed-seed renders showed no repeatable prompt-following gain.',
+      // Failed #4320: coherent, but stock was more literal on two challenges
+      // and both conditioners substituted an index finger for the third.
       verified: false,
       repo: 'divinetribe/gemma-4-12B-it-abliterated-4bit-mlx-text',
       revision: '3f123973331780c8702344dad62445ab09436ef3',
@@ -260,15 +276,18 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
       label: 'Heretic uncensored — Gemma 4 12B 8-bit',
       description:
         'Gemma 4 12B abliterated with the Heretic method — the same family as the H3 Ultra-Heretic '
-        + 'conditioner, at 8-bit. A unified checkpoint, so its extra towers are dropped at load.',
+        + 'conditioner, at 8-bit. Retained as a gated candidate record after the fixed-seed gate failed.',
+      // Failed #4320: challenge behavior stayed stock-like, the explicit
+      // gesture was still an index finger, and the benign kite fragmented.
       verified: false,
       repo: 'culturerevolt/gemma-4-12b-heretic-abliterated-8bit-mlx',
       revision: '86c60c34eb11613fbaae0353e2bfac83a32ce8a3',
       // Published as `gemma4_unified`, which Gemma4LanguageModel.load()
-      // hard-rejects. That one string is the ONLY thing it gets wrong: mlx-lm's
-      // gemma4 sanitizer already discards the vision/audio towers, so the shim
-      // rewrites the type and keeps the substitute's own `quantization` block
-      // (group 32 with per-layer 64 overrides on the MLP projections) verbatim.
+      // hard-rejects. The shim rewrites the type, mlx-lm's sanitizer discards
+      // its main vision/audio towers, and the runner removes the eleven residual
+      // `vision_embedder.*` tensors found by the strict-load gate. It keeps the
+      // substitute's own `quantization` block (group 32 with per-layer 64
+      // overrides on the MLP projections) verbatim.
       configOverrides: Object.freeze({ model_type: 'gemma4' }),
       // All three shards, none skippable: shard 3 interleaves 233 language keys
       // with 17 audio/vision keys, so dropping it to save the towers would take
@@ -289,6 +308,42 @@ const TEXT_ENCODERS_BY_RUNTIME = Object.freeze({
         modelCardUrl: 'https://huggingface.co/culturerevolt/gemma-4-12b-heretic-abliterated-8bit-mlx',
         weightsLicense: GEMMA_TERMS,
         reviewedAt: '2026-08-15',
+      }),
+    }),
+    Object.freeze({
+      id: 'ltx25-ltx-heretic-mxfp8',
+      label: 'LTX Heretic uncensored — Gemma 4 12B MXFP8',
+      description:
+        'The Heretic language backbone used by an LTX-2.5-specific conditioner conversion, '
+        + 'paired with the model pack\'s original LTX connector. Gated pending the repeated-seed render matrix.',
+      // #4470: the production technical gate passes (strict language load,
+      // exact geometry, finite connector outputs, immutable MXFP8 metadata).
+      // Keep this false until the full repeated-seed render matrix proves
+      // benign coherence and repeatable behavior gains.
+      verified: false,
+      repo: 'nightmedia/gemma-4-12B-it-uncensored-heretic-mxfp8-mlx',
+      revision: '20c9f4b167e56f3f749ea3e428188a5e7a35318a',
+      // Exact MLX quantization of llmfan46's Heretic backbone — the same source
+      // named by DeepNeuralNerd's LTX-2.5 conversion. The unified checkpoint
+      // carries ten visual-only `vision_embedder.*` tensors; the runner's
+      // narrow sanitizer drops those while strict-loading every language key.
+      configOverrides: Object.freeze({ model_type: 'gemma4' }),
+      files: Object.freeze([
+        'config.json',
+        'generation_config.json',
+        'chat_template.jinja',
+        'model-00001-of-00003.safetensors',
+        'model-00002-of-00003.safetensors',
+        'model-00003-of-00003.safetensors',
+        'model.safetensors.index.json',
+        'tokenizer.json',
+        'tokenizer_config.json',
+      ]),
+      sizeBytes: 12375013657,
+      disclosure: Object.freeze({
+        modelCardUrl: 'https://huggingface.co/nightmedia/gemma-4-12B-it-uncensored-heretic-mxfp8-mlx',
+        weightsLicense: GEMMA_TERMS,
+        reviewedAt: '2026-08-17',
       }),
     }),
   ]),

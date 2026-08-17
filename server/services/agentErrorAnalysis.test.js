@@ -112,6 +112,29 @@ describe('analyzeAgentFailure', () => {
 // Exercises the real exported ERROR_PATTERNS via analyzeAgentFailure, replacing
 // the inline copy that used to live (and drift) in subAgentSpawner.test.js.
 describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
+  // Real incident 2026-08-17: `model_reasoning_effort = "max"` in the global
+  // codex config. Codex rejects it while LOADING the config, before the prompt
+  // is read, so all three retries died identically and the run escalated to an
+  // investigation task instead of a Tier 1 config fix.
+  it('classifies a codex config-load rejection as cli-config-invalid', () => {
+    const line = 'Error: /home/x/.codex/config.toml:3:26: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`\n    in `model_reasoning_effort`';
+    const analysis = analyzeAgentFailure(withLead(line), { id: 't' }, 'gpt-5.6-sol');
+    expect(analysis.category).toBe('cli-config-invalid');
+    expect(analysis.actionable).toBe(true);
+    expect(analysis.origin).toBe('runner');
+    expect(analysis.message).toContain('max');
+    expect(analysis.message).toContain('model_reasoning_effort');
+    // The rejection line embeds the OS username in its path — it must never be
+    // echoed into a failure record (Sensitive Data & Privacy, CLAUDE.md).
+    expect(analysis.message).not.toContain('/home/x/');
+  });
+
+  it('classifies a config file that fails to load at all', () => {
+    const analysis = analyzeAgentFailure(withLead('Error loading config.toml: expected a value after the equals sign'), { id: 't' }, 'x');
+    expect(analysis.category).toBe('cli-config-invalid');
+    expect(analysis.actionable).toBe(true);
+  });
+
   it('classifies a 404 model-not-found error as actionable', () => {
     const analysis = analyzeAgentFailure(withLead('API Error: 404 - model: claude-4-ultra not found'), { id: 't' }, 'claude-4-ultra');
     expect(analysis.category).toBe('model-not-found');
@@ -170,6 +193,27 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     const analysis = analyzeAgentFailure(withLead('Error: maximum context length exceeded for this request'), { id: 't' }, 'x');
     expect(analysis.category).toBe('context-length');
     expect(analysis.compaction?.needed).toBe(true);
+  });
+
+  it('lets Claude Code\'s structured output-ceiling banner override a false idle phase', () => {
+    const banner = "API Error: Claude's response exceeded the 32000 output token maximum.\nTo configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.";
+    const analysis = analyzeAgentFailure(withLead(banner), { id: 't' }, 'local-model', {
+      completionReason: 'merge-queue-idle-timeout',
+    });
+    expect(analysis.category).toBe('output-length');
+    expect(analysis.origin).toBe('provider');
+    expect(analysis.actionable).toBe(false);
+    expect(analysis.compaction).toMatchObject({ needed: true, reason: 'output-limit' });
+    expect(analysis.completionReason).toBe('merge-queue-idle-timeout');
+  });
+
+  it('does not promote ordinary prose about Claude Code output limits to provider origin', () => {
+    const prose = "The prior run said Claude's response exceeded the 32000 output token maximum and named CLAUDE_CODE_MAX_OUTPUT_TOKENS.";
+    const analysis = analyzeAgentFailure(withLead(prose), { id: 't' }, 'local-model', {
+      completionReason: 'idle-no-changes',
+    });
+    expect(analysis.category).toBe('no-changes');
+    expect(analysis.origin).toBe('runner');
   });
 
   it('classifies an Ollama context overflow separately from a generic context-length error', () => {

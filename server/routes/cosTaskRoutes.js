@@ -114,7 +114,10 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 // The body carries the run settings the app-overview drawer collects: the
 // provider/model/effort pin and `simplify` apply to every command; `target`,
 // `issueAuthorFilter`, and the reviewer choices are `/do:next`-only (they shape
-// the claim prompt, which self-manages its own PR + review loop).
+// the claim prompt, which self-manages its own PR + review loop). `issueContext`
+// is the selected issue's content already fetched by the managed-app Issues tab;
+// it avoids making the agent retrieve the same title/body again. The optional
+// `overrideContext` is user guidance appended to that claim prompt.
 //
 // The launchable-command allowlist is the shared catalog in
 // `server/lib/slashdoCatalog.js` (#3114) — the CoS quick templates read the same
@@ -122,7 +125,8 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const {
     command, app, provider, model, effort, simplify,
-    target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts
+    target, issueContext, overrideContext, issueAuthorFilter, reviewers, usernames, optionalReviewers,
+    reviewerMaxRounds, reviewerModels, reviewerEfforts
   } = validateRequest(slashdoTaskSchema, req.body);
 
   const workflow = getSlashdoWorkflow(command);
@@ -171,13 +175,24 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   // PortOS-managed worktree gets one. `worktreeChangesExpected` declares the
   // workflow's deliverable: false for the report-shaped four (plan-task /
   // replan / review / scan), whose output is a filed issue or a printed report,
-  // so the TUI idle reaper doesn't score their clean tree `idle-no-changes`
-  // (#3636). `simplify` comes from the request (the run drawer's toggle), not
+  // so downstream task bookkeeping does not score their clean tree as missing
+  // code work (#3636). `simplify` comes from the request (the run drawer's toggle), not
   // the catalog.
   const { useWorktree, openPR, worktreeChangesExpected } = workflow.settings;
   let shape;
   if (command === 'next') {
-    const claim = await buildClaimWorkTask(appObj, { target, issueAuthorFilter, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts });
+    const claim = await buildClaimWorkTask(appObj, {
+      target,
+      issueContext,
+      ...(overrideContext !== undefined ? { overrideContext } : {}),
+      issueAuthorFilter,
+      reviewers,
+      usernames,
+      optionalReviewers,
+      reviewerMaxRounds,
+      reviewerModels,
+      reviewerEfforts
+    });
     const scope = claim.target
       ? `claim ${workTrackerLabel(claim.tracker)} item ${claim.target}`
       : `claim next ${workTrackerLabel(claim.tracker)} item`;
@@ -189,12 +204,21 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
       // claim.taskMetadata overrides the catalog posture only where it carries a
       // key. All current claim flows (plan-task / claim-issue / claim-issue-gitlab
       // / claim-issue-jira) self-manage their worktree + MR/PR, so false/false
-      // stands; the spread stays for a future delegated type that needs
-      // CoS-managed isolation. `worktreeChangesExpected` is one such key: the
+      // remains the CoS provisioning posture. `claimFlow` is a separate
+      // lifecycle marker so the prompt builder cannot mistake false/false for a
+      // commit-only handoff. The spread stays for a future delegated type that
+      // needs CoS-managed isolation. `worktreeChangesExpected` is one such key: the
       // claim flow derives it from the app's RESOLVED work tracker (a file
       // tracker commits its checklist, a forge tracker doesn't), which is more
       // specific than the catalog's commit-shaped default, so the spread wins.
-      taskMetadata: { useWorktree, openPR, worktreeChangesExpected, ...claim.taskMetadata },
+      taskMetadata: {
+        useWorktree,
+        openPR,
+        worktreeChangesExpected,
+        ...(claim.target ? { claimTarget: claim.target } : {}),
+        ...claim.taskMetadata,
+        claimFlow: true
+      },
     };
   } else {
     shape = {

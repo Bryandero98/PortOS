@@ -24,6 +24,7 @@ import { canTypeSlashCommands, agentOwnsPrWorkflow, resolveSlashdoInvocation, bu
 import { shellQuote } from '../lib/shellQuote.js';
 import { TASK_PROMPT_KEY, TASK_CONTEXT_KEY, taskContextBlock } from '../lib/cosTaskPrompt.js';
 import { detectForgeCli } from '../lib/gitForge.js';
+import { forgeCliForTracker, resolveRepoForgeTarget } from '../lib/workTracker.js';
 import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../lib/prDisposition.js';
 import * as jiraService from './jira.js';
 import { emitLog } from './cosEvents.js';
@@ -34,6 +35,18 @@ const ROOT_DIR = PATHS.root;
 const AGENTS_DIR = PATHS.cosAgents;
 const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
 
+// Scheduled claim tasks created before the explicit marker was introduced still
+// carry their task kind in analysisType. Keep those persisted queue records on
+// the claim-owned lifecycle while new/manual tasks use the explicit marker.
+const CLAIM_FLOW_TASK_TYPES = new Set([
+  'plan-task', 'claim-issue', 'claim-issue-gitlab', 'claim-issue-jira', 'claim-work'
+]);
+
+export function isClaimFlowTask(task, isTruthyMetaFn = (value) => value === true || value === 'true') {
+  return isTruthyMetaFn(task?.metadata?.claimFlow)
+    || CLAIM_FLOW_TASK_TYPES.has(task?.metadata?.analysisType);
+}
+
 /**
  * Absolute path of the completion sentinel this run must write. The spawners'
  * pollers resolve the same per-instance filename from the same helper (see
@@ -42,6 +55,29 @@ const SKILLS_DIR = join(ROOT_DIR, 'data/prompts/skills');
  */
 function resolveSentinelPath(worktreeInfo, workspaceDir, agentId) {
   return `${worktreeInfo?.worktreePath || workspaceDir}/${doneSentinelName(agentId)}`;
+}
+
+function normalizeForgeCli(value) {
+  if (value === 'glab' || value === 'gitlab') return 'glab';
+  if (value === 'gh' || value === 'github') return 'gh';
+  return null;
+}
+
+function manualForgeCli(forgeCli, worktreeInfo) {
+  return normalizeForgeCli(forgeCli)
+    || normalizeForgeCli(worktreeInfo?.forgeCli)
+    || forgeCliForTracker(worktreeInfo?.forge)
+    || 'gh';
+}
+
+async function resolveManualForgeCli(workspaceDir, worktreeInfo, task) {
+  const explicit = manualForgeCli(null, worktreeInfo);
+  if (explicit !== 'gh') return explicit;
+  const preferredForge = normalizeForgeCli(task?.metadata?.workTracker);
+  const target = await resolveRepoForgeTarget(worktreeInfo?.worktreePath || workspaceDir, {
+    preferredForge: preferredForge === 'glab' ? 'gitlab' : preferredForge === 'gh' ? 'github' : null,
+  }).catch(() => null);
+  return forgeCliForTracker(target?.forge) || explicit;
 }
 
 // Appended to every agent briefing. PortOS shares ONE pm2 daemon across many
@@ -54,14 +90,14 @@ PortOS runs MANY apps under one shared pm2 daemon. To restart an app, use a SCOP
 
 // Also appended to every agent briefing. A CoS agent runs headless: the TUI has
 // no human attached, so an interactive selector or approval gate is a dead end —
-// the session repaints it until the idle reaper kills the run and the work is
-// discarded. Nothing in the briefing used to SAY that, so a `/do:plan-task` run
-// (whose skill shows its drafted issue for approval before filing) parked on a
-// scope question for its whole life and was retried into the same gate three
-// times, filing nothing. The rule names the escape hatch too: slash commands
-// that gate on approval take a flag to skip it.
+// the session can sit there indefinitely and the work may never complete.
+// Nothing in the briefing used to SAY that, so a `/do:plan-task` run (whose
+// skill shows its drafted issue for approval before filing) parked on a scope
+// question for its whole life and was retried into the same gate three times,
+// filing nothing. The rule names the escape hatch too: slash commands that gate
+// on approval take a flag to skip it.
 export const UNATTENDED_RUN_RULE = `## ⚠️ Unattended Run (no human is present)
-PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session sits there until the idle reaper kills it and **your work is thrown away**.
+PortOS launched you autonomously. Nobody is watching this session and nothing can answer you — if you present an interactive choice (a multiple-choice question, an approval gate, a "which option?" selector, a confirmation), the session can wait indefinitely and **your work may never complete**.
 - **Never ask the user to choose or approve.** Make the call yourself, state the assumption in your summary, and proceed.
 - **Invoke commands and skills in their non-interactive form.** If one drafts something and gates on approval before acting, pass the flag that skips that gate (\`--yes\` for the slashdo commands that have one).
 - **Ambiguous task?** Pick the most reasonable reading, do the work, and note the alternatives you rejected in your completion summary.
@@ -99,6 +135,21 @@ const SKILL_MATCHERS = [
   }
 ];
 
+// Domain templates complement (rather than replace) the lifecycle template
+// selected above. Keep this list narrow: broad graphics terms would add prompt
+// weight to tasks that do not involve scene construction or rendering.
+const DOMAIN_SKILL_MATCHERS = [
+  {
+    skill: 'threejs-visual',
+    patterns: [
+      /\bthree(?:\.?js)\b/,
+      /\breact[-\s]?three[-\s]?fiber\b/,
+      /\br3f\b/,
+      /\bwebgl\s+scene\b/,
+    ],
+  },
+];
+
 /**
  * Detect the best matching skill template for a task based on description keywords.
  * @param {Object} task - Task object with description
@@ -115,6 +166,32 @@ export function detectSkillTemplate(task) {
 }
 
 /**
+ * Detect one optional domain template to append after the primary lifecycle
+ * template. Domain routing is deliberately independent so, for example, a
+ * Three.js security audit keeps its security guidance.
+ * @param {Object} task - Task object with description
+ * @returns {string|null} Domain skill template name or null
+ */
+export function detectDomainSkillTemplate(task) {
+  const desc = (task?.description || '').toLowerCase();
+  for (const matcher of DOMAIN_SKILL_MATCHERS) {
+    if (matcher.patterns.some((pattern) => pattern.test(desc))) {
+      return matcher.skill;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the primary lifecycle template and at most one domain guide.
+ * @param {Object} task - Task object with description
+ * @returns {string[]} Ordered template names
+ */
+export function detectSkillTemplates(task) {
+  return [detectSkillTemplate(task), detectDomainSkillTemplate(task)].filter(Boolean);
+}
+
+/**
  * Load a skill template from disk if it exists.
  * @param {string} skillName - Name of the skill template file (without .md)
  * @returns {Promise<string|null>} Template content or null
@@ -123,6 +200,23 @@ export async function loadSkillTemplate(skillName) {
   const content = await tryReadFile(join(SKILLS_DIR, `${skillName}.md`));
   if (content) console.log(`🎯 Loaded skill template: ${skillName}`);
   return content;
+}
+
+/**
+ * Load ordered templates as one prompt section, retaining the primary guidance
+ * even when an optional domain template is unavailable on an older install.
+ * @param {string[]} skillNames - Ordered skill template names
+ * @param {(skillName: string) => Promise<string|null>} loadTemplate - Loader seam for tests
+ * @returns {Promise<string|null>} Joined template content or null
+ */
+export async function loadSkillTemplates(skillNames, loadTemplate = loadSkillTemplate) {
+  const templates = await Promise.all(skillNames.map((skillName) => (
+    Promise.resolve(loadTemplate(skillName)).catch((err) => {
+      console.log(`⚠️ Skill template load failed for ${skillName}: ${err.message}`);
+      return null;
+    })
+  )));
+  return templates.filter(Boolean).join('\n\n') || null;
 }
 
 // Nested-CLAUDE.md discovery bounds (#3866). On-demand nested memory files are a
@@ -549,7 +643,7 @@ async function applySlashdoInvocation(task, {
     : null;
 
   const reviewWith = skipIncludes.length
-    ? buildReviewersCsv(resolvedReviewers, resolvedUsernames, resolvedOptional, resolvedMaxRounds, resolvedModels)
+    ? buildReviewersCsv(resolvedReviewers, resolvedUsernames, resolvedOptional, resolvedMaxRounds, resolvedModels, resolvedEfforts)
     : '';
   // Unlike `reviewWith` this is NOT gated on pruning: the workflow drives its own
   // review loop, so a pinned effort has no other route to the reviewer CLI it
@@ -607,7 +701,7 @@ function isMergeOnlyFollowUp(metadata = {}) {
  *   stay byte-identical so the two callers can't drift.
  * @returns {string}
  */
-export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false, rprBody = null, localAgentLoopBody = null, localAgentLoopBodyPath = null, inlineExitStep = null } = {}) {
+export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false, rprBody = null, localAgentLoopBody = null, localAgentLoopBodyPath = null, inlineExitStep = null, forgeCli = null } = {}) {
   // One parameter, not two: an `inline` boolean alongside it could disagree with
   // it, and the disagreement renders silently — `inline` with a blank exit step
   // emits a bare "6." and a truncated merge-gate hand-back.
@@ -618,6 +712,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const prOwner = metadata.reviewLoopPROwner ?? '';
   const prRepo = metadata.reviewLoopPRRepo ?? '';
   const sourceTaskId = metadata.sourceTaskId || 'unknown';
+  const reviewForgeCli = normalizeForgeCli(forgeCli)
+    || (detectForgeCli(metadata.reviewLoopPRHost) === 'glab' ? 'glab' : 'gh');
   // Merge-only follow-up (Review Loop off): no reviewer to wait on or invoke —
   // the whole job is CI-gate → fix → merge. Branch before any reviewer defaulting
   // below, which would otherwise resolve the empty list back to `[copilot]`.
@@ -625,6 +721,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     return buildMergeFollowUpSection({
       prUrl, prBranch, prNumber, prOwner, prRepo, sourceTaskId, verbose, inlineExitStep,
       prHost: metadata.reviewLoopPRHost ?? '',
+      forgeCli: reviewForgeCli,
     });
   }
   // Arbitrary GitHub reviewer usernames (gate-only PR reviewers), appended to
@@ -796,10 +893,13 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     ...(localLlmPins.some(p => p.effort) ? ['effort: "…"'] : []),
     'diff: .'
   ].join(', ');
+  const diffCommand = reviewForgeCli === 'glab'
+    ? `glab mr diff ${prNumber || '<MR_NUMBER>'}`
+    : `gh pr diff ${prNumber || '<PR_NUMBER>'}`;
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
-gh pr diff ${prNumber || '<PR_NUMBER>'} | jq -Rs '{ backend: "<lmstudio|ollama>", diff: . }' | curl -sS -X POST http://localhost:5555/api/code-review/local -H 'Content-Type: application/json' -d @- > "$REVIEW_RESPONSE"
+${diffCommand} | jq -Rs '{ backend: "<lmstudio|ollama>", diff: . }' | curl -sS -X POST http://localhost:5555/api/code-review/local -H 'Content-Type: application/json' -d @- > "$REVIEW_RESPONSE"
 if ! jq -er '.findings | select(type == "string" and length > 0)' "$REVIEW_RESPONSE" > "\${REVIEW_RESPONSE}.findings"; then
   echo "Local reviewer failed: $(jq -r '.error // "missing .findings in reviewer response"' "$REVIEW_RESPONSE")" >&2
   STATUS=cli-error # Never treat an absent or malformed response as clean.
@@ -814,7 +914,9 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   // Instruct the agent to request each username reviewer as a PR reviewer and
   // gate the merge on their approval. `gh pr edit --add-reviewer` takes the bare
   // login, so strip the `@`.
-  const githubUsersInvocation = `request ${usernames.map(u => `\`@${u}\``).join(', ')} as PR reviewer${usernames.length > 1 ? 's' : ''} (\`gh pr edit ${prNumber || '<PR_NUMBER>'} --add-reviewer <user>\`, drop the \`@\`), then wait for their review (poll every 5–15s) and address any findings; their approval gates the merge.`;
+  const githubUsersInvocation = reviewForgeCli === 'glab'
+    ? `request ${usernames.map(u => `\`@${u}\``).join(', ')} as MR reviewer${usernames.length > 1 ? 's' : ''} using the GitLab project UI or API, then inspect \`glab mr view ${prNumber || '<MR_NUMBER>'}\` for their review and address any findings; their approval gates the merge.`
+    : `request ${usernames.map(u => `\`@${u}\``).join(', ')} as PR reviewer${usernames.length > 1 ? 's' : ''} (\`gh pr edit ${prNumber || '<PR_NUMBER>'} --add-reviewer <user>\`, drop the \`@\`), then wait for their review (poll every 5–15s) and address any findings; their approval gates the merge.`;
   const multiBullets = [
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
@@ -926,7 +1028,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   // Where the loop hands control back. A follow-up agent's whole task WAS the
   // loop, so it exits; an inline loop is one step of a larger completion
   // workflow that still owes the run its `.agent-done` sentinel — telling it to
-  // "exit" here is how a finished merge idles into a false timeout.
+  // "exit" here leaves a finished merge without the sentinel that records it.
   const exitStep = inline
     ? `6. ${inlineExitStep}`
     : `6. Exit. Do **not** run \`/do:push\` or open a new PR${leaveOpen ? '' : ' — the merge handles everything'}. The system will clean up your worktree on exit.`;
@@ -940,11 +1042,17 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     : [
       `4. When the reviewer list is exhausted (or the stop mode triggers), merge the PR **immediately** with this exact command (flags: \`--merge --delete-branch\`, nothing else — a true merge commit keeps the branch tip in main's history so automated worktree cleanup can prove the branch is merged):`,
       '   ```bash',
-      `   gh pr merge "${prUrl}" --merge --delete-branch`,
+      reviewForgeCli === 'glab'
+        ? `   glab mr merge "${prNumber || '<MR_NUMBER>'}" --yes --remove-source-branch`
+        : `   gh pr merge "${prUrl}" --merge --delete-branch`,
       '   ```',
-      prOwner && prRepo && prNumber ? `   (Equivalent: \`gh pr merge ${prNumber} --repo ${prOwner}/${prRepo} --merge --delete-branch\`.)` : null,
+      reviewForgeCli === 'glab'
+        ? null
+        : (prOwner && prRepo && prNumber ? `   (Equivalent: \`gh pr merge ${prNumber} --repo ${prOwner}/${prRepo} --merge --delete-branch\`.)` : null),
       '   You have already verified the review is clean, so force the immediate merge. Adding any merge-deferral flag would leave the PR open after you exit.',
-      `5. Confirm the PR is actually merged before exiting: \`gh pr view "${prUrl}" --json state -q .state\` must return \`MERGED\`. If it returns \`OPEN\` or \`CLOSED\`, investigate (a check is failing, a thread is still unresolved, or branch protection is blocking) — fix and retry the merge. Do NOT exit until state is \`MERGED\`.`,
+      reviewForgeCli === 'glab'
+        ? `5. Confirm the MR is actually merged before exiting: \`glab mr view "${prNumber || '<MR_NUMBER>'}"\` must show it merged. If it is still open or was closed unmerged, investigate (a check is failing, a thread is still unresolved, or branch protection is blocking) — fix and retry the merge. Do NOT exit until it is merged.`
+        : `5. Confirm the PR is actually merged before exiting: \`gh pr view "${prUrl}" --json state -q .state\` must return \`MERGED\`. If it returns \`OPEN\` or \`CLOSED\`, investigate (a check is failing, a thread is still unresolved, or branch protection is blocking) — fix and retry the merge. Do NOT exit until state is \`MERGED\`.`,
       exitStep,
     ].filter(Boolean);
 
@@ -1087,7 +1195,7 @@ function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>', forge 
  * @param {Object} opts - PR coordinates + `verbose` (full/api path) vs compact.
  * @returns {string}
  */
-function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false, inlineExitStep = null }) {
+function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false, inlineExitStep = null, forgeCli = null }) {
   const inline = inlineExitStep !== null;
   // PortOS opens GitLab MRs via `glab` too, so a GitLab host must not be handed
   // `gh` commands (the host is persisted by spawnReviewLoopFollowUp). Classify
@@ -1095,13 +1203,15 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
   // bare `host !== 'github.com'` test would get wrong.
   //
   // An INLINE gate has no persisted host to classify — its PR does not exist yet
-  // — so it takes the `unknown` posture and emits both CLIs, matching the
-  // create step that feeds it. Reading the empty host as `github` would print a
-  // gh-only merge gate under a create step that offers `glab mr create`.
+  // — so the caller supplies the forge already selected for the create step.
+  // Falling back to GitHub preserves the historical manual workflow when no
+  // remote metadata is available.
   const gate = buildCiMergeGateSteps(1, {
     prRef: `"${prUrl}"`,
     mrRef: prNumber !== '' ? `${prNumber}` : '<MR_NUMBER>',
-    forge: inline ? 'unknown' : (detectForgeCli(prHost) === 'glab' ? 'gitlab' : 'github'),
+    forge: inline
+      ? (normalizeForgeCli(forgeCli) === 'glab' ? 'gitlab' : 'github')
+      : (detectForgeCli(prHost) === 'glab' ? 'gitlab' : 'github'),
     // An inline run reached this gate through plain `git`/`gh` — it never ran
     // `/do:pr`, so a saved slashdo merge default can't have landed the PR for it.
     alreadyMergedHint: inline ? '' : undefined,
@@ -1159,7 +1269,7 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
 export function buildCompletionGuidelineBullet({
   isReadOnly, isTui, tuiCompletionCommand, slashdoFree = false,
   worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, discardWorktree = false, noCodeOutput = false,
-  leavePrOpen = false, isPrFollowUp = false,
+  leavePrOpen = false, isPrFollowUp = false, claimFlow = false,
 }) {
   // A PR follow-up (review-loop or merge-only) already carries its own PRIMARY
   // OBJECTIVE section with the full procedure, and its cleanup runs with
@@ -1182,6 +1292,9 @@ export function buildCompletionGuidelineBullet({
   }
   if (discardWorktree) {
     return '**This is a reasoning-only task.** The worktree is discarded on exit — do NOT commit, push, merge, or open a PR. Write your result to the completion sentinel (see the Completion section) and stop.';
+  }
+  if (claimFlow) {
+    return '**This is a self-managed claim flow.** Follow the claim prompt above through its phase-specific worktree, PR/MR, review, merge or human-handoff, and cleanup steps. Do NOT stop after committing or hand the lifecycle back to PortOS.';
   }
   if (isReadOnly) {
     return '**This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.';
@@ -1323,10 +1436,10 @@ export function buildProgrammaticOutputCompletionSection(sentinelPath) {
  *
  * A TUI agent still needs a `.agent-done` sentinel to signal completion — the 2s
  * sentinel poll in `spawnTuiAgent` is the primary finalize path and the channel
- * that ingests the run summary. Without it a read-only TUI run only finalizes via
- * the idle reaper / shell-exit fallback, so the resolution summary is never
- * captured cleanly (the bug this repairs). CLI/API read-only agents complete on
- * process exit and never poll a sentinel, so they get the bare notice only.
+ * that ingests the run summary. Without it a read-only TUI run relies on shell
+ * exit, so the resolution summary is not captured cleanly (the bug this
+ * repairs). CLI/API read-only agents complete on process exit and never poll a
+ * sentinel, so they get the bare notice only.
  */
 export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = null } = {}) {
   const notice = '## Read-Only Task\nDo NOT commit, push, or modify any files. Read data and report findings only.';
@@ -1346,7 +1459,7 @@ export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = n
  * nothing to commit or push, and telling the agent to run `/do:push` just makes it
  * load that skill for no reason (and can contradict the task prompt's own
  * "on a 200 your task is complete"). A TUI agent still writes a `.agent-done`
- * sentinel so the 2s poll finalizes it promptly instead of waiting on the idle
+ * sentinel so the 2s poll finalizes it promptly instead of waiting for a runtime
  * reaper.
  */
 export function buildActionOutputCompletionSection({ isTui = false, sentinelPath = null } = {}) {
@@ -1357,6 +1470,27 @@ export function buildActionOutputCompletionSection({ isTui = false, sentinelPath
     '',
     `Your task is complete once that request succeeds. Then write a one-line summary to \`${sentinelPath}\` and stop — PortOS polls this sentinel every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
   ].join('\n');
+}
+
+/**
+ * Completion handoff for claim prompts that create their own worktree and own
+ * the forge lifecycle. `openPR: false` must remain the CoS provisioning posture,
+ * so claimFlow is the explicit signal that keeps these prompts out of the
+ * generic commit-only handoff.
+ */
+function buildClaimFlowCompletionSection({ isTui = false, sentinelPath = null } = {}) {
+  const lines = [
+    '## Claim Workflow Handoff',
+    'This is a self-managed claim flow. The claim prompt above owns its claim worktree, branch, PR/MR, review, merge or human-handoff, and cleanup. Follow its phase-specific exit conditions — do NOT stop after a code commit or hand the lifecycle back to PortOS.',
+    '',
+    'For a successful claim, signal completion only after the prompt\'s prescribed PR/MR and cleanup steps are complete. For a clean no-work, blocked, or review-stuck exit, follow the prompt\'s prescribed leave-open/cleanup path first.'
+  ];
+  if (isTui && sentinelPath) {
+    lines.push('', 'When that path is complete, write the completion sentinel and stop:', '', ...buildSentinelWriteSteps(1, sentinelPath, '   ## PR/MR\n   <PR or MR URL, or explain the clean exit>'));
+  } else {
+    lines.push('', 'After the prompt\'s prescribed final step, exit so PortOS can record the completed claim.');
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -1482,7 +1616,8 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
     : null;
 
   if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
-    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody, localAgentLoopBodyPath };
+    const forgeCli = await resolveManualForgeCli(workspaceDir, worktreeInfo, task);
+    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody, localAgentLoopBodyPath, forgeCli };
     return options.split === true
       ? buildLightContextPromptParts(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions)
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);
@@ -1507,6 +1642,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   // Build worktree context section if applicable
   const willOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+  const claimFlow = isClaimFlowTask(task, isTruthyMetaFn);
   const prCompletion = resolvePrCompletion(task.metadata);
   // A discard (reasoning-only) worktree: the agent reasons in it but it's thrown
   // away on exit with no commit/merge/PR (see agentWorktreeCleanup.js). Suppresses
@@ -1528,6 +1664,8 @@ ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (lat
 
 **Important**: ${discardWorktree
     ? DISCARD_WORKTREE_NOTE
+    : claimFlow
+      ? 'The claim workflow in the Completion section owns its claim branch, push, PR/MR, review, merge or human-handoff, and cleanup — do not hand those steps back to PortOS.'
     : isTui
       ? 'Commit your changes to this branch — see the **Completion Workflow** section below for the full push/PR/exit sequence.'
       : isWorktreeOnExistingBranch
@@ -1569,7 +1707,7 @@ Use the findings from the previous stage to inform your work. If the previous st
     ? 'run `/simplify` to review the changed code for reuse, quality, and efficiency'
     : SIMPLIFY_INLINE_REVIEW;
   // Discard tasks don't commit, so the simplify-before-commit step is moot.
-  const simplifySection = simplifyEnabled && !isTui && !discardWorktree ? `
+  const simplifySection = simplifyEnabled && !isTui && !discardWorktree && !claimFlow ? `
 ## Simplify Step
 After completing your work and before committing, ${simplifyInstruction}. Fix any issues found, then ${worktreeInfo && willOpenPR ? 'commit your changes (do NOT push — on a successful run the system will push and open the PR after you exit; if the run fails, no push or PR happens)' : 'commit and push using `/do:push`'}.
 ` : '';
@@ -1620,6 +1758,8 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
     ? buildActionOutputCompletionSection({ isTui, sentinelPath })
     : discardWorktree
       ? buildProgrammaticOutputCompletionSection(sentinelPath)
+      : claimFlow
+        ? buildClaimFlowCompletionSection({ isTui, sentinelPath })
       : isTui
         ? buildTuiCompletionSection({
             willOpenPR, prCompletion, simplifyEnabled,
@@ -1703,14 +1843,9 @@ Include the ticket ID (${task.metadata.jiraTicketId}) in your commit messages, e
 ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch branches.' : ''}
 ` : '';
 
-  // Detect and load task-type-specific skill template (only when matched)
-  const matchedSkill = detectSkillTemplate(task);
-  const skillSection = matchedSkill
-    ? await loadSkillTemplate(matchedSkill).catch(err => {
-        console.log(`⚠️ Skill template load failed for ${matchedSkill}: ${err.message}`);
-        return null;
-      })
-    : null;
+  // Keep the existing lifecycle template first, then append one narrow domain
+  // guide when the task explicitly concerns a supported visual stack.
+  const skillSection = await loadSkillTemplates(detectSkillTemplates(task));
 
   // Build onboard tools section for agent awareness
   const toolsSection = await getToolsSummaryForPrompt().catch(err => {
@@ -1817,6 +1952,8 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
   ? 'Deliver your result the way the task describes (the API call or command it names) — do NOT commit, push, or open a PR; this task changes no code'
   : discardWorktree
   ? 'Write your result to the completion sentinel (see the Completion section above) — do NOT commit, push, or open a PR; this worktree is discarded on exit'
+  : claimFlow
+    ? 'Follow the claim workflow prompt above; it owns its worktree, PR/MR, review, merge or human-handoff, and cleanup. Do not stop after committing.'
   : isReviewLoopFollowUp
     ? 'Follow the follow-up section above — push any fixes you make to the PR branch; a run that needed no fix makes no commit and that is a success, not a miss'
     : isTui
@@ -1839,7 +1976,7 @@ ${(() => {
     isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
     worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput,
     leavePrOpen: leavesPrForHuman(task),
-    isPrFollowUp: isReviewLoopFollowUp,
+    isPrFollowUp: isReviewLoopFollowUp, claimFlow,
   });
   return bullet ? `- ${bullet}` : '';
 })()}
@@ -1852,6 +1989,8 @@ ${noCodeOutput
   ? `- **Do NOT commit, push, or open a PR.** This task changes no code — its result is delivered by the API call or command described above. Without this, a no-worktree task of this shape was told to \`/do:push\` **directly to the branch it is standing on**, which for a task running in the app's live checkout is its default branch.`
   : discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
+  : claimFlow
+    ? `- **Follow the claim workflow prompt above.** It owns the claim worktree and the full PR/MR lifecycle; do not stop after committing or hand push/PR/merge/cleanup back to PortOS.`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
     : isTui && tuiSlashdoFree
@@ -1861,7 +2000,7 @@ ${noCodeOutput
     : worktreeInfo && willOpenPR
       ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations. The system will push your branch and open the PR after you exit, so do NOT run \`git push\` or \`/do:push\` yourself.`
       : `- **Commit and push using \`/do:push\`** — this handles changelog updates, staging specific files, writing a conventional commit message, and pushing safely. If \`/do:push\` is unavailable, follow its conventions manually: stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix, no Co-Authored-By annotations, and push with \`git pull --rebase && git push\`.`}
-${discardWorktree || noCodeOutput ? '' : worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
+${discardWorktree || noCodeOutput || claimFlow ? '' : worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
 
 ## Working Directory
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
@@ -1914,11 +2053,12 @@ export function buildLightContextPromptParts(task, workspaceDir, worktreeInfo, i
 
 const BEGIN_WORKING_LINE = 'Begin working on the task now.';
 
-function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null, localAgentLoopBodyPath = null } = {}) {
+function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null, localAgentLoopBodyPath = null, forgeCli = null } = {}) {
   // Idempotent with the reconcile in buildAgentPrompt; also protects the
   // directly-exported buildLightContextPrompt/Parts entry points.
   task = reconcileSplitContext(task);
   const willOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+  const claimFlow = isClaimFlowTask(task, isTruthyMetaFn);
   const prCompletion = resolvePrCompletion(task.metadata);
   const simplifyEnabled = isTruthyMetaFn(task.metadata?.simplify);
   const isReadOnly = isTruthyMetaFn(task.metadata?.readOnly);
@@ -1949,6 +2089,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
     : (codeReviewDefaults?.reviewerApplies === true);
+  const resolvedForgeCli = manualForgeCli(forgeCli, worktreeInfo);
   // Can this session TYPE a Claude Code slash command (`/do:pr`, `/do:push`,
   // `/simplify`)? One predicate, both prompt paths (#3114): `canTypeSlashCommands`
   // derives from `resolveSlashdoStyle` with the spawners' blank-command posture,
@@ -1977,7 +2118,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // a JIRA run be told to open a PR whose merge section was suppressed — and
   // PortOS opened that PR too. `inlineSection` also names WHICH section follows,
   // so the completion step's cross-reference can't name the wrong one.
-  const inlineSection = inlinePrLifecycleSection(task, {
+  const inlineSection = claimFlow ? null : inlinePrLifecycleSection(task, {
     providerType: isTui ? PROVIDER_TYPES.TUI : PROVIDER_TYPES.CLI,
     providerId, providerCommand, leanMode, worktreeInfo, isTruthyMetaFn,
   });
@@ -2031,7 +2172,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       `- **Path**: \`${worktreeInfo.worktreePath}\``,
       worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
       '',
-      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree }),
+      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow }),
       'Do NOT manually switch branches or modify the worktree configuration.',
       // Resuming a previous failed agent's branch: establish what's already done
       // before writing code (see buildResumeSection). '' when not a resume.
@@ -2081,13 +2222,18 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     // output hook) is the sole output; the worktree is discarded on exit. Wins
     // over the isTui / CLI push-and-PR completion workflows below.
     sections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
+  } else if (claimFlow) {
+    sections.push(buildClaimFlowCompletionSection({
+      isTui,
+      sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
+    }));
   } else if (isReadOnly) {
     sections.push(buildReadOnlyCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReviewLoopFollowUp) {
-    sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody }));
+    sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody, forgeCli: resolvedForgeCli }));
     if (isTui) {
       const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
       const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
@@ -2106,10 +2252,11 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
-      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies
+      reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies,
+      forgeCli: resolvedForgeCli
     }));
   } else {
-    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies }));
+    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion
@@ -2135,6 +2282,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       reviewerEfforts: lightReviewerEfforts,
       reviewStopMode: lightReviewStopMode,
       reviewerApplies: lightReviewerApplies,
+      forgeCli: resolvedForgeCli,
     }));
   }
 
@@ -2147,8 +2295,9 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
  * push workflow (TUI or Claude Code CLI with slashdo), reuse an existing PR
  * branch (review fixes), or hand off to PortOS's post-exit push.
  */
-function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree }) {
+function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow = false }) {
   if (discardWorktree) return DISCARD_WORKTREE_NOTE;
+  if (claimFlow) return 'The claim workflow in the Completion section owns the push, PR/MR, review, merge or human-handoff, and cleanup steps.';
   if (isTui) return 'Commit your changes to this branch — see **Completion Workflow** below.';
   if (isWorktreeOnExistingBranch) {
     return 'Commit and **push** any review-fix commits to this branch (the PR points at it). Use `git pull --rebase` before pushing if needed.';
@@ -2230,7 +2379,7 @@ function buildPostPRMergeSteps(startStep, { prCompletion = PR_COMPLETIONS.REVIEW
 function resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies }) {
   const reviewUsernames = normalizeReviewUsernames(usernames);
   const reviewArgs = willOpenPR
-    ? (runsReviewLoop ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels }) : '--review-with none')
+    ? (runsReviewLoop ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts }) : '--review-with none')
     : '';
   // Effort pins can't ride `--review-with` (no suffix for them in slashdo's
   // grammar), so they're stated as an instruction on the invocation instead.
@@ -2275,14 +2424,14 @@ function buildSentinelWriteSteps(stepNumber, sentinelPath, sentinelTail) {
  * return this IS a Claude session, so `/simplify` and `/do:pr` are both safe to
  * emit without a second provider check.
  */
-function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, ownsPrWorkflow = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, ownsPrWorkflow = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh' }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (slashdoFree) {
     // Plain `git`/`gh` instead of `/do:pr` — but still the whole lifecycle when
     // the session is a real coding harness (`ownsPrWorkflow`); the reviewer
     // procedure it needs is inlined in the Review Loop section that follows.
-    return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen, ownsPrWorkflow });
+    return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen, ownsPrWorkflow, forgeCli });
   }
   const cmd = willOpenPR ? '/do:pr' : '/do:push';
   // `/do:pr` may inherit a saved `review-with` default. Explicitly opt out
@@ -2355,22 +2504,31 @@ function promptRef(ref, fallback) {
  * inline review-loop and merge-gate sections address the PR by those names —
  * they are rendered before the PR exists, so a literal URL is impossible.
  */
-function buildManualPrCreateStep(step, { branchName, baseBranch }) {
+function buildManualPrCreateStep(step, { branchName, baseBranch, forgeCli = 'gh' }) {
   const branch = promptRef(branchName, '<branch>');
   const base = promptRef(baseBranch, '<base-branch>');
+  const gitlab = forgeCli === 'glab';
   return [
     `${step}. Push the branch and open the pull request yourself, capturing its URL and number — the section below addresses the PR by these shell variables:`,
     '',
     '   ```bash',
     `   git push -u origin ${branch}`,
-    `   PR_URL=$(gh pr create --base ${base} --head ${branch} --title "<conventional title>" --body "<description>")`,
-    '   PR_NUMBER=$(gh pr view "$PR_URL" --json number -q .number)',
+    gitlab
+      ? `   PR_URL=$(glab mr create --source-branch ${branch} --target-branch ${base} --title "<conventional title>" --description "<description>" | grep -Eo 'https?://[^[:space:]]+' | tail -n 1)`
+      : `   PR_URL=$(gh pr create --base ${base} --head ${branch} --title "<conventional title>" --body "<description>")`,
+    gitlab
+      ? '   PR_NUMBER=$(glab mr view "$PR_URL" -F json | jq -r .iid)'
+      : '   PR_NUMBER=$(gh pr view "$PR_URL" --json number -q .number)',
     '   ```',
     // `--fill` on a one-line commit produces an empty description; PortOS used
     // to generate the body server-side, so spell out what it must contain now
     // that the agent writes it.
-    '   Write a real `--body`: a **Summary** section and a **Test plan** section, no AI-attribution footer. Do NOT use `--fill`. If `gh` reports the pull request already exists, adopt it instead of failing: `PR_URL=$(gh pr view --json url -q .url)`.',
-    `   On a GitLab remote use \`glab mr create --source-branch ${branch} --target-branch ${base} --title "…" --description "…"\` and read the MR URL/IID back with \`glab mr view\`.`,
+    gitlab
+      ? '   Write a real `--description`: a **Summary** section and a **Test plan** section, with no AI-attribution footer. If `glab` reports the merge request already exists, adopt its URL and IID before continuing.'
+      : '   Write a real `--body`: a **Summary** section and a **Test plan** section, no AI-attribution footer. Do NOT use `--fill`. If `gh` reports the pull request already exists, adopt it instead of failing: `PR_URL=$(gh pr view --json url -q .url)`.',
+    gitlab
+      ? '   The GitLab MR URL and IID are captured in `$PR_URL` and `$PR_NUMBER`; use those variables for every review, merge, and verification command below.'
+      : `   On a GitLab remote use \`glab mr create --source-branch ${branch} --target-branch ${base} --title "…" --description "…"\` and read the MR URL/IID back with \`glab mr view\`.`,
   ];
 }
 
@@ -2388,7 +2546,7 @@ function buildManualPrCreateStep(step, { branchName, baseBranch }) {
  * `ownsPrWorkflow: false` (lean mode) keeps the original handoff: commit and
  * stop, PortOS owns the post-exit push / PR / review / merge lifecycle.
  */
-function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false, ownsPrWorkflow = false }) {
+function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false, ownsPrWorkflow = false, forgeCli = 'gh' }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   // `ownsPrWorkflow` already folds in `willOpenPR`, the worktree, and the
@@ -2403,7 +2561,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
   const lines = [
     '## Completion Workflow',
     drivesOwnPr
-      ? 'This provider does NOT have slashdo (`/do:*`) commands, so drive the handoff with plain `git` and `gh`. **You own this PR end to end — nothing else will open, review, or merge it.** Run these in order:'
+      ? `This provider does NOT have slashdo (\`/do:*\`) commands, so drive the handoff with plain \`git\` and \`${forgeCli}\`. **You own this ${forgeCli === 'glab' ? 'MR' : 'PR'} end to end — nothing else will open, review, or merge it.** Run these in order:`
       : 'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git`. Run these in order:',
     '',
     simplifyStep,
@@ -2417,7 +2575,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
 
   let step = 3;
   if (drivesOwnPr) {
-    lines.push(...buildManualPrCreateStep(step++, { branchName, baseBranch }));
+    lines.push(...buildManualPrCreateStep(step++, { branchName, baseBranch, forgeCli }));
     lines.push(`${step++}. Work through the **${runsReviewLoop ? 'Review Loop' : 'Merge Gate'}** section below in full — it ends by merging the PR. Come back here when it is done.`);
   } else if (willOpenPR) {
     const handoff = policyLeavesOpen
@@ -2492,11 +2650,11 @@ export function inlinePrLifecycleSection(task, { providerType, providerId, provi
  */
 function buildInlineReviewLoopSection({
   taskId, branchName, runsReviewLoop, leaveOpen, localAgentLoopBody, localAgentLoopBodyPath = null, writesSentinel = false,
-  reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies,
+  reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies, forgeCli = 'gh',
 }) {
   // Where control goes after the merge. A TUI run still owes PortOS its
   // `.agent-done` sentinel — telling it to "exit" here is how a finished merge
-  // idles into a false timeout — while a CLI run signals completion by exiting.
+  // can otherwise sit without recording completion — while a CLI run signals completion by exiting.
   const inlineExitStep = writesSentinel
     ? 'Return to the **Completion Workflow** above and write the completion sentinel — the run is not done until you have. Do NOT open a second PR.'
     : 'You are done — exit. Do NOT open a second PR or push anything further.';
@@ -2517,7 +2675,7 @@ function buildInlineReviewLoopSection({
     // exactly as the merge-only follow-up gets.
     reviewLoopMergeOnly: !runsReviewLoop,
     sourceTaskId: taskId || 'unknown',
-  }, { verbose: false, localAgentLoopBody, localAgentLoopBodyPath, inlineExitStep });
+  }, { verbose: false, localAgentLoopBody, localAgentLoopBodyPath, inlineExitStep, forgeCli });
 }
 
 /**
@@ -2530,7 +2688,7 @@ function buildInlineReviewLoopSection({
  * CLI providers fall through to the legacy commit-only block where PortOS
  * handles push+PR on exit.
  */
-function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, ownsPrWorkflow = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false }) {
+function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, ownsPrWorkflow = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh' }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (hasSlashdo && worktreeInfo && willOpenPR) {
@@ -2587,6 +2745,7 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
     lines.push(...buildManualPrCreateStep(step++, {
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
+      forgeCli,
     }));
     lines.push(`${step}. Work through the **${runsReviewLoop ? 'Review Loop' : 'Merge Gate'}** section below in full — it ends by merging the PR.`);
     return lines.join('\n');

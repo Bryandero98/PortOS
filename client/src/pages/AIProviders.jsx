@@ -22,6 +22,7 @@ import CodeReviewDefaultsPanel from '../components/providers/CodeReviewDefaultsP
 import EffortSelect from '../components/cos/EffortSelect';
 import Modal from '../components/ui/Modal';
 import { FormField } from '../components/ui/FormField';
+import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 
 // One phrasing for "this command isn't on the CoS Agent Runner's allowlist",
 // shared by the provider-card badge tooltip and the editor's inline banner.
@@ -68,6 +69,10 @@ export default function AIProviders() {
   const [sampleProviders, setSampleProviders] = useState([]);
   const [loadingSamples, setLoadingSamples] = useState(false);
   const [addingSample, setAddingSample] = useState({});
+  // `null` means the availability endpoint was not reached (for example, an
+  // older server during an upgrade), distinct from a confirmed missing CLI.
+  const [opencodeInstallStatus, setOpenCodeInstallStatus] = useState(null);
+  const [showOpenCodeInstaller, setShowOpenCodeInstaller] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -103,14 +108,15 @@ export default function AIProviders() {
     setLoading(true);
     setLoadError(false);
     let providersFailed = false;
-    const [providersData, appsData, runsData, statusData] = await Promise.all([
+    const [providersData, appsData, runsData, statusData, opencodeData] = await Promise.all([
       api.getProviders().catch(() => {
         providersFailed = true;
         return null;
       }),
       api.getApps().catch(() => []),
       api.getRuns(20).catch(() => ({ runs: [] })),
-      api.getProviderStatuses().catch(() => ({ providers: {} }))
+      api.getProviderStatuses().catch(() => ({ providers: {} })),
+      api.getOpenCodeInstallStatus({ silent: true }).catch(() => null),
     ]);
     if (providersFailed || !providersData) {
       setLoadError(true);
@@ -129,6 +135,9 @@ export default function AIProviders() {
     setApps(appsData);
     setRuns(runsData.runs || []);
     setStatuses(statusData.providers || {});
+    setOpenCodeInstallStatus(opencodeData && typeof opencodeData.installed === 'boolean'
+      ? opencodeData
+      : null);
     setLoading(false);
   };
 
@@ -281,6 +290,11 @@ export default function AIProviders() {
     }
   };
 
+  const handleOpenCodeInstallComplete = () => {
+    toast.success('OpenCode CLI installed and ready to test');
+    loadData();
+  };
+
   const selectedRunProvider = providers.find(p => p.id === activeProviderId);
   const runProviderIsTui = isTuiProvider(selectedRunProvider);
 
@@ -331,6 +345,39 @@ export default function AIProviders() {
           </button>
         </div>
       </div>
+
+      {opencodeInstallStatus && (
+        <div className={`rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+          opencodeInstallStatus.installed
+            ? 'border-port-success/40 bg-port-success/5'
+            : 'border-port-warning/40 bg-port-warning/5'
+        }`}>
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-white">OpenCode CLI</h2>
+            {opencodeInstallStatus.installed ? (
+              <p className="mt-1 text-sm text-port-success">Available on PortOS&apos;s PATH. OpenCode CLI and TUI providers can run.</p>
+            ) : (
+              <>
+                <p className="mt-1 text-sm text-gray-300">Required by OpenCode CLI and TUI providers. Install it here before sending an OpenCode agent task.</p>
+                {!opencodeInstallStatus.npmAvailable && (
+                  <p className="mt-1 text-xs text-port-warning">npm is not available on PortOS&apos;s PATH, so this host cannot install OpenCode from the page.</p>
+                )}
+              </>
+            )}
+          </div>
+          {!opencodeInstallStatus.installed && (
+            <button
+              type="button"
+              onClick={() => setShowOpenCodeInstaller(true)}
+              disabled={!opencodeInstallStatus.npmAvailable}
+              className="min-h-[44px] shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-port-accent text-white hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={opencodeInstallStatus.npmAvailable ? 'Install OpenCode CLI with npm' : 'npm is required to install OpenCode from this page'}
+            >
+              Install OpenCode
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Sample Providers Panel */}
       {showSamples && (
@@ -635,7 +682,7 @@ export default function AIProviders() {
                       )}
                       {isTuiProvider(provider) && (
                         <p className="text-xs break-words">
-                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, idle complete <span className="text-gray-300">{provider.tuiIdleTimeoutMs || 180000}ms</span>
+                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, completion by sentinel, process exit, or explicit failure
                         </p>
                       )}
                       {provider.fallbackProvider && (
@@ -782,6 +829,17 @@ export default function AIProviders() {
           onSave={() => { setShowForm(false); setEditingProvider(null); loadData(); }}
         />
       )}
+      <RuntimeInstallModal
+        open={showOpenCodeInstaller}
+        runtime="opencode"
+        label="OpenCode CLI"
+        onClose={() => setShowOpenCodeInstaller(false)}
+        onComplete={handleOpenCodeInstallComplete}
+        installUrlBase="/api/providers/opencode/install"
+        streamMethod="POST"
+        flushMs={250}
+        description="Installing the OpenCode CLI with npm. This downloads the current OpenCode package."
+      />
       </div>
     </div>
   );
@@ -811,8 +869,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     envVars: provider?.envVars || {},
     secretEnvVars: provider?.secretEnvVars || [],
     headlessArgs: provider?.headlessArgs?.join(' ') || '',
-    tuiPromptDelayMs: provider?.tuiPromptDelayMs || 2500,
-    tuiIdleTimeoutMs: provider?.tuiIdleTimeoutMs || 180000
+    tuiPromptDelayMs: provider?.tuiPromptDelayMs || 2500
   });
 
   const [newEnvKey, setNewEnvKey] = useState('');
@@ -890,16 +947,11 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     e.preventDefault();
 
     const tuiPromptDelay = parseInt(formData.tuiPromptDelayMs, 10);
-    const tuiIdleTimeout = parseInt(formData.tuiIdleTimeoutMs, 10);
-    // Three cases for the timeout field on submit:
-    //   1. valid integer within bounds → send the parsed number
-    //   2. blank/whitespace → omit so the server keeps the current value
-    //      (Number('') is 0, which would 400 against the min-1000 rule)
-    //   3. non-empty but invalid (e.g. '1e3', '500', 'abc') → send the
-    //      RAW STRING. Number() would accept '1e3' as 1000, silently
-    //      saving an exponent form the client/runner reject as invalid;
-    //      the server's digit-only preprocess will leave the string
-    //      alone and z.number() will produce a clear validation error.
+    // Blank input is omitted so the server keeps the current value. Non-empty
+    // invalid input (e.g. '1e3', '500', 'abc') is sent as the raw string so
+    // Number() cannot silently save an exponent form the client/runner reject;
+    // the server's digit-only preprocess leaves it alone and z.number() produces
+    // a clear validation error.
     const parsedTimeout = parseTimeoutMs(formData.timeout);
     const timeoutInput = String(formData.timeout ?? '').trim();
     const data = {
@@ -934,11 +986,8 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     if (formData.type === 'tui') {
       if (Number.isFinite(tuiPromptDelay)) data.tuiPromptDelayMs = tuiPromptDelay;
       else delete data.tuiPromptDelayMs;
-      if (Number.isFinite(tuiIdleTimeout)) data.tuiIdleTimeoutMs = tuiIdleTimeout;
-      else delete data.tuiIdleTimeoutMs;
     } else {
       delete data.tuiPromptDelayMs;
-      delete data.tuiIdleTimeoutMs;
     }
 
     // Only send apiKey if user entered a new value (avoid overwriting existing key with empty string)
@@ -1057,18 +1106,8 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
                       className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                     />
                   </FormField>
-                  <FormField label="Idle Complete (ms)">
-                    <input
-                      type="number"
-                      min="10000"
-                      max="1800000"
-                      value={formData.tuiIdleTimeoutMs}
-                      onChange={(e) => setFormData(prev => ({ ...prev, tuiIdleTimeoutMs: e.target.value }))}
-                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                    />
-                  </FormField>
                   <p className="sm:col-span-2 text-xs text-gray-500">
-                    TUI providers open an attachable shell session, paste the agent prompt, parse terminal output, and complete after the terminal is idle.
+                    TUI providers stay attached while the provider is silent; they finish on the completion sentinel, process exit, or explicit failure.
                   </p>
                 </div>
               )}

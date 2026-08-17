@@ -35,9 +35,13 @@ vi.mock('../../services/feedbackLoop.js', () => fnMap([
 vi.mock('../../services/timeCapsule.js', () => fnMap([
   'createSnapshot', 'listSnapshots', 'getSnapshot', 'deleteSnapshot', 'compareSnapshots',
 ]));
+vi.mock('../../services/spotifyBrowserImport.js', () => fnMap([
+  'openSpotifyBrowser', 'importSpotifyFromBrowser',
+]));
 
 import digitalTwinRoutes from './index.js';
 import * as digitalTwinService from '../../services/digital-twin.js';
+import * as spotifyBrowserImport from '../../services/spotifyBrowserImport.js';
 
 const VALID_UUID = '11111111-1111-1111-1111-111111111111';
 
@@ -194,6 +198,33 @@ describe('Digital Twin Routes', () => {
       const res = await request(app).put('/api/digital-twin/settings').send({ autoEnrich: true });
       expect(res.status).toBe(200);
       expect(digitalTwinService.updateSettings).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('interactive Spotify import', () => {
+    it('opens the managed Spotify privacy page and returns its browser state', async () => {
+      spotifyBrowserImport.openSpotifyBrowser.mockResolvedValue({ status: 'auth-required', pageId: 'tab-1' });
+      const res = await request(app).post('/api/digital-twin/import/spotify/browser/open').send({});
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: 'auth-required', pageId: 'tab-1' });
+    });
+
+    it('validates the provider before running the browser import', async () => {
+      const res = await request(app)
+        .post('/api/digital-twin/import/spotify/browser/import')
+        .send({ providerId: 'local' });
+      expect(res.status).toBe(400);
+      expect(spotifyBrowserImport.importSpotifyFromBrowser).not.toHaveBeenCalled();
+    });
+
+    it('runs the browser import with the selected provider and model', async () => {
+      spotifyBrowserImport.importSpotifyFromBrowser.mockResolvedValue({ status: 'complete', itemCount: 4 });
+      const res = await request(app)
+        .post('/api/digital-twin/import/spotify/browser/import')
+        .send({ providerId: 'local', model: 'example-model' });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('complete');
+      expect(spotifyBrowserImport.importSpotifyFromBrowser).toHaveBeenCalledWith('local', 'example-model');
     });
   });
 

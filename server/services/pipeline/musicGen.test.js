@@ -4,6 +4,15 @@ import { join } from 'path';
 import { rm, readdir } from 'fs/promises';
 import { writeFileSync, mkdtempSync } from 'fs';
 
+const cuda = vi.hoisted(() => ({ status: 'available', maxVramGb: 40 }));
+vi.mock('../../lib/cudaCapability.js', () => ({
+  getCudaCapability: vi.fn(async () => ({ status: cuda.status, gpus: [], maxVramGb: cuda.maxVramGb, error: null })),
+}));
+
+vi.mock('../../lib/hfCache.js', () => ({
+  inspectModelCache: vi.fn(async () => ({ cached: true })),
+}));
+
 // ---- Pure-helper tests (no mocks needed) ---------------------------------
 import {
   buildMusicGenArgs,
@@ -18,11 +27,16 @@ import {
   DEFAULT_ENGINE_ID,
   MUSICGEN_MODELS,
   AUDIOLDM2_MODELS,
+  MINIMAX_MUSIC3_MLX_MODELS,
   DEFAULT_MUSICGEN_MODEL_ID,
   DEFAULT_AUDIOLDM2_MODEL_ID,
   MIN_DURATION_SEC,
   MAX_DURATION_SEC,
   DEFAULT_DURATION_SEC,
+  MUSIC_VRAM_READINESS,
+  resolveVramReadiness,
+  resolveEngineVramReadiness,
+  MUSIC_RENDERER_BENCHMARK_GUIDE,
 } from './musicGen.js';
 
 describe('MUSICGEN_MODELS registry', () => {
@@ -64,7 +78,7 @@ describe('AUDIOLDM2_MODELS registry', () => {
 
 describe('ENGINES backend registry', () => {
   it('exposes all backends with the fields the route + UI consume', () => {
-    expect(Object.keys(ENGINES).sort()).toEqual(['acestep', 'acestep15', 'audioldm2', 'minimax-music3', 'musicgen']);
+    expect(Object.keys(ENGINES).sort()).toEqual(['acestep', 'acestep15', 'audioldm2', 'minimax-music3', 'minimax-music3-mlx', 'musicgen']);
     for (const engine of Object.values(ENGINES)) {
       expect(typeof engine.id).toBe('string');
       expect(typeof engine.name).toBe('string');
@@ -100,10 +114,70 @@ describe('ENGINES backend registry', () => {
     expect(ENGINES.acestep.models[0].repo).toBe('ACE-Step/ACE-Step-v1-3.5B');
   });
 
+  it('offers both pinned MLX MiniMax variants with 8-bit as the default', () => {
+    expect(ENGINES['minimax-music3-mlx']).toMatchObject({
+      id: 'minimax-music3-mlx',
+      name: expect.stringContaining('MiniMax-Music3'),
+      defaultModelId: 'minimax-music3-mlx-8bit',
+      installEnv: 'INSTALL_MINIMAX_MUSIC3_MLX',
+      lyrics: true,
+      customModels: false,
+      fixedModelInstall: true,
+      supportsModelRevision: true,
+      requiresPlatform: { platform: 'darwin', arch: 'arm64' },
+    });
+    expect(MINIMAX_MUSIC3_MLX_MODELS).toEqual([
+      expect.objectContaining({ id: 'minimax-music3-mlx-8bit', repo: 'mlx-community/MiniMax-Music3-8bit', revision: expect.stringMatching(/^[0-9a-f]{40}$/) }),
+      expect.objectContaining({ id: 'minimax-music3-mlx-bf16', repo: 'mlx-community/MiniMax-Music3-bf16', revision: expect.stringMatching(/^[0-9a-f]{40}$/) }),
+    ]);
+  });
+
   it('musicgen window mirrors the legacy module-level constants', () => {
     expect(ENGINES.musicgen.minDurationSec).toBe(MIN_DURATION_SEC);
     expect(ENGINES.musicgen.maxDurationSec).toBe(MAX_DURATION_SEC);
     expect(ENGINES.musicgen.defaultDurationSec).toBe(DEFAULT_DURATION_SEC);
+  });
+
+  it('declares MiniMax VRAM requirements per execution profile', () => {
+    const engine = ENGINES['minimax-music3'];
+    expect(engine.executionProfile).toBe('cuda-bf16-single-gpu');
+    expect(engine.vramProfiles[engine.executionProfile]).toMatchObject({
+      label: 'CUDA BF16 (single GPU)',
+      minVramGb: null,
+      recommendedVramGb: null,
+    });
+  });
+
+  it('keeps MiniMax profile support gated on technical checks plus full-length listening', () => {
+    expect(ENGINES['minimax-music3']).toMatchObject({
+      benchmarkGuide: MUSIC_RENDERER_BENCHMARK_GUIDE,
+      requiresFullLengthListening: true,
+    });
+    expect(MUSIC_RENDERER_BENCHMARK_GUIDE).toBe('docs/features/music-renderer-benchmarks.md');
+  });
+});
+
+describe('VRAM readiness', () => {
+  it('distinguishes sufficient, insufficient, and unknown measurements', () => {
+    expect(resolveVramReadiness({ cudaStatus: 'available', maxVramGb: 32, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.SUFFICIENT);
+    expect(resolveVramReadiness({ cudaStatus: 'available', maxVramGb: 12, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.INSUFFICIENT);
+    expect(resolveVramReadiness({ cudaStatus: 'available', maxVramGb: null, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.UNKNOWN_SIZE);
+    expect(resolveVramReadiness({ cudaStatus: 'unknown', maxVramGb: 32, minVramGb: 24 }))
+      .toBe(MUSIC_VRAM_READINESS.UNKNOWN_SIZE);
+  });
+
+  it('keeps an unmeasured CUDA execution profile unknown-size', () => {
+    expect(resolveEngineVramReadiness('minimax-music3', {
+      status: 'available', maxVramGb: 80,
+    })).toMatchObject({
+      state: MUSIC_VRAM_READINESS.UNKNOWN_SIZE,
+      minVramGb: null,
+      recommendedVramGb: null,
+      maxVramGb: 80,
+    });
   });
 });
 
@@ -166,6 +240,19 @@ describe('buildSidecarArgs', () => {
     expect(args).toContain('MiniMaxAI/MiniMax-Music3');
     expect(args.slice(args.indexOf('--duration'), args.indexOf('--duration') + 2)).toEqual(['--duration', '300']);
     expect(args.slice(args.indexOf('--lyrics'), args.indexOf('--lyrics') + 2)).toEqual(['--lyrics', 'Example lyrics']);
+  });
+
+  it('pins the selected MLX checkpoint revision in the sidecar args', () => {
+    const { args } = buildSidecarArgs({
+      engineId: 'minimax-music3-mlx', pythonPath: '/venv/python', repo: 'mlx-community/MiniMax-Music3-8bit',
+      revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5', prompt: 'bright pop', lyrics: '[verse] Example',
+      durationSec: 30, outputPath: '/tmp/out.wav',
+    });
+    expect(args.slice(args.indexOf('--revision'), args.indexOf('--revision') + 2)).toEqual([
+      '--revision', '10aa4ca578d04c6f5256c1bc22fc8405a09602b5',
+    ]);
+    expect(args[0]).toMatch(/generate_minimax_music3_mlx\.py$/);
+    expect(args).toContain('--lyrics');
   });
   const base = {
     pythonPath: '/venv/bin/python3',
@@ -301,6 +388,8 @@ const h = vi.hoisted(() => ({
   mockWriteOutput: true,
   musicgenPython: '/fake/venv-musicgen/bin/python3',
   audioldm2Python: '/fake/venv-audioldm2/bin/python3',
+  minimaxMusic3Python: '/fake/venv-minimax-music3/bin/python3',
+  minimaxMusic3MlxPython: '/fake/venv-minimax-music3-mlx/bin/python3',
   // isEngineHealthy's import probe: which interpreters it ran, and whether the
   // import succeeded (a half-built venv exits non-zero).
   probeCalls: [],
@@ -379,6 +468,8 @@ vi.mock('../../lib/pythonSetup.js', async () => {
     ...actual,
     resolveMusicgenPython: () => h.musicgenPython,
     resolveAudioldm2Python: () => h.audioldm2Python,
+    resolveMinimaxMusic3Python: () => h.minimaxMusic3Python,
+    resolveMinimaxMusic3MlxPython: () => h.minimaxMusic3MlxPython,
   };
 });
 
@@ -393,10 +484,14 @@ beforeEach(() => {
   h.mockStdout = 'STAGE:done\nRESULT:{"output":"x","durationSec":12.5,"sampleRate":32000}\n';
   h.musicgenPython = '/fake/venv-musicgen/bin/python3';
   h.audioldm2Python = '/fake/venv-audioldm2/bin/python3';
+  h.minimaxMusic3Python = '/fake/venv-minimax-music3/bin/python3';
+  h.minimaxMusic3MlxPython = '/fake/venv-minimax-music3-mlx/bin/python3';
   h.probeCalls.length = 0;
   h.probeOk = true;
   h.osPlatform = 'darwin';
   h.osArch = 'arm64';
+  cuda.status = 'available';
+  cuda.maxVramGb = 40;
   invalidateEngineHealth();
 });
 
@@ -415,6 +510,38 @@ describe('generateMusic backend selection', () => {
     expect(res.engine).toBe('musicgen');
     expect(res.modelId).toBe(DEFAULT_MUSICGEN_MODEL_ID);
     expect(res.filename).toMatch(/^music-gen-.*\.wav$/);
+  });
+
+  it('blocks MiniMax when its CUDA profile has no measured VRAM floor', async () => {
+    await expect(generateMusic({
+      prompt: 'warm cinematic pop',
+      lyrics: `[verse]\n${'word '.repeat(150)}\n[outro]`,
+      engine: 'minimax-music3',
+      durationMode: 'auto',
+    })).rejects.toMatchObject({
+      status: 503,
+      code: 'PIPELINE_MUSIC_VRAM_UNKNOWN',
+    });
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('routes MiniMax Music 3 MLX to its sibling venv and pins the selected checkpoint', async () => {
+    await generateMusic({
+      prompt: 'warm cinematic pop',
+      lyrics: '[verse]\nExample words',
+      engine: 'minimax-music3-mlx',
+      modelId: 'minimax-music3-mlx-bf16',
+      durationSec: 30,
+    });
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].bin).toBe('/fake/venv-minimax-music3-mlx/bin/python3');
+    expect(spawnCalls[0].args[0]).toMatch(/generate_minimax_music3_mlx\.py$/);
+    expect(spawnCalls[0].args.slice(spawnCalls[0].args.indexOf('--model'), spawnCalls[0].args.indexOf('--model') + 2)).toEqual([
+      '--model', 'mlx-community/MiniMax-Music3-bf16',
+    ]);
+    expect(spawnCalls[0].args.slice(spawnCalls[0].args.indexOf('--revision'), spawnCalls[0].args.indexOf('--revision') + 2)).toEqual([
+      '--revision', '83a5f2d365673689df5c8f36e21e108751fd92ea',
+    ]);
   });
 
   it('routes to the audioldm2 sidecar + venv when engine=audioldm2', async () => {

@@ -83,6 +83,75 @@ describe('Settings routes — apiAccess slice', () => {
   });
 });
 
+describe('Settings routes — agent context and federated media provider slices', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('accepts and returns a strict disabled-by-default context configuration', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ agentContext: { enabled: true, profile: 'metadata', scopes: ['navigation', 'workspaces'] } });
+    expect(res.status).toBe(200);
+    expect(res.body.agentContext).toEqual({
+      enabled: true,
+      profile: 'metadata',
+      scopes: ['navigation', 'workspaces'],
+    });
+  });
+
+  it('rejects unknown, empty, duplicate, and misspelled scopes', async () => {
+    for (const agentContext of [
+      { enabled: true, scopes: [] },
+      { enabled: true, scopes: ['brain', 'brain'] },
+      { enabled: true, scopes: ['privacy-vault'] },
+      { enabled: true, scopes: ['navigation'], extra: true },
+    ]) {
+      const res = await request(buildApp()).put('/api/settings').send({ agentContext });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    }
+  });
+
+  it('accepts a disabled-by-default provider config and preserves future federation keys', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: {
+        strictPullAuthorization: true,
+        futureFederationField: 'preserve',
+        mediaProvider: {
+          enabled: false,
+          maxQueuedJobs: 2,
+          audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3', futureModelField: true }],
+          futureProviderField: 'preserve',
+        },
+      } });
+    expect(res.status).toBe(200);
+    expect(res.body.federation.mediaProvider).toMatchObject({
+      enabled: false,
+      maxQueuedJobs: 2,
+      futureProviderField: 'preserve',
+    });
+    expect(res.body.federation.futureFederationField).toBe('preserve');
+  });
+
+  it('rejects invalid limits and duplicate engine/model pairs', async () => {
+    const invalidLimit = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaProvider: { maxQueuedJobs: 0 } } });
+    expect(invalidLimit.status).toBe(400);
+
+    const duplicate = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaProvider: { audioModels: [
+        { engine: 'musicgen', modelId: 'm' },
+        { engine: 'musicgen', modelId: 'm' },
+      ] } } });
+    expect(duplicate.status).toBe(400);
+  });
+});
+
 describe('Settings routes — imageGen.grok slice (#2859)', () => {
   beforeEach(() => {
     store = {};

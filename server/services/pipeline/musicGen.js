@@ -11,6 +11,9 @@
  *     (≤30s; trained on 30s windows, degrades past that). First backend.
  *   - `audioldm2` — AudioLDM2 latent diffusion via HuggingFace `diffusers`.
  *     Long-form (well past 30s), torch on MPS/CUDA/CPU. Second backend.
+ *   - `minimax-music3` — MiniMax Music 3 via CUDA Diffusers, up to five minutes.
+ *   - `minimax-music3-mlx` — native MiniMax Music 3 on Apple Silicon via MLX,
+ *     with selectable 8-bit and BF16 checkpoints.
  *
  * An ENGINES registry holds each backend's models, duration window, sidecar
  * script, venv resolver and install hint, so the route, UI and `generateMusic`
@@ -22,8 +25,13 @@
  * `generateMusic` throws a 503 with that backend's install hint rather than a
  * bare spawn error — exactly like the FLUX.2 venv gate.
  *
- * Output: a mono WAV written into the shared music library (PATHS.music) under
- * a `music-gen-<uuid>.wav` basename, so the picker treats a generated track
+ * Performance or memory profiles are not supported from metrics alone: the
+ * full-length benchmark protocol in
+ * `docs/features/music-renderer-benchmarks.md` requires an explicit listening
+ * review after the technical checks pass.
+ *
+ * Output: a WAV written into the shared music library (PATHS.music) under a
+ * `music-gen-<uuid>.wav` basename, so the picker treats a generated track
  * identically to an uploaded one.
  */
 
@@ -44,11 +52,13 @@ import {
   resolveAcestepPython, ACESTEP_RUNTIME_DIR, ACESTEP_VENV_DEFAULT,
   resolveAcestep15Python, ACESTEP15_RUNTIME_DIR, ACESTEP15_VENV_DEFAULT,
   resolveMinimaxMusic3Python, MINIMAX_MUSIC3_RUNTIME_DIR, MINIMAX_MUSIC3_VENV_DEFAULT,
+  resolveMinimaxMusic3MlxPython, MINIMAX_MUSIC3_MLX_RUNTIME_DIR, MINIMAX_MUSIC3_MLX_VENV_DEFAULT,
 } from '../../lib/pythonSetup.js';
 import { getCudaCapability } from '../../lib/cudaCapability.js';
 import { inspectModelCache } from '../../lib/hfCache.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { stripMarkdownEmphasis } from '../../lib/markdownText.js';
+import { recommendMinimaxDurationSec } from '../../lib/musicDuration.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
 
 const execFileAsync = promisify(execFile);
@@ -61,6 +71,8 @@ const AUDIOLDM2_SCRIPT = join(__dirname, '../../../scripts/generate_audioldm2.py
 const ACESTEP_SCRIPT = join(__dirname, '../../../scripts/generate_acestep.py');
 const ACESTEP15_SCRIPT = join(__dirname, '../../../scripts/generate_acestep15.py');
 const MINIMAX_MUSIC3_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3.py');
+const MINIMAX_MUSIC3_MLX_SCRIPT = join(__dirname, '../../../scripts/generate_minimax_music3_mlx.py');
+export const MUSIC_RENDERER_BENCHMARK_GUIDE = 'docs/features/music-renderer-benchmarks.md';
 // Back-compat alias for the pre-multi-engine `buildMusicGenArgs` default.
 const SIDECAR_SCRIPT = MUSICGEN_SCRIPT;
 
@@ -107,8 +119,61 @@ export const ACESTEP15_MODELS = Object.freeze([
   { id: 'ace-step-v1.5', repo: 'ACE-Step/Ace-Step1.5', name: 'ACE-Step 1.5 (full song + vocals)' },
 ]);
 export const DEFAULT_ACESTEP15_MODEL_ID = 'ace-step-v1.5';
+// MiniMax Music 3 weights. The HF repo is ~57 GB, but `ModularPipeline`
+// (what scripts/generate_minimax_music3.py loads) reads only the seven
+// components named in the repo's modular_model_index.json: condition_encoder,
+// language_model, rvq_depth_decoder, scheduler, tokenizer, transformer,
+// vocoder — about 29 GB. The rest is the sglang-omni serving path: a bundled
+// 20 GB Qwen-7B captioner under qwen_7B/ plus the original-format
+// flowmatching_vae.pth / dav.pth checkpoints. `downloadIgnore` keeps those off
+// the user's disk; it is fnmatch (not glob), so `*` spans `/` as well.
 export const MINIMAX_MUSIC3_MODELS = Object.freeze([
-  { id: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', name: 'MiniMax Music 3 (CUDA, up to 5 minutes)' },
+  {
+    id: 'minimax-music3',
+    repo: 'MiniMaxAI/MiniMax-Music3',
+    name: 'MiniMax-Music3 (CUDA, up to 5 minutes)',
+    downloadIgnore: Object.freeze(['qwen_7B/*', 'flowmatching_vae.pth', 'dav.pth', 'figures/*']),
+    downloadSizeGb: 29,
+  },
+]);
+
+// VRAM requirements belong to the execution profile, not the model name. The
+// current CUDA sidecar has no reproducible PortOS memory benchmark yet, so its
+// contract deliberately carries null floors and remains unknown-size until the
+// measured profile is recorded. A missing measurement must not be interpreted
+// as zero VRAM or as permission to start a run that will fail during loading.
+export const MUSIC_VRAM_READINESS = Object.freeze({
+  SUFFICIENT: 'sufficient',
+  INSUFFICIENT: 'insufficient',
+  UNKNOWN_SIZE: 'unknown-size',
+});
+export const MINIMAX_MUSIC3_VRAM_PROFILES = Object.freeze({
+  'cuda-bf16-single-gpu': Object.freeze({
+    label: 'CUDA BF16 (single GPU)',
+    minVramGb: null,
+    recommendedVramGb: null,
+  }),
+});
+
+// These are immutable HF revisions because a shipped model must not silently
+// change underneath an existing install. The 8-bit conversion is the practical
+// default for general Apple-Silicon installs (~14 GB); BF16 remains selectable
+// as the larger unquantized reference (~29 GB) for high-memory systems.
+export const MINIMAX_MUSIC3_MLX_MODELS = Object.freeze([
+  {
+    id: 'minimax-music3-mlx-8bit',
+    repo: 'mlx-community/MiniMax-Music3-8bit',
+    revision: '10aa4ca578d04c6f5256c1bc22fc8405a09602b5',
+    downloadSizeGb: 14,
+    name: 'MiniMax-Music3 MLX 8-bit (~14 GB, lower-memory default)',
+  },
+  {
+    id: 'minimax-music3-mlx-bf16',
+    repo: 'mlx-community/MiniMax-Music3-bf16',
+    revision: '83a5f2d365673689df5c8f36e21e108751fd92ea',
+    downloadSizeGb: 29,
+    name: 'MiniMax-Music3 MLX BF16 (~29 GB, unquantized reference)',
+  },
 ]);
 
 /**
@@ -227,7 +292,7 @@ export const ENGINES = Object.freeze({
   },
   'minimax-music3': {
     id: 'minimax-music3',
-    name: 'MiniMax Music 3 (CUDA only)',
+    name: 'MiniMax-Music3 (CUDA only)',
     models: MINIMAX_MUSIC3_MODELS,
     defaultModelId: 'minimax-music3',
     minDurationSec: 1,
@@ -250,9 +315,42 @@ export const ENGINES = Object.freeze({
     // The sheet is built per-render rather than fixed, because `audio_duration`
     // is only a CEILING for this engine — see buildMinimaxInstrumentalLyrics.
     instrumentalLyrics: buildMinimaxInstrumentalLyrics,
+    // Auto mode sizes that ceiling from lyric words/sections and leaves room
+    // for an ending. MiniMax may still stop earlier by design.
+    autoDuration: true,
     customModels: false,
     fixedModelInstall: true,
     cudaRequired: true,
+    executionProfile: 'cuda-bf16-single-gpu',
+    vramProfiles: MINIMAX_MUSIC3_VRAM_PROFILES,
+    benchmarkGuide: MUSIC_RENDERER_BENCHMARK_GUIDE,
+    requiresFullLengthListening: true,
+  },
+  'minimax-music3-mlx': {
+    id: 'minimax-music3-mlx',
+    name: 'MiniMax-Music3 (MLX, Apple Silicon)',
+    models: MINIMAX_MUSIC3_MLX_MODELS,
+    defaultModelId: 'minimax-music3-mlx-8bit',
+    minDurationSec: 1,
+    maxDurationSec: 300,
+    defaultDurationSec: 60,
+    scriptPath: MINIMAX_MUSIC3_MLX_SCRIPT,
+    runtimeDir: MINIMAX_MUSIC3_MLX_RUNTIME_DIR,
+    resolvePython: resolveMinimaxMusic3MlxPython,
+    venvDefault: MINIMAX_MUSIC3_MLX_VENV_DEFAULT,
+    installEnv: 'INSTALL_MINIMAX_MUSIC3_MLX',
+    healthProbe: 'import mlx; from mlx_audio.music import load',
+    lyrics: true,
+    instrumentalLyrics: buildMinimaxInstrumentalLyrics,
+    autoDuration: true,
+    customModels: false,
+    fixedModelInstall: true,
+    supportsModelRevision: true,
+    requiresPlatform: {
+      platform: 'darwin',
+      arch: 'arm64',
+      label: 'macOS on Apple Silicon (MLX)',
+    },
   },
 });
 
@@ -297,6 +395,57 @@ export function isEnginePlatformSupported(engineId) {
 // null for a portable engine.
 export function enginePlatformLabel(engineId) {
   return getEngine(engineId).requiresPlatform?.label || null;
+}
+
+/**
+ * Resolve a VRAM contract without collapsing an unreadable measurement into
+ * zero. Keeping this pure makes the three readiness states testable without a
+ * CUDA host and lets callers use the exact same comparison at every boundary.
+ */
+export function resolveVramReadiness({ cudaStatus, maxVramGb, minVramGb } = {}) {
+  if (!Number.isFinite(minVramGb) || cudaStatus !== 'available' || !Number.isFinite(maxVramGb)) {
+    return MUSIC_VRAM_READINESS.UNKNOWN_SIZE;
+  }
+  return maxVramGb >= minVramGb
+    ? MUSIC_VRAM_READINESS.SUFFICIENT
+    : MUSIC_VRAM_READINESS.INSUFFICIENT;
+}
+
+/**
+ * Resolve the selected engine's execution-profile requirement against the
+ * largest CUDA card reported by cudaCapability. Portable engines are
+ * sufficient by definition; CUDA engines with no measured profile remain
+ * unknown-size and are fail-closed by install/generation callers.
+ */
+export function resolveEngineVramReadiness(engineId, cuda = {}) {
+  const engine = getEngine(engineId);
+  const profile = engine.vramProfiles?.[engine.executionProfile] || null;
+  const state = engine.cudaRequired
+    ? resolveVramReadiness({
+      cudaStatus: cuda.status,
+      maxVramGb: cuda.maxVramGb,
+      minVramGb: profile?.minVramGb,
+    })
+    : MUSIC_VRAM_READINESS.SUFFICIENT;
+  return {
+    state,
+    executionProfile: engine.executionProfile || null,
+    profileLabel: profile?.label || null,
+    minVramGb: profile?.minVramGb ?? null,
+    recommendedVramGb: profile?.recommendedVramGb ?? null,
+    maxVramGb: Number.isFinite(cuda.maxVramGb) ? cuda.maxVramGb : null,
+  };
+}
+
+export function formatEngineVramReadinessMessage(engineId, readiness, action = 'run') {
+  const engine = getEngine(engineId);
+  if (readiness?.state === MUSIC_VRAM_READINESS.INSUFFICIENT) {
+    return `${engine.name} requires at least ${readiness.minVramGb} GB of VRAM for the ${readiness.profileLabel || 'selected'} profile; this host reports ${readiness.maxVramGb} GB.`;
+  }
+  if (readiness?.state === MUSIC_VRAM_READINESS.UNKNOWN_SIZE) {
+    return `${engine.name} cannot be ${action} because the GPU VRAM requirement has not been measured for the ${readiness.profileLabel || 'selected'} execution profile.`;
+  }
+  return null;
 }
 
 // Whether a backend's venv interpreter exists. Cheap (an existsSync behind the
@@ -415,16 +564,19 @@ export function buildMinimaxInstrumentalLyrics(durationSec) {
  * spawning Python. All sidecars share the same base flag contract
  * (`--model/--text/--duration/--output/--runtime-dir`), so one builder serves
  * every engine; `engineId` selects the duration window + script + runtime dir.
+ * Engines with immutable shipped snapshots can opt into `--revision` so the
+ * Python loader and the local cache inspect the same HF commit.
  * Lyric-aware engines (`engine.lyrics`, e.g. ACE-Step) additionally get
  * `--lyrics`; non-lyric engines never receive the flag (their sidecars don't
  * define it), so a stray lyrics arg can't break a MusicGen/AudioLDM2 spawn.
  */
-export function buildSidecarArgs({ engineId = DEFAULT_ENGINE_ID, pythonPath, scriptPath, runtimeDir, repo, prompt, lyrics, durationSec, outputPath }) {
+export function buildSidecarArgs({ engineId = DEFAULT_ENGINE_ID, pythonPath, scriptPath, runtimeDir, repo, revision, prompt, lyrics, durationSec, outputPath }) {
   const engine = getEngine(engineId);
   const seconds = clampDuration(durationSec, engine.id);
   const args = [
     scriptPath ?? engine.scriptPath,
     '--model', repo,
+    ...(engine.supportsModelRevision && revision ? ['--revision', revision] : []),
     // Prompts are authored in a plain textarea that many users type markdown
     // into out of habit. Every backend's text encoder tokenizes `**` and `_`
     // as literal content, so the emphasis markers become conditioning noise —
@@ -464,10 +616,10 @@ export function buildMusicGenArgs({ pythonPath, scriptPath = SIDECAR_SCRIPT, run
  * (500) when the sidecar exits non-zero / produces no result.
  *
  * `engine` selects the backend (`musicgen` | `audioldm2` | `acestep` |
- * `acestep15`); unknown
+ * `acestep15` | `minimax-music3` | `minimax-music3-mlx`); unknown
  * ids fall back to the default. `modelId` is resolved within that engine's
- * registry. `lyrics` is forwarded only to lyric-aware engines (ACE-Step); other
- * engines ignore it. `signal` (optional AbortSignal) SIGTERMs the child — wired
+ * registry. `lyrics` is forwarded only to lyric-aware engines; other engines
+ * ignore it. `signal` (optional AbortSignal) SIGTERMs the child — wired
  * through so a cancel button can abort a long render. `onActivity` (optional)
  * fires once per `STAGE:` line the sidecar emits — the media-job queue's
  * generic idle watchdog resets its timer off it via the audio job-kind
@@ -476,7 +628,7 @@ export function buildMusicGenArgs({ pythonPath, scriptPath = SIDECAR_SCRIPT, run
  * flat timeout. Callers outside the queue (the Pipeline Audio routes) omit it
  * and behave exactly as before.
  */
-export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT_ENGINE_ID, durationSec, modelId, repo, signal, onActivity } = {}) {
+export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT_ENGINE_ID, durationSec, durationMode, modelId, repo, provenance, signal, onActivity } = {}) {
   const text = (prompt || '').trim();
   if (!text) {
     throw new ServerError('prompt is required', { status: 400, code: 'PIPELINE_MUSIC_EMPTY_PROMPT' });
@@ -491,7 +643,12 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
   const model = repo
     ? { id: modelId || repo, repo, name: modelId || repo }
     : shippedModel;
-  const resolvedDuration = durationSec ?? engine.defaultDurationSec;
+  const resolvedDuration = durationMode === 'auto' && engine.autoDuration
+    ? recommendMinimaxDurationSec(lyrics, {
+      minDurationSec: engine.defaultDurationSec,
+      maxDurationSec: engine.maxDurationSec,
+    })
+    : durationSec ?? engine.defaultDurationSec;
   const pythonPath = engine.resolvePython();
   if (engine.cudaRequired) {
     const cuda = await getCudaCapability();
@@ -501,9 +658,18 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
         { status: 503, code: 'PIPELINE_MUSIC_CUDA_REQUIRED' },
       );
     }
+    const vram = resolveEngineVramReadiness(engine.id, cuda);
+    if (vram.state !== MUSIC_VRAM_READINESS.SUFFICIENT) {
+      throw new ServerError(formatEngineVramReadinessMessage(engine.id, vram), {
+        status: 503,
+        code: vram.state === MUSIC_VRAM_READINESS.INSUFFICIENT
+          ? 'PIPELINE_MUSIC_VRAM_INSUFFICIENT'
+          : 'PIPELINE_MUSIC_VRAM_UNKNOWN',
+      });
+    }
   }
   if (engine.fixedModelInstall) {
-    const cache = await inspectModelCache(model.repo).catch(() => ({ cached: false }));
+    const cache = await inspectModelCache(model.repo, { revision: model.revision }).catch(() => ({ cached: false }));
     if (!cache.cached) {
       throw new ServerError(`${engine.name} model weights are not installed. Install them from Music before generating.`, {
         status: 503, code: 'PIPELINE_MUSIC_MODEL_MISSING',
@@ -526,7 +692,7 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
   await ensureDir(PATHS.music);
   const filename = `music-gen-${randomUUID()}.wav`;
   const outputPath = join(PATHS.music, filename);
-  const { bin, args } = buildSidecarArgs({ engineId: engine.id, pythonPath, repo: model.repo, prompt: text, lyrics, durationSec: resolvedDuration, outputPath });
+  const { bin, args } = buildSidecarArgs({ engineId: engine.id, pythonPath, repo: model.repo, revision: model.revision, prompt: text, lyrics, durationSec: resolvedDuration, outputPath });
 
   console.log(`🎼 Generating music [${engine.id}/${model.id}] ${clampDuration(resolvedDuration, engine.id)}s: "${text.slice(0, 60)}"`);
   // The default backends use ungated HF weights (facebook/* and cvssp/*), so a
@@ -563,5 +729,6 @@ export async function generateMusic({ prompt, lyrics, engine: engineId = DEFAULT
     modelId: model.id,
     model: model.name,
     engine: engine.id,
+    ...(provenance ? { provenance } : {}),
   };
 }

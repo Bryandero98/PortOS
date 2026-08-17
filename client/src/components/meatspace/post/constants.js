@@ -10,10 +10,9 @@ export const MEMORY_DRILL_TYPES = ['memory-fill-blank', 'memory-sequence', 'memo
 export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
 
 // Drill types valid elsewhere but not yet wired into the interactive POST
-// session drill picker (DOMAINS.memory.drillTypes below) — memory-fill-blank's
-// scoring path is fully correct now (see MEMORY_DRILL_TYPES above), it just
-// isn't one of the types PostSessionLauncher offers to pick from yet.
-export const POST_UNSUPPORTED_DRILL_TYPES = ['memory-fill-blank'];
+// session drill picker. Multi-blank fill-in-the-blank is now wired end to end,
+// so this remains empty until a future generation-only type needs the guard.
+export const POST_UNSUPPORTED_DRILL_TYPES = [];
 
 // The server generators have item-shape requirements: Sequence Recall needs a
 // successor line, while Element Flash is backed by the built-in periodic-table
@@ -171,9 +170,8 @@ export function isMemoryItemEnabled(config, itemId) {
 // Domain definitions for 5-minute balanced sessions — DERIVED from POST_TOPICS
 // so the domain list has exactly one owner. A POST *domain* is a topic that
 // reports a coarse module (i.e. can produce a scored POST task); Morse has a
-// null module and is therefore not a domain. Drill types the session picker
-// can't run yet (POST_UNSUPPORTED_DRILL_TYPES) are filtered out here, so
-// DOMAINS keeps exactly the drill lists the launcher has always composed from.
+// null module and is therefore not a domain. Generation-only types are filtered
+// out here through POST_UNSUPPORTED_DRILL_TYPES.
 export const DOMAINS = Object.fromEntries(
   POST_TOPICS
     .filter(t => t.module)

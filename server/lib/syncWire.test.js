@@ -231,6 +231,34 @@ describe('syncWire', () => {
       expect(JSON.stringify(withPins)).toBe(JSON.stringify(preField));
     });
 
+    it('strips local commission runs, including taste and audio provenance, from the brief wire form (#4347)', () => {
+      const withLocalRun = sanitizeRecordForWire('creativeCommission', {
+        id: 'commission-example',
+        name: 'Example Commission',
+        brief: { intent: 'ambient', musicTaste: { source: 'digital-twin', window: 'month' } },
+        runs: [{
+          id: 'run-example',
+          tasteRecipe: { source: 'digital-twin', sourceHash: 'private-local' },
+          musicGeneration: { engine: 'musicgen', modelId: 'example-model', durationSec: 45 },
+          musicOutput: { filename: 'example.wav', sourceHash: 'private-local' },
+        }],
+        schedule: { kind: 'DAILY' },
+        assignment: { providerId: 'local-only' },
+        feedback: [],
+        enabled: true,
+        updatedAt: '2026-08-16T00:00:00.000Z',
+      });
+      const briefOnly = sanitizeRecordForWire('creativeCommission', {
+        id: 'commission-example',
+        name: 'Example Commission',
+        brief: { intent: 'ambient', musicTaste: { source: 'digital-twin', window: 'month' } },
+        updatedAt: '2026-08-16T00:00:00.000Z',
+      });
+
+      expect(withLocalRun.runs).toBeUndefined();
+      expect(JSON.stringify(withLocalRun)).toBe(JSON.stringify(briefOnly));
+    });
+
     describe('author kind', () => {
       it('passes through an author with canonical tail soft-delete fields', () => {
         const a = { id: 'auth-1', name: 'Ada', bio: 'b' };

@@ -43,10 +43,12 @@ tryReadFile: vi.fn().mockResolvedValue(null), jobId: 'whatever' })),
   generateImage: vi.fn(async () => ({ jobId: 'whatever' })),
   generateImageCodex: vi.fn(async () => ({ jobId: 'whatever' })),
   generateAudio: vi.fn(async () => ({ jobId: 'whatever' })),
+  generateAudioRemote: vi.fn(async () => ({ jobId: 'whatever' })),
   cancelVideo: vi.fn(),
   cancelImage: vi.fn(),
   cancelImageCodex: vi.fn(),
   cancelAudio: vi.fn(),
+  cancelAudioRemote: vi.fn(),
   // #1332: loraTraining is dynamically imported by the queue for runTraining
   // (worker) and hasSurvivingTrainer (boot reconcile). Stub both so the boot
   // re-attach decision is testable without loading the real trainer module.
@@ -75,6 +77,11 @@ vi.mock('../audioGen/local.js', () => ({
   cancel: (...args) => stubs.cancelAudio(...args),
 }));
 
+vi.mock('../audioGen/remote.js', () => ({
+  generateAudio: (...args) => stubs.generateAudioRemote(...args),
+  cancel: (...args) => stubs.cancelAudioRemote(...args),
+}));
+
 vi.mock('../loraTraining/index.js', () => ({
   runTraining: (...args) => stubs.runTraining(...args),
   hasSurvivingTrainer: (...args) => stubs.hasSurvivingTrainer(...args),
@@ -101,6 +108,13 @@ const flush = async () => {
   await Promise.resolve();
   await mediaJobQueue?.__drainForTests();
 };
+
+const remoteMediaParams = () => ({
+  wireVersion: 1,
+  peerId: '00000000-0000-4000-8000-000000000001',
+  profile: { style: 'ambient', mood: 'calm', tempo: 'slow', energy: 'low', instruments: [] },
+  request: { engine: 'remote-audio', modelId: 'example/model' },
+});
 
 beforeEach(async () => {
   tempDataDir = mkdtempSync(join(tmpdir(), 'mediaJobQueue-test-'));
@@ -800,12 +814,89 @@ describe('Audio kind (#1928)', () => {
     // gen modules must not have been invoked.
     expect(stubs.generateVideo).not.toHaveBeenCalled();
     expect(stubs.generateImage).not.toHaveBeenCalled();
+    expect(stubs.generateAudioRemote).not.toHaveBeenCalled();
 
     audioGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.wav`, durationSec: 12 });
     await waitFor(() => mediaJobQueue.getJob(job.jobId)?.status === 'completed');
 
     const settled = mediaJobQueue.getJob(job.jobId);
     expect(settled.result).toEqual({ generationId: job.jobId, filename: `${job.jobId}.wav`, durationSec: 12 });
+  });
+
+  it('runs remote audio in its own lane without occupying the local GPU', async () => {
+    stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+    stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
+
+    const video = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'local render' } });
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'audio',
+      params: {
+        prompt: '',
+        engine: 'remote-audio',
+        modelId: 'example/model',
+        remoteMedia: remoteMediaParams(),
+      },
+    });
+
+    await waitFor(() => stubs.generateVideo.mock.calls.length === 1
+      && stubs.generateAudioRemote.mock.calls.length === 1);
+    expect(stubs.generateAudio).not.toHaveBeenCalled();
+    expect(mediaJobQueue.getJob(video.jobId).status).toBe('running');
+    expect(mediaJobQueue.getJob(remote.jobId).status).toBe('running');
+
+    audioGenEvents.emit('completed', { generationId: remote.jobId, filename: `${remote.jobId}.wav` });
+    videoGenEvents.emit('failed', { generationId: video.jobId, error: 'cleanup' });
+    await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'completed');
+  });
+
+  it('persists cancellation intent before signaling a running remote adapter', async () => {
+    stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'audio',
+      params: {
+        prompt: '',
+        remoteMedia: remoteMediaParams(),
+      },
+    });
+    await waitFor(() => stubs.generateAudioRemote.mock.calls.length === 1);
+
+    await expect(mediaJobQueue.cancelJob(remote.jobId)).resolves.toMatchObject({ ok: true, status: 'canceling' });
+    expect(stubs.cancelAudioRemote).toHaveBeenCalledWith(remote.jobId);
+    expect(mediaJobQueue.getJob(remote.jobId).params.remoteMedia.cancelRequested).toBe(true);
+
+    audioGenEvents.emit('failed', { generationId: remote.jobId, error: 'canceled remotely' });
+    await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'canceled');
+  });
+
+  it('re-enqueues a persisted running remote job with reconciliation enabled', async () => {
+    const id = '00000000-0000-4000-8000-000000000002';
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [{
+        id,
+        kind: 'audio',
+        owner: null,
+        status: 'running',
+        queuedAt: '2026-08-17T12:00:00.000Z',
+        startedAt: '2026-08-17T12:00:01.000Z',
+        params: {
+          prompt: '',
+          engine: 'remote-audio',
+          modelId: 'example/model',
+          remoteMedia: remoteMediaParams(),
+        },
+      }],
+    }));
+    stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
+
+    await mediaJobQueue.initMediaJobQueue();
+    await waitFor(() => stubs.generateAudioRemote.mock.calls.length === 1);
+
+    expect(stubs.generateAudioRemote).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: id,
+      remoteMedia: expect.objectContaining({ reconcile: true }),
+    }));
+    audioGenEvents.emit('completed', { generationId: id, filename: `${id}.wav` });
+    await waitFor(() => mediaJobQueue.getJob(id)?.status === 'completed');
   });
 
   // cancelJob's dispatch-by-kind (mod.cancel(jobId)) is exercised generically

@@ -152,6 +152,17 @@ describe('reference repos routes', () => {
       expect(r.body.analysis).toEqual({ queued: false, reason: 'no-new-commits' });
       expect(svc.triggerReferenceAnalysis).not.toHaveBeenCalled();
     });
+
+    it('returns stale snapshots without queuing analysis', async () => {
+      svc.checkReferenceRepo.mockResolvedValueOnce({
+        head: 'a'.repeat(40), commitCount: 2, commits: [], stale: true,
+        error: { code: 'REFERENCE_REPO_GIT_FAILED', message: 'temporary outage' },
+      });
+      const r = await request(app).post('/api/apps/app-1/reference-repos/r1/check');
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ stale: true, analysis: { queued: false, reason: 'stale-snapshot' } });
+      expect(svc.triggerReferenceAnalysis).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /:refId/reviewed', () => {

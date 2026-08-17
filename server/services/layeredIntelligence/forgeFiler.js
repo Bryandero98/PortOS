@@ -5,6 +5,7 @@
  * forge CLI (injectable `exec`).
  */
 
+import { dispatchLabelSpec, forgeIssueLabels } from '../../lib/dispatchLabels.js';
 import { safeJSONParse } from '../../lib/fileUtils.js';
 import { LI_LABEL, LI_BLOCKING_LABEL } from './constants.js';
 import { slugMarker, extractSlugFromBody } from './dedup.js';
@@ -228,10 +229,13 @@ export async function listBlockingIssues({ cli, cwd, env, exec = runCli } = {}) 
  * (gh/glab both fail creating an issue with a non-existent label). Idempotent —
  * `--force` (gh) / re-create (glab) is a no-op when the label already exists.
  */
-export async function ensureForgeLabels({ cli, cwd, env, exec = runCli } = {}) {
+export async function ensureForgeLabels({ cli, cwd, env, extraLabels = [], exec = runCli } = {}) {
   const labels = [
     { name: LI_LABEL, color: '1d76db', desc: 'Filed by the Layered Intelligence loop' },
-    { name: LI_BLOCKING_LABEL, color: 'b60205', desc: 'Layered Intelligence loop is paused on this issue' }
+    { name: LI_BLOCKING_LABEL, color: 'b60205', desc: 'Layered Intelligence loop is paused on this issue' },
+    ...extraLabels.map((name) => dispatchLabelSpec(name)).filter(Boolean).map((s) => ({
+      name: s.name, color: s.color, desc: s.description
+    }))
   ];
   for (const l of labels) {
     if (cli === 'glab') {
@@ -245,14 +249,20 @@ export async function ensureForgeLabels({ cli, cwd, env, exec = runCli } = {}) {
 /**
  * File ONE proposal issue on a forge (gh/glab). Ensures labels first, embeds the
  * slug marker in the body, and returns `{ success, number, url }`. The issue
- * number is parsed from the created URL's trailing digits.
+ * number is parsed from the created URL's trailing digits. Optional dispatch
+ * hints and contributor labels are applied only when the proposal supplied
+ * valid values — never derived from `complexity`.
  */
-export async function fileProposalToForge({ cli, cwd, env, title, body, slug, exec = runCli } = {}) {
-  await ensureForgeLabels({ cli, cwd, env, exec });
+export async function fileProposalToForge({
+  cli, cwd, env, title, body, slug, model, effort, goodFirstIssue, helpWanted, exec = runCli
+} = {}) {
+  const extras = forgeIssueLabels({ model, effort, goodFirstIssue, helpWanted });
+  await ensureForgeLabels({ cli, cwd, env, extraLabels: extras, exec });
   const fullBody = `${body}\n\n${slugMarker(slug)}`;
+  const labelArgs = [LI_LABEL, ...extras].flatMap((name) => ['--label', name]);
   const args = cli === 'glab'
-    ? ['issue', 'create', '--title', title, '--description', fullBody, '--label', LI_LABEL]
-    : ['issue', 'create', '--title', title, '--body', fullBody, '--label', LI_LABEL];
+    ? ['issue', 'create', '--title', title, '--description', fullBody, ...labelArgs]
+    : ['issue', 'create', '--title', title, '--body', fullBody, ...labelArgs];
   const { code, stdout, stderr } = await exec(cli, args, { cwd, env });
   if (code !== 0) return { success: false, error: stderr || `${cli} exited with code ${code}` };
   const urlMatch = stdout.trim().match(/(https?:\/\/\S+)/);

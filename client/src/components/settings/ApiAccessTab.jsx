@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Globe, Lock, Unlock, Copy, RefreshCw } from 'lucide-react';
+import { Bot, Globe, Lock, Unlock, Copy, RefreshCw } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { getSettings, updateSettings, getOpenApiSpec } from '../../services/apiSystem';
@@ -34,27 +34,37 @@ const API_CARDS = [
 ];
 
 const DEFAULT_ACCESS = { exposed: false, requireAuth: false };
+const DEFAULT_AGENT_CONTEXT = { enabled: false, profile: 'metadata', scopes: ['navigation', 'workspaces'] };
+const AGENT_CONTEXT_SCOPES = [
+  { id: 'navigation', label: 'Navigation', hint: 'PortOS page labels, aliases, and paths.' },
+  { id: 'workspaces', label: 'Workspaces', hint: 'App presence and task counts; never repository paths or branches.' },
+  { id: 'brain', label: 'Brain', hint: 'Searchable Brain records; metadata-only unless summary mode is selected.' },
+  { id: 'identity', label: 'Identity export', hint: 'Section presence only; never raw identity records or Privacy Vault data.' },
+];
 
-const Toggle = ({ checked, onChange, label, hint, disabled }) => (
-  <label className={`flex items-start gap-3 ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+const Toggle = ({ id, checked, onChange, label, hint, disabled }) => (
+  <div className={`flex items-start gap-3 ${disabled ? 'opacity-50' : ''}`}>
     <input
+      id={id}
+      aria-label={label}
       type="checkbox"
       checked={checked}
       disabled={disabled}
       onChange={(e) => onChange(e.target.checked)}
       className="w-4 h-4 mt-0.5 shrink-0"
     />
-    <div className="flex flex-col min-w-0 flex-1">
+    <label htmlFor={id} className={`flex flex-col min-w-0 flex-1 ${disabled ? '' : 'cursor-pointer'}`}>
       <span className="text-sm text-white">{label}</span>
       {hint && <span className="text-xs text-gray-500">{hint}</span>}
-    </div>
-  </label>
+    </label>
+  </div>
 );
 
 export function ApiAccessTab() {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
   const [access, setAccess] = useState({});
+  const [agentContext, setAgentContext] = useState(DEFAULT_AGENT_CONTEXT);
   const [spec, setSpec] = useState(null);
 
   // window.location.origin is the tailnet host the user is browsing from, so
@@ -69,7 +79,14 @@ export function ApiAccessTab() {
 
   useEffect(() => {
     getSettings({ silent: true })
-      .then((s) => setAccess(s?.apiAccess || {}))
+      .then((s) => {
+        setAccess(s?.apiAccess || {});
+        setAgentContext({
+          ...DEFAULT_AGENT_CONTEXT,
+          ...(s?.agentContext || {}),
+          scopes: s?.agentContext?.scopes?.length ? s.agentContext.scopes : DEFAULT_AGENT_CONTEXT.scopes,
+        });
+      })
       .catch(() => toast.error('Failed to load API access settings'))
       .finally(() => setLoading(false));
     loadSpec();
@@ -96,6 +113,28 @@ export function ApiAccessTab() {
     } finally {
       setSavingId(null);
     }
+  };
+
+  const patchAgentContext = async (partial) => {
+    const prev = agentContext;
+    const next = { ...prev, ...partial };
+    setAgentContext(next);
+    setSavingId('agent-context');
+    try {
+      await updateSettings({ agentContext: next }, { silent: true });
+    } catch (err) {
+      setAgentContext(prev);
+      toast.error(`Failed to save: ${err.message}`);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const patchAgentContextScope = (scope, checked) => {
+    const scopes = checked
+      ? [...new Set([...agentContext.scopes, scope])]
+      : agentContext.scopes.filter((candidate) => candidate !== scope);
+    if (scopes.length > 0) patchAgentContext({ scopes });
   };
 
   if (loading) return <BrailleSpinner text="Loading API access settings" />;
@@ -147,6 +186,7 @@ export function ApiAccessTab() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Toggle
+                id={`api-${card.id}-exposed`}
                 checked={entry.exposed}
                 disabled={busy}
                 onChange={(v) => patchAccess(card.id, { exposed: v })}
@@ -154,6 +194,7 @@ export function ApiAccessTab() {
                 hint="Off by default. Nothing is reachable until you turn this on."
               />
               <Toggle
+                id={`api-${card.id}-auth`}
                 checked={entry.requireAuth}
                 disabled={busy || !entry.exposed}
                 onChange={(v) => patchAccess(card.id, { requireAuth: v })}
@@ -189,6 +230,82 @@ export function ApiAccessTab() {
           </div>
         );
       })}
+
+      <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-white">
+              <Bot size={18} />
+              <h3 className="text-base font-semibold">Agent Context (MCP)</h3>
+              <span className={`text-xs ${agentContext.enabled ? 'text-port-success' : 'text-gray-500'}`}>
+                {agentContext.enabled ? 'local access enabled' : 'disabled'}
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              A read-only context surface for agents running on this machine. It accepts loopback
+              connections only, never tailnet or public traffic, and makes no LLM calls. PortOS
+              password authentication still applies when configured.
+            </p>
+          </div>
+          {savingId === 'agent-context' && <BrailleSpinner />}
+        </div>
+
+        <Toggle
+          id="agent-context-enabled"
+          checked={agentContext.enabled}
+          disabled={savingId !== null}
+          onChange={(enabled) => patchAgentContext({ enabled })}
+          label="Enable local MCP context"
+          hint="Off by default. Enabling does not expose the endpoint beyond this machine."
+        />
+
+        <fieldset className="space-y-2" disabled={savingId !== null}>
+          <legend className="text-xs font-medium text-gray-300 mb-2">Allowed context scopes</legend>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {AGENT_CONTEXT_SCOPES.map((scope) => {
+              const checked = agentContext.scopes.includes(scope.id);
+              return (
+                <Toggle
+                  key={scope.id}
+                  id={`agent-context-scope-${scope.id}`}
+                  checked={checked}
+                  disabled={savingId !== null || (checked && agentContext.scopes.length === 1)}
+                  onChange={(value) => patchAgentContextScope(scope.id, value)}
+                  label={scope.label}
+                  hint={scope.hint}
+                />
+              );
+            })}
+          </div>
+        </fieldset>
+
+        <div className="space-y-1">
+          <label htmlFor="agent-context-profile" className="text-xs font-medium text-gray-300">Disclosure profile</label>
+          <select
+            id="agent-context-profile"
+            value={agentContext.profile}
+            disabled={savingId !== null}
+            onChange={(event) => patchAgentContext({ profile: event.target.value })}
+            className="block w-full sm:max-w-md bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white disabled:opacity-50"
+          >
+            <option value="metadata">Metadata only (recommended)</option>
+            <option value="summary">Redacted summaries</option>
+          </select>
+          <p className="text-xs text-gray-500">
+            Metadata mode can match private text but returns only generic record labels and stable opaque references.
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <div className="text-xs text-gray-400">Local Streamable HTTP endpoint</div>
+          <code className="block bg-port-bg border border-port-border rounded-lg px-3 py-2 text-xs text-port-accent break-all">
+            /api/agent-context/mcp
+          </code>
+          <p className="text-xs text-gray-500">
+            Runtime manifest: <code className="text-port-accent">/api/agent-context/manifest</code>
+          </p>
+        </div>
+      </div>
 
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-2">
         <div className="flex items-center justify-between gap-2">

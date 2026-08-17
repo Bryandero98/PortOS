@@ -24,6 +24,7 @@ import {
   LLM_DRILL_TYPES,
   MEMORY_DRILL_TYPES,
   trainingEntrySchema,
+  trainingRunSubmitSchema,
   postProgressQuerySchema,
 } from '../lib/postValidation.js';
 import * as postService from '../services/meatspacePost.js';
@@ -301,6 +302,16 @@ router.post('/post/training', asyncHandler(async (req, res) => {
   const data = validateRequest(trainingEntrySchema, req.body);
   const entry = await trainingService.submitTrainingEntry(data);
   res.status(201).json(entry);
+}));
+
+/**
+ * POST /api/meatspace/post/training/runs
+ * Atomically persist every attempt in one completed training run.
+ */
+router.post('/post/training/runs', asyncHandler(async (req, res) => {
+  const data = validateRequest(trainingRunSubmitSchema, req.body);
+  const run = await trainingService.submitTrainingRun(data);
+  res.status(201).json(run);
 }));
 
 /**

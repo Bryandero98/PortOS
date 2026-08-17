@@ -30,7 +30,7 @@ vi.mock('../components/ProviderModelSelector', () => ({
 
 // The preview mounts a react-three-fiber Canvas, which cannot render in jsdom.
 vi.mock('../components/threejsModels/ThreejsModelPreview', () => ({
-  default: () => <div>Model preview</div>,
+  default: ({ family }) => <div>Model preview {family?.id || 'no family'}</div>,
 }));
 
 import { generateThreejsModel, getThreejsModel, listThreejsModelFamilies } from '../services/api';
@@ -316,6 +316,7 @@ describe('ThreejsModelDetail subject family', () => {
     expect(screen.getByText('Lights')).toBeInTheDocument();
     expect(screen.getByText(/side profile, top-down/)).toBeInTheDocument();
     expect(screen.getByText(/wheelbase and track proportion/)).toBeInTheDocument();
+    expect(screen.getByText('Model preview vehicle')).toBeInTheDocument();
     // The floor-not-ceiling framing has to reach the user too — otherwise the
     // checklist reads as the whole job rather than the minimum.
     expect(screen.getByText(/floor, not a ceiling/)).toBeInTheDocument();

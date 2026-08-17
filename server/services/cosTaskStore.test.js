@@ -461,6 +461,18 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
   });
 
+  it('persists a pinned claim target through the task markdown round-trip', async () => {
+    const created = await addTask({
+      description: 'Claim GitHub issue 42 for Example App',
+      app: 'example-app',
+      claimTarget: '42'
+    }, 'user');
+
+    expect(created.metadata.claimTarget).toBe('42');
+    const { tasks } = await getUserTasks();
+    expect(tasks.find(t => t.id === created.id).metadata.claimTarget).toBe('42');
+  });
+
   it('persists malware scan report ownership through the task markdown round-trip', async () => {
     const malwareScan = { linkId: 'a3d2c4e8-810a-4d1a-8ab1-94d3e0a13f8d', reportId: 'b38bdf75-3fe2-498c-9c36-7d512dc078d1' };
     const created = await addTask({ description: 'Malware scan: example/repo', malwareScan }, 'user');
@@ -674,9 +686,10 @@ describe('cosTaskStore.addTask', () => {
   });
 
   it('persists boolean override flags (true and false) into metadata', async () => {
-    const task = await addTask({ description: 'flagged', useWorktree: false, openPR: true }, 'user');
+    const task = await addTask({ description: 'flagged', useWorktree: false, openPR: true, claimFlow: true }, 'user');
     expect(task.metadata.useWorktree).toBe(false);
     expect(task.metadata.openPR).toBe(true);
+    expect(task.metadata.claimFlow).toBe(true);
     expect(task.metadata.prCompletion).toBe('review-then-merge');
   });
 

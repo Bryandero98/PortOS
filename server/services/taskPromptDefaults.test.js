@@ -31,6 +31,26 @@ const SNAPSHOT = JSON.parse(readFileSync(
 ));
 
 describe('taskPromptDefaults integrity snapshot', () => {
+  it('claim workflows avoid Copilot and require verified remote merge state before cleanup', () => {
+    for (const key of ['plan-task', 'claim-issue']) {
+      const prompt = DEFAULT_TASK_PROMPTS[key];
+      expect(prompt.toLowerCase()).not.toContain('copilot');
+      expect(prompt).not.toMatch(/^\s*gh pr merge[^\n]*--auto/m);
+      expect(prompt).toContain('--json state -q .state');
+      expect(prompt).toContain('[ "$STATE" = "MERGED" ]');
+      expect(prompt).toContain('--squash --delete-branch');
+      expect(prompt).toContain('--rebase --delete-branch');
+      expect(prompt).toContain('Never force-delete with `-D`');
+    }
+
+    const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
+    expect(gitlab.toLowerCase()).not.toContain('copilot');
+    expect(gitlab).toContain('glab mr view');
+    expect(gitlab).toContain('ascii_downcase');
+    expect(gitlab).toContain('--squash --remove-source-branch');
+    expect(gitlab).toContain('Never force-delete with `-D`');
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -109,6 +129,21 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v9).not.toContain('REJECTED.md');
     expect(v9).toContain('.changelog/');
     expect(v9).not.toBe(current);
+  });
+
+  it('do-replan v2 rejects future-only proposals while preserving v1 for migration', () => {
+    const current = DEFAULT_TASK_PROMPTS['do-replan'];
+    expect(PROMPT_VERSIONS['do-replan']).toBe(2);
+    expect(current).toContain('Issue-quality gate');
+    expect(current).toContain('useful to do now');
+    expect(current).toContain('let a later audit rediscover it');
+    expect(current).toContain('A refactor is valid when current evidence shows it pays off now');
+
+    const previous = PREVIOUS_DEFAULT_PROMPTS['do-replan'];
+    const v1 = previous.find((prompt) => prompt.includes('Replan — Audit PLAN.md'));
+    expect(v1).toBeDefined();
+    expect(v1).not.toContain('Issue-quality gate');
+    expect(v1).not.toBe(current);
   });
 
   // claim-issue v7 / claim-issue-gitlab v6: Phase 3 no longer parks an *ambiguous*
@@ -218,10 +253,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // declared the reviewer unavailable, and merged its PR on a self-review. Every
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
-    ['plan-task', 14],
-    ['claim-issue', 12],
-    ['claim-issue-gitlab', 11],
-    ['claim-issue-jira', 9],
+    ['plan-task', 15],
+    ['claim-issue', 14],
+    ['claim-issue-gitlab', 13],
+    ['claim-issue-jira', 11],
   ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     expect(PROMPT_VERSIONS[key]).toBe(version);
@@ -264,8 +299,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(worktreeCommands).toHaveLength(1);
     expect(worktreeCommands.every((command) => command.includes('--no-track'))).toBe(true);
 
-    const outgoing = PREVIOUS_DEFAULT_PROMPTS[key].at(-1);
-    expect(outgoing).toMatch(/\bworktree add -b\b/);
+    // Located by CONTENT, not array position: later revisions append their
+    // own outgoing bodies after the pre-`--no-track` default.
+    const outgoing = PREVIOUS_DEFAULT_PROMPTS[key].find(
+      (p) => /\bworktree add -b\b/.test(p) && !p.includes('--no-track'),
+    );
+    expect(outgoing).toBeDefined();
     expect(outgoing).not.toContain('--no-track');
     expect(outgoing).not.toBe(current);
   });

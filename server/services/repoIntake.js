@@ -151,7 +151,7 @@ export async function queueRepoStudy(link) {
   // telling the agent where to file, the tracker it names, and the
   // `worktreeChangesExpected` flag derived from that SAME tracker so the two can
   // never disagree (a github/gitlab/jira run files out of band and leaves the
-  // tree clean; without the flag it is scored `idle-no-changes`, #3102).
+  // tree clean; without the flag it is mistaken for missing code work, #3102).
   const { trackerInstructions, workTracker, worktreeChangesExpected } =
     await resolveTrackerFilingBlock(app, 'repo-study');
 

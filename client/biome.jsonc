@@ -58,6 +58,8 @@
     // `recommended` preset is much broader; adopting it is a separate policy
     // decision, not part of this migration.
     //
+    // Accessibility rules are enabled in small, verified stages. Add each rule
+    // only after the current client has a clean baseline for it.
     // KNOWN PARITY GAPS — this is a near-port, not a total one. Counts below are
     // measured with `--max-diagnostics=none --reporter=json`, excluding
     // `suppressions/unused` noise; Biome's default reporter caps at 20, so a bare
@@ -75,6 +77,12 @@
     // Do not upgrade this comment to a claim of full parity without re-measuring.
     "rules": {
       "preset": "none",
+      "a11y": {
+        "useAltText": "error",
+        "useAriaPropsForRole": "error",
+        "useValidAriaProps": "error",
+        "noLabelWithoutControl": "error"
+      },
       "complexity": {
         // eslint: no-regex-spaces
         "noAdjacentSpacesInRegex": "error",

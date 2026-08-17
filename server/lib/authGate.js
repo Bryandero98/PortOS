@@ -65,6 +65,11 @@ const isPublicPath = (path) => {
 // the cookie or Authorization: Bearer header.
 export const authGate = async (req, res, next) => {
   const enabled = await isAuthEnabled();
+  // Downstream peer-provider routes need to distinguish a verified peer Basic
+  // credential from an interactive browser session. The global gate is the
+  // one authoritative verifier, so leave a request-local, non-secret marker
+  // instead of re-running password verification in each provider route.
+  req.portosAuthContext = { enabled, authenticated: false, method: null };
   if (!enabled) return next();
   // CSRF guard runs FIRST, before isPublicPath — public endpoints like
   // /api/auth/logout still mutate state (clear the cookie + revoke the
@@ -89,14 +94,20 @@ export const authGate = async (req, res, next) => {
   const settings = await getSettings();
   if (isRegistryPublic(settings, path)) return next();
   const token = extractToken(req);
-  if (await verifySession(token)) return next();
+  if (await verifySession(token)) {
+    req.portosAuthContext = { enabled: true, authenticated: true, method: 'session' };
+    return next();
+  }
   // Also accept HTTP Basic auth — used by peer-to-peer federation probes.
   // The peer sends `Authorization: Basic <base64(:password)>` (the Instances
   // UI stores username + password; only the password is validated here since
   // PortOS is single-user). scrypt verification is intentionally slow but runs
   // in libuv's thread pool so it doesn't block the event loop.
   const basicPassword = extractBasicPassword(req);
-  if (basicPassword && await verifyBasicPassword(basicPassword)) return next();
+  if (basicPassword && await verifyBasicPassword(basicPassword)) {
+    req.portosAuthContext = { enabled: true, authenticated: true, method: 'basic' };
+    return next();
+  }
   // /data/* is hit directly by <img>/<audio>/<video> tags which don't show a
   // structured-JSON error — return a plain 401 there. API callers expect the
   // PortOS error envelope.

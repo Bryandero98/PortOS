@@ -20,7 +20,7 @@ export const REQUIRED_PACKAGES = IS_DARWIN
   ? ['mflux', 'mlx', 'mlx_vlm', 'mlx_video', 'transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm']
   : IS_WIN
     ? ['transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm', 'torch', 'diffusers']
-    : ['mflux', 'transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm'];
+    : ['mflux', 'transformers', 'safetensors', 'huggingface_hub', 'numpy', 'cv2', 'tqdm', 'torch', 'diffusers'];
 
 // Some package identifiers in REQUIRED_PACKAGES need to be probed via a
 // deeper submodule import to distinguish two PyPI packages that publish the
@@ -482,6 +482,47 @@ export function resolveMinimaxMusic3Python() {
 export function invalidateMinimaxMusic3Python() {
   cachedMinimaxMusic3Python = null;
 }
+
+// MiniMax Music 3's native MLX port runs in a separate venv from the CUDA
+// Diffusers runtime above. Keeping the stacks isolated prevents a torch/
+// diffusers upgrade from changing the MLX install (and vice versa).
+const MINIMAX_MUSIC3_MLX_VENV_CANDIDATES = [
+  join(HOME, '.portos', 'venv-minimax-music3-mlx', 'bin', 'python3'),
+  join(PATHS.data, 'python', 'venv-minimax-music3-mlx', 'bin', 'python3'),
+];
+
+export const MINIMAX_MUSIC3_MLX_VENV_DEFAULT = MINIMAX_MUSIC3_MLX_VENV_CANDIDATES[0];
+export const MINIMAX_MUSIC3_MLX_RUNTIME_DIR = '';
+
+let cachedMinimaxMusic3MlxPython = null;
+export function resolveMinimaxMusic3MlxPython() {
+  if (cachedMinimaxMusic3MlxPython && existsSync(cachedMinimaxMusic3MlxPython)) return cachedMinimaxMusic3MlxPython;
+  for (const p of MINIMAX_MUSIC3_MLX_VENV_CANDIDATES) {
+    if (existsSync(p)) { cachedMinimaxMusic3MlxPython = p; return p; }
+  }
+  return null;
+}
+
+export function invalidateMinimaxMusic3MlxPython() {
+  cachedMinimaxMusic3MlxPython = null;
+}
+
+// Every venv PortOS provisions with `huggingface_hub` installed, in preference
+// order. hfDownload.js falls back through these to find an interpreter that can
+// run scripts/hf_download_repo.py when no image-gen runtime is configured — a
+// music-only install still has to be able to download its own weights.
+//
+// ADDING A RUNTIME: if its setup-image-video.sh block pip-installs
+// huggingface_hub, add its resolver here. This list used to live in
+// hfDownload.js, where each new engine forgot it; keeping it next to the
+// resolvers is what makes the omission visible.
+export const HF_HUB_PYTHON_RESOLVERS = Object.freeze([
+  resolveAcestepPython,
+  resolveAudioldm2Python,
+  resolveMusicgenPython,
+  resolveMinimaxMusic3Python,
+  resolveMinimaxMusic3MlxPython,
+]);
 
 // MuScriptor (audio → MIDI transcription for the Rounds workbench + Music Video
 // parsing, #reference-audio-to-midi) runs in its own venv at

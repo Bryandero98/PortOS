@@ -77,8 +77,9 @@ function accuracySpeedScore(recomputed, refMs) {
  * is no data to derive them from, so downstream readers/aggregators stay safe.
  *
  * NOTE: this treats `answered == null` as "not reached". It is therefore the
- * right helper for skip-means-blank drills (stroop, schulte, mental-rotation,
- * digit-span, reaction-time) but NOT for n-back, where withholding a press is a
+ * right helper for skip-means-blank drills (Stroop, mental rotation, digit span,
+ * reaction time) but NOT for Schulte (event stream) or n-back (go/no-go). In
+ * n-back, withholding a press is a
  * deliberate "no-match" answer — n-back computes its own signal-detection metrics.
  */
 export function answeredMetrics(recomputed) {
@@ -238,17 +239,24 @@ export function generateDigitSpan(config = {}) {
 }
 
 /**
- * Stroop trials. ~25% congruent (word matches ink), the rest incongruent. The
- * correct answer is always the INK color.
+ * Stroop trials with an exact configured conflict mix. Congruent trials have a
+ * matching word and ink; incongruent trials deliberately disagree. The correct
+ * answer is always the INK color.
  */
 export function generateStroop(config = {}) {
   const count = clampInt(config.count, 5, 40, 15);
+  const incongruentPct = clampInt(config.incongruentPct, 0, 100, 75);
+  const incongruentCount = Math.round(count * incongruentPct / 100);
+  const conflictFlags = shuffle([
+    ...Array.from({ length: incongruentCount }, () => true),
+    ...Array.from({ length: count - incongruentCount }, () => false),
+  ]);
   const trials = [];
   for (let i = 0; i < count; i++) {
     const wordColor = pick(STROOP_COLORS);
-    const inkColor = Math.random() < 0.25
-      ? wordColor
-      : pick(STROOP_COLORS.filter(c => c.name !== wordColor.name));
+    const inkColor = conflictFlags[i]
+      ? pick(STROOP_COLORS.filter(c => c.name !== wordColor.name))
+      : wordColor;
     trials.push({
       word: wordColor.name,
       inkColor: inkColor.name,
@@ -258,7 +266,7 @@ export function generateStroop(config = {}) {
   }
   return {
     type: 'stroop',
-    config: { count },
+    config: { count, incongruentPct },
     trials,
     options: STROOP_COLORS.map(c => ({ name: c.name, hex: c.hex })),
   };
@@ -283,25 +291,28 @@ export function generateSchulteTable(config = {}) {
 
 /**
  * Mental rotation: each trial shows a reference shape (an asymmetric
- * grid-cell footprint) and 4 candidate shapes — exactly one is the reference
+ * grid-cell footprint) and 2-4 candidate shapes — exactly one is the reference
  * rotated (0/90/180/270deg); the rest are mirrored (reflected) at a random
  * rotation, so they share a silhouette "feel" without being a true rotation
- * match. `correctIndex` is the answer key; scoring recomputes it independently
- * from `shape`/`rotationSteps`, never trusting the stored index round-trip.
+ * match. The stored `correctIndex` supports immediate client feedback; server
+ * scoring independently derives the answer from `shape`/`rotationSteps` and
+ * the generated options.
  */
 export function generateMentalRotation(config = {}) {
   const count = clampInt(config.count, 4, 20, 8);
+  const rotationComplexity = clampInt(config.rotationComplexity, 1, 3, 3);
+  const optionCount = clampInt(config.optionCount, 2, 4, 4);
   const shapeKeys = Object.keys(ROTATION_SHAPES);
   const trials = [];
   for (let i = 0; i < count; i++) {
     const shapeKey = pick(shapeKeys);
     const baseCells = ROTATION_SHAPES[shapeKey];
-    const rotationSteps = 1 + Math.floor(Math.random() * 3); // 1-3 (nonzero: 90/180/270deg)
+    const rotationSteps = 1 + Math.floor(Math.random() * rotationComplexity);
     const correctCells = rotateCells(baseCells, rotationSteps);
 
     const options = [{ cells: correctCells, isMatch: true }];
     let guard = 0;
-    while (options.length < 4 && guard < 50) {
+    while (options.length < optionCount && guard < 50) {
       guard++;
       const mirrored = mirrorCells(rotateCells(baseCells, Math.floor(Math.random() * 4)));
       const key = cellsKey(mirrored);
@@ -313,12 +324,13 @@ export function generateMentalRotation(config = {}) {
 
     trials.push({
       shape: shapeKey,
+      rotationSteps,
       target: normalizeCells(baseCells),
       options: shuffled.map(o => o.cells),
       correctIndex,
     });
   }
-  return { type: 'mental-rotation', config: { count, gridSize: 4 }, trials };
+  return { type: 'mental-rotation', config: { count, gridSize: 4, rotationComplexity, optionCount }, trials };
 }
 
 /**
@@ -510,27 +522,61 @@ function scoreStroop(drillData, questions) {
   return { score: accuracySpeedScore(recomputed, refMs), questions: recomputed, ...answeredMetrics(recomputed) };
 }
 
-// Schulte table: each question is one "find the next number" step, keyed by
-// `index` (0-based position in the 1..N sequence). Reference response window
-// scales with grid size — a bigger grid needs more scanning per step.
+// Schulte table: questions are the COMPLETE ordered click event stream. The
+// server owns `currentTarget` and advances it only after a valid matching click;
+// client-supplied index/expected/correct fields are ignored. That preserves
+// wrong taps and repeated inputs as performance evidence instead of reconstructing
+// an impossible perfect run from only successful targets.
 function scoreSchulteTable(drillData, questions) {
   const size = drillData?.config?.size || 5;
-  const total = size * size;
-  const refMs = 1000 + size * 500;
-  const recomputed = questions.map(q => {
-    const i = Number.isInteger(q.index) ? q.index : -1;
-    const expected = i + 1;
-    const answered = q.answered == null ? null : Number(q.answered);
-    return {
-      prompt: `${expected}`,
-      index: i,
-      expected,
+  const generatedCells = Array.isArray(drillData?.cells)
+    ? drillData.cells.filter(value => Number.isInteger(value) && value > 0)
+    : [];
+  const total = generatedCells.length || size * size;
+  const tableValues = new Set(generatedCells.length
+    ? generatedCells
+    : Array.from({ length: total }, (_, i) => i + 1));
+  const refMs = 1000 + Math.round(Math.sqrt(total)) * 500;
+  const recomputed = [];
+  let currentTarget = 1;
+  for (const event of questions) {
+    if (currentTarget > total) break;
+    const selected = event?.answered == null ? null : Number(event.answered);
+    const answered = Number.isInteger(selected) && tableValues.has(selected) ? selected : null;
+    const correct = answered === currentTarget;
+    recomputed.push({
+      prompt: `${currentTarget}`,
+      index: currentTarget - 1,
+      expected: currentTarget,
       answered,
-      correct: i >= 0 && i < total && answered === expected,
-      responseMs: clampMs(q.responseMs, refMs),
-    };
-  });
-  return { score: accuracySpeedScore(recomputed, refMs), questions: recomputed, ...answeredMetrics(recomputed) };
+      correct,
+      responseMs: clampMs(event?.responseMs, refMs),
+    });
+    if (correct) currentTarget += 1;
+  }
+
+  const correctEvents = recomputed.filter(event => event.correct);
+  const attemptCount = recomputed.length;
+  const answeredCount = correctEvents.length;
+  const errorCount = attemptCount - answeredCount;
+  const accuracy = attemptCount ? answeredCount / attemptCount : null;
+  const completion = total ? answeredCount / total : null;
+  const avgResponseMs = answeredCount
+    ? Math.round(correctEvents.reduce((sum, event) => sum + event.responseMs, 0) / answeredCount)
+    : null;
+  const speedBonus = avgResponseMs == null ? 0 : Math.max(0, 1 - avgResponseMs / refMs);
+  const score = Math.round(((accuracy || 0) * 0.8 + speedBonus * 0.2) * (completion || 0) * 100);
+  return {
+    score,
+    questions: recomputed,
+    accuracy,
+    completion,
+    avgResponseMs,
+    answeredCount,
+    totalCount: total,
+    attemptCount,
+    errorCount,
+  };
 }
 
 // Mental rotation: `index` selects the trial; `answered` is the option index
@@ -541,7 +587,16 @@ function scoreMentalRotation(drillData, questions) {
   const refMs = 6000;
   const recomputed = questions.map(q => {
     const trial = trials[q.index] || {};
-    const expected = Number.isInteger(trial.correctIndex) ? trial.correctIndex : null;
+    const baseCells = ROTATION_SHAPES[trial.shape];
+    const generatedExpected = baseCells && Number.isInteger(trial.rotationSteps) && Array.isArray(trial.options)
+      ? trial.options.findIndex(cells => cellsKey(normalizeCells(cells)) === cellsKey(rotateCells(baseCells, trial.rotationSteps)))
+      : -1;
+    // Legacy generated drills predate rotationSteps, so retain their stored
+    // answer-key fallback. New drills recompute from shape + transformation +
+    // options and never trust correctIndex.
+    const expected = generatedExpected >= 0
+      ? generatedExpected
+      : Number.isInteger(trial.correctIndex) ? trial.correctIndex : null;
     const answered = q.answered == null ? null : Number(q.answered);
     return {
       prompt: q.prompt ?? `shape ${trial.shape ?? ''}`,

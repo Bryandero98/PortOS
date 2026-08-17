@@ -9,12 +9,14 @@ Index of everything under `docs/`. Start with the [root README](../README.md) fo
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System design: React client, Express server, PM2 satellites, PostgreSQL + `data/` files |
 | [API.md](./API.md) | REST endpoints, complete route-domain index, Socket.IO events |
 | [COMPANION_APP_API.md](./COMPANION_APP_API.md) | PortDeck native iOS companion client discovery and HTTP API contract |
+| [FEDERATED_MEDIA_PROVIDERS.md](./FEDERATED_MEDIA_PROVIDERS.md) | Authenticated, capacity-aware peer audio provider wire contract and setup |
 | [STORAGE.md](./STORAGE.md) | Storage classification contract — PostgreSQL vs filesystem, new-data-store checklist |
 | [BACKUP.md](./BACKUP.md) | Filesystem snapshots + PostgreSQL dumps, restore semantics |
 | [PORTS.md](./PORTS.md) | Port allocation (5553–5561) and how 5555/5553/5554 relate |
 | [PM2.md](./PM2.md) | Recommended PM2 ecosystem patterns for sub-projects |
 | [QUOTA-BURN.md](./QUOTA-BURN.md) | Quota-burn automation — spending subscription-backed CLI quota before expiry |
 | [THREEJS_MODELS.md](./THREEJS_MODELS.md) | Three.js procedural 3D model generation and trust boundary |
+| [features/music-renderer-benchmarks.md](./features/music-renderer-benchmarks.md) | Technical and full-length listening evidence for local music renderer profiles |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Dev setup (PostgreSQL required), code conventions |
 | [GITHUB_ACTIONS.md](./GITHUB_ACTIONS.md) | CI and release workflows |
 | [VERSIONING.md](./VERSIONING.md) | SemVer + release process (`/do:release`) |
@@ -32,7 +34,7 @@ Start with the [product surface map](./features/product-surfaces.md) for a compl
 
 App management: [app-wizard](./features/app-wizard.md) · [autofixer](./features/autofixer.md) · [browser](./features/browser.md) · [error-handling](./features/error-handling.md) · [jira-sprint-manager](./features/jira-sprint-manager.md)
 
-Chief of Staff: [chief-of-staff](./features/chief-of-staff.md) · [cos-agent-runner](./features/cos-agent-runner.md) · [cos-enhancement](./features/cos-enhancement.md) · [agent-skills](./features/agent-skills.md) · [memory-system](./features/memory-system.md) · [claude-ollama](./features/claude-ollama.md) · [mtplx](./features/mtplx.md) · [prompt-manager](./features/prompt-manager.md)
+Chief of Staff: [chief-of-staff](./features/chief-of-staff.md) · [cos-agent-runner](./features/cos-agent-runner.md) · [cos-enhancement](./features/cos-enhancement.md) · [agent-context](./features/agent-context.md) · [agent-skills](./features/agent-skills.md) · [memory-system](./features/memory-system.md) · [claude-ollama](./features/claude-ollama.md) · [mtplx](./features/mtplx.md) · [prompt-manager](./features/prompt-manager.md)
 
 Identity & self: [digital-twin](./features/digital-twin.md) · [identity-system](./features/identity-system.md) · [soul-system](./features/soul-system.md) · [post](./features/post.md) (insights design spike: [plans/2026-06-03](./plans/2026-06-03-cross-domain-insights-engine.md))
 
@@ -53,4 +55,5 @@ Comms & voice: [openclaw-operator-chat](./features/openclaw-operator-chat.md) ([
 
 - **[themes/](./themes/README.md)** — UI theme specs and the theme integration contract.
 - **[examples/](./examples/README.md)** — copy-ready config examples (e.g. Claude Code → Ollama settings).
+- **[`.changelog/README.md`](../.changelog/README.md)** — how to write an unreleased changelog fragment (`npm run changelog:add`).
 - **media/** — screenshots and logo used by the root README.

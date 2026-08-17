@@ -445,3 +445,4 @@ describe('computeGoalForest', () => {
     }
   });
 });
+// @vitest-environment node

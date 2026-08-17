@@ -17,6 +17,8 @@ is the contract.
 grep -i "what you want to do" client/src/lib/README.md
 ```
 
+| `postQuickSession.js` | Pure Quick POST duration presets, local-observation estimator, deterministic budget composer, and preview metadata. |
+
 ---
 
 ## Prompt & rendering (server mirrors)
@@ -49,6 +51,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `runnerFamilies.js` | Mirror of `server/lib/runners.js`. |
 | `slashdoCatalog.js` | Mirror of `server/lib/slashdoCatalog.js` — the launchable slashdo workflows (`SLASHDO_WORKFLOWS`, `slashdoWorkflowsForApp(isSwiftApp)`, `SLASHDO_APP_TYPES`) driving the app-overview Agent Operations buttons. Adds only the per-button Tailwind classes; pinned by `server/lib/slashdoCatalog.test.js`. |
 | `issueLength.js` | Mirror of `server/lib/issueLength.js`. |
+| `musicDuration.js` | Lyric-aware MiniMax Music 3 duration analysis: section/word detection, ending-cushioned auto-duration recommendations, and cap warnings. Mirrors `server/lib/musicDuration.js`. |
 
 ## Pipeline / image-gen defaults
 
@@ -114,6 +117,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `mediaNavigation.js` | `getAdjacentMedia(items, item)` — prev/next computation for lightboxes. |
 | `mediaCollectionList.js` | Search / sort ordering for the Media Collections grid (#3283) and the `CollectionPickerShell` dropdown (#3312): `applyCollectionView(collections, { query, sort })` filters via `mediaSearch.js`'s AND-token matcher over name+description and orders synthetic "Unsorted" → non-empty-or-user-created → auto-generated empties, then by `COLLECTION_SORTS` (`updated` / `name` / `count`, `normalizeCollectionSort` coerces an unknown/URL value); keys are derived once per record, not per comparison. "Hide empty" is deliberately NOT a parameter — the page owns that one predicate (`collectionItemCount(c) > 0`) because it also needs the pre-filter count. `isAutoCollection(c)` recognizes a machine-created collection from ANY of four independent markers (`AUTO_NAME_PREFIXES`, `Auto-created…`/`Auto-generated…` description, `uc-`/`sc-` id, universe/series link) so a record predating a given marker still classifies; `splitCollectionName(name)` lifts the shared `Creative Director: ` / `Writers Room: ` / `Universe: ` / `Series: ` prefix into a badge label so the distinguishing tail survives truncation, and name sorting uses that stripped title. **Adding a server-side auto-creator means adding its prefix here** or its collections silently rank as user-created. Pure — no React. |
 | `mediaSearch.js` | `buildMediaHaystack`, `tokenizeQuery`, `matchHaystack`, `filterByQuery` — client-side AND-token search over normalized media items (prompt/model/seed/LoRA/universe tags). Shared by MediaHistory + the Image Gen gallery picker. |
+| `morsePractice.js` | Pure deterministic adaptive Morse sampler — `selectMorsePrompt` combines bounded weak-character/confusion weighting with a non-zero exploration floor and only emits material valid for the active Koch pool; `canAdvanceMorseLevel` guards level advancement on sample count, accuracy, and effective speed. |
 | `moodBoardItemSrc.js` | `moodBoardItemSrc(item)` resolves a mood-board item to a display image/poster src (`imageUrl` → served `image:<file>` bytes → derived video thumbnail → null); `moodBoardItemVideoSrc(item)` resolves a `type:'video'` item's playback URL; `moodBoardItemAnalysisSource(item)` resolves an item to a prompt-from-media source (null when not a local gallery asset). Shared by MoodBoardDetail + MoodBoardReferenceStrip. |
 | `registerServiceWorker.js` | `registerServiceWorker()` / `unregisterServiceWorkers()` — wires up the offline app-shell + low-bandwidth asset-caching service worker (`public/sw.js`). Registers only in a production secure context (HTTPS or localhost); no-ops over plain-HTTP Tailnet and tears down any stale SW in dev. Called once from `main.jsx`. |
 | `safeStorage.js` | `safeReadStorage` / `safeReadJsonStorage` / `safeWriteStorage` / `safeWriteJsonStorage` / `safeRemoveStorage` — guarded `localStorage` access that swallows throws (Safari private mode, blocked storage), with fallback-safe JSON parsing for structured entries. Use instead of touching `localStorage` inline so a storage failure never crashes init or a write path (#2387). Consumed by `useTheme`, `useCitySettings`, `useNavWorkingSet`, and the command palette. Also `safeReadJsonSession` / `safeWriteJsonSession` / `safeRemoveSession` — the same guarantees over `sessionStorage`, for tab-scoped crash-recovery buffers of edits the server has not accepted yet (QuotaBurn's unsaved-patch stash). |

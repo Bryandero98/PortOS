@@ -74,8 +74,7 @@
         "ANTHROPIC_SMALL_FAST_MODEL": "qwen2.5:7b"
       },
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "opencode-ollama": {
       "id": "opencode-ollama",
@@ -109,8 +108,7 @@
         "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"ollama\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"Ollama (local)\",\"options\":{\"baseURL\":\"http://localhost:11434/v1\"}}}}"
       },
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "opencode-mtplx": {
       "id": "opencode-mtplx",
@@ -146,8 +144,7 @@
         "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"mtplx\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"MTPLX (local MTP)\",\"options\":{\"baseURL\":\"http://127.0.0.1:8000/v1\"}}}}"
       },
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "codex": {
       "id": "codex",
@@ -182,8 +179,7 @@
       "enabled": false,
       "envVars": {},
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "claude-code-tui": {
       "id": "claude-code-tui",
@@ -200,8 +196,7 @@
       "enabled": true,
       "envVars": {},
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "claude-code-tui-bedrock": {
       "id": "claude-code-tui-bedrock",
@@ -218,8 +213,7 @@
       "enabled": false,
       "envVars": { "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_BEARER_TOKEN_BEDROCK": "" },
       "secretEnvVars": ["AWS_BEARER_TOKEN_BEDROCK"],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "antigravity-tui": {
       "id": "antigravity-tui",
@@ -237,8 +231,7 @@
       "enabled": false,
       "envVars": {},
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "antigravity-cli": {
       "id": "antigravity-cli",
@@ -380,8 +373,7 @@
       "enabled": false,
       "envVars": {},
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "kimi-cli": {
       "id": "kimi-cli",
@@ -416,8 +408,7 @@
       "enabled": false,
       "envVars": {},
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     },
     "cursor-cli": {
       "id": "cursor-cli",
@@ -450,8 +441,7 @@
       "enabled": false,
       "envVars": {},
       "secretEnvVars": [],
-      "tuiPromptDelayMs": 2500,
-      "tuiIdleTimeoutMs": 180000
+      "tuiPromptDelayMs": 2500
     }
   }
 }

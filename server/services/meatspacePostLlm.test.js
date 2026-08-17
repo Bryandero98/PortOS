@@ -65,8 +65,20 @@ function mockApiProvider(responseJson) {
   return provider;
 }
 
+const storyQuestions = () => [
+  { question: 'Who visited?', answer: 'Jane', aliases: ['J. Doe'] },
+  { question: 'Where did she go?', answer: 'Paris' },
+  { question: 'When did she go?', answer: 'Monday' },
+];
+
+const compoundExamples = (root = 'fire') => [
+  `${root}house`, `${root}work`, `${root}place`, `${root}wood`, `${root}fly`,
+  `${root}proof`, `${root}storm`, `${root}wall`, `${root}light`, `${root}break`,
+];
+
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 // =============================================================================
@@ -120,16 +132,39 @@ describe('generateWordAssociation', () => {
     expect(result.config.count).toBe(5);
   });
 
-  it('slices to count limit', async () => {
+  it('rejects a wrong item count instead of truncating the response', async () => {
     mockApiProvider({ questions: Array.from({ length: 10 }, (_, i) => ({ prompt: `word${i}` })) });
-    const result = await generateWordAssociation({ count: 3 });
-    expect(result.questions).toHaveLength(3);
+    await expect(generateWordAssociation({ count: 3 })).rejects.toThrow(/questions.*3 item/i);
   });
 
   it('defaults hints to empty string', async () => {
     mockApiProvider({ questions: [{ prompt: 'test' }] });
     const result = await generateWordAssociation({ count: 1 });
     expect(result.questions[0].hints).toBe('');
+  });
+
+  it('rejects missing, truncated, and wrong-type output with actionable paths', async () => {
+    mockApiProvider({ questions: [{ prompt: 42 }] });
+    await expect(generateWordAssociation({ count: 1 })).rejects.toThrow(/questions\.0\.prompt/);
+
+    mockApiProvider({ questions: [] });
+    await expect(generateWordAssociation({ count: 1 })).rejects.toThrow(/questions/);
+
+    mockApiProvider({ prompts: [{ prompt: 'wrong key' }] });
+    await expect(generateWordAssociation({ count: 1 })).rejects.toThrow(/questions/);
+  });
+
+  it('records only secret-free generation provenance', async () => {
+    const provider = mockApiProvider({ questions: [{ prompt: 'test' }] });
+    provider.apiKey = 'do-not-persist';
+    provider.authHeader = 'do-not-persist';
+
+    const result = await generateWordAssociation({ count: 1 });
+
+    expect(result.generation).toEqual({
+      schemaVersion: '1', promptVersion: '1', providerId: 'test-provider', model: 'test-model',
+    });
+    expect(JSON.stringify(result.generation)).not.toContain('do-not-persist');
   });
 });
 
@@ -140,7 +175,7 @@ describe('generateWordAssociation', () => {
 describe('generateStoryRecall', () => {
   it('returns story-recall drill with exercises', async () => {
     mockApiProvider({ exercises: [
-      { paragraph: 'A story about Jane...', questions: [{ question: 'Who?', answer: 'Jane' }] }
+      { paragraph: 'A story about Jane...', questions: storyQuestions() }
     ]});
 
     const result = await generateStoryRecall({ count: 1 });
@@ -152,7 +187,7 @@ describe('generateStoryRecall', () => {
   });
 
   it('defaults count to 3', async () => {
-    mockApiProvider({ exercises: Array.from({ length: 3 }, () => ({ paragraph: 'p', questions: [] })) });
+    mockApiProvider({ exercises: Array.from({ length: 3 }, () => ({ paragraph: 'p', questions: storyQuestions() })) });
     const result = await generateStoryRecall({});
     expect(result.config.count).toBe(3);
   });
@@ -165,7 +200,7 @@ describe('generateStoryRecall', () => {
 describe('generateVerbalFluency', () => {
   it('returns verbal-fluency drill with categories', async () => {
     mockApiProvider({ categories: [
-      { category: 'Animals', minExpected: 15, examples: ['dog', 'cat'] }
+      { category: 'Animals', minExpected: 15, examples: ['dog', 'cat', 'otter'] }
     ]});
 
     const result = await generateVerbalFluency({ count: 1 });
@@ -176,7 +211,7 @@ describe('generateVerbalFluency', () => {
   });
 
   it('defaults count to 3', async () => {
-    mockApiProvider({ categories: Array.from({ length: 3 }, () => ({ category: 'X', minExpected: 10, examples: [] })) });
+    mockApiProvider({ categories: Array.from({ length: 3 }, () => ({ category: 'X', minExpected: 10, examples: ['a', 'b', 'c'] })) });
     const result = await generateVerbalFluency({});
     expect(result.config.count).toBe(3);
   });
@@ -238,7 +273,7 @@ describe('generatePunWordplay', () => {
 describe('generateCompoundChain', () => {
   it('returns compound-chain drill with challenges', async () => {
     mockApiProvider({ challenges: [
-      { rootWord: 'paper', position: 'prefix', examples: ['paperback', 'paperweight'], minExpected: 8 }
+      { rootWord: 'paper', position: 'prefix', examples: compoundExamples('paper'), minExpected: 8 }
     ]});
 
     const result = await generateCompoundChain({ count: 1 });
@@ -247,22 +282,26 @@ describe('generateCompoundChain', () => {
     expect(result.challenges).toHaveLength(1);
     expect(result.challenges[0].rootWord).toBe('paper');
     expect(result.challenges[0].position).toBe('prefix');
-    expect(result.challenges[0].examples).toEqual(['paperback', 'paperweight']);
+    expect(result.challenges[0].examples).toEqual(compoundExamples('paper'));
     expect(result.challenges[0].minExpected).toBe(8);
   });
 
   it('defaults count to 5', async () => {
-    mockApiProvider({ challenges: Array.from({ length: 5 }, () => ({ rootWord: 'fire', position: 'both', examples: [], minExpected: 8 })) });
+    mockApiProvider({ challenges: Array.from({ length: 5 }, () => ({ rootWord: 'fire', position: 'both', examples: compoundExamples(), minExpected: 8 })) });
     const result = await generateCompoundChain({});
     expect(result.config.count).toBe(5);
   });
 
-  it('defaults position, examples, and minExpected when absent', async () => {
+  it('rejects a partial challenge instead of inventing scoring fields', async () => {
     mockApiProvider({ challenges: [{ rootWord: 'light' }] });
-    const result = await generateCompoundChain({ count: 1 });
-    expect(result.challenges[0].position).toBe('both');
-    expect(result.challenges[0].examples).toEqual([]);
-    expect(result.challenges[0].minExpected).toBe(8);
+    await expect(generateCompoundChain({ count: 1 })).rejects.toThrow(/position|examples|minExpected/);
+  });
+
+  it('rejects answer-key examples that contradict the declared root position', async () => {
+    mockApiProvider({ challenges: [{
+      rootWord: 'paper', position: 'prefix', examples: ['newspaper', ...compoundExamples('paper').slice(1)], minExpected: 8,
+    }] });
+    await expect(generateCompoundChain({ count: 1 })).rejects.toThrow(/declared position/);
   });
 });
 
@@ -273,29 +312,29 @@ describe('generateCompoundChain', () => {
 describe('generateBridgeWord', () => {
   it('returns bridge-word drill with puzzles', async () => {
     mockApiProvider({ puzzles: [
-      { clues: ['news___', '___back'], answer: 'paper', difficulty: 'easy', hint: 'You write on it' }
+      { clues: ['news___', '___back', '___weight'], answer: 'paper', difficulty: 'easy', hint: 'You write on it' }
     ]});
 
     const result = await generateBridgeWord({ count: 1 });
     expect(result.type).toBe('bridge-word');
     expect(result.config.count).toBe(1);
     expect(result.puzzles).toHaveLength(1);
-    expect(result.puzzles[0].clues).toEqual(['news___', '___back']);
+    expect(result.puzzles[0].clues).toEqual(['news___', '___back', '___weight']);
     expect(result.puzzles[0].answer).toBe('paper');
     expect(result.puzzles[0].difficulty).toBe('easy');
     expect(result.puzzles[0].hint).toBe('You write on it');
   });
 
   it('defaults count to 5', async () => {
-    mockApiProvider({ puzzles: Array.from({ length: 5 }, () => ({ clues: [], answer: 'x' })) });
+    mockApiProvider({ puzzles: Array.from({ length: 5 }, () => ({ clues: ['a___', '___b', 'c___'], answer: 'x' })) });
     const result = await generateBridgeWord({});
     expect(result.config.count).toBe(5);
   });
 
-  it('defaults clues, difficulty, and hint when absent', async () => {
-    mockApiProvider({ puzzles: [{ answer: 'paper' }] });
+  it('defaults optional difficulty and hint while retaining required clues', async () => {
+    mockApiProvider({ puzzles: [{ clues: ['news___', '___back', '___weight'], answer: 'paper' }] });
     const result = await generateBridgeWord({ count: 1 });
-    expect(result.puzzles[0].clues).toEqual([]);
+    expect(result.puzzles[0].clues).toHaveLength(3);
     expect(result.puzzles[0].difficulty).toBe('medium');
     expect(result.puzzles[0].hint).toBe('');
   });
@@ -321,15 +360,15 @@ describe('generateDoubleMeaning', () => {
   });
 
   it('defaults count to 5', async () => {
-    mockApiProvider({ challenges: Array.from({ length: 5 }, () => ({ word: 'x', meanings: [] })) });
+    mockApiProvider({ challenges: Array.from({ length: 5 }, () => ({ word: 'x', meanings: ['one', 'two'] })) });
     const result = await generateDoubleMeaning({});
     expect(result.config.count).toBe(5);
   });
 
-  it('defaults example, difficulty, and meanings when absent', async () => {
-    mockApiProvider({ challenges: [{ word: 'scale' }] });
+  it('defaults optional example and difficulty while requiring meanings', async () => {
+    mockApiProvider({ challenges: [{ word: 'scale', meanings: ['measurement', 'fish covering'] }] });
     const result = await generateDoubleMeaning({ count: 1 });
-    expect(result.challenges[0].meanings).toEqual([]);
+    expect(result.challenges[0].meanings).toEqual(['measurement', 'fish covering']);
     expect(result.challenges[0].example).toBe('');
     expect(result.challenges[0].difficulty).toBe('medium');
   });
@@ -500,11 +539,11 @@ describe('generateLlmDrill', () => {
     const wa = await generateLlmDrill('word-association', { count: 1 });
     expect(wa.type).toBe('word-association');
 
-    mockApiProvider({ exercises: [{ paragraph: 'p', questions: [] }] });
+    mockApiProvider({ exercises: [{ paragraph: 'p', questions: storyQuestions() }] });
     const sr = await generateLlmDrill('story-recall', { count: 1 });
     expect(sr.type).toBe('story-recall');
 
-    mockApiProvider({ categories: [{ category: 'X', minExpected: 10, examples: [] }] });
+    mockApiProvider({ categories: [{ category: 'X', minExpected: 10, examples: ['a', 'b', 'c'] }] });
     const vf = await generateLlmDrill('verbal-fluency', { count: 1 });
     expect(vf.type).toBe('verbal-fluency');
 
@@ -516,15 +555,15 @@ describe('generateLlmDrill', () => {
     const pw = await generateLlmDrill('pun-wordplay', { count: 1 });
     expect(pw.type).toBe('pun-wordplay');
 
-    mockApiProvider({ challenges: [{ rootWord: 'fire', position: 'both', examples: [], minExpected: 8 }] });
+    mockApiProvider({ challenges: [{ rootWord: 'fire', position: 'both', examples: compoundExamples(), minExpected: 8 }] });
     const cc = await generateLlmDrill('compound-chain', { count: 1 });
     expect(cc.type).toBe('compound-chain');
 
-    mockApiProvider({ puzzles: [{ answer: 'paper' }] });
+    mockApiProvider({ puzzles: [{ clues: ['news___', '___back', '___weight'], answer: 'paper' }] });
     const bw = await generateLlmDrill('bridge-word', { count: 1 });
     expect(bw.type).toBe('bridge-word');
 
-    mockApiProvider({ challenges: [{ word: 'bark', meanings: [] }] });
+    mockApiProvider({ challenges: [{ word: 'bark', meanings: ['tree covering', 'dog sound'] }] });
     const dm = await generateLlmDrill('double-meaning', { count: 1 });
     expect(dm.type).toBe('double-meaning');
 
@@ -583,6 +622,10 @@ describe('scoreLlmDrill', () => {
     expect(result.evaluation.overallScore).toBe(75);
     expect(result.questions[0].llmScore).toBe(80);
     expect(result.questions[0].llmFeedback).toBe('Good associations');
+    expect(result.evaluation.provenance).toEqual({
+      generator: { schemaVersion: 'legacy', promptVersion: 'legacy', providerId: 'legacy', model: 'legacy' },
+      scorer: { kind: 'llm', rubricVersion: '1', providerId: 'test-provider', model: 'test-model' },
+    });
   });
 
   it('combines quality (80%) and speed bonus (20%)', async () => {
@@ -617,27 +660,24 @@ describe('scoreLlmDrill', () => {
     expect(fast.score).toBeGreaterThan(slow.score);
   });
 
-  it('clamps score between 0 and 100', async () => {
+  it('rejects out-of-range scorer output instead of clamping it', async () => {
     mockApiProvider({
       overallScore: 150,
       scores: [{ score: 200, feedback: 'Over max' }],
       summary: 'Overcapped'
     });
 
-    const result = await scoreLlmDrill(
+    await expect(scoreLlmDrill(
       'word-association',
       { questions: [{ prompt: 'test' }] },
       [{ response: 'answer', responseMs: 1000 }],
       120000
-    );
-
-    expect(result.score).toBeLessThanOrEqual(100);
+    )).rejects.toThrow(/overallScore|score/);
   });
 
-  it('returns score 0 for unknown drill type', async () => {
-    const result = await scoreLlmDrill('unknown', {}, [], 60000);
-    expect(result.score).toBe(0);
-    expect(result.evaluation).toBeNull();
+  it('rejects an unknown drill type instead of fabricating zero', async () => {
+    await expect(scoreLlmDrill('unknown', {}, [{ response: 'x' }], 60000))
+      .rejects.toThrow('Unsupported POST LLM scorer type');
   });
 
   it('attaches per-response llmScore and llmFeedback', async () => {
@@ -666,21 +706,32 @@ describe('scoreLlmDrill', () => {
     expect(result.questions[1].llmFeedback).toBe('Needs work');
   });
 
-  it('handles missing scores array gracefully', async () => {
+  it('rejects a missing scores array instead of storing partial feedback', async () => {
     mockApiProvider({
       overallScore: 50,
       summary: 'No per-item scores'
     });
 
-    const result = await scoreLlmDrill(
+    await expect(scoreLlmDrill(
       'pun-wordplay',
       { challenges: [{ prompt: 'x' }] },
       [{ response: 'y', responseMs: 1000 }],
       120000
-    );
+    )).rejects.toThrow(/scores/);
+  });
 
-    expect(result.questions[0].llmScore).toBeNull();
-    expect(result.questions[0].llmFeedback).toBe('');
+  it('rejects truncated and wrong-type score entries', async () => {
+    mockApiProvider({
+      overallScore: 50,
+      scores: [{ score: '50', feedback: 'wrong type' }],
+      summary: 'Malformed',
+    });
+    await expect(scoreLlmDrill(
+      'word-association',
+      { questions: [{ prompt: 'a' }, { prompt: 'b' }] },
+      [{ response: 'x' }, { response: 'y' }],
+      120000,
+    )).rejects.toThrow(/scores/);
   });
 
   it('scores story-recall with answers', async () => {
@@ -696,17 +747,59 @@ describe('scoreLlmDrill', () => {
     expect(result.evaluation.overallScore).toBe(100);
   });
 
-  it('scores verbal-fluency with items', async () => {
-    // verbal-fluency uses local scoring: 10 unique items / 15 target = 67
+  it('accepts declared story aliases but rejects substring fragments', async () => {
+    const drillData = {
+      exercises: [{
+        questions: [
+          { question: 'Where?', answer: 'New York City', aliases: ['NYC'] },
+          { question: 'Who?', answer: 'Alexandra', aliases: [] },
+        ],
+      }],
+    };
+
+    const result = await scoreLlmDrill(
+      'story-recall', drillData, [{ answers: ['nyc', 'Alex'], responseMs: 5000 }], 180000,
+    );
+
+    expect(result.evaluation.scores[0]).toMatchObject({ score: 50, feedback: '1 of 2 correct' });
+  });
+
+  it('scores verbal-fluency from finite known examples without a provider call', async () => {
+    const animals = ['dog', 'cat', 'fish', 'bird', 'snake', 'lion', 'tiger', 'bear', 'wolf', 'fox'];
     const result = await scoreLlmDrill(
       'verbal-fluency',
-      { categories: [{ category: 'Animals', minExpected: 15, examples: ['dog'] }] },
-      [{ items: ['dog', 'cat', 'fish', 'bird', 'snake', 'lion', 'tiger', 'bear', 'wolf', 'fox'], responseMs: 45000 }],
+      { categories: [{ category: 'Animals', minExpected: 15, examples: animals }] },
+      [{ items: animals, responseMs: 45000 }],
       60000
     );
 
     expect(result.score).toBeGreaterThan(0);
     expect(result.evaluation.overallScore).toBe(67);
+    expect(runPromptThroughProvider).not.toHaveBeenCalled();
+  });
+
+  it('batch-validates verbal items once and separates valid, invalid, and duplicate items', async () => {
+    mockApiProvider({
+      verdicts: [
+        { responseIndex: 0, itemIndex: 1, valid: true },
+        { responseIndex: 0, itemIndex: 4, valid: false },
+      ],
+    });
+
+    const result = await scoreLlmDrill(
+      'verbal-fluency',
+      { categories: [{ category: 'Animals', minExpected: 3, examples: ['dog'] }] },
+      [{ items: ['dog', 'otter', 'OTTER', '', 'not an animal category'], responseMs: 10000 }],
+      60000,
+    );
+
+    expect(runPromptThroughProvider).toHaveBeenCalledTimes(1);
+    expect(result.evaluation.scores[0]).toMatchObject({
+      validCount: 2,
+      validItems: ['dog', 'otter'],
+      invalidItems: ['', 'not an animal category'],
+      duplicateItems: ['OTTER'],
+    });
   });
 
   it('compound-chain accepts both full compounds and the other half', async () => {
@@ -714,7 +807,7 @@ describe('scoreLlmDrill', () => {
     // Both should count as valid compound contributions.
     const result = await scoreLlmDrill(
       'compound-chain',
-      { challenges: [{ rootWord: 'fire', position: 'either', minExpected: 4, examples: ['firehose', 'firepit', 'firework', 'campfire'] }] },
+      { challenges: [{ rootWord: 'fire', position: 'both', minExpected: 4, examples: ['firehose', 'firepit', 'firework', 'campfire'] }] },
       [{ items: ['hose', 'pit', 'work', 'campfire'], responseMs: 30000 }],
       60000
     );
@@ -731,13 +824,48 @@ describe('scoreLlmDrill', () => {
   it('compound-chain rejects bare root word', () => {
     return scoreLlmDrill(
       'compound-chain',
-      { challenges: [{ rootWord: 'fire', position: 'either', minExpected: 2, examples: [] }] },
+      { challenges: [{ rootWord: 'fire', position: 'both', minExpected: 2, examples: ['firework'] }] },
       [{ items: ['fire', 'firework'], responseMs: 10000 }],
       60000
     ).then(result => {
       expect(result.evaluation.scores[0].validCount).toBe(1);
       expect(result.evaluation.scores[0].invalidItems).toContain('fire');
     });
+  });
+
+  it('batch-validates unknown compound fragments exactly once', async () => {
+    mockApiProvider({
+      verdicts: [
+        { responseIndex: 0, itemIndex: 1, valid: true },
+        { responseIndex: 0, itemIndex: 3, valid: false },
+        { responseIndex: 0, itemIndex: 4, valid: true },
+      ],
+    });
+
+    const result = await scoreLlmDrill(
+      'compound-chain',
+      { challenges: [{ rootWord: 'fire', position: 'both', minExpected: 3, examples: [] }] },
+      [{ items: ['fire', 'firehouse', 'FIRE HOUSE', 'firebanana', 'wildfire'], responseMs: 10000 }],
+      60000,
+    );
+
+    expect(runPromptThroughProvider).toHaveBeenCalledTimes(1);
+    expect(result.evaluation.scores[0]).toMatchObject({
+      validCount: 2,
+      validItems: ['firehouse', 'wildfire'],
+      invalidItems: ['fire', 'firebanana'],
+      duplicateItems: ['FIRE HOUSE'],
+    });
+  });
+
+  it('rejects incomplete semantic verdict batches', async () => {
+    mockApiProvider({ verdicts: [] });
+    await expect(scoreLlmDrill(
+      'compound-chain',
+      { challenges: [{ rootWord: 'fire', position: 'both', minExpected: 1, examples: [] }] },
+      [{ items: ['firehouse'], responseMs: 1000 }],
+      60000,
+    )).rejects.toThrow(/verdicts/);
   });
 });
 
@@ -771,16 +899,13 @@ describe('scoreLlmDrill bridge-word (local scoring)', () => {
     expect(result.evaluation.scores[0].feedback).toBe('The answer was "paper"');
   });
 
-  it('falls back to "no answer available" when the puzzle does not resolve', async () => {
-    const result = await scoreLlmDrill(
+  it('rejects a missing answer key instead of fabricating a zero score', async () => {
+    await expect(scoreLlmDrill(
       'bridge-word',
       { puzzles: [] },
       [{ response: 'paper', responseMs: 5000 }],
       60000
-    );
-
-    expect(result.evaluation.scores[0].score).toBe(0);
-    expect(result.evaluation.scores[0].feedback).toBe('No answer available');
+    )).rejects.toThrow(/missing answer key/);
   });
 });
 
@@ -904,4 +1029,3 @@ describe('AI response parsing', () => {
     await expect(generateWordAssociation({ count: 1 })).rejects.toThrow();
   });
 });
-

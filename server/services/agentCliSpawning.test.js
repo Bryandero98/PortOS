@@ -428,10 +428,10 @@ describe('buildCliSpawnConfig', () => {
         { id: 'my-codex', command: '/opt/homebrew/bin/codex' },
         null,
         {},
-        { effort: 'ultra' },
+        { effort: 'xhigh' },
       );
       expect(config.args).not.toContain('--effort');
-      expect(config.args[config.args.indexOf('-c') + 1]).toBe('model_reasoning_effort=ultra');
+      expect(config.args[config.args.indexOf('-c') + 1]).toBe('model_reasoning_effort=xhigh');
     });
 
     it('respects a user-baked --effort pin in provider args (mirrors the --model rule)', () => {
@@ -610,7 +610,10 @@ describe('stream error containment', () => {
     });
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(ensureOllamaAgentContext).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-ollama' }));
+    expect(ensureOllamaAgentContext).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'claude-ollama' }),
+      { model: 'claude-3' },
+    );
     expect(ensureOllamaAgentContext.mock.invocationCallOrder[0]).toBeLessThan(spawn.mock.invocationCallOrder[0]);
 
     fakeProcess.emit('close', 0);

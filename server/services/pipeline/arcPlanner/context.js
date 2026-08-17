@@ -10,10 +10,11 @@
 import { MANUSCRIPT_TYPES } from '../series.js';
 import { listIssues, STAGE_INPUT_MAX } from '../issues.js';
 import { ARC_LIMITS, ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { trimToClause } from '../../../lib/storyBible.js';
 import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { CHARACTER_ARC_LIMITS, renderCharacterArcsForPrompt } from '../../../lib/seriesCharacterArc.js';
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
-import { DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
+import { computeIssueTargets, DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
 import { getUniverse } from '../../universeBuilder.js';
 import { getSeriesPlanningCanon, scopeCanonForSeries } from '../seriesCanon.js';
 import { renderCanonForPrompt, renderCategoriesForPrompt, renderCompositesForPrompt, renderEntitiesSummary } from '../../../lib/universePromptRenderers.js';
@@ -32,11 +33,14 @@ export const ARC_ROLES = new Set(ARC_ROLE_LIST);
 // at prompt time. Limit to the canonical preset names.
 export const SEASON_LENGTH_PRESETS = new Set(LENGTH_PROFILE_NAMES.filter((n) => n !== 'custom'));
 
-// Finale-role episodes should size like a finale even when the LLM omits
-// (or misspells) lengthProfile. Other arcRoles fall back to the default
-// profile so a missing/misspelled length doesn't cascade into the wrong
-// size for the whole arc.
-export const lengthProfileForArcRole = (arcRole) => (arcRole === 'finale' ? 'finale' : DEFAULT_LENGTH_PROFILE);
+// Structural climax and denouement/finale are independent beats with
+// independent runtime defaults. Preserve that distinction even when the LLM
+// omits (or misspells) lengthProfile.
+export const lengthProfileForArcRole = (arcRole) => {
+  if (arcRole === 'climax') return 'extended';
+  if (arcRole === 'finale') return 'finale';
+  return DEFAULT_LENGTH_PROFILE;
+};
 
 // Each prior season renders as its header (logline + synopsis) plus the
 // committed per-episode beats from `stages.idea.input` — that field was
@@ -521,14 +525,21 @@ export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFie
 //
 // `synopsis` (not `beats`) matches the prompt's existing language; it is sourced
 // from idea.input, which carries the LLM's logline+synopsis.
-export const renderVerifyIssueLeaf = (iss) => ({
-  number: iss.number,
-  title: iss.title,
-  status: iss.status,
-  arcPosition: iss.arcPosition,
-  arcRole: iss.arcRole || null,
-  synopsis: (iss.stages?.idea?.input || '').trim() || null,
-});
+export const renderVerifyIssueLeaf = (iss) => {
+  const lengthProfile = iss.lengthProfile || lengthProfileForArcRole(iss.arcRole);
+  const targets = computeIssueTargets({ ...iss, lengthProfile });
+  return {
+    number: iss.number,
+    title: iss.title,
+    status: iss.status,
+    arcPosition: iss.arcPosition,
+    arcRole: iss.arcRole || null,
+    lengthProfile,
+    pageTarget: targets.pageTarget,
+    minutesTarget: targets.minutesTarget,
+    synopsis: (iss.stages?.idea?.input || '').trim() || null,
+  };
+};
 
 // The volume node the arc-verify prompt scores. Exported for the same contract
 // test as `renderVerifyIssueLeaf` — checks #3/#4/#7 read `endingHook`,
@@ -613,7 +624,12 @@ export function shapeEpisodeResolutions(rawEpisodes) {
     out.push({
       seasonNumber: Number.isInteger(seasonNumberRaw) ? seasonNumberRaw : null,
       episodeNumber,
-      synopsis: synopsis.slice(0, STAGE_INPUT_MAX),
+      // A resolver correction must obey the same episode-plan budget as the
+      // generator that created the synopsis. The old STAGE_INPUT_MAX ceiling
+      // (200k) let a sequence of continuity repairs turn a compact plan into a
+      // near-manuscript. Boundary-aware trimming avoids manufacturing the
+      // half-sentence that the next verification round would immediately flag.
+      synopsis: trimToClause(synopsis, ARC_LIMITS.EPISODE_SYNOPSIS_MAX),
     });
     if (out.length >= RESOLVE_EPISODE_MAX) break;
   }
@@ -633,11 +649,16 @@ export function shapeEpisodeResolutions(rawEpisodes) {
 export function renderVolumeIssue(iss, { synopsisOnly = false } = {}) {
   const beats = synopsisOnly ? '' : (iss.stages?.idea?.output || '').trim();
   const synopsis = (iss.stages?.idea?.input || '').trim();
+  const targets = computeIssueTargets(iss);
   const base = {
     number: iss.number,
     title: iss.title,
     status: iss.status,
     arcPosition: iss.arcPosition,
+    arcRole: iss.arcRole || null,
+    lengthProfile: iss.lengthProfile || null,
+    pageTarget: targets.pageTarget,
+    minutesTarget: targets.minutesTarget,
   };
   if (beats) return { ...base, beats };
   return { ...base, synopsis: synopsis || null };

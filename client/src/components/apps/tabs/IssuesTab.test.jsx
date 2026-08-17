@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+
+const { socketHandlers, socketMock } = vi.hoisted(() => {
+  const handlers = new Map();
+  const mock = {
+    connected: true,
+    on: vi.fn((event, handler) => handlers.set(event, handler)),
+    off: vi.fn((event, handler) => {
+      if (handlers.get(event) === handler) handlers.delete(event);
+    }),
+    emit: vi.fn()
+  };
+  return { socketHandlers: handlers, socketMock: mock };
+});
+
+vi.mock('../../../services/socket', () => ({ default: socketMock }));
 
 vi.mock('../../../services/api', () => ({
   getAppIssues: vi.fn(),
@@ -41,6 +56,10 @@ const renderTab = () => render(
 );
 
 beforeEach(() => {
+  socketHandlers.clear();
+  socketMock.on.mockClear();
+  socketMock.off.mockClear();
+  socketMock.emit.mockClear();
   api.getAppIssues.mockResolvedValue(okPayload([ISSUE]));
   api.createSlashdoTask.mockResolvedValue({ id: 'task-1' });
   api.getProviders.mockResolvedValue({ providers: [] });
@@ -76,15 +95,60 @@ describe('IssuesTab', () => {
     await waitFor(() => expect(screen.queryByText(/Repro: open the editor/)).not.toBeInTheDocument());
   });
 
-  it('claims an issue by queuing the /do:next task pinned to that issue number', async () => {
+  it('claims an issue with its prefetched content pinned to the /do:next task', async () => {
     renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
 
     await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledWith(
-      'next', 'app-1', { target: '42' }, { silent: true }
+      'next', 'app-1', {
+        target: '42',
+        issueContext: {
+          number: 42,
+          title: 'Crash on save',
+          body: 'Repro: open the editor and hit save.',
+          url: 'https://github.com/acme/widget/issues/42'
+        }
+      }, { silent: true }
     ));
     expect(await screen.findByRole('link', { name: /Queued/ })).toBeInTheDocument();
+  });
+
+  it('tracks the claimed task from queued through active and completed over the CoS socket', async () => {
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
+    expect(await screen.findByRole('link', { name: /Queued/ })).toBeInTheDocument();
+
+    act(() => socketHandlers.get('cos:tasks:changed')({
+      task: { id: 'task-1', status: 'in_progress' }
+    }));
+    expect(await screen.findByRole('link', { name: /Active/ })).toBeInTheDocument();
+
+    act(() => socketHandlers.get('cos:tasks:changed')({
+      task: { id: 'task-1', status: 'completed' }
+    }));
+    expect(await screen.findByRole('link', { name: /Completed/ })).toBeInTheDocument();
+  });
+
+  it('does not lose an active socket update that arrives before the POST response', async () => {
+    let resolveClaim;
+    api.createSlashdoTask.mockImplementation(() => new Promise(resolve => { resolveClaim = resolve; }));
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
+    act(() => socketHandlers.get('cos:tasks:changed')({
+      task: {
+        id: 'task-1', status: 'in_progress',
+        metadata: { app: 'app-1', claimTarget: '42' }
+      }
+    }));
+    expect(await screen.findByRole('link', { name: /Active/ })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveClaim({ id: 'task-1', status: 'pending' });
+    });
+    expect(screen.getByRole('link', { name: /Active/ })).toBeInTheDocument();
   });
 
   it('sends the page-level provider/model/effort pin along with a claim', async () => {
@@ -104,7 +168,37 @@ describe('IssuesTab', () => {
 
     await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledWith(
       'next', 'app-1',
-      { target: '42', provider: 'claude', model: 'claude-opus-5', effort: undefined },
+      {
+        target: '42',
+        issueContext: {
+          number: 42,
+          title: 'Crash on save',
+          body: 'Repro: open the editor and hit save.',
+          url: 'https://github.com/acme/widget/issues/42'
+        },
+        provider: 'claude',
+        model: 'claude-opus-5',
+        effort: undefined
+      },
+      { silent: true }
+    ));
+  });
+
+  it('sends optional override context with the selected claim', async () => {
+    renderTab();
+
+    await screen.findByText('Crash on save');
+    fireEvent.change(screen.getByLabelText(/Override context or instructions/), {
+      target: { value: 'Prefer a small, focused fix and add a regression test.' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Claim/ }));
+
+    await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledWith(
+      'next', 'app-1',
+      expect.objectContaining({
+        target: '42',
+        overrideContext: 'Prefer a small, focused fix and add a regression test.'
+      }),
       { silent: true }
     ));
   });

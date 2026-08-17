@@ -63,11 +63,24 @@ function hostOf(baseUrl) {
   if (!raw) return null
   // A bare `host:port` (the OLLAMA_HOST convention) is not a valid URL, so give
   // it a scheme before parsing rather than string-comparing the two spellings.
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+    ? raw.replace(/^(https?:\/\/):(?=\d|$)/i, '$1localhost:')
+    : /^:\d+(?:\/.*)?$/.test(raw)
+      ? `http://localhost${raw}`
+      : `http://${raw}`
   // `URL.parse` returns null on invalid input instead of throwing (Node ≥22.1;
   // the repo's engine floor is 22.12), so no try/catch is needed here.
   const url = URL.parse(withScheme)
-  return url ? url.host.toLowerCase() : null
+  if (!url) return null
+
+  // Ollama treats loopback aliases as the same local daemon. Compare a
+  // canonical hostname plus the parsed port so 127.0.0.1, [::1], and an empty
+  // OLLAMA_HOST hostname cannot make a local provider look remote.
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const canonicalHostname = ['127.0.0.1', '::1', 'localhost'].includes(hostname)
+    ? 'localhost'
+    : hostname
+  return `${canonicalHostname}${url.port ? `:${url.port}` : ''}`
 }
 
 /**

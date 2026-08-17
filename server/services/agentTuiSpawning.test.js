@@ -11,7 +11,6 @@ vi.mock('./shell.js', () => ({
   killSession: vi.fn(),
   getSession: vi.fn(),
   getSessionProcess: vi.fn(),
-  getLastInputAt: vi.fn().mockReturnValue(null),
   registerExternalSession: vi.fn(),
 }));
 
@@ -86,10 +85,8 @@ vi.mock('./codeReview.js', () => ({
   })
 }));
 
-// Only the mutable registries are stubbed; the module's pure predicates
-// (isFalsyMeta et al., which the worktreeChangesExpected opt-out reads through)
-// come from the real module — it is import-free, so there is nothing to isolate,
-// and a hand-written copy would silently drift from the real metadata coercion.
+// Only the mutable registries are stubbed; the module's other state helpers
+// come from the real module so the test does not duplicate their behavior.
 vi.mock('./agentState.js', async (importOriginal) => ({
   ...await importOriginal(),
   activeAgents: new Map(),
@@ -99,30 +96,8 @@ vi.mock('./agentState.js', async (importOriginal) => ({
   unregisterSpawnedAgent: vi.fn(),
 }));
 
-// ONE execGit double behind BOTH entry points. The commit half of the
-// work-evidence probe moved to `lib/gitCommitProbe.js` (#3637), which reaches
-// `lib/execGit.js` directly rather than through `git.js`'s re-export — so mocking
-// only `git.js` would leave the probe shelling out to real git. Sharing the spy
-// keeps every `vi.mocked(gitService.execGit)` override in this file authoritative
-// for the probe too.
-const { execGitMock, getPullRequestStateMock } = vi.hoisted(() => ({
-  execGitMock: vi.fn(),
-  getPullRequestStateMock: vi.fn().mockResolvedValue({ status: 'known', state: 'OPEN' }),
-}));
-vi.mock('../lib/execGit.js', () => ({ execGit: execGitMock }));
-vi.mock('./github.js', () => ({
-  getPullRequestState: (...args) => getPullRequestStateMock(...args),
-}));
-
 vi.mock('./git.js', () => ({
-  // Default: worktree has changes so idle-complete succeeds. Tests that want
-  // to exercise the idle-no-changes failure path override via mockResolvedValueOnce.
-  getStatus: vi.fn().mockResolvedValue({ clean: false, files: [{ path: 'file.txt', status: 'M' }] }),
   getDiff: vi.fn().mockResolvedValue('diff content here'),
-  // `git rev-list --count --since=…` for the commit half of the work-evidence
-  // probe. Default: zero commits during the run, so a clean tree still fails —
-  // the commit-and-push test overrides this to a non-zero count.
-  execGit: execGitMock,
   // No owner-matched gh account by default → empty overlay (ambient auth kept).
   resolveForgeTokenEnv: vi.fn().mockResolvedValue({}),
 }));
@@ -234,12 +209,7 @@ import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import {
-  MAX_RUNTIME_WRAP_UP_GRACE_MS,
   SELF_CLEARING_RESUBMIT_INTERVAL_MS,
-  MERGE_QUEUE_IDLE_TIMEOUT_MS,
-  REVIEW_LOOP_IDLE_TIMEOUT_MS,
-  BACKGROUND_SHELL_IDLE_TIMEOUT_MS,
-  decideIdleReap,
 } from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
 // it directly exercises the same code path production does.
@@ -346,7 +316,7 @@ describe('agent TUI spawning', () => {
     expect(config.args).toEqual(['--dangerously-skip-permissions']);
   });
 
-  it('quotes TUI arguments and carries idle timing config', () => {
+  it('quotes TUI arguments and carries prompt timing config without a runtime limit', () => {
     const config = buildTuiSpawnConfig({
       id: 'claude-code-tui',
       name: 'Claude TUI',
@@ -354,7 +324,7 @@ describe('agent TUI spawning', () => {
       command: 'claude',
       args: ['--dangerously-skip-permissions', '--add-dir', '/tmp/with space'],
       tuiPromptDelayMs: 1000,
-      tuiIdleTimeoutMs: 30000
+      tuiMaxRuntimeMs: 7200000
     }, 'claude-sonnet');
 
     expect(config.args).toEqual([
@@ -366,7 +336,8 @@ describe('agent TUI spawning', () => {
     ]);
     expect(config.commandLine).toBe("claude --dangerously-skip-permissions --add-dir '/tmp/with space' --model claude-sonnet");
     expect(config.promptDelayMs).toBe(1000);
-    expect(config.idleTimeoutMs).toBe(30000);
+    expect(config).not.toHaveProperty('maxRuntimeMs');
+    expect(config).not.toHaveProperty('idleTimeoutMs');
   });
 
   it('namespaces the Ollama model under ollama/ for an OpenCode TUI', () => {
@@ -393,10 +364,21 @@ describe('agent TUI spawning', () => {
     expect(claudeConfig.command).toBe('claude');
   });
 
-  it('applies default prompt-delay and idle-timeout when the provider omits them', () => {
+  it('applies the default prompt delay and omits a runtime limit', () => {
     const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui' }, null);
     expect(config.promptDelayMs).toBe(2500);
-    expect(config.idleTimeoutMs).toBe(180000);
+    expect(config).not.toHaveProperty('maxRuntimeMs');
+    expect(config).not.toHaveProperty('idleTimeoutMs');
+  });
+
+  it('does not configure an idle timeout for any TUI provider', () => {
+    for (const provider of [
+      { id: 'claude-ollama-tui', type: 'tui', command: 'claude', ollamaBacked: true },
+      { id: 'opencode-mtplx-tui', type: 'tui', command: 'opencode', mtplxBacked: true },
+      { id: 'codex-tui', type: 'tui', command: 'codex' },
+    ]) {
+      expect(buildTuiSpawnConfig(provider, 'example-model')).not.toHaveProperty('idleTimeoutMs');
+    }
   });
 
   it('omits the --model flag when model is null/empty', () => {
@@ -416,9 +398,11 @@ describe('agent TUI spawning', () => {
     const codex = buildTuiSpawnConfig(
       { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
       null,
-      { effort: 'ultra' },
+      // codex's config enum stops at `xhigh`; `max`/`ultra` clamp down rather
+      // than reaching the CLI, where they would fail its config load outright.
+      { effort: 'max' },
     );
-    expect(codex.args).toContain('model_reasoning_effort=ultra');
+    expect(codex.args).toContain('model_reasoning_effort=xhigh');
     expect(codex.args).not.toContain('--effort');
   });
 
@@ -497,10 +481,6 @@ describe('spawnTuiAgent runtime', () => {
     args: [],
     commandLine: 'codex',
     promptDelayMs: 100,
-    idleTimeoutMs: 50,
-    // Large so the wall-clock backstop never fires during the modest fake-timer
-    // advances the idle/paste tests perform (the max-runtime test overrides it).
-    maxRuntimeMs: 3600000
   };
 
   function runSpawn(overrides = {}) {
@@ -519,10 +499,6 @@ describe('spawnTuiAgent runtime', () => {
       cleanupWorktreeFn: vi.fn().mockResolvedValue(undefined),
       isTruthyMetaFn: (v) => !!v
     };
-    // Default the connectivity probe to "online" so the idle reaper behaves
-    // exactly as before for every existing test — no real network I/O. The
-    // outage tests below inject their own resolver.
-    const checkOnlineFn = overrides.checkOnlineFn ?? vi.fn().mockResolvedValue(true);
     return spawnTuiAgent({
       agentId,
       task,
@@ -535,7 +511,6 @@ describe('spawnTuiAgent runtime', () => {
       agentDir,
       executionId,
       laneName,
-      checkOnlineFn,
       leanMode: overrides.leanMode ?? false,
       useDurableRunner: overrides.useDurableRunner ?? false,
       ...helpers,
@@ -599,16 +574,6 @@ describe('spawnTuiAgent runtime', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(readFile).mockResolvedValue('');
 
-    // Reset git mock: default is worktree has changes (idle-complete succeeds).
-    // Tests that want to exercise the idle-no-changes failure path override this.
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: false, files: [{ path: 'file.txt', status: 'M' }] });
-    vi.mocked(gitService.getDiff).mockResolvedValue('diff content here');
-    vi.mocked(gitService.execGit).mockResolvedValue({ exitCode: 0, stdout: '0\n', stderr: '' });
-
-    // Reset input-recency state: no input recorded by default. The
-    // recent-input test overrides this — clearAllMocks doesn't undo a
-    // mockReturnValue override, so it must be reset explicitly here.
-    vi.mocked(shellService.getLastInputAt).mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -666,6 +631,16 @@ describe('spawnTuiAgent runtime', () => {
     // Drive the shell-exit path so the completion chain settles and no timer leaks.
     await capturedOnExit({ exitCode: 0, killed: false });
     await completeDone;
+  });
+
+  it('makes the login shell exit with the TUI command instead of lingering after it exits', async () => {
+    runSpawn();
+    await flushMicrotasks();
+
+    expect(shellService.createShellSession).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ initialCommand: 'codex; exit $?' }),
+    );
   });
 
   it('skips the owner-token probe when the provider supplies its own GITHUB_TOKEN so the explicit credential wins', async () => {
@@ -815,63 +790,32 @@ describe('spawnTuiAgent runtime', () => {
     expect(releaseRetryHold).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
   });
 
-  // ── 1. Successful idle-complete path ────────────────────────────────────────
-  it('idle-complete: calls finalizeAgent(success:true) with completionReason=idle-complete when idle fires after enough output and runtime', async () => {
-    // Wire finalizeAgent to resolve a promise we can await, so we can detect
-    // when the async finish() chain completes without polling.
+  // ── CoS agents stay alive while provider output is silent ────────────────────
+  it('does not finalize a CoS TUI merely because provider output goes silent', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
 
-    runSpawn();
-
-    // Flush initial async setup (updateAgent calls etc.)
+    const spawnPromise = runSpawn();
     await flushMicrotasks();
 
-    // Feed a banner-style line so firstOutputAt is set — the paste timer
-    // gates on "we've seen at least one chunk of output" plus an idle window
-    // before sending the prompt (ready-signal detection).
-    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await capturedOnData(Buffer.from('Codex booting...\\n'));
     await flushMicrotasks();
-
-    // Advance past the prompt-delay floor (100ms) AND the readiness idle
-    // threshold (1200ms). The poll interval (300ms) ticks during this window
-    // and fires the paste once both gates open, setting promptSentAt.
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
-
-    // Emit the prompt echo so paste verification passes (issue #2192).
-    // In a real TUI, the paste is echoed in the input buffer; tests must
-    // simulate this or verification fails and Enter is never sent.
-    await capturedOnData(Buffer.from('do the thing\n'));
+    await capturedOnData(Buffer.from('do the thing\\n'));
     await flushMicrotasks();
-
-    // Advance past PASTE_TO_ENTER_FALLBACK_MS (3500ms) so the submit-Enter fires
-    // and promptSubmittedAt is set — work-activity is only observed AFTER submit
-    // (the prompt echo before that must not be scanned; issue #1229 review).
     await vi.advanceTimersByTimeAsync(3600);
     await flushMicrotasks();
 
-    // Feed PTY chunks AFTER submit that prove the model is actually WORKING — the
-    // elapsed working counter ADVANCING through two distinct values SPACED ACROSS
-    // WALL-CLOCK TIME (≥750ms apart). This sets lastOutputAt > promptSentAt AND
-    // trips the work-activity tracker, which the idle gate now requires before
-    // finalizing as success (issue #1229 — pure chrome churn, a single counter
-    // value, or two counters arriving at once must NOT count; see the no-activity
-    // and echoed-transcript tests).
-    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(800);
-    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
+    // The agent has submitted its prompt. No output follows for substantially
+    // longer than the old idle window, but the run must remain attached.
+    await vi.advanceTimersByTimeAsync(60000);
+    await flushMicrotasks();
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
 
-    // Advance past DEFAULT_TUI_MIN_RUNTIME_MS (15 000ms) + idleTimeoutMs (50ms).
-    // The idle setInterval ticks every 5 000ms; at the >=15s tick the
-    // conditions (runtime >= 15s, lastOutputAt > promptSentAt, idle >= 50ms)
-    // are all satisfied.
-    await vi.advanceTimersByTimeAsync(21000);
-
-    // finish() is called as fire-and-forget inside the interval callback;
-    // switch to real timers and await our sentinel promise so the full async
-    // chain (finalizeAgent → ...) drains completely.
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
     vi.useRealTimers();
     await completeDone;
 
@@ -879,602 +823,56 @@ describe('spawnTuiAgent runtime', () => {
       expect.objectContaining({
         agentId: 'agent-1',
         success: true,
-        completionReason: 'idle-complete',
+        completionReason: 'shell-exit',
       })
     );
   });
 
-  // ── 1b. Idle timer must not reap a session that just received real input ────
-  // A large bracketed paste into a live agent TUI can sit in a silent
-  // reflow/commit window with no PTY output yet, which looks identical to
-  // "idle" to this timer. While input keeps arriving recently (within
-  // PASTE_INPUT_GRACE_MS), the idle reaper must not fire — gated on input
-  // RECENCY rather than "is a socket attached", since a regular Shell session
-  // keeps its socket bound after the viewer navigates away (only external
-  // one-shot runs release on `shell:release-views`), which would otherwise
-  // permanently suppress idle-complete for any agent glanced at once (caught
-  // in review — see shell.test.js for the isolated getLastInputAt coverage).
-  it('idle timer does not reap while getLastInputAt reports recent input', async () => {
-    vi.mocked(shellService.getLastInputAt).mockImplementation(() => Date.now());
+  // ── No wall-clock stop ─────────────────────────────────────────────────────
+  // A provider can legitimately spend more than a day on one task. Advancing
+  // well past the old three-hour ceiling must not send a wrap-up prompt or
+  // finalize the agent; completion remains sentinel-, exit-, or failure-driven.
+  it('keeps a submitted OpenCode agent attached beyond 24 hours', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
 
-    runSpawn();
+    const spawnPromise = runSpawn({
+      provider: { ...defaultProvider, id: 'opencode-tui', name: 'OpenCode TUI' },
+      tuiConfig: { ...defaultTuiConfig, command: 'opencode', commandLine: 'opencode' },
+    });
     await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await capturedOnData(Buffer.from('OpenCode booting...\n'));
     await flushMicrotasks();
-
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
-
     await capturedOnData(Buffer.from('do the thing\n'));
     await flushMicrotasks();
-
     await vi.advanceTimersByTimeAsync(3600);
     await flushMicrotasks();
 
-    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(800);
-    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
-
-    // Advance well past DEFAULT_TUI_MIN_RUNTIME_MS + idleTimeoutMs — the
-    // un-guarded timer would have reaped by now (see test 1 above).
-    await vi.advanceTimersByTimeAsync(21000);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
     await flushMicrotasks();
 
     expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-  });
-
-  // ── 1a. Idle-out with NO work activity → failure (issue #1229) ───────────────
-  // The bug: when the prompt never submits, the TUI keeps repainting its banner /
-  // status line, so `lastOutputAt > promptSentAt` passes on pure chrome churn and
-  // the agent — which did ZERO work — was finalized as `success: idle-complete`.
-  // The fix gates idle-complete success on having seen a real work-activity
-  // signal (working counter / interrupt hint / "thinking"). With only chrome
-  // post-paste, idle must finalize as FAILURE with reason 'idle-no-activity'.
-  it('idle-no-activity: finalizes failure when idle fires but no work signal ever appeared (unsubmitted prompt)', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn();
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    // Post-paste output, but ONLY chrome that repaints with an unsent prompt —
-    // the input footer + effort indicator from the real #1229 stuck transcript.
-    // None of this advances the working counter, so the work-activity tracker
-    // stays inactive.
-    await capturedOnData(Buffer.from('⏵⏵ bypass permissions on (shift+tab to cycle)\n'));
-    await capturedOnData(Buffer.from('● high · /effort\n'));
-
-    await vi.advanceTimersByTimeAsync(21000);
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: 'agent-1',
-        success: false,
-        completionReason: 'idle-no-activity',
-      })
-    );
-  });
-
-  // ── 1a-ter. Idle-out with work activity but zero file changes → failure (#2191) ─
-  // Issue #2191: a TUI agent that shows the working counter (workActivity.active
-  // becomes true) but produces NO file changes in the worktree should fail, not
-  // succeed. Examples: the model rambled, made invalid tool calls, hit an error
-  // ("Model is not valid"), or ended at an interactive prompt with zero edits.
-  // The fix gates idle-complete success on evidence of work in the worktree
-  // (non-empty git status) in addition to the work-counter signal.
-  it('idle-no-changes: finalizes failure when work counter advanced but worktree is clean (zero file changes)', async () => {
-    // Override the default git mock to report a clean worktree (no changes, no diff).
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
-    vi.mocked(gitService.getDiff).mockResolvedValue('');
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn();
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    // Emit the prompt echo so paste verification passes (issue #2192) — without
-    // it the Enter is never sent, promptSubmittedAt stays null, and the run
-    // finalizes as idle-no-activity instead of exercising the idle-no-changes path.
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-
-    // Advance past PASTE_TO_ENTER_FALLBACK_MS so submit fires.
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // Feed PTY chunks that PROVE the model was working — the elapsed working
-    // counter ADVANCING through two distinct values. This sets workActivity.active
-    // to true, but the worktree is still clean (no file changes).
-    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(800);
-    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
-
-    // Advance past DEFAULT_TUI_MIN_RUNTIME_MS + idleTimeoutMs.
-    await vi.advanceTimersByTimeAsync(21000);
-
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: 'agent-1',
-        success: false,
-        completionReason: 'idle-no-changes',
-      })
-    );
-  });
-
-  // ── 1a-quater. worktreeChangesExpected:false skips the clean-tree gate (#3102) ─
-  // Issue #3102: the #2191 gate above assumes every agent's work product is a
-  // file change. A `reference-watch` run against a GitHub/GitLab/JIRA work
-  // tracker files ISSUES and — per its own prompt — edits no application code,
-  // so a run that did its whole job leaves a CLEAN worktree and was recorded as
-  // `idle-no-changes` failure. `worktreeChangesExpected: false` opts such a task
-  // out of the worktree gate, leaving `workActivity.active` as the sole signal.
-  //
-  // Drives the same PTY sequence as the idle-no-changes test: prompt echo →
-  // submit → an ADVANCING work counter → idle out, with a clean worktree.
-  // Shared PTY choreography: boot banner → prompt echo (paste verify) → submit
-  // Enter → an ADVANCING work counter (sets workActivity.active and
-  // lastOutputAt > promptSentAt). Leaves fake timers running at the second
-  // counter; callers add their own tail (idle advance + git/finalize/assertions).
-  async function driveToSubmittedAndWorking(overrides = {}) {
-    runSpawn(overrides);
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    // Prompt echo so paste verification passes and the submit-Enter fires.
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // An ADVANCING work counter → workActivity.active becomes true.
-    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(800);
-    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
-  }
-
-  async function driveIdleWithWorkOnCleanTree(overrides) {
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
-    vi.mocked(gitService.getDiff).mockResolvedValue('');
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    await driveToSubmittedAndWorking(overrides);
-
-    await vi.advanceTimersByTimeAsync(21000);
-    vi.useRealTimers();
-    await completeDone;
-  }
-
-  it('idle-complete: worktreeChangesExpected:false succeeds on a clean worktree (non-file work tracker)', async () => {
-    await driveIdleWithWorkOnCleanTree({
-      task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: false } },
-    });
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: 'agent-1',
-        success: true,
-        completionReason: 'idle-complete',
-      })
-    );
-    // The gate is skipped, so git status is never consulted — but the diff
-    // capture still runs unconditionally (a no-op on a clean tree, and useful
-    // for post-mortems either way).
-    expect(gitService.getStatus).not.toHaveBeenCalled();
-    expect(gitService.getDiff).toHaveBeenCalledWith('/tmp/ws', true);
-    expect(gitService.getDiff).toHaveBeenCalledWith('/tmp/ws', false);
-  });
-
-  it("idle-no-changes: the TASKS.md string round-trip 'false' also opts out of the gate", async () => {
-    // Task metadata survives a markdown round-trip as strings, so the opt-out
-    // must read through isFalsyMeta rather than a bare `=== false`.
-    await driveIdleWithWorkOnCleanTree({
-      task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: 'false' } },
-    });
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
-    );
-  });
-
-  it('idle-no-changes: worktreeChangesExpected:true still fails on a clean worktree (no behavior change)', async () => {
-    await driveIdleWithWorkOnCleanTree({
-      task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: true } },
-    });
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'idle-no-changes' })
-    );
-  });
-
-  // ── 1a-sexies. A programmatic-I/O run is judged by its PAYLOAD, not the tree ──
-  // A layered-intelligence run reasons over the app's goals and returns JSON that
-  // a deterministic step files as one tracker issue; its prompt FORBIDS touching
-  // the repo. Measuring it by worktree evidence blamed it for exactly the thing it
-  // was told not to do — the failure read "zero file changes" on a task that must
-  // change no files — and buried the real miss: no `.agent-done` payload landed,
-  // so nothing was filed.
-  const liTask = (metadata = {}) => ({
-    id: 'task-1',
-    description: 'do the thing',
-    taskType: 'internal',
-    metadata: { analysisType: 'layered-intelligence', useWorktree: true, openPR: false, discardWorktree: true, ...metadata },
-  });
-
-  it('idle-no-deliverable: a programmatic-I/O run with no sentinel fails on its OWN criterion', async () => {
-    await driveIdleWithWorkOnCleanTree({ task: liTask() });
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'idle-no-deliverable' })
-    );
-    // The worktree question is never asked — it measures nothing about this run.
-    expect(gitService.getStatus).not.toHaveBeenCalled();
-  });
-
-  it('idle-no-deliverable: the failure names the missing payload, not missing file changes', async () => {
-    await driveIdleWithWorkOnCleanTree({ task: liTask() });
-
-    const { error } = vi.mocked(agentLifecycle.finalizeAgent).mock.calls.at(-1)[0];
-    expect(error).toContain('.agent-done');
-    expect(error).not.toContain('zero uncommitted file changes');
-  });
-
-  // A DIRTY tree doesn't rescue it either: this type ships a payload, and stray
-  // edits in a worktree that is discarded unmerged are not the deliverable.
-  it('idle-no-deliverable: a dirty worktree does not substitute for the payload', async () => {
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: false, files: [{ path: 'f.txt', status: 'M' }] });
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    await driveToSubmittedAndWorking({ task: liTask() });
-    await vi.advanceTimersByTimeAsync(21000);
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'idle-no-deliverable' })
-    );
-  });
-
-  // The type-derived question must not leak to a code-editing task that merely
-  // carries the same worktree-disposal metadata: a quota-burn job can want a
-  // scratch checkout it builds in and never lands, and it declares that shape via
-  // `worktreeChangesExpected` instead.
-  it('idle-no-changes: a code-editing task keeps the worktree criterion', async () => {
-    await driveIdleWithWorkOnCleanTree({
-      task: { id: 'task-1', description: 'do the thing', metadata: { analysisType: 'security', discardWorktree: true } },
-    });
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'idle-no-changes' })
-    );
-    expect(gitService.getStatus).toHaveBeenCalled();
-  });
-
-  // ── 1a-quinquies. A COMMIT during the run is evidence of work ────────────────
-  // The #2191 gate above read only UNCOMMITTED changes, so a job whose
-  // deliverable is a commit — `/do:release`, `/do:pr` — idled out on a clean
-  // tree *because it succeeded* and was scored a failure. Rationale and the
-  // 2026-08-08 release incident: worktreeHasWorkEvidence. The clean-tree +
-  // zero-commit failure stays covered by the sibling tests above, which run on
-  // the beforeEach default of `rev-list --count` → 0.
-  it('idle-complete: a commit made during the run counts as work on a clean tree (release/do:pr jobs)', async () => {
-    vi.mocked(gitService.execGit).mockResolvedValue({ exitCode: 0, stdout: '2\n', stderr: '' });
-    await driveIdleWithWorkOnCleanTree();
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: 'agent-1',
-        success: true,
-        completionReason: 'idle-complete',
-      })
-    );
-    // The probe is scoped to the run window by committer date, so commits that
-    // were already on the branch at spawn can't launder a no-op into a success.
-    expect(gitService.execGit).toHaveBeenCalledWith(
-      ['rev-list', '--count', expect.stringMatching(/^--since=\d{4}-/), 'HEAD'],
-      '/tmp/ws',
-      { ignoreExitCode: true, timeout: 10_000 }
-    );
-  });
-
-  it('idle-no-activity: worktreeChangesExpected:false does NOT rescue a run with zero work-counter activity', async () => {
-    // The flag only relaxes the worktree-evidence gate. A prompt that never
-    // submitted (no working indicator ever appeared) must still fail — otherwise
-    // opting out of the file gate would silently launder a total no-op run.
-    vi.mocked(gitService.getStatus).mockResolvedValue({ clean: true, files: [] });
-    vi.mocked(gitService.getDiff).mockResolvedValue('');
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ task: { id: 'task-1', description: 'do the thing', metadata: { worktreeChangesExpected: false } } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    // Chrome-only repaints — the working counter never advances.
-    await capturedOnData(Buffer.from('⏵⏵ bypass permissions on (shift+tab to cycle)\n'));
-    await capturedOnData(Buffer.from('● high · /effort\n'));
-
-    await vi.advanceTimersByTimeAsync(21000);
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'idle-no-activity' })
-    );
-  });
-
-  // ── 1d. Connectivity-aware idle reaper ──────────────────────────────────────
-  // When the machine loses internet, a live TUI goes silent (it can't reach the
-  // model) exactly like a hung or finished agent looks to the idle timer — so an
-  // outage would reap an agent that's only blocked on the network. The reaper is
-  // the ONLY liveness signal for a genuinely hung TUI, so it isn't removed —
-  // it's gated on a reachability probe and DEFERS while offline.
-  const OFFLINE_TUI_CONFIG = {
-    command: 'codex',
-    args: [],
-    commandLine: 'codex',
-    promptDelayMs: 100,
-    // A larger idle window than the fast default so the lead probe
-    // (idleTimeoutMs/2, capped) resolves on an earlier 5s tick than the reap
-    // tick — mirroring how a real 3-minute window spans many probe ticks.
-    idleTimeoutMs: 15000,
-    maxRuntimeMs: 3600000,
-  };
-
-  async function driveToIdleSilence({ checkOnlineFn, silenceMs = 45000 }) {
-    await driveToSubmittedAndWorking({ tuiConfig: OFFLINE_TUI_CONFIG, checkOnlineFn });
-    // Go silent well past the 15s idle window (several 5s ticks) so the lead
-    // probe fires and resolves before the reap tick.
-    await vi.advanceTimersByTimeAsync(silenceMs);
-    await flushMicrotasks();
-  }
-
-  it('idle reaper DEFERS while the machine is offline (does not reap an agent that lost internet)', async () => {
-    const checkOnlineFn = vi.fn().mockResolvedValue(false);
-    await driveToIdleSilence({ checkOnlineFn });
-
-    expect(checkOnlineFn).toHaveBeenCalled(); // the reachability probe fired
-    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled(); // …and the reap was deferred
-  });
-
-  it('idle reaper still reaps on the SAME window when online (deferral is outage-specific, not a timing artifact)', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    // dirty tree (default git mock) → idle-complete success
-    await driveToIdleSilence({ checkOnlineFn: vi.fn().mockResolvedValue(true) });
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
-    );
-  });
-
-  it('idle reaper resumes reaping once connectivity RETURNS (deferral is not permanent)', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    // Offline for the first probe, then the connection comes back. The reap is
-    // deferred through the outage, then fires after the reconnect grace window.
-    const checkOnlineFn = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
-    await driveToIdleSilence({ checkOnlineFn, silenceMs: 90000 });
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(checkOnlineFn.mock.calls.length).toBeGreaterThan(1); // probed again after the outage
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: true, completionReason: 'idle-complete' })
-    );
-  });
-
-  // ── 1c. Absolute wall-clock backstop reaps a busy-but-stuck agent ───────────
-  // The idle reaper resets on every PTY chunk, so an agent whose working counter
-  // keeps repainting through a stalled provider retry never idles out and would
-  // run unbounded (real incident 2026-07-06: agent-b1c56083 churned for 98min).
-  // The max-runtime timer is the honest ceiling: it fires from submission
-  // regardless of PTY chatter and, with no .agent-done sentinel present,
-  // finalizes as a needs-manual-finish FAILURE.
-  it('max-runtime: reaps a still-chattering agent as failure once the wall-clock ceiling elapses', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    // Idle window LARGER than the max-runtime ceiling so the idle reaper can't
-    // win — this isolates the wall-clock backstop (the real-world stuck agent
-    // keeps its working counter ticking, so idle never fires anyway).
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    // Prompt echo → paste verification passes → submit-Enter fires → the
-    // max-runtime timer is armed.
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // A busy agent that keeps chattering — but the idle window (600s) is huge so
-    // only the 30s wall-clock ceiling can reap it. Advance past the ceiling.
-    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(31000);
-    await flushMicrotasks();
-
-    // The ceiling PRODS rather than reaping (#3167): it pastes a wrap-up message
-    // and opens a grace window, so the agent is NOT finalized yet.
-    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+    expect(shellService.pasteToSession).not.toHaveBeenCalledWith(
       SESSION_ID,
-      expect.stringContaining('you have hit your maximum runtime'),
+      expect.anything(),
       { label: '[cosAgents] max-runtime wrap-up' },
     );
 
-    // No sentinel ever appears → the grace window expires → NOW it reaps.
-    await vi.advanceTimersByTimeAsync(MAX_RUNTIME_WRAP_UP_GRACE_MS + 2000);
-    await flushMicrotasks();
-
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
     vi.useRealTimers();
     await completeDone;
 
-    // Reaped under the DISTINCT reason: it was asked to wrap up and didn't, which
-    // means a wedged provider — not "raise the runtime budget".
     expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'agent-1',
-        success: false,
-        completionReason: 'max-runtime-no-wrap-up',
+        success: true,
+        completionReason: 'shell-exit',
       })
     );
-  });
-
-  // The whole point of the grace window: an agent that was SECONDS from writing
-  // its sentinel when the ceiling landed must finalize as a SUCCESS, not be
-  // reaped. This is the agent-d2ae0352 shape (PR merged 01:32:29, killed
-  // 01:32:59) that made a fresh agent redo already-shipped work.
-  it('max-runtime: an agent that wraps up during the grace window finalizes as success', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // Ceiling fires → prod + grace window, no finalize.
-    await vi.advanceTimersByTimeAsync(31000);
-    await flushMicrotasks();
-    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
-
-    // The prod works: the agent writes .agent-done well inside the grace window.
-    vi.mocked(existsSync).mockReturnValue(true);
-    await vi.advanceTimersByTimeAsync(4000);
-    await flushMicrotasks();
-
-    vi.useRealTimers();
-    await completeDone;
-
-    // Finalized as a SUCCESS via the ordinary sentinel path — never reaped.
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: 'agent-1', success: true })
-    );
-    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalledWith(
-      expect.objectContaining({ completionReason: 'max-runtime-timeout' })
-    );
-  });
-
-  // A dead session can't be prodded, so the grace window is pointless — reap
-  // immediately rather than idling the full window for a message nobody reads.
-  it('max-runtime: reaps immediately (no grace) when the TUI session is already gone', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, idleTimeoutMs: 600000, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    // Session died before the ceiling landed.
-    vi.mocked(shellService.getSession).mockReturnValue(null);
-    await vi.advanceTimersByTimeAsync(31000);
-    await flushMicrotasks();
-
-    vi.useRealTimers();
-    await completeDone;
-
-    // Never prodded, so this keeps the plain-ceiling reason (not no-wrap-up).
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ success: false, completionReason: 'max-runtime-timeout' })
-    );
-  });
-
-  // ── 1d. A written .agent-done sentinel is never overridden by a FAILURE reap ─
-  // If the agent wrote .agent-done, the run truly finished — the max-runtime
-  // ceiling firing would be a false failure. The 2s sentinel poll normally
-  // finalizes it as success first; the max-runtime timer's own salvage branch
-  // (existsSync check) is the boundary backstop mirroring the one-shot runner's
-  // response-file salvage. Either way, with the sentinel present the run must
-  // finalize as SUCCESS — never as a max-runtime FAILURE.
-  it('max-runtime does not fail a run whose .agent-done sentinel exists', async () => {
-    vi.mocked(existsSync).mockReturnValue(true);
-
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { ...defaultTuiConfig, maxRuntimeMs: 30000 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Codex booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('do the thing\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600);
-    await flushMicrotasks();
-
-    vi.useRealTimers();
-    await completeDone;
-
-    const call = vi.mocked(agentLifecycle.finalizeAgent).mock.calls.at(-1)?.[0];
-    expect(call?.success).toBe(true);
-    expect(call?.completionReason).not.toBe('max-runtime-timeout');
   });
 
   // ── 1b. Command exited before the prompt → don't paste into the bare shell ───
@@ -1495,7 +893,7 @@ describe('spawnTuiAgent runtime', () => {
     // raw.txt tail surfaced in the error.
     vi.mocked(readFile).mockResolvedValue('Error: claude exited at startup\n');
 
-    runSpawn();
+    const spawnPromise = runSpawn();
     await flushMicrotasks();
 
     await capturedOnData(Buffer.from('booting...\n'));
@@ -1523,12 +921,9 @@ describe('spawnTuiAgent runtime', () => {
   });
 
   // ── 1c. claude waits for bracketed-paste mode (input ready) before pasting ───
-  const claudeTuiConfig = { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100, idleTimeoutMs: 50 };
+  const claudeTuiConfig = { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100 };
   // Antigravity (agy) gets the SAME positive input-ready gate as claude (#2705).
-  // maxRuntimeMs is explicit for the same reason defaultTuiConfig pins it: left
-  // undefined, the wall-clock backstop is a `setTimeout(…, undefined)` that fires
-  // on the next tick and prods every one of these runs to wrap up.
-  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100, idleTimeoutMs: 50, maxRuntimeMs: 3600000 };
+  const agyTuiConfig = { command: 'agy', args: [], commandLine: 'agy', promptDelayMs: 100 };
   const pasteCount = () => vi.mocked(shellService.writeToSession).mock.calls
     .filter(([, d]) => typeof d === 'string' && d.includes('\x1b[200~')).length;
   // The launch shell turns bracketed-paste OFF to run the command, then claude
@@ -1658,6 +1053,34 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
+  it('codex hook-review offer: continues without trusting hooks before pasting the prompt', async () => {
+    runSpawn();
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      'Hooks need review\n'
+      + '1 hook is new or changed.\n'
+      + '› 1. Review hooks\n'
+      + '2. Trust all and continue\n'
+      + "3. Continue without trusting (hooks won't run)\n",
+    ));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+
+    // Two down-arrows select option 3, preserving the sandbox boundary.
+    expect(vi.mocked(shellService.writeToSession).mock.calls.map(([, data]) => data))
+      .toContain('\x1b[B\x1b[B\r');
+    expect(pasteCount()).toBe(0);
+
+    // The selector clears and Codex repaints its composer; only then can the
+    // ordinary Codex readiness path paste the task.
+    await capturedOnData(Buffer.from('OpenAI Codex ready\n'));
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
   it('tui-not-ready: claude that never shows an input prompt finalizes failure without pasting', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
@@ -1682,9 +1105,9 @@ describe('spawnTuiAgent runtime', () => {
   // ── 1c-bis. Antigravity (agy) uses the SAME positive input-ready gate (#2705) ─
   // agy's TUI emits the bracketed-paste-mode toggle exactly like claude, so it
   // must gate the paste on paste-mode-re-enabled rather than blind-pasting on the
-  // idle heuristic (which fired into agy's still-initializing banner and left the
-  // agent sitting at an empty prompt until it was reaped). Without the fix agy
-  // took the idle-heuristic path and WOULD have pasted after ~2s of banner idle;
+  // quiet-startup heuristic (which fired into agy's still-initializing banner and
+  // left the agent sitting at an empty prompt). Without the fix agy took that
+  // path and WOULD have pasted after ~2s of banner silence;
   // asserting pasteCount()===0 there is what discriminates the fix.
   //
   // agy needs a SECOND gate on top of paste mode, because — unlike claude — it
@@ -1754,7 +1177,7 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
-  it('agy tui-not-ready: an agy TUI that never signals input-ready fails fast instead of idle-reaping', async () => {
+  it('agy tui-not-ready: an agy TUI that never signals input-ready fails fast instead of blind-pasting', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
@@ -1904,46 +1327,10 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
-  // ── 1a-bis. Non-counter TUI provider keeps the permissive idle-complete ──────
-  // The work-counter signal only exists on Claude Code / Codex. On a provider
-  // that never renders it (Antigravity/Gemini), absence proves nothing — so a
-  // sentinel-less idle-out must stay SUCCESS (the original behavior), not be
-  // downgraded to failure. Regression guard for #1229 review (codex P2): gating
-  // idle-complete solely on a Claude/Codex screen pattern would falsely fail
-  // every sentinel-less completion on the other supported TUI providers.
-  it('idle-complete: a non-counter provider (gemini) stays success even with no work-counter signal', async () => {
-    let resolveComplete;
-    const completeDone = new Promise((r) => { resolveComplete = r; });
-    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
-
-    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100, idleTimeoutMs: 50 } });
-    await flushMicrotasks();
-
-    await capturedOnData(Buffer.from('Gemini booting...\n'));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(3600); // submit fires
-    await flushMicrotasks();
-    // Real work output, but NO `(Ns ·` counter (gemini doesn't render one).
-    await capturedOnData(Buffer.from('Editing src/foo.js …\n'));
-    await vi.advanceTimersByTimeAsync(21000);
-    vi.useRealTimers();
-    await completeDone;
-
-    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: 'agent-1',
-        success: true,
-        completionReason: 'idle-complete',
-      })
-    );
-  });
-
   // ── 1b. Submit-Enter retries ─────────────────────────────────────────────────
   // A single `\r` after a large bracketed paste can be swallowed mid-paste-
   // commit, stranding the prompt unsent (the "I had to hit Enter myself" bug,
-  // which then idles out and is falsely marked success). The fallback path must
+  // which was then falsely marked success by the old fallback). The submit path must
   // fire the Enter SUBMIT_ENTER_ATTEMPTS times, spaced apart, so one lands after
   // the paste settles. Asserts the bracketed paste is written once and `\r` is
   // written exactly SUBMIT_ENTER_ATTEMPTS times.
@@ -2083,7 +1470,7 @@ describe('spawnTuiAgent runtime', () => {
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
 
-    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100, idleTimeoutMs: 50 } });
+    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100 } });
     await flushMicrotasks();
     // Same banner text codex prints — but this is a gemini session.
     await capturedOnData(Buffer.from('Starting MCP servers (0/3): a, b, c\n'));
@@ -2142,6 +1529,55 @@ describe('spawnTuiAgent runtime', () => {
         completionReason: 'shell-exit',
       })
     );
+  });
+
+  it('spools the runner exit tail when an immediate exit beat live TUI output', async () => {
+    const { appendFile } = await import('fs/promises');
+    const spawnPromise = runSpawn({ useDurableRunner: true });
+    await flushMicrotasks();
+
+    await capturedOnExit({
+      exitCode: 1,
+      killed: false,
+      outputTail: 'OpenCode startup error: configured model is unavailable',
+    });
+    await flushMicrotasks();
+    await spawnPromise;
+
+    const rawTail = vi.mocked(appendFile).mock.calls.find(
+      ([path, contents]) => typeof path === 'string' && path.endsWith('raw.txt') && String(contents).includes('OpenCode startup error'),
+    );
+    expect(rawTail).toBeDefined();
+  });
+
+  it('does not revive an agent when the durable runner exits before its spawn response', async () => {
+    let resolveRunnerSession;
+    let exitPromise;
+    const session = {
+      sessionId: SESSION_ID,
+      pid: 4321,
+      ptyProcess: { pid: 4321, kill: vi.fn() },
+    };
+    vi.mocked(spawnTuiSessionViaRunner).mockImplementationOnce((options) => {
+      capturedOnData = options.onData;
+      capturedOnExit = options.onExit;
+      // The socket relay registers this callback before its POST resolves, so
+      // a CLI that exits immediately can finalize while the response is held.
+      exitPromise = options.onExit({ exitCode: 1, killed: false, outputTail: 'startup failed' });
+      return new Promise((resolve) => { resolveRunnerSession = resolve; });
+    });
+
+    const spawnPromise = runSpawn({ useDurableRunner: true });
+    await flushMicrotasks();
+    resolveRunnerSession(session);
+
+    await spawnPromise;
+    await exitPromise;
+
+    expect(activeAgents.has('agent-1')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(shellService.killSession).toHaveBeenCalledWith(SESSION_ID);
+    expect(cosAgentLifecycle.updateAgent).not.toHaveBeenCalled();
   });
 
   // ── 4. Killed / user-terminated path ────────────────────────────────────────
@@ -2342,12 +1778,11 @@ describe('spawnTuiAgent runtime', () => {
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
 
-    runSpawn();
+    const spawnPromise = runSpawn();
     await flushMicrotasks();
 
-    // Drive the idle-complete success path (mirrors test 1) — the post-paste
-    // chunk must carry a work-activity signal so the idle gate finalizes as
-    // success (issue #1229).
+    // Drive the prompt far enough to exercise normal post-submit output, then
+    // use the ordinary shell-exit completion path.
     await capturedOnData(Buffer.from('Codex booting...\n'));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
@@ -2358,9 +1793,10 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(3600); // submit-Enter fires → promptSubmittedAt set
     await flushMicrotasks();
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(800); // counter must tick across ≥750ms to count as work
+    await vi.advanceTimersByTimeAsync(800);
     await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
-    await vi.advanceTimersByTimeAsync(21000);
+    await capturedOnExit({ exitCode: 0, killed: false });
+    await spawnPromise;
     vi.useRealTimers();
     await completeDone;
 
@@ -2542,6 +1978,23 @@ describe('spawnTuiAgent runtime', () => {
       );
     });
 
+    it('classifies a runner executable preflight failure as command-not-found', async () => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        new Error('Command executable unavailable: opencode did not pass the CoS Runner capability check. Reinstall it or update the provider command.'),
+      );
+
+      await expect(runSpawn({ useDurableRunner: true })).resolves.toBeNull();
+
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          success: false,
+          completionReason: 'command-not-found',
+          error: expect.stringContaining('did not pass the CoS Runner capability check'),
+        })
+      );
+    });
+
     it('keeps the actionable spawn-error when the local PTY path throws', async () => {
       vi.mocked(shellService.createShellSession).mockImplementationOnce(() => {
         throw new Error('posix_spawnp failed');
@@ -2559,199 +2012,5 @@ describe('spawnTuiAgent runtime', () => {
       );
     });
 
-    it('skips PR state polling when review-loop follow-up has an unresolved PR host (#4007)', async () => {
-      runSpawn({
-        task: {
-          id: 'task-4007',
-          description: 'do the thing',
-          metadata: {
-            reviewLoopFollowUp: 'true',
-            reviewLoopPRHost: null,
-            reviewLoopPRUrl: 'https://unknown-forge.example.com/owner/repo/pull/4007',
-          },
-        },
-      });
-
-      await flushMicrotasks();
-      await capturedOnData(Buffer.from('Codex booting...\n'));
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(2000);
-      await flushMicrotasks();
-      await capturedOnData(Buffer.from('do the thing\n'));
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(3600);
-      await flushMicrotasks();
-      await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-      await vi.advanceTimersByTimeAsync(800);
-      await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
-      await vi.advanceTimersByTimeAsync(16000);
-      await flushMicrotasks();
-
-      expect(getPullRequestStateMock).not.toHaveBeenCalled();
-    });
-
-    it('polls PR state when review-loop follow-up has a resolved github PR host (#4007)', async () => {
-      runSpawn({
-        task: {
-          id: 'task-4007-gh',
-          description: 'do the thing',
-          metadata: {
-            reviewLoopFollowUp: 'true',
-            reviewLoopPRHost: 'github.com',
-            reviewLoopPRUrl: 'https://github.com/owner/repo/pull/4007',
-          },
-        },
-      });
-
-      await flushMicrotasks();
-      await capturedOnData(Buffer.from('Codex booting...\n'));
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(2000);
-      await flushMicrotasks();
-      await capturedOnData(Buffer.from('do the thing\n'));
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(3600);
-      await flushMicrotasks();
-      await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
-      await vi.advanceTimersByTimeAsync(800);
-      await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
-      await vi.advanceTimersByTimeAsync(16000);
-      await flushMicrotasks();
-
-      expect(getPullRequestStateMock).toHaveBeenCalledWith('https://github.com/owner/repo/pull/4007', expect.anything());
-    });
-  });
-});
-
-// Issue #2074 — the idle reaper must extend its grace while a swarm orchestrator
-// is in its Phase C merge queue, and, if the EXTENDED window still blows, surface
-// a needs-manual-finish failure instead of a silent `status: completed`.
-//
-// Exercises the REAL `decideIdleReap` the idleTimer body calls (it was an inline
-// copy here until the merge-follow-up branch below made the drift risk concrete
-// — a copy would have "passed" while the shipped reaper still failed merged
-// PRs). The real code keeps an async worktree-changes check (#2191) that can
-// downgrade `idle-complete` to `idle-no-changes`; that's covered by the full
-// fake-timer harness above, not by this pure function.
-describe('agentTuiSpawning — idle reap decision (#2074)', () => {
-  const BASE = 180000;
-
-  it('does NOT reap at the 3-min default while in a merge queue — grace extends to 15min', () => {
-    const r = decideIdleReap({ idle: BASE + 5000, baseIdleTimeoutMs: BASE, mergeQueueActive: true, workActive: true, rendersCounter: true });
-    expect(r.action).toBe('wait');
-    expect(r.effectiveIdleTimeoutMs).toBe(MERGE_QUEUE_IDLE_TIMEOUT_MS);
-  });
-
-  it('reaps a merge-queue agent as needs-manual-finish once the EXTENDED window blows', () => {
-    const r = decideIdleReap({ idle: MERGE_QUEUE_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, mergeQueueActive: true, workActive: true, rendersCounter: true });
-    expect(r.action).toBe('reap');
-    expect(r.success).toBe(false);
-    expect(r.reason).toBe('merge-queue-idle-timeout');
-  });
-
-  it('leaves the pre-#2074 idle-complete path untouched when NOT in a merge queue', () => {
-    const r = decideIdleReap({ idle: BASE + 1, baseIdleTimeoutMs: BASE, mergeQueueActive: false, workActive: true, rendersCounter: true });
-    expect(r.action).toBe('reap');
-    expect(r.success).toBe(true);
-    expect(r.reason).toBe('idle-complete');
-  });
-
-  it('leaves the #1229 no-activity failure path untouched when NOT in a merge queue', () => {
-    const r = decideIdleReap({ idle: BASE + 1, baseIdleTimeoutMs: BASE, mergeQueueActive: false, workActive: false, rendersCounter: true });
-    expect(r.action).toBe('reap');
-    expect(r.success).toBe(false);
-    expect(r.reason).toBe('idle-no-activity');
-  });
-
-  it('a merge-queue reap takes precedence over the no-activity downgrade', () => {
-    // Even with no work counter seen, a latched merge queue means real work was
-    // happening — surface it as needs-manual-finish, not a never-submitted prompt.
-    const r = decideIdleReap({ idle: MERGE_QUEUE_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, mergeQueueActive: true, workActive: false, rendersCounter: true });
-    expect(r.reason).toBe('merge-queue-idle-timeout');
-  });
-
-  // Generalizes the #2074 fix to do:release/do:pr/do:rpr's multi-reviewer loop —
-  // observed 2026-07-02 on agent-61508f36 (PR #2084): a slow codex review pass
-  // went silent past the 3-minute default and the still-waiting release agent
-  // was reaped as a false `idle-complete` success before it ever merged.
-  it('does NOT reap at the 3-min default while in a review loop — grace extends to 15min', () => {
-    const r = decideIdleReap({ idle: BASE + 5000, baseIdleTimeoutMs: BASE, reviewLoopActive: true, workActive: true, rendersCounter: true });
-    expect(r.action).toBe('wait');
-    expect(r.effectiveIdleTimeoutMs).toBe(REVIEW_LOOP_IDLE_TIMEOUT_MS);
-  });
-
-  it('reaps a review-loop agent as needs-manual-finish once the EXTENDED window blows', () => {
-    const r = decideIdleReap({ idle: REVIEW_LOOP_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, reviewLoopActive: true, workActive: true, rendersCounter: true });
-    expect(r.action).toBe('reap');
-    expect(r.success).toBe(false);
-    expect(r.reason).toBe('review-loop-idle-timeout');
-  });
-
-  it('a review-loop reap takes precedence over the no-activity downgrade', () => {
-    const r = decideIdleReap({ idle: REVIEW_LOOP_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, reviewLoopActive: true, workActive: false, rendersCounter: true });
-    expect(r.reason).toBe('review-loop-idle-timeout');
-  });
-
-  it('a merge-queue reap takes precedence over a review-loop reap when both are (implausibly) active', () => {
-    const r = decideIdleReap({ idle: 900001, baseIdleTimeoutMs: BASE, mergeQueueActive: true, reviewLoopActive: true, workActive: true, rendersCounter: true });
-    expect(r.reason).toBe('merge-queue-idle-timeout');
-  });
-
-  it('a background-shell wait extends the window but carries no verdict of its own', () => {
-    const waiting = decideIdleReap({ idle: BASE + 1, baseIdleTimeoutMs: BASE, backgroundShellActive: true, workActive: true, rendersCounter: true });
-    expect(waiting.action).toBe('wait');
-    expect(waiting.effectiveIdleTimeoutMs).toBe(BACKGROUND_SHELL_IDLE_TIMEOUT_MS);
-    const blown = decideIdleReap({ idle: BACKGROUND_SHELL_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE, backgroundShellActive: true, workActive: true, rendersCounter: true });
-    expect(blown.reason).toBe('idle-complete');
-    expect(blown.success).toBe(true);
-  });
-
-  // The merge-follow-up false failure (task sys-rl-msr1j1a5 / PR #3909,
-  // 2026-08-13). The follow-up prompt QUOTES `gh pr checks` / `gh pr merge` /
-  // `--delete-branch`, so the TUI's echo of it latches `mergeQueueActive` before
-  // any work runs. The agent then merged the PR in ~60s, printed "PR Status:
-  // MERGED", made no commit (nothing to commit — it only merges), skipped the
-  // sentinel, and idled — and was recorded as `merge-queue-idle-timeout` 15
-  // minutes later, three times over, ending in Blocked with a HIGH "PR left
-  // open" card naming an already-merged PR.
-  describe('PR follow-up whose PR already merged', () => {
-    it('reaps as a SUCCESS at the BASE window even with the merge queue latched', () => {
-      const r = decideIdleReap({
-        idle: BASE + 1, baseIdleTimeoutMs: BASE,
-        mergeQueueActive: true, prFollowUpMerged: true, workActive: true, rendersCounter: true,
-      });
-      expect(r.action).toBe('reap');
-      expect(r.success).toBe(true);
-      expect(r.reason).toBe('pr-follow-up-merged');
-    });
-
-    it('does not fire before the BASE window — a merged PR is not a reason to cut a working agent short', () => {
-      const r = decideIdleReap({
-        idle: BASE - 1, baseIdleTimeoutMs: BASE,
-        mergeQueueActive: true, prFollowUpMerged: true, workActive: true, rendersCounter: true,
-      });
-      expect(r.action).toBe('wait');
-    });
-
-    it('outranks the no-activity downgrade too — the deliverable landed regardless of the work counter', () => {
-      const r = decideIdleReap({
-        idle: BASE + 1, baseIdleTimeoutMs: BASE,
-        prFollowUpMerged: true, workActive: false, rendersCounter: true,
-      });
-      expect(r.success).toBe(true);
-      expect(r.reason).toBe('pr-follow-up-merged');
-    });
-
-    // The bug this whole branch exists to kill: without `prFollowUpMerged` the
-    // SAME signals produce the needs-manual-finish failure. Guards against a
-    // future refactor that quietly stops threading the forge answer through.
-    it('still fails as needs-manual-finish when the PR did NOT merge', () => {
-      const r = decideIdleReap({
-        idle: MERGE_QUEUE_IDLE_TIMEOUT_MS + 1, baseIdleTimeoutMs: BASE,
-        mergeQueueActive: true, prFollowUpMerged: false, workActive: true, rendersCounter: true,
-      });
-      expect(r.success).toBe(false);
-      expect(r.reason).toBe('merge-queue-idle-timeout');
-    });
   });
 });

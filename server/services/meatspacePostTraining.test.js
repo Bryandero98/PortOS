@@ -23,6 +23,7 @@ vi.mock('../services/settings.js', () => ({
 import { readJSONFile, atomicWrite } from '../lib/fileUtils.js';
 import {
   submitTrainingEntry,
+  submitTrainingRun,
   getTrainingStats,
   getTrainingEntries,
 } from './meatspacePostTraining.js';
@@ -52,7 +53,7 @@ describe('submitTrainingEntry', () => {
     expect(entry.id).toBeTruthy();
     expect(entry.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(entry.timestamp).toBeTruthy();
-    expect(atomicWrite).toHaveBeenCalledOnce();
+    expect(atomicWrite.mock.calls.filter(([path]) => String(path).includes('post-training-log'))).toHaveLength(1);
   });
 
   it('persists a per-question breakdown when supplied (issue #2114)', async () => {
@@ -104,6 +105,53 @@ describe('submitTrainingEntry', () => {
     expect(savedData.entries).toHaveLength(2);
     expect(savedData.entries[0].id).toBe('old');
     expect(savedData.entries[1].module).toBe('llm-drills');
+  });
+
+  it('uses a supplied entry id as a stable compatibility-run retry key', async () => {
+    let stored = { entries: [] };
+    readJSONFile.mockImplementation(async () => stored);
+    atomicWrite.mockImplementation(async (path, value) => {
+      if (String(path).includes('post-training-log')) stored = value;
+    });
+    const entry = {
+      id: 'stable-entry', module: 'mental-math', drillType: 'multiplication',
+      questionCount: 2, correctCount: 2, totalMs: 1000,
+    };
+
+    await submitTrainingEntry(entry);
+    await submitTrainingEntry(entry);
+
+    expect(stored.entries).toHaveLength(1);
+    expect(stored.entries[0]).toMatchObject({ id: 'stable-entry', runId: 'training-entry:stable-entry' });
+  });
+});
+
+describe('submitTrainingRun (#4441)', () => {
+  it('writes the full run once and replaces the same stable attempt ids on retry', async () => {
+    let stored = { entries: [] };
+    readJSONFile.mockImplementation(async () => stored);
+    atomicWrite.mockImplementation(async (path, value) => {
+      if (String(path).includes('post-training-log')) stored = value;
+    });
+    const payload = {
+      id: '11111111-1111-4111-8111-111111111111',
+      attempts: [
+        { id: 'a-1', module: 'mental-math', drillType: 'multiplication', questionCount: 2, correctCount: 2, latencyMs: 1000 },
+        { id: 'a-2', module: 'cognitive', drillType: 'stroop', questionCount: 2, correctCount: 1, latencyMs: 1500 },
+        { id: 'a-3', module: 'memory', drillType: 'memory-fill-blank', memoryItemId: 'memory-1', questionCount: 1, correctCount: 1, latencyMs: 900 },
+      ],
+    };
+
+    await submitTrainingRun(payload);
+    const firstTimestamps = stored.entries.map((entry) => entry.timestamp);
+    await submitTrainingRun(payload);
+
+    expect(atomicWrite.mock.calls.filter(([path]) => String(path).includes('post-training-log'))).toHaveLength(2);
+    expect(stored.entries).toHaveLength(3);
+    expect(stored.entries.map((entry) => entry.id)).toEqual(['a-1', 'a-2', 'a-3']);
+    expect(stored.entries.map((entry) => entry.runId)).toEqual([payload.id, payload.id, payload.id]);
+    expect(stored.entries[2].memoryItemId).toBe('memory-1');
+    expect(stored.entries.map((entry) => entry.timestamp)).toEqual(firstTimestamps);
   });
 });
 

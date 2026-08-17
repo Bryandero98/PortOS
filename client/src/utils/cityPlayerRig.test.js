@@ -144,3 +144,4 @@ describe('bankAngle', () => {
     expect(bankAngle(0)).toBeCloseTo(0, 10);
   });
 });
+// @vitest-environment node

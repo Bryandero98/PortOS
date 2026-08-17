@@ -9,7 +9,8 @@ either `import * as api from '.../services/api'` or `import { specificFn } from 
 
 This directory has no `index.js` barrel because every file already follows the `apiX.js`
 naming convention, and `api.js` already aggregates them. When you add a new `apiX.js`,
-add it to `api.js` and add a row here.
+add it to `api.js` and add a row here. `index.test.js` fails if either side drifts
+(or if a non-api helper is added without a README row).
 
 ## Discovery rule
 
@@ -50,17 +51,18 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiHistory.js` | Historical logs / runs. |
 | `apiLogs.js` | PM2 system logs: fetch a process's recent log tail (process list comes from `apiCommands.getProcessesList`). |
 | `apiPorts.js` | Port forwarding / allocation. |
-| `apiProviders.js` | AI provider config. |
+| `apiProviders.js` | AI provider configuration and safe OpenCode CLI installation readiness. |
 | `apiPrompts.js` | Prompt Manager: stage templates, variables, and job-skill templates (providers list reuses `apiProviders.getProviders`). |
 | `apiReferenceRepos.js` | Per-app reference-repo registry. |
 | `apiReview.js` | Review hub. |
 | `apiCodeReview.js` | Code Review Defaults (Review Loop reviewer chain + per-backend local-LLM model). |
+| `apiCatalog.js` | Creative catalog ingredients (list/create/update/delete scraps + `listCatalogIngredientsByIds` / facets). |
 | `apiCatalogTypes.js` | User-defined catalog ingredient types (list active registry + create/update/delete user types). |
 | `apiRuns.js` | Agent run history. |
 | `apiScaffold.js` | App scaffolding templates. |
 | `apiSchedules.js` | Automation schedules. |
 | `apiQuotaBurn.js` | Quota Burn plan + live status, the job-type catalog its config form renders, and manual runs (`getQuotaBurn`/`getQuotaBurnCatalog`/`saveQuotaBurn`/`runQuotaBurn`), plus `rearmQuotaBurn` to put spent `run once` steps back into the rotation. |
-| `apiSystem.js` | System info (CPU/memory/ports/alerts) + D&D-style character sheet getter, plus the usage cost report and explicit historical reconciliation (`getUsage`/`getUsageRaw`/`resetUsage`, `getProviderUsage`, `getUsageBackfillStatus`/`startUsageBackfill`, `updateSubscriptionCosts` for the subscription-vs-API savings comparison). |
+| `apiSystem.js` | System info (CPU/memory/ports/alerts/active processing) + D&D-style character sheet getter, plus the usage cost report and explicit historical reconciliation (`getUsage`/`getUsageRaw`/`resetUsage`, `getProviderUsage`, `getUsageBackfillStatus`/`startUsageBackfill`, `updateSubscriptionCosts` for the subscription-vs-API savings comparison). |
 | `apiAuth.js` | Optional login password — status, login/logout, set/clear password. |
 | `apiLoops.js` | Scheduled loops. |
 
@@ -75,10 +77,11 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiModelPersonality.js` | LLM personality self-profile tests: run, history, delete, scorer settings. |
 | `apiGoals.js` | Identity / goals tracking. |
 | `apiHealth.js` | Apple Health. |
-| `apiMeatspace.js` | MeatSpace (genome + location). |
+| `apiMeatspace.js` | MeatSpace health, genome, POST, memory-practice, and atomic POST training-run APIs. |
 | `apiMortalLoom.js` | Mortality tracking. |
 | `apiMoodBoard.js` | Mood boards (inspiration canvas + items). |
 | `apiTribe.js` | Tribe people (relationship rings + contacts). |
+| `apiTimeline.js` | Human-activity timeline: `/timeline/day` + `/timeline/events`. |
 | `apiCalendar.js` | Calendar events. |
 | `apiMessages.js` | Messages / notifications + iMessage manager (#2413). |
 | `apiStackerNews.js` | Stacker News account, territory, review-action, and safe analysis APIs. |
