@@ -702,11 +702,16 @@ const hfSearchGate = createConcurrencyGate(2)
 // curated catalog and the live search, and neither caches until it resolves.
 const repoModelFlight = createSingleFlight()
 
-// Statuses that are a real, durable "this repo has no data for you" answer and
-// so are safe to cache. Everything else non-OK (429 rate limit, 5xx, 408) is the
-// Hub having a bad moment — mirrors `resolveRegistryBody` in
-// ollamaRegistryCatalog.js, which has always drawn this line.
-const HF_PERMANENT_NOT_FOUND = new Set([401, 403, 404, 410])
+// Statuses that are a real, durable "this repo has no data" answer and so are
+// safe to cache. Everything else non-OK (including auth denials, rate limits,
+// 5xx, and 408) may change and must be retried on a later lookup — mirrors
+// `resolveRegistryBody` in ollamaRegistryCatalog.js, which has always drawn this
+// line.
+// Authentication denials are deliberately excluded: a user can add a token or
+// gain access to a gated repo at any time, so caching a 401/403 would keep the
+// catalog blank until the seven-day repo-cache TTL expires. A genuinely missing
+// or gone repo remains a durable no-data answer.
+const HF_PERMANENT_NOT_FOUND = new Set([404, 410])
 
 // Single door to the Hub: bounded concurrency + the shared one-shot retry.
 //
@@ -791,10 +796,10 @@ const TRANSIENT_FETCH = Symbol('transient-fetch')
 //
 // `null` = fetched-but-unavailable, and it is cached at both tiers (per the
 // absent-vs-empty sentinel rule) so a sizeless repo isn't re-probed every search
-// — but ONLY when the Hub gave a durable answer (401/403/404/410). A rate limit,
-// a 5xx, or a dropped connection also returns null and is NOT cached, so a
-// recovered Hub re-enriches on the next request instead of staying blank for the
-// week the disk TTL would otherwise hold it.
+// — but ONLY when the Hub gave a durable answer (404/410). An auth denial, rate
+// limit, 5xx, or dropped connection also returns null and is NOT cached, so a
+// newly authorized or recovered Hub re-enriches on the next request instead of
+// staying blank for the week the disk TTL would otherwise hold it.
 async function fetchRepoModel(repoId) {
   if (repoModelCache.has(repoId)) return repoModelCache.get(repoId)
   return repoModelFlight.run(repoId, async () => {
@@ -815,7 +820,8 @@ async function fetchRepoModel(repoId) {
     // as "no data" would bake a bad moment into the disk tier for the full TTL,
     // and a restart would no longer clear it the way the old memory-only cache did.
     if (result === TRANSIENT_FETCH || result.outcome === 'transient') return null
-    // 'permanent' (gated / private / gone) IS a real answer — cache the null.
+    // 'permanent' (gone) IS a real answer — cache the null. Auth denials are
+    // transient because the user's credentials or repository access can change.
     const model = result.outcome === 'ok' ? result.data : null
     rememberRepoModel(repoId, model)
     await writeCachedRepoModel(repoId, model)

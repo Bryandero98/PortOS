@@ -695,6 +695,47 @@ export const musicSettingsSchema = z.object({
   }).partial().optional(),
 });
 
+// Federated media is an opt-in provider surface. The outer objects remain
+// passthrough for mixed-version peers/settings UIs: a rolled-back install must
+// preserve fields introduced by a newer build while still validating every
+// field this build understands.
+export const federatedMediaModelSchema = z.object({
+  engine: z.string().trim().min(1).max(80),
+  modelId: z.string().trim().min(1).max(256),
+}).passthrough();
+
+export const federatedMediaProviderSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxQueuedJobs: z.number().int().min(1).max(20).optional(),
+  audioModels: z.array(federatedMediaModelSchema).max(100).refine(
+    (models) => new Set(models.map((model) => `${model.engine}\u0000${model.modelId}`)).size === models.length,
+    { message: 'audioModels must not contain duplicate engine/model pairs' },
+  ).optional(),
+}).passthrough();
+
+export const federationSettingsSchema = z.object({
+  strictPullAuthorization: z.boolean().optional(),
+  mediaProvider: federatedMediaProviderSettingsSchema.optional(),
+}).passthrough();
+
+// Provider submissions intentionally accept text + model selection only. No
+// URL, local path, command, or provider credential can ride this contract.
+export const federatedMediaJobSubmissionSchema = z.object({
+  engine: z.string().trim().min(1).max(80),
+  modelId: z.string().trim().min(1).max(256),
+  prompt: z.string().trim().min(1).max(8000),
+  lyrics: z.string().max(50_000).optional(),
+  durationSec: z.number().finite().min(1).max(3600).optional(),
+  durationMode: z.enum(['auto', 'manual']).optional(),
+}).strict();
+
+export const federatedMediaIdempotencyKeySchema = z.string().trim().min(1).max(200)
+  .regex(/^[A-Za-z0-9._:-]+$/, 'Idempotency-Key contains unsupported characters');
+
+export const federatedMediaJobParamsSchema = z.object({
+  id: z.string().uuid(),
+}).strict();
+
 // Creative Director settings slice. Each LLM-backed stage can pin its own
 // provider/model instead of inheriting the system default. `evaluation` is a
 // direct vision API call (blank = auto-pick a local vision model, else fall

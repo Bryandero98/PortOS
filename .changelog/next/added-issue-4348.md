@@ -1,0 +1,1 @@
+- Add an authenticated federated audio provider API with conservative capacity admission and integrity-checked results (#4348).

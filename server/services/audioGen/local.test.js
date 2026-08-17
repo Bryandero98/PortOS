@@ -18,10 +18,10 @@ describe('generateAudio', () => {
     const onCompleted = vi.fn();
     audioGenEvents.once('completed', onCompleted);
 
-    await generateAudio({ jobId: 'job-1', prompt: 'a moody synth bed', engine: 'musicgen', durationSec: 12 });
+    await generateAudio({ jobId: 'job-1', prompt: 'a moody synth bed', engine: 'musicgen', durationSec: 12, durationMode: 'manual' });
 
     expect(generateMusic).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: 'a moody synth bed', engine: 'musicgen', durationSec: 12,
+      prompt: 'a moody synth bed', engine: 'musicgen', durationSec: 12, durationMode: 'manual',
       signal: expect.any(AbortSignal),
       onActivity: expect.any(Function),
     }));

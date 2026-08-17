@@ -44,6 +44,8 @@ import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
 import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
+import { PATHS } from '../lib/fileUtils.js';
+import { shellQuote } from '../lib/shellQuote.js';
 
 /**
  * Block a task that has exceeded the max spawn limit. Returns true if blocked.
@@ -450,16 +452,13 @@ export async function buildClaimWorkTask(app, {
 
   const resolvedAuthorFilter = resolveClaimAuthorFilter(issueAuthorFilter, metadata);
 
-  // Reviewers: explicit option wins; otherwise mirror the scheduler — merge
-  // configured metadata reviewers with the user's Code Review Defaults, falling
-  // back to the hardcoded default when filtering empties the list. A settings
-  // read error degrades to the default inside normalizeReviewers, so it never
-  // blocks. Local-LLM reviewers are dropped from BOTH paths: the claim prompts
-  // drive reviewers by invoking their CLI, and lmstudio/ollama have none.
-  const reviewersList = (reviewers !== undefined
-    ? (Array.isArray(reviewers) ? reviewers : [reviewers]).filter(Boolean)
-    : normalizeReviewers(metadata, codeReviewDefaults?.reviewers)
-  ).filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
+  // Reviewers: explicit option wins; otherwise mirror the scheduler. Local-LLM
+  // reviewers stay in the operative list; an appended procedure below tells the
+  // claim agent how to invoke PortOS's review service instead of silently replacing
+  // the user's configured reviewer.
+  const reviewersList = reviewers !== undefined
+    ? normalizeClaimReviewers({ reviewers: Array.isArray(reviewers) ? reviewers : [reviewers] }, codeReviewDefaults?.reviewers)
+    : normalizeClaimReviewers(metadata, codeReviewDefaults?.reviewers);
   // Arbitrary GitHub reviewer usernames appended as `@user` tokens so the
   // claim prompt's `/do:next --review-with` gates the merge on them too. An
   // explicit option wins, then a task-level list, then the Code Review Defaults.
@@ -499,7 +498,8 @@ export async function buildClaimWorkTask(app, {
     + appendTargetWorkItemBlock(promptTaskType, targetRef)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
-    + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts);
+    + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts)
+    + appendLocalReviewerInstructions(promptTaskType, reviewersList, promptReviewerModels, promptReviewerEfforts);
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
@@ -513,8 +513,7 @@ export async function buildClaimWorkTask(app, {
 
 /**
  * Resolve the reviewer prompt pieces for the claim flow exactly as
- * buildClaimWorkTask does (Code Review Defaults, minus local-LLM reviewers the
- * claim prompt can't drive, falling back to the hardcoded default). Mirrors the
+ * buildClaimWorkTask does (including local-LLM reviewers). Mirrors the
  * scheduled claim-work resolution so the JIRA play button honors the user's
  * reviewer choice.
  *
@@ -524,8 +523,7 @@ export async function buildClaimWorkTask(app, {
  */
 async function resolveClaimReviewerPrompt() {
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  const list = normalizeReviewers({}, codeReviewDefaults?.reviewers)
-    .filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
+  const list = normalizeClaimReviewers({}, codeReviewDefaults?.reviewers);
   // Arbitrary GitHub reviewer usernames from the Code Review Defaults, appended
   // as `@user` tokens so the play button's claim gates the merge on them too.
   // Optional-reviewer set rides along so a `~opt` reviewer stays non-blocking,
@@ -537,6 +535,7 @@ async function resolveClaimReviewerPrompt() {
   return {
     csv: buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModels, reviewerEfforts),
     effortBlock: appendReviewerEffortBlock(list, reviewerEfforts),
+    localReviewerBlock: appendLocalReviewerInstructions('claim-issue-jira', list, reviewerModels, reviewerEfforts),
   };
 }
 
@@ -691,6 +690,43 @@ const appendReviewerEffortBlock = (reviewers, reviewerEfforts) => {
 };
 
 /**
+ * Append the invocation contract for claim reviewers that have no CLI binary.
+ * This is prose rather than a template placeholder so customized legacy claim
+ * prompts receive the safety fix too. Empty/malformed responses are explicitly
+ * inconclusive and can never be mistaken for a clean review.
+ */
+export function buildLocalReviewerInstructions(promptTaskType, reviewers, reviewerModels = {}, reviewerEfforts = {}) {
+  const localReviewers = (reviewers || []).filter((reviewer) => LOCAL_LLM_REVIEWERS.includes(reviewer));
+  if (!localReviewers.length) return '';
+
+  const gitlabDiff = `MR_IID="$(glab mr list --source-branch "$(git branch --show-current)" -F json | jq -er '.[0].iid)'"\nglab mr diff "$MR_IID"`;
+  const diffCommand = promptTaskType === 'claim-issue-gitlab'
+    ? gitlabDiff
+    : promptTaskType === 'claim-issue'
+      ? 'gh pr diff'
+      : `if command -v gh >/dev/null 2>&1 && gh pr view --json url -q .url >/dev/null 2>&1; then\n  gh pr diff\nelif command -v glab >/dev/null 2>&1; then\n  ${gitlabDiff.replace(/\n/g, '\n  ')}\nelse\n  echo "No supported forge CLI can resolve the current branch's review diff" >&2\n  exit 1\nfi`;
+  const reviewScript = shellQuote(join(PATHS.root, 'server/scripts/run-local-code-review.mjs'));
+  const commands = localReviewers.map((reviewer) => {
+    const pinned = {
+      backend: reviewer,
+      ...(reviewerModels[reviewer] ? { model: reviewerModels[reviewer] } : {}),
+      ...(reviewerEfforts[reviewer] ? { effort: reviewerEfforts[reviewer] } : {}),
+    };
+    const jqArgs = Object.entries(pinned)
+      .map(([key, value]) => `--arg ${key} ${shellQuote(value)}`)
+      .join(' ');
+    const jqObject = Object.keys(pinned).map((key) => `${key}: $${key}`).join(', ');
+    return `### ${reviewer}\n\n\`\`\`bash\nREVIEW_DIFF=$(mktemp)\nREVIEW_RESPONSE=$(mktemp)\ntrap 'rm -f "$REVIEW_DIFF" "$REVIEW_RESPONSE" "\${REVIEW_RESPONSE}.findings"' EXIT\nif ! { ${diffCommand}; } > "$REVIEW_DIFF"; then\n  echo "Unable to resolve the current branch's review diff" >&2\n  exit 1\nfi\njq -Rs ${jqArgs} '{ ${jqObject}, diff: . }' < "$REVIEW_DIFF" | node ${reviewScript} > "$REVIEW_RESPONSE"\nif ! jq -er '.findings | select(type == "string" and length > 0)' "$REVIEW_RESPONSE" > "\${REVIEW_RESPONSE}.findings"; then\n  echo "Local reviewer failed: $(jq -r '.error // "missing .findings in reviewer response"' "$REVIEW_RESPONSE")" >&2\n  exit 1\nfi\ncat "\${REVIEW_RESPONSE}.findings"\n\`\`\``;
+  }).join('\n\n');
+
+  return `\n\n## Local Reviewer Procedure\n\nRun each configured local reviewer in its listed order using the command below. Only a successfully extracted non-empty \`.findings\` string is a review result. Timeout, transport failure, malformed JSON, an error response, or missing/empty findings is INCONCLUSIVE: do not merge or substitute a self-review.\n\n${commands}`;
+}
+
+const appendLocalReviewerInstructions = (promptTaskType, reviewers, reviewerModels, reviewerEfforts) => (
+  buildLocalReviewerInstructions(promptTaskType, reviewers, reviewerModels, reviewerEfforts)
+);
+
+/**
  * Build a one-off "implement THIS JIRA ticket" task for `app` — the per-card
  * "play" button on the app overview's sprint board (the JIRA analogue of the
  * `/do:next` claim button). Resolves the `claim-issue-jira` prompt body directly
@@ -713,7 +749,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
   const key = normalizeWorkItemRef(ticketKey);
 
   // Independent reads (prompt body + Code Review Defaults) — fetch concurrently.
-  const [template, { csv: reviewersCsv, effortBlock }] = await Promise.all([
+  const [template, { csv: reviewersCsv, effortBlock, localReviewerBlock }] = await Promise.all([
     getTaskPrompt('claim-issue-jira'),
     resolveClaimReviewerPrompt(),
   ]);
@@ -725,7 +761,8 @@ export async function buildJiraTicketTask(app, ticketKey) {
     // a backreference.
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     + appendTargetWorkItemBlock('claim-issue-jira', key)
-    + effortBlock;
+    + effortBlock
+    + localReviewerBlock;
 
   return { ticketKey: key, prompt, taskMetadata: { useWorktree: false, openPR: false } };
 }
@@ -2690,17 +2727,10 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // user's configured reviewers. Settings I/O failures degrade to the hardcoded
   // default inside normalizeReviewers, so a read error never blocks dispatch.
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  // Drop local-LLM reviewers (lmstudio/ollama) from the prompt's {reviewers}
-  // token: the claim/plan prompt templates only document how to drive copilot
-  // and the CLI reviewers (claude/codex/antigravity; grok flows through the same
-  // generic CLI path but isn't yet named in the per-kind bullet — see #2453).
-  // Unlike the system
-  // review-loop follow-up prompt (agentPromptBuilder.js), they carry no
-  // local-endpoint invocation instructions, so naming a local-LLM reviewer
-  // here would stall the agent's review step. Fall through to the hardcoded
-  // copilot default when filtering empties the list.
-  const promptReviewers = normalizeReviewers(metadata, codeReviewDefaults?.reviewers)
-    .filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
+  // Keep local-LLM reviewers in the operative list. Their service invocation
+  // contract is appended after rendering so customized legacy prompts receive
+  // it without needing a new placeholder.
+  const promptReviewers = normalizeClaimReviewers(metadata, codeReviewDefaults?.reviewers);
   // Arbitrary GitHub reviewer usernames appended as `@user` tokens so the claim
   // prompt's `/do:next --review-with` gates the merge on them too. A task-level
   // list overrides the Code Review Defaults; forge-agnostic, so not filtered.
@@ -2708,11 +2738,8 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   const promptOptionalReviewers = resolveOptionalReviewers(metadata.optionalReviewers, codeReviewDefaults?.optionalReviewers);
   const promptReviewerMaxRounds = resolveReviewerMaxRounds(metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
   // Per-reviewer model pins ride the same precedence, emitted as slashdo's
-  // `[<model>]` bracket. Entries for the local-LLM reviewers filtered out above
-  // are inert — the emitter only brackets tokens it actually emits. Efforts
-  // resolve in the same call (they reconcile against the models) and are appended
-  // as an instruction after the substitutions below, since `--review-with` has no
-  // suffix for them.
+  // `[<model>]` bracket. Efforts resolve in the same call and are appended as an
+  // instruction after the substitutions below.
   const { reviewerModels: promptReviewerModels, reviewerEfforts: promptReviewerEfforts } =
     resolveReviewerPins(metadata, codeReviewDefaults);
   const reviewersCsv = buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts);
@@ -2761,6 +2788,9 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     // instruction two owners to drift apart.
     + (/\{reviewers\}/.test(promptTemplate)
         ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts)
+        : '')
+    + (/\{reviewers\}/.test(promptTemplate)
+        ? appendLocalReviewerInstructions(promptTaskType, promptReviewers, promptReviewerModels, promptReviewerEfforts)
         : '');
 }
 
@@ -2982,4 +3012,14 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   };
 
   return task;
+}
+const CLAIM_REVIEWER_FALLBACK = ['codex'];
+
+/** Claim workflows are unattended and must use an invokable reviewer. */
+export function normalizeClaimReviewers(metadata, configuredReviewers) {
+  const fallback = Array.isArray(configuredReviewers) && configuredReviewers.length
+    ? configuredReviewers
+    : CLAIM_REVIEWER_FALLBACK;
+  const reviewers = normalizeReviewers(metadata, fallback).filter((reviewer) => reviewer !== 'copilot');
+  return reviewers.length ? reviewers : [...CLAIM_REVIEWER_FALLBACK];
 }

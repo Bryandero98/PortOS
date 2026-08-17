@@ -267,6 +267,9 @@ describe('Layout — isFullWidthRoute classification', () => {
     ['/story-builder', false], ['/story-builder/s1/step', true],
     ['/pipeline', false], ['/pipeline/series/s1', true],
     ['/local-llm', false], ['/local-llm/m', true],
+    // Music owns the same full-bleed title/tab/body shell as Media Gen, but
+    // its similarly named Music Video route is classified independently.
+    ['/music', true], ['/music/generate', true], ['/music-video', false],
     // Game: only a single-segment detail workspace.
     ['/game', false], ['/game/', false], ['/game/g1', true], ['/game/g1/x', false],
     // Apps: detail editor is full-width, but the Add App form is explicitly excluded

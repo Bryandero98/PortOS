@@ -921,7 +921,7 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
   if (hasLoras && (!videoLoraFamily(model) || usesWindowsHelper)) {
     throw usesWindowsHelper
       ? new ServerError(
-        `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on the Windows LTX-Video helper.`,
+        `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on the CUDA LTX-Video helper.`,
         { status: 400, code: 'LORAS_REQUIRE_LTX2' },
       )
       : videoLoraUnsupportedError(model, modelId);
@@ -950,8 +950,8 @@ const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeight
       { status: 400, code: 'A2V_REQUIRES_LTX2' },
     );
   }
-  // The site the predicate is named for: every BYOV runtime has declined above,
-  // so what's left on win32 is the legacy LTX-Video 0.9.5 diffusers wrapper.
+  // Every BYOV runtime has declined above; the remaining declared CUDA runtime
+  // is the legacy LTX-Video 0.9.5 diffusers wrapper.
   if (routesToWindowsHelper(model)) {
     const scriptPath = join(PATHS.root, 'scripts', 'generate_win.py');
     const args = [scriptPath, '--model', modelId, '--prompt', prompt, '--height', String(height), '--width', String(width), '--num-frames', String(numFrames), '--fps', String(fps), '--steps', String(steps), '--guidance', String(guidance), '--seed', String(seed), '--output', outputPath];
@@ -1182,7 +1182,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   }
   // Every runner resolves its weights from a HuggingFace repo id EXCEPT the
-  // legacy Windows helper, which hardcodes Lightricks/LTX-Video. A user-edited
+  // legacy CUDA helper, which hardcodes Lightricks/LTX-Video. A user-edited
   // registry entry missing `repo` would otherwise pass `undefined` into spawn
   // args. Keyed on the runner rather than the platform, so a Windows BYOV
   // runtime — which does need its repo — is still held to it here.
@@ -1294,9 +1294,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   //  - A model that routes to generate_win.py takes --last-image only so the
   //    script can log status; the LTX-Video 0.9.5 pipeline reads --image
   //    alone, so it never opens the last-frame file. That gate keys on the
-  //    RUNNER, not on the platform (see routesToWindowsHelper): Windows also
-  //    has a BYOV runtime, MiniMax H3 CUDA, whose helper genuinely anchors the
-  //    last frame, and a bare platform check would hand it an unresized frame.
+  //    RUNNER, not on the platform (see routesToWindowsHelper): both Windows
+  //    and Linux have BYOV runtimes whose helper genuinely anchors the last
+  //    frame, and a bare platform check would hand them an unresized frame.
   const lastImageWillBeUsed = !!lastImagePath && !routesToWindowsHelper(model) && mode === 'fflf'
     && (modelAnchorsLastFrame(model) || !sourceImagePath);
   // A non-null `keyframes` that ISN'T a length-≥2 array is malformed —

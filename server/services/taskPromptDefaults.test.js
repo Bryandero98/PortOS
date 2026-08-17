@@ -31,6 +31,26 @@ const SNAPSHOT = JSON.parse(readFileSync(
 ));
 
 describe('taskPromptDefaults integrity snapshot', () => {
+  it('claim workflows avoid Copilot and require verified remote merge state before cleanup', () => {
+    for (const key of ['plan-task', 'claim-issue']) {
+      const prompt = DEFAULT_TASK_PROMPTS[key];
+      expect(prompt.toLowerCase()).not.toContain('copilot');
+      expect(prompt).not.toMatch(/^\s*gh pr merge[^\n]*--auto/m);
+      expect(prompt).toContain('--json state -q .state');
+      expect(prompt).toContain('[ "$STATE" = "MERGED" ]');
+      expect(prompt).toContain('--squash --delete-branch');
+      expect(prompt).toContain('--rebase --delete-branch');
+      expect(prompt).toContain('Never force-delete with `-D`');
+    }
+
+    const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
+    expect(gitlab.toLowerCase()).not.toContain('copilot');
+    expect(gitlab).toContain('glab mr view');
+    expect(gitlab).toContain('ascii_downcase');
+    expect(gitlab).toContain('--squash --remove-source-branch');
+    expect(gitlab).toContain('Never force-delete with `-D`');
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -233,10 +253,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // declared the reviewer unavailable, and merged its PR on a self-review. Every
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
-    ['plan-task', 14],
-    ['claim-issue', 13],
-    ['claim-issue-gitlab', 12],
-    ['claim-issue-jira', 10],
+    ['plan-task', 15],
+    ['claim-issue', 14],
+    ['claim-issue-gitlab', 13],
+    ['claim-issue-jira', 11],
   ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     expect(PROMPT_VERSIONS[key]).toBe(version);

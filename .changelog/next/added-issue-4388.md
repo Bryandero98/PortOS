@@ -1,0 +1,1 @@
+- Adapt Three.js model previews to frame pressure with an inspectable fixed-quality override
