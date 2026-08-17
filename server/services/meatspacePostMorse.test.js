@@ -77,6 +77,17 @@ describe('appendMorseRound', () => {
     expect(round.accuracy).toBe(50);
   });
 
+  it('keeps bounded adaptive sampler metadata with the round', async () => {
+    const round = await appendMorseRound({
+      mode: 'copy',
+      samplerVersion: 'adaptive-v1',
+      materialMode: 'words',
+      targetedChars: ['m', 'M', 'R'],
+      items: [{ sent: 'M', guessed: 'R', correct: false }],
+    });
+    expect(round).toMatchObject({ samplerVersion: 'adaptive-v1', materialMode: 'words', targetedChars: ['M', 'R'] });
+  });
+
   it('appends to existing rounds', async () => {
     readJSONFile.mockResolvedValue({ kochLevel: 3, settings: null, rounds: [{ id: 'old' }] });
     await appendMorseRound({ mode: 'copy', items: [{ sent: 'K', guessed: 'K', correct: true }] });
@@ -188,6 +199,20 @@ describe('getMorseProgress', () => {
 
     // Confusion pairs (sent !== guessed), worst-first by count.
     expect(p.confusionPairs[0]).toEqual({ sent: 'M', guessed: 'R', count: 2 });
+  });
+
+  it('compares targeted and coverage accuracy without changing legacy rounds', async () => {
+    readJSONFile.mockResolvedValue({
+      kochLevel: 5,
+      settings: null,
+      rounds: [{
+        id: 'r1', date: today(), mode: 'copy', targetedChars: ['M'],
+        items: [{ sent: 'M', guessed: 'R', correct: false }, { sent: 'K', guessed: 'K', correct: true }],
+      }],
+    });
+    const p = await getMorseProgress(30);
+    expect(p.practiceAccuracy.targeted).toEqual({ correct: 0, attempts: 1, accuracy: 0 });
+    expect(p.practiceAccuracy.coverage).toEqual({ correct: 1, attempts: 1, accuracy: 100 });
   });
 
   it('excludes empty-sent insertions from the confusion matrix and mastery', async () => {

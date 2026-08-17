@@ -522,6 +522,9 @@ export const morseRoundSchema = z.object({
   kochLevel: z.number().int().min(1).max(MORSE_MAX_KOCH_LEVEL).optional(),
   wpm: z.number().min(1).max(100).optional(),
   farnsworthWpm: z.number().min(1).max(100).optional(),
+  samplerVersion: z.string().max(40).optional(),
+  materialMode: z.enum(['groups', 'words', 'callsigns', 'qso']).optional(),
+  targetedChars: z.array(z.string().max(8)).max(41).optional(),
   // Bounded so a malformed client can't write (and then re-aggregate on every
   // progress read) an unbounded array. A legit round tops out well under this:
   // copy is 10 questions × ≤5-char groups (≈50, doubled by insertions), send is

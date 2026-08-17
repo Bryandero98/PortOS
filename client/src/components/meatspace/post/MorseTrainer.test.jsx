@@ -99,6 +99,15 @@ describe('MorseTrainer deep-linking', () => {
     expect(MODES.map((m) => m.id)).toEqual(MORSE_MODE_IDS);
   });
 
+  it('lets users choose transfer material or opt out of adaptive selection', async () => {
+    await renderMorse();
+    expect(screen.getByLabelText('Adaptive practice')).toBeChecked();
+    fireEvent.click(screen.getByLabelText('Adaptive practice'));
+    expect(screen.getByLabelText('Adaptive practice')).not.toBeChecked();
+    fireEvent.change(screen.getByLabelText('Material'), { target: { value: 'qso' } });
+    expect(screen.getByLabelText('Material')).toHaveValue('qso');
+  });
+
   it('shows the mode grid and routes on pick (mode=null)', async () => {
     const onSelectMode = vi.fn();
     await renderMorse({ mode: null, onSelectMode });
