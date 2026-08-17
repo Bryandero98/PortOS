@@ -112,3 +112,4 @@ describe('computeFederationHorizon', () => {
     expect(placed.map(p => p.id)).toEqual(['a', 'b']);
   });
 });
+// @vitest-environment node

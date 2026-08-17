@@ -1,0 +1,1 @@
+- Speed up targeted CI by avoiding duplicate DB loads and narrowing Windows coverage

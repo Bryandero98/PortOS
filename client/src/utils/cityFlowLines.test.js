@@ -87,3 +87,4 @@ describe('computeFlowConnections', () => {
     expect(conns[0].end).toEqual([2, 0.5, 0]);
   });
 });
+// @vitest-environment node

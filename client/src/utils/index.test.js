@@ -51,3 +51,4 @@ describe('client/src/utils/ barrel', () => {
     expect(collisions, `colliding exports would silently shadow under the barrel:\n${collisions.join('\n')}`).toEqual([]);
   });
 });
+// @vitest-environment node

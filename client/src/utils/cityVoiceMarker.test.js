@@ -117,3 +117,4 @@ describe('computeVoiceMarker', () => {
     }
   });
 });
+// @vitest-environment node

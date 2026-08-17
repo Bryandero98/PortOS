@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import { vitestCiPool } from '../scripts/vitestCiPool.js';
+import { DB_TEST_INCLUDE } from './vitest.config.db.js';
 
 // `npm run test:fast` is the Windows-safe way to set the flag (a
 // `VITEST_FAST=1 vitest` script is parsed as an executable name on cmd.exe).
@@ -49,6 +50,12 @@ export default defineConfig({
     // The slashdo submodule ships its own node:test suites; vitest can't
     // parse them and the broad `../lib/**` glob would otherwise pick them up
     // as "no test suite found" failures that break --bail=1 CI runs.
+    // DB-backed suites run only in `vitest.config.db.js`, against portos_test.
+    // Keeping them in this file made ordinary Linux and Windows jobs import 29
+    // files solely to skip their 275 assertions when no test DB was configured.
+    // The DB job is the authoritative runner, so excluding the same canonical
+    // list here removes duplicate setup without reducing coverage.
+    //
     // Heavy disk/git/Sharp integration suites. `npm run test:fast`
     // (VITEST_FAST=1) drops them so a unit-only loop stays cheap; `npm test`
     // and CI keep the full run. The git-guard files are NOT listed here —
@@ -57,6 +64,7 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '../lib/slashdo/**',
+      ...DB_TEST_INCLUDE,
       ...(process.env.VITEST_FAST ? [
         'services/worktreeReap.test.js',
         'services/sprites/atlas.test.js',

@@ -130,3 +130,4 @@ describe('computeJiraDistrict', () => {
     expect(d.structures[0].summary).toBe('P-9');
   });
 });
+// @vitest-environment node

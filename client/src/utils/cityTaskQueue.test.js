@@ -125,3 +125,4 @@ describe('computeTaskQueue', () => {
     expect(vm.state).toBe('queued');
   });
 });
+// @vitest-environment node
