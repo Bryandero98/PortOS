@@ -2467,7 +2467,7 @@ export async function resolveReconcileDrainGate(taskSchedule, taskType, app, { s
  */
 async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule) {
   if (taskType !== 'branch-reconcile') return { skip: false, block: '' };
-  const { reconcile, filterActionable, formatInFlightForPrompt, actionableSignature } = await import('./branchReconcile.js');
+  const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature } = await import('./branchReconcile.js');
   const { formatSupersededForPrompt } = await import('./supersededLedger.js');
   const { getActiveAgentIds } = await import('./agentState.js');
   // Action toggles were merged (global → per-app override) + value-constrained
@@ -2520,8 +2520,9 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   // log so "nothing actionable" doesn't read as "no branches exist".
   const heldLive = (result.wip || []).filter((b) => b.liveOwnerReason);
   const heldLiveSuffix = countSuffix(heldLive, 'branch(es) left to their live owners', (b) => b.liveOwnerReason);
-  const actionable = filterActionable(result.inFlight, actions);
-  if (actionable.length === 0) {
+  const allActionable = filterActionable(result.inFlight, actions);
+  const actionable = limitBranchesForAgent(allActionable, metadata.branchesPerAgent);
+  if (allActionable.length === 0) {
     // Definitive idle: nothing in-flight to drive. Park on the recheck cadence,
     // clearing the progress signature so a fresh set later dispatches and zeroing the
     // dispatch budget — this drain converged, so the next one gets a full one.
@@ -2553,10 +2554,17 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   metadata.perpetual = true;
   const supersededBlock = formatSupersededForPrompt(result.superseded || []);
   const block = [
-    formatInFlightForPrompt(actionable, { defaultBranch: result.defaultBranch, actions }),
+    formatInFlightForPrompt(actionable, {
+      defaultBranch: result.defaultBranch,
+      actions,
+      branchesPerAgent: metadata.branchesPerAgent
+    }),
     supersededBlock
   ].filter(Boolean).join('\n');
-  emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)${heldLiveSuffix}${supersededSuffix}`, { appId: app.id, analysisType: taskType });
+  const batchSuffix = allActionable.length > actionable.length
+    ? ` (selected ${actionable.length} of ${allActionable.length})`
+    : '';
+  emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)${batchSuffix}${heldLiveSuffix}${supersededSuffix}`, { appId: app.id, analysisType: taskType });
   return { skip: false, block };
 }
 

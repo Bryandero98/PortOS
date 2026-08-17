@@ -57,6 +57,19 @@ describe('cosValidation effort field', () => {
   });
 });
 
+describe('branch-reconcile batch metadata', () => {
+  it('keeps integer batch sizes from 1 through 6', () => {
+    expect(sanitizeTaskMetadata({ branchesPerAgent: 1 })).toEqual({ branchesPerAgent: 1 });
+    expect(sanitizeTaskMetadata({ branchesPerAgent: 6 })).toEqual({ branchesPerAgent: 6 });
+  });
+
+  it('drops zero, fractional, string, and unbounded batch sizes', () => {
+    for (const branchesPerAgent of [0, 7, 1.5, '3', null]) {
+      expect(sanitizeTaskMetadata({ branchesPerAgent })).toBeNull();
+    }
+  });
+});
+
 describe('cosValidation autonomous-job effort field', () => {
   it('accepts every EFFORT_LEVELS value on create and rejects unknown values', () => {
     for (const effort of EFFORT_LEVELS) {

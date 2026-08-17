@@ -1,0 +1,1 @@
+- Branch reconciliation now cleans merged worktrees first, limits each coordinator to a configured branch batch, and absorbs the legacy branch-cleanup schedule.

@@ -5,11 +5,11 @@ import AppOverrideRow from './AppOverrideRow';
 
 const APP = { id: 'app-1', name: 'Acme' };
 
-function renderRow({ globalTaskMetadata = {}, override = null, onUpdate = vi.fn().mockResolvedValue(undefined) } = {}) {
+function renderRow({ globalTaskMetadata = {}, override = null, onUpdate = vi.fn().mockResolvedValue(undefined), taskType = 'feature-ideas' } = {}) {
   render(
     <AppOverrideRow
       app={APP}
-      taskType="feature-ideas"
+      taskType={taskType}
       globalIntervalType="daily"
       globalTaskMetadata={globalTaskMetadata}
       managedAgentOptions={[]}
@@ -68,5 +68,19 @@ describe('AppOverrideRow — After opening PR override', () => {
     expect(prSelect()).toHaveValue('leave-open');
     await act(async () => { fireEvent.change(prSelect(), { target: { value: '' } }); });
     expect(onUpdate).toHaveBeenCalledWith('app-1', 'feature-ideas', { taskMetadata: null });
+  });
+});
+
+describe('AppOverrideRow — branch-reconcile batch size', () => {
+  it('allows an app to inherit or override the global branch batch', async () => {
+    const onUpdate = renderRow({
+      taskType: 'branch-reconcile',
+      globalTaskMetadata: { branchesPerAgent: 3 },
+      override: { taskMetadata: { branchesPerAgent: 2 } }
+    });
+    const select = screen.getByLabelText('Branches per agent for Acme');
+    expect(select).toHaveValue('2');
+    await act(async () => { fireEvent.change(select, { target: { value: '' } }); });
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'branch-reconcile', { taskMetadata: null });
   });
 });

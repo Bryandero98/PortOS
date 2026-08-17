@@ -1437,6 +1437,13 @@ export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 export const SWARM_COUNT_MIN = 2;
 export const SWARM_COUNT_MAX = 6;
 
+// branch-reconcile coordinator batch size. Unlike claim-issue's swarm count,
+// this is the number of already-classified branches one coordinator receives
+// in a run. A one-branch batch is valid, and the scheduler supplies the default
+// when the key is absent so old task records remain compatible.
+export const BRANCHES_PER_AGENT_MIN = 1;
+export const BRANCHES_PER_AGENT_MAX = 6;
+
 // POST /api/cos/tasks/slashdo — a `/do:*` button click from an app's Agent
 // Operations panel. The run-settings fields are PICKED from createCosTaskSchema
 // rather than restated, so the drawer's provider/model/effort/simplify/reviewer
@@ -1574,6 +1581,18 @@ export function sanitizeTaskMetadata(raw) {
       && (raw.swarmCount === 0
         || (raw.swarmCount >= SWARM_COUNT_MIN && raw.swarmCount <= SWARM_COUNT_MAX))) {
     clean.swarmCount = raw.swarmCount;
+    hasKeys = true;
+  }
+  // `branchesPerAgent` bounds the branch-reconcile prompt to a deterministic
+  // prefix of the prioritized in-flight set. It is separate from swarmCount:
+  // branch-reconcile runs one coordinator over a batch, while claim-issue fans
+  // out independent issue agents. Absent means inherit; there is no "off"
+  // value because the task default intentionally supplies a safe batch size.
+  if (Object.prototype.hasOwnProperty.call(raw, 'branchesPerAgent')
+      && Number.isInteger(raw.branchesPerAgent)
+      && raw.branchesPerAgent >= BRANCHES_PER_AGENT_MIN
+      && raw.branchesPerAgent <= BRANCHES_PER_AGENT_MAX) {
+    clean.branchesPerAgent = raw.branchesPerAgent;
     hasKeys = true;
   }
   // Pass through pipeline config (validated shape: object with stages array)
