@@ -30,6 +30,7 @@ vi.mock('./musicEngineCapabilities.js', () => ({
 
 vi.mock('./mediaJobQueue/index.js', () => ({
   listJobs: vi.fn(() => state.jobs),
+  isRemoteMediaJob: (job) => job?.kind === 'audio' && job.params?.remoteMedia !== undefined,
   getJob: vi.fn((id) => state.jobs.find((job) => job.id === id) || null),
   enqueueJob: vi.fn(({ kind, owner, params }) => {
     const suffix = String(state.nextId++).padStart(12, '0');
@@ -77,7 +78,9 @@ afterAll(() => {
 
 const selection = { engine: 'minimax-music3', modelId: 'minimax-music3' };
 const config = () => ({ enabled: true, maxQueuedJobs: 2, audioModels: [selection] });
-const input = () => ({ ...selection, prompt: 'slow synthwave', durationSec: 60, durationMode: 'manual' });
+const SAFE_PROMPT = 'Instrumental synthwave music with a dreamy mood, slow tempo, medium energy. No vocals or spoken words.';
+const OTHER_SAFE_PROMPT = 'Instrumental ambient music with a calm mood, slow tempo, low energy. No vocals or spoken words.';
+const input = () => ({ ...selection, prompt: SAFE_PROMPT, durationSec: 60, durationMode: 'manual' });
 
 function readyEngine(overrides = {}) {
   return {
@@ -173,7 +176,7 @@ describe('federated media provider capacity and idempotency', () => {
     expect(enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'audio', owner: 'federated-media:peer-example',
       params: expect.objectContaining({
-        prompt: 'slow synthwave', engine: 'minimax-music3', modelId: 'minimax-music3',
+        prompt: SAFE_PROMPT, engine: 'minimax-music3', modelId: 'minimax-music3',
         durationMode: 'manual',
         federatedMedia: expect.objectContaining({
           callerInstanceId: 'peer-example', idempotencyKey: 'commission-1',
@@ -195,7 +198,7 @@ describe('federated media provider capacity and idempotency', () => {
 
     await expect(submitFederatedMediaJob({
       callerId: 'peer-example', config: config(),
-      input: { ...input(), prompt: 'different' }, idempotencyKey: 'commission-1',
+      input: { ...input(), prompt: OTHER_SAFE_PROMPT }, idempotencyKey: 'commission-1',
     })).rejects.toMatchObject({ status: 409, code: 'MEDIA_PROVIDER_IDEMPOTENCY_CONFLICT' });
   });
 
@@ -208,6 +211,23 @@ describe('federated media provider capacity and idempotency', () => {
       callerId: 'peer-example', config: config(), input: input(), idempotencyKey: 'commission-2',
     })).rejects.toMatchObject({ status: 429, code: 'MEDIA_PROVIDER_BUSY' });
     expect(enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('does not count outgoing proxy jobs against this machine provider capacity', async () => {
+    state.jobs = [
+      {
+        id: 'remote-outgoing',
+        kind: 'audio',
+        owner: null,
+        status: 'running',
+        params: { remoteMedia: { wireVersion: 1, peerId: '00000000-0000-4000-8000-000000000001' } },
+      },
+      { id: 'local-1', kind: 'video', owner: null, status: 'running', params: {} },
+    ];
+
+    await expect(submitFederatedMediaJob({
+      callerId: 'peer-example', config: config(), input: input(), idempotencyKey: 'commission-remote-capacity',
+    })).resolves.toMatchObject({ replayed: false, job: { status: 'queued' } });
   });
 
   it('fails closed when CUDA readiness is unknown', async () => {

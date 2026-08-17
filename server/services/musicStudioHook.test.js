@@ -126,4 +126,29 @@ describe('music studio completion hook', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(trackStore.updateTrack).not.toHaveBeenCalledWith('deleted-track', expect.anything());
   });
+
+  it('files the privacy-safe profile prompt instead of the rollback-safe empty prompt', async () => {
+    trackStore.getTrack.mockResolvedValue({ id: 'track-1', renders: [] });
+    queue.events.emit('completed', {
+      id: 'job-remote', kind: 'audio', queuedAt: new Date().toISOString(),
+      params: {
+        prompt: '',
+        lyrics: '',
+        remoteMedia: {
+          wireVersion: 1,
+          peerId: '00000000-0000-4000-8000-000000000001',
+          profile: { style: 'ambient', mood: 'calm', tempo: 'slow', energy: 'low', instruments: ['piano'] },
+          request: { engine: 'remote-audio', modelId: 'example/model' },
+        },
+        musicStudio: { trackId: 'track-1', lyricsEnabled: true, lyricsProvided: false },
+      },
+      result: { filename: 'remote.wav', durationSec: 30, engine: 'remote-audio', modelId: 'example/model' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(trackStore.buildRenderAppend).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      prompt: 'Instrumental ambient music with a calm mood, slow tempo, low energy, featuring piano. No vocals or spoken words.',
+      lyrics: '',
+    }));
+  });
 });

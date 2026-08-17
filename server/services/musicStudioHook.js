@@ -2,6 +2,7 @@
  * Files completed Music Studio audio jobs onto their track, even when the
  * browser that started the render has unmounted (#4353).
  */
+import { renderFederatedMediaAudioPrompt } from '../lib/federatedMediaWire.js';
 import { createMediaJobImageHook } from './mediaJobImageHook.js';
 import { updateJobResult } from './mediaJobQueue/index.js';
 import * as tracks from './tracks/index.js';
@@ -22,14 +23,15 @@ const hook = createMediaJobImageHook({
     const tag = job.params.musicStudio;
     const authoredPrompt = typeof tag.authoredPrompt === 'string' ? tag.authoredPrompt : job.params.prompt;
     const authoredLyrics = typeof tag.authoredLyrics === 'string' ? tag.authoredLyrics : job.params.lyrics;
+    const remotePrompt = renderFederatedMediaAudioPrompt(job.params.remoteMedia?.profile);
     return {
       filename,
       durationSec: Number.isFinite(job.result?.durationSec) ? Math.round(job.result.durationSec) : null,
       engine: typeof job.result?.engine === 'string' ? job.result.engine : null,
       modelId: typeof job.result?.modelId === 'string' ? job.result.modelId : null,
-      prompt: job.params.prompt,
+      prompt: remotePrompt || job.params.prompt,
       authoredPrompt,
-      lyrics: job.params.lyrics,
+      lyrics: remotePrompt ? '' : job.params.lyrics,
       authoredLyrics,
       lyricsEnabled: tag.lyricsEnabled === true,
       lyricsProvided: tag.lyricsProvided === true,
