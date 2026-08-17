@@ -118,6 +118,14 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     expect(directive.goal).not.toContain('MiniMax H3 prompt template');
     expect(directive.goal).toContain('production-ready prompt');
   });
+
+  it('honors the resolved settings-level cloud backend for auto mode', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' } },
+      { defaultVideoModelId: () => 'minimax_h3_8bit', effectiveVideoMode: 'grok' },
+    );
+    expect(directive.goal).not.toContain('MiniMax H3 prompt template');
+  });
 });
 
 describe('per-ability directives steer the planner to the right tools', () => {

@@ -24,7 +24,9 @@
 
 import { schedule, cancel, isValidCron } from '../eventScheduler.js';
 import { getUserTimezone } from '../../lib/timezone.js';
-import { settingsEvents } from '../settings.js';
+import { getSettings, settingsEvents } from '../settings.js';
+import { RENDER_TARGET } from '../../lib/renderTargets.js';
+import { resolveVideoMode, VIDEO_GEN_MODE } from '../videoGen/modes.js';
 import { listCommissions, getCommission, recordCommissionRun, commissionEvents } from './store.js';
 import { commissionToCron } from './directive.js';
 import { buildCommissionDirective, getAbilityAdapter } from './abilityAdapters.js';
@@ -277,9 +279,18 @@ async function fireCommission(commission, trigger) {
       import('../videoGen/local.js'),
     ]);
 
+    const settings = (commission.targetAbility === 'video' || commission.targetAbility === 'music-video')
+      ? await getSettings().catch(() => ({}))
+      : {};
+    const requestedVideoMode = commission.generation?.videoMode === 'auto'
+      ? null : commission.generation?.videoMode;
+    const effectiveVideoMode = (commission.targetAbility === 'video' || commission.targetAbility === 'music-video')
+      ? resolveVideoMode(requestedVideoMode, settings, { target: RENDER_TARGET.CREATIVE_AGENT })
+      : VIDEO_GEN_MODE.LOCAL;
     const directive = buildCommissionDirective(commission, {
       tasteRecipe: startedTasteRecipe,
       defaultVideoModelId,
+      effectiveVideoMode,
     });
     // Fan the commission's single LLM pin onto BOTH CD cognitive stages
     // (treatment + plan) as the project's `modelOverrides`, so the scheduled
