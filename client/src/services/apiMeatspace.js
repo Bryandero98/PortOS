@@ -267,6 +267,11 @@ export const submitTrainingEntry = (data) => request('/meatspace/post/training',
   method: 'POST',
   body: JSON.stringify(data)
 });
+export const submitTrainingRun = (data, options = {}) => request('/meatspace/post/training/runs', {
+  method: 'POST',
+  body: JSON.stringify(data),
+  ...options
+});
 export const getTrainingStats = (days) => request(`/meatspace/post/training/stats${days != null ? `?days=${days}` : ''}`);
 export const getTrainingEntries = (limit) => request(`/meatspace/post/training/entries${limit ? `?limit=${limit}` : ''}`);
 

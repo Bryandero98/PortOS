@@ -5,11 +5,11 @@ vi.mock('../services/api', () => ({
   generatePostDrill: vi.fn(),
   submitPostSession: vi.fn(),
   scorePostLlmDrill: vi.fn(),
-  submitTrainingEntry: vi.fn(),
+  submitTrainingRun: vi.fn(),
 }));
 vi.mock('../components/ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
-import { generatePostDrill, submitPostSession, scorePostLlmDrill, submitTrainingEntry } from '../services/api';
+import { generatePostDrill, submitPostSession, scorePostLlmDrill, submitTrainingRun } from '../services/api';
 import { usePostSession } from './usePostSession';
 
 // Covers issue #2010: a memory drill completed inside a POST session must
@@ -461,7 +461,7 @@ describe('usePostSession — LLM training-log correctCount (issue #2097)', () =>
       questions: [{ questionIndex: 0, items: ['firehouse'], llmScore: 90 }],
       evaluation: { overallScore: 90, scores: [{ score: 90 }] },
     });
-    submitTrainingEntry.mockResolvedValue({});
+    submitTrainingRun.mockResolvedValue({ id: 'training-run' });
 
     const { result } = renderHook(() => usePostSession());
 
@@ -484,12 +484,14 @@ describe('usePostSession — LLM training-log correctCount (issue #2097)', () =>
       await result.current.saveSession({});
     });
 
-    expect(submitTrainingEntry).toHaveBeenCalledWith(expect.objectContaining({
+    expect(submitTrainingRun.mock.calls[0][0].attempts[0]).toEqual(expect.objectContaining({
       module: 'llm-drills',
       drillType: 'compound-chain',
       questionCount: 1,
       correctCount: 1,
-      totalMs: 5000,
+      latencyMs: 5000,
+      inputMode: 'text',
+      scorerProvenance: 'server-llm',
     }));
   });
 
@@ -502,7 +504,7 @@ describe('usePostSession — LLM training-log correctCount (issue #2097)', () =>
       questions: [{ questionIndex: 0, response: 'wrong', llmScore: 20 }],
       evaluation: { overallScore: 20, scores: [{ score: 20 }] },
     });
-    submitTrainingEntry.mockResolvedValue({});
+    submitTrainingRun.mockResolvedValue({ id: 'training-run' });
 
     const { result } = renderHook(() => usePostSession());
 
@@ -525,9 +527,47 @@ describe('usePostSession — LLM training-log correctCount (issue #2097)', () =>
       await result.current.saveSession({});
     });
 
-    expect(submitTrainingEntry).toHaveBeenCalledWith(expect.objectContaining({
+    expect(submitTrainingRun.mock.calls[0][0].attempts[0]).toEqual(expect.objectContaining({
       drillType: 'bridge-word', questionCount: 1, correctCount: 0,
     }));
+  });
+});
+
+describe('usePostSession — atomic training-run save (#4441)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  it('keeps a failed save retryable and reuses the same run and attempt ids', async () => {
+    generatePostDrill.mockResolvedValue({
+      type: 'doubling-chain', config: { steps: 1 },
+      questions: [{ prompt: '2 x 2', expected: 4 }],
+    });
+    submitTrainingRun
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ id: 'saved-training-run', attemptCount: 1 });
+
+    const { result } = renderHook(() => usePostSession());
+    await act(async () => {
+      await result.current.startSession([{ type: 'doubling-chain', config: {}, timeLimitSec: 60 }], true);
+    });
+    act(() => { result.current.submitAnswer('4'); });
+    act(() => { result.current.acknowledgeAnswer(); });
+
+    let first;
+    await act(async () => { first = await result.current.saveSession({}); });
+    expect(first).toBeNull();
+    expect(result.current.state).toBe('complete');
+    const firstPayload = submitTrainingRun.mock.calls[0][0];
+    expect(firstPayload.attempts[0].inputMode).toBe('numeric');
+
+    await act(async () => { await result.current.saveSession({}); });
+    expect(result.current.state).toBe('saved');
+    const retryPayload = submitTrainingRun.mock.calls[1][0];
+    expect(retryPayload.id).toBe(firstPayload.id);
+    expect(retryPayload.attempts.map((attempt) => attempt.id))
+      .toEqual(firstPayload.attempts.map((attempt) => attempt.id));
   });
 });
 
@@ -550,7 +590,7 @@ describe('usePostSession — LLM training-log per-question breakdown (issue #211
       questions: [{ questionIndex: 0, prompt: 'fire', items: ['firehouse'], responseMs: 500, llmScore: 90, llmFeedback: 'Nice!' }],
       evaluation: { overallScore: 90, scores: [{ score: 90, feedback: 'Nice!' }] },
     });
-    submitTrainingEntry.mockResolvedValue({});
+    submitTrainingRun.mockResolvedValue({ id: 'training-run' });
 
     const { result } = renderHook(() => usePostSession());
 
@@ -573,7 +613,7 @@ describe('usePostSession — LLM training-log per-question breakdown (issue #211
       await result.current.saveSession({});
     });
 
-    expect(submitTrainingEntry).toHaveBeenCalledWith(expect.objectContaining({
+    expect(submitTrainingRun.mock.calls[0][0].attempts[0]).toEqual(expect.objectContaining({
       drillType: 'compound-chain',
       questions: [expect.objectContaining({
         prompt: 'fire', items: ['firehouse'], score: 90, feedback: 'Nice!', correct: true,
@@ -594,7 +634,7 @@ describe('usePostSession — LLM training-log per-question breakdown (issue #211
       questions: [{ questionIndex: 0, response: 'y', llmScore: 80 }],
       evaluation: { overallScore: 80, scores: [{ score: 80 }] },
     });
-    submitTrainingEntry.mockResolvedValue({});
+    submitTrainingRun.mockResolvedValue({ id: 'training-run' });
 
     const { result } = renderHook(() => usePostSession());
 
@@ -617,7 +657,7 @@ describe('usePostSession — LLM training-log per-question breakdown (issue #211
       await result.current.saveSession({});
     });
 
-    const entry = submitTrainingEntry.mock.calls[0][0];
+    const entry = submitTrainingRun.mock.calls[0][0].attempts[0];
     expect(entry).not.toHaveProperty('questions');
   });
 });
@@ -700,16 +740,17 @@ describe('usePostSession — refresh-safe run + idempotent submit (issue #2098)'
     expect(snap.drillResults).toHaveLength(1);
   });
 
-  it('does not restore a training run persisted mid-save (avoids double training-log)', () => {
+  it('restores a training run persisted mid-save for an idempotent retry', () => {
     sessionStorage.setItem('post.activeRun', JSON.stringify({
-      runId: 'r1', state: 'saving', isTraining: true,
+      runId: '11111111-1111-4111-8111-111111111111', state: 'saving', isTraining: true,
       drills: [{ type: 'compound-chain' }], currentDrillIndex: 0, currentDrill: null,
       currentQuestionIndex: 0, answers: [],
       drillResults: [{ module: 'llm-drills', type: 'compound-chain', score: 90 }],
       sessionScore: 90, tags: {},
     }));
     const { result } = renderHook(() => usePostSession());
-    expect(result.current.state).toBe('idle'); // training run is dropped, not resumed
+    expect(result.current.state).toBe('complete');
+    expect(result.current.drillResults).toHaveLength(1);
   });
 
   it('clears the persisted run on reset (no stale run resumes next mount)', async () => {
