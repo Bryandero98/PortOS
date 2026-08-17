@@ -211,6 +211,14 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
   seed: z.number().int().optional(),
   numFrames: z.number().int().min(1).max(2000).optional(),
   fps: z.number().int().min(1).max(120).optional(),
+  tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
+  disableAudio: z.boolean().optional(),
+  imageStrength: z.number().min(0).max(1).optional(),
+  textEncoderId: z.string().max(64).optional().transform(emptyToUndef),
+  chunks: z.number().int().min(1).max(8).optional(),
+  chunkPrompts: z.array(z.string().max(8000)).max(8).optional(),
+  contextFrames: z.number().int().min(0).max(64).optional(),
+  loras: z.array(z.object({ filename: z.string().max(512), name: z.string().max(200).optional(), scale: z.number().min(0).max(2).optional() })).max(8).optional(),
 }).partial();
 
 const retryBodySchema = z.object({
