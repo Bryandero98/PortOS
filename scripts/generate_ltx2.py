@@ -575,8 +575,9 @@ def filter_ltx25_unified_weights(weights: dict) -> dict:
 
     mlx-lm's Gemma 4 sanitizer already removes ``vision_tower.*``,
     ``audio_tower.*`` and the multimodal projectors before strict weight
-    loading.  The Heretic unified checkpoint additionally publishes eleven
-    ``vision_embedder.*`` tensors (sometimes under a leading ``model.``),
+    loading.  The pinned Heretic unified checkpoints additionally publish ten
+    or eleven ``vision_embedder.*`` tensors (sometimes under a leading
+    ``model.``),
     which are not part of the text-only ``gemma4`` module tree and otherwise
     make strict loading fail.  Filter only that proven visual prefix: using
     ``strict=False`` would also hide a genuinely missing language tensor.
