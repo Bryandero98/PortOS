@@ -50,11 +50,11 @@ describe('localLlmCatalog', () => {
       expect(list.find((m) => m.key === 'gemma4-12b').installed).toBe(true);
     });
 
-    it('gates the native Qwen MLX recommendation to Apple Silicon', () => {
+    it('gates the current MLX Community Qwen recommendation to Apple Silicon', () => {
       const mlxKey = 'qwen3.8-27b-mlx-4bit';
       expect(getCatalog('lmstudio').find((m) => m.key === mlxKey)).toMatchObject({
         format: 'mlx',
-        id: 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+        id: 'mlx-community/Qwen3.8-27B-4bit'
       });
       expect(getCatalog('lmstudio', [], { appleSilicon: true }).some((m) => m.key === mlxKey)).toBe(true);
       expect(getCatalog('lmstudio', [], { appleSilicon: false }).some((m) => m.key === mlxKey)).toBe(false);
@@ -151,7 +151,7 @@ describe('localLlmCatalog', () => {
     });
 
     it('does not invent an Ollama target for a known LM Studio-only MLX build', () => {
-      expect(mapModelToBackend('lmstudio', 'lmstudio-community/Qwen3.8-27B-MLX-4bit', 'ollama'))
+      expect(mapModelToBackend('lmstudio', 'mlx-community/Qwen3.8-27B-4bit', 'ollama'))
         .toEqual({ targetId: null, exact: false });
     });
 

@@ -290,12 +290,12 @@ export const LOCAL_LLM_CATALOG = [
     params: '27B',
     size: '15.0 GB',
     family: 'qwen',
-    description: 'LM Studio’s 4-bit MLX build of Qwen3.8 27B — a native Apple-Silicon format with long context, coding, reasoning, tools, vision, thinking, and multilingual support.',
+    description: 'MLX Community’s current 4-bit Qwen3.8 27B build — a native Apple-Silicon format with long context, coding, reasoning, tools, vision, thinking, and multilingual support.',
     capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision', 'multilingual'],
     context: 262144,
     format: 'mlx',
     appleSiliconOnly: true,
-    lmstudio: 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+    lmstudio: 'mlx-community/Qwen3.8-27B-4bit'
   },
   {
     key: 'qwen3.8-27b',
