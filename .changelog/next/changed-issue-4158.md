@@ -1,0 +1,1 @@
+- Client lint now checks image alternative text and valid ARIA usage.

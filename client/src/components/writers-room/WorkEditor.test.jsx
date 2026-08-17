@@ -140,6 +140,15 @@ describe('WorkEditor header layout (#3568)', () => {
     expect(within(snapshot).getByText('Snapshot').className).toContain('hidden sm:inline');
   });
 
+  it('exposes the storyboard resizer as a bounded separator', async () => {
+    await renderEditor();
+    const separator = screen.getByRole('separator', { name: 'Resize storyboard sidebar' });
+
+    expect(separator).toHaveAttribute('aria-orientation', 'vertical');
+    expect(Number(separator.getAttribute('aria-valuemin'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuenow')));
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuemax')));
+  });
+
   it('gives the header controls a 44px touch target on mobile', async () => {
     await renderEditor();
     const { title, status, save, snapshot } = headerControls();
