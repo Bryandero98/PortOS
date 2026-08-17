@@ -64,6 +64,11 @@ beforeEach(() => {
 });
 
 describe('LocalLlmTab installed models', () => {
+  it('links to the shared Ollama generation controls', async () => {
+    await renderTab();
+    expect(screen.getByRole('link', { name: /temperature and thinking defaults/i }).getAttribute('href')).toBe('/ai');
+  });
+
   it('lets a long model id wrap instead of truncating it', async () => {
     await renderTab();
     const name = screen.getByText(LONG_ID);

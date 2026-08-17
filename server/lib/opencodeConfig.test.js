@@ -130,10 +130,11 @@ describe('buildOpencodeEnvVars', () => {
   });
 
   it('declares the run model (bare) under provider.ollama.models', () => {
-    const result = buildOpencodeEnvVars({ command: 'opencode', ollamaBacked: true, models: [] }, 'qwen2.5:7b');
+    const result = buildOpencodeEnvVars({ command: 'opencode', ollamaBacked: true, models: [], temperature: 0.6, thinking: false }, 'qwen2.5:7b');
     expect(result.OPENCODE_CONFIG_CONTENT).toBeDefined();
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
     expect(cfg.provider.ollama.models['qwen2.5:7b']).toEqual({ name: 'qwen2.5:7b', tool_call: true });
+    expect(cfg.agent.build).toEqual({ temperature: 0.6, think: false });
   });
 
   it('declares the run model under provider.mtplx.models for MTPLX-backed OpenCode', () => {

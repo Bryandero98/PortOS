@@ -134,8 +134,8 @@ export function createPortOSProviderRoutes(aiToolkit) {
   // than EventSource: EventSource would auto-reconnect after a dropped stream
   // and could launch another non-idempotent npm install.
   //
-  // The fixed command is npm install --global opencode-ai@latest; no request
-  // input reaches a shell or package argument.
+  // The fixed command is npm install --global --ignore-scripts=false
+  // opencode-ai@latest; no request input reaches a shell or package argument.
   router.post('/opencode/install', asyncHandler(async (req, res) => {
     const { send, safeEnd } = openSseStream(res);
     const installLog = createInstallLogger({ installer: 'OpenCode CLI', target: 'npm global prefix' });

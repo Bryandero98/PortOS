@@ -44,6 +44,8 @@
       "models": [],
       "defaultModel": null,
       "ollamaBacked": true,
+      "temperature": 0.6,
+      "thinking": true,
       "timeout": 600000,
       "enabled": false,
       "envVars": {
@@ -142,6 +144,8 @@
       "models": [],
       "defaultModel": null,
       "ollamaBacked": true,
+      "temperature": 0.6,
+      "thinking": true,
       "timeout": 600000,
       "enabled": false,
       "envVars": {
@@ -161,6 +165,8 @@
       "models": [],
       "defaultModel": null,
       "ollamaBacked": true,
+      "temperature": 0.6,
+      "thinking": true,
       "timeout": 600000,
       "enabled": false,
       "envVars": {
@@ -178,6 +184,8 @@
       "models": [],
       "defaultModel": null,
       "ollamaBacked": true,
+      "temperature": 0.6,
+      "thinking": true,
       "timeout": 600000,
       "enabled": false,
       "envVars": {
@@ -257,6 +265,8 @@
       "type": "api",
       "endpoint": "http://localhost:11434/v1",
       "apiKey": "",
+      "temperature": 0.6,
+      "thinking": true,
       "models": [],
       "defaultModel": null,
       "timeout": 300000,

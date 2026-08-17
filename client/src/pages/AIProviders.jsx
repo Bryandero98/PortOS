@@ -863,6 +863,8 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     fallbackProvider: provider?.fallbackProvider || '',
     fallbackModel: provider?.fallbackModel || '',
     numCtx: provider?.numCtx ?? '',
+    temperature: provider?.temperature ?? 0.6,
+    thinking: provider?.thinking ?? true,
     contextWindow: provider?.contextWindow ?? '',
     timeout: provider?.timeout || 300000,
     enabled: provider?.enabled !== false,
@@ -942,6 +944,10 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
     if (!input) return null;
     return /^\d+$/.test(input) ? Number(input) : value;
   };
+  const parseNumberField = (value) => {
+    const input = String(value ?? '').trim();
+    return input === '' ? undefined : Number(input);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -960,6 +966,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
       contextWindow: parseOptionalIntField(formData.contextWindow),
       numCtx: showsNumCtx ? parseOptionalIntField(formData.numCtx) : null,
+      ...(showsNumCtx ? { temperature: parseNumberField(formData.temperature), thinking: formData.thinking } : {}),
     };
     // The generation/fallback pickers filter out embedding-only models, so a
     // stored embedding (from an older config) would be hidden in the UI yet
@@ -1365,6 +1372,33 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
               )}
             </div>
           </div>
+
+          {showsNumCtx && (
+            <div className="border-t border-port-border pt-4 mt-4">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Ollama Generation</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <FormField label="Temperature">
+                  <input
+                    type="number"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                    value={formData.temperature}
+                    onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
+                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Defaults to 0.6 for local Ollama agent runs.</p>
+                </FormField>
+                <FormField label="Thinking mode">
+                  <label className="flex items-center gap-2 min-h-10 text-sm text-gray-300">
+                    <input type="checkbox" checked={formData.thinking} onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.checked }))} />
+                    Enable model reasoning
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1">Sent to thinking-capable Ollama models; unsupported models ignore it.</p>
+                </FormField>
+              </div>
+            </div>
+          )}
 
           {/* Fallback Provider */}
           <div className="border-t border-port-border pt-4 mt-4">

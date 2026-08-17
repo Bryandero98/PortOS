@@ -766,8 +766,8 @@ describe('huggingFaceCatalog', () => {
       expect(catalog[0].sizeBytes).toBe(8_000_000_000)
     })
 
-    it('enriches a curated LM Studio MLX entry with one installed native-format variant', async () => {
-      const repo = 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+    it('enriches the curated MLX Community Qwen entry with one installed native-format variant', async () => {
+      const repo = 'mlx-community/Qwen3.8-27B-4bit'
       fetch.mockResolvedValueOnce(blobs(repo, {
         'model-00001-of-00003.safetensors': 5_400_000_000,
         'model-00002-of-00003.safetensors': 5_300_000_000,

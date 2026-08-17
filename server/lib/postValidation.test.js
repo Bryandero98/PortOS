@@ -104,7 +104,7 @@ describe('Morse drill types stay scoped to the training log', () => {
 
 describe('Rhetoric drill types stay scoped to the training log', () => {
   it('accepts each standalone rhetoric exercise without making it a generatable POST drill', () => {
-    for (const drillType of ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-progressia', 'rhetoric-brainstorm']) {
+    for (const drillType of ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-chiasmus', 'rhetoric-progressia', 'rhetoric-brainstorm']) {
       const parsed = trainingEntrySchema.parse({
         module: 'rhetoric', drillType, questionCount: 5, correctCount: 4, totalMs: 60000,
       });

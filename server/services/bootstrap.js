@@ -123,6 +123,7 @@ import { initMusicStudioHook } from './musicStudioHook.js';
 import { initImageGenQuotaHook } from './imageGenQuota.js';
 import { initSpriteReferenceImageHook } from './spriteReferenceImageHook.js';
 import { initCreativeDirectorSceneImageHook } from './creativeDirectorSceneImageHook.js';
+import { initCreativeDirectorRenderFailureHook } from './creativeDirector/renderFailureHook.js';
 import { initComicPagesFilenameHook } from './pipeline/comicPagesFilenameHook.js';
 import { initStoryboardsFilenameHook } from './pipeline/storyboardsFilenameHook.js';
 import { initSeasonCoverFilenameHook } from './pipeline/seasonCoverFilenameHook.js';
@@ -492,6 +493,9 @@ const initMediaJobDependentHooks = () => {
   // reference-frame render onto its project scene's `sourceImageFile` on
   // completion, even if no client is watching (#1867).
   initCreativeDirectorSceneImageHook();
+  // Creative Director render failures are actionable code defects; queue one
+  // deduplicated internal repair task for every tagged CD media lane.
+  initCreativeDirectorRenderFailureHook();
   // Pipeline filename hooks — stamp `filename` onto stage records on
   // media-job completion so the UI can still render them after the
   // 24h media-job archive TTL elapses.

@@ -21,6 +21,11 @@ describe('commandExists', () => {
     await expect(commandExists('nope', ['--version'])).resolves.toBe(false)
   })
 
+  it('resolves false when spawning throws synchronously (e.g. ENOEXEC)', async () => {
+    execFileMock.impl = () => { throw Object.assign(new Error('ENOEXEC'), { code: 'ENOEXEC' }) }
+    await expect(commandExists('broken-shim', ['--version'])).resolves.toBe(false)
+  })
+
   it('defaults args to ["--version"] when omitted', async () => {
     let seenArgs = null
     execFileMock.impl = (_cmd, args, _opts, cb) => { seenArgs = args; cb(null, { stdout: '', stderr: '' }) }

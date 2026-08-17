@@ -39,7 +39,8 @@ export const LOCAL_LLM_CATEGORIES = [
 
 // Each entry: { key, name, category, recommendedFor?, featured?, params, size,
 //               family, description, capabilities, context?, format?,
-//               appleSiliconOnly?, ollama?, lmstudio? }
+//               appleSiliconOnly?, ollama?, lmstudio?, ollamaAliases?,
+//               lmstudioAliases? }
 //
 // `category` is the one primary lane that groups a model in the unfiltered
 // picker. `recommendedFor` is its intentionally broader set of use-case lanes:
@@ -50,6 +51,8 @@ export const LOCAL_LLM_CATEGORIES = [
 // `ollama` / `lmstudio` are the exact pull/download ids for that backend.
 // A missing id means there is no well-known build of that model for that
 // backend (the user can still free-text install one).
+// `ollamaAliases` / `lmstudioAliases` preserve recognized ids retired by an
+// upstream publisher without making them available as fresh install targets.
 // `context` is the model's native context window in tokens — set it only when
 // it's a documented spec for that build (the install-card badge shows it; live
 // Hugging Face results read the true value from GGUF metadata instead).
@@ -290,12 +293,13 @@ export const LOCAL_LLM_CATALOG = [
     params: '27B',
     size: '15.0 GB',
     family: 'qwen',
-    description: 'LM Studio’s 4-bit MLX build of Qwen3.8 27B — a native Apple-Silicon format with long context, coding, reasoning, tools, vision, thinking, and multilingual support.',
+    description: 'MLX Community’s current 4-bit Qwen3.8 27B build — a native Apple-Silicon format with long context, coding, reasoning, tools, vision, thinking, and multilingual support.',
     capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision', 'multilingual'],
     context: 262144,
     format: 'mlx',
     appleSiliconOnly: true,
-    lmstudio: 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+    lmstudio: 'mlx-community/Qwen3.8-27B-4bit',
+    lmstudioAliases: ['lmstudio-community/Qwen3.8-27B-MLX-4bit']
   },
   {
     key: 'qwen3.8-27b',
@@ -668,6 +672,14 @@ const normalizeLmStudioId = (id) => String(id || '')
 const normalizeFor = (backend, id) =>
   backend === 'ollama' ? normalizeOllamaId(id) : normalizeLmStudioId(id);
 
+const entryIdsForBackend = (entry, backend) => [
+  entry[backend],
+  ...(Array.isArray(entry[`${backend}Aliases`]) ? entry[`${backend}Aliases`] : [])
+].filter(Boolean);
+
+const entryMatchesBackendId = (entry, backend, normalizedId) =>
+  entryIdsForBackend(entry, backend).some((id) => normalizeFor(backend, id) === normalizedId);
+
 /**
  * Return the catalog projected onto a single backend: only entries that ship
  * a known build for `backend`, each with the backend-specific install id
@@ -702,7 +714,8 @@ export function getCatalog(backend, installedIds = [], { appleSilicon } = {}) {
         format: entry.format || null,
         // Native context window (tokens), when it's a documented spec; null otherwise.
         contextLength: Number.isFinite(entry.context) ? entry.context : null,
-        installed: installedNorm.has(normalizeFor(backend, entry[backend]))
+        installed: entryIdsForBackend(entry, backend)
+          .some((id) => installedNorm.has(normalizeFor(backend, id)))
       };
     });
 }
@@ -744,7 +757,7 @@ export function mapModelToBackend(fromBackend, modelId, toBackend) {
   // Suggested models first, then models retired from the picker — an install
   // that predates a catalog refresh still migrates exactly.
   const entry = [...LOCAL_LLM_CATALOG, ...RETIRED_MODEL_MAPPINGS].find(
-    (e) => e[fromBackend] && normalizeFor(fromBackend, e[fromBackend]) === fromNorm
+    (e) => entryMatchesBackendId(e, fromBackend, fromNorm)
   );
   if (entry && entry[toBackend]) {
     return { targetId: entry[toBackend], exact: true };

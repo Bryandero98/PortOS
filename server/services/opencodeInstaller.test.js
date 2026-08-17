@@ -55,5 +55,6 @@ describe('OpenCode installer', () => {
       detached: process.platform !== 'win32',
     }));
     expect(OPENCODE_NPM_INSTALL_ARGS).toContain('--no-progress');
+    expect(OPENCODE_NPM_INSTALL_ARGS).toContain('--ignore-scripts=false');
   });
 });
