@@ -15,7 +15,7 @@
  *     settings: { wpm, farnsworthWpm, toneHz } | null,
  *     rounds: [{
  *       id, date, timestamp, mode: 'copy'|'head-copy'|'send',
- *       kochLevel, wpm, farnsworthWpm,
+ *       kochLevel, wpm, farnsworthWpm, samplerVersion, materialMode, targetedChars,
  *       items: [{ sent, guessed, correct, responseMs }],
  *       accuracy, durationMs
  *     }]
@@ -129,6 +129,11 @@ export async function appendMorseRound(round) {
       kochLevel: typeof round.kochLevel === 'number' ? clampLevel(round.kochLevel) : (data.kochLevel ?? DEFAULT_KOCH_LEVEL),
       wpm: Number.isFinite(round.wpm) ? round.wpm : null,
       farnsworthWpm: Number.isFinite(round.farnsworthWpm) ? round.farnsworthWpm : null,
+      samplerVersion: typeof round.samplerVersion === 'string' ? round.samplerVersion : null,
+      materialMode: typeof round.materialMode === 'string' ? round.materialMode : 'groups',
+      targetedChars: [...new Set((Array.isArray(round.targetedChars) ? round.targetedChars : [])
+        .map((char) => String(char).toUpperCase())
+        .filter((char) => char.length > 0 && char.length <= 8))],
       items,
       accuracy,
       durationMs: Number.isFinite(round.durationMs) ? Math.max(0, Math.round(round.durationMs)) : 0,
@@ -219,7 +224,9 @@ export async function getMorseProgress(days = 30) {
   // Confusion matrix + per-character accuracy over the window.
   const confusionMatrix = {};
   const charStats = {}; // sent -> { correct, attempts }
+  const practiceCounts = { targeted: { correct: 0, attempts: 0 }, coverage: { correct: 0, attempts: 0 } };
   for (const r of rounds) {
+    const targetedChars = new Set((r.targetedChars || []).map((char) => String(char).toUpperCase()));
     for (const it of (r.items || [])) {
       const sent = it.sent;
       // Empty sent = an insertion (an extra typed char with no transmitted
@@ -232,6 +239,9 @@ export async function getMorseProgress(days = 30) {
       charStats[sent] ||= { correct: 0, attempts: 0 };
       charStats[sent].attempts += 1;
       if (it.correct) charStats[sent].correct += 1;
+      const bucket = targetedChars.has(sent) ? practiceCounts.targeted : practiceCounts.coverage;
+      bucket.attempts += 1;
+      if (it.correct) bucket.correct += 1;
     }
   }
 
@@ -255,6 +265,10 @@ export async function getMorseProgress(days = 30) {
     }
   }
   confusionPairs.sort((a, b) => b.count - a.count);
+  const practiceAccuracy = Object.fromEntries(Object.entries(practiceCounts).map(([kind, counts]) => [kind, {
+    ...counts,
+    accuracy: counts.attempts > 0 ? Math.round((counts.correct / counts.attempts) * 100) : null,
+  }]));
 
   return {
     days,
@@ -266,5 +280,6 @@ export async function getMorseProgress(days = 30) {
     confusionMatrix,
     confusionPairs,
     charAccuracy,
+    practiceAccuracy,
   };
 }
