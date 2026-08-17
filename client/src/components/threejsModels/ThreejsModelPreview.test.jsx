@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@react-three/fiber', () => ({
@@ -9,6 +9,7 @@ vi.mock('@react-three/fiber', () => ({
       data-alpha={String(props.gl?.alpha)}
       data-dpr={Array.isArray(props.dpr) ? props.dpr.join(',') : String(props.dpr)}
       data-shadows={String(props.shadows)}
+      data-camera-position={props.camera?.position?.join(',')}
     >
       {children}
     </div>
@@ -97,6 +98,8 @@ const part = (id, geometry, materialId, overrides = {}) => ({
 const renderPreview = (ui, entry = '/') =>
   render(ui, { wrapper: ({ children }) => <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter> });
 
+const LocationProbe = () => <output data-testid="location-probe">{useLocation().search}</output>;
+
 const box = { type: 'box', width: 1, height: 1, depth: 1 };
 const positionOf = (container, name) =>
   container.querySelector(`group[name="${name}"]`).getAttribute('position').split(',').map(Number);
@@ -134,6 +137,37 @@ describe('ThreejsModelPreview', () => {
     expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-dpr', '0.75,1');
     expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-shadows', 'basic');
     expect(SPEC).toEqual(originalSpec);
+  });
+
+  it('keeps deterministic camera and material inspections in validated URL state without changing the spec', () => {
+    const spec = { ...SPEC, materials: { body: material() }, parts: [part('body', box, 'body')] };
+    renderPreview(<><ThreejsModelPreview spec={spec} family={{ orbitViews: ['side profile'], reviewAxes: ['panel gap continuity'] }} /><LocationProbe /></>, '/?auditCamera=near&auditMode=wireframe');
+
+    expect(screen.getByRole('button', { name: 'Near' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Wireframe' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-camera-position', '0,0,1.7999999999999998');
+    expect(screen.getByText(/Family review: side profile/)).toBeInTheDocument();
+    expect(screen.getByText(/panel gap continuity/)).toBeInTheDocument();
+    expect(screen.getByText(/never change the saved model/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Family review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Part boundaries' }));
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('auditCamera=family');
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('auditMode=boundaries');
+    expect(spec).toEqual({ ...SPEC, materials: { body: material() }, parts: [part('body', box, 'body')] });
+  });
+
+  it('falls back to the authored final view when an audit URL is stale', () => {
+    renderPreview(<ThreejsModelPreview spec={SPEC} />, '/?auditCamera=unknown&auditMode=unknown');
+
+    expect(screen.getByRole('button', { name: 'Authored' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Final' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('preserves an authored overhead direction in near and far bookmarks', () => {
+    renderPreview(<ThreejsModelPreview spec={{ ...SPEC, camera: { ...SPEC.camera, position: [0, 3, 0] } }} />, '/?auditCamera=near');
+
+    expect(screen.getByTestId('threejs-canvas')).toHaveAttribute('data-camera-position', '0,1.7999999999999998,0');
   });
 
   it('renders extrude and tube parts as built buffer geometries', () => {
