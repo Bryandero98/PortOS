@@ -54,7 +54,19 @@ All advertised tools carry MCP `readOnlyHint: true`, `destructiveHint: false`, `
 | `list_context` | Page through one enabled scope. |
 | `resolve_navigation` | Resolve a PortOS page alias when Navigation is enabled. |
 
-Calls are capped at 25 returned items, 1,000 inspected source items per scope, 320 characters per summary, 200 characters per query, and 20,000 serialized characters per structured result. Source failures produce an MCP tool error rather than masquerading as an empty result. A capped scan sets `sourceTruncated: true`; search/list also set `truncated: true`, so partial coverage cannot look complete.
+Calls are capped at 25 returned items, 1,000 inspected source items per scope, 320 characters per summary, 200 characters per query, 20,000 serialized characters, and approximately 5,000 tokens per structured result. Source failures produce an MCP tool error rather than masquerading as an empty result. A capped scan sets `sourceTruncated: true`; search/list also set `truncated: true`, so partial coverage cannot look complete. Data-bearing results also expose `sourceStatus: "fresh" | "stale"`, so a retained snapshot cannot be mistaken for a live read.
+
+## Contract evaluation
+
+The public manifest and tool-call contract have a fixture-backed black-box suite. It creates a fresh in-memory contract for every case, replaces every navigation/workspace/Brain/identity source with sanitized fake records, and never reads the running instance, a real workspace, the Privacy Vault, or an AI provider.
+
+Run it from the repository root:
+
+```bash
+npm run --silent eval:agent-context -- --failure-threshold 0
+```
+
+The command writes one JSON report to stdout and exits non-zero when `fail + error` exceeds the threshold. Every case reports `pass`, `fail`, `error`, or `skip` plus its fixture source and tool pointer. Use `--fixture <path>` to evaluate another declarative suite with the same schema. The checked-in cases cover manifest/runtime parity, read-only annotations, search/list/get/navigation/profile calls, scope and privacy boundaries, result and approximate-token budgets, unknown records, source errors, and stale-source signaling.
 
 ## Protocol example
 

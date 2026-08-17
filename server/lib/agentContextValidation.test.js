@@ -46,5 +46,6 @@ describe('agentContextValidation', () => {
     const search = AGENT_CONTEXT_TOOL_REGISTRY.find((tool) => tool.name === 'search_context');
     expect(search.inputSchema.safeParse({ query: 'x', limit: AGENT_CONTEXT_LIMITS.maxResults }).success).toBe(true);
     expect(search.inputSchema.safeParse({ query: 'x', limit: AGENT_CONTEXT_LIMITS.maxResults + 1 }).success).toBe(false);
+    expect(AGENT_CONTEXT_LIMITS.maxApproxTokens).toBeLessThanOrEqual(Math.ceil(AGENT_CONTEXT_LIMITS.maxResponseChars / 4));
   });
 });

@@ -46,6 +46,7 @@ describe('agentContextMcp service', () => {
     expect(manifest.profile).toBe('metadata');
     expect(manifest.scopes).toEqual(['navigation', 'workspaces']);
     expect(manifest.transport).toMatchObject({ loopbackOnly: true, stateful: false });
+    expect(manifest).toMatchObject({ schemaVersion: 2, limits: { maxApproxTokens: 5_000 } });
     expect(manifest.exclusions.join(' ')).toMatch(/Privacy Vault/);
   });
 
@@ -78,6 +79,7 @@ describe('agentContextMcp service', () => {
       id: 'project-1',
       title: 'Contact alice@example.com from /Users/alice/notes',
       description: 'Host 192.0.2.10 token sk-12345678901234567890',
+      privateBody: 'never expose this projected field',
     }]);
     const result = await callAgentContextTool('list_context', { scope: 'brain' });
     const serialized = JSON.stringify(result);
@@ -86,6 +88,7 @@ describe('agentContextMcp service', () => {
     expect(serialized).not.toContain('alice@example.com');
     expect(serialized).not.toContain('/Users/alice');
     expect(serialized).not.toContain('sk-12345678901234567890');
+    expect(serialized).not.toContain('never expose this projected field');
   });
 
   it('rejects reads outside configured scopes', async () => {
@@ -106,6 +109,7 @@ describe('agentContextMcp service', () => {
     expect(bounded.structuredContent.items).toHaveLength(AGENT_CONTEXT_LIMITS.maxResults);
     expect(bounded.structuredContent.truncated).toBe(true);
     expect(bounded.structuredContent.sourceTruncated).toBe(true);
+    expect(bounded.structuredContent.sourceStatus).toBe('fresh');
 
     mocks.listContexts.mockRejectedValue(new Error('catalog unavailable'));
     const failed = await callAgentContextTool('list_context', { scope: 'workspaces' });
@@ -120,6 +124,7 @@ describe('agentContextMcp service', () => {
     });
     const navigation = await callAgentContextTool('resolve_navigation', { query: 'home' });
     expect(navigation.structuredContent.match).toMatchObject({ title: 'Dashboard', path: '/' });
+    expect(navigation.structuredContent.sourceStatus).toBe('fresh');
 
     const identity = await callAgentContextTool('list_context', { scope: 'identity' });
     expect(identity.structuredContent.items[0].summary).toMatch(/raw records are excluded/);
