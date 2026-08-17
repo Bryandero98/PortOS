@@ -108,8 +108,12 @@ function videoPromptGuidanceFor(commission, {
 } = {}) {
   const generation = commission?.generation;
   const isCloudVideo = (effectiveVideoMode || generation?.videoMode) === VIDEO_GEN_MODE.GROK;
+  const hasExplicitLocalModel = generation?.videoMode === VIDEO_GEN_MODE.LOCAL && generation?.videoModelId;
   const modelId = isCloudVideo ? undefined : (
-    generation?.videoModelId || generation?.model || effectiveVideoModelId
+    (hasExplicitLocalModel ? generation.videoModelId : undefined)
+      || effectiveVideoModelId
+      || generation?.videoModelId
+      || generation?.model
       || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined)
   );
   return buildVideoPromptGuidance(modelId);

@@ -134,6 +134,30 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     );
     expect(directive.goal).toContain('MiniMax H3 prompt template');
   });
+
+  it('uses the resolved target model for auto mode even when the commission has a stale model', () => {
+    const directive = buildCommissionDirective(
+      {
+        targetAbility: 'video',
+        brief: { intent: 'a quiet harbor' },
+        generation: { videoMode: 'auto', videoModelId: 'minimax_h3_8bit' },
+      },
+      { effectiveVideoMode: 'local', effectiveVideoModelId: 'ltx-2.5' },
+    );
+    expect(directive.goal).not.toContain('MiniMax H3 prompt template');
+  });
+
+  it('keeps an explicitly pinned local commission model ahead of the target default', () => {
+    const directive = buildCommissionDirective(
+      {
+        targetAbility: 'video',
+        brief: { intent: 'a quiet harbor' },
+        generation: { videoMode: 'local', videoModelId: 'minimax_h3_8bit' },
+      },
+      { effectiveVideoMode: 'local', effectiveVideoModelId: 'ltx-2.5' },
+    );
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
+  });
 });
 
 describe('per-ability directives steer the planner to the right tools', () => {
