@@ -3792,7 +3792,7 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\
 ## Phase 7 — Report
 
 Generate a short summary: the ticket KEY + summary worked, the MR/PR URL, the ticket's FINAL JIRA status (confirm it is "In Review"), reviewers run, and any status transition that failed and why.`,
-  
+
     // v9 default — follow-ups carried no dispatch/contributor labels (bumped to v10)
 `[Claim Issue: {appName}] Claim and ship the next ready JIRA ticket
 
