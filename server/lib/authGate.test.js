@@ -66,8 +66,10 @@ const runGate = async (gate, req) => new Promise((resolve) => {
 describe('authGate middleware', () => {
   it('is a no-op when auth is disabled', async () => {
     const { authGate } = await import('./authGate.js');
-    const result = await runGate(authGate, { path: '/api/cos', headers: {} });
+    const req = { path: '/api/cos', headers: {} };
+    const result = await runGate(authGate, req);
     expect(result.called).toBe(true);
+    expect(req.portosAuthContext).toEqual({ enabled: false, authenticated: false, method: null });
   });
 
   it('passes /api/auth/login through even when auth is enabled', async () => {
@@ -392,11 +394,13 @@ describe('authGate HTTP Basic auth (peer federation)', () => {
     const auth = await import('../services/auth.js');
     await auth.setPassword({ newPassword: 'peer-secret' });
     const { authGate } = await import('./authGate.js');
-    const result = await runGate(authGate, {
+    const req = {
       path: '/api/cos',
       headers: { authorization: basicHeader('peer-secret') },
-    });
+    };
+    const result = await runGate(authGate, req);
     expect(result.called).toBe(true);
+    expect(req.portosAuthContext).toEqual({ enabled: true, authenticated: true, method: 'basic' });
   });
 
   it('also works with a non-empty username (username is ignored)', async () => {

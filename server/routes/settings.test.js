@@ -83,6 +83,50 @@ describe('Settings routes — apiAccess slice', () => {
   });
 });
 
+describe('Settings routes — federated media provider slice (#4348)', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('accepts a disabled-by-default provider config and preserves future federation keys', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: {
+        strictPullAuthorization: true,
+        futureFederationField: 'preserve',
+        mediaProvider: {
+          enabled: false,
+          maxQueuedJobs: 2,
+          audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3', futureModelField: true }],
+          futureProviderField: 'preserve',
+        },
+      } });
+    expect(res.status).toBe(200);
+    expect(res.body.federation.mediaProvider).toMatchObject({
+      enabled: false,
+      maxQueuedJobs: 2,
+      futureProviderField: 'preserve',
+    });
+    expect(res.body.federation.futureFederationField).toBe('preserve');
+  });
+
+  it('rejects invalid limits and duplicate engine/model pairs', async () => {
+    const invalidLimit = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaProvider: { maxQueuedJobs: 0 } } });
+    expect(invalidLimit.status).toBe(400);
+
+    const duplicate = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaProvider: { audioModels: [
+        { engine: 'musicgen', modelId: 'm' },
+        { engine: 'musicgen', modelId: 'm' },
+      ] } } });
+    expect(duplicate.status).toBe(400);
+  });
+});
+
 describe('Settings routes — imageGen.grok slice (#2859)', () => {
   beforeEach(() => {
     store = {};

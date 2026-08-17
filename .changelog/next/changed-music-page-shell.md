@@ -1,0 +1,1 @@
+- Music now uses the same full-page layout and navigation style as Media Gen.

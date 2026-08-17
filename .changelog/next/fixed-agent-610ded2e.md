@@ -1,0 +1,1 @@
+- Claim workflows now honor local reviewers and verify remote merges before cleanup.

@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 vi.mock('../../services/api', () => ({
+  getAuthStatus: vi.fn(),
   getSettings: vi.fn(),
+  listMusicEngines: vi.fn(),
   updateSettings: vi.fn(),
 }));
 vi.mock('../ui/Toast', () => ({
@@ -14,15 +16,99 @@ vi.mock('../ui/Toast', () => ({
   }),
 }));
 
-import { getSettings, updateSettings } from '../../services/api';
+import { getAuthStatus, getSettings, listMusicEngines, updateSettings } from '../../services/api';
 import { SharingTab } from './SharingTab';
 
 const strictToggle = () => screen.getByLabelText(/Enforce per-peer sharing settings/i);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getAuthStatus.mockResolvedValue({ enabled: false });
   getSettings.mockResolvedValue({ sharingDisplayName: '', sharingBio: '' });
+  listMusicEngines.mockResolvedValue({ engines: [] });
   updateSettings.mockResolvedValue({});
+});
+
+describe('SharingTab — federated media provider (#4348)', () => {
+  const providerToggle = () => screen.getByLabelText(/Accept audio generation jobs/i);
+
+  it('keeps provider opt-in disabled until an instance password exists', async () => {
+    render(<SharingTab />);
+    await waitFor(() => expect(providerToggle()).toBeInTheDocument());
+    expect(providerToggle()).toBeDisabled();
+    expect(screen.getByText(/instance password is required/i)).toBeInTheDocument();
+  });
+
+  it('persists an allowlisted model while preserving the rest of the federation slice', async () => {
+    getAuthStatus.mockResolvedValue({ enabled: true });
+    getSettings.mockResolvedValue({
+      federation: {
+        strictPullAuthorization: false,
+        somethingElse: 'keep-me',
+        mediaProvider: {
+          enabled: false,
+          maxQueuedJobs: 2,
+          audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3', futureModelField: 'keep-model-too' }],
+          futureField: 'keep-too',
+        },
+      },
+    });
+    listMusicEngines.mockResolvedValue({
+      engines: [{
+        id: 'minimax-music3',
+        name: 'MiniMax Music 3',
+        runtimeReady: true,
+        platformSupported: true,
+        cudaRequired: true,
+        cudaState: 'available',
+        fixedModelInstall: true,
+        modelReadyById: { 'minimax-music3': true },
+        models: [{ id: 'minimax-music3', name: 'MiniMax model' }],
+      }],
+    });
+
+    render(<SharingTab />);
+    await waitFor(() => expect(providerToggle()).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText('MiniMax model')).toBeInTheDocument());
+    fireEvent.click(providerToggle());
+    fireEvent.click(screen.getByRole('button', { name: 'Save provider' }));
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({
+      federation: {
+        strictPullAuthorization: false,
+        somethingElse: 'keep-me',
+        mediaProvider: {
+          enabled: true,
+          maxQueuedJobs: 2,
+          audioModels: [{
+            engine: 'minimax-music3',
+            modelId: 'minimax-music3',
+            futureModelField: 'keep-model-too',
+          }],
+          futureField: 'keep-too',
+        },
+      },
+    }, { silent: true }));
+  });
+
+  it('lets an auth-off install disable a provider that was previously enabled', async () => {
+    getSettings.mockResolvedValue({
+      federation: {
+        mediaProvider: {
+          enabled: true,
+          maxQueuedJobs: 2,
+          audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }],
+        },
+      },
+    });
+    render(<SharingTab />);
+    await waitFor(() => expect(providerToggle()).toBeEnabled());
+    fireEvent.click(providerToggle());
+    fireEvent.click(screen.getByRole('button', { name: 'Save provider' }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      federation: expect.objectContaining({ mediaProvider: expect.objectContaining({ enabled: false }) }),
+    }), { silent: true }));
+  });
 });
 
 describe('SharingTab — federation pull authorization (#3659)', () => {

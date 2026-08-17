@@ -62,7 +62,7 @@ describe('huggingFaceRepoCache', () => {
     const stale = Date.now() - (8 * 24 * 60 * 60 * 1000); // 8 days — TTL is 7
     await mkdir(join(tempRoot, 'cache'), { recursive: true });
     await writeFile(cacheFile(), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       entries: {
         'old/Repo': { fetchedAt: stale, model: { id: 'old/Repo' } },
         'new/Repo': { fetchedAt: Date.now(), model: { id: 'new/Repo' } }

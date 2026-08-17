@@ -634,47 +634,25 @@ Use \`feat:\` / \`fix:\` / \`refactor:\` / \`chore:\` / etc. (The bracketed-scop
 
 ## Phase 6 — Review and ship
 
-The configured reviewers for this task, in order, are \`{reviewers}\`. \`copilot\` waits for GitHub's auto-review; \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique. When more than one is configured, run each in the listed order before merging — this mirrors slashdo's \`/do:pr --review-with <list>\` (the lone default \`copilot\` needs no flag; multi-reviewer runs may also carry \`--review-stop-on-*\` / \`--reviewer-applies\`).
+The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. Run each reviewer in order before merging.
 
 1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff — BEFORE opening the PR, not retroactively. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
 2. Push the branch: \`git push -u origin claim/<slug>\`
 3. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
-4. **Wait for each configured reviewer's findings BEFORE merging.** \`gh pr merge --auto\` only waits for required status checks; it does NOT wait for code-review feedback. Run the reviewers in the listed order (\`{reviewers}\`); for each one, apply the matching handling below before advancing to the next:
+4. **Wait for each configured reviewer's valid findings BEFORE merging.** Invoke CLI reviewers headless against the PR diff; invoke local LLM reviewers through the appended endpoint procedure. Apply fixes, run tests, and re-push, capped at 3 rounds per reviewer. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review or merge; comment on the PR naming the failure, remove only the worktree, and leave the branch and PR for reconciliation.
 
-   - **\`copilot\`** — This repo has GitHub Copilot Code Review configured to auto-run on every new PR. Poll until Copilot's review lands or a 10-minute timeout fires:
-     \`\`\`bash
-     PR=<num>
-     # Match both forms: GraphQL/\`gh pr view\` returns the login without \`[bot]\`;
-     # the REST request-a-reviewer endpoint requires the \`[bot]\` suffix. Future
-     # GitHub API changes could flip which form callers see — accept either.
-     for i in $(seq 1 20); do
-       REVIEW=$(gh pr view "$PR" --json reviews \\
-         -q '.reviews[] | select(.author.login | test("^copilot-pull-request-reviewer(\\\\[bot\\\\])?$")) | {state, submittedAt}')
-       [ -n "$REVIEW" ] && break
-       sleep 30
-     done
-     \`\`\`
-     - **No review within 10 min**: proceed to merge (Copilot was slow or skipped).
-     - **\`APPROVED\` with no inline comments**: proceed to merge.
-     - **\`COMMENTED\` or \`CHANGES_REQUESTED\`**: fetch findings with \`gh api "repos/{owner}/{repo}/pulls/$PR/comments"\` (\`gh\` substitutes \`{owner}\`/\`{repo}\` from the current git checkout — those are gh path-placeholders, not prompt template vars) and \`gh pr view "$PR" --json reviews\`. Address each finding inside the worktree, commit, \`git push\`. Re-poll — Copilot re-reviews the new head SHA. Cap re-iterations at **3 rounds**; if findings keep arriving past that, exit to the **review-stuck cleanup** below — do NOT route to Phase 3b. Phase 3b is reserved for items that are blocked on *requirements clarification* and would inappropriately mutate PLAN.md and write \`.plan-questions.md\` for a review-feedback stall.
-
-     **Review-stuck cleanup** (exit after 3 rounds of unresolved review feedback): add one final PR comment via \`gh pr comment $PR\` summarizing what was addressed across the rounds and what's still outstanding so the human picks up cold, then run the worktree-only cleanup (same shape as Phase 3b's, since the PR remains open and unmerged):
-     \`\`\`bash
-     cd {repoPath}
-     git worktree remove "\${WORKTREE}"
-     \`\`\`
-     Leave the local \`claim/<slug>\` branch and the open PR alone. Do NOT run Phase 7 — that phase assumes a merged PR. PLAN.md and the changelog were already updated in Phase 5, and that's fine even though the merge didn't happen: the next \`plan-task\` run will see the slug as in-flight via the open PR and pick a different item.
-
-   - **\`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\`** — Invoke that CLI in headless mode against the PR diff to critique it, apply the fixes, run tests, and re-push. Iterate until the CLI reports no further blocking findings, then advance to the next configured reviewer (or merge if it's the last). Cap at **3 rounds** here — this inline claim flow is intentionally more conservative than the dedicated CoS-spawned review-loop follow-up (which allows up to 10 iterations per reviewer); after 3 rounds, leave the PR for human follow-up. A configured CLI reviewer whose binary is not on PATH is UNSATISFIED, not clean — that is a broken setup, not a passing review. Do NOT substitute your own self-review and do NOT merge; comment on the PR naming the missing command and stop.
-
-5. **Merge via \`gh pr merge\`** — NEVER a local \`git merge\` into main or any other branch. The repo may allow only one of \`--merge\` / \`--squash\` / \`--rebase\`, so don't hardcode a method. Try in this order and use the first one that succeeds:
+5. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
    \`\`\`bash
-   gh pr merge <num> --auto --delete-branch \\
-     || gh pr merge <num> --merge --delete-branch \\
-     || gh pr merge <num> --squash --delete-branch \\
-     || gh pr merge <num> --rebase --delete-branch
+   PR_URL=$(gh pr view <num> --json url -q .url)
+   gh pr merge "$PR_URL" --merge --delete-branch || {
+     [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ] || \
+       gh pr merge "$PR_URL" --squash --delete-branch || \
+       gh pr merge "$PR_URL" --rebase --delete-branch
+   }
+   STATE=$(gh pr view "$PR_URL" --json state -q .state)
+   [ "$STATE" = "MERGED" ] || { echo "Expected MERGED, got $STATE" >&2; exit 1; }
    \`\`\`
-   \`--auto\` lets GitHub apply the repo's configured default once required checks pass; the explicit-method fallbacks cover repos that disallow auto-merge or restrict to a single method. \`--delete-branch\` removes the remote branch atomically on merge.
+   The exact comparison must succeed. Investigate and retry on \`OPEN\`; \`CLOSED\` is not success. Do not enter Phase 7 until remote state is exactly \`MERGED\`.
 
 ## Phase 7 — Clean up (post-merge ONLY)
 
@@ -688,7 +666,7 @@ git worktree remove "\${WORKTREE}"
 git branch -d "claim/\${SLUG}"
 \`\`\`
 
-If \`git branch -d\` refuses (the PR squash-merged on GitHub but local doesn't know yet), use \`-D\` — the PR is confirmed merged via Phase 6, so the local branch is genuinely redundant.
+If \`git branch -d\` refuses, fetch the default branch and re-check remote \`MERGED\` state. Retry \`-d\` only when Git proves the branch integrated; otherwise leave it for reconciliation. Never force-delete with \`-D\`.
 
 **Do NOT \`git pull\` from inside this phase** (no \`--rebase\`, no \`--autostash\`, no plain \`pull\`). The agent's work is already integrated on GitHub via \`gh pr merge\`; pulling locally provides no functional benefit and risks rebasing the user's in-progress branch / shuffling their uncommitted changes through stash if the source repo HEAD happens to be on a tracking feature branch when the agent runs. Leave the user's working tree alone.
 
@@ -788,19 +766,24 @@ This flow ships GitHub issues — it does NOT touch PLAN.md. The audit trail is 
 
 ## Phase 6 — Review and ship
 
-The configured reviewers for this task, in order, are \`{reviewers}\`. \`copilot\` waits for GitHub's auto-review; \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique. When more than one is configured, run each in the listed order before merging — this mirrors slashdo's \`/do:pr --review-with <list>\`.
+The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. Run each in order before merging.
 
 1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff BEFORE the reviewers run. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
-2. **Wait for each configured reviewer's findings BEFORE merging.** \`gh pr merge --auto\` only waits for required status checks; it does NOT wait for code-review feedback. Run the reviewers in the listed order (\`{reviewers}\`); for \`copilot\`, poll up to 10 minutes for its review and address \`COMMENTED\` / \`CHANGES_REQUESTED\` findings (commit + push inside the worktree, re-poll), capped at 3 rounds. For \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\`, invoke that CLI headless against the PR diff, apply fixes, run tests, re-push — capped at 3 rounds — then advance to the next reviewer. A configured CLI reviewer whose binary is not on PATH is UNSATISFIED, not clean — that is a broken setup, not a passing review. Do NOT substitute your own self-review and do NOT merge; comment on the PR naming the missing command and stop.
+2. **Wait for each configured reviewer's findings BEFORE merging.** Run the reviewers in the listed order (\`{reviewers}\`). Invoke CLI reviewers headless against the PR diff and local LLM reviewers through the appended endpoint procedure; apply fixes, run tests, and re-push — capped at 3 rounds — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review or merge; comment on the PR naming the failure and stop.
 
    **Review-stuck cleanup** (after 3 unresolved rounds): post one summarizing PR comment (\`gh pr comment\`), then run the worktree-only cleanup (\`cd {repoPath} && git worktree remove "\${WORKTREE}"\`). Leave the local branch, the open PR, the assignee, and the \`in-progress\` label in place so the human picks up cold. Do NOT run Phase 7.
-3. **Merge via \`gh pr merge\`** — NEVER a local \`git merge\`. The repo may allow only one method, so try in order and use the first that succeeds:
+3. **Merge immediately via \`gh pr merge\`** — NEVER a local \`git merge\` and NEVER \`--auto\`, which can return successfully while leaving the PR queued and OPEN. Prefer a true merge commit, with squash/rebase fallbacks for repositories that disallow it:
    \`\`\`bash
-   gh pr merge <pr-num> --auto --delete-branch \\
-     || gh pr merge <pr-num> --merge --delete-branch \\
-     || gh pr merge <pr-num> --squash --delete-branch \\
-     || gh pr merge <pr-num> --rebase --delete-branch
+   PR_URL=$(gh pr view <pr-num> --json url -q .url)
+   gh pr merge "$PR_URL" --merge --delete-branch || {
+     [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ] || \
+       gh pr merge "$PR_URL" --squash --delete-branch || \
+       gh pr merge "$PR_URL" --rebase --delete-branch
+   }
+   STATE=$(gh pr view "$PR_URL" --json state -q .state)
+   [ "$STATE" = "MERGED" ] || { echo "Expected MERGED, got $STATE" >&2; exit 1; }
    \`\`\`
+   The exact comparison MUST succeed. \`OPEN\` means CI, review, or branch protection still blocks the merge; investigate, fix, and retry. \`CLOSED\` is also not success. Do not enter Phase 7 until remote GitHub state is exactly \`MERGED\`.
 
 ## Phase 7 — Clean up (post-merge ONLY)
 
@@ -812,7 +795,7 @@ git worktree remove "\${WORKTREE}"
 git branch -d "claim/issue-\${NUM}"
 \`\`\`
 
-If \`git branch -d\` refuses (the PR squash-merged on GitHub but local doesn't know yet), use \`-D\` — the PR is confirmed merged, so the local branch is redundant.
+If \`git branch -d\` refuses, fetch the default branch and re-check the PR's remote \`MERGED\` state. Retry \`-d\` only when Git can prove the branch is integrated; otherwise leave the local branch for the reconciliation task. Never force-delete with \`-D\`.
 
 **Reconcile the issue — did this PR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` trailer already auto-closed it; if it's somehow still open, close it (\`gh issue close "\${NUM}"\`) and remove the label (\`gh issue edit "\${NUM}" --remove-label in-progress\`).
@@ -921,18 +904,22 @@ This flow ships GitLab issues — it does NOT touch PLAN.md. The audit trail is 
 
 ## Phase 6 — Review and ship
 
-The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique. (\`copilot\` is GitHub-only — skip it on GitLab.) When more than one is configured, run each in the listed order before merging.
+The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. Run each in order before merging.
 
 1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff BEFORE the reviewers run. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
-2. **Wait for each configured CLI reviewer's findings BEFORE merging.** For \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\`, invoke that CLI headless against the MR diff, apply fixes, run tests, re-push — capped at 3 rounds — then advance to the next reviewer. A configured CLI reviewer whose binary is not on PATH is UNSATISFIED, not clean — that is a broken setup, not a passing review. Do NOT substitute your own self-review and do NOT merge; comment on the MR naming the missing command and stop.
+2. **Wait for each configured reviewer's valid findings BEFORE merging.** Invoke CLI reviewers headless against the MR diff; invoke local LLM reviewers through the appended endpoint procedure. Apply fixes, run tests, and re-push — capped at 3 rounds — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review or merge; comment on the MR naming the failure and stop.
 
    **Review-stuck cleanup** (after 3 unresolved rounds): post one summarizing MR note (\`glab mr note\`), then run the worktree-only cleanup (\`cd {repoPath} && git worktree remove "\${WORKTREE}"\`). Leave the local branch, the open MR, the assignee, and the \`in-progress\` label in place so the human picks up cold. Do NOT run Phase 7.
-3. **Merge via \`glab mr merge\`** — NEVER a local \`git merge\`. \`glab mr merge\` takes the **MR IID**, which is NOT the issue number — resolve it from the source branch first, then merge by that IID:
+3. **Merge immediately via \`glab mr merge\`** — NEVER a local \`git merge\`. \`glab mr merge\` takes the **MR IID**, which is NOT the issue number — resolve it from the source branch first, merge, then verify remote state:
    \`\`\`bash
    MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" -F json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
-   glab mr merge "\${MR_IID}" --yes --remove-source-branch \\
-     || glab mr merge "\${MR_IID}" --yes --squash --remove-source-branch
+   glab mr merge "\${MR_IID}" --yes --remove-source-branch || {
+     glab mr view "\${MR_IID}" -F json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null || \
+       glab mr merge "\${MR_IID}" --yes --squash --remove-source-branch
+   }
+   glab mr view "\${MR_IID}" -F json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
    \`\`\`
+   The verification command must succeed and print a merged state. An opened/closed state or missing value is not success; investigate CI, review, and branch protection, then retry. Do not enter Phase 7 until the forge confirms the MR is merged.
 
 ## Phase 7 — Clean up (post-merge ONLY)
 
@@ -944,7 +931,7 @@ git worktree remove "\${WORKTREE}"
 git branch -d "claim/issue-\${NUM}"
 \`\`\`
 
-If \`git branch -d\` refuses, use \`-D\` — the MR is confirmed merged, so the local branch is redundant.
+If \`git branch -d\` refuses, fetch the default branch and re-check the MR's merged state. Retry \`-d\` only when Git proves the branch integrated; otherwise leave it for reconciliation. Never force-delete with \`-D\`.
 
 **Reconcile the issue — did this MR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` line already auto-closed it on merge to the default branch; if it's somehow still open, close it (\`glab issue close "\${NUM}"\`) and remove the label (\`glab issue update "\${NUM}" --unlabel in-progress\`).
@@ -1062,10 +1049,10 @@ The audit trail is the merged MR/PR + \`git log\`. Detect the forge from the git
 
 ## Phase 6 — Review and clean up
 
-The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique. (\`copilot\` is GitHub-only — skip it on GitLab.) When more than one is configured, run each in the listed order.
+The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. Run each in order.
 
 1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent by hand.
-2. **Run each configured CLI reviewer** headless against the MR/PR diff, apply fixes, run tests, re-push — capped at 3 rounds — then advance to the next reviewer. A configured CLI reviewer whose binary is not on PATH is UNSATISFIED, not clean — that is a broken setup, not a passing review. Do NOT substitute your own self-review; comment on the MR/PR naming the missing command and stop.
+2. **Run each configured reviewer.** Invoke CLI reviewers headless against the MR/PR diff and local LLM reviewers through the appended endpoint procedure. Apply fixes, run tests, and re-push — capped at 3 rounds — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review; comment on the MR/PR naming the failure and stop.
 3. **Leave the MR/PR open for a human to land.** Unlike the GitHub/GitLab issue flows, this flow does NOT auto-merge — the ticket is "In Review" and a human reviews + merges. After the reviewers finish, run the worktree-only cleanup so the source checkout is left clean:
    \`\`\`bash
    cd {repoPath}
