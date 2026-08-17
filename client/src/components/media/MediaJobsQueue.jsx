@@ -769,19 +769,21 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
         </FormField>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <FormField className="col-span-2 sm:col-span-3" label="Model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
-          {models.length > 0 ? <ModelSelect models={models} value={modelId} onChange={handleModelChange} /> : (
-            <input value={modelId} onChange={(e) => setModelId(e.target.value)} className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white" />
-          )}
-        </FormField>
+        {!isGrok && (
+          <FormField className="col-span-2 sm:col-span-3" label="Model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+            {models.length > 0 ? <ModelSelect models={models} value={modelId} onChange={handleModelChange} /> : (
+              <input value={modelId} onChange={(e) => setModelId(e.target.value)} className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white" />
+            )}
+          </FormField>
+        )}
         <ResolutionField presets={resolutionOptionsForModel(currentModel)} width={width} height={height} onChange={(w, h) => { setWidth(w); setHeight(h); }} {...videoEdgeBoundsForModel(currentModel)} snapOnBlur />
       </div>
-      {encoderOptions.length > 1 && (
+      {!isGrok && encoderOptions.length > 1 && (
         <FormField label="Text encoder" labelClassName="block text-xs font-medium text-gray-400 mb-1">
           <ModelSelect models={encoderOptions} value={textEncoderId} onChange={(e) => setTextEncoderId(e.target.value)} getLabel={(option) => option.label} />
         </FormField>
       )}
-      {loraFamily && videoLoras.length > 0 && (
+      {!isGrok && loraFamily && videoLoras.length > 0 && (
         <LoraPicker
           availableLoras={videoLoras}
           selected={selectedLoras}
