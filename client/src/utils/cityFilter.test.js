@@ -38,3 +38,4 @@ describe('computeFilterResult', () => {
     expect(dimmed.has('a')).toBe(true);
   });
 });
+// @vitest-environment node

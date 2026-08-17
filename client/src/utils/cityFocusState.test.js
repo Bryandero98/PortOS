@@ -42,3 +42,4 @@ describe('resolveCityFocus', () => {
     });
   });
 });
+// @vitest-environment node

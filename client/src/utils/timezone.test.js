@@ -66,3 +66,4 @@ describe('isValidTimezone', () => {
     expect(isValidTimezone(undefined)).toBe(false);
   });
 });
+// @vitest-environment node

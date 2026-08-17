@@ -147,3 +147,4 @@ describe('normalizeUrl', () => {
       expect(linksTabNormalize('git@host:repo')).toBe('git@host:repo'));
   });
 });
+// @vitest-environment node

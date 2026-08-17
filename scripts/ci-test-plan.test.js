@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCiTestPlan } from './ci-test-plan.js';
+import { buildCiTestPlan, WINDOWS_CONTRACT_TESTS } from './ci-test-plan.js';
 
 const TRACKED = [
   'server/lib/index.test.js',
@@ -13,6 +13,8 @@ const TRACKED = [
   'server/services/sprites/atlasGrid.test.js',
   'server/services/sprites/atlasLayout.test.js',
   'server/services/taskPromptDefaults.test.js',
+  'server/lib/bufferedSpawn.test.js',
+  'server/lib/platform.test.js',
   'client/src/a11yConventions.test.js',
   'client/src/hooks/mountedRefConventions.test.js',
   'client/src/components/catalog/CatalogCard.jsx',
@@ -100,6 +102,16 @@ describe('CI test impact planner', () => {
       expect(plan.client.mode, path).toBe('full');
       expect(plan.db, path).toBe(true);
     }
+  });
+
+  it('uses related server coverage, not every CI surface, for a server barrel edit', () => {
+    const plan = buildCiTestPlan(['server/lib/index.js'], { trackedFiles: TRACKED });
+
+    expect(plan.full).toBe(false);
+    expect(plan.server.mode).toBe('related');
+    expect(plan.client.mode).toBe('skip');
+    expect(plan.db).toBe(false);
+    expect(plan.windows).toBe(false);
   });
 
   it('does not treat a source .grit or a mistyped biome.json as lint configuration', () => {
@@ -291,11 +303,34 @@ describe('CI test impact planner', () => {
     ], { trackedFiles: TRACKED });
     expect(spawn.full).toBe(false);
     expect(spawn.windows).toBe(true);
+    expect(spawn.windowsMode).toBe('related');
+    expect(spawn.windowsFiles).toEqual([
+      'server/lib/bufferedSpawn.test.js',
+      'server/lib/platform.test.js',
+    ]);
 
     const winHelper = buildCiTestPlan([
       'scripts/fix-windows-console.js',
     ], { trackedFiles: TRACKED });
     expect(winHelper.full).toBe(false);
     expect(winHelper.windows).toBe(true);
+  });
+
+  it('keeps the complete Windows suite for an explicit full-CI request', () => {
+    const plan = buildCiTestPlan(['server/lib/bufferedSpawn.js'], {
+      trackedFiles: TRACKED,
+      forceFull: true,
+    });
+
+    expect(plan.windowsMode).toBe('full');
+    expect(plan.windowsFiles).toEqual([]);
+  });
+
+  it('only names tracked Windows contract tests', () => {
+    const plan = buildCiTestPlan(['server/lib/bufferedSpawn.js'], {
+      trackedFiles: TRACKED,
+    });
+
+    expect(plan.windowsFiles.every((path) => WINDOWS_CONTRACT_TESTS.includes(path))).toBe(true);
   });
 });

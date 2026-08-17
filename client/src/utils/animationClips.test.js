@@ -53,3 +53,4 @@ describe('withInPlaceClips', () => {
     expect(original.tracks.length).toBe(before);
   });
 });
+// @vitest-environment node

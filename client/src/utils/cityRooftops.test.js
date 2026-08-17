@@ -48,3 +48,4 @@ describe('computeRooftopKit', () => {
     expect(() => computeRooftopKit('')).not.toThrow();
   });
 });
+// @vitest-environment node

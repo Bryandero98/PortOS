@@ -128,3 +128,4 @@ describe('scaleMetricToHeight', () => {
     expect(scaleMetricToHeight(0, { min: 2, base: 0 })).toBe(2);
   });
 });
+// @vitest-environment node
