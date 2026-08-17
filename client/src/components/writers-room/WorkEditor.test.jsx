@@ -140,6 +140,29 @@ describe('WorkEditor header layout (#3568)', () => {
     expect(within(snapshot).getByText('Snapshot').className).toContain('hidden sm:inline');
   });
 
+  it('exposes the storyboard resizer as a bounded separator', async () => {
+    class ResizeObserverStub {
+      constructor(callback) { this.callback = callback; }
+      observe() { this.callback(); }
+      disconnect() {}
+    }
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 1000 });
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+
+    try {
+      await renderEditor();
+      const separator = screen.getByRole('separator', { name: 'Resize storyboard sidebar' });
+
+      expect(separator).toHaveAttribute('aria-orientation', 'vertical');
+      expect(separator).toHaveAttribute('aria-valuemax', '600');
+      expect(Number(separator.getAttribute('aria-valuemin'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuenow')));
+      expect(Number(separator.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(Number(separator.getAttribute('aria-valuemax')));
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('gives the header controls a 44px touch target on mobile', async () => {
     await renderEditor();
     const { title, status, save, snapshot } = headerControls();
