@@ -102,6 +102,18 @@ describe('Morse drill types stay scoped to the training log', () => {
   });
 });
 
+describe('Rhetoric drill types stay scoped to the training log', () => {
+  it('accepts each standalone rhetoric exercise without making it a generatable POST drill', () => {
+    for (const drillType of ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-progressia', 'rhetoric-brainstorm']) {
+      const parsed = trainingEntrySchema.parse({
+        module: 'rhetoric', drillType, questionCount: 5, correctCount: 4, totalMs: 60000,
+      });
+      expect(parsed.drillType).toBe(drillType);
+      expect(() => postDrillRequestSchema.parse({ type: drillType })).toThrow();
+    }
+  });
+});
+
 describe('trainingEntrySchema wordplay drill types (issue #2097)', () => {
   // Regression: the standalone Wordplay tab (WordplayTrainer.jsx) never
   // persisted practice — fixed by submitting these four LLM drill types

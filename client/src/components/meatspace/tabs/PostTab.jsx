@@ -20,6 +20,7 @@ import ElementsSong, { ELEMENTS_MODE_IDS } from '../post/ElementsSong';
 import DrillTransition from '../post/DrillTransition';
 import WordplayTrainer from '../post/WordplayTrainer';
 import MorseTrainer, { MORSE_MODE_IDS } from '../post/MorseTrainer';
+import RhetoricTrainer from '../post/RhetoricTrainer';
 import { LLM_DRILL_TYPES, COGNITIVE_DRILL_TYPES } from '../post/constants';
 
 // The live in-progress run lives at /post/session/run; every OTHER `:subtab`
@@ -283,6 +284,16 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
           mode={subtab}
           onSelectMode={(id) => navigate(`/post/wordplay/${id}`)}
           onExitMode={() => navigate('/post/wordplay')}
+          onBack={() => navigate('/post/launcher')}
+          onContinue={continueDailyRoutine}
+        />
+      );
+    case 'rhetoric':
+      return (
+        <RhetoricTrainer
+          mode={subtab}
+          onSelectMode={(id) => navigate(`/post/rhetoric/${id}`)}
+          onExitMode={() => navigate('/post/rhetoric')}
           onBack={() => navigate('/post/launcher')}
           onContinue={continueDailyRoutine}
         />
