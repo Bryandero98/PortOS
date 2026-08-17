@@ -1,3 +1,5 @@
+import { renderFederatedMediaAudioPrompt } from '../../lib/federatedMediaWire.js';
+
 // Public projection of a media job. Keep worker-only paths and subprocess
 // details out of both the queue API and the processing dashboard.
 const PARAM_ALLOWLIST = new Set([
@@ -25,6 +27,14 @@ export function sanitizeJob(job) {
           : value,
       ]))
     : undefined;
+  // Remote jobs keep only a fixed-vocabulary profile inside their versioned
+  // marker so free-form personal text never reaches the provider. Rebuild the
+  // actual conditioning prompt for the public projection without exposing
+  // private peer routing state.
+  const remotePrompt = renderFederatedMediaAudioPrompt(job.params?.remoteMedia?.profile);
+  if (safeParams && remotePrompt) {
+    safeParams.prompt = remotePrompt;
+  }
   return {
     id: job.id,
     kind: job.kind,
