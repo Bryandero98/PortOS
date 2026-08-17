@@ -35,6 +35,7 @@ import {
   ABILITY_GENERATION_SPEC, GENERATION_KEY_DEFS, CREATIVE_COMMISSION_ABILITIES,
   COMMISSION_RENDER_BACKEND_AUTO,
 } from '../../lib/creativeCommissionValidation.js';
+import { VIDEO_GEN_MODE } from '../../videoGen/modes.js';
 import { buildVideoPromptGuidance } from './videoPromptGuidance.js';
 
 const isStr = (v) => typeof v === 'string';
@@ -104,8 +105,11 @@ function genValue(commission, key) {
 
 function videoPromptGuidanceFor(commission, { defaultVideoModelId } = {}) {
   const generation = commission?.generation;
-  const modelId = generation?.videoModelId || generation?.model
-    || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined);
+  const isCloudVideo = generation?.videoMode === VIDEO_GEN_MODE.GROK;
+  const modelId = isCloudVideo ? undefined : (
+    generation?.videoModelId || generation?.model
+      || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined)
+  );
   return buildVideoPromptGuidance(modelId);
 }
 

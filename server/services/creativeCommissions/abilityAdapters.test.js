@@ -109,6 +109,15 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     );
     expect(directive.goal).toContain('MiniMax H3 prompt template');
   });
+
+  it('does not apply local-model guidance to a Grok-pinned commission', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' }, generation: { videoMode: 'grok' } },
+      { defaultVideoModelId: () => 'minimax_h3_8bit' },
+    );
+    expect(directive.goal).not.toContain('MiniMax H3 prompt template');
+    expect(directive.goal).toContain('production-ready prompt');
+  });
 });
 
 describe('per-ability directives steer the planner to the right tools', () => {
