@@ -91,6 +91,28 @@ export function validateVideoRetryParams(params = {}) {
       { status: 400, code: mode === 'a2v' ? 'A2V_REQUIRES_LTX2' : 'IC_LORA_REQUIRES_LTX2' },
     );
   }
+  const numFrames = params.numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
+  const fps = params.fps ?? 24;
+  if (isMiniMaxH3Runtime(model.runtime)) {
+    const controlError = minimaxH3ControlError({
+      model,
+      negativePrompt: params.negativePrompt,
+      disableAudio: params.disableAudio,
+      tiling: params.tiling,
+      numFrames,
+      fps,
+    });
+    if (controlError) throw controlError;
+  }
+  if (model.runtime === 'wan22') {
+    const frameStride = Number(model.frameStride);
+    if (Number.isFinite(frameStride) && frameStride > 0 && (Number(numFrames) - 1) % frameStride !== 0) {
+      throw new ServerError(
+        `${model.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
+        { status: 400, code: 'WAN22_INVALID_FRAME_COUNT' },
+      );
+    }
+  }
 }
 
 /**

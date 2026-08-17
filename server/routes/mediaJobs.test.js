@@ -25,6 +25,9 @@ vi.mock('../services/mediaJobQueue/index.js', () => ({
   runJobNow: (...args) => stubs.runJobNow(...args),
   removeArchivedJob: (...args) => stubs.removeArchivedJob(...args),
 }));
+vi.mock('../services/videoGen/prepareParams.js', () => ({
+  validateVideoRetryParams: vi.fn(),
+}));
 
 const mediaJobsRouter = (await import('./mediaJobs.js')).default;
 
