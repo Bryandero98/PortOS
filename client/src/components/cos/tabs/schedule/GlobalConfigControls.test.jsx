@@ -107,6 +107,34 @@ describe('GlobalConfigControls — After opening PR', () => {
     renderControls({ taskMetadata: { useWorktree: true, openPR: false, reviewLoop: true } });
     expect(screen.getByTestId('reviewer-picker')).toBeInTheDocument();
   });
+
+  it('resets the task review override while preserving unrelated task metadata', () => {
+    const onUpdate = renderControls({
+      taskMetadata: {
+        useWorktree: true,
+        openPR: true,
+        prCompletion: 'review-then-merge',
+        reviewers: ['codex'],
+        usernames: ['example-reviewer'],
+        optionalReviewers: ['codex'],
+        reviewerMaxRounds: { codex: 2 },
+        reviewerModels: { codex: 'example-model' },
+        reviewerEfforts: { codex: 'high' },
+        reviewStopMode: 'first-blocking',
+        reviewerApplies: true,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use system Code Review Defaults' }));
+
+    expect(onUpdate).toHaveBeenCalledWith('feature-ideas', {
+      taskMetadata: {
+        useWorktree: true,
+        openPR: true,
+        prCompletion: 'review-then-merge',
+      },
+    });
+  });
 });
 
 describe('GlobalConfigControls — branch-reconcile batch size', () => {
