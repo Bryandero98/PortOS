@@ -32,7 +32,10 @@ import {
   resolveCliEffort,
   hasEffortFlag,
   buildEffortArgs,
+  CODEX_EFFORT_KEY,
   CODEX_UPDATE_CHECK_KEY,
+  PORTOS_CLI_CONFIG_KEYS,
+  isPortosSuppliedConfigKey,
   hasCodexUpdateCheckConfig,
   buildCodexStartupArgs,
   isCodexProvider,
@@ -513,6 +516,35 @@ describe('providerModels', () => {
     it('returns [] when the user already pinned the key (their value wins)', () => {
       expect(buildCodexStartupArgs(['-c', `${CODEX_UPDATE_CHECK_KEY}=true`])).toEqual([]);
       expect(buildCodexStartupArgs([`--config=${CODEX_UPDATE_CHECK_KEY}=true`])).toEqual([]);
+    });
+  });
+
+  // The `cli-config-invalid` analyzer asks this to decide whether a rejected
+  // config key came from a PortOS `-c` override or from the user's own CLI
+  // config file, and it names a different fix for each — so an emitter added
+  // without a row here would be blamed on the user (incident 2026-08-18).
+  describe('isPortosSuppliedConfigKey / PORTOS_CLI_CONFIG_KEYS', () => {
+    it('covers exactly the keys the -c builders emit', () => {
+      expect([...PORTOS_CLI_CONFIG_KEYS].sort()).toEqual([CODEX_EFFORT_KEY, CODEX_UPDATE_CHECK_KEY].sort());
+      // Guard against a third emitter appearing without a row: both builders
+      // that produce `-c` are asserted to use a listed key.
+      const emitted = [
+        ...buildEffortArgs('high', { command: 'codex' }),
+        ...buildCodexStartupArgs()
+      ].filter((a) => a.includes('='));
+      expect(emitted.length).toBeGreaterThan(0);
+      for (const pair of emitted) expect(isPortosSuppliedConfigKey(pair.split('=')[0])).toBe(true);
+    });
+
+    it('is false for keys that only ever live in the user config file', () => {
+      // Real 2026-08-18 rejection: written by a newer install of the same CLI.
+      expect(isPortosSuppliedConfigKey('service_tier')).toBe(false);
+      expect(isPortosSuppliedConfigKey('notify')).toBe(false);
+      // Lookalikes must not pass — the fix text hinges on an exact match.
+      expect(isPortosSuppliedConfigKey('model_reasoning_effort_override')).toBe(false);
+      expect(isPortosSuppliedConfigKey('')).toBe(false);
+      expect(isPortosSuppliedConfigKey(null)).toBe(false);
+      expect(isPortosSuppliedConfigKey(42)).toBe(false);
     });
   });
 

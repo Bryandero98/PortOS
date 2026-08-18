@@ -150,6 +150,56 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(decision.metadataUpdates.blockedCategory).toBe('cli-config-invalid');
   });
 
+  // Real incident 2026-08-18: the Codex desktop app wrote `service_tier =
+  // "default"` into the shared `~/.codex/config.toml`, and the older `codex` on
+  // PATH — the binary PortOS spawns — accepts only `fast` or `flex`. Every
+  // codex agent on the machine died at config load. The first pass at this fix
+  // text told the reader to check "the provider's ladder in providerModels.js",
+  // which for a key PortOS never emits is a dead end: the analysis has to name
+  // the CLI's own config file as the source.
+  it('blames the user config for a key PortOS never supplies', () => {
+    const line = 'Error loading config.toml: unknown variant `default`, expected `fast` or `flex`\nin `service_tier`';
+    const analysis = analyzeAgentFailure(withLead(line), { id: 't' }, 'gpt-5.6-luna');
+    expect(analysis.category).toBe('cli-config-invalid');
+    expect(analysis.rejectedConfigKey).toBe('service_tier');
+    expect(analysis.rejectedConfigValue).toBe('default');
+    expect(analysis.suggestedFix).toContain('PortOS never supplies `service_tier`');
+    expect(analysis.suggestedFix).toContain('~/.codex/config.toml');
+    // Pointing at PortOS source for a key PortOS does not emit is the failure
+    // mode this test exists to prevent.
+    expect(analysis.suggestedFix).not.toContain('providerModels.js');
+  });
+
+  // The mirror case: `model_reasoning_effort` IS a PortOS `-c` override, so the
+  // fix belongs in the effort ladder and editing the CLI config would be undone
+  // on the next spawn.
+  it('blames the PortOS override for a key PortOS does supply', () => {
+    const line = 'Error loading config.toml: unknown variant `max`, expected one of `low`, `high`\nin `model_reasoning_effort`';
+    const analysis = analyzeAgentFailure(withLead(line), { id: 't' }, 'gpt-5.6-sol');
+    expect(analysis.suggestedFix).toContain('providerModels.js');
+    expect(analysis.suggestedFix).not.toContain('PortOS never supplies');
+  });
+
+  // The CLI enumerates what it WILL accept; the escalation card shows the fix
+  // text, not the raw log, so the accepted values have to ride along with it.
+  it('echoes the accepted values the CLI listed', () => {
+    const line = 'Error loading config.toml: unknown variant `default`, expected `fast` or `flex`\nin `service_tier`';
+    const analysis = analyzeAgentFailure(withLead(line), { id: 't' }, 'gpt-5.6-luna');
+    expect(analysis.rejectedConfigExpected).toBe('`fast` or `flex`');
+    expect(analysis.suggestedFix).toContain('expects `fast` or `flex`');
+  });
+
+  // No `expected` clause (and no `in \`key\`` line) — the fix degrades to naming
+  // both possible sources rather than interpolating an empty list.
+  it('omits the accepted-values clause when the CLI did not list any', () => {
+    const line = 'Error loading config.toml: unknown field `mystery_setting` while parsing the provider table';
+    const analysis = analyzeAgentFailure(withLead(line), { id: 't' }, 'x');
+    expect(analysis.category).toBe('cli-config-invalid');
+    expect(analysis.rejectedConfigExpected).toBeNull();
+    expect(analysis.suggestedFix).not.toContain('This CLI version expects');
+    expect(analysis.suggestedFix).toContain('Look first in');
+  });
+
   it('classifies a config file that fails to load at all', () => {
     const analysis = analyzeAgentFailure(withLead('Error loading config.toml: expected a value after the equals sign'), { id: 't' }, 'x');
     expect(analysis.category).toBe('cli-config-invalid');

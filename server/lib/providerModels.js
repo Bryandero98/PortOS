@@ -335,6 +335,12 @@ export function resolveCliEffort(effort, provider, model = null) {
   return EFFORT_RANK[below.length ? below[below.length - 1] : supported[0]];
 }
 
+// Codex's config key (set via `-c <key>=<value>`) that carries the reasoning
+// effort. Named for the same reason as CODEX_UPDATE_CHECK_KEY below: the string
+// is matched in one place, emitted in another, and read back by the error
+// analyzer when a config rejection has to be blamed on PortOS or on the user.
+export const CODEX_EFFORT_KEY = 'model_reasoning_effort';
+
 /**
  * True when the user has already baked an effort override into the provider's
  * args — claude's `--effort <level>` / `--effort=<level>` or a codex
@@ -352,7 +358,7 @@ export function hasEffortFlag(args) {
       const next = args[i + 1];
       return typeof next === 'string' && next.length > 0 && !next.startsWith('-');
     }
-    return a.startsWith('model_reasoning_effort=');
+    return a.startsWith(`${CODEX_EFFORT_KEY}=`);
   });
 }
 
@@ -373,7 +379,7 @@ export function buildEffortArgs(effort, provider, existingArgs = [], model = nul
   const effectiveEffort = resolveCliEffort(effort, provider, model);
   if (!effectiveEffort || hasEffortFlag(existingArgs)) return [];
   return isCodexProvider(provider)
-    ? ['-c', `model_reasoning_effort=${effectiveEffort}`]
+    ? ['-c', `${CODEX_EFFORT_KEY}=${effectiveEffort}`]
     : ['--effort', effectiveEffort];
 }
 
@@ -422,6 +428,33 @@ export function hasCodexUpdateCheckConfig(args) {
 export function buildCodexStartupArgs(existingArgs = []) {
   if (hasCodexUpdateCheckConfig(existingArgs)) return [];
   return ['-c', `${CODEX_UPDATE_CHECK_KEY}=false`];
+}
+
+/**
+ * Every CLI config key PortOS itself injects as a `-c <key>=<value>` override.
+ * Exhaustive by construction — `buildEffortArgs` and `buildCodexStartupArgs`
+ * above are the only two builders that emit `-c`, and both key off the
+ * constants listed here.
+ *
+ * Read by the `cli-config-invalid` error analyzer (`agentErrorAnalysis.js`) to
+ * answer the only question that matters when a CLI refuses to start: did PortOS
+ * hand it that value, or was it already sitting in the user's own config file?
+ * Getting this wrong sends the user grepping PortOS source for a key PortOS
+ * never emits — the 2026-08-18 `service_tier` incident, where a newer install
+ * of the same CLI had written a variant the CLI on PATH rejects into the shared
+ * config file.
+ */
+export const PORTOS_CLI_CONFIG_KEYS = Object.freeze([CODEX_EFFORT_KEY, CODEX_UPDATE_CHECK_KEY]);
+
+/**
+ * True when `key` is a config key PortOS supplies via `-c` (see
+ * PORTOS_CLI_CONFIG_KEYS). Null-safe; comparison is exact, so a lookalike key
+ * from the user's config file is correctly reported as not-ours.
+ * @param {unknown} key
+ * @returns {boolean}
+ */
+export function isPortosSuppliedConfigKey(key) {
+  return typeof key === 'string' && PORTOS_CLI_CONFIG_KEYS.includes(key.trim());
 }
 
 /**
