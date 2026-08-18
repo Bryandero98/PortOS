@@ -55,8 +55,13 @@ export function useRepoIntake(text) {
   const [studyContext, setStudyContext] = useState('');
 
   const repo = useMemo(() => capturedGitHubRepo(text), [text]);
+  const repoKey = repo ? `${repo.owner}/${repo.repo}` : null;
   const options = useMemo(() => ({ malwareScan, learn }), [malwareScan, learn]);
   const setters = { malwareScan: setMalwareScan, learn: setLearn };
+
+  useEffect(() => {
+    setStudyContext('');
+  }, [repoKey]);
 
   useEffect(() => {
     if (!repo || !learn || typeof api.getApps !== 'function') return;
