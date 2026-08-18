@@ -419,10 +419,11 @@ export function oversizedBodyPointer(bodyPath, body) {
  * @param {string} [opts.reviewWith=''] - reviewer CSV to pin (`codex,copilot`).
  *   Required when `body` had reviewer variants pruned out of it.
  * @param {string} [opts.reviewerEffortNote=''] - the per-reviewer reasoning-effort
- *   instruction (`buildReviewerEffortNote`). Emitted independently of `reviewWith`:
- *   this workflow runs its OWN review loop, so an effort pinned on the task has no
- *   other way to reach the reviewer CLI the workflow spawns — and unlike the CSV it
- *   applies whether or not the body was pruned.
+ *   instruction (`buildReviewerEffortNote`). Non-empty only when `reviewWith` is
+ *   NOT emitted: a pinned CSV carries each effort as slashdo's `~effort=<level>`
+ *   suffix, so the prose would just have the agent pass the flag twice. Unpinned,
+ *   the workflow resolves reviewers itself and this is the pin's only route to the
+ *   CLI it spawns.
  * @returns {string} markdown section, or '' when `resolved` is null
  */
 export function buildSlashdoSection(resolved, body = null, { bodyPath = null, reviewWith = '', reviewerEffortNote = '' } = {}) {

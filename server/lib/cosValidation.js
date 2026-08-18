@@ -531,12 +531,12 @@ export function normalizeReviewerEffort(raw, reviewer) {
  * same emitted `--review-with` token as `normalizeReviewerModels` (e.g.
  * `{ codex: 'high', ollama: 'low' }`).
  *
- * Unlike the model pin, this never becomes part of a slashdo token: slashdo's
- * entry grammar has no effort suffix. It reaches a reviewer through the two
- * places PortOS actually controls the invocation — the review-loop follow-up
- * prompt's CLI command line (`codex -c model_reasoning_effort=high`, `claude
- * --effort high`) and the `reasoning_effort` field of the local reviewer's
- * `/api/code-review/local` request body.
+ * Three carriers, depending on who invokes the reviewer. On a slashdo invocation
+ * it rides the emitted token as `~effort=<level>` (`markSuffixes`), which slashdo
+ * turns into the reviewer's own flag. Where PortOS drives the invocation itself it
+ * is spelled out instead: the review-loop follow-up prompt's CLI command line
+ * (`codex -c model_reasoning_effort=high`, `claude --effort high`) and the
+ * `reasoning_effort` field of the local reviewer's `/api/code-review/local` body.
  *
  * An absent key means "let that reviewer use its own default effort", which is
  * NOT the same as a blank string, so an unusable value is DROPPED rather than
@@ -707,24 +707,31 @@ export function reviewerEffortArgs(reviewer, effort) {
 }
 
 /**
- * Prose instruction carrying the per-reviewer effort pins into a **slashdo**
- * invocation — `/do:pr --review-with …`, where the model pin rides the token's
- * `[<model>]` bracket but the effort has nowhere to go: slashdo's entry grammar
- * (`<agent>[<model>](~opt|~max=<n>)*`) has no effort suffix, and inventing one
- * would just be a token its parser drops.
+ * Prose instruction carrying the per-reviewer effort pins into a prompt whose
+ * agent spawns the reviewer CLI ITSELF — the claim flows (which run each
+ * configured reviewer by hand, no `--review-with` anywhere in the prompt) and a
+ * slashdo invocation that pins no reviewer list.
  *
- * So the effort is delivered the only way that actually reaches the nested CLI:
- * as an instruction to append the flag when the loop invokes it. Scoped to CLI
- * reviewers on purpose — slashdo's local-model loop calls the backend itself
- * rather than through PortOS's endpoint, so there is no flag to name for
- * `ollama`/`lmstudio` there (their effort still applies on the PortOS-driven
- * review-loop follow-up, which posts to `/api/code-review/local`).
+ * **Not for an invocation that pins `--review-with`.** slashdo's entry grammar is
+ * `<agent>[<model>](~opt|~max=<n>|~effort=<level>)*`, and `markSuffixes` emits
+ * that `~effort=` suffix, so the pin already reaches the CLI the loop spawns.
+ * Restating it as prose there is worse than silent: the agent passes the flag a
+ * second time, or hand-runs a reviewer the loop was about to run. Pass the
+ * emitted `--review-with` text as `reviewWith` and this returns '' when it sees
+ * the suffix — one check, so a caller can't decide wrong.
+ *
+ * Scoped to CLI reviewers on purpose — `ollama`/`lmstudio` have no binary to
+ * name (their effort rides the `POST /api/code-review/local` body instead).
  *
  * @param {string[]} reviewers - the reviewer slugs the invocation emits
  * @param {Object<string, string>} [reviewerEfforts] - token-keyed effort pins
- * @returns {string} a single sentence, or '' when no reviewer carries an effort
+ * @param {Object} [options]
+ * @param {string} [options.reviewWith] - the `--review-with` text this prompt
+ *   emits, if any. A `~effort=` in it means slashdo already carries the pin.
+ * @returns {string} a single sentence, or '' when nothing is left to say
  */
-export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}) {
+export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}, { reviewWith = '' } = {}) {
+  if (typeof reviewWith === 'string' && reviewWith.includes('~effort=')) return '';
   const efforts = normalizeReviewerEfforts(reviewerEfforts) || {};
   const entries = (Array.isArray(reviewers) ? reviewers : [])
     .map((r) => {
@@ -733,7 +740,7 @@ export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}) {
     })
     .filter(Boolean);
   if (!entries.length) return '';
-  return `When the review loop invokes a reviewer CLI, add its pinned reasoning effort: ${entries.join(', ')}. \`--review-with\` has no effort suffix, so this is the only way it reaches the reviewer.`;
+  return `Invoke each reviewer CLI at its pinned reasoning effort: ${entries.join(', ')}. Pass the flag yourself when you spawn the reviewer — nothing else in this prompt applies it (a \`~effort=<level>\` suffix in a reviewer list is slashdo's own grammar, which only its \`--review-with\` parses).`;
 }
 
 /**

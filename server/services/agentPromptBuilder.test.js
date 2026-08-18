@@ -2534,14 +2534,33 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
     warn.mockRestore();
   });
 
-  // The workflow drives its OWN review loop, so an effort pinned on the task has
-  // no other route to the reviewer CLI it spawns — `--review-with` carries a
-  // `[<model>]` bracket but has no effort suffix.
-  it('states a pinned reviewer effort in the slashdo section', async () => {
+  // A pinned reviewer list carries the effort as slashdo's own `~effort=<level>`
+  // suffix, so the section states it ONCE — on the pin. The prose instruction is
+  // for the unpinned case, where the workflow resolves reviewers itself.
+  it('carries a pinned reviewer effort on the --review-with token, not as prose', async () => {
     const prompt = await buildAgentPrompt(
       slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high' } }),
       {}, '/r', null, isTruthyMeta,
       { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('codex~effort=high');
+    // Restating it would have the agent pass `-c model_reasoning_effort=high` a
+    // second time, on top of the one slashdo's loop already passes.
+    expect(prompt).not.toContain('Invoke each reviewer CLI at its pinned reasoning effort');
+  });
+
+  it('states the effort in prose when the section pins no reviewer list', async () => {
+    // Reviewers spanning every loop variant prune nothing, so no `--review-with`
+    // is emitted — the pin's only route to the CLI the workflow spawns is prose.
+    const prompt = await buildAgentPrompt(
+      slashdoTask({
+        reviewers: ['copilot', 'codex', 'ollama'],
+        usernames: ['octocat'],
+        reviewerEfforts: { codex: 'high' },
+      }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    // (the note's own prose mentions the flag — assert on the pin line instead)
+    expect(prompt).not.toContain('Run this workflow with');
     expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
   });
 
@@ -2553,7 +2572,8 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
       slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high', claude: 'xhigh' } }),
       {}, '/r', null, isTruthyMeta,
       { providerType: 'cli', providerId: 'codex' });
-    expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
+    expect(prompt).toContain('codex~effort=high');
+    expect(prompt).not.toContain('claude~effort=xhigh');
     expect(prompt).not.toContain('--effort xhigh');
   });
 

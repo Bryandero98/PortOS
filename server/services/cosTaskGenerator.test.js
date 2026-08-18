@@ -359,21 +359,35 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     expect(GEN_SRC).toContain('appendLocalReviewerInstructions(promptTaskType, promptReviewers');
   });
 
+  it('keeps the reasoning-effort PROSE on every claim path (they emit no --review-with)', () => {
+    // `buildReviewerEffortNote` goes silent when it is handed a `--review-with`
+    // string carrying `~effort=<level>` — correct for a slashdo invocation, where
+    // the suffix already reaches the reviewer CLI. A claim prompt has no such
+    // invocation: the agent spawns each reviewer itself, so the CSV's suffix
+    // reaches no parser and the sentence is the pin's only route. No claim path
+    // may start passing `reviewWith` and mute itself.
+    expect(GEN_SRC).toContain('appendReviewerEffortBlock(reviewersList, promptReviewerEfforts)');
+    expect(GEN_SRC).toContain('appendReviewerEffortBlock(list, reviewerEfforts)');
+    expect(GEN_SRC).toContain('appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts)');
+    expect(GEN_SRC).not.toMatch(/buildReviewerEffortNote\([^)]*reviewWith/);
+  });
+
   it('threads per-reviewer ~max round caps into the prompt CSV on both claim paths', () => {
-    // The `{reviewers}` token IS the flag string for the claim flows, so a
-    // configured cap only reaches slashdo if the CSV carries it. Both the
-    // scheduled path and buildClaimWorkTask resolve it with task-over-default
-    // precedence (unit-tested in validation.test.js).
+    // The `{reviewers}` token is the whole reviewer contract the claim agent
+    // gets — it runs each reviewer by hand, so a configured cap only reaches the
+    // run if the CSV carries it. Both the scheduled path and buildClaimWorkTask
+    // resolve it with task-over-default precedence (unit-tested in
+    // validation.test.js).
     expect(GEN_SRC).toContain('resolveReviewerMaxRounds(metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds)');
     expect(GEN_SRC).toContain('resolveReviewerMaxRounds(reviewerMaxRounds ?? metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds)');
     expect(GEN_SRC).toContain('buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts)');
   });
 
   it('threads per-reviewer model pins into the prompt CSV on both claim paths (#3133)', () => {
-    // Same argument as the caps above: `{reviewers}` IS the flag string for the
-    // claim flows, so a pinned model only reaches slashdo (as its `[<model>]`
-    // bracket) if the CSV carries it. Both paths resolve with task-over-default
-    // precedence off the Code Review Defaults' `<reviewer>Model` scalars.
+    // Same argument as the caps above: `{reviewers}` is the only place the claim
+    // prompt names a pinned model, so it only reaches the run if the CSV carries
+    // it. Both paths resolve with task-over-default precedence off the Code
+    // Review Defaults' `<reviewer>Model` scalars.
     //
     // All three prompt paths go through `resolveReviewerPins`, which resolves the
     // model map TOGETHER with the effort map and reconciles the two (#3728) — an

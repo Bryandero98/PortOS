@@ -486,8 +486,10 @@ export async function buildClaimWorkTask(app, {
   // Per-reviewer model pins (slashdo's `[<model>]` bracket) and reasoning efforts
   // ride the same explicit-option → task metadata → Code Review Defaults
   // precedence, and resolve together so the two describe one invocation (an agy
-  // model id can carry its effort as a suffix). The efforts carry no
-  // `--review-with` token, so they land as an appended instruction below.
+  // model id can carry its effort as a suffix). The claim prompt runs its
+  // reviewers by hand rather than through `--review-with`, so the effort also
+  // lands as an appended instruction below — the CSV's `~effort=` suffix is
+  // slashdo grammar nothing in this flow parses.
   const { reviewerModels: promptReviewerModels, reviewerEfforts: promptReviewerEfforts } = resolveReviewerPins({
     reviewerModels: reviewerModels ?? metadata.reviewerModels,
     reviewerEfforts: reviewerEfforts ?? metadata.reviewerEfforts,
@@ -535,7 +537,8 @@ export async function buildClaimWorkTask(app, {
  *
  * Returns BOTH pieces because the two travel differently: `csv` fills the
  * template's `{reviewers}` placeholder, while `effortBlock` is appended prose —
- * `--review-with` has no effort suffix to carry it.
+ * the claim agent spawns each reviewer CLI itself, so no `--review-with` parser
+ * ever reads the CSV's `~effort=` suffix.
  */
 async function resolveClaimReviewerPrompt() {
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
@@ -697,8 +700,9 @@ const appendTargetWorkItemBlock = (promptTaskType, ref) => {
  * the same blank-line separator. APPENDED rather than substituted into a
  * `{...}` placeholder because a new placeholder would be silently dropped by
  * every install whose customized claim template predates it (the same reason
- * `swarmBlock` is prepended) — and because there is no `--review-with` suffix to
- * carry it, so it has to be prose. Empty when no reviewer in the list pins one.
+ * `swarmBlock` is prepended) — and prose because the claim agent invokes each
+ * reviewer CLI directly: this flow emits no `--review-with`, so the CSV's
+ * `~effort=` suffix reaches no parser. Empty when no reviewer in the list pins one.
  */
 const appendReviewerEffortBlock = (reviewers, reviewerEfforts) => {
   const note = buildReviewerEffortNote(reviewers, reviewerEfforts);
