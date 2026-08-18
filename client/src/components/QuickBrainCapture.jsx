@@ -104,6 +104,7 @@ export default function QuickBrainCapture() {
     });
     if (result) {
       toast.success(result.message || 'Captured');
+      repoIntake.setStudyContext('');
     }
     submittingRef.current = false;
     setIsSubmitting(false);
