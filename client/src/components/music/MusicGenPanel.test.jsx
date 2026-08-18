@@ -6,6 +6,7 @@ import * as api from '../../services/api';
 
 vi.mock('../../services/api', () => ({
   listMusicEngines: vi.fn(),
+  getInstances: vi.fn(),
   generateMusic: vi.fn(),
   getActiveProcessing: vi.fn(),
   getMediaJob: vi.fn(),
@@ -62,6 +63,7 @@ describe('MusicGenPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getActiveProcessing.mockResolvedValue({ jobs: [] });
+    api.getInstances.mockResolvedValue({ peers: [] });
   });
 
   it('does not show a missing-runtime warning immediately for an empty saved track', async () => {
@@ -250,6 +252,47 @@ describe('MusicGenPanel', () => {
     }), { silent: true }));
     expect(api.generateMusic.mock.calls[0][0]).not.toHaveProperty('trackId');
     expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
+  });
+
+  it('selects a fresh federated audio provider without sending prompt or lyrics as conditioning', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      mediaProviderPeerId: 'peer-example',
+      engine: 'minimax-music3',
+      modelId: 'minimax-music3',
+      instrumentalOnly: true,
+      remoteMusicProfile: {
+        style: 'ambient', mood: 'calm', tempo: 'moderate', energy: 'medium', instruments: [],
+      },
+    }), { silent: true }));
+    const requestBody = api.generateMusic.mock.calls[0][0];
+    expect(requestBody).not.toHaveProperty('lyrics');
   });
 
   it('can render instrumentally without conditioning on or clearing the track lyrics', async () => {
