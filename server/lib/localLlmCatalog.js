@@ -38,7 +38,7 @@ export const LOCAL_LLM_CATEGORIES = [
 ];
 
 // Each entry: { key, name, category, recommendedFor?, featured?, params, size,
-//               family, description, note?, capabilities, context?, format?,
+//               family, description, note?, repository?, gated?, capabilities, context?, format?,
 //               appleSiliconOnly?, ollama?, lmstudio?, ollamaImport?, ollamaAliases?,
 //               lmstudioAliases? }
 //
@@ -314,6 +314,8 @@ export const LOCAL_LLM_CATALOG = [
     family: 'qwen',
     description: 'OrcaRouter’s abliterated Qwen3.8 variant for red-team and unrestricted local evaluation, with 2-, 4-, 6-, and 8-bit MLX builds plus vision, tools, reasoning, and multilingual support.',
     note: 'Gated on Hugging Face — accept the repository terms and configure a Hugging Face token in Settings. Ollama imports the 4-bit build; LM Studio can select another quantization.',
+    repository: 'orcarouter/Qwen3.8-27B-Uncensored-MLX',
+    gated: true,
     capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision', 'multilingual'],
     context: 262144,
     format: 'mlx',
@@ -726,7 +728,7 @@ export function getOllamaImportSpec(modelId) {
  * @param {string} backend - 'ollama' | 'lmstudio'
  * @param {string[]} [installedIds] - ids currently installed on that backend
  * @param {{ appleSilicon?: boolean }} [options] - host capabilities used for platform-gated entries
- * @returns {Array<{ id, key, name, category, recommendedFor, featured, params, size, family, description, note, capabilities, format, contextLength, installed }>}
+ * @returns {Array<{ id, key, name, category, recommendedFor, featured, params, size, family, description, note, repository, gated, capabilities, format, contextLength, installed }>}
  */
 export function getCatalog(backend, installedIds = [], { appleSilicon } = {}) {
   if (!isBackend(backend)) return [];
@@ -749,6 +751,8 @@ export function getCatalog(backend, installedIds = [], { appleSilicon } = {}) {
         family: entry.family,
         description: entry.description,
         note: entry.note || null,
+        repository: entry.repository || null,
+        gated: entry.gated === true,
         capabilities: entry.capabilities,
         format: entry.format || null,
         // Native context window (tokens), when it's a documented spec; null otherwise.
