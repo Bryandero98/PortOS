@@ -618,7 +618,11 @@ async function applySlashdoInvocation(task, {
   // explicit naming: nothing defaults to either suffix, so both are deliberate
   // choices, and dropping one would silently turn a non-blocking review blocking
   // or spend an unbudgeted number of rounds. `buildReviewWithArgs` makes the same
-  // exemption for its lone-default suppression — keep the two in step.
+  // exemption for its lone-default suppression — keep the two in step. It carries a
+  // third clause for a copilot `~effort=`; there is deliberately none here, because
+  // copilot has no effort ladder at all (`REVIEWER_EFFORT_LEVELS` is keyed off
+  // `reviewerCliBinary`, and copilot names no binary), so `normalizeReviewerEfforts`
+  // drops the pin long before either function sees it.
   const taskPinnedReviewer = (Array.isArray(task.metadata?.reviewers) && task.metadata.reviewers.length > 0)
     || (typeof task.metadata?.reviewer === 'string' && !!task.metadata.reviewer);
   const optionalDefaultReviewer = resolvedOptional.some(t => t.toLowerCase() === DEFAULT_REVIEWER);

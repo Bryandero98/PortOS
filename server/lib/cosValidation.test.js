@@ -333,6 +333,10 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     expect(noEffort).not.toContain('~effort=');
     expect(buildReviewerEffortNote(['codex'], { codex: 'high' }, { reviewWith: noEffort })).toContain('`codex -c model_reasoning_effort=high`');
     expect(buildReviewerEffortNote(['codex'], { codex: 'high' }, { reviewWith: '' })).toContain('`codex -c model_reasoning_effort=high`');
+    // And a lone copilot can't carry an effort at all (no ladder — see the DROPS
+    // test above), which is why the lone-default suppression stays correct without
+    // an effort clause of its own in applySlashdoInvocation.
+    expect(buildReviewWithArgs(['copilot'], { reviewerEfforts: { copilot: 'high' } })).toBe('');
   });
 
   it('never claims --review-with lacks an effort suffix', () => {

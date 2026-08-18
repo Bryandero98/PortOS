@@ -531,12 +531,12 @@ export function normalizeReviewerEffort(raw, reviewer) {
  * same emitted `--review-with` token as `normalizeReviewerModels` (e.g.
  * `{ codex: 'high', ollama: 'low' }`).
  *
- * Unlike the model pin, this never becomes part of a slashdo token: slashdo's
- * entry grammar has no effort suffix. It reaches a reviewer through the two
- * places PortOS actually controls the invocation — the review-loop follow-up
- * prompt's CLI command line (`codex -c model_reasoning_effort=high`, `claude
- * --effort high`) and the `reasoning_effort` field of the local reviewer's
- * `/api/code-review/local` request body.
+ * Three carriers, depending on who invokes the reviewer. On a slashdo invocation
+ * it rides the emitted token as `~effort=<level>` (`markSuffixes`), which slashdo
+ * turns into the reviewer's own flag. Where PortOS drives the invocation itself it
+ * is spelled out instead: the review-loop follow-up prompt's CLI command line
+ * (`codex -c model_reasoning_effort=high`, `claude --effort high`) and the
+ * `reasoning_effort` field of the local reviewer's `/api/code-review/local` body.
  *
  * An absent key means "let that reviewer use its own default effort", which is
  * NOT the same as a blank string, so an unusable value is DROPPED rather than
