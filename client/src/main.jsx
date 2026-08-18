@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router';
 import { Toaster } from './components/ui/Toast';
 import ErrorBoundary from './components/ErrorBoundary';
+import RouteErrorFallback from './components/RouteErrorFallback';
 import { ThemeProvider } from './components/ThemeContext';
 import { isStaleChunkError, reloadOnceForStaleChunk } from './utils/staleChunkReload';
 import { reportClientError } from './lib/clientErrorReporter';
@@ -60,6 +61,7 @@ window.addEventListener('error', (event) => {
 const router = createBrowserRouter([
   {
     path: '*',
+    errorElement: <RouteErrorFallback />,
     element: (
       <>
         <App />
