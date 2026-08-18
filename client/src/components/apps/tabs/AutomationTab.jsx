@@ -313,10 +313,28 @@ export default function AutomationTab({ appId, appName }) {
                     </button>
                   ) : null}
                   <div className="flex items-center gap-1 ml-auto">
+                    {globalConfig.fileIssuesCapable && (() => {
+                      const effective = override.taskMetadata?.fileIssues ?? globalConfig.taskMetadata?.fileIssues ?? globalConfig.defaultFileIssues === true;
+                      const hasOverride = override.taskMetadata?.fileIssues !== undefined;
+                      return (
+                        <button
+                          key="fileIssues"
+                          onClick={() => handleMetaToggle(taskType, 'fileIssues', globalConfig.taskMetadata)}
+                          aria-pressed={effective}
+                          aria-label={`File issues only: ${effective ? 'on' : 'off'}${hasOverride ? ' (app override)' : ' (inherited)'}`}
+                          className={`text-xs px-1.5 py-0.5 rounded transition-colors border ${agentOptionButtonClass(effective, hasOverride)}`}
+                          title={`File issues only: ${effective ? 'on' : 'off'}${hasOverride ? ' (app override)' : ' (inherited)'}`}
+                        >
+                          Iss
+                        </button>
+                      );
+                    })()}
                     {AGENT_OPTIONS.map(({ field, shortLabel, label }) => {
                       const effective = override.taskMetadata?.[field] ?? globalConfig.taskMetadata?.[field] ?? false;
                       const hasOverride = override.taskMetadata?.[field] !== undefined;
-                      const managed = globalConfig.managedAgentOptions?.includes(field);
+                      const fileIssuesOn = (override.taskMetadata?.fileIssues ?? globalConfig.taskMetadata?.fileIssues ?? globalConfig.defaultFileIssues) === true;
+                      const managed = globalConfig.managedAgentOptions?.includes(field)
+                        || (globalConfig.fileIssuesCapable && fileIssuesOn && ['useWorktree', 'openPR', 'simplify'].includes(field));
                       const titleText = managed
                         ? `${label}: managed internally by ${taskType}`
                         : `${label}: ${effective ? 'on' : 'off'}${hasOverride ? ' (app override)' : ' (inherited)'}`;

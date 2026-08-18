@@ -128,6 +128,15 @@ describe('composable skill template routing', () => {
     }))).toEqual(['security-audit', 'threejs-visual']);
   });
 
+  it('routes data-safety and dead-code audits to their own skill templates', () => {
+    expect(detectSkillTemplates(makeTask({
+      description: '[Improvement] Data and upgrade-safety audit',
+    }))).toEqual(['data-safety']);
+    expect(detectSkillTemplates(makeTask({
+      description: '[Improvement] Dead-code and duplication audit',
+    }))).toEqual(['simplify']);
+  });
+
   it('joins templates in routing order and tolerates an unavailable domain guide', async () => {
     const loadTemplate = vi.fn(async (name) => ({
       'security-audit': 'Security lifecycle guidance',

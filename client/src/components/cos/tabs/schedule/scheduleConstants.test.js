@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getTaskStatusGroup, taskSortKey, TASK_FILTERS, STATUS_GROUPS, describeNextRun, coverageTone, setMetadataOverride, toggleMetadataField } from './scheduleConstants';
+import { getTaskStatusGroup, taskSortKey, TASK_FILTERS, STATUS_GROUPS, describeNextRun, coverageTone, setMetadataOverride, toggleMetadataField, fileIssuesEffective, managedAgentOptionsFor, toggleFileIssuesMetadata } from './scheduleConstants';
 
 describe('setMetadataOverride', () => {
   it('sets a key without disturbing the app\'s other overrides', () => {
@@ -18,6 +18,38 @@ describe('setMetadataOverride', () => {
 
   it('returns null once nothing is overridden so the row drops its object', () => {
     expect(setMetadataOverride({ prCompletion: 'leave-open' }, 'prCompletion', '')).toBeNull();
+  });
+});
+
+describe('fileIssuesEffective', () => {
+  it('prefers an app override, then the stored global, then the catalog default', () => {
+    expect(fileIssuesEffective({ defaultFileIssues: true }, { fileIssues: false })).toBe(false);
+    expect(fileIssuesEffective({ taskMetadata: { fileIssues: true }, defaultFileIssues: false })).toBe(true);
+    expect(fileIssuesEffective({ defaultFileIssues: true })).toBe(true);
+    expect(fileIssuesEffective({ defaultFileIssues: false })).toBe(false);
+  });
+});
+
+describe('managedAgentOptionsFor', () => {
+  it('adds worktree/PR/simplify to the managed set when file-issues is on', () => {
+    expect(managedAgentOptionsFor({
+      fileIssuesCapable: true,
+      defaultFileIssues: true,
+      managedAgentOptions: ['claimFlow'],
+    })).toEqual(['claimFlow', 'useWorktree', 'openPR', 'simplify']);
+  });
+
+  it('leaves non-audit tasks alone', () => {
+    expect(managedAgentOptionsFor({ managedAgentOptions: ['useWorktree'] })).toEqual(['useWorktree']);
+  });
+});
+
+describe('toggleFileIssuesMetadata', () => {
+  it('forces the no-code posture on and leaves it when turning off', () => {
+    expect(toggleFileIssuesMetadata({ useWorktree: true, openPR: true, simplify: true }, true))
+      .toEqual({ useWorktree: false, openPR: false, simplify: false, fileIssues: true });
+    expect(toggleFileIssuesMetadata({ fileIssues: true, useWorktree: false }, false))
+      .toEqual({ fileIssues: false, useWorktree: false });
   });
 });
 

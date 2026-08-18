@@ -1412,7 +1412,10 @@ const ALLOWED_TASK_METADATA_KEYS = [
   // type whose deliverable is outside the repo — e.g. a reference-watch run
   // against a GitHub/GitLab/JIRA work tracker files its proposals as issues and,
   // per the prompt, edits no application code, so a clean worktree is expected.
-  'worktreeChangesExpected'
+  'worktreeChangesExpected',
+  // Audit-type toggle: file tracker issues (no code) vs implement the fix.
+  // Dispatch stamps `noCodeOutput` when this is true. See server/lib/auditCatalog.js.
+  'fileIssues'
 ];
 
 // pr-watcher author-gate values. 'self' = PRs opened by the gh-authenticated

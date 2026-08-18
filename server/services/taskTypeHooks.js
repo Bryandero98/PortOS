@@ -48,6 +48,7 @@
 
 import { isFalsyMeta, isTruthyMeta } from './agentState.js';
 import { TRACKER_FILING_TASK_TYPES, CONCRETE_WORK_TRACKERS } from '../lib/workTracker.js';
+import { isAuditTaskType } from '../lib/auditCatalog.js';
 
 // taskType → () => import('./path/to/hookModule.js'). A module may export either
 // or both hooks; a missing export means "no hook of that kind for this type".
@@ -246,6 +247,10 @@ export function declaresNoCommitCriterion(task) {
  */
 function isTrackerFilingDispatch(task) {
   const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
+  // Explicit fileIssues on an audit type wins — including turning ux (which
+  // still lives in TRACKER_FILING_TASK_TYPES for back-compat) into do-work.
+  if (isTruthyMeta(task?.metadata?.fileIssues)) return true;
+  if (isFalsyMeta(task?.metadata?.fileIssues) && isAuditTaskType(type)) return false;
   if (TRACKER_FILING_TASK_TYPES.has(type)) return true;
   return CONCRETE_WORK_TRACKERS.includes(task?.metadata?.workTracker);
 }

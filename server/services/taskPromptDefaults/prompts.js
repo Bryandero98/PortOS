@@ -430,6 +430,69 @@ keyboard-inaccessible icon") — and file it as the UX finding, not as the a11y 
    routes you audited, how many findings you filed (and their slugs), and which
    checklist items came up most often.`,
 
+  'data-safety': `[Improvement: {appName}] Data and upgrade-safety audit
+
+Audit {appName} for changes that could corrupt, lose, or strand user data
+across upgrades and machines.
+
+Repository: {repoPath}
+
+{modeInstructions}
+
+Hunt specifically for:
+
+- **Format changes without a migration** — a stored shape the code now expects
+  that an older install's files or rows do not have, with nothing to convert
+  them and no defensive read path.
+- **Missing seeds and defaults** — a new stored artifact with no shipped
+  reference copy, so a fresh install starts broken.
+- **Schema parity drift** — a field added to a sanitizer, writer, or payload but
+  never to the validation schema (or the reverse), so a valid record is rejected
+  or an invalid one is stored.
+- **Version gates** — cross-machine or cross-version payloads whose meaning
+  changed without the version marker moving, letting a newer peer feed something
+  an older one will mis-handle.
+- **Destructive defaults** — an exclude/cleanup/reset path whose pattern is
+  broader than intended, a delete that is not scoped, a write that clobbers a
+  field it never read.
+- **Read-modify-write races between two paths** that mutate the same record or
+  file and can drop one another's changes.
+
+State the upgrade scenario explicitly for each finding: which install, holding
+what, upgrading to what, and what breaks. Cross-version and cross-install
+compatibility code is NOT dead code — read the project's rules on migrations
+and version gates before proposing any such removal.`,
+
+  'simplify': `[Improvement: {appName}] Dead-code and duplication audit
+
+Find code {appName} would be better without.
+
+Repository: {repoPath}
+
+{modeInstructions}
+
+Hunt specifically for:
+
+- **Unreferenced code** — exports with no importer, components rendered from
+  nowhere, feature flags with one branch permanently dead, config keys nothing
+  reads. Verify with a repo-wide search before acting; a dynamic or
+  string-keyed reference is easy to miss and a wrong removal is expensive.
+- **Re-implemented helpers** — a local function that duplicates something the
+  project's shared library catalogs already provide. Cite both, and propose the
+  reuse.
+- **Copy-paste drift** — near-identical blocks that have diverged, where one copy
+  has a fix the other never got. That divergence is a latent bug; say which copy
+  is correct.
+- **Modules that outgrew their file** — one file holding several unrelated
+  concerns, or a component whose body has swallowed logic that belongs in a
+  hook or a pure helper. Propose the split, with the new file names.
+- **Stale scaffolding** — commented-out blocks, TODOs whose work already
+  shipped, migration or compatibility shims whose trigger can no longer occur.
+
+Cross-version and cross-install compatibility code is NOT dead code, even when
+this install no longer hits it. Read the project's rules on migrations and
+version gates before proposing any such removal.`,
+
   'feature-ideas': `[Improvement: {appName}] Implement Next Planned Feature
 
 Your goal is to implement the next planned item from PLAN.md, or brainstorm a new feature if no plan exists.

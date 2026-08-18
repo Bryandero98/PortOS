@@ -232,4 +232,43 @@ describe('scheduled ux prompt assembly (#3273)', () => {
     expect(task.metadata.workTracker).toBe('plan');
     expect(checkReferenceRepoMock).not.toHaveBeenCalled();
   });
+
+  it('defaults ux to file-issues posture (noCodeOutput, no worktree/PR)', async () => {
+    const task = await generateUx(makeApp());
+    expect(task.metadata.fileIssues).toBe(true);
+    expect(task.metadata.noCodeOutput).toBe(true);
+    expect(task.metadata.useWorktree).toBe(false);
+    expect(task.metadata.openPR).toBe(false);
+    expect(task.description).toContain('Mode: file issues, change nothing');
+  });
+});
+
+describe('audit fileIssues toggle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('stamps no-code posture and injects the file-issues banner when fileIssues is on', async () => {
+    const { getTaskInterval } = await import('./taskSchedule.js');
+    getTaskInterval.mockResolvedValue({ type: 'weekly', taskMetadata: { fileIssues: true } });
+    const task = await generate(makeApp(), 'security');
+    expect(task.metadata.fileIssues).toBe(true);
+    expect(task.metadata.noCodeOutput).toBe(true);
+    expect(task.metadata.useWorktree).toBe(false);
+    expect(task.metadata.openPR).toBe(false);
+    expect(task.description).toContain('Mode: file issues, change nothing');
+    expect(task.description).toContain('[security-…]');
+    expect(task.description).not.toContain('{modeInstructions}');
+    expect(task.description).not.toContain('{trackerInstructions}');
+  });
+
+  it('does not file and asks the agent to implement when fileIssues is off', async () => {
+    const { getTaskInterval } = await import('./taskSchedule.js');
+    getTaskInterval.mockResolvedValue({ type: 'weekly', taskMetadata: { fileIssues: false } });
+    const task = await generate(makeApp(), 'security');
+    expect(task.metadata.fileIssues).toBe(false);
+    expect(task.metadata.noCodeOutput).toBeUndefined();
+    expect(task.description).toContain('Mode: implement the highest-value fix');
+    expect(task.description).not.toContain('[security-…]');
+  });
 });

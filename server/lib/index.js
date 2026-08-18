@@ -141,6 +141,7 @@ export * as providerVendors from './providerVendors.js';
 export * from './providerTranscriptUsage.js';
 export * from './quotaBurnConfig.js';
 export * from './quotaBurnPresets.js';
+export * from './auditCatalog.js';
 export * from './quotaBurnValidation.js';
 export * from './quotaReset.js';
 export * from './quotaWindows.js';
