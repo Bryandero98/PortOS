@@ -53,6 +53,7 @@ import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
 import { computePostStreaks, computeUnifiedStreak, normalizeYmd, recordDayKey, withDerivedDayKeys, ymdToUTC, ymdShift } from '../lib/postStreak.js';
 import { getUserTimezone, todayInTimezone, userLocalToday as localToday } from '../lib/timezone.js';
 import { getStoredPostSession, listPostSessions, saveStoredPostSession } from './postRunStore.js';
+import { ServerError } from '../lib/errorHandler.js';
 
 // Re-export the shared streak helper so existing importers of
 // `computePostStreaks` from this module keep working after it moved to
@@ -80,6 +81,74 @@ const CONFIG_FILE = join(MEATSPACE_DIR, 'post-config.json');
 // or future caller gets slice-specific side effects "for free", instead of
 // each route handler having to remember to bolt one on (#2015).
 export const postConfigEvents = new EventEmitter();
+
+// The first fixed benchmark battery is intentionally small and deterministic:
+// one seeded arithmetic drill plus one seeded executive-control drill. It is a
+// protocol, not a projection of the user's adaptive configuration, so later
+// forms can be added without changing the meaning of an existing result.
+export const POST_BENCHMARK_PROTOCOL = Object.freeze({
+  protocolId: 'post-foundation-battery',
+  protocolVersion: 1,
+  scorerVersion: 'post-deterministic-v1',
+  forms: Object.freeze([
+    Object.freeze({
+      formId: 'a',
+      tasks: Object.freeze([
+        Object.freeze({ type: 'doubling-chain', domain: 'mental-math', config: Object.freeze({ startValue: 5, steps: 8 }), timeLimitSec: 60 }),
+        Object.freeze({ type: 'task-switching', domain: 'cognitive', config: Object.freeze({ seed: 'post-foundation-a', count: 12, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 }) }),
+      ]),
+    }),
+    Object.freeze({
+      formId: 'b',
+      tasks: Object.freeze([
+        Object.freeze({ type: 'doubling-chain', domain: 'mental-math', config: Object.freeze({ startValue: 7, steps: 8 }), timeLimitSec: 60 }),
+        Object.freeze({ type: 'task-switching', domain: 'cognitive', config: Object.freeze({ seed: 'post-foundation-b', count: 12, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 }) }),
+      ]),
+    }),
+  ]),
+});
+
+const cloneBenchmarkProtocol = (protocol) => JSON.parse(JSON.stringify(protocol));
+
+export function getPostBenchmarkForm(formId) {
+  return POST_BENCHMARK_PROTOCOL.forms.find((form) => form.formId === formId) || null;
+}
+
+export async function getPostBenchmarkProtocol() {
+  const sessions = await getPostSessions();
+  const formIds = new Set(sessions
+    .filter((session) => session?.benchmark?.protocolId === POST_BENCHMARK_PROTOCOL.protocolId)
+    .slice(-POST_BENCHMARK_PROTOCOL.forms.length)
+    .map((session) => session.benchmark.formId));
+  const nextForm = POST_BENCHMARK_PROTOCOL.forms.find((form) => !formIds.has(form.formId))
+    || POST_BENCHMARK_PROTOCOL.forms[0];
+  return { ...cloneBenchmarkProtocol(POST_BENCHMARK_PROTOCOL), nextFormId: nextForm.formId };
+}
+
+function assertBenchmarkSession(benchmark, tasks, modules) {
+  if (!benchmark) return;
+  const form = benchmark.protocolId === POST_BENCHMARK_PROTOCOL.protocolId
+    && benchmark.protocolVersion === POST_BENCHMARK_PROTOCOL.protocolVersion
+    && benchmark.scorerVersion === POST_BENCHMARK_PROTOCOL.scorerVersion
+    ? getPostBenchmarkForm(benchmark.formId)
+    : null;
+  const expectedModules = form ? [...new Set(form.tasks.map((task) => task.domain))] : [];
+  const modulesMatch = expectedModules.length === modules.length
+    && expectedModules.every((module) => modules.includes(module));
+  const tasksMatch = form
+    && tasks.length === form.tasks.length
+    && form.tasks.every((expected, index) => {
+      const actual = tasks[index];
+      return actual?.type === expected.type
+        && Object.entries(expected.config).every(([key, value]) => actual.config?.[key] === value);
+    });
+  if (!form || !modulesMatch || !tasksMatch) {
+    throw new ServerError('Benchmark session does not match its registered protocol form', {
+      status: 400,
+      code: 'INVALID_BENCHMARK',
+    });
+  }
+}
 
 const DEFAULT_CONFIG = {
   mentalMath: {
@@ -322,6 +391,7 @@ export async function submitPostSession(sessionData) {
   // metrics) can't persist stale client-sent values that stats aggregation
   // would then prefer over a questions[] derivation.
   const rawTasks = Array.isArray(sessionData.tasks) ? sessionData.tasks : [];
+  assertBenchmarkSession(sessionData.benchmark, rawTasks, sessionData.modules);
   const rescoredTasks = rawTasks.map(t => {
     const {
       score: _score, correct: _correct,
@@ -428,6 +498,7 @@ export async function submitPostSession(sessionData) {
     score: computeSessionScore(rescoredTasks, config.scoring?.weights),
     tags: sessionData.tags || {},
     ...(sessionData.plan ? { plan: sessionData.plan } : {}),
+    ...(sessionData.benchmark ? { benchmark: sessionData.benchmark } : {}),
   };
 
   const stored = await saveStoredPostSession(session);

@@ -56,12 +56,51 @@ import {
   generateDrill,
   getSessionSkillContext,
   getPostReviewReps,
+  getPostBenchmarkProtocol,
 } from './meatspacePost.js';
 
 describe('Quick POST config', () => {
   it('defaults a new install to the five-minute preset', async () => {
     const config = await getPostConfig();
     expect(config.quickDurationMin).toBe(5);
+  });
+});
+
+describe('Fixed POST benchmark protocol', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readJSONFile.mockImplementation((path, defaultValue) => Promise.resolve(defaultValue));
+  });
+
+  it('returns the first form when no benchmark has been completed', async () => {
+    const protocol = await getPostBenchmarkProtocol();
+    expect(protocol).toMatchObject({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      nextFormId: 'a',
+    });
+    expect(protocol.forms).toHaveLength(2);
+    expect(protocol.forms[0].tasks).toHaveLength(2);
+  });
+
+  it('rejects a benchmark submission whose task config was changed', async () => {
+    await expect(submitPostSession({
+      modules: ['mental-math'],
+      tasks: [{
+        module: 'mental-math',
+        type: 'doubling-chain',
+        config: { startValue: 999, steps: 1 },
+        questions: [{ prompt: '999 x 2', expected: 1998, answered: 1998, responseMs: 500 }],
+        totalMs: 500,
+      }],
+      benchmark: {
+        protocolId: 'post-foundation-battery',
+        protocolVersion: 1,
+        scorerVersion: 'post-deterministic-v1',
+        formId: 'a',
+      },
+    })).rejects.toMatchObject({ code: 'INVALID_BENCHMARK', status: 400 });
   });
 });
 

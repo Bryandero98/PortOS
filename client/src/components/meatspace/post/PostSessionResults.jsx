@@ -3,7 +3,7 @@ import PostSessionSummary from './PostSessionSummary';
 import PostCompletionActions from './PostCompletionActions';
 
 export default function PostSessionResults({ session, tags = {}, onSaved, onBack }) {
-  const { drillResults, sessionScore, state, saveSession, isTraining, sessionPlan, savedSession } = session;
+  const { drillResults, sessionScore, state, saveSession, isTraining, sessionPlan, benchmark, savedSession } = session;
 
   async function handleSave(continueDaily) {
     const savedSession = await saveSession(tags);
@@ -19,6 +19,12 @@ export default function PostSessionResults({ session, tags = {}, onSaved, onBack
         plan={sessionPlan}
         actualDurationMs={savedSession?.actualDurationMs}
       />
+
+      {benchmark && (
+        <p className="text-center text-xs text-gray-500">
+          Fixed benchmark · form {benchmark.formId.toUpperCase()} · protocol v{benchmark.protocolVersion}
+        </p>
+      )}
 
       {/* Every completed assessment offers the same explicit daily-routine fork. */}
       {state === 'complete' && (

@@ -286,6 +286,16 @@ export const postQuickSessionPlanSchema = z.object({
   selectedTypes: z.array(z.string().max(100)).max(50),
 });
 
+// A benchmark is a versioned, fixed-form assessment. It is deliberately
+// separate from the adaptive/Quick plan so benchmark history remains
+// comparable even when a user's normal POST configuration changes.
+export const postBenchmarkSchema = z.object({
+  protocolId: z.string().trim().min(1).max(100),
+  protocolVersion: z.number().int().min(1).max(100),
+  scorerVersion: z.string().trim().min(1).max(100),
+  formId: z.string().trim().min(1).max(100),
+});
+
 export const postSessionSubmitSchema = z.object({
   // Client-generated session id (uuid) — keys the idempotent upsert in
   // submitPostSession so a retry after a dropped response can't double-record.
@@ -298,6 +308,7 @@ export const postSessionSubmitSchema = z.object({
   tags: postTagsSchema.optional().default({}),
   startedAt: z.string().datetime().optional(),
   plan: postQuickSessionPlanSchema.optional(),
+  benchmark: postBenchmarkSchema.optional(),
 });
 
 // LLM drill type configuration

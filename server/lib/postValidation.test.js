@@ -14,8 +14,37 @@ import {
   POST_SUPPORTED_MEMORY_TYPES,
   POST_QUICK_DURATION_MINUTES,
   postQuickSessionPlanSchema,
+  postBenchmarkSchema,
 } from './postValidation.js';
 import { getTopic, POST_TOPICS } from './postTopics.js';
+
+describe('postBenchmarkSchema', () => {
+  it('accepts versioned benchmark metadata', () => {
+    expect(postBenchmarkSchema.parse({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      formId: 'a',
+    })).toEqual({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      formId: 'a',
+    });
+  });
+
+  it('keeps benchmark metadata optional for legacy sessions', () => {
+    expect(postSessionSubmitSchema.parse({
+      modules: ['mental-math'],
+      tasks: [{
+        module: 'mental-math',
+        type: 'doubling-chain',
+        questions: [{ prompt: '2 x 2', expected: 4, answered: 4, responseMs: 100 }],
+        totalMs: 100,
+      }],
+    }).benchmark).toBeUndefined();
+  });
+});
 
 describe('postConfigUpdateSchema llmDrills', () => {
   // Regression: the config UI (PostDrillConfig.jsx) exposed only 5 of the 14
