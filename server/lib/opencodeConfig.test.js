@@ -25,6 +25,11 @@ describe('toBareModelIds', () => {
       .toEqual(['mtplx', 'qwen/model']);
   });
 
+  it('keeps OrcaRouter stored ids unchanged for the models map', () => {
+    expect(toBareModelIds(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], 'orcarouter'))
+      .toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
+  });
+
   it('rejects an unknown local provider key instead of silently using Ollama', () => {
     expect(() => toBareModelIds('model', 'unknown')).toThrow(/unsupported opencode local provider/i);
   });
@@ -97,6 +102,18 @@ describe('buildOpencodeConfig', () => {
       mtplx: { name: 'mtplx', tool_call: true },
     });
   });
+
+  it('declares OrcaRouter models under unchanged keys and its gateway endpoint', () => {
+    const cfg = buildOpencodeConfig(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], null, 'orcarouter');
+    expect(cfg.provider.orcarouter).toMatchObject({
+      npm: '@ai-sdk/openai-compatible',
+      name: 'OrcaRouter',
+      options: { baseURL: 'https://api.orcarouter.ai/v1' },
+    });
+    expect(Object.keys(cfg.provider.orcarouter.models).sort()).toEqual([
+      'anthropic/claude-sonnet-4.6', 'orcarouter/auto',
+    ]);
+  });
 });
 
 describe('buildOpencodeConfigContent', () => {
@@ -151,6 +168,25 @@ describe('buildOpencodeEnvVars', () => {
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
     expect(cfg.provider.mtplx.options.baseURL).toBe('http://127.0.0.1:8000/v1');
     expect(cfg.provider.mtplx.models.mtplx).toEqual({ name: 'mtplx', tool_call: true });
+  });
+
+  it('injects the sibling OrcaRouter API key only into the composed spawn config', () => {
+    const storedConfig = JSON.stringify({
+      permission: 'allow',
+      provider: { orcarouter: { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'https://api.orcarouter.ai/v1' } } },
+    });
+    const result = buildOpencodeEnvVars({
+      command: 'opencode',
+      orcarouterBacked: true,
+      models: ['orcarouter/auto'],
+      envVars: { OPENCODE_CONFIG_CONTENT: storedConfig },
+      orcarouterApiKey: 'sk-orca-example',
+    }, 'orcarouter/auto');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.orcarouter.models['orcarouter/auto']).toEqual({ name: 'orcarouter/auto', tool_call: true });
+    expect(cfg.provider.orcarouter.options.apiKey).toBe('sk-orca-example');
+    expect(result.ORCAROUTER_API_KEY).toBe('sk-orca-example');
+    expect(storedConfig).not.toContain('sk-orca-example');
   });
 
   it('unions the provider models, defaultModel, and the run model (deduped, bare)', () => {

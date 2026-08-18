@@ -455,7 +455,7 @@ export function isOpencodeCommand(command) {
  * already-qualified id (`openai/gpt-4o`, `anthropic/claude-sonnet`), and blindly
  * prefixing `ollama/` would route it to the wrong backend. No-op for
  * non-local / non-OpenCode providers and empty models.
- * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean}} provider
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, orcarouterBacked?:boolean}} provider
  * @param {string|null|undefined} model
  * @returns {string|null|undefined}
  */
@@ -463,6 +463,9 @@ export function prefixOpencodeModel(provider, model) {
   const namespace = getOpencodeLocalProviderNamespace(provider);
   if (!isOpencodeCommand(provider?.command) || !namespace || !model) return model;
   const id = String(model);
+  if (namespace === 'orcarouter') {
+    return id.startsWith('orcarouter/orcarouter/') ? id : `orcarouter/${id}`;
+  }
   return id.startsWith(`${namespace}/`) ? id : `${namespace}/${id}`;
 }
 
@@ -471,12 +474,13 @@ export function prefixOpencodeModel(provider, model) {
  * opted into one. Structural markers avoid deriving a backend from an editable
  * display name or endpoint and preserve the legacy Ollama outcome if a malformed
  * record carries both markers.
- * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean}|null|undefined} provider
- * @returns {'ollama'|'mtplx'|null}
+ * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean, orcarouterBacked?:boolean}|null|undefined} provider
+ * @returns {'ollama'|'mtplx'|'orcarouter'|null}
  */
 export function getOpencodeLocalProviderNamespace(provider) {
   if (provider?.ollamaBacked === true) return 'ollama';
   if (provider?.mtplxBacked === true) return 'mtplx';
+  if (provider?.orcarouterBacked === true) return 'orcarouter';
   return null;
 }
 

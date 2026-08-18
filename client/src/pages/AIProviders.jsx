@@ -1149,7 +1149,7 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
                 <p className="text-xs text-gray-500 mt-1">
                   This field is the only place API providers read a key from — it's stored on this
                   provider and sent as an <code>Authorization: Bearer</code> header on every request.
-                  No environment variable is involved. Hosted APIs (Cerebras, Grok, NVIDIA, …) require
+                  No environment variable is involved. Hosted APIs (Cerebras, Grok, NVIDIA, OrcaRouter, …) require
                   one; local backends (Ollama, LM Studio) don't.
                 </p>
               </FormField>

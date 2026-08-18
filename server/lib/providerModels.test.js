@@ -139,6 +139,13 @@ describe('providerModels', () => {
       expect(prefixOpencodeModel(mtplx, 'mtplx/mtplx')).toBe('mtplx/mtplx');
     });
 
+    it('keeps the OrcaRouter stored id in the models map but double-prefixes the OpenCode argv id', () => {
+      const orca = { command: 'opencode', orcarouterBacked: true };
+      expect(prefixOpencodeModel(orca, 'orcarouter/auto')).toBe('orcarouter/orcarouter/auto');
+      expect(prefixOpencodeModel(orca, 'anthropic/claude-sonnet-4.6')).toBe('orcarouter/anthropic/claude-sonnet-4.6');
+      expect(prefixOpencodeModel(orca, 'orcarouter/orcarouter/auto')).toBe('orcarouter/orcarouter/auto');
+    });
+
     it('is idempotent — an already-namespaced id is returned unchanged', () => {
       expect(prefixOpencodeModel(oc, 'ollama/qwen2.5:7b')).toBe('ollama/qwen2.5:7b');
     });
@@ -171,6 +178,7 @@ describe('providerModels', () => {
     it('uses explicit markers and keeps Ollama as the malformed dual-marker fallback', () => {
       expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true })).toBe('ollama');
       expect(getOpencodeLocalProviderNamespace({ mtplxBacked: true })).toBe('mtplx');
+      expect(getOpencodeLocalProviderNamespace({ orcarouterBacked: true })).toBe('orcarouter');
       expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true, mtplxBacked: true })).toBe('ollama');
       expect(getOpencodeLocalProviderNamespace({})).toBeNull();
     });

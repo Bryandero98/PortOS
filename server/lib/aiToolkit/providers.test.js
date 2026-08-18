@@ -1217,6 +1217,52 @@ describe('Provider Service', () => {
     });
   });
 
+  describe('OrcaRouter model refresh and sibling-key resolution', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('uses the sibling API key for OpenCode CLI/TUI model refresh without persisting it on wrappers', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'orcarouter/auto' }, { id: 'anthropic/claude-sonnet-4.6' }] }),
+      });
+      vi.stubGlobal('fetch', fetchSpy);
+
+      await providerService.createProvider({
+        id: 'orcarouter',
+        name: 'OrcaRouter',
+        type: 'api',
+        endpoint: 'https://api.orcarouter.ai/v1',
+        apiKey: 'sk-orca-example',
+      });
+      const wrapper = await providerService.createProvider({
+        id: 'opencode-orcarouter',
+        name: 'OpenCode OrcaRouter',
+        type: 'cli',
+        command: 'opencode',
+        endpoint: 'https://api.orcarouter.ai/v1',
+        orcarouterBacked: true,
+        models: ['orcarouter/auto'],
+      });
+
+      const resolved = await providerService.getProviderById(wrapper.id);
+      expect(resolved.apiKey).toBe('sk-orca-example');
+      expect(Object.keys(resolved)).not.toContain('apiKey');
+
+      const updated = await providerService.refreshProviderModels(wrapper.id);
+      expect(updated.models).toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://api.orcarouter.ai/v1/models',
+        expect.objectContaining({ headers: { Authorization: 'Bearer sk-orca-example' } }),
+      );
+
+      const stored = (await providerService.getAllProviders()).providers.find(p => p.id === wrapper.id);
+      expect(stored.apiKey).toBe('');
+      expect(stored.models).toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
+    });
+  });
+
   describe('_refreshAPIProviderModels — network layer', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
