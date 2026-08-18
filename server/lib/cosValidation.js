@@ -967,6 +967,8 @@ const cosTaskDiagnosticsSchema = z.object({
 // permanent through the API.
 const effortInputSchema = z.preprocess(emptyToUndefined, z.enum(EFFORT_LEVELS).optional());
 const effortUpdateSchema = z.preprocess(emptyToNull, z.enum(EFFORT_LEVELS).nullable().optional());
+const taskTemperatureInputSchema = z.number().min(0).max(2).optional();
+const taskTemperatureUpdateSchema = z.number().min(0).max(2).nullable().optional();
 
 // A bare slashdo command name (`plan-task`, `pr-better`). Shared by the task
 // schema and the quick-template schemas. `isValidSlashdoCommand` is the single
@@ -1007,6 +1009,8 @@ export const createCosTaskSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   effort: effortInputSchema,
+  temperature: taskTemperatureInputSchema,
+  thinking: z.boolean().optional(),
   app: z.string().optional(),
   type: z.string().optional().default('user'),
   approvalRequired: z.boolean().optional(),
@@ -1117,6 +1121,8 @@ export const updateCosTaskSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   effort: effortUpdateSchema,
+  temperature: taskTemperatureUpdateSchema,
+  thinking: z.boolean().nullable().optional(),
   app: z.string().optional(),
   blockedReason: z.string().optional(),
   type: z.string().optional().default('user'),

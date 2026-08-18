@@ -341,6 +341,15 @@ describe('cosTaskStore.addTask', () => {
       expect(created.metadata.prompt).toBeUndefined();
     });
 
+    it('round-trips OpenCode Ollama generation controls, including thinking off', async () => {
+      const created = await addTask({
+        description: 'local task', id: 'task-opencode', effort: 'high', temperature: 0.25, thinking: false,
+      }, 'user');
+      expect(created.metadata).toMatchObject({ effort: 'high', temperature: 0.25, thinking: false });
+      const reloaded = await getTaskById('task-opencode');
+      expect(reloaded.metadata).toMatchObject({ effort: 'high', temperature: '0.25', thinking: 'false' });
+    });
+
     it('accepts an explicit prompt alongside a note and never re-classifies it', async () => {
       const created = await addTask(
         { description: 'claim', id: 'task-explicit', prompt: AGENT_BODY, context: 'one-line note' },

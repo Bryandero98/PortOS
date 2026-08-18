@@ -7,7 +7,7 @@ import { processScreenshotUploads, processAttachmentUploads } from '../../servic
 import { ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
 import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
-import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, seedModelEffort } from '../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, isOpencodeOllamaProvider, seedModelEffort } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS, prCompletionOption } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
 import { slashdoLabel } from '../../lib/slashdoCatalog';
@@ -17,7 +17,7 @@ import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
-  const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', app: defaultApp });
+  const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', temperature: '', thinking: '', app: defaultApp });
   const [addToTop, setAddToTop] = useState(false);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
@@ -120,7 +120,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // "Auto" so the visible select and the submitted value can't diverge.
   useEffect(() => {
     if (newTask.provider && !enabledProviders.some(p => p.id === newTask.provider)) {
-      setNewTask(t => ({ ...t, provider: '', model: '', effort: '' }));
+      setNewTask(t => ({ ...t, provider: '', model: '', effort: '', temperature: '', thinking: '' }));
     }
   }, [enabledProviders, newTask.provider]);
 
@@ -334,6 +334,8 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       model: newTask.model || undefined,
       provider: newTask.provider || undefined,
       effort: newTask.effort || undefined,
+      temperature: newTask.temperature === '' ? undefined : Number(newTask.temperature),
+      thinking: newTask.thinking === '' ? undefined : newTask.thinking === 'true',
       app: newTask.app || undefined,
       slashdoCommand: slashdoCommand || undefined,
       createJiraTicket,
@@ -652,7 +654,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
             <select
               id="task-provider"
               value={newTask.provider}
-              onChange={e => setNewTask(t => ({ ...t, provider: e.target.value, model: '', effort: '' }))}
+              onChange={e => setNewTask(t => ({ ...t, provider: e.target.value, model: '', effort: '', temperature: '', thinking: '' }))}
               className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
             >
               <option value="">Auto (default)</option>
@@ -695,6 +697,37 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
             className="sm:w-40 w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
           />
         </div>
+        {isOpencodeOllamaProvider(selectedProvider) && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="task-thinking" className="sr-only">Thinking</label>
+              <select
+                id="task-thinking"
+                value={newTask.thinking}
+                onChange={e => setNewTask(t => ({ ...t, thinking: e.target.value }))}
+                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+              >
+                <option value="">Provider thinking default</option>
+                <option value="true">Thinking on</option>
+                <option value="false">Thinking off</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="task-temperature" className="sr-only">Temperature</label>
+              <input
+                id="task-temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.05"
+                placeholder="Provider temperature default"
+                value={newTask.temperature}
+                onChange={e => setNewTask(t => ({ ...t, temperature: e.target.value }))}
+                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+              />
+            </div>
+          </div>
+        )}
         {apiOnlyProviders && (
           <div className="px-3 py-2 bg-port-warning/10 border border-port-warning/40 rounded-lg text-xs text-port-warning">
             Your enabled providers are HTTP API providers with no file-writing harness, so they can't run agent tasks. Enable <span className="font-semibold">Claude Ollama</span> for Ollama, or <span className="font-semibold">OpenCode MTPLX</span> for a separately running MTPLX server, on the AI Providers page to run file-writing tasks on a local model.

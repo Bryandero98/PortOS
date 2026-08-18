@@ -57,6 +57,16 @@ describe('cosValidation effort field', () => {
   });
 });
 
+describe('cosValidation OpenCode Ollama generation overrides', () => {
+  it('accepts bounded temperature and explicit thinking, including false', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', temperature: 0.25, thinking: false }))
+      .toMatchObject({ temperature: 0.25, thinking: false });
+    expect(createCosTaskSchema.safeParse({ description: 'x', temperature: 2.1 }).success).toBe(false);
+    expect(updateCosTaskSchema.parse({ thinking: null, temperature: null }))
+      .toMatchObject({ thinking: null, temperature: null });
+  });
+});
+
 describe('branch-reconcile batch metadata', () => {
   it('keeps integer batch sizes from 1 through 6', () => {
     expect(sanitizeTaskMetadata({ branchesPerAgent: 1 })).toEqual({ branchesPerAgent: 1 });

@@ -68,7 +68,7 @@ const isTerminalTaskStatus = (status) => status === 'completed' || status === 'b
 // with the #4153 split so the task editor can edit the agent-facing payload the
 // same way it edits the human note — deliberately WITHOUT re-classification, so
 // a multi-line note edit can't overwrite the payload (see `splitTaskPromptFields`).
-const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'app'];
+const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'temperature', 'thinking', 'app'];
 
 // Equality for metadata values across a fresh markdown re-parse: primitives by
 // ===, arrays/objects (reviewers[], screenshots[], …) by JSON since the two
@@ -330,6 +330,8 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.model) metadata.model = taskData.model;
     if (taskData.provider) metadata.provider = taskData.provider;
     if (taskData.effort) metadata.effort = taskData.effort;
+    if (taskData.temperature !== undefined) metadata.temperature = taskData.temperature;
+    if (taskData.thinking !== undefined) metadata.thinking = taskData.thinking;
     if (taskData.app) metadata.app = taskData.app;
     // Tags a task dispatched by the voice code-agent tool so the proactive
     // speech layer can announce its completion (see voice/proactiveTriggers.js).
