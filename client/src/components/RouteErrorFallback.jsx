@@ -1,6 +1,8 @@
 import { AlertTriangle } from 'lucide-react';
+import { useEffect } from 'react';
 import { useNavigate, useRouteError, isRouteErrorResponse } from 'react-router';
 import Banner from './ui/Banner';
+import { isStaleChunkError, reloadOnceForStaleChunk } from '../utils/staleChunkReload';
 
 const getErrorMessage = (error) => {
   if (isRouteErrorResponse(error)) return error.statusText || `Request failed (${error.status})`;
@@ -13,6 +15,10 @@ export default function RouteErrorFallback() {
   const error = useRouteError();
   const navigate = useNavigate();
   const message = getErrorMessage(error);
+
+  useEffect(() => {
+    if (isStaleChunkError(error)) reloadOnceForStaleChunk();
+  }, [error]);
 
   return (
     <div className="min-h-dvh-cap bg-port-bg flex items-center justify-center p-4">

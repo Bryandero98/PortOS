@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, Outlet, RouterProvider } from 'react-router';
 import RouteErrorFallback from './RouteErrorFallback';
+import { isStaleChunkError, reloadOnceForStaleChunk } from '../utils/staleChunkReload';
+
+vi.mock('../utils/staleChunkReload', () => ({
+  isStaleChunkError: vi.fn(),
+  reloadOnceForStaleChunk: vi.fn(),
+}));
 
 const renderRouteError = async (error) => {
   const router = createMemoryRouter([
@@ -30,6 +36,22 @@ const renderRouteError = async (error) => {
 };
 
 describe('RouteErrorFallback', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isStaleChunkError.mockReturnValue(false);
+  });
+
+  it('triggers stale-chunk recovery for a render-phase dynamic import failure', async () => {
+    const error = new Error('Failed to fetch dynamically imported module');
+    isStaleChunkError.mockReturnValue(true);
+    reloadOnceForStaleChunk.mockReturnValue(true);
+
+    await renderRouteError(error);
+
+    expect(isStaleChunkError).toHaveBeenCalledWith(error);
+    expect(reloadOnceForStaleChunk).toHaveBeenCalledOnce();
+  });
+
   it('explains that the page failed and offers recovery actions', async () => {
     await renderRouteError(new Error('Importing a module script failed'));
 
