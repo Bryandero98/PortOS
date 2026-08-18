@@ -40,6 +40,9 @@ export const setImageHidden = (filename, hidden, options = {}) => request(`/imag
   body: JSON.stringify({ hidden }),
   ...options,
 });
+export const updateImagePrompt = (filename, prompt, options = {}) => request(`/image-gen/${encodeURIComponent(filename)}/prompt`, {
+  method: 'PATCH', body: JSON.stringify({ prompt }), ...options,
+});
 export const cleanGalleryImage = (filename, options = {}) => request(`/image-gen/${encodeURIComponent(filename)}/clean`, {
   method: 'POST',
   body: JSON.stringify({}),
@@ -241,6 +244,9 @@ export const setVideoHidden = (id, hidden, options = {}) => request(`/video-gen/
   method: 'POST',
   body: JSON.stringify({ hidden }),
   ...options,
+});
+export const updateVideoPrompt = (id, prompt, options = {}) => request(`/video-gen/history/${encodeURIComponent(id)}/prompt`, {
+  method: 'PATCH', body: JSON.stringify({ prompt }), ...options,
 });
 export const extractLastFrame = (id, options = {}) => request(`/video-gen/last-frame/${encodeURIComponent(id)}`, { method: 'POST', ...options });
 export const upscaleVideo = (id, options = {}) => request(`/video-gen/upscale/${encodeURIComponent(id)}`, { method: 'POST', ...options });

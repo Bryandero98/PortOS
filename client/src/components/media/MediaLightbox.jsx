@@ -106,6 +106,7 @@ export default function MediaLightbox({
   hasNext = false,
   annotation = null,
   onAnnotationChange,
+  onPromptChange,
   variantGroup = null,
   onSelectVariant,
 }) {
@@ -371,6 +372,7 @@ export default function MediaLightbox({
             onPromptFrom={() => setPromptFromOpen(true)}
             annotation={annotation}
             onAnnotationChange={onAnnotationChange}
+            onPromptChange={onPromptChange}
             variantGroup={variantGroup}
             onSelectVariant={onSelectVariant}
           />
@@ -412,7 +414,7 @@ function SettingsPane({
   item, meta, isVideo,
   onClose, onRemix, onSendToImage, onSendToVideo, onSendTo3d, onContinue, onClean, onRegenerate, onRemoveWatermark, regenAvailable, regenBounds,
   copy, onRefine, onPromptFrom,
-  annotation, onAnnotationChange,
+  annotation, onAnnotationChange, onPromptChange,
   variantGroup, onSelectVariant,
 }) {
   const asideClasses = 'md:w-80 lg:w-96 shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-port-border max-h-[40vh] md:max-h-[92vh]';
@@ -465,6 +467,9 @@ function SettingsPane({
   // would otherwise restart the timer every time a media-gen event arrived.
   const [noteDraft, setNoteDraft] = useState(annotation?.note ?? '');
   const [saveStatus, setSaveStatus] = useState('idle');
+  const [promptDraft, setPromptDraft] = useState('');
+  const [promptStatus, setPromptStatus] = useState('idle');
+  const [promptSaving, setPromptSaving] = useState(false);
   const onSaveRef = useRef(onAnnotationChange);
   const pendingNoteRef = useRef(null);
   useEffect(() => { onSaveRef.current = onAnnotationChange; });
@@ -474,6 +479,20 @@ function SettingsPane({
   useEffect(() => {
     setNoteDraft(annotation?.note ?? '');
   }, [item?.key, annotation?.note]);
+  useEffect(() => {
+    setPromptDraft(item.prompt === '(no prompt)' ? '' : (item.prompt || ''));
+    setPromptStatus('idle');
+  }, [item?.key, item?.prompt]);
+  const savePrompt = async () => {
+    if (!onPromptChange || promptSaving) return;
+    setPromptSaving(true);
+    setPromptStatus('saving');
+    await onPromptChange(item, promptDraft).then(
+      () => setPromptStatus('saved'),
+      () => setPromptStatus('error'),
+    );
+    setPromptSaving(false);
+  };
   // On item swap (or full unmount): flush any pending note to the *old* item's
   // save callback before resetting local state. onSaveRef still holds the old
   // closure at cleanup time because React runs effect cleanups before the new
@@ -536,7 +555,26 @@ function SettingsPane({
       </header>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
-        {item.prompt && (
+        {onPromptChange ? (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="media-prompt" className="text-gray-500 uppercase tracking-wide">Prompt</label>
+              <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                {promptStatus === 'saving' && <span>Saving…</span>}
+                {promptStatus === 'saved' && <span className="text-port-success">Saved</span>}
+                {promptStatus === 'error' && <span className="text-port-error">Save failed</span>}
+                <span>{promptDraft.length}/8000</span>
+              </div>
+            </div>
+            <textarea id="media-prompt" value={promptDraft}
+              onChange={(e) => { setPromptDraft(e.target.value.slice(0, 8000)); setPromptStatus('idle'); }}
+              placeholder="Add the prompt used to create this media" rows={5} maxLength={8000}
+              className="w-full bg-port-bg border border-port-border rounded p-2 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-port-accent resize-y" />
+            <div className="flex justify-end mt-1">
+              <button type="button" onClick={savePrompt} disabled={promptSaving || promptDraft === (item.prompt === '(no prompt)' ? '' : (item.prompt || ''))} className="px-2 py-1 rounded bg-port-accent text-white disabled:opacity-40">Save prompt</button>
+            </div>
+          </div>
+        ) : item.prompt ? (
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-gray-500 uppercase tracking-wide">Prompt</span>
@@ -551,7 +589,7 @@ function SettingsPane({
             </div>
             <p className="text-gray-200 whitespace-pre-wrap">{item.prompt}</p>
           </div>
-        )}
+        ) : null}
 
         {onAnnotationChange && (
           <div>
