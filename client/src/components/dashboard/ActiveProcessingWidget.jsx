@@ -19,7 +19,7 @@ const sameProcessingSnapshot = (a, b) => a?.agents?.active === b?.agents?.active
   && a?.gpu?.gpus?.[0]?.utilizationPercent === b?.gpu?.gpus?.[0]?.utilizationPercent
   && a?.jobs?.length === b?.jobs?.length
   && (a?.extras?.imageTo3d || []).length === (b?.extras?.imageTo3d || []).length
-  && a?.jobs?.every((job, index) => job.id === b.jobs[index]?.id
+  && (a?.jobs || []).every((job, index) => job.id === b.jobs[index]?.id
     && job.status === b.jobs[index]?.status
     && job.progress === b.jobs[index]?.progress
     && job.statusMsg === b.jobs[index]?.statusMsg)

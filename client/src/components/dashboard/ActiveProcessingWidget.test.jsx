@@ -6,7 +6,7 @@ import ActiveProcessingWidget from './ActiveProcessingWidget';
 
 const { mockGetActiveProcessing, mockCancelMediaJob } = vi.hoisted(() => ({
   mockGetActiveProcessing: vi.fn(),
-  mockCancelMediaJob: vi.fn(),
+  mockCancelMediaJob: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../services/api', () => ({
