@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import ActiveProcessingWidget from './ActiveProcessingWidget';
+import ActiveProcessingWidget, { sameProcessingSnapshot } from './ActiveProcessingWidget';
 
 const { mockGetActiveProcessing, mockCancelMediaJob } = vi.hoisted(() => ({
   mockGetActiveProcessing: vi.fn(),
@@ -65,5 +65,12 @@ describe('ActiveProcessingWidget', () => {
     renderWidget();
     await user.click(screen.getByRole('button', { name: 'Cancel Example image' }));
     expect(mockCancelMediaJob).toHaveBeenCalledWith('image-1', { silent: true });
+  });
+
+  it('recognizes queue movement while ignoring server timestamps', () => {
+    const base = { updatedAt: '2026-01-01T00:00:00Z', jobs: [{ id: 'job-1', status: 'queued', position: 2 }], agents: {}, gpu: {}, extras: {} };
+    expect(sameProcessingSnapshot(base, { ...base, updatedAt: '2026-01-01T00:00:03Z' })).toBe(true);
+    expect(sameProcessingSnapshot(base, { ...base, jobs: [{ ...base.jobs[0], position: 1 }] })).toBe(false);
+    expect(sameProcessingSnapshot(undefined, base)).toBe(false);
   });
 });

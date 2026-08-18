@@ -12,19 +12,23 @@ const elapsed = (startedAt, now = Date.now()) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 const eta = (etaMs) => (Number.isFinite(etaMs) && etaMs >= 0 ? `~${Math.ceil(etaMs / 60000)}m` : null);
-const sameProcessingSnapshot = (a, b) => a?.agents?.active === b?.agents?.active
-  && a?.agents?.queued === b?.agents?.queued
-  && a?.gpu?.status === b?.gpu?.status
-  && a?.gpu?.laneBusy === b?.gpu?.laneBusy
-  && a?.gpu?.gpus?.[0]?.utilizationPercent === b?.gpu?.gpus?.[0]?.utilizationPercent
-  && a?.jobs?.length === b?.jobs?.length
-  && (a?.extras?.imageTo3d || []).length === (b?.extras?.imageTo3d || []).length
-  && (a?.jobs || []).every((job, index) => job.id === b.jobs[index]?.id
-    && job.status === b.jobs[index]?.status
-    && job.progress === b.jobs[index]?.progress
-    && job.statusMsg === b.jobs[index]?.statusMsg)
-  && (a?.extras?.imageTo3d || []).every((item, index) => item.id === b.extras?.imageTo3d?.[index]?.id
-    && item.name === b.extras?.imageTo3d?.[index]?.name);
+export const sameProcessingSnapshot = (a, b) => {
+  if (!a || !b) return a === b;
+  return a.agents?.active === b.agents?.active
+    && a.agents?.queued === b.agents?.queued
+    && a.gpu?.status === b.gpu?.status
+    && a.gpu?.laneBusy === b.gpu?.laneBusy
+    && a.gpu?.gpus?.[0]?.utilizationPercent === b.gpu?.gpus?.[0]?.utilizationPercent
+    && a.jobs?.length === b.jobs?.length
+    && (a.extras?.imageTo3d || []).length === (b.extras?.imageTo3d || []).length
+    && (a.jobs || []).every((job, index) => job?.id === b.jobs[index]?.id
+      && job?.status === b.jobs[index]?.status
+      && job?.progress === b.jobs[index]?.progress
+      && job?.position === b.jobs[index]?.position
+      && job?.statusMsg === b.jobs[index]?.statusMsg)
+    && (a.extras?.imageTo3d || []).every((item, index) => item.id === b.extras?.imageTo3d?.[index]?.id
+      && item.name === b.extras?.imageTo3d?.[index]?.name);
+};
 
 function JobRow({ job, onCancel }) {
   const tag = job.params?.musicStudio;
@@ -76,7 +80,7 @@ function ActiveProcessingWidget() {
         <div className="space-y-1.5">{jobs.map((job) => <JobRow key={job.id} job={job} onCancel={cancel} />)}</div>
         {imageTo3d.map((item) => <Link key={`3d-${item.id}`} to="/3d" className="mt-1.5 flex items-center gap-2 rounded-lg border border-port-border bg-port-bg/60 px-2.5 py-2 text-xs text-gray-300 hover:border-port-accent/50"><Layers3 size={14} className="text-port-accent" /><span className="min-w-0 flex-1 truncate">Image-to-3D · {item.name}</span><ExternalLink size={13} className="text-gray-500" /></Link>)}
         {activeAgents ? <Link to="/cos/agents" className="mt-1.5 flex items-center gap-2 rounded-lg border border-port-border bg-port-bg/60 px-2.5 py-2 text-xs text-gray-300 hover:border-port-accent/50"><Bot size={14} className="text-port-accent" /><span className="min-w-0 flex-1">Chief of Staff agents</span><span className="font-mono text-gray-500">{activeAgents} active{data.agents.queued ? ` · ${data.agents.queued} queued` : ''}</span><ExternalLink size={13} className="text-gray-500" /></Link> : null}
-        {!idle && gpu?.status === 'available' && gpu.gpus?.length ? <div className="mt-3 text-[11px] text-gray-500">GPU {gpu.gpus[0].utilizationPercent == null ? 'utilization unknown' : `${Math.round(gpu.gpus[0].utilizationPercent)}% utilized`}</div> : null}
+      {!idle && gpu?.status === 'available' && gpu.gpus?.length ? <div className="mt-3 text-[11px] text-gray-500">GPU {gpu.gpus[0]?.utilizationPercent == null ? 'utilization unknown' : `${Math.round(gpu.gpus[0]?.utilizationPercent)}% utilized`}</div> : null}
       </>}
     </div>
   );
