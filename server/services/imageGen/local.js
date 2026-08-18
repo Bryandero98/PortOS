@@ -1068,6 +1068,16 @@ export async function setImageHidden(filename, hidden) {
   return { ok: true, hidden: metadata.hidden };
 }
 
+export async function updateImagePrompt(filename, prompt) {
+  assertGalleryFilename(filename);
+  const { path: sidecarPath, metadata } = await readImageSidecar(filename);
+  const trimmedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
+  if (trimmedPrompt) metadata.prompt = trimmedPrompt;
+  else delete metadata.prompt;
+  await atomicWrite(sidecarPath, metadata);
+  return { filename, prompt: trimmedPrompt };
+}
+
 // Returns just `{ filename, name }` — clients send `filename` back in the
 // generate payload's `loraFilenames` and the server resolves it against
 // PATHS.loras. Avoids leaking absolute server paths into the API surface.

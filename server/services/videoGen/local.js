@@ -90,6 +90,20 @@ export * from './modeContract.js';
 export * from './eta.js';
 export { loadHistory, saveHistory, mutateVideoHistory, getHistoryItem };
 
+export async function updateHistoryItemPrompt(id, prompt) {
+  let result;
+  await mutateVideoHistory((history) => {
+    const item = history.find((h) => h.id === id);
+    if (!item) throw new ServerError('Not found', { status: 404, code: 'NOT_FOUND' });
+    const trimmedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
+    if (trimmedPrompt) item.prompt = trimmedPrompt;
+    else delete item.prompt;
+    result = { id, prompt: trimmedPrompt };
+    return history;
+  });
+  return result;
+}
+
 // LoRA wrapper for the notapalindrome `mlx_video` runtime. The stock
 // `mlx_video.generate_av` CLI has no --lora flag, but the package ships an
 // LTX-aware LoRA subsystem (`mlx_video.lora`) — this helper imports generate_av,

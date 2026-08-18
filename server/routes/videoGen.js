@@ -40,6 +40,7 @@ import {
   getHistoryItem,
   deleteHistoryItem,
   setHistoryItemHidden,
+  updateHistoryItemPrompt,
   extractLastFrame,
   stitchVideos,
   upscaleHistoryItem,
@@ -1244,6 +1245,7 @@ router.get('/history', asyncHandler(async (_req, res) => {
 // value is only compared against stored ids — so a length-capped string is the
 // right bound.
 const historyLookupIdSchema = z.string().min(1).max(200);
+const updatePromptSchema = z.object({ prompt: z.string().max(8000) });
 
 router.get('/history/:id', asyncHandler(async (req, res) => {
   const parsed = historyLookupIdSchema.safeParse(req.params.id);
@@ -1279,6 +1281,14 @@ router.delete('/history/:id', asyncHandler(async (req, res) => {
 
 router.post('/history/:id/visibility', asyncHandler(async (req, res) => {
   res.json(await setHistoryItemHidden(req.params.id, !!req.body?.hidden));
+}));
+
+router.patch('/history/:id/prompt', asyncHandler(async (req, res) => {
+  const parsedId = historyLookupIdSchema.safeParse(req.params.id);
+  if (!parsedId.success) failValidation(parsedId);
+  const body = updatePromptSchema.safeParse(req.body ?? {});
+  if (!body.success) failValidation(body);
+  res.json(await updateHistoryItemPrompt(parsedId.data, body.data.prompt));
 }));
 
 // Render jobs use UUID history ids, while shared-gallery uploads use an

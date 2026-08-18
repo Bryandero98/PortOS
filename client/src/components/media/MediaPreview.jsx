@@ -2,6 +2,7 @@ import { useMemo, useCallback } from 'react';
 import MediaLightbox from './MediaLightbox';
 import { getMediaNavProps } from '../../lib/mediaNavigation';
 import { computeImageVariantGroup } from './variants';
+import { updateImagePrompt, updateVideoPrompt } from '../../services/apiImageVideo';
 
 // Thin wrapper around MediaLightbox that owns the consistent wiring every
 // page repeated by hand: open/close, prev/next nav, and the annotation
@@ -19,6 +20,7 @@ export default function MediaPreview({
   items,
   annotations,
   updateAnnotation,
+  onPromptSaved,
   ...handlers
 }) {
   const navProps = useMemo(
@@ -37,12 +39,24 @@ export default function MediaPreview({
     if (!nextItem) return;
     setPreview(nextItem);
   }, [setPreview]);
+  const savePrompt = useCallback(async (item, prompt) => {
+    const result = item.kind === 'image'
+      ? await updateImagePrompt(item.filename, prompt, { silent: true })
+      : await updateVideoPrompt(item.id, prompt, { silent: true });
+    const nextPrompt = result?.prompt || '(no prompt)';
+    setPreview((current) => current?.key === item.key
+      ? { ...current, prompt: nextPrompt, raw: { ...current.raw, prompt: result?.prompt || '' } }
+      : current);
+    onPromptSaved?.(item, nextPrompt);
+    return result;
+  }, [onPromptSaved, setPreview]);
   return (
     <MediaLightbox
       item={preview}
       onClose={() => setPreview(null)}
       annotation={annotations?.[preview?.key] ?? null}
       onAnnotationChange={preview && updateAnnotation ? (patch) => updateAnnotation(preview.key, patch) : undefined}
+      onPromptChange={savePrompt}
       variantGroup={variantGroup}
       onSelectVariant={onSelectVariant}
       {...handlers}

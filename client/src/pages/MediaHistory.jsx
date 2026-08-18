@@ -146,6 +146,10 @@ export default function MediaHistory() {
     }
   };
 
+  const handlePromptSaved = (item, prompt) => {
+    setItems((all) => all.map((current) => current.key === item.key ? { ...current, prompt } : current));
+  };
+
   // Remix / SendToVideo / Continue / Clean all share a single implementation
   // with MediaCollectionDetail, ImageGen, and the Universe Builder lightbox
   // via `useMediaPreviewActions`. Only the post-clean side effect (splicing
@@ -310,6 +314,7 @@ export default function MediaHistory() {
         items={filtered}
         annotations={annotations}
         updateAnnotation={updateAnnotation}
+        onPromptSaved={handlePromptSaved}
         onRemix={handleRemix}
         onSendToImage={handleSendToImage}
         onSendToVideo={handleSendToVideo}

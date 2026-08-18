@@ -51,6 +51,7 @@ const MAX_PROMPT_LENGTH = 8000;
 const MAX_LORAS = 8;
 const MAX_REFERENCE_IMAGES = 4;
 const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;
+const updatePromptSchema = z.object({ prompt: z.string().max(MAX_PROMPT_LENGTH) });
 
 router.get('/style-presets', (_req, res) => res.json(STYLE_PRESETS));
 
@@ -647,6 +648,11 @@ router.delete('/:filename', asyncHandler(async (req, res) => {
 
 router.post('/:filename/visibility', asyncHandler(async (req, res) => {
   res.json(await local.setImageHidden(req.params.filename, !!req.body?.hidden));
+}));
+
+router.patch('/:filename/prompt', asyncHandler(async (req, res) => {
+  const body = validateRequest(updatePromptSchema, req.body ?? {});
+  res.json(await local.updateImagePrompt(req.params.filename, body.prompt));
 }));
 
 router.post('/:filename/clean', asyncHandler(async (req, res) => {
