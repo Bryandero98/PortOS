@@ -203,7 +203,7 @@ export async function resolveReviewLoopOptions(metadata, { normalize, isTruthyMe
 
 /**
  * Per-reviewer CLI-binary install probe, keyed by reviewer slug (e.g.
- * `{ claude: true, antigravity: false, codex: true, grok: false }`). Only CLI
+ * `{ claude: true, antigravity: false, codex: true, grok: false, cursor: true }`). Only CLI
  * reviewers (`isCliReviewer`) are probed — `copilot` is a GitHub API review
  * and `lmstudio`/`ollama` route through `/api/code-review/local`, neither has
  * a binary to find.

@@ -28,6 +28,7 @@ const providers = [
   // spawned non-interactively, so the CLI's catalog is the one it should offer.
   { id: 'grok-tui', type: 'tui', command: 'grok', models: ['stale-tui-id'] },
   { id: 'grok-cli', type: 'cli', command: 'grok', models: ['grok-configured-default', 'grok-code-fast-1'] },
+  { id: 'cursor-cli', type: 'cli', command: 'cursor-agent', models: ['auto', 'gpt-5'] },
 ];
 
 describe('useReviewerModelOptions', () => {
@@ -65,6 +66,13 @@ describe('useReviewerModelOptions', () => {
     // Free-text: the shipped grok catalog is sentinel-only, so a typed id is
     // often the only way to pin one.
     expect(result.current.freeText.grok).toBe(true);
+  });
+
+  it('sources Cursor Agent options from its cursor-agent provider', async () => {
+    const { result } = renderHook(() => useReviewerModelOptions());
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.optionsByReviewer.cursor).toEqual(['auto', 'gpt-5']);
+    expect(result.current.freeText.cursor).toBe(true);
   });
 
   it('falls back to a TUI-only grok install for its catalog', async () => {

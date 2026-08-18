@@ -166,6 +166,9 @@ describe('cosValidation reviewer CLI binaries', () => {
       expect(reviewerCliBinary(slug)).toBe(slug);
       expect(describeReviewerCli(slug)).toBe(`\`${slug}\``);
     }
+    expect(reviewerCliBinary('cursor')).toBe('cursor-agent');
+    expect(reviewerCliBinary('cursor-agent')).toBe('cursor-agent');
+    expect(describeReviewerCli('cursor')).toBe('`cursor-agent` (the `cursor` reviewer)');
   });
 
   it('returns null for reviewers that have no spawnable CLI', () => {
@@ -376,6 +379,13 @@ describe('client mirror of the reviewer effort ladders', () => {
 });
 
 describe('per-reviewer model pins', () => {
+  it('accepts Cursor Agent in the reviewer config and persists its model pin', () => {
+    const parsed = codeReviewSettingsSchema.parse({ reviewers: ['cursor-agent'], cursorModel: 'gpt-5' });
+    expect(parsed.reviewers).toEqual(['cursor']);
+    expect(parsed.cursorModel).toBe('gpt-5');
+    expect(reviewerModelsFromDefaults(parsed)).toEqual({ cursor: 'gpt-5' });
+  });
+
   it('keeps an antigravity model pin on the code-review settings slice', () => {
     // `agy --model <id>` is real (unlike the effort-only support PortOS assumed
     // before #3728), so the scalar has to survive the `.strict()` schema.
