@@ -121,6 +121,30 @@ describe('LocalLlmTab installed models', () => {
 });
 
 describe('LocalLlmTab recommendations', () => {
+  it('links a gated curated model to Hugging Face so its terms can be accepted', async () => {
+    getLocalLlmCatalog.mockResolvedValue({
+      models: [{
+        id: 'orcarouter/qwen3.8-27b-uncensored-mlx:4bit',
+        key: 'qwen3.8-27b-uncensored-mlx',
+        name: 'Qwen3.8 27B Uncensored MLX',
+        category: 'general',
+        recommendedFor: ['general'],
+        params: '27B',
+        size: '15 GB',
+        description: 'A gated local evaluation model.',
+        repository: 'orcarouter/Qwen3.8-27B-Uncensored-MLX',
+        gated: true,
+        capabilities: ['chat'],
+      }],
+    });
+
+    await renderTab();
+
+    const termsLink = await screen.findByRole('link', { name: 'Accept terms' });
+    expect(termsLink).toHaveAttribute('href', 'https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX');
+    expect(termsLink).toHaveAttribute('target', '_blank');
+  });
+
   it('highlights the flagship general model and surfaces it in its coding use-case filter', async () => {
     getLocalLlmCatalog.mockResolvedValue({
       models: [{

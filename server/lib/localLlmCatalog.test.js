@@ -72,7 +72,9 @@ describe('localLlmCatalog', () => {
       expect(getCatalog('lmstudio', [], { appleSilicon: true }).find((m) => m.key === uncensoredKey)).toMatchObject({
         format: 'mlx',
         id: 'https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX',
-        note: expect.stringContaining('Gated on Hugging Face')
+        note: expect.stringContaining('Gated on Hugging Face'),
+        repository: 'orcarouter/Qwen3.8-27B-Uncensored-MLX',
+        gated: true
       });
       expect(getCatalog('lmstudio', ['orcarouter/Qwen3.8-27B-Uncensored-MLX'], { appleSilicon: true })
         .find((m) => m.key === uncensoredKey)?.installed).toBe(true);

@@ -887,6 +887,7 @@ export function LocalLlmTab() {
                 {group.models.map((m) => {
                   const isHf = m.source === 'huggingface';
                   const isAudio = m.category === 'audio';
+                  const repositoryUrl = m.repository ? `https://huggingface.co/${m.repository}` : null;
                   // Multi-quant repos let the user trade their RAM for fidelity.
                   // `chosenId` is the selected variant's install id (defaulting to
                   // the server's RAM-aware pick `m.id`); the card's size/RAM/fit
@@ -1036,16 +1037,16 @@ export function LocalLlmTab() {
                           Sharded — use LM Studio or a smaller quant
                         </span>
                       )}
-                      {isHf && m.repository && (
+                      {repositoryUrl && (
                         <a
-                          href={`https://huggingface.co/${m.repository}`}
+                          href={repositoryUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          title="Open the model page on Hugging Face"
+                          title={m.gated ? 'Open Hugging Face to accept repository terms' : 'Open the model page on Hugging Face'}
                           className="px-2.5 py-1 text-xs bg-port-border/60 hover:bg-port-border text-gray-300 rounded flex items-center gap-1"
                         >
                           <ExternalLink size={12} />
-                          Visit
+                          {m.gated ? 'Accept terms' : 'Visit'}
                         </a>
                       )}
                     </div>
