@@ -23,6 +23,21 @@ import { INTERVAL_DESCRIPTIONS, toggleMetadataField, pipelineStages, IMPROVEMENT
 // runs (no app) land on the server-side fallback.
 const PR_COMPLETION_INHERIT_HINT = `Uses the target app's "After opening PR" default (Apps → Edit App), or "${prCompletionOption(IMPLICIT_PR_COMPLETION)?.label}" when it has none.`;
 
+// These fields are the task-local reviewer-loop override. Removing them lets
+// the picker and server resolver fall back to the install-wide Code Review
+// Defaults without changing the task's PR policy or other agent options.
+const REVIEW_CONFIG_KEYS = [
+  'reviewer',
+  'reviewers',
+  'usernames',
+  'optionalReviewers',
+  'reviewerMaxRounds',
+  'reviewerModels',
+  'reviewerEfforts',
+  'reviewStopMode',
+  'reviewerApplies',
+];
+
 export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, category: _category, providers, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled }) {
   const reviewDefaults = useCodeReviewDefaults();
   // Resolved model lists for the reviewer table's Model column (the picker itself
@@ -166,6 +181,16 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     await onUpdate(taskType, {
       taskMetadata: value ? { ...rest, prCompletion: value } : rest
     });
+    setUpdating(false);
+  };
+
+  const handleResetReviewConfig = async () => {
+    setUpdating(true);
+    const metadata = config.taskMetadata || {};
+    const taskMetadata = Object.fromEntries(
+      Object.entries(metadata).filter(([key]) => !REVIEW_CONFIG_KEYS.includes(key))
+    );
+    await onUpdate(taskType, { taskMetadata });
     setUpdating(false);
   };
 
@@ -499,6 +524,18 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
         )}
         {reviewersApply && (
           <div className="mt-3 pl-2">
+            {REVIEW_CONFIG_KEYS.some((key) => key in (config.taskMetadata || {})) && (
+              <button
+                type="button"
+                onClick={handleResetReviewConfig}
+                disabled={updating}
+                className="mb-2 flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50"
+                title="Remove this task's code review override and use the system Code Review Defaults"
+              >
+                <RotateCcw size={13} />
+                Use system Code Review Defaults
+              </button>
+            )}
             <ReviewerPicker
               reviewers={config.taskMetadata?.reviewers ?? (config.taskMetadata?.reviewer ? [config.taskMetadata.reviewer] : reviewDefaults.reviewers)}
               usernames={config.taskMetadata?.usernames ?? reviewDefaults.usernames}
