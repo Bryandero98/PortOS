@@ -192,7 +192,8 @@ export const reviewRecordSchema = z.object({
 // from REPO_INTAKE_KEYS so the wire contract can't drift from the normalizer
 // that reads it (server/lib/repoIntakeActions.js).
 export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS)).extend({
-  targetAppId: z.string().trim().min(1).max(200).optional()
+  targetAppId: z.string().trim().min(1).max(200).optional(),
+  studyContext: z.string().trim().max(5000).optional()
 });
 const repoIntakeInputSchema = repoIntakeSchema.optional();
 

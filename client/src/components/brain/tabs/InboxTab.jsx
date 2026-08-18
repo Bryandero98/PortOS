@@ -369,6 +369,8 @@ export default function InboxTab({ onRefresh, settings }) {
           managedApps={repoIntake.managedApps}
           targetAppId={repoIntake.targetAppId}
           onTargetAppChange={repoIntake.setTargetAppId}
+          studyContext={repoIntake.studyContext}
+          onStudyContextChange={repoIntake.setStudyContext}
           onToggle={repoIntake.toggle}
         />
       </form>

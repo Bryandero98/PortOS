@@ -32,9 +32,11 @@ export const REPO_INTAKE_OPTIONS = [
  * @param {{owner: string, repo: string}|null} props.repo parsed repo, or null to
  *   render nothing (the capture isn't a bare repo URL)
  * @param {{malwareScan: boolean, learn: boolean}} props.options
+ * @param {string} props.studyContext
+ * @param {(context: string) => void} props.onStudyContextChange
  * @param {(key: string) => void} props.onToggle
  */
-export default function RepoIntakeOptions({ idPrefix, repo, options, managedApps = [], targetAppId, onTargetAppChange, onToggle }) {
+export default function RepoIntakeOptions({ idPrefix, repo, options, managedApps = [], targetAppId, onTargetAppChange, studyContext = '', onStudyContextChange, onToggle }) {
   if (!repo) return null;
 
   return (
@@ -70,6 +72,22 @@ export default function RepoIntakeOptions({ idPrefix, repo, options, managedApps
             {managedApps.map(app => <option key={app.id} value={app.id}>{app.name}</option>)}
           </select>
         </label>
+      )}
+      {options.learn && (
+        <div>
+          <label htmlFor={`${idPrefix}-study-context`} className="block text-xs text-gray-400 mb-1">
+            Study context <span className="text-gray-600">(optional)</span>
+          </label>
+          <textarea
+            id={`${idPrefix}-study-context`}
+            rows={3}
+            maxLength={5000}
+            value={studyContext}
+            onChange={e => onStudyContextChange?.(e.target.value)}
+            placeholder="What should the agent look for, and where might an implementation fit?"
+            className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+          />
+        </div>
       )}
       {REPO_INTAKE_OPTIONS.some(({ key }) => options[key]) && (
         <p className="text-xs text-gray-500">
