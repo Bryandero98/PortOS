@@ -230,6 +230,59 @@
       "secretEnvVars": [],
       "tuiPromptDelayMs": 2500
     },
+    "orcarouter": {
+      "id": "orcarouter",
+      "name": "OrcaRouter",
+      "type": "api",
+      "endpoint": "https://api.orcarouter.ai/v1",
+      "apiKey": "",
+      "models": ["orcarouter/auto"],
+      "defaultModel": "orcarouter/auto",
+      "lightModel": "orcarouter/auto",
+      "mediumModel": "orcarouter/auto",
+      "heavyModel": "orcarouter/auto",
+      "timeout": 300000,
+      "enabled": false,
+      "envVars": {},
+      "secretEnvVars": []
+    },
+    "opencode-orcarouter": {
+      "id": "opencode-orcarouter",
+      "name": "OpenCode OrcaRouter",
+      "type": "cli",
+      "command": "opencode",
+      "args": ["run"],
+      "endpoint": "https://api.orcarouter.ai/v1",
+      "models": ["orcarouter/auto"],
+      "defaultModel": "orcarouter/auto",
+      "orcarouterBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"orcarouter\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"OrcaRouter\",\"options\":{\"baseURL\":\"https://api.orcarouter.ai/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "headlessArgs": []
+    },
+    "opencode-orcarouter-tui": {
+      "id": "opencode-orcarouter-tui",
+      "name": "OpenCode OrcaRouter TUI",
+      "type": "tui",
+      "command": "opencode",
+      "args": [],
+      "endpoint": "https://api.orcarouter.ai/v1",
+      "models": ["orcarouter/auto"],
+      "defaultModel": "orcarouter/auto",
+      "orcarouterBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"orcarouter\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"OrcaRouter\",\"options\":{\"baseURL\":\"https://api.orcarouter.ai/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "tuiPromptDelayMs": 2500,
+      "tuiIdleTimeoutMs": 180000
+    },
     "antigravity-tui": {
       "id": "antigravity-tui",
       "name": "Antigravity TUI",

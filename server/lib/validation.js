@@ -411,13 +411,17 @@ export const providerSchema = z.object({
   // Kept in schema parity with aiToolkit's provider schema. Marks OpenCode
   // wrappers for a separately started local MTPLX native-MTP server.
   mtplxBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for the OrcaRouter OpenAI-compatible
+  // gateway; the sibling API record owns its key.
+  orcarouterBacked: z.boolean().optional(),
   // Explicit opt-in to attach the API key to an arbitrary (non-local,
   // non-allowlisted) endpoint — mirrors the aiToolkit providerSchema. Guards
   // SSRF / key exfiltration (server/lib/aiToolkit/internal/endpointGuard.js).
   allowCustomEndpoint: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
   headlessArgs: z.array(z.string()).optional(),
-  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional()
+  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
+  tuiIdleTimeoutMs: z.number().int().min(1000).max(86400000).optional()
 });
 
 // Run command schema

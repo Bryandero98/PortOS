@@ -39,6 +39,22 @@ export { canRefreshModels };
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SAMPLE_PATH = join(__dirname, 'defaults/providers.sample.json');
 
+// OpenCode OrcaRouter wrappers intentionally keep no key in their persisted
+// record. Attach the sibling API key only to execution-time copies, and make
+// the property non-enumerable so provider responses and provider writes cannot
+// accidentally expose or persist it.
+function withOrcaRouterApiKey(provider, providers) {
+  const siblingKey = providers?.orcarouter?.apiKey;
+  if (provider?.orcarouterBacked !== true || provider.apiKey || !siblingKey) return provider;
+  const executionProvider = { ...provider };
+  Object.defineProperty(executionProvider, 'apiKey', {
+    value: siblingKey,
+    enumerable: false,
+    configurable: true,
+  });
+  return executionProvider;
+}
+
 // Extensions Windows can launch directly, checked in cmd.exe's own resolution
 // preference. Deliberately excludes an extension-less match — npm ships a
 // POSIX shell-script stub alongside a package's `.cmd`/`.bat`/`.ps1` Windows
@@ -504,13 +520,15 @@ export function createProviderService(config = {}) {
 
     async getProviderById(id) {
       const data = await loadProviders();
-      return data.providers[id] || null;
+      const provider = data.providers[id];
+      return provider ? withOrcaRouterApiKey(provider, data.providers) : null;
     },
 
     async getActiveProvider() {
       const data = await loadProviders();
       if (!data.activeProvider) return null;
-      return data.providers[data.activeProvider] || null;
+      const provider = data.providers[data.activeProvider];
+      return provider ? withOrcaRouterApiKey(provider, data.providers) : null;
     },
 
     async setActiveProvider(id) {
@@ -560,6 +578,7 @@ export function createProviderService(config = {}) {
         // backend. Preserve this marker so OpenCode receives the `mtplx/`
         // namespace and model refresh probes its local endpoint.
         ...(providerData.mtplxBacked === true ? { mtplxBacked: true } : {}),
+        ...(providerData.orcarouterBacked === true ? { orcarouterBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
         // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
         // persisted when true so existing keyless/local providers stay clean.
@@ -567,7 +586,8 @@ export function createProviderService(config = {}) {
         envVars: providerData.envVars || {},
         secretEnvVars: providerData.secretEnvVars || [],
         headlessArgs: providerData.headlessArgs || [],
-        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500
+        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500,
+        ...(providerData.tuiIdleTimeoutMs != null ? { tuiIdleTimeoutMs: providerData.tuiIdleTimeoutMs } : {})
       };
 
       data.providers[id] = provider;
@@ -618,7 +638,7 @@ export function createProviderService(config = {}) {
 
     async testProvider(id) {
       const data = await loadProviders();
-      const provider = data.providers[id];
+      const provider = withOrcaRouterApiKey(data.providers[id], data.providers);
 
       if (!provider) {
         return { success: false, error: 'Provider not found' };
@@ -752,7 +772,7 @@ export function createProviderService(config = {}) {
      */
     async fetchProviderModels(id) {
       const data = await loadProviders();
-      const provider = data.providers[id];
+      const provider = withOrcaRouterApiKey(data.providers[id], data.providers);
 
       if (!provider) {
         return null;
@@ -1040,6 +1060,11 @@ export function createProviderService(config = {}) {
      * @returns {Promise<string[]>}
      */
     async _fetchMtplxModels(provider) {
+      return this._refreshAPIProviderModels(provider);
+    },
+
+    /** Fetch the OrcaRouter catalog for its OpenCode CLI/TUI wrappers. */
+    async _fetchOrcaRouterModels(provider) {
       return this._refreshAPIProviderModels(provider);
     },
 

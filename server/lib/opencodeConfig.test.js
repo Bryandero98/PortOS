@@ -25,6 +25,11 @@ describe('toBareModelIds', () => {
       .toEqual(['mtplx', 'qwen/model']);
   });
 
+  it('keeps OrcaRouter vendor ids unchanged for its provider models map', () => {
+    expect(toBareModelIds(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], 'orcarouter'))
+      .toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
+  });
+
   it('rejects an unknown local provider key instead of silently using Ollama', () => {
     expect(() => toBareModelIds('model', 'unknown')).toThrow(/unsupported opencode local provider/i);
   });
@@ -56,6 +61,19 @@ describe('buildOpencodeConfig', () => {
     const cfg = buildOpencodeConfig(['ollama/qwen2.5:7b', 'llama3.1:8b']);
     expect(Object.keys(cfg.provider.ollama.models).sort()).toEqual(['llama3.1:8b', 'qwen2.5:7b']);
     expect(cfg.provider.ollama.models['qwen2.5:7b']).toEqual({ name: 'qwen2.5:7b', tool_call: true });
+  });
+
+  it('declares OrcaRouter stored ids under the orcarouter provider', () => {
+    const cfg = buildOpencodeConfig(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], null, 'orcarouter');
+    expect(cfg.provider.orcarouter).toMatchObject({
+      npm: '@ai-sdk/openai-compatible',
+      name: 'OrcaRouter',
+      options: { baseURL: 'https://api.orcarouter.ai/v1' },
+    });
+    expect(Object.keys(cfg.provider.orcarouter.models).sort()).toEqual([
+      'anthropic/claude-sonnet-4.6',
+      'orcarouter/auto',
+    ]);
   });
 
   it('preserves a slash-bearing bare model id', () => {
@@ -151,6 +169,25 @@ describe('buildOpencodeEnvVars', () => {
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
     expect(cfg.provider.mtplx.options.baseURL).toBe('http://127.0.0.1:8000/v1');
     expect(cfg.provider.mtplx.models.mtplx).toEqual({ name: 'mtplx', tool_call: true });
+  });
+
+  it('injects the OrcaRouter sibling key only into the dynamic spawn config', () => {
+    const result = buildOpencodeEnvVars({
+      command: 'opencode',
+      orcarouterBacked: true,
+      apiKey: 'sk-orca-example',
+      models: ['orcarouter/auto'],
+      envVars: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          permission: 'allow',
+          provider: { orcarouter: { options: { baseURL: 'https://api.orcarouter.ai/v1' } } },
+        }),
+      },
+    }, 'orcarouter/auto');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.orcarouter.models['orcarouter/auto']).toBeDefined();
+    expect(cfg.provider.orcarouter.options.apiKey).toBe('sk-orca-example');
+    expect(result.ORCAROUTER_API_KEY).toBe('sk-orca-example');
   });
 
   it('unions the provider models, defaultModel, and the run model (deduped, bare)', () => {

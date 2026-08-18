@@ -76,6 +76,11 @@ describe('providerSchema', () => {
     expect(providerSchema.safeParse({ ...minimalProvider, mtplxBacked: 'true' }).success).toBe(false);
   });
 
+  it('accepts the explicit OrcaRouter marker and rejects a non-boolean value', () => {
+    expect(providerSchema.safeParse({ ...minimalProvider, orcarouterBacked: true }).success).toBe(true);
+    expect(providerSchema.safeParse({ ...minimalProvider, orcarouterBacked: 'true' }).success).toBe(false);
+  });
+
   describe('endpoint empty-string/null → undefined coercion', () => {
     it('coerces endpoint: "" to undefined so the URL check is skipped for CLI providers', () => {
       const r = providerSchema.safeParse({ ...minimalProvider, endpoint: '' });

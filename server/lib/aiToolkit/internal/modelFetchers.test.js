@@ -19,6 +19,7 @@ const SHIPPED_REFRESHABLE = [
   'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
   'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
   'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama', 'opencode-ollama-tui',
+  'opencode-orcarouter', 'opencode-orcarouter-tui', 'orcarouter',
 ];
 const SHIPPED_NOT_REFRESHABLE = [
   'claude-code-tui', 'claude-code-tui-bedrock', 'codex', 'codex-tui',

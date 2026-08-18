@@ -84,6 +84,9 @@ describe('endpointGuard — evaluateSecretEndpoint', () => {
     it('allows the bundled NVIDIA NIM host without opt-in', () => {
       expect(evaluateSecretEndpoint('https://integrate.api.nvidia.com/v1').allowed).toBe(true);
     });
+    it('allows the bundled OrcaRouter host without opt-in', () => {
+      expect(evaluateSecretEndpoint('https://api.orcarouter.ai/v1').allowed).toBe(true);
+    });
   });
 
   describe('arbitrary public hosts require explicit opt-in', () => {
@@ -124,6 +127,9 @@ describe('endpointGuard — assertSecretEndpoint', () => {
   });
   it('does not throw for the Cerebras host with a secret', () => {
     expect(() => assertSecretEndpoint('https://api.cerebras.ai/v1', { hasSecret: true })).not.toThrow();
+  });
+  it('does not throw for the OrcaRouter host with a secret', () => {
+    expect(() => assertSecretEndpoint('https://api.orcarouter.ai/v1', { hasSecret: true })).not.toThrow();
   });
   it('does not throw for loopback with a secret', () => {
     expect(() => assertSecretEndpoint('http://127.0.0.1:1234/v1', { hasSecret: true })).not.toThrow();
