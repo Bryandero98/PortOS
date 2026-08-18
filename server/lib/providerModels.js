@@ -91,6 +91,9 @@ export const resolveCliModel = (model) => isConfiguredDefaultModel(model) ? null
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// OpenCode forwards this narrow OpenAI-compatible ladder as `reasoningEffort`
+// to a local Ollama model. Keep it separate from vendor-CLI-only levels.
+export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 
 // Effort values no CLI ladder accepts any more, kept ACCEPTED as stored/API
 // input so records saved under an older ladder still validate after an install
@@ -288,6 +291,7 @@ export function isAntigravityProvider(provider) {
  */
 export function effortLevelsForProvider(provider, model = null) {
   if (!provider) return null;
+  if (isOpencodeProvider(provider) && provider.ollamaBacked === true) return OPENCODE_OLLAMA_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;

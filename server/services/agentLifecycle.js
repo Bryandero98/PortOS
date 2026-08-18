@@ -630,12 +630,25 @@ async function runAgentSpawn(task) {
     // bake a bare, Bedrock-invalid --model into the argv. Cached (5-min TTL), so
     // the spawn helper's own getClaudeSettingsEnv() call is effectively free.
     const cliSettingsEnv = isClaudeCliProvider(provider) ? await getClaudeSettingsEnv() : {};
+    // Task-level OpenCode/Ollama generation controls override provider defaults
+    // for this one run. The child-environment composer turns these into the
+    // dynamic `agent.build` config instead of mutating saved provider state.
+    const taskTemperature = task.metadata?.temperature === '' ? NaN : Number(task.metadata?.temperature);
+    const taskThinking = task.metadata?.thinking;
+    const runProvider = {
+      ...provider,
+      ...(Number.isFinite(taskTemperature) && taskTemperature >= 0 && taskTemperature <= 2
+        ? { temperature: taskTemperature }
+        : {}),
+      ...([true, false, 'true', 'false'].includes(taskThinking) ? { thinking: taskThinking } : {}),
+      ...(typeof task.metadata?.effort === 'string' ? { effort: task.metadata.effort } : {}),
+    };
     // Per-task reasoning-effort override (task form / schedule config). The
     // builders no-op it for providers without an effort control.
     const taskEffort = task.metadata?.effort || null;
     const cliConfig = isTui
-      ? buildTuiSpawnConfig(provider, selectedModel, { systemPromptFile, effort: taskEffort })
-      : buildCliSpawnConfig(provider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort });
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort })
+      : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
       agentId,
@@ -664,7 +677,7 @@ async function runAgentSpawn(task) {
         prompt,
         workspacePath,
         model: selectedModel,
-        provider,
+        provider: runProvider,
         runId,
         tuiConfig: cliConfig,
         agentDir,
@@ -677,7 +690,7 @@ async function runAgentSpawn(task) {
       });
     }
     if (useRunner) {
-      return await spawnViaRunner(agentId, task, { prompt, workspacePath, model: selectedModel, provider, runId, cliConfig, executionId: toolExecution.id, laneName });
+      return await spawnViaRunner(agentId, task, { prompt, workspacePath, model: selectedModel, provider: runProvider, runId, cliConfig, executionId: toolExecution.id, laneName });
     }
     // Direct spawn mode (fallback)
     return await spawnDirectly({
@@ -686,7 +699,7 @@ async function runAgentSpawn(task) {
       prompt,
       workspacePath,
       model: selectedModel,
-      provider,
+      provider: runProvider,
       runId,
       cliConfig,
       agentDir,

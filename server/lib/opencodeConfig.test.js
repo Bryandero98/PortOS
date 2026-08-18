@@ -137,6 +137,15 @@ describe('buildOpencodeEnvVars', () => {
     expect(cfg.agent.build).toEqual({ temperature: 0.6, think: false });
   });
 
+  it('passes a task-level reasoning effort through to Ollama', () => {
+    const cfg = buildOpencodeConfig('qwen2.5:7b', null, 'ollama', {
+      temperature: '0.25',
+      thinking: 'true',
+      effort: 'high',
+    });
+    expect(cfg.agent.build).toEqual({ temperature: 0.25, think: true, reasoningEffort: 'high' });
+  });
+
   it('declares the run model under provider.mtplx.models for MTPLX-backed OpenCode', () => {
     const result = buildOpencodeEnvVars({ command: 'opencode', mtplxBacked: true, models: ['mtplx'] }, 'mtplx');
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);

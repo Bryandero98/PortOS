@@ -184,6 +184,16 @@ export const filterSelectableModels = (models) =>
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// OpenCode passes this through as `reasoningEffort` to its configured local
+// provider. Ollama's OpenAI-compatible API accepts this narrow ladder for
+// thinking models; the broader vendor-CLI ladders are not portable here.
+export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+
+/** True when an OpenCode process provider is backed by the local Ollama daemon. */
+export const isOpencodeOllamaProvider = (provider) =>
+  (['opencode', 'opencode-tui'].includes(String(provider?.id || '').toLowerCase())
+    || commandBasename(provider?.command) === 'opencode')
+  && provider?.ollamaBacked === true;
 
 /**
  * Antigravity base-model ↔ effort-suffix split — MIRROR of
@@ -358,6 +368,7 @@ export const seedModelEffort = (provider, model, effort) => {
  */
 export const effortLevelsForProvider = (provider, model = null) => {
   if (!provider) return null;
+  if (isOpencodeOllamaProvider(provider)) return OPENCODE_OLLAMA_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;

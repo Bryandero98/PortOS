@@ -117,6 +117,7 @@ describe('effortLevelsForProvider (server mirror)', () => {
     ['path-configured agy', { id: 'custom', command: '/Users/x/.local/bin/agy' }, ANTIGRAVITY_EFFORT_LEVELS],
     ['claude code', { id: 'claude-code', command: 'claude' }, CLAUDE_EFFORT_LEVELS],
     ['codex', { id: 'codex', command: 'codex' }, CODEX_EFFORT_LEVELS],
+    ['OpenCode Ollama', { id: 'opencode-ollama', command: 'opencode', ollamaBacked: true }, ['low', 'medium', 'high']],
     ['grok (no effort control)', { id: 'grok-cli', command: 'grok' }, null],
     ['blank command is not claude', { id: 'ollama' }, null],
   ];

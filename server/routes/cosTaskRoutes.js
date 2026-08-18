@@ -317,6 +317,8 @@ router.put('/tasks/:id', asyncHandler(async (req, res) => {
   if (fields.model !== undefined) updates.model = fields.model;
   if (fields.provider !== undefined) updates.provider = fields.provider;
   if (fields.effort !== undefined) updates.effort = fields.effort;
+  if (fields.temperature !== undefined) updates.temperature = fields.temperature;
+  if (fields.thinking !== undefined) updates.thinking = fields.thinking;
   if (fields.app !== undefined) updates.app = fields.app;
 
   // Set blocker metadata when marking as blocked

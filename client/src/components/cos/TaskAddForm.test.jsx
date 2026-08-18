@@ -47,6 +47,27 @@ describe('TaskAddForm responsive layout', () => {
     expect(options).toHaveClass('grid-cols-1');
     expect(options).not.toHaveClass('grid-cols-2');
   });
+
+  it('sends OpenCode Ollama thinking, effort, and temperature overrides with the task', async () => {
+    const user = userEvent.setup();
+    api.addCosTask.mockResolvedValue({ success: true });
+    render(<TaskAddForm providers={[{
+      id: 'opencode-ollama', name: 'OpenCode Ollama', enabled: true, type: 'tui',
+      command: 'opencode', ollamaBacked: true, models: ['qwen3:8b'],
+    }]} apps={[]} onTaskAdded={vi.fn()} />);
+
+    await user.type(screen.getByPlaceholderText('Task description *'), 'Implement the change');
+    await user.selectOptions(screen.getByLabelText('AI provider'), 'opencode-ollama');
+    await user.selectOptions(screen.getByLabelText('Thinking effort'), 'high');
+    await user.selectOptions(screen.getByLabelText('Thinking'), 'false');
+    await user.type(screen.getByLabelText('Temperature'), '0.25');
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(api.addCosTask.mock.calls.at(-1)[0]).toMatchObject({
+      provider: 'opencode-ollama', effort: 'high', thinking: false, temperature: 0.25,
+    });
+  });
 });
 
 // A slashdo quick-template carries the run shape its workflow implies (#3089).

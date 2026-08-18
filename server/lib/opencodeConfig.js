@@ -113,12 +113,23 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
   // Ollama's native `think` flag.
   if (generation && providerKey === 'ollama') {
     const temperature = Number.isFinite(Number(generation.temperature)) ? Number(generation.temperature) : 0.6;
-    const thinking = typeof generation.thinking === 'boolean' ? generation.thinking : undefined;
+    // TASKS.md metadata is text, so a persisted task re-enters the lifecycle as
+    // `'true'`/`'false'`. Accept both wire forms without treating an absent or
+    // malformed value as an intentional override.
+    const thinking = generation.thinking === true || generation.thinking === 'true'
+      ? true
+      : generation.thinking === false || generation.thinking === 'false'
+        ? false
+        : undefined;
+    const effort = typeof generation.effort === 'string' && generation.effort.trim()
+      ? generation.effort.trim()
+      : undefined;
     config.agent = { ...(config.agent && typeof config.agent === 'object' ? config.agent : {}) };
     config.agent.build = {
       ...(config.agent.build && typeof config.agent.build === 'object' ? config.agent.build : {}),
       temperature,
       ...(thinking === undefined ? {} : { think: thinking }),
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
     };
   }
   return config;

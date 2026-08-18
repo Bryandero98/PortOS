@@ -216,8 +216,13 @@ describe('providerModels', () => {
       expect(effortLevelsForProvider({ id: 'custom', command: '/Users/x/.local/bin/agy' })).toBe(ANTIGRAVITY_EFFORT_LEVELS);
     });
 
-    it('returns null for providers without an effort control (and does NOT default blank commands to claude)', () => {
+    it('offers the OpenAI-compatible ladder only for Ollama-backed OpenCode', () => {
+      expect(effortLevelsForProvider({ id: 'opencode-ollama', command: 'opencode', ollamaBacked: true }))
+        .toEqual(['low', 'medium', 'high']);
       expect(effortLevelsForProvider({ id: 'opencode-ollama', command: 'opencode' })).toBeNull();
+    });
+
+    it('returns null for providers without an effort control (and does NOT default blank commands to claude)', () => {
       expect(effortLevelsForProvider({ id: 'grok-cli', command: 'grok' })).toBeNull();
       expect(effortLevelsForProvider({ id: 'ollama' })).toBeNull();
       expect(effortLevelsForProvider(null)).toBeNull();
