@@ -252,8 +252,8 @@ describe('local LLM memory-management routes', () => {
   });
 
   it('GET /loaded reports models both local backends currently have resident', async () => {
-     // Mirror the real getLoadedModels() field set so the fixture documents the
-     // pass-through contract and would catch any future field-stripping.
+      // Mirror the real getLoadedModels() field set so the fixture documents the
+      // pass-through contract and would catch any future field-stripping.
     const resident = { id: 'llama3.2', name: 'llama3.2', size: 4096, sizeVram: 4096, expiresAt: null };
     const lmStudioResident = { id: 'example/lmstudio', state: 'loaded' };
     getLoadedModels.mockResolvedValue([resident]);
@@ -262,34 +262,39 @@ describe('local LLM memory-management routes', () => {
     const res = await request(makeApp()).get('/api/local-llm/loaded');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ollama: [resident], lmstudio: [lmStudioResident], sourceErrors: [] });
+    expect(res.body).toEqual({ ollama: [resident], lmstudio: [lmStudioResident], sourceErrors: [], disabled: [] });
     expect(getLoadedModels).toHaveBeenCalledTimes(1);
     expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
-   });
+     });
 
-  it('GET /loaded does not probe a user-disabled backend or report it unavailable', async () => {
-     // A backend the user marked intentionally disabled (localLlm.<id>.disabled) is
-     // a known not-resident state, not an unavailable one — so /loaded must skip
-     // probing it and never surface "Status unavailable for LM Studio" to the
-     // Memory Management panel. Even though the residency probe would otherwise
-     // record a "LM Studio is unavailable" error, a disabled backend must not carry it.
+  it('GET /loaded keeps a failed disabled backend in sourceErrors but names it disabled', async () => {
+      // "Mark disabled" only silences the availability NAG — it is not evidence the
+      // backend holds no memory. So /loaded must still probe a disabled backend AND
+      // still surface its failed residency in sourceErrors (the panel's
+      // "Free everything" guard keys off that), while separately naming it in
+      // `disabled` so the banner can stay quiet about it.
     getSettings.mockResolvedValueOnce({ localLlm: { lmstudio: { disabled: true } } });
     getLmStudioResidencyError.mockReturnValueOnce('LM Studio is unavailable');
+    getLoadedLmStudioModels.mockResolvedValue([{ id: 'example/lmstudio', state: 'loaded' }]);
 
     const res = await request(makeApp()).get('/api/local-llm/loaded');
 
     expect(res.status).toBe(200);
-    expect(res.body.sourceErrors).not.toContain('lmstudio');
-    expect(res.body.lmstudio).toEqual([]);
-     // The disabled backend is a no-residency state — never probed.
-    expect(getLoadedLmStudioModels).not.toHaveBeenCalled();
+       // Residency is honored — the backend is still probed…
+    expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
+    expect(res.body.lmstudio).toEqual([{ id: 'example/lmstudio', state: 'loaded' }]);
+       // …and its failed probe keeps the "unknown residency" status sourceErrors so
+       // "Free everything" can't claim it freed a model it never saw.
+    expect(res.body.sourceErrors).toContain('lmstudio');
+       // The disabled flag is the signal the panel uses to hold the banner.
+    expect(res.body.disabled).toEqual(['lmstudio']);
     expect(getSettings).toHaveBeenCalled();
-   });
+      });
 
   it('GET /loaded still reports an enabled backend whose residency probe fails', async () => {
-     // The disabled-skip must not suppress a genuine "status unavailable" — an
-     // enabled backend that fails its residency probe still surfaces as a source
-     // error so the panel keeps its "excluded from Free everything" guard.
+      // An enabled backend that fails its residency probe surfaces in sourceErrors
+      // and is NOT in `disabled`, so the panel both shows the nag and keeps its
+      // "excluded from Free everything" guard.
     getSettings.mockResolvedValueOnce({});
     getLmStudioResidencyError.mockReturnValueOnce('LM Studio is unavailable');
 
@@ -297,9 +302,10 @@ describe('local LLM memory-management routes', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sourceErrors).toContain('lmstudio');
+       // An enabled backend is not in the disabled list.
+    expect(res.body.disabled).not.toContain('lmstudio');
     expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
-   });
-
+      });
 
   it('POST /unload evicts a resident model and echoes the service result', async () => {
     // Real unloadModel() success shape is { unloaded: true, model } — NOT modelId

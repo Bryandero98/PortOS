@@ -46,6 +46,7 @@ const EMPTY_SNAPSHOT = {
   whisperRunning: false,
   sttEngine: 'whisper',
   unavailableSources: [],
+  disabledSources: [],
 };
 
 const SOURCE_LABELS = {
@@ -80,6 +81,10 @@ export default function MemoryManagement({ onLoadedModelsChange } = {}) {
   const [loading, setLoading] = useState(true);
   const [lastFetched, setLastFetched] = useState(0);
   const [unavailableSources, setUnavailableSources] = useState([]);
+   // Backends the user marked intentionally disabled stay in unavailableSources
+   // (so "Free everything" still skips their unknown residency) but are excluded
+   // from the "Status unavailable" banner — the nag the user opted out of.
+  const [disabledSources, setDisabledSources] = useState([]);
   // Guards the polled setState calls — a late /voice/status response that
   // resolves after unmount would otherwise call setState on a dead tree.
   // useMounted resets the ref to true on every mount so React 18 StrictMode's
@@ -123,6 +128,10 @@ export default function MemoryManagement({ onLoadedModelsChange } = {}) {
     const ttsValid = typeof tts?.kokoro?.state === 'string';
     const voiceValid = voice != null && typeof voice === 'object';
     const llmSourceErrors = llmValid && Array.isArray(llm.sourceErrors) ? llm.sourceErrors : [];
+      // Distinguish "field absent" from "present-but-empty" so a later failed poll
+       // keeps the last-known disabled backends (the outage is the very scenario
+       // the banner suppression exists for) while an explicit [] clears them.
+    const llmDisabledSources = Array.isArray(llm?.disabled) ? llm.disabled : previous.disabledSources;
     const failedSources = [
       ...(!llmValid ? ['ollama', 'lmstudio'] : llmSourceErrors),
       ...(!ttsValid ? ['tts'] : []),
@@ -139,7 +148,8 @@ export default function MemoryManagement({ onLoadedModelsChange } = {}) {
       whisperRunning: voiceValid ? Boolean(voice.services?.whisper?.ok) : previous.whisperRunning,
       sttEngine: voiceValid ? (voice.sttEngine || 'whisper') : previous.sttEngine,
       unavailableSources: [...new Set(failedSources)],
-    };
+      disabledSources: [...new Set(llmDisabledSources)],
+     };
     snapshotRef.current = snapshot;
     if (priority) priorityRefreshRef.current = false;
     if (!mountedRef.current) return snapshot;
@@ -149,6 +159,7 @@ export default function MemoryManagement({ onLoadedModelsChange } = {}) {
     setWhisperRunning(snapshot.whisperRunning);
     setSttEngine(snapshot.sttEngine);
     setUnavailableSources(snapshot.unavailableSources);
+    setDisabledSources(snapshot.disabledSources);
     setLoading(false);
     setLastFetched(Date.now());
     onLoadedModelsChange?.({
@@ -233,6 +244,11 @@ export default function MemoryManagement({ onLoadedModelsChange } = {}) {
     || whisperRunning || ttsState.state !== 'lazy';
   const anyActionRunning =
     unloadingModel || unloadingLmStudio || unloadingKokoro || stoppingWhisper || startingWhisper || freeingAll;
+   // The banner is the nag the user can opt out of per backend, so it drops
+   // user-disabled backends. The free-everything guard and empty-state check
+   // below still use the full unavailableSources, so a disabled-but-running
+   // backend can't be silently freed as "nothing resident."
+  const bannerSources = unavailableSources.filter((source) => !disabledSources.includes(source));
 
   return (
       <div className="bg-port-card border border-port-border rounded mb-4">
@@ -266,15 +282,15 @@ export default function MemoryManagement({ onLoadedModelsChange } = {}) {
         </div>
       </div>
 
-      {unavailableSources.length > 0 && (
-        <div className="mx-3 mt-3 flex items-start gap-2 rounded border border-port-warning/30 bg-port-warning/10 px-3 py-2 text-xs text-port-warning">
-          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-          <span>
-            Status unavailable for {unavailableSources.map((source) => SOURCE_LABELS[source] || source).join(', ')}.
+         {bannerSources.length > 0 && (
+          <div className="mx-3 mt-3 flex items-start gap-2 rounded border border-port-warning/30 bg-port-warning/10 px-3 py-2 text-xs text-port-warning">
+           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+           <span>
+            Status unavailable for {bannerSources.map((source) => SOURCE_LABELS[source] || source).join(', ')}.
             Last known values remain visible; unknown resources are excluded from Free everything.
-          </span>
-        </div>
-      )}
+           </span>
+          </div>
+         )}
 
       {loadedOllama.length === 0 && loadedLmStudio.length === 0
         && !whisperRunning && ttsState.state === 'lazy' && unavailableSources.length === 0 ? (

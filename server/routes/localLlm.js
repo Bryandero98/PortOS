@@ -290,28 +290,30 @@ router.post('/migrate', asyncHandler(async (req, res) => {
 // right now so the Memory Management panel can show what to unload before
 // kicking off a big diffusion render.
 //
-// A backend the user has marked intentionally disabled (localLlm.<id>.disabled —
-// "PortOS will not expect this backend to be running") is a KNOWN not-resident
-// state, not an unavailable one, so it is not probed and never surfaces as a
-// "Status unavailable for …" error for the Memory Management panel.
+// sourceErrors stays the full failure list: a backend the user marked disabled
+// (localLlm.<id>.disabled — "PortOS will not expect this backend to be running")
+// is STILL probed, and a failed probe on a disabled-but-actually-running backend
+// must keep its "unknown residency" status so "Free everything" can't claim it
+// reclaimed a model it can't even see. The `disabled` field names the backends
+// the user opted out of availability warnings for, so the panel stays quiet
+// about them WITHOUT weakening that cleanup guard.
 router.get('/loaded', asyncHandler(async (_req, res) => {
-  // A disabled backend is a known not-resident state, so skip both the probe and
-  // the residency-error check for it — an intentionally-off backend must not read
-  // as "status unavailable".
   const settings = await getSettings().catch(() => ({}))
   const ollamaDisabled = Boolean(settings.localLlm?.ollama?.disabled)
   const lmStudioDisabled = Boolean(settings.localLlm?.lmstudio?.disabled)
-  // The residency getters return [] on a failed/unreachable probe (never throw),
-  // recording the failure via their getLastLoadedModelsError().
   const [ollama, lmstudio] = await Promise.all([
-    ollamaDisabled ? Promise.resolve([]) : getLoadedOllamaModels(),
-    lmStudioDisabled ? Promise.resolve([]) : getLoadedLmStudioModels(true),
+    getLoadedOllamaModels(),
+    getLoadedLmStudioModels(true),
    ])
   const sourceErrors = [
-     ...(!ollamaDisabled && getOllamaResidencyError() ? ['ollama'] : []),
-     ...(!lmStudioDisabled && getLmStudioResidencyError() ? ['lmstudio'] : []),
+     ...(getOllamaResidencyError() ? ['ollama'] : []),
+     ...(getLmStudioResidencyError() ? ['lmstudio'] : []),
    ]
-  res.json({ ollama, lmstudio, sourceErrors })
+  const disabled = [
+     ...(ollamaDisabled ? ['ollama'] : []),
+     ...(lmStudioDisabled ? ['lmstudio'] : []),
+   ]
+  res.json({ ollama, lmstudio, sourceErrors, disabled })
 }))
 
 // POST /api/local-llm/unload — body: { backend: 'ollama', modelId }.
