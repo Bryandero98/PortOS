@@ -32,11 +32,11 @@ const BASE_CONFIG = {
   status: {},
 };
 
-function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas' } = {}) {
+function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas', config: extraConfig = {} } = {}) {
   render(
     <GlobalConfigControls
       taskType={taskType}
-      config={{ ...BASE_CONFIG, taskMetadata }}
+      config={{ ...BASE_CONFIG, taskMetadata, ...extraConfig }}
       onUpdate={onUpdate}
       onTrigger={() => {}}
       onReset={() => {}}
@@ -145,6 +145,25 @@ describe('GlobalConfigControls — branch-reconcile batch size', () => {
     fireEvent.change(select, { target: { value: '5' } });
     expect(onUpdate).toHaveBeenCalledWith('branch-reconcile', {
       taskMetadata: { cleanupMerged: true, branchesPerAgent: 5 }
+    });
+  });
+});
+
+describe('GlobalConfigControls — file issues only', () => {
+  it('is hidden for non-audit tasks', () => {
+    renderControls();
+    expect(screen.queryByRole('button', { name: /File issues only/i })).not.toBeInTheDocument();
+  });
+
+  it('toggles fileIssues and forces the no-code posture on', () => {
+    const onUpdate = renderControls({
+      taskType: 'security',
+      taskMetadata: { useWorktree: true, openPR: true, simplify: true, fileIssues: false },
+      config: { fileIssuesCapable: true, defaultFileIssues: false },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /File issues only/i }));
+    expect(onUpdate).toHaveBeenCalledWith('security', {
+      taskMetadata: { useWorktree: false, openPR: false, simplify: false, fileIssues: true },
     });
   });
 });

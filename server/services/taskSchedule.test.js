@@ -1312,20 +1312,20 @@ describe('taskSchedule', () => {
   describe('ux defaults (#3273)', () => {
     it('is registered as a self-improvement task type with a description', () => {
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('ux')
-      expect(TASK_TYPE_DESCRIPTIONS['ux']).toBe('UX/design audit — files issues, no code changes')
+      expect(TASK_TYPE_DESCRIPTIONS['ux']).toBe('UX/design audit — file issues (default) or implement fixes')
     })
 
-    it('defaults to weekly + disabled with worktree/PR locked off', () => {
+    it('defaults to weekly + disabled with file-issues on (worktree/PR off)', () => {
       const cfg = DEFAULT_TASK_INTERVALS['ux']
       expect(cfg.type).toBe(INTERVAL_TYPES.WEEKLY)
       // Off by default — enabling it is the user's consent to a weekly LLM run.
       expect(cfg.enabled).toBe(false)
-      // The deliverable is tracker issues, so a CoS-managed worktree/PR is wrong.
+      expect(cfg.taskMetadata.fileIssues).toBe(true)
       expect(cfg.taskMetadata.useWorktree).toBe(false)
       expect(cfg.taskMetadata.openPR).toBe(false)
-      expect(MANAGED_AGENT_OPTIONS['ux']).toEqual(['useWorktree', 'openPR'])
-      // Writable for the same reason reference-watch is: the agent commits
-      // PLAN.md items / shells out to `gh issue create`.
+      // File-issues posture is enforced at dispatch, not via a static lock, so
+      // the user can flip fileIssues off and implement.
+      expect(MANAGED_AGENT_OPTIONS['ux']).toBeUndefined()
       expect(cfg.taskMetadata.readOnly).toBe(false)
     })
 
@@ -1344,6 +1344,33 @@ describe('taskSchedule', () => {
       expect(prompt).toContain('ui-bugs')
       expect(prompt).toContain('mobile-responsive')
       expect(prompt).toContain('accessibility')
+    })
+  })
+
+  describe('audit file-issues types', () => {
+    it('registers data-safety and simplify as disabled weekly file-issues audits', () => {
+      for (const taskType of ['data-safety', 'simplify']) {
+        expect(SELF_IMPROVEMENT_TASK_TYPES).toContain(taskType)
+        expect(TASK_TYPE_DESCRIPTIONS[taskType]).toBeTruthy()
+        const cfg = DEFAULT_TASK_INTERVALS[taskType]
+        expect(cfg.type).toBe(INTERVAL_TYPES.WEEKLY)
+        expect(cfg.enabled).toBe(false)
+        expect(cfg.taskMetadata.fileIssues).toBe(true)
+        expect(cfg.taskMetadata.useWorktree).toBe(false)
+        expect(cfg.taskMetadata.openPR).toBe(false)
+        expect(MANAGED_AGENT_OPTIONS[taskType]).toBeUndefined()
+      }
+    })
+
+    it('surfaces fileIssuesCapable on audit types in getScheduleStatus', async () => {
+      mockSchedule()
+      const status = await getScheduleStatus()
+      expect(status.tasks['security'].fileIssuesCapable).toBe(true)
+      expect(status.tasks['security'].defaultFileIssues).toBe(false)
+      expect(status.tasks['ux'].fileIssuesCapable).toBe(true)
+      expect(status.tasks['ux'].defaultFileIssues).toBe(true)
+      expect(status.tasks['data-safety'].fileIssuesCapable).toBe(true)
+      expect(status.tasks['claim-issue'].fileIssuesCapable).toBeUndefined()
     })
   })
 

@@ -43,6 +43,12 @@ import { isHeldByOther, getClaimOwner } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import {
+  isAuditTaskType,
+  isFileIssuesMode,
+  modeContractFor,
+  applyAuditModeWrapper,
+} from '../lib/auditCatalog.js';
 import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { shellQuote } from '../lib/shellQuote.js';
@@ -2783,9 +2789,11 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   const swarmBlock = resolveSwarmBlock(promptTaskType, metadata.swarmCount);
 
   return `${swarmBlock}${promptTemplate}`
-    // {trackerInstructions} FIRST — the injected block itself carries
-    // {appName}/{repoPath} placeholders that the replacers below expand. This
+    // {modeInstructions} before {trackerInstructions}: the file-issues mode
+    // contract itself carries {trackerInstructions}. Then tracker before
+    // {appName}/{repoPath} — the injected block carries those too. This
     // ordering is load-bearing (mirrors triggerReferenceAnalysis).
+    .replace(/\{modeInstructions\}/g, () => blocks.modeInstructions || '')
     .replace(/\{trackerInstructions\}/g, () => blocks.trackerInstructions)
     .replace(/\{appName\}/g, app.name)
     .replace(/\{repoPath\}/g, app.repoPath)
@@ -2938,9 +2946,10 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   if (referenceWatch.skip) return null;
   const referenceDataBlock = referenceWatch.block;
 
-  // Tracker-filing types (reference-watch / ux): the {trackerInstructions} block
-  // for the app's resolved work tracker.
-  const trackerFiling = await resolveTrackerFilingBlock(app, taskType);
+  // Tracker-filing types (reference-watch, or an audit type with fileIssues):
+  // the {trackerInstructions} block for the app's resolved work tracker.
+  const fileIssues = isFileIssuesMode(taskType, metadata);
+  const trackerFiling = await resolveTrackerFilingBlock(app, taskType, { fileIssues });
   if (trackerFiling.workTracker) {
     // Traceability + deliverable posture, derived from the SAME resolved tracker
     // that selected the {trackerInstructions} block above so the flag can't drift
@@ -2973,11 +2982,14 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   }
   const planConstraintBlock = buildPlanConstraintBlock(metadata.planId);
 
+  const modeInstructions = isAuditTaskType(taskType) ? modeContractFor(fileIssues) : '';
   const description = await buildImprovementTaskDescription({
-    promptTemplate, app, promptTaskType, metadata,
+    promptTemplate: applyAuditModeWrapper(promptTemplate, modeInstructions),
+    app, promptTaskType, metadata,
     blocks: {
       referenceData: referenceDataBlock,
       trackerInstructions: trackerFiling.trackerInstructions,
+      modeInstructions,
       prData: prDataBlock,
       inFlightBranches: inFlightBranchesBlock,
       zombieIssues: zombieIssuesBlock,
@@ -2988,6 +3000,15 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   });
 
   applyAppWorktreeDefault(metadata, app);
+  // File-issues posture wins over app worktree/PR defaults — the deliverable
+  // is tracker items, so a managed worktree or an implied PR is the wrong shape.
+  if (fileIssues) {
+    metadata.fileIssues = true;
+    metadata.noCodeOutput = true;
+    metadata.useWorktree = false;
+    metadata.openPR = false;
+    metadata.simplify = false;
+  }
   applyProviderModelPins(metadata, interval, hookOverride);
 
   const approval = await resolveConfidenceApproval(state, `app-improve:${taskType}`, `Task app-improve:${taskType} for ${app.name}`, metadata);

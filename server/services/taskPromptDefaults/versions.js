@@ -38,7 +38,9 @@ export const PROMPT_VERSIONS = {
   'documentation': 5, // v5: the changelog step defers to the convention the repo documents (some repos collect per-branch fragments in a directory so parallel agents don't conflict) instead of prescribing an append to `.changelog/NEXT.md`. v4: generic {appName} body (v1 hardcoded "PortOS"; v2/v3 retired DONE.md wording)
   'ui-bugs': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
   'mobile-responsive': 2, // v2: generic {appName} app-UI body (older default hardcoded "PortOS" + http://localhost:5555)
-  'ux': 1, // v1: walk the running UI with Playwright MCP against a 7-item named UX checklist and file ONE tracker item per finding via {trackerInstructions} — read-only on source, no branches/PRs. Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed).
+  'ux': 1, // v1: walk the running UI with Playwright MCP against a 7-item named UX checklist and file ONE tracker item per finding via {trackerInstructions} — read-only on source, no branches/PRs. Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed). Mode (file-issues vs implement) is injected at dispatch via {modeInstructions} / applyAuditModeWrapper — no prompt bump required.
+  'data-safety': 1, // v1: data/upgrade-safety audit (migrations, schema parity, version gates). Mode injected at dispatch.
+  'simplify': 1, // v1: dead-code/duplication audit. Mode injected at dispatch.
   'release-check': 8, // v8: database-backed release tests are provisioned and run using the repo's documented isolated test database before the release PR gate; v7: Step 1 also reads the UNCOLLECTED changelog fragments (the fragment dir, plus whatever preview command that repo documents — release-check is a generic {appName} prompt, so it never names a PortOS script to run) and counts substantive entries across the assembled notes — reading only the staged `.changelog/NEXT.md` under-counts a release whose entries are still per-branch fragments, so a ready release reported as "not enough work". v6: generic {appName} body (older defaults hardcoded "PortOS")
 };
 

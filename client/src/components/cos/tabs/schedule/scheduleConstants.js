@@ -177,6 +177,38 @@ export function setMetadataOverride(taskMetadata, field, value) {
 // Toggle a global taskMetadata field, enforcing the openPR→useWorktree invariant.
 // Persists both true and false values so explicit overrides survive the server-side
 // merge with task-type defaults (e.g., feature-ideas defaults openPR to true).
+// Effective file-issues mode for an audit-capable task: an explicit stored
+// boolean wins, otherwise the catalog default the schedule status published.
+export function fileIssuesEffective(config, overrideMetadata) {
+  if (overrideMetadata?.fileIssues !== undefined) return overrideMetadata.fileIssues === true;
+  if (config?.taskMetadata?.fileIssues !== undefined) return config.taskMetadata.fileIssues === true;
+  return config?.defaultFileIssues === true;
+}
+
+// When file-issues is on, worktree/PR/simplify are meaningless — the UI treats
+// them as managed so the user cannot turn them on under that mode.
+export const FILE_ISSUES_MANAGED_FIELDS = ['useWorktree', 'openPR', 'simplify'];
+
+export function managedAgentOptionsFor(config, overrideMetadata) {
+  const managed = [...(config?.managedAgentOptions || [])];
+  if (config?.fileIssuesCapable && fileIssuesEffective(config, overrideMetadata)) {
+    for (const field of FILE_ISSUES_MANAGED_FIELDS) {
+      if (!managed.includes(field)) managed.push(field);
+    }
+  }
+  return managed;
+}
+
+export function toggleFileIssuesMetadata(metadata, next) {
+  const taskMetadata = { ...(metadata || {}), fileIssues: next };
+  if (next) {
+    taskMetadata.useWorktree = false;
+    taskMetadata.openPR = false;
+    taskMetadata.simplify = false;
+  }
+  return taskMetadata;
+}
+
 export function toggleMetadataField(metadata, field) {
   const current = metadata || {};
   const newMeta = { ...current, [field]: !current[field] };

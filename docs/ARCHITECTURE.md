@@ -333,4 +333,5 @@ PostgreSQL itself is not PM2-managed — it runs as the system service (`:5432`)
 
 ### Adding CoS Task Types
 1. Add the task type to `SELF_IMPROVEMENT_TASK_TYPES` and `DEFAULT_TASK_INTERVALS` in `server/services/taskSchedule.js`
-2. Add its prompt template to `DEFAULT_TASK_PROMPTS` in `server/services/taskPromptService.js`
+2. Add its prompt template to `DEFAULT_TASK_PROMPTS` in `server/services/taskPromptDefaults/prompts.js` (bump `PROMPT_VERSIONS` + append the outgoing default to `PREVIOUS_DEFAULT_PROMPTS` if you are changing an existing default)
+3. If it is an audit that should be configurable to **file issues** or **do the work**, add it to `AUDIT_DEFINITIONS` in `server/lib/auditCatalog.js` (and map any matching quota-burn preset via `quotaBurnId`)

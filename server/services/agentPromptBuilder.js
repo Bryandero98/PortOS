@@ -110,6 +110,14 @@ PortOS launched you autonomously. Nobody is watching this session and nothing ca
  */
 const SKILL_MATCHERS = [
   {
+    skill: 'data-safety',
+    keywords: ['data-safety', 'upgrade-safety', 'schema parity', 'schemaversion', 'seed file', 'data.reference']
+  },
+  {
+    skill: 'simplify',
+    keywords: ['dead code', 'unused export', 'duplication', 'copy-paste', 'unreferenced']
+  },
+  {
     skill: 'security-audit',
     keywords: ['security', 'audit', 'vulnerability', 'xss', 'injection', 'owasp', 'cve', 'penetration', 'hardening', 'sanitize', 'authorization']
   },

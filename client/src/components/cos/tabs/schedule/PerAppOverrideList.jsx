@@ -47,6 +47,8 @@ export default function PerAppOverrideList({ taskType, config, apps, onUpdateOve
             globalIntervalType={config.type}
             globalTaskMetadata={config.taskMetadata}
             managedAgentOptions={config.managedAgentOptions}
+            fileIssuesCapable={config.fileIssuesCapable}
+            defaultFileIssues={config.defaultFileIssues}
             override={appOverrides[app.id]}
             onUpdate={onUpdateOverride}
           />

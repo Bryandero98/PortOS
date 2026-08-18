@@ -16,7 +16,7 @@ import { effectiveModelFor } from '../../../../utils/providers';
 import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
-import { INTERVAL_DESCRIPTIONS, toggleMetadataField, pipelineStages, IMPROVEMENT_DISABLED_TITLE, SAVING_TITLE } from './scheduleConstants';
+import { INTERVAL_DESCRIPTIONS, toggleMetadataField, pipelineStages, IMPROVEMENT_DISABLED_TITLE, SAVING_TITLE, fileIssuesEffective, managedAgentOptionsFor, toggleFileIssuesMetadata } from './scheduleConstants';
 
 // Shown for the unpinned ('' → inherit) choice: the task type is global, so the
 // policy is whatever each target app configured, and PortOS's own self-improvement
@@ -468,12 +468,38 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
         activeApps={activeApps}
       />
 
+      {config.fileIssuesCapable && (
+        <button
+          type="button"
+          disabled={updating}
+          aria-pressed={fileIssuesEffective(config)}
+          aria-label={fileIssuesEffective(config) ? 'File issues only (on)' : 'File issues only (off)'}
+          className={`w-full flex items-center justify-between gap-3 min-h-[44px] rounded px-2 -mx-2 text-left ${updating ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-port-card/30 active:bg-port-card/50'}`}
+          onClick={async () => {
+            setUpdating(true);
+            await onUpdate(taskType, {
+              taskMetadata: toggleFileIssuesMetadata(config.taskMetadata, !fileIssuesEffective(config))
+            });
+            setUpdating(false);
+          }}
+        >
+          <div className="min-w-0 flex-1">
+            <span className="text-sm text-white">File issues only</span>
+            <p className="text-xs text-gray-500">
+              When on, the agent reads the code and files tracker issues — it does not change source.
+              When off, it implements the highest-value fix.
+            </p>
+          </div>
+          <ToggleSwitch enabled={fileIssuesEffective(config)} disabled={updating} decorative />
+        </button>
+      )}
+
       <div>
         <span className="text-sm text-gray-400 block mb-2">Agent Options</span>
         <div className="space-y-2">
           {AGENT_OPTIONS.map(({ field, label, description }) => {
             const enabled = config.taskMetadata?.[field] ?? false;
-            const managed = config.managedAgentOptions?.includes(field);
+            const managed = managedAgentOptionsFor(config).includes(field);
             const lockedHint = `${label} is managed internally by this task — the agent's prompt handles it.`;
             return (
               <button

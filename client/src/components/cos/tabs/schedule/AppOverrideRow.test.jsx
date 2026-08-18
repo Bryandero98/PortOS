@@ -5,7 +5,14 @@ import AppOverrideRow from './AppOverrideRow';
 
 const APP = { id: 'app-1', name: 'Acme' };
 
-function renderRow({ globalTaskMetadata = {}, override = null, onUpdate = vi.fn().mockResolvedValue(undefined), taskType = 'feature-ideas' } = {}) {
+function renderRow({
+  globalTaskMetadata = {},
+  override = null,
+  onUpdate = vi.fn().mockResolvedValue(undefined),
+  taskType = 'feature-ideas',
+  fileIssuesCapable,
+  defaultFileIssues,
+} = {}) {
   render(
     <AppOverrideRow
       app={APP}
@@ -13,6 +20,8 @@ function renderRow({ globalTaskMetadata = {}, override = null, onUpdate = vi.fn(
       globalIntervalType="daily"
       globalTaskMetadata={globalTaskMetadata}
       managedAgentOptions={[]}
+      fileIssuesCapable={fileIssuesCapable}
+      defaultFileIssues={defaultFileIssues}
       override={override}
       onUpdate={onUpdate}
     />
@@ -68,6 +77,28 @@ describe('AppOverrideRow — After opening PR override', () => {
     expect(prSelect()).toHaveValue('leave-open');
     await act(async () => { fireEvent.change(prSelect(), { target: { value: '' } }); });
     expect(onUpdate).toHaveBeenCalledWith('app-1', 'feature-ideas', { taskMetadata: null });
+  });
+});
+
+describe('AppOverrideRow — file issues only', () => {
+  it('shows the Iss toggle for audit-capable tasks and hides it otherwise', () => {
+    renderRow({ taskType: 'feature-ideas' });
+    expect(screen.queryByRole('button', { name: /File issues only/i })).not.toBeInTheDocument();
+  });
+
+  it('toggles fileIssues as a per-app override', async () => {
+    const onUpdate = renderRow({
+      taskType: 'security',
+      fileIssuesCapable: true,
+      defaultFileIssues: false,
+      globalTaskMetadata: { fileIssues: false },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /File issues only/i }));
+    });
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'security', {
+      taskMetadata: { fileIssues: true, useWorktree: false, openPR: false, simplify: false },
+    });
   });
 });
 

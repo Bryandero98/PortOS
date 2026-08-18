@@ -48,6 +48,7 @@ import {
   REFERENCE_WATCH_AUDITED_VERSION,
   PREVIOUS_DEFAULT_PROMPTS
 } from './taskPromptDefaults.js';
+import { isAuditTaskType, defaultFileIssuesFor } from '../lib/auditCatalog.js';
 
 // Re-export the prompt-version constants so existing importers of taskSchedule.js
 // are unaffected. The prompt GETTERS (getDefaultPrompt / getTaskPrompt /
@@ -197,14 +198,18 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   'reference-watch',
   // Walks the running app UI with a UX reviewer's eye (Playwright MCP) against a
   // named checklist — buried primary actions, dead-end empty/error states,
-  // affordances that drift between sibling screens — and files ONE tracker issue
-  // per finding instead of committing a speculative redesign. Design judgment is
-  // proposed, never auto-merged: `ux` is a TRACKER-FILING type (see
-  // TRACKER_FILING_TASK_TYPES in cosTaskGenerator.js), read-only on source.
-  // Deliberately narrower than its siblings: raw console errors belong to
-  // `ui-bugs`, viewport breakage to `mobile-responsive`, ARIA/contrast/keyboard
-  // to `accessibility`.
+  // affordances that drift between sibling screens. Defaults to filing tracker
+  // issues (`fileIssues: true`); the user can flip it to implement. Deliberately
+  // narrower than its siblings: raw console errors belong to `ui-bugs`, viewport
+  // breakage to `mobile-responsive`, ARIA/contrast/keyboard to `accessibility`.
   'ux',
+  // Quota-burn `data-safety-audit` counterpart. Migrations, schema parity, and
+  // cross-version compatibility. Defaults to file-issues (safer for unattended).
+  'data-safety',
+  // Quota-burn `simplify-audit` counterpart. Dead code, unused exports, and
+  // copy-paste drift — distinct from `code-quality` (which is the broader DRY /
+  // long-function / TODO pass). Defaults to file-issues.
+  'simplify',
   // PortOS-only: researches the current best local LLMs per category and
   // refreshes the bundled suggested-models catalog (server/lib/localLlmCatalog.js)
   // + the editorial family ranking (server/lib/localModelHeuristics.js), opening a
@@ -297,11 +302,11 @@ export const PERPETUAL_DRAIN_DISPATCH_CAP = 5;
 export const DEFAULT_BRANCHES_PER_AGENT = 3;
 
 export const DEFAULT_TASK_INTERVALS = {
-  'security':            { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
-  'code-quality':        { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
-  'test-coverage':       { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
-  'performance':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
-  'accessibility':       { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
+  'security':            { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'code-quality':        { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'test-coverage':       { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'performance':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'accessibility':       { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   // branch-reconcile first removes fully-merged, clean orphaned worktrees and
   // branches, then finishes THIS machine's remaining in-flight LOCAL branches
   // per app (open a PR for pushed-but-unopened work, resolve merge conflicts,
@@ -339,11 +344,11 @@ export const DEFAULT_TASK_INTERVALS = {
   // non-committing-coordinator posture above. Off by default — enabling it is the
   // user's explicit consent to let it mutate issue state on a schedule.
   'issue-reconcile':     { type: INTERVAL_TYPES.PERPETUAL, enabled: false, providerId: null, model: null, prompt: null, recheckCron: '0 4 * * *', drainDispatchCap: PERPETUAL_DRAIN_DISPATCH_CAP, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, autoClose: true } },
-  'console-errors':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
+  'console-errors':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   'dependency-updates':  { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null },
-  'documentation':       { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
-  'ui-bugs':             { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null },
-  'mobile-responsive':   { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null },
+  'documentation':       { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'ui-bugs':             { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'mobile-responsive':   { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   // feature-ideas waits for do-replan so new work is grounded in a fresh PLAN.md
   // that already accounts for any in-flight or unmerged work.
   'feature-ideas':       { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, runAfter: ['do-replan'], taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
@@ -390,8 +395,8 @@ export const DEFAULT_TASK_INTERVALS = {
   // `issueAuthorFilter` applies only when the resolved tracker is a forge
   // (github/gitlab); it's inert for plan/jira.
   'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
-  'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
-  'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
+  'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
+  'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   // Release-check inspects and mutates release state (for example, the main →
   // release PR) rather than producing source commits. It must run from the app's
   // live main checkout so its branch/ref checks describe the real release flow;
@@ -423,15 +428,17 @@ export const DEFAULT_TASK_INTERVALS = {
   // REFERENCE_WATCH_AUDITED_VERSION above; bumping the prompt version requires
   // re-auditing this default (a guard test in taskSchedule.test.js enforces it).
   'reference-watch':     { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: false } },
-  // ux audits the RUNNING app UI and delivers findings as tracker issues, so a
-  // CoS-managed worktree/PR is the wrong shape for it entirely — both are LOCKED
-  // off (MANAGED_AGENT_OPTIONS). `readOnly: false` for the same reason
-  // reference-watch is writable: the prompt's PLAN.md path appends + commits
-  // `[ux-…]` checklist items and the forge paths shell out to `gh`/`glab issue
-  // create`; `readOnly: true` would inject the "do not modify or commit files"
-  // guard and the agent would refuse. Off by default (AI Provider Usage Policy —
-  // enabling it is the user's consent to a weekly browser-driving LLM run).
-  'ux':                  { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, readOnly: false } },
+  // ux audits the RUNNING app UI. Defaults to filing tracker issues
+  // (`fileIssues: true`); flip that off to implement. `readOnly: false` so the
+  // PLAN.md path can commit checklist items / forge paths can `gh issue create`.
+  // Off by default (AI Provider Usage Policy — enabling it is the user's consent
+  // to a weekly browser-driving LLM run).
+  'ux':                  { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false, readOnly: false } },
+  // data-safety / simplify are the scheduled counterparts of the quota-burn
+  // `data-safety-audit` and `simplify-audit` presets. New types default to
+  // file-issues so an unattended enable doesn't land code. Off by default.
+  'data-safety':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
+  'simplify':            { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   // pr-watcher polls for newly-opened PRs, so it runs on a short custom
   // interval rather than the loose rotation/daily cadence. 30 min keeps the
   // gh polling cheap while still reacting to a PR within one cycle. Default
@@ -491,9 +498,6 @@ export const MANAGED_AGENT_OPTIONS = {
   // claim-work delegates to one of the above prompt bodies, each of which
   // creates its own worktree + PR — so the same lock applies to the router.
   'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
-  // ux's deliverable is tracker issues, not code — it never edits source, so a
-  // worktree/PR would only produce an empty branch. Lock both off.
-  'ux': ['useWorktree', 'openPR'],
   'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected']
 };
 
@@ -2029,6 +2033,11 @@ export async function getScheduleStatus() {
       taskStatus.managedAgentOptions = MANAGED_AGENT_OPTIONS[taskType];
     }
 
+    if (isAuditTaskType(taskType)) {
+      taskStatus.fileIssuesCapable = true;
+      taskStatus.defaultFileIssues = defaultFileIssuesFor(taskType);
+    }
+
     // Perpetual tasks park PER-APP (parkPerpetual is called with the appId), so
     // the global `status` above (shouldRunTask with no appId) always reads
     // 'perpetual-drain' for app-scoped tasks like claim-issue/claim-work even
@@ -2211,25 +2220,25 @@ function formatRelativeTime(timestamp) {
 // which reads as an orphaned/legacy task. A parity guard in taskSchedule.test.js
 // fails the suite if the two ever drift apart.
 export const TASK_TYPE_DESCRIPTIONS = {
-  'ui-bugs': 'Find and fix UI bugs',
-  'mobile-responsive': 'Check mobile responsiveness',
-  'security': 'Security vulnerability audit',
-  'code-quality': 'Code quality improvements',
-  'console-errors': 'Fix console errors',
-  'performance': 'Performance optimization',
-  'test-coverage': 'Improve test coverage',
-  'documentation': 'Update documentation',
+  'ui-bugs': 'Find UI bugs — file issues or implement fixes',
+  'mobile-responsive': 'Mobile/responsive audit — file issues or implement fixes',
+  'security': 'Security audit — file issues or implement fixes',
+  'code-quality': 'Code quality — file issues or implement fixes',
+  'console-errors': 'Console errors — file issues or implement fixes',
+  'performance': 'Performance audit — file issues or implement fixes',
+  'test-coverage': 'Test coverage — file issues or add tests',
+  'documentation': 'Docs drift — file issues or implement fixes',
   'feature-ideas': 'Implement next planned feature or brainstorm new one',
   'plan-task': 'Execute next PLAN.md item, remove it from PLAN.md, log to changelog (worktree+PR)',
   'claim-issue': 'Claim and ship the next open GitHub issue (owner-filed or any author), PR closes it',
   'claim-work': "Ship the next work item from the app's configured tracker (PLAN.md, GitHub/GitLab issues, or JIRA), routed automatically",
-  'accessibility': 'Accessibility audit',
+  'accessibility': 'Accessibility audit — file issues or implement fixes',
   'branch-reconcile': "Finish this machine's in-flight local branches: clean up merged ones, open PRs, resolve conflicts, drive review, auto-merge when green",
   'issue-reconcile': "Heal zombie issues: open + in-progress but their PR already merged with no live claim — close + file a scoped follow-up when work remains, or release the claim so the queue re-picks it",
   'dependency-updates': 'Land or resolve open Dependabot/Renovate PRs, then update the dependencies they missed',
   'release-check': 'Check for release readiness',
-  'error-handling': 'Improve error handling',
-  'typing': 'Improve TypeScript types',
+  'error-handling': 'Failure-path audit — file issues or implement fixes',
+  'typing': 'TypeScript types — file issues or implement fixes',
   'pr-reviewer': 'Review open PRs from contributors',
   'pr-watcher': 'Run a custom prompt on PRs newly opened against the default branch',
   'code-reviewer-a': 'Review the codebase and triage/implement findings (independent provider/model instance A)',
@@ -2238,7 +2247,9 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'jira-sprint-manager': 'Triage and implement JIRA sprint tickets',
   'jira-status-report': 'Generate JIRA weekly status report',
   'reference-watch': 'Watch reference repos and append PLAN.md items for new upstream work',
-  'ux': 'UX/design audit — files issues, no code changes',
+  'ux': 'UX/design audit — file issues (default) or implement fixes',
+  'data-safety': 'Data/upgrade-safety audit — file issues (default) or implement fixes',
+  'simplify': 'Dead-code/duplication audit — file issues (default) or implement removals',
   'refresh-local-llm-catalog': "Refresh PortOS's bundled suggested local-model catalog + editorial ranking (PortOS repo only)",
   'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent"
 };
