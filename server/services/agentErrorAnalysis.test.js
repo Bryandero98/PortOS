@@ -129,6 +129,27 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(analysis.message).not.toContain('/home/x/');
   });
 
+  // Same incident, the OTHER source: PortOS's own `-c model_reasoning_effort=max`
+  // override. Codex reports an override rejection with the same "Error loading
+  // config.toml" lead but NO file:line:col prefix, so this wording is what the
+  // three failing runs on 2026-08-17 actually recorded — verified by running
+  // `codex exec -c model_reasoning_effort=max -`. Classifying it (not falling
+  // through to `unknown`) is what keeps it a Tier 1 config fix instead of an
+  // escalated investigation. `resolveCliEffort` is what stops PortOS emitting
+  // the bad value in the first place (server/lib/providerModels.js).
+  it('classifies a codex -c override rejection (no file path in the message)', () => {
+    const line = 'Error loading config.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`\n    in `model_reasoning_effort`';
+    const analysis = analyzeAgentFailure(withLead(line), { id: 't' }, 'gpt-5.6-sol');
+    expect(analysis.category).toBe('cli-config-invalid');
+    expect(analysis.rejectedConfigKey).toBe('model_reasoning_effort');
+    expect(analysis.rejectedConfigValue).toBe('max');
+    // A CLI that dies at config load dies identically every time — the run must
+    // block on the FIRST failure rather than burn all three retries on it.
+    const decision = resolveFailedTaskDecision({ id: 't', metadata: {} }, analysis);
+    expect(decision.status).toBe('blocked');
+    expect(decision.metadataUpdates.blockedCategory).toBe('cli-config-invalid');
+  });
+
   it('classifies a config file that fails to load at all', () => {
     const analysis = analyzeAgentFailure(withLead('Error loading config.toml: expected a value after the equals sign'), { id: 't' }, 'x');
     expect(analysis.category).toBe('cli-config-invalid');
