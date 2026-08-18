@@ -60,7 +60,7 @@ export const SLASHDO_INLINE_BUDGET_CHARS = 24000;
  *
  * Keyed by the PortOS reviewer slug (`REVIEWER_VALUES` in `cosValidation.js`) so
  * the keep-set derives from already-resolved run settings. `copilot` and the
- * arbitrary-`@login` loop are GitHub-side; `claude`/`codex`/`antigravity`/`grok`
+ * arbitrary-`@login` loop are GitHub-side; `claude`/`codex`/`antigravity`/`grok`/`cursor`
  * all share slashdo's one local-agent loop; `ollama`/`lmstudio` are the
  * local-model loop.
  *
@@ -90,7 +90,7 @@ export const SLASHDO_REVIEWER_INCLUDE_NAMES = Object.freeze(Object.values(SLASHD
  * can pin it against `REVIEWER_CLI_BINARIES` (whose keys are the same roster);
  * a reviewer added to one and not the other is a drift the test catches.
  */
-export const LOCAL_AGENT_REVIEWERS = new Set(['claude', 'codex', 'antigravity', 'grok']);
+export const LOCAL_AGENT_REVIEWERS = new Set(['claude', 'codex', 'antigravity', 'grok', 'cursor']);
 /** Reviewer slugs that drive slashdo's local-model (Ollama-style) loop. */
 const LOCAL_MODEL_REVIEWERS = new Set(['ollama', 'lmstudio']);
 

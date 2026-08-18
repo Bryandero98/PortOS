@@ -21,13 +21,13 @@ import { PR_COMPLETION_VALUES } from './prDisposition.js';
 // =============================================================================
 
 // Reviewer choices for the Review Loop. `copilot` requests a native GitHub
-// Copilot review; `claude`/`antigravity`/`codex`/`grok` instruct the review-loop
+// Copilot review; `claude`/`antigravity`/`codex`/`grok`/`cursor` instruct the review-loop
 // follow-up agent to invoke the named CLI to critique the PR diff; `lmstudio`/`ollama`
 // route the diff through PortOS's local code-review endpoint
 // (`POST /api/code-review/local`) which runs the configured local LLM model.
 // Mirrored in client/src/components/cos/constants.js → REVIEWER_OPTIONS.
-export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'grok', 'lmstudio', 'ollama'];
-export const REVIEWER_ALIASES = { gemini: 'antigravity' };
+export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'grok', 'cursor', 'lmstudio', 'ollama'];
+export const REVIEWER_ALIASES = { gemini: 'antigravity', 'cursor-agent': 'cursor' };
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 // Reviewers that resolve to a local-LLM backend (rather than a CLI or GitHub
@@ -50,7 +50,7 @@ export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
 // get their model injected server-side by `POST /api/code-review/local`. Add a
 // reviewer here when its CLI gains model selection; the `<reviewer>Model`
 // settings scalar is generated from this roster (codeReviewSettingsSchema).
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok'];
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor'];
 // Every reviewer whose model the user can PICK in the UI: the model-capable CLIs
 // above (threaded into the follow-up prompt as `<reviewer> --model <id>`) plus the
 // local-LLM backends (whose id is injected server-side by
@@ -74,6 +74,7 @@ export const REVIEWER_CLI_BINARIES = {
   antigravity: ANTIGRAVITY_COMMAND,
   codex: 'codex',
   grok: 'grok',
+  cursor: 'cursor-agent',
 };
 
 /**
@@ -383,7 +384,7 @@ function normalizeReviewerModel(raw, reviewer = null) {
 }
 
 // Reviewers whose slashdo `--review-with` entry accepts a `[<model>]` bracket
-// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/ollama). PortOS's
+// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/cursor/ollama). PortOS's
 // `lmstudio` reviewer has NO slashdo counterpart — it's served by
 // `POST /api/code-review/local`, which takes the model in its request body — so a
 // pinned lmstudio model never becomes a bracket, and `copilot`/`@login` entries

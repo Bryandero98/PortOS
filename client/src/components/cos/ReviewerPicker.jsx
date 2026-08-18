@@ -15,8 +15,9 @@ import {
   reviewerLabel,
   sanitizeReviewerModelInput
 } from './constants';
+import { normalizeReviewerSlug } from '../../lib/reviewerPins';
 
-const normalizeReviewerValue = (value) => value === 'gemini' ? 'antigravity' : value;
+const normalizeReviewerValue = (value) => normalizeReviewerSlug(value);
 
 /**
  * Ordered multi-reviewer picker, rendered as one row per reviewer with the five

@@ -27,9 +27,10 @@ import {
 
 // CLI reviewers whose binary takes a `--model <id>` tier. Mirror of
 // MODEL_CAPABLE_CLI_REVIEWERS (`antigravity` runs `agy --model <id>`, `grok` runs
-// `grok --model <id>` — the latter takes a model but no effort, so this roster is
+// `grok --model <id>`, and Cursor runs `cursor-agent --model <id>` — the latter
+// two take a model but no separate effort flag, so this roster is
 // deliberately wider than EFFORT_SELECTABLE_REVIEWERS below).
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok'];
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor'];
 
 // The local-LLM backends, which take both a model and an effort.
 export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
@@ -68,7 +69,7 @@ export const REVIEWER_EFFORT_LEVELS = Object.freeze({
 export const EFFORT_SELECTABLE_REVIEWERS = Object.freeze(Object.keys(REVIEWER_EFFORT_LEVELS));
 
 // Reviewer slug aliases. `gemini` is the historical name for the Antigravity CLI.
-const REVIEWER_ALIASES = { gemini: 'antigravity' };
+const REVIEWER_ALIASES = { gemini: 'antigravity', 'cursor-agent': 'cursor' };
 
 // The canonical slug for a reviewer token: lower-cased, trimmed, aliases resolved.
 // `''` for a non-string. `@username` tokens ride through as-is (they're no

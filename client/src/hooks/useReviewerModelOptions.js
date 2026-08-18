@@ -13,7 +13,7 @@ import { reviewerEffortLevels, normalizeReviewerSlug } from '../lib/reviewerPins
  * Two sources, because the two reviewer kinds are different things:
  * - `lmstudio` / `ollama` ids come from `/api/local-llm/status`, so they reflect
  *   what's actually installed rather than a provider's stale stored `models`.
- * - `codex` / `claude` / `antigravity` / `grok` tiers come from the provider
+ * - `codex` / `claude` / `antigravity` / `grok` / `cursor` tiers come from the provider
  *   catalog (`/api/providers`) — these are CLI reviewers, not local backends, so
  *   there's nothing to probe.
  *
@@ -98,6 +98,7 @@ export default function useReviewerModelOptions() {
       // the user lists real ids on the provider. The Model cell stays useful
       // regardless because grok, like every CLI reviewer, is free-text.
       grok: providerTiers((p) => p.id === 'grok-cli', isGrokBuildCli),
+      cursor: providerTiers((p) => p.id === 'cursor-cli', (p) => p.id === 'cursor-tui'),
     };
 
     // The agy provider's RAW catalog — one id per effort tier
@@ -123,7 +124,7 @@ export default function useReviewerModelOptions() {
       modelEffortLevels,
       // A local backend's id list is authoritative (we probed it), so keep those
       // pickers a closed `<select>`. Every CLI reviewer is free-text: `claude` for
-      // the Ollama-backed / Bedrock-form cases above, `codex`/`antigravity`/`grok`
+      // the Ollama-backed / Bedrock-form cases above, `codex`/`antigravity`/`grok`/`cursor`
       // because their catalogs are stored snapshots that can lag a newly-released
       // tier — grok's shipped catalog holds no real id at all, so a typed id is the
       // ONLY way to pin one (an agy pin may also be typed effort-suffixed — the
