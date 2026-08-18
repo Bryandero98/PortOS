@@ -402,6 +402,7 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [Architecture Overview](./docs/ARCHITECTURE.md) — System design, data flow, and service diagram
 - [API Reference](./docs/API.md) — REST endpoints, full route-domain index, and WebSocket events
 - [Companion App API](./docs/COMPANION_APP_API.md) — PortDeck native mobile client discovery and HTTP API contract
+- [Federated Media Providers](./docs/FEDERATED_MEDIA_PROVIDERS.md) — Authenticated, capacity-aware peer audio provider wire contract and setup
 - [Storage Classification Contract](./docs/STORAGE.md) — when data belongs in PostgreSQL vs the filesystem, plus the new-data-store checklist
 - [Backup & Restore](./docs/BACKUP.md) — filesystem snapshots + mandatory PostgreSQL dumps and how to restore them
 - [Port Allocation](./docs/PORTS.md) — Port conventions (5553-5561) and allocation guide
@@ -424,14 +425,17 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [Voice Mode](./docs/features/voice.md) — local STT/TTS/LLM voice assistant setup
 - [Chief of Staff](./docs/features/chief-of-staff.md) — Autonomous agent orchestrator
 - [Operational Goals](./docs/GOALS_OPERATIONAL.md) — Runtime priorities the CoS reads when generating work
+- [Agent Context](./docs/features/agent-context.md) — Per-task execution context and history tracking
 - [Agent Skills](./docs/features/agent-skills.md) — Task-type-specific agent prompts
 - [Claude on Ollama](./docs/features/claude-ollama.md) — Run agent tasks on a local model
 - [CoS Agent Runner](./docs/features/cos-agent-runner.md) — Isolated agent process architecture
 - [CoS Enhancement](./docs/features/cos-enhancement.md) — Hybrid search, proactive execution, error recovery
+- [MTPLX](./docs/features/mtplx.md) — Multiplexed agent execution and terminal streaming
 - [Memory System](./docs/features/memory-system.md) — Semantic memory with vector search and importance decay
 - [Digital Twin](./docs/features/digital-twin.md) — Genome, chronotype, taste, and mortality-aware goals
 - [Identity System](./docs/features/identity-system.md) — Extended identity modeling (P1-P3)
 - [Soul System](./docs/features/soul-system.md) — Identity scaffold with behavioral testing
+- [Privacy Center](./docs/features/privacy-center.md) — Machine-local vault, data brokers, and organization change tracking
 - [Brain System](./docs/features/brain-system.md) — Offline-first second brain
 - [POST](./docs/features/post.md) — Daily cognitive training
 - [App Wizard](./docs/features/app-wizard.md) — App registration and scaffolding
@@ -442,6 +446,8 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [JIRA Sprint Manager](./docs/features/jira-sprint-manager.md) — Autonomous JIRA triage and implementation
 - [Writers Room](./docs/features/writers-room.md) — Prose-to-media writing environment with explicit AI passes
 - [Sprite Export Contract](./docs/features/sprite-export-contract.md) — What a published sprite atlas guarantees a consuming game
+- [Video Text Encoders](./docs/features/video-text-encoders.md) — Dual-encoder memory and clip conditioning for video models
+- [Music Renderer Benchmarks](./docs/features/music-renderer-benchmarks.md) — Benchmarking profiles and listening test evidence for local renderers
 - [OpenClaw](./docs/features/openclaw-operator-chat.md) — In-app operator-agent chat
 - [Stacker News](./docs/features/stacker-news.md) — Territory management and content stewardship
 - [Messages Security Model](./docs/features/messages-security.md) — Prompt-injection boundary around untrusted message content
