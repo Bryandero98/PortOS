@@ -25,7 +25,7 @@ describe('toBareModelIds', () => {
       .toEqual(['mtplx', 'qwen/model']);
   });
 
-  it('keeps OrcaRouter vendor ids unchanged for its provider models map', () => {
+  it('keeps OrcaRouter stored ids unchanged for the models map', () => {
     expect(toBareModelIds(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], 'orcarouter'))
       .toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
   });
@@ -61,19 +61,6 @@ describe('buildOpencodeConfig', () => {
     const cfg = buildOpencodeConfig(['ollama/qwen2.5:7b', 'llama3.1:8b']);
     expect(Object.keys(cfg.provider.ollama.models).sort()).toEqual(['llama3.1:8b', 'qwen2.5:7b']);
     expect(cfg.provider.ollama.models['qwen2.5:7b']).toEqual({ name: 'qwen2.5:7b', tool_call: true });
-  });
-
-  it('declares OrcaRouter stored ids under the orcarouter provider', () => {
-    const cfg = buildOpencodeConfig(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], null, 'orcarouter');
-    expect(cfg.provider.orcarouter).toMatchObject({
-      npm: '@ai-sdk/openai-compatible',
-      name: 'OrcaRouter',
-      options: { baseURL: 'https://api.orcarouter.ai/v1' },
-    });
-    expect(Object.keys(cfg.provider.orcarouter.models).sort()).toEqual([
-      'anthropic/claude-sonnet-4.6',
-      'orcarouter/auto',
-    ]);
   });
 
   it('preserves a slash-bearing bare model id', () => {
@@ -114,6 +101,18 @@ describe('buildOpencodeConfig', () => {
     expect(cfg.provider.mtplx.models).toEqual({
       mtplx: { name: 'mtplx', tool_call: true },
     });
+  });
+
+  it('declares OrcaRouter models under unchanged keys and its gateway endpoint', () => {
+    const cfg = buildOpencodeConfig(['orcarouter/auto', 'anthropic/claude-sonnet-4.6'], null, 'orcarouter');
+    expect(cfg.provider.orcarouter).toMatchObject({
+      npm: '@ai-sdk/openai-compatible',
+      name: 'OrcaRouter',
+      options: { baseURL: 'https://api.orcarouter.ai/v1' },
+    });
+    expect(Object.keys(cfg.provider.orcarouter.models).sort()).toEqual([
+      'anthropic/claude-sonnet-4.6', 'orcarouter/auto',
+    ]);
   });
 });
 
@@ -171,23 +170,23 @@ describe('buildOpencodeEnvVars', () => {
     expect(cfg.provider.mtplx.models.mtplx).toEqual({ name: 'mtplx', tool_call: true });
   });
 
-  it('injects the OrcaRouter sibling key only into the dynamic spawn config', () => {
+  it('injects the sibling OrcaRouter API key only into the composed spawn config', () => {
+    const storedConfig = JSON.stringify({
+      permission: 'allow',
+      provider: { orcarouter: { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'https://api.orcarouter.ai/v1' } } },
+    });
     const result = buildOpencodeEnvVars({
       command: 'opencode',
       orcarouterBacked: true,
-      apiKey: 'sk-orca-example',
       models: ['orcarouter/auto'],
-      envVars: {
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({
-          permission: 'allow',
-          provider: { orcarouter: { options: { baseURL: 'https://api.orcarouter.ai/v1' } } },
-        }),
-      },
+      envVars: { OPENCODE_CONFIG_CONTENT: storedConfig },
+      orcarouterApiKey: 'sk-orca-example',
     }, 'orcarouter/auto');
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
-    expect(cfg.provider.orcarouter.models['orcarouter/auto']).toBeDefined();
+    expect(cfg.provider.orcarouter.models['orcarouter/auto']).toEqual({ name: 'orcarouter/auto', tool_call: true });
     expect(cfg.provider.orcarouter.options.apiKey).toBe('sk-orca-example');
     expect(result.ORCAROUTER_API_KEY).toBe('sk-orca-example');
+    expect(storedConfig).not.toContain('sk-orca-example');
   });
 
   it('unions the provider models, defaultModel, and the run model (deduped, bare)', () => {
