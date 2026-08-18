@@ -6,10 +6,25 @@ import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 
 const elapsed = (startedAt, now = Date.now()) => {
   if (!startedAt) return 'queued';
-  const seconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
+  const parsed = Date.parse(startedAt);
+  if (Number.isNaN(parsed)) return 'queued';
+  const seconds = Math.max(0, Math.floor((now - parsed) / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 const eta = (etaMs) => (Number.isFinite(etaMs) && etaMs >= 0 ? `~${Math.ceil(etaMs / 60000)}m` : null);
+const sameProcessingSnapshot = (a, b) => a?.agents?.active === b?.agents?.active
+  && a?.agents?.queued === b?.agents?.queued
+  && a?.gpu?.status === b?.gpu?.status
+  && a?.gpu?.laneBusy === b?.gpu?.laneBusy
+  && a?.gpu?.gpus?.[0]?.utilizationPercent === b?.gpu?.gpus?.[0]?.utilizationPercent
+  && a?.jobs?.length === b?.jobs?.length
+  && (a?.extras?.imageTo3d || []).length === (b?.extras?.imageTo3d || []).length
+  && a?.jobs?.every((job, index) => job.id === b.jobs[index]?.id
+    && job.status === b.jobs[index]?.status
+    && job.progress === b.jobs[index]?.progress
+    && job.statusMsg === b.jobs[index]?.statusMsg)
+  && (a?.extras?.imageTo3d || []).every((item, index) => item.id === b.extras?.imageTo3d?.[index]?.id
+    && item.name === b.extras?.imageTo3d?.[index]?.name);
 
 function JobRow({ job, onCancel }) {
   const tag = job.params?.musicStudio;
@@ -39,8 +54,8 @@ function JobRow({ job, onCancel }) {
 }
 
 function ActiveProcessingWidget() {
-  const { data, loading } = useAutoRefetch(() => api.getActiveProcessing({ silent: true }), 3000, {
-    compare: (a, b) => a?.updatedAt === b?.updatedAt,
+  const { data } = useAutoRefetch(() => api.getActiveProcessing({ silent: true }), 3000, {
+    compare: sameProcessingSnapshot,
   });
   const cancel = (id) => api.cancelMediaJob(id, { silent: true }).catch(() => undefined);
   const jobs = data?.jobs || [];
@@ -55,13 +70,14 @@ function ActiveProcessingWidget() {
         <div><h3 className="flex items-center gap-2 text-sm font-semibold text-white"><span className={`relative flex h-6 w-6 items-center justify-center rounded-lg ${idle ? 'bg-port-border/60 text-gray-400' : 'bg-port-accent/15 text-port-accent'}`}><Cpu size={15} />{!idle ? <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-ping rounded-full bg-port-accent" /> : null}</span> Live activity</h3><p className="mt-1 text-[11px] text-gray-500">What PortOS is working on right now</p></div>
         <span className={`rounded-full px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${idle ? 'bg-port-border/60 text-gray-500' : 'bg-port-accent/15 text-port-accent'}`}>{idle ? 'idle' : `${activeCount} active`}</span>
       </div>
-      {!idle ? <div className="mb-3 grid grid-cols-3 gap-1.5 text-center"><Metric icon={Bot} value={activeAgents} label="agents" /><Metric icon={Layers3} value={jobs.length} label="media" /><Metric icon={Cpu} value={gpu?.laneBusy ? 'busy' : 'ready'} label="GPU" /></div> : null}
-      {loading && !data ? <p className="text-xs text-gray-500">Checking render lanes…</p> : null}
-      {idle ? <Link to="/system-resources/overview" className="flex items-center justify-between rounded-lg border border-port-border bg-port-bg px-3 py-3 text-xs text-gray-400 transition-colors hover:border-port-accent/50 hover:text-gray-200"><span>Nothing is running</span><span>GPU {gpu?.status === 'available' ? 'ready' : gpu?.status || 'unknown'} →</span></Link> : null}
-      <div className="space-y-1.5">{jobs.map((job) => <JobRow key={job.id} job={job} onCancel={cancel} />)}</div>
-      {imageTo3d.map((item) => <Link key={`3d-${item.id}`} to="/3d" className="mt-1.5 flex items-center gap-2 rounded-lg border border-port-border bg-port-bg/60 px-2.5 py-2 text-xs text-gray-300 hover:border-port-accent/50"><Layers3 size={14} className="text-port-accent" /><span className="min-w-0 flex-1 truncate">Image-to-3D · {item.name}</span><ExternalLink size={13} className="text-gray-500" /></Link>)}
-      {activeAgents ? <Link to="/cos/agents" className="mt-1.5 flex items-center gap-2 rounded-lg border border-port-border bg-port-bg/60 px-2.5 py-2 text-xs text-gray-300 hover:border-port-accent/50"><Bot size={14} className="text-port-accent" /><span className="min-w-0 flex-1">Chief of Staff agents</span><span className="font-mono text-gray-500">{activeAgents} active{data.agents.queued ? ` · ${data.agents.queued} queued` : ''}</span><ExternalLink size={13} className="text-gray-500" /></Link> : null}
-      {!idle && gpu?.status === 'available' && gpu.gpus?.length ? <div className="mt-3 text-[11px] text-gray-500">GPU {gpu.gpus[0].utilizationPercent == null ? 'utilization unknown' : `${Math.round(gpu.gpus[0].utilizationPercent)}% utilized`}</div> : null}
+      {!data ? <p className="text-xs text-gray-500">Checking render lanes…</p> : <>
+        {!idle ? <div className="mb-3 grid grid-cols-3 gap-1.5 text-center"><Metric icon={Bot} value={activeAgents} label="agents" /><Metric icon={Layers3} value={jobs.length} label="media" /><Metric icon={Cpu} value={gpu?.laneBusy ? 'busy' : 'ready'} label="GPU" /></div> : null}
+        {idle ? <Link to="/system-resources/overview" className="flex items-center justify-between rounded-lg border border-port-border bg-port-bg px-3 py-3 text-xs text-gray-400 transition-colors hover:border-port-accent/50 hover:text-gray-200"><span>Nothing is running</span><span>GPU {gpu?.status === 'available' ? 'ready' : gpu?.status || 'unknown'} →</span></Link> : null}
+        <div className="space-y-1.5">{jobs.map((job) => <JobRow key={job.id} job={job} onCancel={cancel} />)}</div>
+        {imageTo3d.map((item) => <Link key={`3d-${item.id}`} to="/3d" className="mt-1.5 flex items-center gap-2 rounded-lg border border-port-border bg-port-bg/60 px-2.5 py-2 text-xs text-gray-300 hover:border-port-accent/50"><Layers3 size={14} className="text-port-accent" /><span className="min-w-0 flex-1 truncate">Image-to-3D · {item.name}</span><ExternalLink size={13} className="text-gray-500" /></Link>)}
+        {activeAgents ? <Link to="/cos/agents" className="mt-1.5 flex items-center gap-2 rounded-lg border border-port-border bg-port-bg/60 px-2.5 py-2 text-xs text-gray-300 hover:border-port-accent/50"><Bot size={14} className="text-port-accent" /><span className="min-w-0 flex-1">Chief of Staff agents</span><span className="font-mono text-gray-500">{activeAgents} active{data.agents.queued ? ` · ${data.agents.queued} queued` : ''}</span><ExternalLink size={13} className="text-gray-500" /></Link> : null}
+        {!idle && gpu?.status === 'available' && gpu.gpus?.length ? <div className="mt-3 text-[11px] text-gray-500">GPU {gpu.gpus[0].utilizationPercent == null ? 'utilization unknown' : `${Math.round(gpu.gpus[0].utilizationPercent)}% utilized`}</div> : null}
+      </>}
     </div>
   );
 }

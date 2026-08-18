@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ActiveProcessingWidget from './ActiveProcessingWidget';
 
 const { mockGetActiveProcessing, mockCancelMediaJob } = vi.hoisted(() => ({
@@ -21,6 +22,8 @@ vi.mock('../../hooks/useAutoRefetch', () => ({
 }));
 
 const renderWidget = () => render(<MemoryRouter><ActiveProcessingWidget /></MemoryRouter>);
+
+beforeEach(() => vi.clearAllMocks());
 
 describe('ActiveProcessingWidget', () => {
   it('shows an idle GPU link when nothing is active', () => {
@@ -49,5 +52,18 @@ describe('ActiveProcessingWidget', () => {
     expect(screen.getByRole('link', { name: 'Open audio activity' })).toHaveAttribute('href', '/media/history?type=audio');
     expect(screen.getByRole('link', { name: /Chief of Staff agents/ })).toHaveAttribute('href', '/cos/agents');
     expect(screen.getByText('50%')).toBeInTheDocument();
+  });
+
+  it('cancels a live job from its row', async () => {
+    mockGetActiveProcessing.mockReturnValue({
+      gpu: { status: 'available' },
+      jobs: [{ id: 'image-1', kind: 'image', status: 'running', progress: 0.5, startedAt: new Date().toISOString(), params: { prompt: 'Example image' } }],
+      extras: {},
+      agents: {},
+    });
+    const user = userEvent.setup();
+    renderWidget();
+    await user.click(screen.getByRole('button', { name: 'Cancel Example image' }));
+    expect(mockCancelMediaJob).toHaveBeenCalledWith('image-1', { silent: true });
   });
 });
