@@ -305,7 +305,7 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     expect(reviewerEffortArgs('codex', ' HIGH ')).toEqual(['-c', 'model_reasoning_effort=high']);
   });
 
-  it('builds the slashdo-invocation note only for CLI reviewers carrying an effort', () => {
+  it('builds the hand-invocation note only for CLI reviewers carrying an effort', () => {
     const note = buildReviewerEffortNote(['codex', 'claude', 'copilot'], { codex: 'high', claude: 'low', copilot: 'high' });
     expect(note).toContain('`codex -c model_reasoning_effort=high`');
     expect(note).toContain('`claude --effort low`');
@@ -317,6 +317,31 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     // slashdo's local-model loop calls the backend itself, so there's no flag to
     // name for lmstudio/ollama in this path.
     expect(buildReviewerEffortNote(['ollama'], { ollama: 'high' })).toBe('');
+  });
+
+  it('goes SILENT once the emitted --review-with carries the effort itself', () => {
+    // slashdo has parsed `~effort=<level>` since v3.31, and markSuffixes emits it —
+    // so on a pinned invocation the loop already runs the reviewer at that effort.
+    // Repeating it as prose tells the agent to pass the flag a second time, or to
+    // hand-run a reviewer `/do:pr` was about to run.
+    const reviewWith = buildReviewWithArgs(['codex', 'claude'], { reviewerEfforts: { codex: 'high', claude: 'low' } });
+    expect(reviewWith).toContain('codex~effort=high');
+    expect(buildReviewerEffortNote(['codex', 'claude'], { codex: 'high', claude: 'low' }, { reviewWith })).toBe('');
+    // An invocation that pins reviewers but NO effort leaves the note as the only
+    // carrier, and an absent/blank pin is the unpinned case.
+    const noEffort = buildReviewWithArgs(['codex', 'claude'], {});
+    expect(noEffort).not.toContain('~effort=');
+    expect(buildReviewerEffortNote(['codex'], { codex: 'high' }, { reviewWith: noEffort })).toContain('`codex -c model_reasoning_effort=high`');
+    expect(buildReviewerEffortNote(['codex'], { codex: 'high' }, { reviewWith: '' })).toContain('`codex -c model_reasoning_effort=high`');
+  });
+
+  it('never claims --review-with lacks an effort suffix', () => {
+    // The note predates slashdo's `~effort=` support and used to justify itself
+    // with "`--review-with` has no effort suffix". It does have one — an agent
+    // reading that next to its own `codex~effort=high` token is being misled.
+    const note = buildReviewerEffortNote(['codex'], { codex: 'high' });
+    expect(note).not.toContain('has no effort suffix');
+    expect(note).toContain('Pass the flag yourself when you spawn the reviewer');
   });
 
   it('carries reviewerEfforts through the task schema and the metadata sanitizer', () => {

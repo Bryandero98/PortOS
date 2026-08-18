@@ -653,11 +653,13 @@ async function applySlashdoInvocation(task, {
   const reviewWith = skipIncludes.length
     ? buildReviewersCsv(resolvedReviewers, resolvedUsernames, resolvedOptional, resolvedMaxRounds, resolvedModels, resolvedEfforts)
     : '';
-  // Unlike `reviewWith` this is NOT gated on pruning: the workflow drives its own
-  // review loop, so a pinned effort has no other route to the reviewer CLI it
-  // spawns — the `/do:pr` completion step further down the prompt is a different
-  // invocation entirely, and for a slashdo-backed task usually isn't reached.
-  const reviewerEffortNote = buildReviewerEffortNote(resolvedReviewers, resolvedEfforts);
+  // Gated on the PIN, not on pruning. When `reviewWith` is emitted, each token
+  // carries `~effort=<level>` and slashdo's loop applies it — the note would only
+  // have the agent pass the flag twice. When nothing is pinned, the workflow
+  // resolves reviewers itself and the note is the pin's only route to the CLI it
+  // spawns (the `/do:pr` completion step further down is a different invocation
+  // entirely, and for a slashdo-backed task usually isn't reached).
+  const reviewerEffortNote = buildReviewerEffortNote(resolvedReviewers, resolvedEfforts, { reviewWith });
   const section = buildSlashdoSection(resolved, body, { bodyPath, reviewWith, reviewerEffortNote });
   return { ...task, description: `${task.description}\n\n${section}` };
 }
@@ -2380,9 +2382,12 @@ function resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, userna
   const reviewArgs = willOpenPR
     ? (runsReviewLoop ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts }) : '--review-with none')
     : '';
-  // Effort pins can't ride `--review-with` (no suffix for them in slashdo's
-  // grammar), so they're stated as an instruction on the invocation instead.
-  const effortNote = willOpenPR && runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
+  // Effort pins ride the emitted `--review-with` tokens as `~effort=<level>`, so
+  // the prose note is suppressed whenever that suffix is present — it only speaks
+  // for an invocation that pins no reviewer list (see buildReviewerEffortNote).
+  const effortNote = willOpenPR && runsReviewLoop
+    ? buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewWith: reviewArgs })
+    : '';
   return { reviewUsernames, reviewArgs, effortNote };
 }
 
@@ -2706,8 +2711,8 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
           : `and drives the review loop for ${[...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ')} in order until clean.`)
       : 'with external review disabled.';
     lines.push(`${step++}. \`/do:pr${reviewerArg}\` — commits your changes, pushes the branch, and opens a pull request against the default branch ${completionNote}`);
-    // Effort pins have no `--review-with` suffix to ride, so they're stated as an
-    // instruction on the invocation instead (see buildReviewerEffortNote).
+    // Empty whenever the emitted `--review-with` already carries `~effort=<level>`
+    // (see buildReviewerEffortNote) — this speaks only for an unpinned invocation.
     if (effortNote) lines.push(`   ${effortNote}`);
     // Merge steps follow — review-gated with a loop, CI-gated without one — unless
     // this PR is a human's to land (JIRA-tracked; see lib/prDisposition.js).
