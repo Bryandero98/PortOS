@@ -16,7 +16,8 @@ import {
   AlertCircle,
   TrendingUp,
   Play,
-  Scale
+  Scale,
+  Unlock
 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
@@ -160,16 +161,27 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
     return null;
   }, [durations, task, task.status]);
 
-  const handleStatusChange = async (newStatus, blockedReasonText = '') => {
+  const handleStatusChange = async (newStatus, blockedReasonText = '', successMessage = `Task marked as ${newStatus}`) => {
     const updates = { status: newStatus, type: taskSource };
     if (newStatus === 'blocked' && blockedReasonText) {
       updates.blockedReason = blockedReasonText;
     }
     const result = await api.updateCosTask(task.id, updates, { silent: true }).catch(err => { toast.error(err.message); return null; });
     if (!result) return false;
-    toast.success(`Task marked as ${newStatus}`);
+    toast.success(successMessage);
     onRefresh();
     return true;
+  };
+
+  // Unblocking is the same status write the actionable-insights banner performs,
+  // offered here on the card itself so clearing a blocker doesn't require
+  // scrolling back to the banner at the top of the page. Gated while in flight so
+  // a double-click can't fire two writes.
+  const [unblocking, setUnblocking] = useState(false);
+  const handleUnblock = async () => {
+    setUnblocking(true);
+    await handleStatusChange('pending', '', 'Task unblocked and moved to pending');
+    setUnblocking(false);
   };
 
   const handleMarkBlocked = () => {
@@ -573,7 +585,7 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
         {/* Action buttons. Keep the delete confirmation here, next to the trash
             icon, rather than at the bottom of the card — a task with a lot of
             context would otherwise push the confirm row far below the fold. */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           {!editing && (
             isConfirming(task.id) ? (
               <ConfirmButtonPair
@@ -597,6 +609,23 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
                     aria-label="Process task now"
                   >
                     <Play size={14} aria-hidden="true" />
+                  </button>
+                )}
+                {/* Labeled, not icon-only: this is the primary next action for a
+                    blocked task, and the icon-only affordance (clicking the status
+                    glyph) wasn't discoverable — the user had to go find the banner
+                    at the top of the page instead. */}
+                {task.status === 'blocked' && (
+                  <button
+                    type="button"
+                    onClick={handleUnblock}
+                    disabled={unblocking}
+                    className="flex items-center gap-1 px-2 py-1 min-h-[32px] text-xs font-medium text-port-success bg-port-success/10 hover:bg-port-success/20 rounded transition-colors disabled:opacity-50"
+                    title="Unblock and move to pending"
+                    aria-label={`Unblock task ${task.id} and move it to pending`}
+                  >
+                    <Unlock size={12} aria-hidden="true" />
+                    {unblocking ? 'Unblocking…' : 'Unblock'}
                   </button>
                 )}
                 {task.status !== 'blocked' && task.status !== 'completed' && (
