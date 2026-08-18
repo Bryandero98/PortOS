@@ -181,6 +181,17 @@ describe('buildRepoStudyContext', () => {
     expect(body).toMatch(/Clean-room/);
     expect(body).toMatch(/LICENSE/);
   });
+
+  it('includes requester context as guidance for the study', () => {
+    const body = buildRepoStudyContext(LINK, {
+      appName: 'PortOS',
+      repoPath: '/srv/portos',
+      trackerInstructions: 'FILE HERE',
+      studyContext: 'Look for indexing improvements and where they fit in search.',
+    });
+    expect(body).toContain('## Additional context from the requester');
+    expect(body).toContain('Look for indexing improvements and where they fit in search.');
+  });
 });
 
 describe('runRepoIntake', () => {
@@ -194,6 +205,11 @@ describe('runRepoIntake', () => {
     expect(addTask).toHaveBeenCalledTimes(1);
     expect(patch.malwareScan).toBeUndefined();
     expect(patch.repoStudy).toEqual({ taskId: 'task-abc', queuedAt: expect.any(String) });
+  });
+
+  it('passes requester context into the queued repo study', async () => {
+    await runRepoIntake(LINK, { learn: true, studyContext: 'Focus on the search architecture.' });
+    expect(addTask.mock.calls[0][0].context).toContain('Focus on the search architecture.');
   });
 
   it('stamps a queued scan as `queued`, so the UI does not link at a missing report', async () => {

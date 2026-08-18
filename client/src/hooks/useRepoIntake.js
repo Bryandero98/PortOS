@@ -37,7 +37,8 @@ export function capturedGitHubRepo(text) {
 
 /**
  * @param {string} text the current capture text
- * @returns {{ repo: object|null, options: object, toggle: (key: string) => void,
+ * @returns {{ repo: object|null, options: object, studyContext: string,
+ *   setStudyContext: (context: string) => void, toggle: (key: string) => void,
  *   intakeFor: (text: string) => object|undefined }}
  *   `repo` is the parsed `{ owner, repo }` (null when the text isn't a bare repo
  *   URL) — both the panel and the host's hint read it, so the text is parsed
@@ -51,10 +52,16 @@ export function useRepoIntake(text) {
   const [learn, setLearn] = useLocalStorageBool(STORAGE_KEYS.learn, false);
   const [managedApps, setManagedApps] = useState([{ id: PORTOS_APP_ID, name: 'PortOS' }]);
   const [targetAppId, setTargetAppId] = useState(PORTOS_APP_ID);
+  const [studyContext, setStudyContext] = useState('');
 
   const repo = useMemo(() => capturedGitHubRepo(text), [text]);
+  const repoKey = repo ? `${repo.owner}/${repo.repo}` : null;
   const options = useMemo(() => ({ malwareScan, learn }), [malwareScan, learn]);
   const setters = { malwareScan: setMalwareScan, learn: setLearn };
+
+  useEffect(() => {
+    setStudyContext('');
+  }, [repoKey]);
 
   useEffect(() => {
     if (!repo || !learn || typeof api.getApps !== 'function') return;
@@ -75,9 +82,14 @@ export function useRepoIntake(text) {
     managedApps,
     targetAppId,
     setTargetAppId,
+    studyContext,
+    setStudyContext,
     toggle: (key) => setters[key](v => !v),
     intakeFor: (submitted) => (capturedGitHubRepo(submitted)
-      ? { ...options, ...(learn ? { targetAppId } : {}) }
+      ? { ...options, ...(learn ? {
+        targetAppId,
+        ...(studyContext.trim() ? { studyContext: studyContext.trim() } : {}),
+      } : {}) }
       : undefined),
   };
 }

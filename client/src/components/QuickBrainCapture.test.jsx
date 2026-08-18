@@ -166,6 +166,36 @@ describe('QuickBrainCapture', () => {
       });
     });
 
+    it('sends optional study context with the repo study request', async () => {
+      renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Study for app ideas'));
+      fireEvent.change(screen.getByLabelText(/study context/i), {
+        target: { value: 'Look for the indexing approach and where it could fit in search.' },
+      });
+      fireEvent.click(screen.getByLabelText('Capture'));
+
+      await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
+      expect(captureBrainThought.mock.calls[0][3].repoIntake).toEqual({
+        malwareScan: false,
+        learn: true,
+        targetAppId: 'portos-default',
+        studyContext: 'Look for the indexing approach and where it could fit in search.',
+      });
+    });
+
+    it('clears study context when switching to another repo', async () => {
+      renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Study for app ideas'));
+      fireEvent.change(screen.getByLabelText(/study context/i), {
+        target: { value: 'Only for the first repo.' },
+      });
+
+      type('https://github.com/example-owner/another-repo');
+      await waitFor(() => expect(screen.getByLabelText(/study context/i)).toHaveValue(''));
+    });
+
     it('remembers the choice across mounts', () => {
       const { unmount } = renderWidget();
       type(REPO);

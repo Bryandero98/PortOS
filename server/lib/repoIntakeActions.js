@@ -22,7 +22,7 @@ export const REPO_INTAKE_KEYS = ['malwareScan', 'learn'];
  * from scheduling a no-op intake pass after each clone.
  *
  * @param {unknown} input
- * @returns {{ malwareScan: boolean, learn: boolean } | null}
+ * @returns {{ malwareScan: boolean, learn: boolean, targetAppId?: string, studyContext?: string } | null}
  */
 export function normalizeRepoIntake(input) {
   if (!isPlainObject(input)) return null;
@@ -30,6 +30,9 @@ export function normalizeRepoIntake(input) {
   if (!REPO_INTAKE_KEYS.some(key => normalized[key])) return null;
   if (normalized.learn && typeof input.targetAppId === 'string' && input.targetAppId.trim()) {
     normalized.targetAppId = input.targetAppId.trim();
+  }
+  if (normalized.learn && typeof input.studyContext === 'string' && input.studyContext.trim()) {
+    normalized.studyContext = input.studyContext.trim();
   }
   return normalized;
 }

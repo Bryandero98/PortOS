@@ -102,8 +102,11 @@ Use that path as SCAN_DIR. Adhere to every Operational Invariant in the workflow
  * Build the `repo-study` agent context. Kept separate from the queueing so the
  * wording is assertable without going through the task store.
  */
-export function buildRepoStudyContext(link, { appName, repoPath, trackerInstructions }) {
-  return `A GitHub repository was captured into the Brain and cloned locally. Study it as a source of IDEAS for ${appName} and record the adoptable ones in the work tracker.
+export function buildRepoStudyContext(link, { appName, repoPath, trackerInstructions, studyContext }) {
+  const requesterContext = typeof studyContext === 'string' && studyContext.trim()
+    ? `\n## Additional context from the requester\n\n${studyContext.trim()}\n`
+    : '';
+  return `A GitHub repository was captured into the Brain and cloned locally. Study it as a source of IDEAS for ${appName} and record the adoptable ones in the work tracker.${requesterContext}
 
 ## The repository under study
 
@@ -142,7 +145,7 @@ End with: the studied repo, its license, how many proposals you filed (with thei
  *
  * @returns {Promise<{ queued: boolean, reason?: string, taskId?: string, linkPatch?: object }>}
  */
-export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
+export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID, studyContext) {
   if (!isCloneReadable(link)) return { queued: false, reason: 'not-cloned' };
 
   const app = await getAppById(targetAppId || PORTOS_APP_ID);
@@ -171,6 +174,7 @@ export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID) {
         trackerInstructions: trackerInstructions
           .replace(/\{appName\}/g, () => app.name)
           .replace(/\{repoPath\}/g, () => app.repoPath),
+        studyContext,
       }),
       // The deliverable is tracker items, not code — the agent reads PortOS and
       // the clone, then files. No worktree, no PR, no review loop.
@@ -218,7 +222,7 @@ export async function runRepoIntake(link, intake) {
   for (const [key, queue] of Object.entries(INTAKE_QUEUERS)) {
     if (!requested[key]) continue;
     const result = key === 'learn'
-      ? await queue(link, requested.targetAppId).catch(err => ({ queued: false, reason: err.message }))
+      ? await queue(link, requested.targetAppId, requested.studyContext).catch(err => ({ queued: false, reason: err.message }))
       : await queue(link).catch(err => ({ queued: false, reason: err.message }));
     if (result.queued) patch = { ...patch, ...result.linkPatch };
     else console.error(`❌ Capture-time ${key} not queued for link ${link.id}: ${result.reason}`);

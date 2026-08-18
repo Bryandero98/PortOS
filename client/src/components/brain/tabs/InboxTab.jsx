@@ -148,6 +148,7 @@ export default function InboxTab({ onRefresh, settings }) {
       // A capture that was just a URL is filed to Links synchronously — no
       // brain:classified event follows, so announce the outcome here.
       if (result.link) toast.success(result.message || 'Saved to Links');
+      repoIntake.setStudyContext('');
       onRefresh?.();
     }
   };
@@ -369,6 +370,8 @@ export default function InboxTab({ onRefresh, settings }) {
           managedApps={repoIntake.managedApps}
           targetAppId={repoIntake.targetAppId}
           onTargetAppChange={repoIntake.setTargetAppId}
+          studyContext={repoIntake.studyContext}
+          onStudyContextChange={repoIntake.setStudyContext}
           onToggle={repoIntake.toggle}
         />
       </form>

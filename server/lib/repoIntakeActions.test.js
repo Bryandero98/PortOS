@@ -40,6 +40,18 @@ describe('normalizeRepoIntake', () => {
     expect(normalizeRepoIntake(true)).toBeNull();
   });
 
+  it('keeps trimmed study context only for repo study', () => {
+    expect(normalizeRepoIntake({ learn: true, studyContext: '  Find the best seam.  ' })).toEqual({
+      malwareScan: false,
+      learn: true,
+      studyContext: 'Find the best seam.',
+    });
+    expect(normalizeRepoIntake({ malwareScan: true, studyContext: 'ignored' })).toEqual({
+      malwareScan: true,
+      learn: false,
+    });
+  });
+
   it('covers exactly the two documented actions', () => {
     expect(REPO_INTAKE_KEYS).toEqual(['malwareScan', 'learn']);
   });
