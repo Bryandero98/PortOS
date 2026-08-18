@@ -118,7 +118,14 @@ export default function AutomationTab({ appId, appName }) {
   };
 
   const handleMetaToggle = async (taskType, field, globalTaskMetadata) => {
-    const taskMetadata = toggleAppMetadataOverride(overrides[taskType]?.taskMetadata, globalTaskMetadata, field);
+    let taskMetadata = toggleAppMetadataOverride(overrides[taskType]?.taskMetadata, globalTaskMetadata, field);
+    const globalConfig = schedule?.tasks?.[taskType] || {};
+    const nextFileIssues = field === 'fileIssues'
+      ? (taskMetadata?.fileIssues ?? globalTaskMetadata?.fileIssues ?? globalConfig.defaultFileIssues)
+      : null;
+    if (field === 'fileIssues' && nextFileIssues === true && taskMetadata) {
+      taskMetadata = { ...taskMetadata, useWorktree: false, openPR: false, simplify: false };
+    }
     await api.updateAppTaskTypeOverride(appId, taskType, { taskMetadata }, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
