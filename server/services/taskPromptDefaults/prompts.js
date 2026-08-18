@@ -1269,7 +1269,13 @@ Count substantive entries (lines starting with "###" or "- **" under Features, F
 
 Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
 1. \`git -C {repoPath} fetch origin\` and ensure \`<SOURCE_BRANCH>\` is up to date
-2. Run the project's test suite (use the command from release docs)
+2. Run the project's test suite (use the command from release docs). If the
+   release docs identify a separate database-backed test suite, first run the
+   documented test-database provisioning/setup command, then run that database
+   test command as well. Keep the database test target isolated from any real
+   user database; never substitute a production database just to make tests
+   pass. If setup cannot reach the documented database service, report the
+   environmental blocker and stop before creating the release PR.
 3. Run the project's build (use the command from release docs)
 
 ## Step 3: Create or Find PR
