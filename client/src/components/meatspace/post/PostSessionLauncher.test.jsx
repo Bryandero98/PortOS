@@ -20,13 +20,23 @@ vi.mock('../../../services/api', () => ({
   getMorseProgress: vi.fn().mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } }),
   getPostProgress: vi.fn().mockResolvedValue({ series: { byDay: [] } }),
   getMemoryItems: vi.fn().mockResolvedValue([{ id: 'example-memory' }]),
+  getPostBenchmarkProtocol: vi.fn().mockResolvedValue({
+    protocolId: 'post-foundation-battery',
+    protocolVersion: 1,
+    scorerVersion: 'post-deterministic-v1',
+    nextFormId: 'a',
+    forms: [{ formId: 'a', tasks: [
+      { type: 'doubling-chain', domain: 'mental-math', config: { startValue: 5, steps: 8 }, timeLimitSec: 60 },
+      { type: 'task-switching', domain: 'cognitive', config: { seed: 'post-foundation-a', count: 12 }, timeLimitSec: 120 },
+    ] }],
+  }),
   updatePostConfig: vi.fn().mockResolvedValue({}),
   // useUserTimezone (via the today day key) reads getSettings; pin to UTC.
   getSettings: vi.fn().mockResolvedValue({ timezone: 'UTC' }),
 }));
 
 import PostSessionLauncher, { buildCleanTags, cognitiveSummary, interleaveByDomain } from './PostSessionLauncher';
-import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getMemoryItems, updatePostConfig } from '../../../services/api';
+import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
 
 // Pure-function tests for PostSessionLauncher's pre-submit helpers (issue
 // #2102 gap #10). Both were lifted from component-body closures to module
@@ -163,6 +173,37 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     getPostReviewReps.mockResolvedValue({ reps: [] });
     getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
     getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+    getPostBenchmarkProtocol.mockResolvedValue({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      nextFormId: 'a',
+      forms: [{ formId: 'a', tasks: [
+        { type: 'doubling-chain', domain: 'mental-math', config: { startValue: 5, steps: 8 }, timeLimitSec: 60 },
+        { type: 'task-switching', domain: 'cognitive', config: { seed: 'post-foundation-a', count: 12 }, timeLimitSec: 120 },
+      ] }],
+    });
+  });
+
+  it('starts the next fixed benchmark form with versioned metadata', async () => {
+    const onStart = vi.fn();
+    renderLauncher({ onStart });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fixed Benchmark POST' }));
+
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(getPostBenchmarkProtocol).toHaveBeenCalledWith({ silent: true });
+    expect(onStart.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ type: 'doubling-chain', config: { startValue: 5, steps: 8 } }),
+      expect.objectContaining({ type: 'task-switching', config: { seed: 'post-foundation-a', count: 12 } }),
+    ]);
+    expect(onStart.mock.calls[0][2]).toBe(false);
+    expect(onStart.mock.calls[0][4]).toEqual({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      formId: 'a',
+    });
   });
 
   it('renders the "Up next" panel with working deep links', async () => {

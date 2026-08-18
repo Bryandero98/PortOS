@@ -174,6 +174,7 @@ export function usePostSession() {
   const [runId, setRunId] = useState(restored?.runId ?? null);
   const [tags, setTags] = useState(restored?.tags ?? {}); // session tags captured at launch
   const [sessionPlan, setSessionPlan] = useState(restored?.sessionPlan ?? null);
+  const [benchmark, setBenchmark] = useState(restored?.benchmark ?? null);
   const [lastAnswer, setLastAnswer] = useState(null); // { correct, expected, answered } for training feedback
   // Seed the timing refs from the restored snapshot so a mid-drill refresh keeps
   // measuring elapsed time from the ORIGINAL question/drill start — otherwise the
@@ -204,6 +205,7 @@ export function usePostSession() {
     sessionStorage.setItem(RUN_STORAGE_KEY, JSON.stringify({
       runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex,
       answers, drillResults, sessionScore, isTraining, tags, sessionPlan,
+      benchmark,
       // Persist the timing anchors (mutated synchronously on each question/drill
       // transition, just before the state change that fires this effect) so a
       // refresh resumes the clock instead of restarting it.
@@ -212,9 +214,9 @@ export function usePostSession() {
       runStartedAt: runStartedAtRef.current,
       runCompletedAt: runCompletedAtRef.current,
     }));
-  }, [runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex, answers, drillResults, sessionScore, isTraining, tags, sessionPlan]);
+  }, [runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex, answers, drillResults, sessionScore, isTraining, tags, sessionPlan, benchmark]);
 
-  const startSession = useCallback(async (drillConfigs, training = false, sessionTags = {}, plan = null) => {
+  const startSession = useCallback(async (drillConfigs, training = false, sessionTags = {}, plan = null, benchmarkMetadata = null) => {
     // drillConfigs: [{ type, config, timeLimitSec }]
     if (!drillConfigs?.length) {
       toast.error('No drills configured');
@@ -223,6 +225,7 @@ export function usePostSession() {
     setState(STATES.LOADING);
     setIsTraining(training);
     setSessionPlan(plan || null);
+    setBenchmark(training ? null : benchmarkMetadata || null);
     setDrills(drillConfigs);
     setCurrentDrillIndex(0);
     setDrillResults([]);
@@ -592,6 +595,7 @@ export function usePostSession() {
       tags: finalTags,
       startedAt: new Date(runStartedAtRef.current).toISOString(),
       ...(sessionPlan ? { plan: sessionPlan } : {}),
+      ...(benchmark ? { benchmark } : {}),
     }, { silent: true }).catch(err => {
       toast.error(`Failed to save session: ${err.message}`);
       setState(STATES.COMPLETE);
@@ -610,7 +614,7 @@ export function usePostSession() {
     toast.success(`POST complete — score: ${session.score}`);
     setState(STATES.SAVED);
     return session;
-  }, [drillResults, isTraining, tags, runId, sessionPlan]);
+  }, [drillResults, isTraining, tags, runId, sessionPlan, benchmark]);
 
   const reset = useCallback(() => {
     setState(STATES.IDLE);
@@ -628,6 +632,7 @@ export function usePostSession() {
     runCompletedAtRef.current = null;
     setTags({});
     setSessionPlan(null);
+    setBenchmark(null);
     setLastAnswer(null);
     clearRunSnapshot();
   }, []);
@@ -646,6 +651,7 @@ export function usePostSession() {
     isTraining,
     runId,
     sessionPlan,
+    benchmark,
     lastAnswer,
     startSession,
     submitAnswer,
