@@ -126,6 +126,52 @@ describe('TaskItem blocked reason', () => {
   });
 });
 
+describe('TaskItem unblock action', () => {
+  const blocked = {
+    id: 'sys-blocked-3',
+    description: 'Blocked task',
+    status: 'blocked',
+    metadata: { blockedReason: 'Max total spawns exceeded' },
+  };
+  const unblockButton = () =>
+    screen.getByRole('button', { name: `Unblock task ${blocked.id} and move it to pending` });
+
+  it('moves a blocked task to pending from the card itself', async () => {
+    const onRefresh = vi.fn();
+    render(<TaskItem task={blocked} isSystem onRefresh={onRefresh} providers={providers} />);
+
+    fireEvent.click(unblockButton());
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-blocked-3',
+      { status: 'pending', type: 'internal' },
+      { silent: true }
+    ));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled());
+    expect(toast.success).toHaveBeenCalledWith('Task unblocked and moved to pending');
+  });
+
+  it('is offered only on blocked tasks, and never alongside Mark as blocked', () => {
+    const { unmount } = render(<TaskItem task={blocked} isSystem onRefresh={vi.fn()} providers={providers} />);
+    expect(screen.queryByRole('button', { name: 'Mark task as blocked' })).not.toBeInTheDocument();
+    unmount();
+
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+    expect(screen.queryByRole('button', { name: /^Unblock task/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mark task as blocked' })).toBeInTheDocument();
+  });
+
+  it('re-enables the button when the update fails so the user can retry', async () => {
+    api.updateCosTask.mockRejectedValue(new Error('network down'));
+    render(<TaskItem task={blocked} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(unblockButton());
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('network down'));
+    expect(unblockButton()).not.toBeDisabled();
+  });
+});
+
 describe('TaskItem block modal state (#4038)', () => {
   const openBlockModal = () =>
     fireEvent.click(screen.getByRole('button', { name: 'Mark task as blocked' }));
