@@ -83,5 +83,57 @@ describe('MemoryManagement', () => {
     });
     expect(screen.queryByText('older-model')).not.toBeInTheDocument();
     expect(screen.getByText('newer-model')).toBeInTheDocument();
-  });
+    });
+
+  it('hides the unavailability banner for a user-disabled backend', async () => {
+       // A backend the user marked disabled opts out of the availability nag. Its
+       // failed residency still lands in unavailableSources (the "Free everything"
+       // guard), but the banner excludes it.
+    getLoadedLlmModels.mockResolvedValue({
+       ollama: [],
+       lmstudio: [],
+       sourceErrors: ['lmstudio'],
+       disabled: ['lmstudio'],
+       });
+
+    render(<MemoryManagement />);
+
+     // Wait for the first refresh to clear the loading state so the poll result
+     // is the thing under test, not the pre-poll empty render.
+    expect(await screen.findByRole('button', { name: 'Free everything' })).toBeInTheDocument();
+     // The banned nag is suppressed for the disabled backend, even though its
+     // residency is unknown.
+    expect(screen.queryByText(/Status unavailable for LM Studio/i)).not.toBeInTheDocument();
+     // The "free everything" guard and empty-state check still key off the full
+     // unavailable list, so "nothing resident" is NOT claimed while lmstudio's
+     // residency is unconfirmed.
+    expect(screen.queryByText(/full unified memory is available/i)).not.toBeInTheDocument();
+        });
+
+  it('keeps a backend disabled across a later failed poll', async () => {
+          // The banner-suppression scenario IS a transient outage, so a failed poll
+          // must not resurrect the warning for a backend a good poll already marked
+          // disabled — disabled sources are retained (present-vs-empty, not falsy).
+     getLoadedLlmModels
+           .mockResolvedValueOnce({
+             ollama: [],
+             lmstudio: [],
+             sourceErrors: ['lmstudio'],
+             disabled: ['lmstudio'],
+             })
+           .mockRejectedValueOnce(new Error('LLM status failed'));
+
+    render(<MemoryManagement />);
+       // First (good) poll: lmstudio is known-disabled, so the banner is silent even
+       // though its residency error would otherwise show.
+    expect(await screen.findByRole('button', { name: 'Free everything' })).toBeInTheDocument();
+    expect(screen.queryByText(/Status unavailable for/i)).not.toBeInTheDocument();
+       // A later FAILED poll re-adds both backends to unavailableSources, but the
+       // still-known-disabled lmstudio must stay excluded from the banner (ollama,
+       // which is enabled, shows instead).
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(getLoadedLlmModels).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/Status unavailable for Ollama/i)).toBeInTheDocument();
+    expect(screen.queryByText(/LM Studio/i)).not.toBeInTheDocument();
+       });
 });
