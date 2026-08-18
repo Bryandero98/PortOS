@@ -14,7 +14,7 @@ const eta = (etaMs) => (Number.isFinite(etaMs) && etaMs >= 0 ? `~${Math.ceil(eta
 function JobRow({ job, onCancel }) {
   const tag = job.params?.musicStudio;
   const kind = job.kind === 'training' ? 'training' : job.kind;
-  const label = tag?.title || job.params?.characterName || `${kind} render`;
+  const label = tag?.title || job.params?.characterName || job.params?.prompt || `${kind} render`;
   const target = tag?.trackId
     ? `/music/tracks/${encodeURIComponent(tag.trackId)}`
     : kind === 'video' ? '/media/video'

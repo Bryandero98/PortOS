@@ -3,18 +3,20 @@ import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import ActiveProcessingWidget from './ActiveProcessingWidget';
 
-const getActiveProcessing = vi.fn();
-const cancelMediaJob = vi.fn();
+const { mockGetActiveProcessing, mockCancelMediaJob } = vi.hoisted(() => ({
+  mockGetActiveProcessing: vi.fn(),
+  mockCancelMediaJob: vi.fn(),
+}));
 
 vi.mock('../../services/api', () => ({
-  getActiveProcessing,
-  cancelMediaJob,
+  getActiveProcessing: mockGetActiveProcessing,
+  cancelMediaJob: mockCancelMediaJob,
 }));
 
 vi.mock('../../hooks/useAutoRefetch', () => ({
   useAutoRefetch: (fetchFn) => {
     fetchFn();
-    return { data: getActiveProcessing.mock.results.at(-1)?.value, loading: false };
+    return { data: mockGetActiveProcessing.mock.results.at(-1)?.value, loading: false };
   },
 }));
 
@@ -22,7 +24,7 @@ const renderWidget = () => render(<MemoryRouter><ActiveProcessingWidget /></Memo
 
 describe('ActiveProcessingWidget', () => {
   it('shows an idle GPU link when nothing is active', () => {
-    getActiveProcessing.mockReturnValue({ gpu: { status: 'available' }, jobs: [], extras: {}, agents: {} });
+    mockGetActiveProcessing.mockReturnValue({ gpu: { status: 'available' }, jobs: [], extras: {}, agents: {} });
     renderWidget();
     expect(screen.getByText('Live activity')).toBeInTheDocument();
     expect(screen.getByText('Nothing is running')).toBeInTheDocument();
@@ -30,7 +32,7 @@ describe('ActiveProcessingWidget', () => {
   });
 
   it('summarizes active work and links each lane to its destination', () => {
-    getActiveProcessing.mockReturnValue({
+    mockGetActiveProcessing.mockReturnValue({
       gpu: { status: 'available', laneBusy: true, gpus: [{ utilizationPercent: 42 }] },
       jobs: [
         { id: 'image-1', kind: 'image', status: 'running', progress: 0.5, startedAt: new Date().toISOString(), params: { prompt: 'Example image' } },
