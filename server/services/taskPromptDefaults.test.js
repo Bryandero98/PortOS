@@ -442,10 +442,14 @@ describe('taskPromptDefaults integrity snapshot', () => {
     // repo's own documented command, never name a PortOS script to run.
     expect(current).not.toContain('changelog:preview');
     expect(current).toContain('Do NOT guess a command name');
+    expect(current).toContain('database-backed test suite');
+    expect(current).toContain('test-database provisioning/setup command');
+    expect(current).toContain('never substitute a production database');
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
     const outgoing = previous[previous.length - 1];
-    expect(outgoing).not.toContain('per-branch fragments');
+    expect(outgoing).toContain('per-branch fragments');
+    expect(outgoing).not.toContain('database-backed test suite');
     expect(outgoing).not.toBe(current);
   });
 

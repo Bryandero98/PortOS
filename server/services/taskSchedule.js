@@ -233,7 +233,7 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
 
 // Shared taskMetadata posture for the NON-COMMITTING COORDINATOR types
 // (NON_COMMITTING_COORDINATOR_TASK_TYPES in taskTypeHooks.js — branch-reconcile /
-// issue-reconcile / jira-status-report). Each delivers its work
+// issue-reconcile / branch-cleanup / jira-status-report / release-check). Each delivers its work
 // as a SIDE EFFECT in the app's live checkout — a deleted branch, a merged PR, a
 // relabeled issue, a posted report — and by design produces no commit of its own.
 // Two code-shipping criteria therefore have to be switched off or every SUCCESSFUL
@@ -392,7 +392,11 @@ export const DEFAULT_TASK_INTERVALS = {
   'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
   'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
   'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
-  'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null },
+  // Release-check inspects and mutates release state (for example, the main →
+  // release PR) rather than producing source commits. It must run from the app's
+  // live main checkout so its branch/ref checks describe the real release flow;
+  // a CoS worktree hides that checkout and creates an irrelevant task branch.
+  'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
   'pr-reviewer':         { type: INTERVAL_TYPES.CUSTOM, intervalMs: 7200000, enabled: false, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: true, pipeline: { stages: [{ name: 'Security Scan', promptKey: 'pr-reviewer-security', readOnly: true }, { name: 'Code Review & Merge', promptKey: 'pr-reviewer-review', readOnly: false }] } } },
   'code-reviewer-a':     { ...CODE_REVIEWER_INTERVAL },
   'code-reviewer-b':     { ...CODE_REVIEWER_INTERVAL },
@@ -489,7 +493,8 @@ export const MANAGED_AGENT_OPTIONS = {
   'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
   // ux's deliverable is tracker issues, not code — it never edits source, so a
   // worktree/PR would only produce an empty branch. Lock both off.
-  'ux': ['useWorktree', 'openPR']
+  'ux': ['useWorktree', 'openPR'],
+  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected']
 };
 
 // Strip managed-agent fields from a per-app override map before merging on top
