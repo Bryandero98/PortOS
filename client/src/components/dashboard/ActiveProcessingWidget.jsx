@@ -26,13 +26,13 @@ export const sameProcessingSnapshot = (a, b) => {
       && job?.progress === b.jobs[index]?.progress
       && job?.position === b.jobs[index]?.position
       && job?.statusMsg === b.jobs[index]?.statusMsg)
-    && (a.extras?.imageTo3d || []).every((item, index) => item.id === b.extras?.imageTo3d?.[index]?.id
-      && item.name === b.extras?.imageTo3d?.[index]?.name);
+    && (a.extras?.imageTo3d || []).every((item, index) => item?.id === b.extras?.imageTo3d?.[index]?.id
+      && item?.name === b.extras?.imageTo3d?.[index]?.name);
 };
 
 function JobRow({ job, onCancel }) {
   const tag = job.params?.musicStudio;
-  const kind = job.kind === 'training' ? 'training' : job.kind;
+  const kind = job.kind;
   const label = tag?.title || job.params?.characterName || job.params?.prompt || `${kind} render`;
   const target = tag?.trackId
     ? `/music/tracks/${encodeURIComponent(tag.trackId)}`
