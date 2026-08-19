@@ -194,6 +194,12 @@ export function buildProjectRecord(input, { id, now, collectionId }) {
     // snapshot frozen at fire time. The run ledger cannot serve that role — it is
     // capped at MAX_PERSISTED_RUNS, so a long-wedged project falls out of it, and
     // a project a plan step spawns INDIRECTLY (bridgeFromIssue) never enters it.
+    // SERVER-MANAGED — deliberately NOT in the public create/update schema (same
+    // rule as `generateFirstPass` above). `POST /api/creative-director` would
+    // otherwise let any caller bind an unrelated project to an existing
+    // commission, inheriting that commission's provider pin and getting stopped
+    // when it is paused or deleted. Only the scheduler's fire and the
+    // bridgeFromIssue teaser path set it, and both call the service directly.
     // Additive: the whole record round-trips through the JSONB column verbatim
     // (sanitizeProjectForSync / mergeProjectRecord), so no schema-version bump.
     commissionId,

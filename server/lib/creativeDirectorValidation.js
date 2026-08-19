@@ -153,11 +153,6 @@ export const creativeDirectorProjectCreateSchema = z.object({
   // used by the stitch step to mix in audio-stage music. Bare CD projects
   // (no pipeline origin) leave this null.
   sourceIssueId: z.string().min(1).max(64).nullable().optional(),
-  // Optional back-pointer to the Creative Commission that spawned this project —
-  // how the commission finds this work to stop it, and how the dispatch path
-  // resolves the commission's live provider pin. Schema-parity with
-  // buildProjectRecord's `commissionId`.
-  commissionId: z.string().min(1).max(128).nullable().optional(),
   // Production directive (CDO Phase 2, #2184). When present the project is
   // PLAN-driven: the planner agent turns this brief into a validated step list
   // the generalized advance loop executes through the gated creative tool

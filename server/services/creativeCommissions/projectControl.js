@@ -277,23 +277,35 @@ export function registerCommissionProjectReconciler() {
  * already evicted stays unlinked (nothing else can recover it, and a fresh fire
  * mints a correctly-stamped project with no snapshot at all).
  *
- * Pure data movement, no LLM. Idempotent: a project that already carries the
- * back-pointer is skipped, so a re-run writes nothing. Best-effort — a failure
- * leaves the install exactly as it was.
+ * Finally, a commission that was PAUSED or DELETED before the upgrade gets its
+ * newly-linked projects stopped here. Its `commission:changed` event fired on the
+ * old build, which had no reconciler — so nothing ever stopped that work, and
+ * without this pass it keeps re-dispatching after the user already asked for it to
+ * stop. That is the exact complaint this whole change exists to answer, and on an
+ * upgrading install it is the projects reachable ONLY through this backfill that
+ * are still stuck.
  *
- * @returns {Promise<{stamped: number}>}
+ * Pure data movement, no LLM (a stop kills processes and cancels renders; it never
+ * calls a provider), so this is compliant with the no-cold-bootstrap-LLM rule.
+ * Idempotent: a project that already carries the back-pointer is skipped, so a
+ * re-run writes nothing and stops nothing. Best-effort — a failure leaves the
+ * install exactly as it was.
+ *
+ * @returns {Promise<{stamped: number, stopped: number}>}
  */
 export async function backfillProjectCommissionIds() {
   const ids = await commissionStore().listIds({ includeDeleted: true }).catch(() => []);
-  if (!ids.length) return { stamped: 0 };
+  if (!ids.length) return { stamped: 0, stopped: 0 };
 
   const { getProjectsByIds, updateProject } = await import('../creativeDirector/local.js');
   let stamped = 0;
+  let stopped = 0;
   for (const commissionId of ids) {
     const commission = await readCommission(commissionId);
     const legacyIds = ledgerProjectIds(commission);
     if (!legacyIds.length) continue;
     const projects = await getProjectsByIds(legacyIds).catch(() => []);
+    const linked = [];
     for (const project of projects) {
       if (!project || project.commissionId) continue;
       // Drop only the stages the old fire path owned; a hand-set `evaluation` pin
@@ -303,9 +315,22 @@ export async function backfillProjectCommissionIds() {
       const ok = await updateProject(project.id, { commissionId, modelOverrides: overrides })
         .then(() => true)
         .catch((e) => { console.error(`❌ Commission back-pointer backfill: ${project.id} failed: ${e.message}`); return false; });
-      if (ok) stamped += 1;
+      if (ok) { stamped += 1; linked.push(project); }
+    }
+    // A commission stopped BEFORE this build shipped never had its work stopped —
+    // the reconciler didn't exist when its pause/delete event fired. Catch up now,
+    // or the projects we just linked keep retrying forever.
+    if (!linked.length || (!commission.deleted && commission.enabled !== false)) continue;
+    const { stopProject } = await import('../creativeDirector/stopProject.js');
+    const reason = commission.deleted
+      ? 'Creative commission deleted' : 'Creative commission paused';
+    for (const project of linked) {
+      if (PROJECT_TERMINAL_STATUSES.has(project.status)) continue;
+      const result = await stopProject(project.id, { reason })
+        .catch((e) => { console.error(`❌ Commission back-pointer backfill: stop ${project.id} failed: ${e.message}`); return null; });
+      if (result?.stopped) stopped += 1;
     }
   }
-  if (stamped) console.log(`🎯 Commission back-pointer backfill: stamped ${stamped} pre-existing project(s)`);
-  return { stamped };
+  if (stamped) console.log(`🎯 Commission back-pointer backfill: stamped ${stamped} pre-existing project(s), stopped ${stopped} orphaned by an earlier pause/delete`);
+  return { stamped, stopped };
 }

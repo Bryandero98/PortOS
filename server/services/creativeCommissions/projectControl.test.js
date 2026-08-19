@@ -387,7 +387,7 @@ describe('backfillProjectCommissionIds', () => {
       commissionId: 'commission-1',
       modelOverrides: { evaluation: { providerId: 'vision-api' } },
     });
-    expect(result).toEqual({ stamped: 1 });
+    expect(result).toEqual({ stamped: 1, stopped: 0 });
   });
 
   it('includes tombstoned commissions — their wedged projects still need stopping', async () => {
@@ -401,14 +401,41 @@ describe('backfillProjectCommissionIds', () => {
     expect(updateProjectMock).toHaveBeenCalled();
   });
 
+  it.each([
+    ['deleted', { deleted: true }, 'Creative commission deleted'],
+    ['paused', { enabled: false }, 'Creative commission paused'],
+  ])('stops the projects of a commission %s BEFORE this build shipped', async (_label, over, reason) => {
+    // Its pause/delete event fired on a build with no reconciler, so nothing ever
+    // stopped that work — and it is exactly the work still retrying on upgrade.
+    listIdsMock.mockResolvedValue(['commission-1']);
+    readRawMock.mockResolvedValue(commission({ ...over, runs: [{ projectId: 'cd-orphan' }] }));
+    getProjectsByIdsMock.mockResolvedValue([{ id: 'cd-orphan', status: 'planning' }]);
+
+    const result = await backfillProjectCommissionIds();
+
+    expect(stopProjectMock).toHaveBeenCalledExactlyOnceWith('cd-orphan', { reason });
+    expect(result).toEqual({ stamped: 1, stopped: 1 });
+  });
+
+  it('does NOT stop the projects of a live, enabled commission', async () => {
+    listIdsMock.mockResolvedValue(['commission-1']);
+    readRawMock.mockResolvedValue(commission({ runs: [{ projectId: 'cd-live' }] }));
+    getProjectsByIdsMock.mockResolvedValue([{ id: 'cd-live', status: 'planning' }]);
+
+    const result = await backfillProjectCommissionIds();
+
+    expect(stopProjectMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ stamped: 1, stopped: 0 });
+  });
+
   it('is a no-op on a fresh install and on a re-run', async () => {
-    expect(await backfillProjectCommissionIds()).toEqual({ stamped: 0 });
+    expect(await backfillProjectCommissionIds()).toEqual({ stamped: 0, stopped: 0 });
     expect(updateProjectMock).not.toHaveBeenCalled();
 
     listIdsMock.mockResolvedValue(['commission-1']);
     readRawMock.mockResolvedValue(commission({ runs: [{ projectId: 'cd-1' }] }));
     getProjectsByIdsMock.mockResolvedValue([{ id: 'cd-1', commissionId: 'commission-1' }]);
-    expect(await backfillProjectCommissionIds()).toEqual({ stamped: 0 });
+    expect(await backfillProjectCommissionIds()).toEqual({ stamped: 0, stopped: 0 });
     expect(updateProjectMock).not.toHaveBeenCalled();
   });
 });

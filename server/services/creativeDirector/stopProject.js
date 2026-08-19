@@ -22,7 +22,9 @@
  *   4. Retire the underlying internal CoS tasks, so the orphan sweeps can't
  *      respawn them (same reasoning + same `'internal'` / `'completed'`
  *      constraints as recovery.js — see the comment there).
- *   5. Cancel every queued/running media job the project owns, so a doomed render
+ *   5. Reset the scene / plan-step state the stop invalidated, so Resume has
+ *      something runnable to pick up instead of waiting on a worker that is gone.
+ *   6. Cancel every queued/running media job the project owns, so a doomed render
  *      isn't left holding the GPU.
  *
  * Steps 2-4 are also exported on their own as `retireRuns`, because a caller that
@@ -33,7 +35,7 @@
  * store's change bus) — every step is individually caught and no path throws out.
  */
 
-import { getProject, updateProject, updateRun } from './local.js';
+import { getProject, updateProject, updateRun, updateScene, updatePlanStep } from './local.js';
 import { PROJECT_TERMINAL_STATUSES, RUN_TERMINAL_STATUSES } from '../../lib/creativeDirectorPresets.js';
 
 const nowISO = () => new Date().toISOString();
@@ -73,11 +75,15 @@ export function inflightRuns(project, kinds = null) {
  *     this is the tag completionHook's findPendingSeedFrameJob keys on. A
  *     10-scene project enqueues ten of these up front, so omitting them is the
  *     difference between "Stop" cancelling the queue and cancelling nothing.
+ *   - `params.creativeDirectorMusicBed.projectId` — the first-pass / planner music
+ *     bed (firstPassMusicGen.js, creative/tools/media.js), also owner-less. A
+ *     music commission's whole deliverable is one of these.
  */
 export function ownedLiveJobs(jobs, projectId) {
   const ownedBy = (j) => (typeof j?.owner === 'string'
       && (j.owner.startsWith(`cd:${projectId}:`) || j.owner === `creative-director:${projectId}`))
-    || j?.params?.creativeDirector?.projectId === projectId;
+    || j?.params?.creativeDirector?.projectId === projectId
+    || j?.params?.creativeDirectorMusicBed?.projectId === projectId;
   return (jobs || []).filter((j) => ownedBy(j) && (j.status === 'queued' || j.status === 'running'));
 }
 
@@ -171,7 +177,27 @@ export async function stopProject(projectId, { reason = 'Stopped', project: prer
 
   const retired = await retireRuns(projectId, { runs: inflightRuns(project), reason });
 
-  // 5. Cancel the project's live media jobs — nothing downstream will consume them.
+  // 5. Reset the stage state the stop just invalidated. Without this a stopped
+  // project can never be RESUMED: a plan step left `running` makes
+  // deriveNextPlanAction return `waiting` forever (it reads that as "a worker owns
+  // this"), and a scene left `rendering`/`evaluating` points at a job we are about
+  // to cancel. Boot recovery performs exactly this reset for paused projects — but
+  // only at boot, so without it here Resume is dead until the next restart. A scene
+  // whose render already landed (`renderedJobId` set) keeps its `evaluating`
+  // status, the same carve-out recovery.js makes: resetting it would throw away a
+  // finished video.
+  for (const step of (project.plan?.steps || []).filter((st) => st.status === 'running')) {
+    await updatePlanStep(projectId, step.stepId, { status: 'pending' })
+      .catch((e) => console.log(`⚠️ CD stop ${projectId}: reset plan step ${step.stepId} failed: ${e.message}`));
+  }
+  for (const scene of (project.treatment?.scenes || [])) {
+    if (scene.status !== 'rendering' && scene.status !== 'evaluating') continue;
+    if (scene.renderedJobId) continue;
+    await updateScene(projectId, scene.sceneId, { status: 'pending' })
+      .catch((e) => console.log(`⚠️ CD stop ${projectId}: reset scene ${scene.sceneId} failed: ${e.message}`));
+  }
+
+  // 6. Cancel the project's live media jobs — nothing downstream will consume them.
   let jobs = 0;
   const queue = await loadOrEmpty(() => import('../mediaJobQueue/index.js'), 'media queue', projectId);
   if (queue.listJobs && queue.cancelJob) {

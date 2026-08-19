@@ -3,10 +3,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const getProjectMock = vi.fn();
 const updateProjectMock = vi.fn(async () => ({}));
 const updateRunMock = vi.fn(async () => ({}));
+const updateSceneMock = vi.fn(async () => ({}));
+const updatePlanStepMock = vi.fn(async () => ({}));
 vi.mock('./local.js', () => ({
   getProject: (...a) => getProjectMock(...a),
   updateProject: (...a) => updateProjectMock(...a),
   updateRun: (...a) => updateRunMock(...a),
+  updateScene: (...a) => updateSceneMock(...a),
+  updatePlanStep: (...a) => updatePlanStepMock(...a),
 }));
 
 const getActiveAgentsMock = vi.fn(() => []);
@@ -110,8 +114,12 @@ describe('ownedLiveJobs', () => {
       { id: 'j7', status: 'queued', params: { creativeDirector: { projectId: 'cd-1', sceneId: 's1' } } },
       { id: 'j8', status: 'running', params: { creativeDirector: { projectId: 'cd-2' } } }, // other project
       { id: 'j9', status: 'completed', params: { creativeDirector: { projectId: 'cd-1' } } }, // terminal
+      // The music bed uses a THIRD tag and is a music commission's entire
+      // deliverable — missing it means Stop cancels nothing on those projects.
+      { id: 'j10', status: 'running', params: { creativeDirectorMusicBed: { projectId: 'cd-1' } } },
+      { id: 'j11', status: 'queued', params: { creativeDirectorMusicBed: { projectId: 'cd-2' } } },
     ];
-    expect(ownedLiveJobs(jobs, 'cd-1').map((j) => j.id)).toEqual(['j2', 'j3', 'j7']);
+    expect(ownedLiveJobs(jobs, 'cd-1').map((j) => j.id)).toEqual(['j2', 'j3', 'j7', 'j10']);
   });
 });
 
@@ -178,6 +186,30 @@ describe('stopProject', () => {
     }));
     expect(cancelJobMock).toHaveBeenCalledExactlyOnceWith('j2');
     expect(result).toMatchObject({ stopped: true, runs: 1, tasks: 1, agents: 1, jobs: 1 });
+  });
+
+  it('resets the stage state it cancelled, so the project is actually Resumable', async () => {
+    // A plan step left `running` makes deriveNextPlanAction return `waiting`
+    // forever; a scene left `rendering` points at a job we just cancelled. Without
+    // the reset, Resume is dead until the next server restart.
+    getProjectMock.mockResolvedValue(project({
+      plan: { steps: [
+        { stepId: 's-run', status: 'running' },
+        { stepId: 's-done', status: 'done' },
+      ] },
+      treatment: { scenes: [
+        { sceneId: 'sc-1', status: 'rendering' },
+        { sceneId: 'sc-2', status: 'evaluating', renderedJobId: 'job-9' }, // finished render — keep
+        { sceneId: 'sc-3', status: 'accepted' },
+      ] },
+    }));
+
+    await stopProject('cd-1');
+
+    expect(updatePlanStepMock).toHaveBeenCalledExactlyOnceWith('cd-1', 's-run', { status: 'pending' });
+    // Only the scene with no landed render is reset — resetting sc-2 would throw
+    // away a finished video (same carve-out recovery.js makes).
+    expect(updateSceneMock).toHaveBeenCalledExactlyOnceWith('cd-1', 'sc-1', { status: 'pending' });
   });
 
   it('completes the stop when a single step fails', async () => {
