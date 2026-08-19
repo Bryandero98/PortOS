@@ -2453,10 +2453,15 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
   const reviewerArg = (reviewArgs ? ` ${reviewArgs}` : '') + mergeArg;
   const copilotOnly = reviewers.length === 1 && reviewers[0] === DEFAULT_REVIEWER && reviewUsernames.length === 0;
   const reviewerListLabel = [...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ');
+  // Ordering matters to the agent: `/do:pr` partitions the list and runs every
+  // local reviewer BEFORE it creates the PR, so the PR opens against an
+  // already-review-clean branch and only the cloud-side reviewers (Copilot,
+  // `@login`) plus CI remain. Saying "after the PR opens" of the whole list had
+  // agents expecting — and sometimes hand-rolling — a post-PR local pass.
   const reviewSuffix = willOpenPR && runsReviewLoop
     ? (copilotOnly
         ? ' — `/do:pr` runs the Copilot review loop after the PR opens.'
-        : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order after the PR opens.`)
+        : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order: local reviewers before it opens the PR, then the PR-side reviewers (Copilot / \`@login\`) once it is open.`)
     : (willOpenPR ? ' — external review is disabled for this task.' : '');
   // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
   // above), so `/simplify` — a Claude Code built-in — is invokable here.

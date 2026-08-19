@@ -349,7 +349,7 @@ export function resolveSwarmBlock(promptTaskType, count) {
 2. From that queue pick up to ${n} issues that are **mutually independent** — no shared files/subsystems likely to collide on merge, no parent/child or dependency links; prefer issues that touch disjoint areas. **Under-fill is fine:** if fewer than ${n} independent issues exist, run a smaller swarm and say so. **If only ONE is eligible, just run the single-issue flow below and say so** — a one-agent swarm is pure overhead.
 
 ## Phase B — Fan out (one subagent per picked issue)
-For EACH picked issue, spawn a subagent that runs the single-issue **Phases 2–6 below** for that one issue — claim (own \`claim/issue-<num>\` worktree + assignee + \`in-progress\` label) → verify → implement → changelog → open the ${pr} → run the review gate ({reviewers}) — **but with NO merge and NO Phase 7 cleanup** (the orchestrator owns those; each agent opens its ${pr} the equivalent of \`--no-merge\`). Because each agent claims through the normal Phase 2 assignee marker + race read-back, two agents can never ship the same issue.
+For EACH picked issue, spawn a subagent that runs the single-issue **Phases 2–6 below** for that one issue — claim (own \`claim/issue-<num>\` worktree + assignee + \`in-progress\` label) → verify → implement → run the LOCAL reviewers before anything is opened → changelog → open the ${pr} → run the ${pr}-side review gate ({reviewers}) — **but with NO merge and NO Phase 7 cleanup** (the orchestrator owns those; each agent opens its ${pr} the equivalent of \`--no-merge\`). Because each agent claims through the normal Phase 2 assignee marker + race read-back, two agents can never ship the same issue.
 
 **Each fan-out agent gets its OWN scratch subdirectory — the scratchpad root is off-limits.** Every agent in this run shares one session scratchpad path, and every agent runs these byte-identical instructions, so left to themselves two agents pick the same obvious filename (\`pr-body.md\`) and silently clobber each other — last writer wins, the command still exits 0, and the wrong text lands on the wrong ${pr}. So: **each fan-out agent writes ALL temp files under \`<scratchpad>/issue-<num>/\` (its own issue number), and NEVER writes to the scratchpad root** (the root stays the orchestrator's). That covers ${pr} body drafts, review notes, diff dumps, test output — every scratch artifact, not just the body file. Create the directory before first use (\`mkdir -p\`). Filenames inside it may be as obvious as you like; the directory is what makes them unique. **If your environment gives you no scratchpad path at all**, use \`$(mktemp -d)/issue-<num>\` instead — never a path inside the source repo or inside your worktree, where it would show up as untracked cruft or get swept into a commit.
 
@@ -517,7 +517,7 @@ export async function buildClaimWorkTask(app, {
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
     + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts)
-    + appendLocalReviewerInstructions(promptTaskType, reviewersList, promptReviewerModels, promptReviewerEfforts);
+    + buildLocalReviewerInstructions(reviewersList, promptReviewerModels, promptReviewerEfforts);
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
@@ -554,7 +554,7 @@ async function resolveClaimReviewerPrompt() {
   return {
     csv: buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModels, reviewerEfforts),
     effortBlock: appendReviewerEffortBlock(list, reviewerEfforts),
-    localReviewerBlock: appendLocalReviewerInstructions('claim-issue-jira', list, reviewerModels, reviewerEfforts),
+    localReviewerBlock: buildLocalReviewerInstructions(list, reviewerModels, reviewerEfforts),
   };
 }
 
@@ -714,17 +714,22 @@ const appendReviewerEffortBlock = (reviewers, reviewerEfforts) => {
  * This is prose rather than a template placeholder so customized legacy claim
  * prompts receive the safety fix too. Empty/malformed responses are explicitly
  * inconclusive and can never be mistaken for a clean review.
+ *
+ * The diff is resolved from the BRANCH, never from `gh pr diff` / `glab mr diff`:
+ * every claim prompt now runs its local reviewers before the PR/MR is opened
+ * (that is the whole point of the pre-PR review phase), so a forge command that
+ * needs an open PR would fail on the one review pass that has to succeed.
  */
-export function buildLocalReviewerInstructions(promptTaskType, reviewers, reviewerModels = {}, reviewerEfforts = {}) {
+export function buildLocalReviewerInstructions(reviewers, reviewerModels = {}, reviewerEfforts = {}) {
   const localReviewers = (reviewers || []).filter((reviewer) => LOCAL_LLM_REVIEWERS.includes(reviewer));
   if (!localReviewers.length) return '';
 
-  const gitlabDiff = `MR_IID="$(glab mr list --source-branch "$(git branch --show-current)" -F json | jq -er '.[0].iid)'"\nglab mr diff "$MR_IID"`;
-  const diffCommand = promptTaskType === 'claim-issue-gitlab'
-    ? gitlabDiff
-    : promptTaskType === 'claim-issue'
-      ? 'gh pr diff'
-      : `if command -v gh >/dev/null 2>&1 && gh pr view --json url -q .url >/dev/null 2>&1; then\n  gh pr diff\nelif command -v glab >/dev/null 2>&1; then\n  ${gitlabDiff.replace(/\n/g, '\n  ')}\nelse\n  echo "No supported forge CLI can resolve the current branch's review diff" >&2\n  exit 1\nfi`;
+  // Forge-agnostic and PR-free: the branch's own diff against the default
+  // branch's remote ref. `origin/HEAD` resolves the default branch on GitHub and
+  // GitLab alike, falling back to `main` when the symbolic ref is missing. Same
+  // `DEFAULT_BRANCH` idiom (and name) the claim prompts' own worktree blocks use,
+  // re-resolved here because this procedure runs as a self-contained snippet.
+  const diffCommand = 'DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s@^origin/@@\')"\nDEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"\ngit fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1\ngit diff "origin/$DEFAULT_BRANCH...HEAD"';
   const reviewScript = shellQuote(join(PATHS.root, 'server/scripts/run-local-code-review.mjs'));
   const commands = localReviewers.map((reviewer) => {
     const pinned = {
@@ -741,10 +746,6 @@ export function buildLocalReviewerInstructions(promptTaskType, reviewers, review
 
   return `\n\n## Local Reviewer Procedure\n\nRun each configured local reviewer in its listed order using the command below. Only a successfully extracted non-empty \`.findings\` string is a review result. Timeout, transport failure, malformed JSON, an error response, or missing/empty findings is INCONCLUSIVE: do not merge or substitute a self-review.\n\n${commands}`;
 }
-
-const appendLocalReviewerInstructions = (promptTaskType, reviewers, reviewerModels, reviewerEfforts) => (
-  buildLocalReviewerInstructions(promptTaskType, reviewers, reviewerModels, reviewerEfforts)
-);
 
 /**
  * Build a one-off "implement THIS JIRA ticket" task for `app` — the per-card
@@ -2886,7 +2887,7 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
         ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts)
         : '')
     + (/\{reviewers\}/.test(promptTemplate)
-        ? appendLocalReviewerInstructions(promptTaskType, promptReviewers, promptReviewerModels, promptReviewerEfforts)
+        ? buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
         : '');
 }
 
