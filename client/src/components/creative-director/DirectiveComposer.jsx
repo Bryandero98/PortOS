@@ -1,4 +1,4 @@
-import { DELIVERABLE_OPTIONS } from '../../lib/creativeDirectorPlan.js';
+import { CREATIVE_DIRECTOR_GOAL_MAX, DELIVERABLE_OPTIONS } from '../../lib/creativeDirectorPlan.js';
 
 /**
  * Directive composer fields (CDO Phase 4, #2186) — the studio "brief" a directive
@@ -58,7 +58,7 @@ export default function DirectiveComposer({
           onChange={(e) => patch({ goal: e.target.value })}
           placeholder="Produce a 6-issue noir comic in universe X, with covers, a polished manuscript, and a teaser trailer…"
           className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm h-28 font-mono disabled:opacity-50"
-          maxLength={5000}
+          maxLength={CREATIVE_DIRECTOR_GOAL_MAX}
         />
       </div>
 

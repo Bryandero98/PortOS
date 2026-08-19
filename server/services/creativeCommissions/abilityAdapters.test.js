@@ -2,8 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   ABILITY_ADAPTERS, getAbilityAdapter, buildCommissionDirective, buildRenderBackendPin,
 } from './abilityAdapters.js';
-import { CREATIVE_COMMISSION_ABILITIES, ABILITY_GENERATION_SPEC } from '../../lib/creativeCommissionValidation.js';
+import {
+  CREATIVE_COMMISSION_ABILITIES, ABILITY_GENERATION_SPEC,
+  COMMISSION_INTENT_MAX, COMMISSION_STYLE_SPEC_MAX, COMMISSION_BRIEF_TAG_MAX,
+} from '../../lib/creativeCommissionValidation.js';
+import { MAX_DIRECTIVE_GOAL_LEN } from './directive.js';
 import { buildVideoPromptGuidance, isMiniMaxVideoModel } from './videoPromptGuidance.js';
+
+const MAXED_INTENT = 'x'.repeat(COMMISSION_INTENT_MAX);
 
 describe('ability adapter registry', () => {
   it('has an adapter for every supported ability (and no extras)', () => {
@@ -54,20 +60,20 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
       .toMatchObject({ targetAbility: 'video', generation: { quality: 'standard', videoMode: 'auto' } });
   });
 
-  it('clamps the goal under the CD 5000-char cap with a large feedback window + long notes', () => {
+  it('clamps the goal under the directive cap with a large feedback window + long notes', () => {
     const feedback = Array.from({ length: 50 }, (_, i) => ({ rating: i % 2 === 0 ? 'up' : 'down', note: 'z'.repeat(1000) }));
     const directive = buildCommissionDirective({ targetAbility: 'video', brief: { intent: 'surreal' }, feedback, feedbackWindow: 50 });
-    expect(directive.goal.length).toBeLessThanOrEqual(4500);
+    expect(directive.goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
   });
 
   it('keeps the feedback digest even when the brief text is very long', () => {
     const directive = buildCommissionDirective({
       targetAbility: 'video',
-      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(3000) },
+      brief: { intent: 'x'.repeat(COMMISSION_INTENT_MAX * 2), styleSpec: 'y'.repeat(COMMISSION_STYLE_SPEC_MAX * 2) },
       feedback: [{ rating: 'down', note: 'less horror' }],
       feedbackWindow: 5,
     });
-    expect(directive.goal.length).toBeLessThanOrEqual(4500);
+    expect(directive.goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
     expect(directive.goal).toContain('Recent dislikes: less horror.');
   });
 
@@ -93,13 +99,23 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     expect(buildVideoPromptGuidance('ltx-2.5')).not.toContain('[Tracking shot]');
   });
 
-  it('keeps the MiniMax recipe when the brief nearly fills the directive budget', () => {
+  // A brief filled to the SCHEMA caps is the largest one a route or PATCH can
+  // store, so the system prefix AND the user's own words must both survive it:
+  // the clamp drops the tail, and the guidance is prepended, so an under-sized
+  // MAX_DIRECTIVE_GOAL_LEN would silently eat the brief instead of erroring.
+  it('carries a brief filled to the schema caps AND the MiniMax recipe', () => {
+    const intent = 'x'.repeat(COMMISSION_INTENT_MAX);
+    const styleSpec = 'y'.repeat(COMMISSION_STYLE_SPEC_MAX);
     const directive = buildCommissionDirective({
       targetAbility: 'video',
-      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(2000) },
+      brief: { intent, styleSpec, genre: 'g'.repeat(COMMISSION_BRIEF_TAG_MAX), category: 'c'.repeat(COMMISSION_BRIEF_TAG_MAX) },
+      feedback: Array.from({ length: 50 }, (_, i) => ({ rating: i % 2 === 0 ? 'up' : 'down', note: 'z'.repeat(1000) })),
+      feedbackWindow: 50,
       generation: { videoModelId: 'minimax_h3_cuda' },
     });
     expect(directive.goal).toContain('MiniMax H3 prompt template');
+    expect(directive.goal).toContain(intent);
+    expect(directive.goal).toContain(styleSpec);
   });
 
   it('uses the install default model when choosing model-specific guidance', () => {
@@ -184,7 +200,8 @@ describe('per-ability directives steer the planner to the right tools', () => {
   it('music: preserves taste anchors and original-work constraints under the goal cap', () => {
     const d = buildCommissionDirective({
       targetAbility: 'music',
-      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(5000) },
+      // A brief filled to the schema caps — the largest a route or PATCH can store.
+      brief: { intent: MAXED_INTENT, styleSpec: 'y'.repeat(COMMISSION_STYLE_SPEC_MAX) },
       generation: { lengthSeconds: 45 },
     }, {
       tasteRecipe: {
@@ -194,7 +211,8 @@ describe('per-ability directives steer the planner to the right tools', () => {
         sourceVersion: 'music-taste-v1:example', sourceHash: 'example-hash',
       },
     });
-    expect(d.goal.length).toBeLessThanOrEqual(4500);
+    expect(d.goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
+    expect(d.goal).toContain(MAXED_INTENT);
     expect(d.goal).toContain('Example Artist');
     expect(d.goal).toContain('Create an original work');
     expect(d.goal).toContain('do not reproduce source tracks');

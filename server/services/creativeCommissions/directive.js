@@ -4,29 +4,46 @@
  * These are side-effect-free helpers: `commissionToCron` turns a schedule
  * descriptor into a 5-field cron string; `renderFeedbackDigest` renders the taste
  * feedback into a steering digest; and `composeDirectiveGoal` folds a list of
- * brief lines + that digest into a CD directive `goal` under the 5000-char cap.
+ * brief lines + that digest into a CD directive `goal` under MAX_DIRECTIVE_GOAL_LEN.
  * The per-output-type directive assembly (which lines/deliverables each type
  * gets) lives in abilityAdapters.js (#2769), which imports these — this module
- * stays a dependency-free leaf and never imports back. Kept pure so they're
- * trivially unit-testable and importable anywhere without dragging the scheduler
- * graph along. The authoritative cron-VALIDITY check (isValidCron) lives in the
- * scheduler/service.
+ * never imports back. Its only imports are the CAP CONSTANTS the goal budget is
+ * derived from (see below); it pulls in no scheduler/store graph, so it stays
+ * trivially unit-testable and importable anywhere. The authoritative
+ * cron-VALIDITY check (isValidCron) lives in the scheduler/service.
  */
+
+import {
+  COMMISSION_INTENT_MAX, COMMISSION_STYLE_SPEC_MAX, COMMISSION_BRIEF_TAG_MAX,
+} from '../../lib/creativeCommissionValidation.js';
 
 // The CD directive `goal` this composes is fed straight into `createProject` by
 // the scheduler, which does NOT re-validate it against the route's
-// `creativeDirectorDirectiveSchema` (that 5000-char cap only guards HTTP input).
+// `creativeDirectorDirectiveSchema` (whose cap only guards HTTP input).
 // A commission with the max `feedbackWindow` (50) and long notes could otherwise
 // balloon the goal past what the planner should ever see. Clamp defensively: cap
 // each note's contribution to the digest, and hard-cap the final goal with
 // headroom under the CD schema limit.
 export const MAX_DIGEST_NOTE_LEN = 300;
-export const MAX_DIRECTIVE_GOAL_LEN = 4500;
 // The digest is the whole point of the feedback loop, so it gets a reserved
 // slice of the goal budget the brief text can't eat into (see
 // buildCommissionDirective). Bounded on its own too, so 50 reactions can't blow
 // the reservation.
 export const MAX_DIGEST_LEN = 1500;
+// Everything an adapter prepends that the user did not write: the lead sentence
+// plus the longest system prefix (a model's prompt guidance, or a fully-populated
+// music taste recipe). Not derived — those strings are prose, not capped fields —
+// so directive.test.js measures the real ones against this allowance.
+export const MAX_SYSTEM_PREFIX_LEN = 3000;
+// DERIVED, not tuned: the sum of every bounded part one goal can hold. The clamp
+// drops the TAIL and the adapters put system text FIRST, so a budget short of
+// this sum eats the user's own words rather than erroring — which is why raising
+// a brief cap has to move this number, and does so automatically here.
+export const MAX_DIRECTIVE_GOAL_LEN = COMMISSION_INTENT_MAX
+  + COMMISSION_STYLE_SPEC_MAX
+  + (COMMISSION_BRIEF_TAG_MAX * 2) // genre + category
+  + MAX_DIGEST_LEN
+  + MAX_SYSTEM_PREFIX_LEN;
 
 const clamp = (s, max) => (s.length > max ? `${s.slice(0, Math.max(0, max - 1))}…` : s);
 const clampNote = (note) => clamp(note, MAX_DIGEST_NOTE_LEN);
@@ -109,7 +126,7 @@ export function renderFeedbackDigest(feedback, windowSize = 5) {
 
 /**
  * Compose a CD directive `goal` string from a list of brief lines and a feedback
- * digest, under the CD's 5000-char cap. Ability-agnostic (#2769): each ability
+ * digest, under MAX_DIRECTIVE_GOAL_LEN. Ability-agnostic (#2769): each ability
  * adapter builds its own type-specific `lines` (see abilityAdapters.js) and hands
  * them here so the char-budget / digest-reservation logic lives in exactly one
  * place.

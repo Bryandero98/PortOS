@@ -57,6 +57,7 @@ const {
   mergeCommissionsFromSync,
   pruneTombstonedCommissions,
   commissionStore,
+  MAX_RUN_PROMPT_LEN,
   ERR_VALIDATION,
   ERR_NOT_FOUND,
 } = await import('./store.js');
@@ -305,6 +306,18 @@ describe('recordCommissionRun', () => {
     expect(after.runs).toHaveLength(1);
     expect(after.runs[0]).toMatchObject({ status: 'started', projectId: 'cd-1', promptUsed: 'g' });
     expect(after.runs[0].id).toMatch(/^run-/);
+  });
+
+  // The directive goal now carries a full instruction set, but a run's copy of it
+  // is an excerpt: it is retained MAX_PERSISTED_RUNS deep in a record rewritten
+  // whole on every mutation, AND handed to the audio enqueue as the music prompt.
+  it('stores the prompt as a bounded excerpt, not the whole directive goal', async () => {
+    const created = await createCommission(validInput());
+    const goal = 'p'.repeat(MAX_RUN_PROMPT_LEN * 3);
+    await recordCommissionRun(created.id, { status: 'started', projectId: 'cd-1', promptUsed: goal });
+    const after = await getCommission(created.id);
+    expect(after.runs[0].promptUsed.length).toBeLessThanOrEqual(MAX_RUN_PROMPT_LEN);
+    expect(after.runs[0].promptUsed.startsWith('ppp')).toBe(true);
   });
 
   it('persists a manual trigger and defaults everything else to schedule', async () => {

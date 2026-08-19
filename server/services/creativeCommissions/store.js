@@ -86,6 +86,18 @@ export const commissionEvents = new EventEmitter();
 export const TYPE = 'creative-commissions';
 export const COMMISSIONS_SCHEMA_VERSION = 1;
 export const MAX_PERSISTED_RUNS = 50;
+// A run's `promptUsed` is an EXCERPT of the directive goal, not a copy of it.
+// Two things read it, and neither wants the whole brief: the run ledger keeps
+// MAX_PERSISTED_RUNS of them in a record that is rewritten whole on every
+// mutation and shipped entire by the list route, and
+// `getCommissionMusicContextForProject` hands it to the audio enqueue as the
+// authoritative music PROMPT. Since the goal now carries a full instruction set
+// (COMMISSION_INTENT_MAX), an uncapped copy would put a planning brief into a
+// render payload. 4000 keeps both at roughly their pre-instruction-set size.
+export const MAX_RUN_PROMPT_LEN = 4000;
+const clampRunPrompt = (value) => (typeof value === 'string' && value.length > MAX_RUN_PROMPT_LEN
+  ? `${value.slice(0, MAX_RUN_PROMPT_LEN - 1)}…`
+  : value);
 // Feedback is kept inline on the commission record (not a separate federated
 // store) — Phase 1's store shape reserved `feedback[]` precisely so Phase 2 adds
 // the rate surface without a schema change. Capped like runs so a long-lived
@@ -153,6 +165,9 @@ function sanitizeMusicOutput(raw) {
 function sanitizeRunHistoryEntry(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const next = { ...raw };
+  // Also on READ, so a ledger written before the cap (or by a peer) shrinks the
+  // first time it is loaded instead of riding along forever.
+  if (isStr(raw.promptUsed)) next.promptUsed = clampRunPrompt(raw.promptUsed);
   if ('tasteRecipe' in raw) {
     const tasteRecipe = sanitizeMusicTasteRecipe(raw.tasteRecipe);
     if (tasteRecipe) next.tasteRecipe = tasteRecipe;
@@ -715,7 +730,7 @@ export async function recordCommissionRun(id, runEntry) {
       // scheduled, which is what they were.
       trigger: runEntry.trigger === 'manual' ? 'manual' : 'schedule',
       projectId: runEntry.projectId || null,
-      promptUsed: isStr(runEntry.promptUsed) ? runEntry.promptUsed : null,
+      promptUsed: isStr(runEntry.promptUsed) ? clampRunPrompt(runEntry.promptUsed) : null,
       reason: isStr(runEntry.reason) ? runEntry.reason : null,
       error: isStr(runEntry.error) ? runEntry.error : null,
       ...(tasteRecipe ? { tasteRecipe } : {}),
