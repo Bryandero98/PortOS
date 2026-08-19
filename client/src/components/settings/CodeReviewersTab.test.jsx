@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
-import CodeReviewDefaultsPanel from './CodeReviewDefaultsPanel';
+import CodeReviewersTab from './CodeReviewersTab';
 import * as api from '../../services/api';
 
 vi.mock('../../services/api', () => ({
@@ -19,7 +19,7 @@ vi.mock('../ui/Toast', () => ({
   },
 }));
 
-describe('CodeReviewDefaultsPanel', () => {
+describe('CodeReviewersTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -38,7 +38,7 @@ describe('CodeReviewDefaultsPanel', () => {
       reviewerApplies: false,
     });
 
-    render(<CodeReviewDefaultsPanel />);
+    render(<CodeReviewersTab />);
 
     expect(screen.getByText('Loading defaults…')).toBeInTheDocument();
 
@@ -51,7 +51,7 @@ describe('CodeReviewDefaultsPanel', () => {
   it('renders error banner with Retry button and disables Save button when fetch rejects', async () => {
     api.getCodeReviewDefaults.mockRejectedValue(new Error('Network error'));
 
-    render(<CodeReviewDefaultsPanel />);
+    render(<CodeReviewersTab />);
 
     expect(await screen.findByText('Failed to load code review defaults.')).toBeInTheDocument();
     const retryBtn = screen.getByRole('button', { name: 'Retry' });
@@ -73,7 +73,7 @@ describe('CodeReviewDefaultsPanel', () => {
         reviewerApplies: false,
       });
 
-    render(<CodeReviewDefaultsPanel />);
+    render(<CodeReviewersTab />);
 
     expect(await screen.findByText('Failed to load code review defaults.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save defaults' })).toBeDisabled();
@@ -100,7 +100,7 @@ describe('CodeReviewDefaultsPanel', () => {
     });
     api.updateSettings.mockResolvedValue({ success: true });
 
-    render(<CodeReviewDefaultsPanel />);
+    render(<CodeReviewersTab />);
 
     const saveBtn = await screen.findByRole('button', { name: 'Save defaults' });
     fireEvent.click(saveBtn);

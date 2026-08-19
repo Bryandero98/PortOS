@@ -6,6 +6,7 @@ import { AutofixerTab } from '../components/settings/AutofixerTab';
 import AiAssignmentsTab from '../components/settings/AiAssignmentsTab';
 import { BackupTab } from '../components/settings/BackupTab';
 import { CatalogTypesTab } from '../components/settings/CatalogTypesTab';
+import CodeReviewersTab from '../components/settings/CodeReviewersTab';
 import { DatabaseTab } from '../components/settings/DatabaseTab';
 import EmbeddingsTab from '../components/settings/EmbeddingsTab';
 import { LocalLlmTab } from '../components/settings/LocalLlmTab';
@@ -44,6 +45,7 @@ export default function Settings() {
       case 'autofixer': return <AutofixerTab />;
       case 'backup': return <BackupTab />;
       case 'catalog': return <CatalogTypesTab />;
+      case 'code-reviewers': return <CodeReviewersTab />;
       case 'database': return <DatabaseTab />;
       case 'embeddings': return <EmbeddingsTab />;
       case 'local-llm': return <LocalLlmTab />;

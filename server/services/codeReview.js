@@ -119,7 +119,7 @@ export function pickCodeReviewDefaults(settings) {
 
 /**
  * Convenience async wrapper that reads settings.json and returns the merged
- * defaults. Used by the lifecycle fallback and the AI Providers panel.
+ * defaults. Used by the lifecycle fallback and the Code Reviewers settings page.
  *
  * Cached so the per-agent-completion fallback (`finalizeAgent`) doesn't pay
  * a `readFile + JSON.parse + stripStoreKeys` round-trip on every sweep —
@@ -274,7 +274,7 @@ export async function runLocalCodeReview({ backend, model, diff, effort = null, 
     return { ok: false, error: `Unsupported reviewer backend: ${backend}` }
   }
   if (!model || typeof model !== 'string') {
-    return { ok: false, error: `No model configured for ${backend} reviewer — set one on the AI Providers → Code Review Defaults panel.` }
+    return { ok: false, error: `No model configured for ${backend} reviewer — set one on the Settings → Code Reviewers page.` }
   }
   const trimmedDiff = typeof diff === 'string' ? diff.trim() : ''
   if (!trimmedDiff) {
