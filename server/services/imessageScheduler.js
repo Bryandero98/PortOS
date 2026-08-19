@@ -5,8 +5,9 @@
  * ingestion (see imessageSync.js). Mirrors the openWorldSnapshotScheduler pattern.
  *
  * OFF by default: the scheduler is only registered when the user has opted in via
- * Settings → iMessage (`settings.imessage.enabled`). Reading chat.db needs macOS
- * Full Disk Access, so we never poll it silently. The interval value is locked in
+ * the iMessage Settings drawer on Comms → Messages → iMessage
+ * (`settings.imessage.enabled`). Reading chat.db needs macOS Full Disk Access,
+ * so we never poll it silently. The interval value is locked in
  * at registration (changing it needs a restart), but the `enabled` toggle is
  * re-read on every tick so disabling from settings stops runs without a restart.
  *

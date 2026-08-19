@@ -378,7 +378,8 @@ const startBackgroundServices = ({ spawnerReady }) => {
   // for the historical timeline scrubber (issue #877).
   startOpenWorldSnapshotScheduler().catch(err => console.error(`❌ OpenWorld snapshot scheduler init failed: ${err.message}`));
   // Initialize iMessage sync scheduler — OFF by default; only polls chat.db when
-  // the user opts in via Settings → iMessage (needs macOS Full Disk Access) (#2151).
+  // the user opts in from the iMessage Settings drawer on Comms → Messages → iMessage
+  // (needs macOS Full Disk Access) (#2151).
   startImessageScheduler().catch(err => console.error(`❌ iMessage sync scheduler init failed: ${err.message}`));
   // Initialize Signal sync scheduler — OFF by default; only reads the SQLCipher
   // chat DB (via the keychain-wrapped key) when the user opts in via

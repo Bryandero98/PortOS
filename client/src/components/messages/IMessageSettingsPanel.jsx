@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { Save, Loader2, MessageSquare, ShieldCheck, ShieldAlert, RefreshCw, ExternalLink } from 'lucide-react';
+import { Save, Loader2, MessageSquare, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatDateTime } from '../../utils/formatters';
@@ -12,10 +12,15 @@ import {
   syncImessage,
 } from '../../services/api';
 
-// Settings → iMessage (#2151). Opt-in, machine-local ingestion of the macOS
-// Messages database (chat.db) into the Tribe touchpoint log + activity timeline.
-// OFF by default — reading chat.db needs macOS Full Disk Access.
-export function IMessageTab() {
+// iMessage ingestion settings (#2151). Opt-in, machine-local ingestion of the
+// macOS Messages database (chat.db) into the Tribe touchpoint log + activity
+// timeline. OFF by default — reading chat.db needs macOS Full Disk Access.
+//
+// Hosted as a right-side Drawer on Comms → Messages → iMessage rather than its
+// own Settings page, so the config sits next to the data it governs (same
+// pattern as Media Gen Settings over the Image page). `onSynced` lets the host
+// page refresh its conversation list after a sync run from in here.
+export function IMessageSettingsPanel({ onSynced }) {
   const [loading, setLoading] = useState(true);
   const [enabled, setEnabled] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(30);
@@ -76,6 +81,7 @@ export function IMessageTab() {
     if (result?.ok) {
       toast.success(`Synced: ${result.recorded} event(s), ${result.touchpointsCreated} touchpoint(s)${result.hasMore ? ' — more history remains, run again' : ''}`);
       setStatus((prev) => ({ ...(prev || {}), state: { ...(prev?.state || {}), cursorRowid: result.cursorRowid, lastResult: result, lastRunAt: new Date().toISOString() } }));
+      onSynced?.();
     } else {
       toast.error(result?.fullDiskAccessRequired ? 'Full Disk Access required' : (result?.error || 'Sync failed'));
       setSetup(result);
@@ -97,11 +103,8 @@ export function IMessageTab() {
           Reads your local macOS Messages database (<code className="text-gray-300">~/Library/Messages/chat.db</code>) read-only
           and feeds both Tribe touchpoints and the activity timeline. Machine-local — nothing federates to peers.
           Requires macOS <strong>Full Disk Access</strong> for the process running PortOS.
-          Browse, purge spam, and manage ingested events under{' '}
-          <Link to="/messages/imessage" className="text-port-accent hover:underline inline-flex items-center gap-1">
-            Comms → iMessage <ExternalLink size={12} />
-          </Link>
-          {' '}— deletes there remove PortOS copies only, never Apple Messages.
+          Browse, purge spam, and manage ingested events on the page behind this panel
+          — deletes there remove PortOS copies only, never Apple Messages.
           For names instead of phone numbers, sync{' '}
           <Link to="/messages/contacts" className="text-port-accent hover:underline">Comms → Contacts</Link>
           {' '}(and optionally fill Tribe phones/emails).
@@ -187,15 +190,7 @@ export function IMessageTab() {
 
       {(lastResult || status?.state?.cursorRowid > 0) && (
         <div className="bg-port-card border border-port-border rounded-lg p-4 sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-            <h3 className="text-sm font-semibold text-white">Last sync</h3>
-            <Link
-              to="/messages/imessage"
-              className="inline-flex items-center gap-1 text-xs text-port-accent hover:underline"
-            >
-              Open iMessage manager <ExternalLink size={12} />
-            </Link>
-          </div>
+          <h3 className="text-sm font-semibold text-white mb-2">Last sync</h3>
           <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
             <div><dt className="text-gray-500 text-xs uppercase">Cursor ROWID</dt><dd className="text-gray-200">{status?.state?.cursorRowid ?? 0}</dd></div>
             <div><dt className="text-gray-500 text-xs uppercase">Events recorded</dt><dd className="text-gray-200">{lastResult?.recorded ?? '—'}</dd></div>
@@ -206,12 +201,10 @@ export function IMessageTab() {
           </dl>
           {lastResult?.hasMore && (
             <p className="mt-3 text-xs text-port-warning">
-              More history remains in chat.db — run Sync now again (or open the manager) until the cursor catches up.
+              More history remains in chat.db — run Sync now again until the cursor catches up.
               First batches are often older messages; open{' '}
               <Link to="/timeline" className="text-port-accent hover:underline">Timeline</Link>
-              {' '}on those dates or use{' '}
-              <Link to="/messages/imessage" className="text-port-accent hover:underline">Comms → iMessage</Link>
-              {' '}to browse by conversation.
+              {' '}on those dates, or close this panel to browse by conversation.
             </p>
           )}
         </div>
@@ -220,4 +213,4 @@ export function IMessageTab() {
   );
 }
 
-export default IMessageTab;
+export default IMessageSettingsPanel;
