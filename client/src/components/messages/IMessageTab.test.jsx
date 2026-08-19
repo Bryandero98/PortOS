@@ -1,0 +1,89 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
+
+const api = vi.hoisted(() => ({
+  checkImessageSetup: vi.fn(),
+  getImessageConversationEvents: vi.fn(),
+  getImessageConversations: vi.fn(),
+  getImessageStats: vi.fn(),
+  getImessageStatus: vi.fn(),
+  getSettings: vi.fn(),
+  syncImessage: vi.fn(),
+  updateSettings: vi.fn(),
+}));
+const toast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }));
+
+vi.mock('../../services/api', () => api);
+vi.mock('../ui/Toast', () => ({ default: toast }));
+
+const IMessageTab = (await import('./IMessageTab')).default;
+
+function LocationProbe() {
+  const { search } = useLocation();
+  return <div data-testid="search">{search}</div>;
+}
+
+function renderTab(route = '/messages/imessage') {
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      <Routes>
+        <Route path="/messages/imessage" element={<><IMessageTab /><LocationProbe /></>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getImessageStats.mockResolvedValue({ eventCount: 2, conversationCount: 1, blockedCount: 0 });
+  api.getImessageConversations.mockResolvedValue({ conversations: [] });
+  api.getImessageConversationEvents.mockResolvedValue({ events: [], identity: null });
+  api.getSettings.mockResolvedValue({ imessage: { enabled: false, intervalMinutes: 30 } });
+  api.getImessageStatus.mockResolvedValue({ state: {} });
+  api.syncImessage.mockResolvedValue({ ok: true, recorded: 1, touchpointsCreated: 0 });
+});
+
+// The ingestion config used to be its own /settings/imessage page; it is now a
+// right-side drawer over this page, deep-linked via ?settings=1 so ⌘K and voice
+// ("open iMessage settings") can still land on it.
+describe('IMessageTab — settings drawer', () => {
+  it('stays closed until the Settings button is pressed, then sets ?settings=1', async () => {
+    renderTab();
+    await screen.findByRole('button', { name: 'Settings' });
+    expect(screen.queryByText('iMessage ingestion')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(await screen.findByText('iMessage ingestion')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).toBe('?settings=1');
+  });
+
+  it('opens straight from a ?settings=1 deep link', async () => {
+    renderTab('/messages/imessage?settings=1');
+    expect(await screen.findByText('iMessage ingestion')).toBeTruthy();
+  });
+
+  it('closing the drawer drops the param without leaving the page', async () => {
+    renderTab('/messages/imessage?settings=1');
+    await screen.findByText('iMessage ingestion');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toBe(''));
+    expect(screen.queryByText('iMessage ingestion')).toBeNull();
+  });
+
+  it('refreshes the conversation list after a sync run inside the drawer', async () => {
+    renderTab('/messages/imessage?settings=1');
+    await screen.findByText('iMessage ingestion');
+    const listCalls = api.getImessageConversations.mock.calls.length;
+
+    const drawer = screen.getByRole('dialog', { name: 'iMessage Settings' });
+    fireEvent.click(within(drawer).getByRole('button', { name: /Sync now/ }));
+
+    await waitFor(() => {
+      expect(api.getImessageConversations.mock.calls.length).toBeGreaterThan(listCalls);
+    });
+  });
+});
