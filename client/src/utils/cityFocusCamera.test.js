@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeFocusCamera, BOROUGH_GROUND_RADIUS, CITY_CAMERA_FOV_DEG } from './cityFocusCamera';
+import { computeFocusCamera, BOROUGH_GROUND_RADIUS, CITY_CAMERA_FOV_DEG, computeRegionCamera } from './cityFocusCamera';
 
 const building = { x: 12, z: -24, height: 6 };
 
@@ -74,3 +74,44 @@ describe('computeFocusCamera', () => {
   });
 });
 // @vitest-environment node
+
+describe('computeRegionCamera', () => {
+  const region = { id: 'memory', anchor: [-44, 0, -30], w: 22, d: 22 };
+
+  it('centers the shot on the parcel anchor', () => {
+    const { target } = computeRegionCamera({ region, aspect: 16 / 9 });
+    expect(target[0]).toBeCloseTo(region.anchor[0], 6);
+    expect(target[2]).toBeCloseTo(region.anchor[2], 6);
+  });
+
+  it('sits above and on the +Z side of the region, like the overview camera', () => {
+    const { position, target } = computeRegionCamera({ region, aspect: 16 / 9 });
+    expect(position[1]).toBeGreaterThan(target[1]);
+    expect(position[2]).toBeGreaterThan(region.anchor[2]);
+  });
+
+  it('backs off farther for a bigger parcel', () => {
+    const small = computeRegionCamera({ region, aspect: 16 / 9 });
+    const big = computeRegionCamera({ region: { ...region, w: 66, d: 40 }, aspect: 16 / 9 });
+    expect(big.distance).toBeGreaterThan(small.distance);
+  });
+
+  it('floors the radius so a zero-footprint parcel still frames usefully', () => {
+    const { distance, radius } = computeRegionCamera({ region: { anchor: [0, 0, 0], w: 0, d: 0 }, aspect: 1 });
+    expect(radius).toBeGreaterThan(0);
+    expect(Number.isFinite(distance)).toBe(true);
+  });
+
+  it('pans clear of the HUD safe area', () => {
+    const bare = computeRegionCamera({ region, aspect: 16 / 9 });
+    const withPanel = computeRegionCamera({ region, aspect: 16 / 9, hudSafe: { right: 0.28 } });
+    expect(withPanel.target[0]).toBeGreaterThan(bare.target[0]);
+  });
+
+  it('survives a missing/degenerate region without producing NaNs', () => {
+    for (const bad of [undefined, {}, { anchor: null }, { anchor: [NaN, 0, NaN], w: NaN, d: NaN }]) {
+      const { position, target } = computeRegionCamera({ region: bad, aspect: 16 / 9 });
+      for (const n of [...position, ...target]) expect(Number.isFinite(n)).toBe(true);
+    }
+  });
+});

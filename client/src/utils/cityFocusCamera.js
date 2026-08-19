@@ -51,13 +51,30 @@ export function computeFocusCamera({ building, aspect = 1, fovDeg = CITY_CAMERA_
   const heightRaw = finiteOr(building?.height, 4);
   const height = heightRaw > 0 ? heightRaw : 4;
 
-  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
-  const safeFov = Number.isFinite(fovDeg) && fovDeg > 0 ? fovDeg : CITY_CAMERA_FOV_DEG;
-
   // Bounding radius: the wider of the borough's ground footprint and half its tower height (plus the
   // hologram/agent clearance above), so a tall skinny tower, a short wide cluster, and a
   // many-agent borough all stay fully in frame.
   const radius = Math.max(BOROUGH_GROUND_RADIUS, height * 0.6 + BOROUGH_TOP_CLEARANCE) * FRAMING_MARGIN;
+
+  return frameFromRadius({
+    centerX: bx,
+    centerZ: bz,
+    targetY: height * 0.45,
+    radius,
+    aspect,
+    fovDeg,
+    hudSafe,
+    pitchRad: PITCH_RAD,
+  });
+}
+
+// Shared optics for every framing helper here: given a bounding sphere on the ground plane,
+// back the camera off far enough that the sphere fits the HUD-reduced viewport, then pan the
+// whole shot clear of the HUD panels. Kept in one place so a borough and a whole district
+// can't drift into different framing rules.
+function frameFromRadius({ centerX, centerZ, targetY, radius, aspect, fovDeg, hudSafe, pitchRad }) {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const safeFov = Number.isFinite(fovDeg) && fovDeg > 0 ? fovDeg : CITY_CAMERA_FOV_DEG;
 
   // Usable viewport fraction once the HUD safe area is subtracted, clamped to a floor.
   const right = clamp01(hudSafe?.right ?? 0);
@@ -73,22 +90,67 @@ export function computeFocusCamera({ building, aspect = 1, fovDeg = CITY_CAMERA_
   const distH = radius / (halfH * usableW);
   const distance = Math.max(distV, distH);
 
-  // Pan the framed region so the borough sits in the clear area: push it left of a right-edge panel
+  // Pan the framed region so the subject sits in the clear area: push it left of a right-edge panel
   // and up above a bottom-edge panel. Panning moves camera + target by the same world delta.
   const visHalfW = distance * halfH;
   const visHalfH = distance * halfV;
   const shiftX = right * visHalfW;
   const shiftY = bottom * visHalfH;
 
-  const targetY = height * 0.45;
-  const target = [bx + shiftX, targetY - shiftY, bz];
+  const target = [centerX + shiftX, targetY - shiftY, centerZ];
 
-  // Camera above + on the +Z side (like the overview camera), pitched down by PITCH_RAD.
+  // Camera above + on the +Z side (like the overview camera), pitched down by `pitchRad`.
   const position = [
     target[0],
-    target[1] + distance * Math.sin(PITCH_RAD),
-    bz + distance * Math.cos(PITCH_RAD),
+    target[1] + distance * Math.sin(pitchRad),
+    centerZ + distance * Math.cos(pitchRad),
   ];
 
   return { position, target, distance, radius };
+}
+
+// --- Region framing (fast travel) -------------------------------------------
+// Same optics as computeFocusCamera, but framing a whole district parcel instead of one
+// borough: the bounding radius comes from the parcel's [w × d] footprint rather than a
+// tower's height. Used by the `/openworld/region/:regionId` warp so every region arrives
+// at a consistent, fully-in-frame establishing shot.
+
+// Empty space around a framed region — a touch tighter than a single borough's, since a
+// district already reads as a group and doesn't need the extra breathing room.
+const REGION_FRAMING_MARGIN = 1.2;
+
+// A parcel with no declared footprint (or a degenerate one) still needs a usable shot.
+const MIN_REGION_RADIUS = 10;
+
+// Regions are framed from a little higher than a borough (~46°) so the district's LAYOUT
+// reads — you're arriving to see a place, not to inspect one building's facade.
+const REGION_PITCH_RAD = (46 * Math.PI) / 180;
+
+// Look slightly above the ground plane so the district's structures, not the pavement,
+// sit at the center of frame.
+const REGION_TARGET_Y = 3;
+
+// Compute the establishing camera for one fast-travel region.
+//   region  — { anchor: [x, y, z], w, d } (from openWorldRegions.getRegion).
+//   aspect / fovDeg / hudSafe — as computeFocusCamera.
+// Returns { position:[x,y,z], target:[x,y,z], distance, radius }.
+export function computeRegionCamera({ region, aspect = 1, fovDeg = CITY_CAMERA_FOV_DEG, hudSafe } = {}) {
+  const anchor = Array.isArray(region?.anchor) ? region.anchor : [];
+  const cx = finiteOr(anchor[0], 0);
+  const cz = finiteOr(anchor[2], 0);
+  const w = Math.max(0, finiteOr(region?.w, 0));
+  const d = Math.max(0, finiteOr(region?.d, 0));
+
+  const radius = Math.max(MIN_REGION_RADIUS, Math.hypot(w, d) / 2) * REGION_FRAMING_MARGIN;
+
+  return frameFromRadius({
+    centerX: cx,
+    centerZ: cz,
+    targetY: REGION_TARGET_Y,
+    radius,
+    aspect,
+    fovDeg,
+    hudSafe,
+    pitchRad: REGION_PITCH_RAD,
+  });
 }
